@@ -188,7 +188,7 @@ function commit(repo: Repo, files: Record<string, string | null>, message: strin
   return git(repo.seed, "rev-parse", "HEAD");
 }
 
-const tagOf = (repo: Repo, name: string, sha: string): void => git(repo.seed, "push", "-q", "origin", `${sha}:refs/tags/${name}`);
+const tagOf = (repo: Repo, name: string, sha: string): void => { git(repo.seed, "push", "-q", "origin", `${sha}:refs/tags/${name}`); };
 const changeset = (level: string, text: string): string => `---\n"agent-org": ${level}\n---\n\n${text}\n`;
 const pkg = (version: string): string => `${JSON.stringify({ name: "agent-org", version, scripts: { changeset: "x" } }, null, 2)}\n`;
 const FIRST_CHANGELOG = "# agent-org\n\n## 0.1.0\n\n### Minor Changes\n\n- first release\n";

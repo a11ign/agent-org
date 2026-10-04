@@ -670,7 +670,7 @@ export function recordReading({ stateDir, date, numbers }) {
  * report must not stop the orders behind it, and it says so on stderr rather than offering a half-built one. The ledger is read
  * BEFORE the report, so a day already delivered costs one file read and not the day of PR, journal and transcript reads.
  * THE ONLY WRITER OF THE READINGS FILE (`main` below never writes): offering the retrospective IS recording today's reading.
- * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: typeof readAll, readLedger?: (stateDir: string) => string | null,
+ * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0], readLedger?: (stateDir: string) => string | null,
  *   record?: typeof recordReading }} [seams]
  * @returns {ReturnType<typeof retrospectiveOrder>[]}
  */

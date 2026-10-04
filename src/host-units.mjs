@@ -89,6 +89,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "chairman-watch.service.in", "chairman-watch.timer.in",
   // #3025: the listener's service, the watcher's long-running half. Optional on the same key; it has no timer, because no clock starts it.
   "chairman-listen.service.in",
+  // #3532: the `agent-org` launcher, COPIED to `binDir` like `gh` (`agentOrgLauncher`) and not a unit.
+  "agent-org",
 ]);
 
 /**
@@ -182,6 +184,16 @@ function namesIn(dir, read) {
 }
 
 /**
+ * `@@tool@@`, which only the `agent-org` launcher takes: host.json's `tool`, present on a host that has moved to the installed form and
+ * ABSENT on one that has not, so a template that asks for it on such a host is refused by name (`renderTemplate`) and never rendered with a
+ * guess.
+ * @param {HostConfig} host @param {Record<string, string>} values @returns {Record<string, string>}
+ */
+function withTool(host, values) {
+  return host.tool === undefined ? values : { ...values, tool: host.tool };
+}
+
+/**
  * @param {ShippedDeps} deps
  * @returns {{ toolDir: string, projectDir: string | null, read: typeof readFileSync, values: () => Record<string, string>, host: () => HostConfig,
  *   beforeTicks: () => BeforeTick[] }}
@@ -195,7 +207,7 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
     projectDir: projectUnitsDir !== undefined ? projectUnitsDir : toolDir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null,
     read,
     host: () => host ?? homeHostConfig(),
-    values: () => (values ??= templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration())),
+    values: () => (values ??= withTool(host ?? homeHostConfig(), templateValues(host ?? homeHostConfig(), units ?? readUnitsDeclaration()))),
     beforeTicks: () => beforeTicksOf(host ?? homeHostConfig(), read),
   };
 }
@@ -1424,6 +1436,17 @@ Owned by the repository (packages/agent-org/src/host-units.mjs): \`pnpm run host
 `;
 
 /**
+ * The `agent-org` command in `binDir` (#3532): the launcher that runs the tool's checkout, so a workspace can say `agent-org <cmd>` from any
+ * directory with the project holding no copy of the tool. Owned only on a host that names a `tool`; one that does not has no checkout to launch.
+ * @param {string} scriptDir @param {ShippedDeps} deps @returns {{ label: string, target: string, mode: number, expected: string | null }[]}
+ */
+function agentOrgLauncher(scriptDir, deps) {
+  const { host } = shippedContext(deps);
+  if (host().tool === undefined) return [];
+  return [{ label: "agent-org launcher", target: join(scriptDir, "agent-org"), mode: 0o755, expected: shippedScriptText("agent-org", deps) }];
+}
+
+/**
  * The files this repository owns on the host for the identity policy, each with the text it must hold.
  * `expected` is `null` when the shipped source cannot be read, which is NOT the empty string.
  * @param {ShippedDeps & { shippedDir?: string, scriptDir?: string, workersDir?: string, leadsDir?: string,
@@ -1434,6 +1457,7 @@ export function ownedIdentityFiles(deps = {}) {
   const { scriptDir = binDirectory(deps), workersDir = workersDirectory(deps), leadsDir = leadsDirectory(deps) } = deps;
   return [
     { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: shippedScriptText("gh", deps) },
+    ...agentOrgLauncher(scriptDir, deps),
     { label: "gh-leads-workspaces.txt", target: join(leadsDir, "workspaces.txt"),
       mode: 0o644, expected: leadsListText(deps) },
     { label: "workers README", target: join(workersDir, "README.md"), mode: 0o644, expected: WORKERS_README },

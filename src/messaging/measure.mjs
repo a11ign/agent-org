@@ -16,6 +16,9 @@
 // **AN EVENT IS COUNTED IN THE WINDOW ITS OWN LINE FALLS IN.** An ask sent before the window and cleared inside it is a withdrawal of this window and not a send of it, so a short
 // window can hold more withdrawn than sent.
 //
+// **HAND-FIXES BY THE CHAIRMAN'S SESSION** (a11ign/a11ign#3427, D1) are the `queue` lines `chairman:queue done --hand-fix` writes (`op: "done"`, `handFix: true`), counted in the window their own line falls in:
+// each is an act the org could not do and the chairman's own session did, which is the number A7 wants to see fall. A `done` without `--hand-fix` is not one.
+//
 // **NO RATES.** A window with no lines prints "no messages in the window" and nothing else: a zero rate over nothing reads as a measurement.
 
 import { homedir } from "node:os";
@@ -86,7 +89,7 @@ const refusedAsks = (lines) => lines.filter((line) => line.status === "invalid" 
 
 /**
  * @param {Record<string, any>[]} lines the whole ledger @param {{since: number, until: number}} window
- * @returns {{empty: true} | {empty: false, messages: ReturnType<typeof conversations>, asks: {sent: number, answered: number, withdrawn: number, refused: Record<string, number>}}}
+ * @returns {{empty: true} | {empty: false, messages: ReturnType<typeof conversations>, asks: {sent: number, answered: number, withdrawn: number, refused: Record<string, number>}, handFixes: number}}
  */
 export function measure(lines, { since, until }) {
   const inWindow = (/** @type {number} */ instant) => instant >= since && instant <= until;
@@ -99,8 +102,12 @@ export function measure(lines, { since, until }) {
     empty: false,
     messages: conversations(lines).filter((message) => inWindow(message.receivedAt)),
     asks: { sent: cycles.sent.filter(inWindow).length, answered: cycles.answered.filter(inWindow).length, withdrawn: cycles.withdrawn.filter(inWindow).length, refused },
+    handFixes: handFixesIn(lines, inWindow),
   };
 }
+
+/** @param {Record<string, any>[]} lines @param {(instant: number) => boolean} inWindow @returns {number} the acts the chairman's session finished by hand, in the window */
+const handFixesIn = (lines, inWindow) => lines.filter((line) => line.direction === "queue" && line.op === "done" && line.handFix === true && inWindow(at(line.ts))).length;
 
 /** @param {number | null} seconds @param {string} verb @param {string} none @returns {string} */
 const after = (seconds, verb, none) => (seconds === null ? none : `${verb} after ${seconds} s`);
@@ -108,7 +115,7 @@ const after = (seconds, verb, none) => (seconds === null ? none : `${verb} after
 /** @param {ReturnType<typeof measure>} report @param {{since: number, until: number}} window @returns {string[]} */
 export function formatReport(report, { since, until }) {
   if (report.empty) return ["no messages in the window"];
-  const { messages, asks } = report;
+  const { messages, asks, handFixes } = report;
   const refusedTotal = Object.values(asks.refused).reduce((sum, count) => sum + count, 0);
   return [
     `window ${new Date(since).toISOString()} .. ${new Date(until).toISOString()}`,
@@ -120,6 +127,7 @@ export function formatReport(report, { since, until }) {
     `asks withdrawn (cleared with no answer before it): ${asks.withdrawn}`,
     `asks refused by the brief rule: ${refusedTotal}`,
     ...Object.entries(asks.refused).map(([reason, count]) => `  ${count} x ${reason}`),
+    `hand-fixes by the chairman's session: ${handFixes}`,
   ];
 }
 

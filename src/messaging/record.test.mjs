@@ -95,6 +95,7 @@ describe("chairman:record", () => {
     assert.equal(body.includes("Chairman answered via Telegram"), false);
     assert.deepEqual(github.row.labels, ["needs:chairman"], "a record changes no label");
     const line = ledger.read().find((entry) => entry.direction === "record");
+    assert.ok(line, "the record is in the ledger");
     assert.deepEqual({ ...line, ts: undefined }, { direction: "record", request: `request:${REPO}#3333`, messageRef: REF, step: "comment", ts: undefined });
     assert.equal("key" in line, false, "no key: foldLedger must never take it for a notification");
   });

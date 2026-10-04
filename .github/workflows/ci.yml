@@ -120,10 +120,10 @@ jobs:
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
       # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 429 files were in the
-      # program when this job was added (201 of the 227 `*.test.ts`, 195 of the 219 `@ts-check` `.mjs`); the floor is below that so a deletion does not trip it, and an `exclude` that
-      # swallows a hundred files does. Raise it as the list shrinks.
+      # program when this job was added (201 of the 227 `*.test.ts`, 195 of the 219 `@ts-check` `.mjs`) and 473 once the burn-down of a11ign/a11ign#3571 left four files in `exclude`; the
+      # floor is below that so a deletion does not trip it, and an `exclude` that swallows a hundred files does. Raise it as the list shrinks.
       - name: The program still holds the files it was added to check
         run: |
           count=$(npx tsc --noEmit -p tsconfig.json --listFilesOnly | grep -vc node_modules)
           echo "tsc program: $count files outside node_modules"
-          test "$count" -ge 400
+          test "$count" -ge 440

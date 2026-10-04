@@ -121,7 +121,7 @@ describe("(2) a reader that fails REFUSES the send and names which", () => {
 });
 
 describe("(3) a placeholder outside the vocabulary is refused; (1)'s success is the control that not everything resolves", () => {
-  for (const [wrong, why] of [
+  for (const [wrong, why] of /** @type {[string, RegExp][]} */ ([
     ["{{fleet.workers-sideways}}", /"fleet" has no field "workers-sideways"/],
     ["{{fleet:3.workers-up}}", /"fleet" takes no id/],
     ["{{gate.age}}", /"gate" has no field "age"/],
@@ -133,7 +133,7 @@ describe("(3) a placeholder outside the vocabulary is refused; (1)'s success is 
     ["{{release:-x/y.latest}}", /"release" needs an id of the right shape/],
     ["{{release:a11ign/agent-org.draft}}", /"release" has no field "draft"/],
     ["{{releases:a11ign/agent-org.latest}}", /"releases" is not a kind of fact/],
-  ]) {
+  ])) {
     test(`${wrong} is refused, nothing is sent, and no reader is asked`, async () => {
       let asked = 0;
       const count = () => { asked += 1; return unreadable("anything"); };

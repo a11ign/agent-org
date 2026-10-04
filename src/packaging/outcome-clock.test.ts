@@ -63,7 +63,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const label = (...names: string[]) => names.map((name) => ({ name }));
 const BOT = { login: "a11ign-ai-workers" };
 
-type Moves = { claimedAt: number; comment: number | null; commit: number | null; push: number | null; openPrs: unknown[]; mergedAt: number | null };
+type Moves = import("../work-gate/claim-stall-tick.mjs").ClaimMoves;
 type HoldersIn = { moves: Map<number, Moves> | null; agents: { label: string; status: string }[] | null };
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string };
 type Items = ReturnType<typeof overdueFacts>["items"];
@@ -168,7 +168,7 @@ test("THE SEVEN SHAPES ARE THE SET: a PR shape and a row shape are both here, an
 // --- the two claimed-row shapes of slice 2b, and the controls that make them mean something ---------------------------------------------------------------
 
 /** The reason the clock gives the one row in these facts, and whether the tick offers an order for it. */
-function rowReading(args: ReturnType<typeof heldRow>) {
+function rowReading(args: Parameters<typeof clock>[0]) {
   const { facts, orders } = clock(args);
   return { reason: (facts.items as NonNullable<Items>).find((i) => i.kind === "row")?.reason, raised: orders.length, unread: facts.unread };
 }

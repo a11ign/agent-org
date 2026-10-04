@@ -206,7 +206,7 @@ test("an unreadable registry is `unknown` and never 0, and one refused source do
   assert.ok(Object.values(doraNumbers(down)).length === DORA_METRICS.length && Object.values(doraNumbers(down)).every((n) => n === null), "no number at all, not zeros");
   assert.match(renderDora(down).join("\n"), /acme\/widgets: unknown -- its releases could not be read\. Not 0: nothing was measured\./);
   const noRegressions = measureRepository(WIDGETS as Any, readersOf({ "acme/widgets": { ...WIDGETS_WORLD, regressions: null } }) as Any, NOW);
-  assert.equal(noRegressions.deploymentFrequency.value, 6, "the registry was read");
+  assert.equal(noRegressions.deploymentFrequency?.value, 6, "the registry was read");
   assert.equal(noRegressions.changeFailure, null, "a rate without the regression list would undercount failures, so it is unknown");
   assert.equal(noRegressions.restore, null);
   const throwing = { ...readersOf(WORLDS), releases: () => { throw new Error("HTTP 503"); } };
@@ -218,7 +218,7 @@ test("an unreadable ancestry is `unknown`, never `unreleased`", () => {
   const measured = measureRepository(WIDGETS as Any, readers as Any, NOW);
   assert.equal(measured.leadTime, null);
   assert.match(measured.reasons.leadTime, /ancestry of #\d+ could not be read/);
-  assert.equal(measured.deploymentFrequency.value, 6, "and deployment frequency, which needs no ancestry, is still read");
+  assert.equal(measured.deploymentFrequency?.value, 6, "and deployment frequency, which needs no ancestry, is still read");
 });
 
 const neverPublished = () => { throw Object.assign(new Error("HTTP 404"), { code: NEVER_PUBLISHED }); };
@@ -253,7 +253,7 @@ test("POSITIVE CONTROL for the above: a refused read is still `unknown`, so the 
   assert.equal(fresh(UNPUBLISHED, { ...empty, releases: boom }).status, "unknown", "a network error on the registry is not a 404");
   assert.equal(fresh(FRESH, { ...empty, releases: neverPublished }).status, "unknown", "a 404 means never published only for a declared npm package, not a tag repository");
   const noMerges = fresh(UNPUBLISHED, { ...empty, releases: neverPublished, mergedPrs: boom });
-  assert.match(noMerges.reason, /merged pull requests could not be read/, "never published, and the merges unreadable: nothing to measure from");
+  assert.match(noMerges.reason ?? "", /merged pull requests could not be read/, "never published, and the merges unreadable: nothing to measure from");
   assert.equal(noMerges.status, "unknown");
   const oneMerge = fresh(FRESH, readersOf({ "acme/fresh": { ...EMPTY_WORLD, prs: [pr(40, "10-01T12:00", "f1", "lib/z.ts")], history: ["f1"] } }));
   assert.equal(oneMerge.status, "no release yet");

@@ -63,7 +63,7 @@ function fixtureGithub(initial = openRow()) {
     calls, failOnce, rows,
     writes: () => calls.filter((call) => call.op !== "readRow").map((call) => call.op),
     async readRow(/** @type {any} */ ref) { calls.push({ op: "readRow" }); return structuredClone(rowOf(ref)); },
-    async comment(/** @type {any} */ ref, /** @type {string} */ body) { attempt("comment"); (calls.at(-1) ?? {}).arg = body; rowOf(ref).comments.push({ body, createdAt: "2026-10-02T10:00:00Z" }); },
+    async comment(/** @type {any} */ ref, /** @type {string} */ body) { attempt("comment"); /** @type {{op: string, arg?: string}} */ (calls.at(-1)).arg = body; rowOf(ref).comments.push({ body, createdAt: "2026-10-02T10:00:00Z" }); },
     async removeLabel(/** @type {any} */ ref, /** @type {string} */ label) { attempt("remove-label"); rowOf(ref).labels = rowOf(ref).labels.filter((/** @type {string} */ l) => l !== label); },
     async addLabel(/** @type {any} */ ref, /** @type {string} */ label) { attempt("set-answer"); rowOf(ref).labels.push(label); },
   };
@@ -169,7 +169,7 @@ describe("a button press (done-whens 1 and 4)", () => {
     assert.deepEqual(h.github.writes(), ["comment", "remove-label", "set-answer", "set-answer"], "only the missing step was repeated");
     assert.ok(row.labels.includes(ANSWER_LABEL));
     assert.equal(row.comments.length, 2, "the brief and ONE answer");
-    assert.match(h.lines().find((line) => line.step === "failed").error, /set-answer failed/);
+    assert.match(String(h.lines().find((line) => line.step === "failed")?.error), /set-answer failed/);
   });
 
   test("an option the brief does not offer writes nothing; data that is not ours never gets this far (inbound.mjs drops it)", async () => {
@@ -330,7 +330,7 @@ describe("what the ledger keeps", () => {
 // THE BUTTONS' MEANINGS (a11ign/a11ign#3423 done-whens 4 to 6). Each is the harness above with ONE press changed, so "writes nothing" is read against the
 // positive control at the top of this file (a real press does write three things).
 
-/** An orders port that records each order and answers as `outcome` says. @param {{queued: boolean, say: string, handoff: string | null}} [outcome] */
+/** An orders port that records each order and answers as `outcome` says. @param {{queued: boolean, say: string, handoff: string | null, taker?: string | null, told?: string | null}} [outcome] */
 function fixtureOrders(outcome = { queued: true, say: "queued for liaison, handoff h1", handoff: "h1" }) {
   /** @type {{text: string, messageRef: string}[]} */
   const calls = [];

@@ -2,7 +2,7 @@
 // @ts-check
 // command: trace -- every model turn, wake and GitHub event of one row, in order (a11ign/a11ign#3494, first and second slices).
 //
-// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`
+// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513)
 //
 // It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
@@ -16,7 +16,8 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseLedger, rowsClosedBy } from "../wakes-per-row.mjs";
+import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
+import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
@@ -28,13 +29,20 @@ import { appendToStore, DEFINITIONS, eventsForRow, eventsOfTranscript, openStore
 
 const DEFAULT_SINCE_DAYS = 3;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const WEEK_DAYS = 7;
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
 const SEARCH_PAGE = 100;
+const SEARCH_RESULT_CAP = 1000; // GitHub's search returns no more than this many results of one query, however many pages are asked for
+const LIST_MAX_PAGES = 30;
+const BUDGET_SPENT = "GH_CALLS_SPENT";
 const COST_DECIMALS = 4;
 const SHORT_SHA = 7;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
+const AGGREGATE_FLAG = "--aggregate";
+const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool is the whole org's, and a second run continues where this one stopped
+const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
 /** What this slice does not hold. Printed under every report. */
 export const NOT_HELD = "NOT IN THIS STORE YET: the gh call ledger, the gate's deferral spans, the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
@@ -49,8 +57,30 @@ export function parseArgs(argv) {
   for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
   const since = flags.since ? Date.parse(flags.since) : Date.now() - DEFAULT_SINCE_DAYS * MS_PER_DAY;
   if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
-  return { number, since, store: flags.store ?? join(homedir(), ".cache", "a11ign", "trace", "events.ndjson"), json: flags.json === "1" };
+  return { number, since, store: flags.store ?? defaultStore(), json: flags.json === "1" };
 }
+
+/**
+ * `trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]`: the weekly token-efficiency report. `--since` is rounded down to its Monday 00:00 UTC, so the first week is a
+ * whole one; without it the report starts four weeks before the current one.
+ * @param {string[]} argv
+ */
+export function parseAggregateArgs(argv) {
+  const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== AGGREGATE_FLAG);
+  /** @type {Record<string, string>} */
+  const flags = {};
+  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const requested = flags.since ? Date.parse(flags.since) : weekStart(Date.now()) - DEFAULT_AGGREGATE_WEEKS * WEEK_DAYS * MS_PER_DAY;
+  if (Number.isNaN(requested)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
+  const budget = flags.calls === undefined ? DEFAULT_GITHUB_CALLS : Number(flags.calls);
+  if (!Number.isInteger(budget) || budget < 0) throw new Error(`--calls must be a whole number of gh api calls (got ${flags.calls})`);
+  return { since: weekStart(requested), store: flags.store ?? defaultStore(), json: flags.json === "1", budget };
+}
+
+/** @param {string[]} argv */
+export const isAggregate = (argv) => argv.includes(AGGREGATE_FLAG);
+
+const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.ndjson");
 
 /**
  * @typedef {{ read: number, codexRead: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
@@ -353,7 +383,172 @@ export function render({ number, rows, prs, events, ingest: ingested, github, he
   return out.join("\n");
 }
 
+/**
+ * `gh` that makes at most `budget` calls and counts every one (a failed call is still a call). The (budget+1)th THROWS, before it is made, with `code: GH_CALLS_SPENT`: the budget is
+ * checked per CALL, because one pull request costs several (the issue, each page of its timeline, a check-runs list per head), so a check per pull request can be overshot by all of them.
+ * @param {{ gh: (args: string[]) => any, budget: number }} input
+ * @returns {((args: string[]) => any) & { calls: number }}
+ */
+export function budgetedGh({ gh, budget }) {
+  const counted = countingGh(gh);
+  const bounded = (/** @type {string[]} */ args) => {
+    if (counted.calls >= budget) throw Object.assign(new Error(`--calls ${budget} is spent`), { code: BUDGET_SPENT });
+    return counted(args);
+  };
+  return /** @type {any} */ (Object.defineProperty(bounded, "calls", { get: () => counted.calls }));
+}
+
+/** @param {any} error */
+const isSpent = (error) => error?.code === BUDGET_SPENT;
+
+/**
+ * Merged pull requests of one repository in the window, one counted call per page of the search API. Past GitHub's 1000-result cap the list would be CUT SHORT without saying so
+ * (`gh api --paginate` stops there silently), and a week missing its pull requests prints as a smaller week: so that is refused, and `--since` is narrowed instead.
+ * @param {{ repo: string, window: { from: number, to: number }, gh: (args: string[]) => any }} input
+ * @returns {import("../wakes-per-row.mjs").PullRequest[]}
+ */
+export function listMergedPulls({ repo, window, gh }) {
+  const range = `${new Date(window.from).toISOString()}..${new Date(window.to).toISOString()}`;
+  /** @type {import("../wakes-per-row.mjs").PullRequest[]} */
+  const pulls = [];
+  for (let page = 1; page <= SEARCH_RESULT_CAP / SEARCH_PAGE; page += 1) {
+    const reply = gh(["-X", "GET", "search/issues", "-f", `q=repo:${repo} is:pr is:merged merged:${range}`, "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
+    const items = reply.items ?? [];
+    pulls.push(...items.map((/** @type {any} */ item) => ({ repo, number: item.number, createdAt: item.created_at, mergedAt: item.pull_request?.merged_at, body: item.body ?? "" })));
+    if (pulls.length >= reply.total_count || items.length < SEARCH_PAGE) return pulls;
+  }
+  throw new Error(`${repo} has more merged pull requests since ${new Date(window.from).toISOString()} than GitHub's search returns (${SEARCH_RESULT_CAP}); a list cut short would print smaller weeks, so narrow --since`);
+}
+
+/** The rows GitHub says are open now, one counted call per page, pull requests (which the issues endpoint also lists) left out. @param {{ rowRepo: string, gh: (args: string[]) => any }} input @returns {number[]} */
+export function listOpenRows({ rowRepo, gh }) {
+  /** @type {number[]} */
+  const rows = [];
+  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+    const items = gh(["-X", "GET", `repos/${rowRepo}/issues`, "-f", "state=open", "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
+    if (!Array.isArray(items)) throw new Error(`gh api repos/${rowRepo}/issues: the reply carried no list where one was expected`);
+    rows.push(...items.filter((item) => !item.pull_request).map((item) => item.number));
+    if (items.length < SEARCH_PAGE) return rows;
+  }
+  throw new Error(`gh api repos/${rowRepo}/issues: more than ${LIST_MAX_PAGES} pages; refusing to call a row open on part of the list`);
+}
+
+/**
+ * What the run must know before it can place a single week: the merged pull requests of every code repository, then which rows are open. Both are counted calls. Without the pull
+ * requests there is no list of merged rows, so a budget that cannot list them is an ERROR (a partial list would print smaller weeks); the open rows are optional, and a budget
+ * spent before them leaves them unknown (`null`, printed `not asked`).
+ * @param {{ repos: string[], rowRepo: string, window: { from: number, to: number }, gh: ReturnType<typeof budgetedGh>, budget: number }} input
+ */
+export function readListings({ repos, rowRepo, window, gh, budget }) {
+  try {
+    const pulls = repos.flatMap((repo) => listMergedPulls({ repo, window, gh }));
+    return { pulls, openRows: openRowsWithin({ rowRepo, gh }) };
+  } catch (cause) {
+    if (!isSpent(cause)) throw cause;
+    throw new Error(`--calls ${budget} is too small to list the merged pull requests (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; raise --calls`, { cause });
+  }
+}
+
+/** @param {{ rowRepo: string, gh: ReturnType<typeof budgetedGh> }} input @returns {number[] | null} */
+function openRowsWithin({ rowRepo, gh }) {
+  try {
+    return listOpenRows({ rowRepo, gh });
+  } catch (error) {
+    if (isSpent(error)) return null;
+    throw error;
+  }
+}
+
+/** One pull request's own events, tagged with its repository's short name when it is a keyed repository's (how the store keeps `repo`). @param {{ pull: import("../wakes-per-row.mjs").PullRequest, rowRepo: string, gh: (args: string[]) => any }} input */
+function pullEventsOf({ pull, rowRepo, gh }) {
+  const events = readGithubEvents({ rows: [], prs: [pull.number], repo: pull.repo, gh });
+  return pull.repo === rowRepo ? events : events.map((event) => ({ ...event, repo: pull.repo.split("/")[1] }));
+}
+
+/**
+ * Read what `pending` names of one pull request and the rows it closes, until the budget is spent. A subject whose reading the budget cut off is NOT stored (its events come back only
+ * from a whole reading); what finished before it is. Returns what is still pending, which is non-empty only when the budget stopped it.
+ * @param {{ pull: import("../wakes-per-row.mjs").PullRequest, pending: { pull: boolean, rows: number[] }, rowRepo: string, gh: (args: string[]) => any }} input
+ */
+function readPull({ pull, pending, rowRepo, gh }) {
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const events = [];
+  const left = { ...pending };
+  try {
+    if (left.pull) {
+      events.push(...pullEventsOf({ pull, rowRepo, gh }));
+      left.pull = false;
+    }
+    if (left.rows.length > 0) {
+      events.push(...readGithubEvents({ rows: left.rows, prs: [], repo: rowRepo, gh }));
+      left.rows = [];
+    }
+  } catch (error) {
+    if (!isSpent(error)) throw error;
+  }
+  return { events, left };
+}
+
+/**
+ * What the aggregate reads of GitHub: for the merged rows, their own events (the claim, which gives the wall-clock) and those of the pull requests that closed them. OLDEST MERGE
+ * FIRST, and it STOPS when `gh` (budgeted: see `budgetedGh`) refuses a call: a backfill of three weeks is about nine thousand REST calls, and the pool is the whole org's. A merged pull
+ * request and a closed row do not change, so what the store already holds of one is not read again: a second run continues where the first stopped. What was not read is
+ * returned, so a week that depends on it is marked PARTIAL.
+ * @param {{ pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, held: import("./store.mjs").TraceEvent[], gh: (args: string[]) => any }} input
+ */
+export function githubEventsOfMerged({ pulls, rowRepo, held, gh }) {
+  const merged = new Set(held.filter((event) => event.kind === "merged" && event.pr !== null).map((event) => `${event.repo ?? "primary"}#${event.pr}`));
+  const closed = new Set(held.filter((event) => event.kind === "closed" && event.row !== null).map((event) => event.row));
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const events = [];
+  /** @type {number[]} */
+  const unreadRows = [];
+  let stopped = false;
+  for (const pull of [...pulls].sort((a, b) => Date.parse(a.mergedAt) - Date.parse(b.mergedAt))) {
+    const closes = rowsClosedBy(pull.body ?? "", rowRepo);
+    let left = { pull: !merged.has(`${pull.repo === rowRepo ? "primary" : pull.repo.split("/")[1]}#${pull.number}`), rows: closes.filter((row) => !closed.has(row)) };
+    if (!stopped) {
+      const read = readPull({ pull, pending: left, rowRepo, gh });
+      events.push(...read.events);
+      left = read.left;
+      stopped = left.pull || left.rows.length > 0;
+    }
+    if (left.pull || left.rows.length > 0) unreadRows.push(...closes);
+  }
+  return { events, unreadRows };
+}
+
+/** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.mjs").LedgerEntry[], cache: string }} input */
+function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
+  const transcripts = readTranscripts(join(homedir(), ".claude", "projects"), starts[0]);
+  const instances = readInstances(cache);
+  const claimedAt = new Map([...claims].map(([row, at]) => [row, /** @type {number | null} */ (at)]));
+  const readings = new Map(starts.map((start) => [start, measure({ window: { from: start, to: start + WEEK_DAYS * MS_PER_DAY }, pulls, transcripts, ledger, instances, claimedAt, rowRepo }).rows]));
+  return { readings, unreadable: transcripts.flatMap((transcript) => (transcript.ok ? [] : [transcript.file])) };
+}
+
+async function mainAggregate() {
+  const { since, store: storePath, json, budget } = parseAggregateArgs(process.argv.slice(2));
+  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const declaration = homeProjectDeclaration();
+  const rowRepo = declaration.tracker[0].repo;
+  const cache = join(homedir(), ".cache", "a11ign");
+  const now = Date.now();
+  const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, now });
+  const gh = budgetedGh({ gh: ghApi, budget });
+  const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
+  const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
+  const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
+  const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
+  const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
+  const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
+  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows });
+  console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), `GitHub: ${github.calls} REST calls (gh api, budget ${budget}); ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`, NOT_HELD] }));
+}
+
 async function main() {
+  if (isAggregate(process.argv.slice(2))) return mainAggregate();
   const { number, since, store: storePath, json } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;

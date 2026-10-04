@@ -71,7 +71,7 @@ function host(world: World = {}) {
 }
 
 const NO_AGENTS = null;
-const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: object[] } = {}) => {
+const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall.mjs").MergedPr[] } = {}) => {
   const h = host(world);
   const facts = claimFactsFrom({ row: 3390, session: "worker-3390", waiting: null, blockedBy: [], comments: [comment], openPrs: input.open ?? [],
     mergedPrs: [], elsewhere: { open: input.elsewhereOpen ?? [], merged: input.merged ?? [PR_134] }, repo: REPO, trackerRepo: "a11ign/a11ign", sessionRows: 1 }, h.io);

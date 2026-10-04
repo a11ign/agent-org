@@ -21,11 +21,17 @@ function verdictOf(text) {
   return classifyText(text).verdict;
 }
 
+/** @param {string} text @returns {string | undefined} why the text was not forwarded; undefined when it was */
+function reasonOf(text) {
+  const result = classifyText(text);
+  return "reason" in result ? result.reason : undefined;
+}
+
 describe("secrets are dropped (done-when 2)", () => {
   test("the three shapes of the done-when, together and each alone", () => {
     const together = `here: ${GITHUB_TOKEN}\n${PRIVATE_KEY_HEADER}\npassword: hunter2`;
     assert.equal(classifyText(together).verdict, VERDICT.drop);
-    assert.equal(classifyText(together).reason, REASON.secret);
+    assert.equal(reasonOf(together), REASON.secret);
     for (const text of [GITHUB_TOKEN, PRIVATE_KEY_HEADER, "password: hunter2"]) {
       assert.equal(verdictOf(text), VERDICT.drop, `not dropped: ${text.slice(0, 12)}`);
     }
@@ -67,7 +73,7 @@ const X = "zq-fake-value-0";
 const ZERO_WIDTH = "​";
 
 /** @param {string} text @returns {string} the same text in full-width letters, which NFKC folds back */
-const fullWidth = (text) => [...text].map((char) => (char > " " && char <= "~" ? String.fromCodePoint(char.codePointAt(0) + 0xFEE0) : char)).join("");
+const fullWidth = (text) => [...text].map((char) => (char > " " && char <= "~" ? String.fromCodePoint(/** @type {number} */ (char.codePointAt(0)) + 0xFEE0) : char)).join("");
 /** @param {string} text @returns {string} the text with a zero-width space in the middle of its first word */
 const splitFirstWord = (text) => `${text.slice(0, 3)}${ZERO_WIDTH}${text.slice(3)}`;
 /** @param {string} text @returns {string[]} the plain spelling and the two dressed-up ones */
@@ -223,7 +229,7 @@ describe("deletions and force-pushes are refused (done-when 3)", () => {
       const result = /** @type {any} */ (classifyText(text));
       assert.equal(result.verdict, VERDICT.refuse, text);
       assert.equal(result.reason, reason, text);
-      assert.equal(result.reply, REPLIES[reason]);
+      assert.equal(result.reply, /** @type {Record<string, string>} */ (REPLIES)[reason]);
     }
   });
 
@@ -231,9 +237,9 @@ describe("deletions and force-pushes are refused (done-when 3)", () => {
     const dashes = { hyphen: "\u2010", nonBreaking: "\u2011", figure: "\u2012", en: "\u2013", em: "\u2014", bar: "\u2015", minus: "\u2212", twoEm: "\u2E3A", smallEm: "\uFE58" };
     assert.equal(verdictOf("force-push main"), VERDICT.refuse, "control: the ASCII hyphen is refused");
     for (const [name, dash] of Object.entries(dashes)) {
-      assert.equal(classifyText(`force${dash}push main`).reason, REASON.deletion, `force${name}push`);
-      assert.equal(classifyText(`git push ${dash}${dash}force origin main`).reason, REASON.deletion, `push ${name}${name}force`);
-      assert.equal(classifyText(`rm ${dash}rf runs`).reason, REASON.deletion, `rm ${name}rf`);
+      assert.equal(reasonOf(`force${dash}push main`), REASON.deletion, `force${name}push`);
+      assert.equal(reasonOf(`git push ${dash}${dash}force origin main`), REASON.deletion, `push ${name}${name}force`);
+      assert.equal(reasonOf(`rm ${dash}rf runs`), REASON.deletion, `rm ${name}rf`);
     }
     assert.equal(verdictOf("a well\u2010known \u2014 and ordinary \u2013 sentence"), VERDICT.forward, "control: a dash in prose is not a refusal");
   });
@@ -244,7 +250,7 @@ describe("deletions and force-pushes are refused (done-when 3)", () => {
       "destroy the old repo", "purge the corpus", "nuke the ledger", "drop the database", "get rid of my old branches",
       "git push --force origin main", "git push -f", "force push it", "rm -rf runs", "git reset --hard HEAD~3", "git clean -fdx",
     ];
-    for (const text of refused) assert.equal(classifyText(text).reason, REASON.deletion, text);
+    for (const text of refused) assert.equal(reasonOf(text), REASON.deletion, text);
   });
 
   test("the words that merely sit near a verb are not a deletion: a question about one, a different object, no verb", () => {
@@ -269,7 +275,7 @@ describe("spending is refused", () => {
       "pay for the server", "put it on the credit card", "it costs $20 a month", "spend £15 on it", "that is 50 dollars", "budget of 30 EUR",
       "renew the domain",
     ];
-    for (const text of refused) assert.equal(classifyText(text).reason, REASON.spending, text);
+    for (const text of refused) assert.equal(reasonOf(text), REASON.spending, text);
   });
 
   test("the word 'plan' alone, and numbers without a currency, are not spending", () => {

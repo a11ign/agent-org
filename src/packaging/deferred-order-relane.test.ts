@@ -111,11 +111,13 @@ test("#3465: the gate declares only the ATTRIBUTED ready-flip re-laneable -- a v
   const pr = (by: string) => ({ number: 4, isDraft: true, headRefOid: HEAD, author: { login: "worker-judge" }, labels: [],
     statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
     comments: [{ body: `Review of #4 at \`${HEAD.slice(0, 8)}\`, by \`${by}\`: convinced.` }] });
-  const [attributed] = decide({ prs: [pr("reviewer")], readyRows: [] });
+  // `decide`'s declared return type names only the fields every order has; these two are the ones this order adds.
+  type FlippableOrder = ReturnType<typeof decide>[number] & { mayRelane?: boolean, action?: { kind: string } };
+  const [attributed] = decide({ prs: [pr("reviewer")], readyRows: [] }) as FlippableOrder[];
   assert.equal(attributed.cause, "draft-convinced-not-ready", "POSITIVE CONTROL: the order exists");
   assert.equal(attributed.mayRelane, true);
   assert.equal(attributed.action?.kind, "ready", "and it is the one the gate flips itself: the declaration and the action share a condition");
-  const [selfSigned] = decide({ prs: [pr("worker-judge")], readyRows: [] });
+  const [selfSigned] = decide({ prs: [pr("worker-judge")], readyRows: [] }) as FlippableOrder[];
   assert.equal(selfSigned.cause, "draft-convinced-not-ready");
   assert.equal(selfSigned.mayRelane, undefined, "a self-signed verdict is not declared");
 });

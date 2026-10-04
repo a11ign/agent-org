@@ -42,8 +42,8 @@ const trunkRun = (conclusion, concluded, more = {}) => ({
 });
 
 describe("trunk red, held down for 30 minutes (done-when 1)", () => {
-  /** A messenger over `main` that went red at `NOW`, observed `minutes` later. */
-  async function observedAfter(/** @type {number} */ ...minutes) {
+  /** A messenger over `main` that went red at `NOW`, observed `minutes` later. @param {number[]} minutes */
+  async function observedAfter(...minutes) {
     const run = messenger();
     const red = [trunkRun("failure", NOW), trunkRun("success", NOW - HOUR)];
     for (const m of minutes) {

@@ -75,8 +75,10 @@ const HEAD = "abc12345deadbeefcafe000011112222";
 /** A ready (not draft), green, unreviewed pull request, as `gh pr list` returns it. */
 const readyPr = (number: number) => ({ number, isDraft: false, headRefOid: HEAD, statusCheckRollup: GREEN, author: { login: "a11ign-ai-leads" },
   comments: [], labels: [], reviews: [], reviewRequests: [] });
+/** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
+type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
 const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
-  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) };
+  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `scopeTick`. `gh` answers the pull-request list only. */
 function ordersOf(key: string, prs: unknown[]) {

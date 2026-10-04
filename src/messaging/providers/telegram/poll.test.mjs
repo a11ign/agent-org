@@ -171,6 +171,7 @@ describe("the offset (done-when 1)", () => {
   test("a batch the core cannot record does not move the offset, and is backed off from rather than skipped", async () => {
     const telegram = fakeTelegram({ updates: [update(15), update(16)], stopAfter: 2 });
     const directory = freshDirectory();
+    /** @type {string[]} */
     const logs = [];
     /** @type {number[]} */
     const sleeps = [];
@@ -363,8 +364,8 @@ describe("what the listener does about what the core said", () => {
   test("a failed step is logged and the next one still runs", async () => {
     const telegram = fakeTelegram({ updates: [update(61, { text: PASSWORD_LINE })] });
     const original = /** @type {any} */ (telegram.fetch);
-    telegram.fetch = async (/** @type {string} */ url, /** @type {any} */ init) => (url.endsWith("/deleteMessage")
-      ? reply(400, { ok: false, error_code: 400, description: "message can't be deleted" }) : original(url, init));
+    telegram.fetch = /** @type {typeof telegram.fetch} */ (async (/** @type {string} */ url, /** @type {any} */ init) => (url.endsWith("/deleteMessage")
+      ? reply(400, { ok: false, error_code: 400, description: "message can't be deleted" }) : original(url, init)));
     const run = listener({ directory: freshDirectory(), telegram });
     await run.run();
     assert.match(run.logs.join("\n"), /deleteMessage failed: telegram deleteMessage failed: 400/);

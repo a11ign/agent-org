@@ -54,9 +54,9 @@ function world(states) {
   };
   const unused = async () => { throw new Error("not a read this test makes"); };
   const readers = {
-    issue: async (/** @type {number} */ number) => ({ number, state: read(`row:${number}`), labels: [] }),
+    issue: async (/** @type {number} */ number) => ({ number, state: read(`row:${number}`), labels: /** @type {string[]} */ ([]) }),
     pr: async (/** @type {number} */ number) => ({ number, state: read(`pr:${number}`), review: "none" }),
-    run: async (/** @type {number} */ id) => ({ conclusion: read(`run:${id}`) }),
+    run: async (/** @type {number} */ id) => ({ status: "completed", conclusion: read(`run:${id}`) }),
     unit: async (/** @type {string} */ name) => ({ state: read(`unit:${name}`) }),
     ready: unused, lastMerge: unused, comment: unused, fleet: unused, gate: unused, release: unused,
   };

@@ -71,7 +71,7 @@ test("#3444 (1) CONTROL: the bound and the scan can fail -- the text this row re
 
 // --- (2) A SPAWNED ENGINEER'S FIRST ORDER --------------------------------------------------------------------------------------------------------
 
-const SPAWNED = { row: 3390, worktree: "/home/agent/repos/wt-3390", branch: "agent/an-order-to-a-3390" };
+const SPAWNED = { row: 3390, worktree: "/home/agent/repos/wt-3390", branch: "agent/an-order-to-a-3390", launchDir: "/home/agent/repos/wt-3390" };
 const spawnedOrder = (label = "worker-3390", extra: object = {}) =>
   addressed({ session: "engineer", title: "An order to a live instance", prompt: "x" }, label, { spawned: SPAWNED, ...extra });
 const MEASURED_SPAWNED_BYTES = 700;
@@ -140,8 +140,8 @@ const comment = (id: string, body: string) => ({ id, body });
 const CLAIMED_COMMENTS = [{ number: 2099, comments: [comment("IC_claim", "<!-- row-claim: claim record -->\n**Claim record** -- claimed by `worker-capture`."),
   comment("IC_constraint", "## CONSTRAINT\n\n`ceo`'s ruling: this row may NOT be implemented by granting a token.")] }];
 const PRIMARY = { sha: "9c6ab2463000", originSha: "1f4e9c7a3b5d", behind: 2, ahead: 0, dirty: ["a.mjs"] };
-const LOW_DISK = [{ mounts: ["/"], resource: "inodes", free: 10, total: 100, fraction: 0.1 }];
-const STALE_WAIT = [{ item: { number: 5, title: "t" }, wait: { key: "closed #1", text: "closed #1" }, setter: "worker-1", remove: ["`hold:x`"] }];
+const LOW_DISK = [{ mounts: ["/"], resource: "inodes" as const, free: 10, total: 100, fraction: 0.1 }];
+const STALE_WAIT = [{ item: { number: 5, title: "t" }, wait: { key: "closed #1", text: "closed #1" }, setter: "worker-1", remove: ["`hold:x`"] }] as unknown as Parameters<typeof staleWaitOrders>[0]; // only the fields the order text reads
 const BRANCH = { branch: "agent/worktree-prune-unit-2000", head: "1f4e9c7a3b5d8e2016243c5f7a9b0d1e2f3a4b5c", row: 2000 };
 const TOO_MANY_ROWS = Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] }));
 

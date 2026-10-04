@@ -20,7 +20,7 @@ async function failedChecks(provider) {
   return [];
 }
 
-/** A provider with one behaviour broken, wrapping a working fake. @param {(real: any) => Record<string, unknown>} override */
+/** A provider with one behaviour broken, wrapping a working fake. @param {(real: any) => {id?: string, send?: (message: {text: string, silent?: boolean}) => Promise<unknown>, poll?: unknown, capabilities?: unknown}} override */
 function broken(override) {
   const real = createFakeProvider();
   return { ...real, ...override(real) };

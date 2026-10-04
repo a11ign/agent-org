@@ -78,7 +78,8 @@ test("the variable's name here is the one the tool reads", async () => {
 for (const [what, env] of [["unset", {}], ["empty", { [HOST_VARIABLE]: "" }]] as const) {
   test(`${what} ${HOST_VARIABLE} with no declaration beside the tool REFUSES by name, the path it would have guessed, and the remedy`, () => {
     const beside = scratch();
-    assert.throws(() => resolveHomeCheckout({ env, beside }), (error: unknown) => {
+    // The working directory is pinned to one in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root.
+    assert.throws(() => resolveHomeCheckout({ env, beside, cwd: scratch() }), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
       assert.equal(error.field, HOST_VARIABLE);
       assert.match(error.message, new RegExp(HOST_VARIABLE));

@@ -103,7 +103,7 @@ describe("a failed fetch is surfaced with the token removed (done-when 3)", () =
 
   /** @param {Error} failure @param {string} [token] */
   async function surfaced(failure, token = "123:ABC") {
-    const fetchImpl = redactingFetch(async () => { throw failure; }, createSecret(token));
+    const fetchImpl = redactingFetch(/** @type {(url: string) => Promise<never>} */ (async () => { throw failure; }), createSecret(token));
     try {
       await fetchImpl(FIXTURE);
     } catch (error) {
@@ -131,7 +131,7 @@ describe("a failed fetch is surfaced with the token removed (done-when 3)", () =
 
   test("a message with no secret passes through unchanged, and a success is returned untouched (controls)", async () => {
     assert.equal((await surfaced(new Error("ECONNRESET"))).message, "Error: ECONNRESET");
-    const ok = redactingFetch(async () => "response", createSecret("123:ABC"));
+    const ok = redactingFetch(/** @type {(url: string) => Promise<string>} */ (async () => "response"), createSecret("123:ABC"));
     assert.equal(await ok(FIXTURE), "response");
   });
 });
