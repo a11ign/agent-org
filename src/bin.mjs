@@ -33,7 +33,19 @@ export function planInvocation(argv, { commands = COMMANDS, fixedArgs = FIXED_AR
   if (name === undefined) return { refusal: `agent-org: no command given, and there is no default one. Commands:\n${list}` };
   const file = Object.hasOwn(commands, name) ? commands[name] : undefined;
   if (file === undefined) return { refusal: `agent-org: \`${name}\` is not a command. Commands:\n${list}` };
-  return { run: { program: join(SRC, file), args: [...(fixedArgs[name] ?? []), ...rest] } };
+  return { run: { program: join(SRC, file), args: [...fixedArgs[name] ?? [], ...withoutRepeatedFixed(rest, fixedArgs[name] ?? [])] } };
+}
+
+/**
+ * #3357: `pr:open create --title ...` reached `gh` as `gh pr create create`, because the table already supplies `create` and the program's own
+ * usage text spells it too. A caller who repeats the fixed arguments exactly, leading, gets one copy, so both spellings of the command mean the same.
+ * @param {readonly string[]} rest the caller's arguments
+ * @param {readonly string[]} fixed the table's arguments for this command
+ * @returns {readonly string[]}
+ */
+function withoutRepeatedFixed(rest, fixed) {
+  const repeated = fixed.length > 0 && fixed.every((arg, i) => rest[i] === arg);
+  return repeated ? rest.slice(fixed.length) : rest;
 }
 
 /** @param {string} program @param {string[]} args @returns {Promise<number>} the program's exit code, 128 + n for a signal n */
