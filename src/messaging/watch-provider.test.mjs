@@ -30,15 +30,15 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 
 /**
  * A checkout whose `messaging` key is on, and a home holding the two files that key names.
- * @param {{ tokenMode?: number, paired?: boolean }} [options]
+ * @param {{ tokenMode?: number, paired?: boolean, summary?: { at?: string, timezone?: string } }} [options] `summary` is the opt-in key, absent unless given
  * @returns {{ root: string, home: string }}
  */
-function host({ tokenMode = OWNER_ONLY, paired = true } = {}) {
+function host({ tokenMode = OWNER_ONLY, paired = true, summary = undefined } = {}) {
   const root = mkdtempSync(join(scratch, "root-"));
   const home = mkdtempSync(join(scratch, "home-"));
   mkdirSync(join(root, ".agent-org"));
   const messaging = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/telegram-chairman" };
-  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ tracker: [{ key: "", repo: REPO }], messaging }));
+  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ tracker: [{ key: "", repo: REPO }], messaging: summary === undefined ? messaging : { ...messaging, summary } }));
   const secrets = join(home, ".config", "agent-org");
   mkdirSync(secrets, { recursive: true });
   writeFileSync(join(secrets, "telegram-token"), `${TOKEN}\n`);
@@ -59,14 +59,16 @@ const github = /** @type {any} */ ({
   redPulls: async () => [],
 });
 
-/** A Telegram that answers every `sendMessage`. `requests` is what it received. */
+/** A Telegram that answers every `sendMessage`. `requests` is the URLs it received and `bodies` the payloads. */
 function fakeTelegram() {
   const requests = /** @type {string[]} */ ([]);
-  const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url) => {
+  const bodies = /** @type {Record<string, any>[]} */ ([]);
+  const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url, /** @type {{ body?: string }} */ init) => {
     requests.push(url);
+    bodies.push(JSON.parse(init?.body ?? "{}"));
     return { ok: true, status: 200, headers: new Headers(), json: async () => ({ ok: true, result: { message_id: requests.length } }), text: async () => "" };
   }));
-  return { requests, fetchImpl };
+  return { requests, bodies, fetchImpl };
 }
 
 /** @param {{ root: string, home: string }} world @param {typeof fetch} fetchImpl */
@@ -78,11 +80,11 @@ async function run({ root, home }, fetchImpl) {
 
 describe("main with the registry it SHIPS (no `providers` argument)", () => {
   test("it builds the Telegram provider from the two files and sends: the request goes to /sendMessage, and the token is in no line it writes", async () => {
-    const world = host();
+    const world = host({ summary: {} }); // the summary is opt-in (#3410), and it is what this fixture sends
     const telegram = fakeTelegram();
     const result = await run(world, telegram.fetchImpl);
     assert.equal(result.code, EXIT.ok, result.lines);
-    assert.ok(telegram.requests.length >= 1, "something was sent: the chairman has a request waiting");
+    assert.ok(telegram.requests.length >= 1, "something was sent: the declared summary is due");
     for (const url of telegram.requests) assert.match(url, /\/sendMessage$/);
     assert.ok(telegram.requests[0].includes(`/bot${TOKEN}/`), "the token is in the URL by Telegram's design, and so it is the only place");
     assert.doesNotMatch(result.lines, new RegExp(TOKEN.split(":")[1]), "no line carries the token");
@@ -105,6 +107,53 @@ describe("main with the registry it SHIPS (no `providers` argument)", () => {
     const result = await run(world, telegram.fetchImpl);
     assert.equal(result.code, EXIT.failed);
     assert.match(result.err.join("\n"), /telegram-chairman/);
+    assert.equal(telegram.requests.length, 0);
+  });
+});
+
+/** @param {string} home @returns {string[]} the keys of the `summary:` lines in the ledger */
+function summaryKeys(home) {
+  return readLedgerLines(defaultLedgerPath(home)).map((line) => String(line.key)).filter((key) => key.startsWith("summary:"));
+}
+
+// NOW is 10:00 London on 2026-10-02: past 08:00, so a summary that was going to be sent is due. The `github` fixture's request is NOT sendable (the row
+// has no brief from an org account), so before #3410 the summary was the one thing these runs sent, and it is what the first test above now declares.
+describe("the daily summary is opt-in: absent means off (#3410, chairman 2026-10-04)", () => {
+  test("a config with no `summary` key sends NO summary, though 08:00 London has passed (fails on the code that defaulted to it)", async () => {
+    const world = host();
+    const telegram = fakeTelegram();
+    const result = await run(world, telegram.fetchImpl);
+    assert.equal(result.code, EXIT.ok, result.lines);
+    assert.deepEqual(telegram.requests, [], "nothing at all was sent");
+    assert.deepEqual(summaryKeys(world.home), []);
+    assert.ok(readLedgerLines(defaultLedgerPath(world.home)).length >= 1, "the run did read and write the ledger (the fixture's unsendable request is noted), so the empty list above is not an unrun watcher");
+  });
+
+  test("a config WITH `summary` sends exactly one per local date, and it is silent (the control that keeps the opt-in from being deleted)", async () => {
+    const world = host({ summary: { at: "08:00", timezone: "Europe/London" } });
+    const telegram = fakeTelegram();
+    await run(world, telegram.fetchImpl);
+    await run(world, telegram.fetchImpl);
+    assert.deepEqual(summaryKeys(world.home), ["summary:2026-10-02"], "one key, though the watcher ran twice on that date");
+    const silent = telegram.bodies.filter((body) => body.disable_notification === true);
+    assert.equal(silent.length, 1, "exactly one message was sent silent, and it is the summary");
+  });
+
+  test("a summary key before its time sends nothing yet, and `{}` declares the 08:00 London one", async () => {
+    const early = host({ summary: { at: "23:59", timezone: "Europe/London" } });
+    await run(early, fakeTelegram().fetchImpl);
+    assert.deepEqual(summaryKeys(early.home), [], "declared but not yet due");
+    const declared = host({ summary: {} });
+    await run(declared, fakeTelegram().fetchImpl);
+    assert.deepEqual(summaryKeys(declared.home), ["summary:2026-10-02"]);
+  });
+
+  test("a malformed `summary` is still refused, and nothing is sent", async () => {
+    const world = host({ summary: { at: "8am" } });
+    const telegram = fakeTelegram();
+    const result = await run(world, telegram.fetchImpl);
+    assert.equal(result.code, 2);
+    assert.match(result.err.join("\n"), /messaging\.summary\.at/);
     assert.equal(telegram.requests.length, 0);
   });
 });

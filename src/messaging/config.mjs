@@ -21,6 +21,7 @@ export const PROJECT_FILE = ".agent-org/project.json";
 export const SECRET_DIRECTORY = ".config/agent-org";
 /** The providers a configuration may name. A provider's own module is a later row; naming one here is what lets it be refused by name. */
 export const KNOWN_PROVIDERS = Object.freeze(["telegram"]);
+/** The field defaults of a summary that is DECLARED. It is not what an absent `summary` key means: that is no summary at all. */
 export const DEFAULT_SUMMARY = Object.freeze({ at: "08:00", timezone: "Europe/London" });
 
 const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "summary"]);
@@ -104,9 +105,13 @@ function readTimezone(timezone, source) {
   return timezone;
 }
 
-/** @param {unknown} summary @param {string} source @returns {{ at: string, timezone: string }} */
+/**
+ * THE SUMMARY IS OPT-IN: an absent key is `null` and constructs no summary source (chairman, 2026-10-04: "the chairman does not want a daily
+ * message"). A PRESENT key keeps its field defaults, so `summary: {}` asks for the 08:00 London one.
+ * @param {unknown} summary @param {string} source @returns {{ at: string, timezone: string } | null}
+ */
 function readSummary(summary, source) {
-  if (summary === undefined) return { ...DEFAULT_SUMMARY };
+  if (summary === undefined) return null;
   if (!isObject(summary)) throw new MessagingConfigRefusal("messaging.summary", `it must be an object, not ${describe(summary)}`, source);
   const holder = /** @type {Record<string, unknown>} */ (summary);
   refuseUnknownKeys(holder, ALLOWED_SUMMARY_KEYS, "messaging.summary", source);
@@ -118,7 +123,7 @@ function readSummary(summary, source) {
 }
 
 /** @typedef {{ enabled: false }} MessagingOff */
-/** @typedef {{ enabled: true, provider: string, tokenFile: string, chairmanFile: string, summary: { at: string, timezone: string } }} MessagingOn */
+/** @typedef {{ enabled: true, provider: string, tokenFile: string, chairmanFile: string, summary: { at: string, timezone: string } | null }} MessagingOn */
 
 /**
  * PURE: a test drives every refusal with a plain object.

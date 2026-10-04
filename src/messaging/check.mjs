@@ -47,7 +47,8 @@ export function runMessagingCheck({ root, home, uid, exists }) {
     return { exitCode: 0, lines: ["messaging: OFF (no `messaging` key in .agent-org/project.json); nothing is constructed and no unit is installed"] };
   }
   const { failed, lines } = judgeFiles(config, { uid, exists });
-  const header = [`messaging: ON, provider ${config.provider}, summary at ${config.summary.at} ${config.summary.timezone}`];
+  const summary = config.summary === null ? "no daily summary (opt-in, none declared)" : `summary at ${config.summary.at} ${config.summary.timezone}`;
+  const header = [`messaging: ON, provider ${config.provider}, ${summary}`];
   return { exitCode: failed ? 1 : 0, lines: [...header, ...lines, "no network call was made"] };
 }
 
