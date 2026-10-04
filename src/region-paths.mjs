@@ -25,8 +25,8 @@ import { HOME_CHECKOUT } from "./project-config.mjs";
 
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 
-/** @type {string[] | null} */
-let topLevelCache = null;
+/** @type {Map<string, string[]>} one answer per checkout: the question is about a repository, so the answer is keyed by it. */
+const topLevelCache = new Map();
 /**
  * The repository's own top-level directories, from git rather than from a list.
  *
@@ -39,19 +39,26 @@ let topLevelCache = null;
  * exactly what happened between #975 and this. So the list is derived: a directory exists in this repo or
  * it does not, and that question has an answer git can give.
  *
- * Memoised on first use -- one `ls-files` per process, and this module is imported by a dozen test files.
+ * **`git` runs in `checkout`, the PROJECT's (`HOME_CHECKOUT`), whatever directory the process works in (#3366).** With no `cwd` this
+ * listed the directories of whichever repository the tick was standing in -- the TOOL's (`src`, `host`, `docs`) -- so a Region path such as
+ * `packages/...` was silently not recognised as a path (found by the census of #3363, `git-reads-name-their-checkout.test.ts`).
+ *
+ * Memoised per checkout on first use -- one `ls-files` per process and repository, and this module is imported by a dozen test files.
+ * @param {{ checkout?: string }} [where] the repository whose top-level directories are wanted; the project's by default
  * @returns {string[]}
  */
-export function trackedTopLevelDirs() {
-  if (topLevelCache) return topLevelCache;
-  const out = execFileSync("git", ["ls-files"], { encoding: "utf8", env: sandboxGitEnv() });
+export function trackedTopLevelDirs({ checkout = HOME_CHECKOUT } = {}) {
+  const known = topLevelCache.get(checkout);
+  if (known) return known;
+  const out = execFileSync("git", ["ls-files"], { encoding: "utf8", cwd: checkout, env: sandboxGitEnv() });
   const dirs = new Set();
   for (const line of out.split("\n")) {
     const slash = line.indexOf("/");
     if (slash > 0) dirs.add(line.slice(0, slash));
   }
-  topLevelCache = [...dirs].sort();
-  return topLevelCache;
+  const sorted = [...dirs].sort();
+  topLevelCache.set(checkout, sorted);
+  return sorted;
 }
 
 /**
