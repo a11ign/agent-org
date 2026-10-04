@@ -92,12 +92,13 @@ test("#3266 DONE-WHEN 4d: a mixed tick (one capacity wait, one `no workspace lab
   assert.equal(report.deferred.length, 1);
 });
 
-test("#3266: a seat mid-turn keeps its own one-hour limit and wording (#3029), beside a capacity wait's half hour", () => {
+test("#3266: a seat mid-turn keeps its own limit and wording (#3029, fifteen minutes since #3448), beside a capacity wait's half hour", () => {
   const busy = `handoff/ceo/07ed9f53: "ceo" is working`;
-  const report = refusalReport([busy, ALLOWED], at(45));
-  assert.deepEqual(report.undelivered.length, 1, "45 minutes is over a capacity wait's limit and under a seat mid-turn's");
-  assert.match(report.undelivered[0], /^engineers\/ready-row-unclaimed\/3254: /);
-  assert.match(report.deferred[0], /^handoff\/ceo\/07ed9f53: "ceo" is working \(waiting 45 min/);
+  const report = refusalReport([busy, ALLOWED], at(20));
+  assert.deepEqual(report.undelivered.length, 1, "20 minutes is over a seat mid-turn's limit and under a capacity wait's");
+  assert.match(report.undelivered[0], /^handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 20 min, over the 15-minute limit for a seat mid-turn\)/);
+  assert.match(report.deferred[0], /^engineers\/ready-row-unclaimed\/3254: .*\(waiting 20 min/);
+  assert.equal(refusalReport([busy, ALLOWED], at(35)).undelivered.length, 2, "past the half hour both are overdue");
 });
 
 // --- the retro reads the same journal --------------------------------------------------------------------------------

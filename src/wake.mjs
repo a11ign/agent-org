@@ -43,6 +43,8 @@ import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
+// A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, orgHealthOrders } from "./org-health.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
@@ -3589,18 +3591,15 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
 }
 
 /**
- * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL (#3029): ONE HOUR.
+ * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL: {@link ORDER_STALL_MINUTES}, FIFTEEN (#3448; it was an hour, #3029).
  *
- * MEASURED 2026-10-02 from `journalctl --user -u a11ign-work-tick --since "7 days ago"` (2026-09-25T15:26+01:00 onward, 7,089 `UNDELIVERED`
- * lines): every run of consecutive ticks refusing one causeKey with `"<seat>" is working` (a gap over 10 minutes ends a run), kept only if a
- * `WOKE <seat>` followed within 6 minutes, i.e. the wait ENDED in a delivery and so was a real turn rather than a stuck seat. Of 263 such runs
- * for the standing seats (`ceo`, `product-manager`, `orchestrator`): p50 0 min, p90 10, p99 40, MAX 50 (`orchestrator/fleet-batch-due/2734`,
- * 2026-09-28); the longest for `ceo` was 36 min and for `product-manager` 40. A tick is 2 minutes, so each is good to +-2. One hour is the
- * first round number above the standing seats' maximum. The row-working seats are not the population this is sized for and run longer
- * (`worker-capture` 103 min, 3 of 308 runs over an hour): their order is reported as `nowhere to go` after an hour, which for a seat that has
- * been `working` that long is the line's own meaning, "no session is taking this work".
+ * THE NUMBER AND ITS MEASUREMENT LIVE WITH THE SIGNAL THAT SHARES THEM (`org-health.mjs`), so a deferred order and a standing seat's queue cannot be given two
+ * bounds. The hour was the first round number above the standing seats' longest delivered wait (50 min, 2026-10-02) and was right for "is this order lost"; it
+ * was wrong for "is this work stalled", which #3406 answered by sitting green and approved for forty minutes. The row-working seats run longer
+ * (`worker-capture` 103 min, 3 of 308 runs over an hour) and their orders are reported after the same bound, which for a seat `working` that long is the
+ * line's own meaning, "no session is taking this work".
  */
-export const BUSY_SEAT_DEFERRAL_MS = 60 * 60 * 1000;
+export const BUSY_SEAT_DEFERRAL_MS = ORDER_STALL_MINUTES * 60 * 1000;
 
 /** `<causeKey>: "<seat>" is working`, which is `route`'s own refusal for a seat mid-turn, with `routeWithFallback`'s second half when the order had one. */
 const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?)$/;
@@ -3671,6 +3670,19 @@ export function splitRefusals(refused) {
  * @returns {Map<string, number>} each of `keys` to how long (ms) it has been deferred, 0 for one first seen now
  */
 export function deferralAges(path, keys, now, { read = readFileSync, write = writeFileSync } = {}) {
+  const since = readDeferralHistory(path, read);
+  const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
+  mkdirSync(dirname(path), { recursive: true });
+  write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
+  return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
+}
+
+/**
+ * The file {@link deferralAges} keeps, read and not written: each causeKey to the epoch ms it was FIRST deferred. A missing file is no history; a malformed
+ * one THROWS, for the reason {@link deferralAges} gives.
+ * @param {string} path @param {typeof readFileSync} [read] @returns {Map<string, number>}
+ */
+export function readDeferralHistory(path, read = readFileSync) {
   /** @type {Map<string, number>} */
   const since = new Map();
   try {
@@ -3683,10 +3695,30 @@ export function deferralAges(path, keys, now, { read = readFileSync, write = wri
   } catch (err) {
     if (/** @type {any} */ (err)?.code !== "ENOENT") throw err;
   }
-  const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
-  mkdirSync(dirname(path), { recursive: true });
-  write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
-  return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
+  return since;
+}
+
+/**
+ * #3448: THE ORDERS A TICK HAS WAITING ON A BUSY SESSION, AS THE STALL SIGNAL READS THEM -- the deferred derived orders and the standing seats' queues. PURE.
+ *
+ * A DEFERRED KEY COUNTS ONLY IF THE GATE EMITTED IT THIS TICK (`emitted`): `wake-deferred` is rewritten by the tick that reaches `finishTick`, and a tick with
+ * nothing to deliver exits first and leaves the last file behind, so an order delivered since would otherwise be read as still waiting and its age as a stall.
+ * NOT `org-health` ORDERS, whose own deferral would otherwise name the signal in the signal about it and mint a new key (so a new delivery) every tick.
+ * NOT `engineers/...`, a ready row waiting for a free seat: it has its own, measured bound ({@link CAPACITY_WAIT_LIMIT_MS}, #3266) and "no engineer is idle" is
+ * `ceo`'s question about capacity, not a stall.
+ *
+ * A QUEUE COUNTS ONLY FOR A STANDING SEAT (`standing`): a spawned instance mid-turn on its row for an hour is working, and its inbox is read when it finishes.
+ * A standing seat is never between tasks while it works, which is what makes its oldest queued order a stall and not a wait (#3448: `ceo` held three, oldest 28 min).
+ * @param {{ deferredSince: Map<string, number>, emitted: Set<string>, backlog: ReturnType<typeof handoffBacklog>, standing: Set<string>, now: number }} facts
+ * @returns {import("./org-health.mjs").StalledOrder[]}
+ */
+export function stalledOrdersOf({ deferredSince, emitted, backlog, standing, now }) {
+  const deferred = [...deferredSince]
+    .filter(([key]) => emitted.has(key) && !key.includes("/org-health/") && !key.startsWith("engineers/"))
+    .map(([key, since]) => ({ kind: /** @type {const} */ ("deferred"), name: key, since }));
+  const queued = backlog.filter((b) => standing.has(b.session))
+    .map((b) => ({ kind: /** @type {const} */ ("queue"), name: b.session, since: now - b.oldestMs }));
+  return [...deferred, ...queued];
 }
 
 /**
@@ -6200,6 +6232,24 @@ function claimerFor(spares, ledgerPath, hostLayout) {
 }
 
 /**
+ * #3448: THE ONE `org-health` ORDER FOR AN ORDER THAT HAS WAITED ON A BUSY SESSION TOO LONG, built from what this tick holds, or none. Read BEFORE the
+ * delivery, from the last tick's deferral record and this tick's queues, so it goes to `ceo` through the same door as every other health signal and is held
+ * for the same two hours. EVERY READ IS A STATED UNKNOWN WHEN REFUSED, NEVER A CLEAR: an unreadable record or roster says so on stderr and raises nothing.
+ * @param {{ ledgerPath: string, emitted: Set<string>, backlog: ReturnType<typeof handoffBacklog>, now?: number, log?: (line: string) => void,
+ *   standingSeats?: () => string[] }} tick
+ */
+export function orderStallOrdersNow({ ledgerPath, emitted, backlog, now = Date.now(), log = (line) => process.stderr.write(line), standingSeats = () => persistentRoles() }) {
+  try {
+    const deferredSince = readDeferralHistory(`${dirname(ledgerPath)}/wake-deferred`);
+    const stalled = stalledOrdersOf({ deferredSince, emitted, backlog, standing: new Set(standingSeats()), now });
+    return orgHealthOrders([orderStallReading({ now, stalled })]);
+  } catch (err) {
+    log(`org-health: ${SIGNALS.ORDER_STALLED} UNKNOWN -- ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 160)}; it is not read as clear.\n`);
+    return [];
+  }
+}
+
+/**
  * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
@@ -6279,7 +6329,10 @@ function main() {
   const { orders, failed: releasesNotDone } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
   const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
-  for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
+  const backlog = handoffBacklog(waiting);
+  for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
+  // #3448: AN ORDER THAT HAS WAITED ON A BUSY SESSION PAST THE BOUND IS TOLD TO `ceo`, and it is told before this tick delivers: it rides `orders` like any gate order.
+  const withStalls = [...orders, ...orderStallOrdersNow({ ledgerPath, emitted: new Set(orders.map((o) => o.causeKey)), backlog })];
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
@@ -6292,7 +6345,7 @@ function main() {
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
-  const todo = undelivered(orders, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
+  const todo = undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
   const record = (key, recipient, noClear) => writeFileSync(ledgerPath,
@@ -6300,7 +6353,7 @@ function main() {
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.
-  for (const key of endedRuns(orders.map((o) => o.causeKey), emittedPath)) {
+  for (const key of endedRuns(withStalls.map((o) => o.causeKey), emittedPath)) {
     writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
   }
 
