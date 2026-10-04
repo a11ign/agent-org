@@ -8,6 +8,10 @@
 //   readCiRuns      recent completed runs of every workflow, with their annotations      -> incident:ci-permission
 //   readGateUnit    the work-tick unit's failed state, and when its last run ended       -> incident:gate-crash
 //   readFleetState  the state file `fleet-watch` writes, and when it was written         -> incident:fleet-down
+//
+// AND TWO MORE FOR THE LIAISON'S CHECKED FACTS (a11ign/a11ign#3420), which `placeholders.mjs` calls rather than a source:
+//   readFleetRoster who `fleet-watch` last saw answer, and who it did not                 -> {{fleet.workers-up}}, {{fleet.workers-down}}
+//   readLastTick    when the gate last COMPLETED a tick, from the same record as above     -> {{gate.last-tick.age}}
 //   readTicks       THIS WATCHER'S OWN SAMPLES, newest first                             -> stall:all-idle
 //
 // A LEAF: node's own modules only (and `lib/tick-completion.mjs`, which is the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
@@ -45,8 +49,13 @@ const CI_RUNS_WINDOW = 20;
 /** Failed runs whose annotations one run of the watcher will read: each costs a jobs call and one per failed job, so a backlog drains over runs. */
 const ANNOTATION_READS_PER_RUN = 6;
 const MS_PER_SECOND = 1000;
+const MS_PER_MINUTE = 60_000;
 /** Rows carrying one of these are not waiting for a session: held, blocked, or waiting on somebody's answer. */
 const NOT_WAITING = /^(blocked|hold(:.*)?|answer:.*)$/;
+/** `fleet-watch` stamps every answering worker with the poll's own clock and writes the file just after, so a worker that answered the last poll is within this of the write. */
+const POLL_SLACK_MS = 2 * MS_PER_MINUTE;
+/** `fleet-watch` runs hourly (`OnCalendar=*:47`): two missed firings and a margin is what a stopped watcher looks like (`watch.mjs`'s `FLEET_STATE_MAX_AGE_MS`, the same figure). */
+export const FLEET_READING_MAX_AGE_MS = 130 * MS_PER_MINUTE;
 const SAMPLES_FILE = "samples.jsonl";
 const ANNOTATIONS_FILE = "ci-annotations.json";
 export const SYSTEMD_PROPERTIES = "ActiveState,StateChangeTimestamp,InactiveEnterTimestamp";
@@ -205,6 +214,56 @@ export function readFleetState({ path }) {
     state[name] = Math.min(state[name] ?? Infinity, Number(since));
   }
   return { state, writtenAt: statSync(path).mtimeMs };
+}
+
+/** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. @param {string} a @param {string} b @returns {number} */
+const byNumberedName = (a, b) => a.localeCompare(b, "en", { numeric: true });
+
+/** @param {string} key `<name>  <host>:<port>` or a bare name @returns {string} the worker's name: an address has no business in a message to a chat provider */
+function workerName(key) {
+  return key.trim().split(/\s+/)[0];
+}
+
+/**
+ * Who `fleet-watch` last saw answer and who it did not, by NAME. **`fleet-watch-state.json` alone cannot say who is up**: it holds only the workers that
+ * answered and were not ready (`advance` drops `ready`, `busy` and `unreachable`), so it is `{}` on a healthy fleet. The roster is
+ * `fleet-captures-state.json`, which every answering worker is stamped into with the poll's clock (`seenAt`); a worker that did not answer keeps its
+ * OLD stamp, so it is the one not within `POLL_SLACK_MS` of the file's write. Up is what answered and is not in the non-ready state; down is the rest of
+ * the roster, an unreachable box included (it is down to the chairman whether or not fleet-watch calls that its resting state).
+ *
+ * **Both files must be fresh and the roster must be non-empty, else it THROWS**: "no worker is down" over a watcher that stopped, or over a roster nobody
+ * is on, is the false all-clear this layer exists to refuse. A worker that has never answered since the roster began is not on it, and is not known.
+ *
+ * @param {{ statePath: string, capturesPath: string, now: number, maxAgeMs?: number }} input
+ * @returns {{ up: string[], down: string[], polledAt: number }} `polledAt` is the OLDER of the two files' write times
+ */
+export function readFleetRoster({ statePath, capturesPath, now, maxAgeMs = FLEET_READING_MAX_AGE_MS }) {
+  const notReady = Object.keys(readFleetState({ path: statePath }).state);
+  const captures = JSON.parse(readFileSync(capturesPath, "utf8"));
+  if (captures === null || typeof captures !== "object" || captures.workers === null || typeof captures.workers !== "object" || Array.isArray(captures.workers)) {
+    throw new TypeError(`${capturesPath}: an object with a \`workers\` object was expected`);
+  }
+  const wroteAt = statSync(capturesPath).mtimeMs;
+  const polledAt = Math.min(wroteAt, statSync(statePath).mtimeMs);
+  if (now - polledAt > maxAgeMs) throw new RangeError(`fleet-watch last wrote its state ${Math.round((now - polledAt) / MS_PER_MINUTE)} minutes ago: that is not a reading of the fleet`);
+  const roster = Object.entries(captures.workers).map(([key, entry]) => {
+    const seenAt = /** @type {any} */ (entry)?.seenAt;
+    if (!Number.isFinite(seenAt)) throw new TypeError(`${capturesPath}: ${workerName(key)} has no numeric seenAt`);
+    return { name: workerName(key), answered: wroteAt - seenAt <= POLL_SLACK_MS };
+  });
+  if (roster.length === 0) throw new RangeError(`${capturesPath} names no worker: nothing is known to be up or down`);
+  const up = roster.filter(({ name, answered }) => answered && !notReady.includes(name)).map(({ name }) => name).sort(byNumberedName);
+  const down = [...new Set([...roster.filter(({ name }) => !up.includes(name)).map(({ name }) => name), ...notReady])].sort(byNumberedName);
+  return { up, down, polledAt };
+}
+
+/**
+ * When the gate last COMPLETED a tick (#3040's record, not the unit's timestamp: a tick that died at import moves that as surely as a good one). Absent or
+ * unreadable THROWS, as `readCompletion` does.
+ * @param {{ recordPath: string }} input @returns {{ at: number }}
+ */
+export function readLastTick({ recordPath }) {
+  return { at: readCompletion(recordPath).at };
 }
 
 /**
