@@ -93,21 +93,6 @@ export function fleetWaitingFacts(openRows, labJobs = []) {
 }
 
 /**
- * WHEN THIS COMMIT WAS COMMITTED, as epoch ms, or `null`. The PR's PUSH TIME is not on `pr list` (`commits` is refused by GraphQL, see
- * `readCommitShas`), and the committer date of the head is the best REST has: a rebase, a merge of `main` and GitHub's "Update branch"
- * all make a head whose committer date is the push. `null` for a refused read, never "long ago".
- * @param {string} oid @param {(args: string[]) => string} run @returns {number | null}
- */
-export function readHeadCommittedAt(oid, run = defaultRun) {
-  try {
-    const at = Date.parse(run(["api", `repos/${repoNow()}/commits/${oid}`, "--jq", ".commit.committer.date"]).trim());
-    return Number.isFinite(at) ? at : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * #3486: EVERY OPEN PR AS A CANDIDATE FOR THE OUTCOME CLOCK, whatever state it is in -- held, drafted, armed, red, conflicted: NOTHING IS FILTERED OUT,
  * which is the point (the classifier's two "not a stall" answers used to drop exactly the PRs whose reason had gone). THE REASON IS `stallReasonOf`'s,
  * the same function that decides who is ordered, and it is only a LABEL on the alarm. The clock starts at the PR's `createdAt` and costs NO read:

@@ -144,7 +144,7 @@ export { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.mjs
 export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
   rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.mjs";
 export { withClosingRowOwners, withNamedOwners, withPrOwners, withEndedLabels } from "./work-gate/pr-owners.mjs";
-export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, readHeadCommittedAt, stalledPrFacts,
+export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, stalledPrFacts,
   MAX_WAIT_READS, refFactOf, readWaitRef, readWaitFacts, readRefFacts, waitTickFacts, staleWaitOrders,
   rulingOrdersNow, orgHealthNow } from "./work-gate/org-health.mjs";
 
@@ -440,9 +440,6 @@ export const GH_READS = Object.freeze({
   // #3019: ONE GRAPHQL CALL PER UNARMED CANDIDATE (the timeline's queue events, readEjections), and for one the queue EJECTED, one REST
   // call for the failed `merge_group` run and one `run view --log-failed`. A healthy tick has no unarmed candidate and pays none of it.
   conditionalOnUnarmedPr: "api graphql timelineItems (readEjections); api actions/runs?event=merge_group; run view --log-failed (readEjectionRun)",
-  // #2970: ONE REST CALL PER OPEN PULL REQUEST that is neither progressing nor held AND whose newest comment, review or creation is already
-  // older than org-health's threshold -- the only ones whose push time could change the answer. `commits` cannot ride on `pr list`.
-  conditionalOnQuietStalledPr: "api repos/{repo}/commits/{headRefOid} (readHeadCommittedAt -- org-health's pr-not-progressing)",
   // #2110, AND IT IS ONE CALL FOR THE WHOLE CLAIMED POPULATION RATHER THAN ONE PER ROW. `--label
   // in-progress` filters server-side, so the page is the claimed rows and nothing else -- 8 of them on
   // 2026-09-23 against 500 open rows -- and asking every one of them for its comments in a single
@@ -1257,6 +1254,17 @@ export function baseTipWhenRed(prs, run = defaultRun) {
 function claimedRowCommentsWhenHeld(openRows) {
   const held = openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
   return held ? readClaimedRowComments() : null;
+}
+
+/**
+ * #3486: THE CLAIMED ROWS' COMMENTS AS THE OUTCOME CLOCK READS THEM. `claimedRowCommentsWhenHeld` answers `null` for TWO things -- no row is claimed (nothing
+ * was asked) and the read was refused -- and the clock must tell them apart: the first is "no claimed row to age", the second is "unread", reported as such
+ * and never as nothing overdue. A claimed row and a `null` is the refusal; no claimed row is `[]`.
+ * @param {any[]} openRows @param {any[] | null} claimedComments
+ * @returns {any[] | null}
+ */
+function claimedCommentsForClock(openRows, claimedComments) {
+  return claimedComments ?? (openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL)) ? null : []);
 }
 
 /**
@@ -6499,7 +6507,7 @@ function main() {
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided, pools }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, pools }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
