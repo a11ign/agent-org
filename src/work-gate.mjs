@@ -257,6 +257,8 @@ export function readPrs(run = defaultRun) {
       // one". One more name on the call already made, like the two above; it is what keeps a row whose author is in
       // review out of `claim-stalled`, whose subject is the build and not the wait for a verdict.
       + "headRefName,"
+      // #3445: `title`, the third rung of `ownsPr` (a title ending in the row's `owner/repo#n`); `labels` is already above, the fourth.
+      + "title,"
       // #2209: `mergeStateStatus` AND `mergeable`, BOTH ON THE SAME CALL, because nothing here read whether
       // a pull request CONFLICTS with `main`. #2203 went DIRTY when #2205 merged, was green and approved,
       // and was reported as a credential outage while six Ready rows sat behind it. `gh pr list --json`
@@ -459,7 +461,7 @@ export const GH_READS = Object.freeze({
   // one per row: the newest merged pull requests, of which the claimed branches' are found by name. It bounds what a
   // release for a MERGED row can see to the newest 100 -- at this org's rate about a day -- and a merge older than that,
   // seen only after the gate was down for longer, is missed, not guessed.
-  conditionalOnClaimedBranches: "pr list --state merged --limit 100 --json number,headRefName,mergedAt"
+  conditionalOnClaimedBranches: "pr list --state merged --limit 100 --json number,headRefName,mergedAt,title,labels"
     + " (readMergedPrs -- claim-stalled's merged release)",
   // #2286, WIDENED BY #2741: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row OR some
   // claimed one has a cleared blocker to ask about. `gh`'s `blockedBy` nodes carry no closing time, and a
@@ -2982,12 +2984,12 @@ export function readClaimedRowComments(run = defaultRun) {
  * `null` FOR A REFUSAL, NEVER `[]` (#1286): an unread list is not "nothing merged", and the merged release is simply not
  * evaluated this tick.
  * @param {(args: string[]) => string} [run]
- * @returns {{ number: number, headRefName: string, mergedAt: string }[] | null}
+ * @returns {{ number: number, headRefName: string, mergedAt: string, title: string, labels: { name: string }[] }[] | null}
  */
 export function readMergedPrs(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["pr", "list", "--state", "merged", "--limit", "100", "--json",
-      "number,headRefName,mergedAt"]));
+      "number,headRefName,mergedAt,title,labels"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;

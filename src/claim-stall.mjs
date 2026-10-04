@@ -36,6 +36,8 @@ import { listingIsComplete } from "./herdr-agents.mjs";
 // #2999: THE IDLE-CLAIMANT READING, a sibling leaf. It decides whether an idle holder has a wait the org can read; this file carries the
 // decision as the nudge and, a second reading later, as the release it already owned.
 import { idleClaimantReading, idleNudgePrompt, IDLE_CLAIMANT_MS } from "./idle-claimant.mjs";
+// #3445: WHETHER A PULL REQUEST IS THE CLAIMANT'S, for the open lookup and the merged one alike: a sibling leaf, so this file stays one.
+import { ownsPr } from "./pr-ownership.mjs";
 
 const MINUTE_MS = 60_000;
 
@@ -581,13 +583,15 @@ function blockedReading(facts) {
 // --- THE FACTS OF ONE ROW ---------------------------------------------------------------------------------------------
 
 /**
- * @typedef {import("./idle-claimant.mjs").IdlePr & { headRefName?: string }} OpenPr
- * @typedef {{ number: number, headRefName?: string, mergedAt?: string }} MergedPr
+ * @typedef {import("./idle-claimant.mjs").IdlePr & { headRefName?: string, title?: string }} OpenPr
+ * @typedef {{ number: number, headRefName?: string, mergedAt?: string, title?: string, labels?: ({ name?: string } | string)[] }} MergedPr
  * @typedef {{ open: OpenPr[] | null, merged: MergedPr[] | null }} ElsewherePrs the OTHER tracked code repositories' lists (#3075), each member
  *   tagged with the `repoKey` it came from. `open: null` is a read that was refused, and is never "none open".
  * @typedef {{ row: number, title?: string, session: string, waiting: string | null, blockedBy: number[],
  *   comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string,
- *   waitKind?: string | null }} ClaimInput `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository
+ *   trackerRepo?: string, sessionRows?: number, waitKind?: string | null }} ClaimInput `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository;
+ *   `trackerRepo` is the home repository's `owner/repo`, which a pull request title's reference names (`ownsPr`'s third rung);
+ *   `sessionRows` is how many claimed rows the session holds, and its label (the fourth rung) counts only for a session holding one
  */
 
 /**
@@ -614,8 +618,8 @@ function pullRequestsAcrossRepos(input) {
  * when it was claimed, and git that will not answer is not "no commits". A skipped row is neither nudged nor released,
  * and the caller SAYS so: silence about a claim it could not read would look like a claim that was fine.
  *
- * The branch is the claim record's own (`Claimed-branch:`), so the gate needs no naming convention. A pull request is
- * THIS row's when its head is that branch or ends `-<row>` (`row-branch-rule.mjs`'s own shape).
+ * The branch is the claim record's own (`Claimed-branch:`), so the gate needs no naming convention. Whether a pull request is
+ * THIS row's is `ownsPr`'s answer, the same one for the open and the merged lookup (#3445): the work of #3390 merged on a branch it never claimed.
  *
  * @param {ClaimInput} input @param {HostReads} io @returns {ClaimFacts | { skip: string }}
  */
@@ -630,9 +634,10 @@ export function claimFactsFrom(input, io) {
   const dir = worktree !== null && io.exists(worktree) ? worktree : input.repo;
   try {
     const branch = record.branch;
-    const own = (/** @type {string | undefined} */ head) => head !== undefined && (head === branch || head.endsWith(`-${input.row}`));
-    const ownPrs = prs.open.filter((p) => own(p.headRefName));
-    const merged = branch === null ? null : newestMergedAfter(prs.merged ?? [], branch, record.at);
+    const claimant = { row: input.row, branch, session: input.session, soleHolder: input.sessionRows === 1,
+      ...(input.trackerRepo === undefined ? {} : { trackerRepo: input.trackerRepo }) };
+    const ownPrs = prs.open.filter((p) => ownsPr(claimant, p) !== null);
+    const merged = newestMergedAfter(prs.merged ?? [], claimant, record.at);
     return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
@@ -652,12 +657,13 @@ export function claimFactsFrom(input, io) {
 }
 
 /**
- * The newest pull request MERGED from `branch` after `since`, or `null`: a merge before this claim is another instance's work on the row.
- * @param {{ number: number, headRefName?: string, mergedAt?: string, repoKey?: string }[]} merged @param {string} branch @param {number} since
+ * The newest pull request MERGED that the claimant owns (`ownsPr`) after `since`, or `null`: a merge before this claim is another instance's work on the row,
+ * and that is a question about TIME, so it stays here and not in the ownership test.
+ * @param {(MergedPr & { repoKey?: string })[]} merged @param {import("./pr-ownership.mjs").Claim} claimant @param {number} since
  * @returns {{ number: number, mergedAt: string, repoKey?: string } | null}
  */
-function newestMergedAfter(merged, branch, since) {
-  const after = merged.filter((p) => p.headRefName === branch && Date.parse(String(p.mergedAt ?? "")) > since);
+function newestMergedAfter(merged, claimant, since) {
+  const after = merged.filter((p) => ownsPr(claimant, p) !== null && Date.parse(String(p.mergedAt ?? "")) > since);
   const [newest] = after.sort((a, b) => Date.parse(String(b.mergedAt)) - Date.parse(String(a.mergedAt)));
   return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt), repoKey: newest.repoKey };
 }
