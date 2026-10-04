@@ -201,16 +201,16 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
     assert.match(rows.get(2886).comments.at(-1).body, /> hold it until Monday/, "the reply wrote the chairman's words, quoted");
   });
 
-  test("with row 10's real `converse` taking the pass-through, the plain message is queued for ceo and the chairman is told so", async () => {
+  test("with row 10's real `converse` taking the pass-through, the plain message is queued for the liaison and the chairman is told so", async () => {
     const queuePath = join(scratch, `queue-${Math.random().toString(36).slice(2)}`);
     const { events } = await listen(updates, ({ ledger, say }) => {
       const send = async (/** @type {{text: string}} */ { text }) => { say(`send ${text}`); return { messageRef: "2" }; };
-      return createConverse({ chairman: CHAIRMAN, queuePath, ledger, send, agents: () => [{ label: "ceo", status: "idle" }] }).forward;
+      return createConverse({ chairman: CHAIRMAN, queuePath, ledger, send, agents: () => [{ label: "liaison", status: "idle" }] }).forward;
     });
     assert.deepEqual(events.filter((event) => event.startsWith("send Recorded")), ["send Recorded on a11ign/a11ign#2885: ceo has it.", "send Recorded on a11ign/a11ign#2886: ceo has it."]);
-    assert.match(events.at(-1) ?? "", /^send queued for ceo, handoff handoff\/ceo\/[0-9a-f]{8}$/);
+    assert.equal(events.at(-1), "send Got it, looking.");
     const queued = existsSync(queuePath) ? readFileSync(queuePath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
-    assert.deepEqual(queued.map((entry) => entry.session), ["ceo"], "one order, for ceo, and the answered reply was not queued");
+    assert.deepEqual(queued.map((entry) => entry.session), ["liaison"], "one order, for the liaison, and the answered reply was not queued");
     assert.match(queued[0].prompt, /how is the queue today\?/);
     assert.doesNotMatch(queued[0].prompt, /hold it until Monday/);
   });
