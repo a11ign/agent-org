@@ -30,7 +30,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `org-watch.mjs` and `build-packages.mjs` state at their own imports.
@@ -273,9 +273,84 @@ export function readPrs(run = defaultRun) {
       // #2996: `updatedAt`, the QUIET SINCE of a wait with no stated reason, on the same call.
       + "closingIssuesReferences,createdAt,updatedAt"]);
     const parsed = JSON.parse(out);
-    return Array.isArray(parsed) ? parsed : null;
+    return Array.isArray(parsed) ? withPagedFiles(parsed, { run }) : null;
   } catch {
     return null;
+  }
+}
+
+/** Where a truncated pull request's paged file list is remembered between ticks: each tick is a fresh process, so memory would not outlive one. */
+const PAGED_FILES_CACHE = "truncated-pr-files.json";
+/** How many paged lists the cache keeps. A version PR's head moves with every push to `main`, so an unbounded file would grow for as long as it lives. */
+const PAGED_FILES_KEPT = 20;
+
+/**
+ * #3365: A PULL REQUEST OF MORE THAN 100 FILES IS COMPARED BY ALL OF ITS FILES, NOT DROPPED. `gh pr list --json files` returns the first 100 and
+ * never says so; `comparablePrFiles` rightly refuses a list shorter than `changedFiles`, so the gate could not shelve a row against such a PR
+ * while the claim and the spawn check (`pagedPrFiles`, `file-overlap-rule.mjs`) paged REST and refused it. The release workflow's version PR is
+ * 146 files and open nearly all the time: a row naming a `package.json` was offered 30 ticks running and refused at the spawn every time.
+ *
+ * ONLY a truncated PR is paged, and a complete list costs no call and no disk read. The paged list is cached by PR number + head sha, so a
+ * two-minute tick pays the REST pages once per head. A PR whose paging FAILS (or comes back with the wrong count) is returned as it was and
+ * still drops out of the comparison, as it did before: the gate fails open and the claim stays the authority. That is said on stderr.
+ * NEVER THROWS: a failure here must not turn into a refused `pr list`.
+ *
+ * `{owner}/{repo}` are `gh api`'s own placeholders, resolved from the `GH_REPO` that `run` is aimed with.
+ * @param {any[]} prs @param {{ run: (args: string[]) => string, cachePath?: string, log?: (line: string) => void }} deps
+ * @returns {any[]}
+ */
+export function withPagedFiles(prs, { run, cachePath = stateEntryPath(PAGED_FILES_CACHE), log = (line) => process.stderr.write(line) }) {
+  const truncated = prs.filter((pr) => Array.isArray(pr?.files) && pr.files.length < Number(pr.changedFiles));
+  if (truncated.length === 0) return prs;
+  const cache = readPagedFilesCache(cachePath, log);
+  let fetched = false;
+  const paged = new Map(truncated.map((pr) => {
+    const key = typeof pr.headRefOid === "string" ? `${pr.number}@${pr.headRefOid}` : null;
+    const cached = key === null ? undefined : cache[key];
+    if (Array.isArray(cached) && cached.length === pr.changedFiles) return [pr, cached];
+    const files = pageFilesOf(pr, { run, log });
+    if (files !== null && key !== null) { cache[key] = files; fetched = true; }
+    return [pr, files];
+  }));
+  if (fetched) writePagedFilesCache(cachePath, cache, log);
+  return prs.map((pr) => ((paged.get(pr) ?? null) === null ? pr : { ...pr, files: /** @type {string[]} */ (paged.get(pr)).map((path) => ({ path })) }));
+}
+
+/** @param {any} pr @param {{ run: (args: string[]) => string, log: (line: string) => void }} deps @returns {string[] | null} `null` when the pages could not be read whole */
+function pageFilesOf(pr, { run, log }) {
+  try {
+    const files = run(["api", "--paginate", `repos/{owner}/{repo}/pulls/${pr.number}/files?per_page=100`, "--jq", ".[].filename"]).split("\n").filter(Boolean);
+    if (files.length === pr.changedFiles) return files;
+    log(`work-gate: #${pr.number} lists ${files.length} files when paged, not the ${pr.changedFiles} it reports -- left out of B4's comparison; the claim still refuses (#3365)\n`);
+  } catch (error) {
+    log(`work-gate: could not page #${pr.number}'s files past ${pr.files.length} (${String(/** @type {Error} */ (error).message).split("\n")[0]}) `
+      + "-- left out of B4's comparison, so the gate fails open and the claim still refuses (#3365)\n");
+  }
+  return null;
+}
+
+/** @param {string} path @param {(line: string) => void} log @returns {Record<string, string[]>} an absent file is an empty cache; an unreadable one is said aloud and is too */
+function readPagedFilesCache(path, log) {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    log(`work-gate: ${path} is unreadable (${/** @type {Error} */ (error).message}); paging again (#3365)\n`);
+    return {};
+  }
+}
+
+/** Keeps the newest `PAGED_FILES_KEPT` entries (insertion order), and writes through a rename so a tick reading it never sees half a file. */
+function writePagedFilesCache(/** @type {string} */ path, /** @type {Record<string, string[]>} */ cache, /** @type {(line: string) => void} */ log) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const kept = Object.fromEntries(Object.entries(cache).slice(-PAGED_FILES_KEPT));
+    const scratch = `${path}.${process.pid}.tmp`;
+    writeFileSync(scratch, JSON.stringify(kept));
+    renameSync(scratch, path);
+  } catch (error) {
+    log(`work-gate: could not remember the paged file lists in ${path} (${/** @type {Error} */ (error).message}); the next tick pages again (#3365)\n`);
   }
 }
 
@@ -3501,7 +3576,8 @@ function touchesOwnedLanePath(files, lane) {
  * reports self-authored PRs cannot silently start firing this cause on `ceo`'s own work.
  *
  * `prFiles` IS `comparablePrFiles`'S OUTPUT, NOT `pr.files` RE-READ. That function already drops any PR
- * whose file list does not match its `changedFiles` count (`gh pr list --json files` truncates at 100), so
+ * whose file list does not match its `changedFiles` count (`gh pr list --json files` truncates at 100; `readPrs` pages
+ * such a PR first since #3365, and one it could not page still drops out), so
  * this cause inherits the same guarantee: it can be silent about a PR the gate cannot see the whole of, but
  * it can never fire on a partial list and miss the path that mattered.
  *
