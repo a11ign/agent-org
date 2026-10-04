@@ -118,6 +118,23 @@ test("readWaitClearedAt: the latest lifting of a WAIT label, a passed Not-before
     "a Not-before that has passed is the clearing when it is the latest");
 });
 
+test("an EXPIRED Fleet-hold-until is a clearing too: calls made during the hold are not charged to the row (reviewer, #133)", () => {
+  const holdEnds = Date.parse("2026-10-03T12:00:00Z");
+  const body = "Fleet-hold-until: 2026-10-03T12:00:00Z";
+  const now = Date.parse("2026-10-04T00:00:00Z");
+  const noEvents = () => "";
+  const read = (row: any) => readWaitClearedAt(row, noEvents);
+  assert.equal(read(claimedRow(1, { body })), holdEnds, "a hold that has passed is dated by its own instant");
+  assert.equal(read(claimedRow(1)), 0, "no hold, no clearing");
+  const during = turnsFrom(CLAIMED_AT + 1, OVER);
+  assert.deepEqual(rowCallCountSignals([claimedRow(1, { body })], during, [claimRecord(1)], { now, waitClearedAt: read }), [],
+    "101 turns, every one inside the hold");
+  assert.deepEqual(rowCallCountSignals([claimedRow(1)], during, [claimRecord(1)], { now, waitClearedAt: read }),
+    [{ row: 1, session: SESSION, calls: OVER }], "positive control: with no hold the same row signals");
+  assert.deepEqual(rowCallCountSignals([claimedRow(1, { body })], [...during, ...turnsFrom(holdEnds + 1, OVER)], [claimRecord(1)], { now, waitClearedAt: read }),
+    [{ row: 1, session: SESSION, calls: OVER }], "101 after the hold ended signal");
+});
+
 test("the tick's own call passes `readWaitClearedAt`, because the default reads nothing", () => {
   const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   assert.match(source, /rowCallCountSignals\(allOpen, liveClaudeTurns\(\), claimedComments, \{ waitClearedAt: readWaitClearedAt \}\)/);
