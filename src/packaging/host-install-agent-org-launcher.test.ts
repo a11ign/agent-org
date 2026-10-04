@@ -161,9 +161,14 @@ function projectWithLinkedWorktree() {
   const main = join(root, "project");
   mkdirSync(join(main, ".agent-org"), { recursive: true });
   cpSync(join(PROJECT_ROOT, ".agent-org/project.json"), join(main, ".agent-org/project.json"));
+  // The launcher's tool is a COPY of the sources laid out STANDALONE (`<root>/agent-org/src`, nothing declaring a project within three levels up),
+  // whatever layout this suite runs in: the gate runs it from a monorepo whose `src` up three IS a declared project, which would answer first.
+  const standalone = join(root, "agent-org");
+  cpSync(join(TOOL_ROOT, "src"), join(standalone, "src"), { recursive: true });
+  cpSync(join(TOOL_ROOT, "package.json"), join(standalone, "package.json"));
   const hostFile = join(root, "host.json");
   writeFileSync(hostFile, JSON.stringify({ ...JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/host.json"), "utf8")),
-    binDir: join(root, "bin"), primary: "p", projects: [{ id: "p", checkout: main }], tool: TOOL_ROOT }));
+    binDir: join(root, "bin"), primary: "p", projects: [{ id: "p", checkout: main }], tool: standalone }));
   git(main, "init", "-q", "-b", "main");
   git(main, "add", "-A");
   git(main, "commit", "-q", "-m", "project");
@@ -174,7 +179,7 @@ function projectWithLinkedWorktree() {
   const installed = join(linked, "node_modules/agent-org");
   cpSync(join(TOOL_ROOT, "src"), join(installed, "src"), { recursive: true });
   cpSync(join(TOOL_ROOT, "package.json"), join(installed, "package.json"));
-  return { root, main, linked, hostFile, probe, ownBin: join(installed, "src/bin.mjs") };
+  return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.mjs") };
 }
 
 /** What the command resolved when run from the linked worktree, one line per node process that got as far as asking; `env` is added to a clean one. */
@@ -202,7 +207,7 @@ function resolvedRoot(project: ReturnType<typeof projectWithLinkedWorktree>, arg
  */
 test("4. from a linked worktree the launcher and the project's own bin resolve the same project root, by the working directory's repository", () => {
   const project = projectWithLinkedWorktree();
-  hostIdentityInstall(where(join(project.root, "bin"), TOOL_ROOT) as never);
+  hostIdentityInstall(where(join(project.root, "bin"), project.standalone) as never);
   const launcher = join(project.root, "bin/agent-org");
   const command = "worktrees:prune";
   const own = resolvedRoot(project, [process.execPath, project.ownBin, command]);

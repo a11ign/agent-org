@@ -81,11 +81,12 @@ function fixtureProject(): string {
 }
 
 /** Import `<src>/project-vocabulary.mjs` in a child with `$AGENT_ORG_HOST` as given (`undefined` removes it, whatever this process holds). */
+/** `cwd` is a scratch directory in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root. */
 function readIn(src: string, host: string | undefined): Reading {
   const env = { ...process.env };
   delete env[HOST_ENV];
   if (host !== undefined) env[HOST_ENV] = host;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", PRINT_LABELS, src], { env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", PRINT_LABELS, src], { env, cwd: scratch(), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 }
 
