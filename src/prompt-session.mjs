@@ -31,7 +31,7 @@ import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { clearBeforeOrder, isPerRowInstance, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
+import { clearBeforeOrder, keepsContext, isPersistentRole, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer } from "./wake.mjs";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
@@ -182,12 +182,13 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  * session -- a systemd unit such as the nightly firing is named as unidentified, never guessed.
  *
  * @param {(args: string[]) => string} run @param {string} label @param {string} text
- * @param {{sender?: string | null, sleep?: (ms: number) => void, contextRoot?: string}} [options] `sleep` is
+ * @param {{sender?: string | null, sleep?: (ms: number) => void, contextRoot?: string, sessions?: string | URL}} [options] `sleep` is
  *   the clear's settle ({@link clearBeforeOrder}): real by default, injected only by a test that is not about
- *   the delay (#2546); `contextRoot` is the compact check's transcript root (#2688), same way
+ *   the delay (#2546); `contextRoot` is the compact check's transcript root (#2688), and `sessions` the roster
+ *   a persistent seat is read from (#3415), both the same way
  */
-export function clearThenPrompt(run, label, text, { sender = null, sleep, contextRoot } = {}) {
-  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep, contextRoot);
+export function clearThenPrompt(run, label, text, { sender = null, sleep, contextRoot, sessions } = {}) {
+  const { sent, refusal: clearRefusal } = clearBeforeOrder(run, label, sleep, contextRoot, sessions);
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp: !sent })]);
   } catch (/** @type {any} */ err) {
@@ -525,13 +526,13 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
   if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
     return queueOrLose({ label, text, why: report, agents, path, stance, sender });
   }
-  recordDirectDelivery(path, { label, text, sender, cleared: !isPerRowInstance(label) && !report });
+  recordDirectDelivery(path, { label, text, sender, cleared: !keepsContext(label) && !report });
   if (report) {
     process.stderr.write(`${report}\n`);
     return EXIT.REFUSED;
   }
-  process.stdout.write(isPerRowInstance(label)
-    ? `PROMPTED ${label}, context kept (a per-row instance is never cleared)\n`
+  process.stdout.write(keepsContext(label)
+    ? `PROMPTED ${label}, context kept (${isPersistentRole(label) ? "a persistent seat" : "a per-row instance"} is never cleared)\n`
     : `PROMPTED ${label}, on a cleared context\n`);
   return EXIT.OK;
 }
