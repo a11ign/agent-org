@@ -78,7 +78,7 @@ import { readJsonObject, writeJsonObject } from "./claim-stall.mjs";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
-import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
+import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.mjs";
 import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
@@ -620,7 +620,49 @@ export function sessionEligibilityReason(issueNumber, mySession, { run = default
     }
     if (reason) return reason;
   }
-  return null;
+  return myFiles === null ? null : claimedRegionsReason(myFiles, { issueNumber, openPrs: otherPrFiles ?? [], run: ghRun, repo });
+}
+
+/**
+ * #3475: B4's SECOND HALF AT THE CLAIM -- this row's Region against the Regions of the rows already `in-progress`, which hold files from
+ * their claim and have no open pull request until their first push. A FAILED READ REFUSES, naming itself INCONCLUSIVE: unlike the
+ * pull-request read above, which fails open and always has, this comparison is the only thing standing between two claims and one file
+ * for the whole claim-to-first-push window, so "could not read who holds what" must not pass as "nobody does". The gate offers the row
+ * again on its next tick, so the cost of a transient failure is one tick. A row whose Region declares no file reads nothing at all.
+ *
+ * @param {string[]} myFiles this row's Region entries
+ * @param {{ issueNumber: number, openPrs: { closes?: number[] | number | null }[], run: (args: string[]) => string, repo: string }} where
+ *   `openPrs` is what the pull-request comparison was given, so a claimed row with a pull request is counted once, by its files
+ * @returns {string | null}
+ */
+function claimedRegionsReason(myFiles, { issueNumber, openPrs, run, repo }) {
+  if (myFiles.length === 0) return null;
+  const claimed = lookupClaimedRegions({ run, repo });
+  if (claimed === null) return claimedRowsUnread("retry the claim (the gate offers the row again by itself).");
+  return claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
+}
+
+/** @param {string} then what happens next, which differs between the claim and `check` @returns {string} */
+const claimedRowsUnread = (then) => "B4 COULD NOT BE ASKED which rows are already claimed: that list could not be read, so this row's "
+  + `Region cannot be compared with theirs. INCONCLUSIVE, not clear -- ${then}`;
+
+/**
+ * #3475: THE VERDICT OVER A READ THAT SUCCEEDED, shared by the claim and `check` so the prediction is the refusal. Two rows that were
+ * BOTH dispatched `in-progress` before either claimed would each refuse the other and neither could ever start; so a row that is
+ * itself already claimed yields only to the claimed rows with a LOWER number, and the lowest proceeds. A row not yet claimed yields
+ * to every one.
+ *
+ * @param {string[]} myFiles
+ * @param {{ number: number, files: string[], blockedBy: number[] }[]} claimed every `in-progress` row with a Region, the asker's included
+ * @param {{ issueNumber: number, openPrs: { closes?: number[] | number | null }[] }} where
+ * @returns {string | null}
+ */
+function claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs }) {
+  const alreadyClaimed = claimed.some((row) => row.number === issueNumber);
+  const competitors = alreadyClaimed ? claimed.filter((row) => row.number < issueNumber) : claimed;
+  const edges = new Map(claimed.map((row) => [row.number, row.blockedBy]));
+  const blockersOf = (/** @type {number} */ n) => edges.get(n) ?? null;
+  return claimedRegionOverlapReason(myFiles, competitors, { rowNumber: issueNumber, blockersOf, openPrs });
 }
 
 /**
@@ -2124,7 +2166,26 @@ export function reportB4(issueNumber, deps = {}) {
   // here until #1085's review: the `reportB4 never writes` mutation was 1 red and this `if` is what that
   // red would have been credited to, so the next person mutating here would conclude the empty case was
   // covered by a branch that can no longer be taken.
-  write(`${b4Lines(mine(issueNumber, { repo: deps.repo }), others({ trackerRepo: deps.repo }), issueNumber).join("\n")}\n`);
+  const myFiles = mine(issueNumber, { repo: deps.repo });
+  const otherPrs = others({ trackerRepo: deps.repo });
+  const lines = b4Lines(myFiles, otherPrs, issueNumber);
+  // #3475: THE CLAIMED-ROW HALF, only when the first half could be asked -- a failed read there has already said INCONCLUSIVE.
+  if (myFiles !== null && otherPrs !== null) lines.push(claimedB4Line(myFiles, issueNumber, otherPrs, deps));
+  write(`${lines.join("\n")}\n`);
+}
+
+/**
+ * #3475: `check`'s sentence for the claimed-row half of B4: refused, could-not-ask, or clear -- the claim's own verdict, read-only.
+ * The asking row's own `blockedBy` edge is not read: the claim refuses on an open one before it gets to B4, so it never reaches here.
+ * @param {string[]} myFiles @param {number} issueNumber @param {{ closes?: number[] | number | null }[]} openPrs
+ * @param {{ repo?: string, claimed?: (where?: { repo?: string }) => { number: number, files: string[], blockedBy: number[] }[] | null }} deps
+ * @returns {string}
+ */
+function claimedB4Line(myFiles, issueNumber, openPrs, deps) {
+  const claimed = (deps.claimed ?? lookupClaimedRegions)({ repo: deps.repo });
+  if (claimed === null) return claimedRowsUnread("`row-claim claim` refuses on it.");
+  const reason = myFiles.length === 0 ? null : claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
+  return reason ? `B4 REFUSES THIS CLAIM: ${reason}` : "B4: no row already claimed holds any file in this row's Region.";
 }
 
 /**

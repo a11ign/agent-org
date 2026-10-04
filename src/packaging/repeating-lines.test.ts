@@ -163,6 +163,16 @@ test("#2848: the SHIPPED allowlist loads, every entry has a reason, and it names
   }
 });
 
+test("#3497: the tick's version banner repeating 30 ticks is NOT offered, in both forms and across a release; the banner's FAULT forms still are", () => {
+  const allow = loadAllowlist();
+  const banner = (i: number) => [`agent-org v0.17.${i < 15 ? 1 : 2} (051edcc71f622bb3c2b4bbed3055fd4add32ed59)`, `agent-org v0.17.${i < 15 ? 1 : 2}`];
+  assert.equal(repeatingLines({ ticks: ticksOf(run(30, banner)), allow: [] }).length, 1, "POSITIVE CONTROL: unlisted, the same 30 ticks ARE offered");
+  assert.deepEqual(repeatingLines({ ticks: ticksOf(run(30, banner)), allow }), [], "listed, they are not");
+  for (const fault of ["agent-org (version unreadable: boom)", "agent-org (at no release tag: 9f8e7d6)"]) {
+    assert.equal(repeatingLines({ ticks: ticksOf(run(30, () => [fault])), allow }).length, 1, `${fault} still offered`);
+  }
+});
+
 // --- #3029: the lines `wake.mjs` writes for a refusal, run through the detector as the journal would hold them ------
 
 /** The stderr lines `finishTick` writes for these refusals at this wait, which is what the journal carries. */

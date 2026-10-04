@@ -77,7 +77,8 @@ import { homeProjectDeclaration } from "../project-config.mjs";
 import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { holdersOf } from "../pr-hold-state.mjs";
-import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
+import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
+import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
 /** @type {(path: string) => boolean} */
@@ -229,6 +230,128 @@ export function fileOverlapReason(myFiles, otherPrFiles, { rowNumber = null, blo
     }
   }
   return { reason: null, emptyOtherPrs };
+}
+
+/**
+ * #3475: THE OTHER HALF OF B4 -- A ROW'S REGION AGAINST THE REGIONS OF THE ROWS ALREADY CLAIMED.
+ *
+ * `fileOverlapReason` compares a Region with open pull requests' files and with nothing else, so a row that is claimed and has no
+ * pull request yet holds no file at all, and the window is the whole of the work between claim and first push. Measured 2026-10-04:
+ * `worker-3423` claimed #3423 at 13:02:04Z with `watch.mjs`, `event.mjs` and `core.mjs` in its Region; `worker-3414` claimed #3414 at
+ * 13:29:55Z with the same three; no pull request existed to compare with (#148 opened at 13:34:33Z, 4m38s after the second claim), so B4
+ * passed on an empty list, truthfully, and the two rows ran into three conflicting pull requests.
+ *
+ * ONE MORE INPUT TO THE COMPARISON THE RULE ALREADY MAKES, DERIVED EACH TIME AND WRITTEN NOWHERE -- no label, no `blocked-by` edge to
+ * remove. A shelved row is the gate's own B4 shelving: not offered, its reason names the holder, and it clears when the holder's row
+ * closes or is released. Stacking on the holder stays a person's choice and is named in the refusal as the other way out.
+ *
+ * THE SAME EXCLUSIONS AS FOR PULL REQUESTS: changesets (both sides); the asking row itself; a row whose `blockedBy` edge names the
+ * asker, or is named by it (`blockersOf`, the sibling of {@link isHeldPrWaitingOn}); and a claimed row whose own open pull request
+ * declares `Closes #<row>` is counted ONCE, by that pull request's files, which are the truth once they exist -- so a collision
+ * with it is `fileOverlapReason`'s to name, and this function skips the row rather than naming it twice. `openPrs` is the list
+ * `fileOverlapReason` was given. A PR that declares `Closes: none` closes no row, so its row is still counted here.
+ *
+ * `blockersOf` answers `null` for a row it cannot place, and `null` reads as NOT excluded -- the refusal stands, as for a held PR.
+ * A Region entry is compared only with entries of the same repository key (a bare one is the first's), #2617's rule. A directory
+ * entry (`dir/`, #941) meets every entry under it, and the refusal names the more specific entry of the two.
+ *
+ * @param {string[]} myFiles this row's declared Region entries, as written
+ * @param {{ number: number, files: string[] }[]} claimedRows the other rows that are `in-progress`, each with its Region entries
+ * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null,
+ *   openPrs?: { closes?: number[] | number | null }[] }} [options]
+ * @returns {string | null} the refusal, or `null` when no claimed row shares a file
+ */
+export function claimedRegionOverlapReason(myFiles, claimedRows, { rowNumber = null, blockersOf, openPrs = [] } = {}) {
+  const mine = regionEntriesOf(myFiles);
+  if (mine.length === 0) return null;
+  const countedByPr = new Set(openPrs.flatMap(closedRowsOf));
+  for (const claimed of claimedRows) {
+    if (claimed.number === rowNumber || countedByPr.has(claimed.number)) continue;
+    const shared = sharedRegionEntries(mine, regionEntriesOf(claimed.files));
+    if (shared.length === 0 || areBlockedOnEachOther(rowNumber, claimed.number, blockersOf)) continue;
+    return `overlaps the Region of #${claimed.number}, a row already claimed (\`${CLAIM_LABEL}\`) that has no open pull request `
+      + `declaring \`Closes #${claimed.number}\` yet, and which declares: ${shared.join(", ")}. B4: no two rows are worked on the same `
+      + "file at once -- this row waits until that row closes or is released (the gate offers it again by itself), or stack it "
+      + "on that row's branch with its author.";
+  }
+  return null;
+}
+
+/**
+ * The Region entries that count for B4: all of them but changesets, which never collide.
+ * @param {string[]} entries @returns {string[]}
+ */
+const regionEntriesOf = (entries) => entries.filter((entry) => !isChangeset(splitRegionEntry(entry).path));
+
+/**
+ * The entries of `mine` and `theirs` that meet: same repository key, and one path equal to or covering the other. The MORE SPECIFIC
+ * of the two is named, as written, so a directory against a file names the file.
+ * @param {string[]} mine @param {string[]} theirs @returns {string[]}
+ */
+function sharedRegionEntries(mine, theirs) {
+  const shared = new Set();
+  for (const a of mine) {
+    for (const b of theirs) {
+      const [x, y] = [splitRegionEntry(a), splitRegionEntry(b)];
+      if (x.key !== y.key) continue;
+      if (regionCovers(x.path, y.path)) shared.add(b);
+      else if (regionCovers(y.path, x.path)) shared.add(a);
+    }
+  }
+  return [...shared];
+}
+
+/**
+ * A `blockedBy` edge in EITHER direction between two rows: one cannot be worked first while the other waits on it, so neither is the
+ * other's competitor. `null` from `blockersOf` is "cannot say" and excludes nothing.
+ * @param {number | null} asker @param {number} claimed @param {((row: number) => number[] | null) | undefined} blockersOf
+ * @returns {boolean}
+ */
+function areBlockedOnEachOther(asker, claimed, blockersOf) {
+  if (typeof blockersOf !== "function" || !Number.isInteger(asker)) return false;
+  return blockersOf(claimed)?.includes(Number(asker)) === true || blockersOf(Number(asker))?.includes(claimed) === true;
+}
+
+/**
+ * #3475: THE OTHER ROWS THAT ARE CLAIMED, in the shape {@link claimedRegionOverlapReason} reads, from open rows that carry `in-progress`
+ * and a body -- the gate's `openRows` (which already carry `labels`, `body` and `blockedBy`), so the gate makes no call of its own for
+ * this. A row whose body has no Region section declares no file and is dropped: it can collide with nothing.
+ *
+ * @param {any[] | null | undefined} rows `null`/absent is "not read", and yields `null` -- NEVER `[]`, which would say nobody holds a file
+ * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles`, so a test can name its own tree
+ * @returns {{ number: number, files: string[], blockedBy: number[] }[] | null}
+ */
+export function claimedRegionsOf(rows, options) {
+  if (!Array.isArray(rows)) return null;
+  return rows
+    .filter((row) => (row?.labels ?? []).some((/** @type {any} */ l) => String(l?.name ?? l) === CLAIM_LABEL))
+    .flatMap((row) => {
+      const files = declaredRegionFiles(String(row?.body ?? ""), options) ?? [];
+      const blockedBy = (row?.blockedBy?.nodes ?? []).map((/** @type {any} */ n) => Number(n.number));
+      return files.length === 0 ? [] : [{ number: Number(row.number), files, blockedBy }];
+    });
+}
+
+/** The most claimed rows one read asks for; a full page is read as cut short (see {@link lookupClaimedRegions}). */
+const CLAIMED_ROWS_LIMIT = 200;
+
+/**
+ * #3475: THE CLAIM'S READ OF WHO HOLDS WHAT -- one `gh issue list --label in-progress` over the tracker's open rows, bodies and
+ * `blockedBy` edges included. `null` on a failed read, which is INCONCLUSIVE and NEVER "nobody holds a file": the caller refuses
+ * on it, because a comparison that cannot be made must not pass as a comparison that found nothing.
+ *
+ * @param {{ run?: (args: string[]) => string, repo?: string, rootFiles?: Set<string> }} [deps] `repo` is the TRACKER whose rows are listed
+ * @returns {{ number: number, files: string[], blockedBy: number[] }[] | null}
+ */
+export function lookupClaimedRegions({ run = gh, repo = REPO, rootFiles } = {}) {
+  return lookup(() => {
+    const raw = run(["issue", "list", "--repo", repo, "--state", "open", "--label", CLAIM_LABEL, "--limit", String(CLAIMED_ROWS_LIMIT),
+      "--json", "number,labels,body,blockedBy"]);
+    const listed = JSON.parse(raw);
+    // A FULL PAGE MAY BE A TRUNCATED ONE, and a missing row is a file nobody holds: refuse to read it rather than compare with part.
+    if (Array.isArray(listed) && listed.length >= CLAIMED_ROWS_LIMIT) throw new Error(`${listed.length} claimed rows: the list may be cut short`);
+    return claimedRegionsOf(listed, rootFiles === undefined ? undefined : { rootFiles });
+  });
 }
 
 /**

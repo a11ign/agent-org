@@ -48,7 +48,7 @@ import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from ".
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
 // property its own header states -- it runs before any `pnpm install` or build.
 import { declaredRegionFiles } from "./region-paths.mjs";
-import { declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 // #1959: THE ONE READER OF `docs/lane-ownership.json`, imported rather than re-parsed -- a lane's `paths`
 // and `except` are `ceo`'s to move, and a second copy here would drift the way #939's nine spellings did.
 // Leaf-shaped and relative, so the gate keeps the property its own header states.
@@ -257,6 +257,8 @@ export function readPrs(run = defaultRun) {
       // one". One more name on the call already made, like the two above; it is what keeps a row whose author is in
       // review out of `claim-stalled`, whose subject is the build and not the wait for a verdict.
       + "headRefName,"
+      // #3445: `title`, the third rung of `ownsPr` (a title ending in the row's `owner/repo#n`); `labels` is already above, the fourth.
+      + "title,"
       // #2209: `mergeStateStatus` AND `mergeable`, BOTH ON THE SAME CALL, because nothing here read whether
       // a pull request CONFLICTS with `main`. #2203 went DIRTY when #2205 merged, was green and approved,
       // and was reported as a credential outage while six Ready rows sat behind it. `gh pr list --json`
@@ -459,7 +461,7 @@ export const GH_READS = Object.freeze({
   // one per row: the newest merged pull requests, of which the claimed branches' are found by name. It bounds what a
   // release for a MERGED row can see to the newest 100 -- at this org's rate about a day -- and a merge older than that,
   // seen only after the gate was down for longer, is missed, not guessed.
-  conditionalOnClaimedBranches: "pr list --state merged --limit 100 --json number,headRefName,mergedAt"
+  conditionalOnClaimedBranches: "pr list --state merged --limit 100 --json number,headRefName,mergedAt,title,labels"
     + " (readMergedPrs -- claim-stalled's merged release)",
   // #2286, WIDENED BY #2741: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row OR some
   // claimed one has a cleared blocker to ask about. `gh`'s `blockedBy` nodes carry no closing time, and a
@@ -1003,6 +1005,26 @@ export function blockedOnOpenPr(row, prFiles, options) {
 }
 
 /**
+ * #3475: why B4 would refuse this row RIGHT NOW because of a row somebody has ALREADY CLAIMED, or `null`. A claimed row holds its Region's
+ * files from its claim, and has no open pull request until its first push, so `blockedOnOpenPr` cannot see it -- #3414 was offered and
+ * claimed over three files #3423 had held for 27 minutes. The reason names the holder, and it clears when that row closes or is released:
+ * the shelving is derived each tick from the `openRows` the gate already read, and writes nothing.
+ *
+ * FAILS THE WAY THE PULL-REQUEST HALF DOES: no `openRows` read, or a row with no Region section, is "cannot ask" and shelves nothing,
+ * and the claim still asks (and refuses on a failed read). `claimed` is {@link claimedRegionsOf}'s output, computed once per call.
+ *
+ * @param {any} row @param {{ number: number, files: string[] }[]} claimed
+ * @param {{ rootFiles?: Set<string>, blockersOf?: (row: number) => number[] | null, openPrs?: { closes?: number[] }[] }} options
+ * @returns {string | null}
+ */
+export function blockedOnClaimedRow(row, claimed, options) {
+  if (claimed.length === 0) return null;
+  const mine = declaredRegionFiles(String(row?.body ?? ""), options);
+  if (mine === null) return null;
+  return claimedRegionOverlapReason(mine, claimed, { rowNumber: Number(row?.number), blockersOf: options.blockersOf, openPrs: options.openPrs });
+}
+
+/**
  * #2493: what blocks a row, answered from the open rows the gate has ALREADY READ -- `blockedBy` rides
  * `readOpenRows`'s call -- so the exclusion costs the gate nothing. `null` for a row not among them (closed, or
  * beyond the read's limit), which the rule reads as "not excluded".
@@ -1100,6 +1122,8 @@ const templateGapText = (missing) => `its body has no ${missing.map((f) => `\`##
  *        that cannot reach `origin` is never worse off than one from before this existed.
  *        `openRows` (#2493) is every open row the gate read, for the `blockedBy` edges that say whether a HELD PR is
  *        waiting on the row asked about. ABSENT, no held PR is excluded and B4 refuses exactly as before.
+ *        It is also where #3475 reads the rows already CLAIMED (`in-progress`), whose Regions hold their files before any pull request
+ *        exists: a Ready row sharing a file with one is shelved, naming it. ABSENT, no row is shelved for it.
  *        `clock` is injected the way `partitionFleetBatch` already injects one, and #2113 is why this
  *        path needs one at all: a `Not-before:` may now name an HOUR, so whether a row is offerable can
  *        change within a single day and a test cannot pin that against the host clock.
@@ -1111,6 +1135,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
   const { today = todayIso(), nowMs = Date.now() } = options?.clock ?? {};
   const onOrigin = branchIndex(options?.rowBranches);
   const blockersOf = blockersFromRows(options?.openRows);
+  const claimed = claimedRegionsOf(options?.openRows, options) ?? [];
   for (const row of readyRows) {
     // #2005's OPEN-CHECK, ANSWERED BY THIS LINE AND NOT BY A NEW RULE. The filer asked whether
     // `answer:<session>` should hold a row against its OWN HOLDER -- #1948 was `in-progress` +
@@ -1155,7 +1180,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
         reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
       continue;
     }
-    const reason = blockedOnOpenPr(row, prFiles, { ...options, blockersOf });
+    const reason = blockedOnOpenPr(row, prFiles, { ...options, blockersOf }) ?? blockedOnClaimedRow(row, claimed, { ...options, blockersOf, openPrs: prFiles });
     if (reason) blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row), reason });
     else offerable.push(row);
   }
@@ -2982,12 +3007,12 @@ export function readClaimedRowComments(run = defaultRun) {
  * `null` FOR A REFUSAL, NEVER `[]` (#1286): an unread list is not "nothing merged", and the merged release is simply not
  * evaluated this tick.
  * @param {(args: string[]) => string} [run]
- * @returns {{ number: number, headRefName: string, mergedAt: string }[] | null}
+ * @returns {{ number: number, headRefName: string, mergedAt: string, title: string, labels: { name: string }[] }[] | null}
  */
 export function readMergedPrs(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["pr", "list", "--state", "merged", "--limit", "100", "--json",
-      "number,headRefName,mergedAt"]));
+      "number,headRefName,mergedAt,title,labels"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -6080,7 +6105,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const rows = readyRows ?? [];
   const allOpen = openRows ?? [];
   const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
-  const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
+  const tracker = scope.tracker === null ? NO_TRACKER_READINGS : inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
   const prFiles = comparablePrFiles([...openPrs, ...(read.siblingPrs ?? [])], { trackerRepo: scope.tracker?.repo });
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
@@ -6124,6 +6149,13 @@ function withEjections(prs, ejections) {
   if (!ejections || ejections.size === 0) return prs;
   return prs.map((pr) => (ejections.has(Number(pr?.number)) ? { ...pr, ejection: ejections.get(Number(pr.number)) } : pr));
 }
+
+/**
+ * What a scope with NO tracker of its own reads from a tracker: nothing, in the shapes an empty tracker returns. `inRepo(undefined)` means the
+ * AMBIENT repository, which is the primary's, so asking would hand the primary's closed rows to a scope that has no such rows, and each would
+ * come back as an `answer-owed` order naming a repository where the row does not exist (#3493).
+ */
+const NO_TRACKER_READINGS = { claimedComments: [], epics: [], closedRows: [], closings: null };
 
 /**
  * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
