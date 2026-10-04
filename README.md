@@ -48,7 +48,9 @@ A release starts itself, on the merge that carries a changeset, and no pull requ
 3. **`main`'s `package.json` version and `CHANGELOG.md` lag the last tag**, and are left to: a project pins the tag's tree, which holds both, and the next version is computed
    from the tag. A later merge with no unreleased changeset cuts nothing, and the next one that carries a changeset is a different, later tag.
 
-The tag is not a deploy: the host that runs the org tracks `main`, so a release changes what a project's CI installs and never what the running org does.
+The tag is what reaches the running org: the host that runs the org runs the newest `vX.Y.Z` tag (`update-tool` checks it out), and `host.json`'s `toolVersion` pins one tag
+instead, which is the whole of a rollback. A merge with a changeset is live about nine minutes after it lands (measured from the tag history on a11ign/a11ign#3443), and a merge
+with no changeset is never tagged and so never live. A release therefore changes what a project's CI installs and what the running org does.
 
 A project bumps its pin by editing the range in its `package.json` (`github:a11ign/agent-org#semver:^0.1.0`) in an ordinary dependency pull request and reading the
 changelog it links. While the version is `0.x`, `^0.1.0` takes patches only, so a `minor` is the bump a project opts into.
