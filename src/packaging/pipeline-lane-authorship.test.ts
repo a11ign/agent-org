@@ -132,7 +132,7 @@ function driveArm({ author, files, body = "Closes #1", labels = [] as string[], 
     if (args[0] === "api" && args[2]?.endsWith("/files")) return files.join("\n");
     // #3487: the queue history `arm-pr` now asks last -- never queued, so never ejected.
     if (args.some((x) => x.includes("timelineItems"))) return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } });
-    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [] });
+    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [], blockedBy: { nodes: [], totalCount: 0 } });
     return "";
   };
   const code = runArmPr({ argv: ["--pr=7", "--repo=a11ign/a11ign"], env: {}, run: run as never, sleep: () => "ok" as const,

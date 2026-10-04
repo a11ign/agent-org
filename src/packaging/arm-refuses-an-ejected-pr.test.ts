@@ -99,7 +99,7 @@ function driveArm(ejection: unknown | Error) {
       if (ejection instanceof Error) throw ejection;
       return JSON.stringify(ejection);
     }
-    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [] });
+    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [], blockedBy: { nodes: [], totalCount: 0 } });
     return "";
   };
   const code = runArmPr({ argv: ["--pr=3460", `--repo=${REPO}`], env: {}, run: run as never, sleep: () => "ok" as const,
@@ -132,7 +132,7 @@ test("#3487 (4) arm-pr: a refused read does not arm and exits CANNOT_ASK, the co
 // --- door two: the sweep, whose caller is driven both directly and as the real process ---
 
 test("#3487 sweep: `refusalBeforeArming` -- ejected is refused, a push since is clear, a refused read is `cannot-ask`", () => {
-  const ask = (run: (a: string[]) => string) => refusalBeforeArming({ number: "3460", repo: REPO, author: "worker-1", run });
+  const ask = (run: (a: string[]) => string) => refusalBeforeArming({ number: "3460", repo: REPO, author: "worker-1", prBody: "Closes: none — a fixture", run });
   const forFixture = (fixture: unknown) => (args: string[]) => {
     assert.ok(args.some((a) => a.includes("timelineItems")), "the only read for a non-lane author is the queue history");
     return JSON.stringify(fixture);
