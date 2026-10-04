@@ -218,7 +218,7 @@ function laterMerge(known, next) {
  * @returns {{ repo: string, number: number } | null}
  */
 export function reviewerTarget(session, rowRepo) {
-  const named = /^reviewer-(?:([a-z][a-z-]*?)-)?(\d+)$/.exec(session);
+  const named = /^reviewer-(?:([a-z0-9-]+?)-)?(\d+)$/.exec(session);
   if (!named) return null;
   return { repo: named[1] ? `${rowRepo.split("/")[0]}/${named[1]}` : rowRepo, number: Number(named[2]) };
 }
