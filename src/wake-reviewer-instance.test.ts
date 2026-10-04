@@ -33,6 +33,7 @@ import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
 import { parityOwner } from "./review-attribution.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
+import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
 // #2827: `removeReviewCheckout` now writes #2782's removal log, and a test must not write the host's real record.
 process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "review-removal-log-")), "worktree-removals");
@@ -74,9 +75,12 @@ type Events = string[];
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
 function recordingHerdr(events: Events = []) {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
     events.push(`herdr ${args.join(" ")}`);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (args.join(" ").includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }
@@ -959,6 +963,7 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     writeFileSync(join(dir, "herdr"), "#!/bin/sh\necho \"$*\" >> " + join(dir, "herdr-calls")
       + "\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
+      + STUB_STARTED_PANE
       + "  *) : ;;\nesac\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf '%s' '[]'\n");

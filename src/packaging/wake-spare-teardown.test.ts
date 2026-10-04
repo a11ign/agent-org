@@ -19,6 +19,7 @@ import { deliver as settlingDeliver, engineerRoles }
 import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
   readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR }
   from "../wake.mjs";
+import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -33,8 +34,11 @@ const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so th
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
 function recordingHerdr() {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (args.join(" ").includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }
@@ -317,6 +321,7 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
     const herdrLog = join(dir, "herdr-calls");
     writeFileSync(join(dir, "herdr"), "#!/bin/sh\necho \"$*\" >> " + herdrLog + "\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
+      + STUB_STARTED_PANE
       + "  *) : ;;\nesac\n");
     chmodSync(join(dir, "herdr"), STUB_MODE);
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf '%s' '[]'\n");

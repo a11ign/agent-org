@@ -137,8 +137,9 @@ test("#3440 (3) a refused /compact is reported and the order still goes (mirrors
   const r = recorder(["/compact"]);
   const got = deliver([order(LEAD)], agents([LEAD]), ROSTER,
     { run: r.run, sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) });
-  assert.equal(got.refused.length, 1, `reported: ${JSON.stringify(got)}`);
-  assert.match(got.refused[0], /delivered anyway/);
+  assert.deepEqual(got.refused, [], "one order, one status: delivered, so not also UNDELIVERED (#3546)");
+  assert.equal(got.sent.length, 1, `reported on the delivered line: ${JSON.stringify(got)}`);
+  assert.match(got.sent[0], /\[.*\/compact refused/);
   assert.equal(r.typed().at(-1)?.startsWith(`${LEAD}: You are`), true, "and the order was typed after the refused /compact");
   const c = recorder(["/compact"]);
   const report = clearThenPrompt(c.run, LEAD, "x", { sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) });

@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
+import { startedPanes } from "./started-pane.ts";
 
 const ROOT = HOME_CHECKOUT;
 const read = (repoPath: string) => readFileSync(`${ROOT}/${repoPath}`, "utf8");
@@ -87,8 +88,11 @@ test("#2505: sessions.json lists NO standing engineer address, so the roster REA
 
 test("the delivery path carries the line: what herdr is handed is the addressed text", () => {
   const prompts: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     prompts.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     return args.join(" ").includes("workspace create")
       ? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } }) : "{}";
   };

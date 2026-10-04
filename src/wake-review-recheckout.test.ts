@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.mjs";
 import { promptOrQueue, STANCE, EXIT } from "./prompt-session.mjs";
+import { startedPanes } from "./packaging/started-pane.ts";
 
 const REVIEW_ROOT = "/reviews-root";
 const PRIMARY = "/primary";
@@ -56,9 +57,10 @@ const treeOf = (co: ReturnType<typeof fakeCheckout>, pr: number) => co.trees.get
 /** The first order, as the tick generates it, brings the instance up at the FIRST head. */
 function reviewerAtFirstHead(pr: number, co: ReturnType<typeof fakeCheckout>) {
   const sent: string[][] = [];
+  const pane = startedPanes();
   const out = deliver([{ session: `reviewer-${pr}`, cause: "draft-awaiting-verdict",
     causeKey: `reviewer-${pr}/draft-awaiting-verdict/pr-${pr}/abc12345`, prompt: `Draft #${pr} is green.` }],
-    agents({}), [], { run: (args) => { sent.push(args); return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" },
+    agents({}), [], { run: (args) => { sent.push(args); return pane(args) ?? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" },
       workspace: { workspace_id: "wB" } } }); }, checkout: co.seams, reviewerEnv: {}, registerReviewer: () => {} });
   assert.equal(out.refused.length, 0, out.refused.join(";"));
   assert.equal(treeOf(co, pr), headOf(pr, 1), "the spawn is the one path that already pointed the tree");
