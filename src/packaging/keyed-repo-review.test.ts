@@ -215,7 +215,9 @@ test("(2) `prepareReviewCheckout` hands a keyed reviewer no tree when the clone 
       }
       return base.seams.git(cmd, args);
     };
-    const refused = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link: undefined });
+    // The install of #3386 is stubbed to fail, so the refusal stays what this test reads and no registry is reached; the default is `pnpm install`.
+    const link = (args: { path: string; repoRoot: string }) => linkKeyedDependencies({ ...args, install: () => { throw new Error("registry unreachable"); } });
+    const refused = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link });
     assert.match(String((refused as { refusal: string }).refusal), /no review dependencies for PR #6 .*`tsx`/);
     // POSITIVE CONTROL: with `tsx` present the same call yields a tree, so the refusal above was the missing package and nothing else.
     mkdirSync(join(clone, "node_modules", "tsx"));
