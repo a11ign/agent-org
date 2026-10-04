@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+B4 now compares a row's Region with the Regions of the rows already claimed (`in-progress`), as well as with open pull requests' files, so a claimed row with no pull request yet holds its files (a11ign/a11ign#3475; #3414 was claimed over three files #3423 had held for 27 minutes, and the two rows ran into three conflicting pull requests). `row-claim claim` refuses a row whose Region shares a file with a claimed row's, naming it and the files; `row-claim check` prints the same verdict; and the gate shelves a Ready row behind it with the holder's number in the reason, offering it again by itself once that row closes or is released. Nothing is written: the holders are derived from the open rows on every tick. The exclusions are the pull-request ones: changesets, the asking row, a `blockedBy` edge in either direction, and a claimed row whose own open pull request declares `Closes #<row>`, which is counted once, by its files. A claim that cannot read the list of claimed rows is refused as INCONCLUSIVE rather than passed, and two rows both already `in-progress` do not refuse each other: the lower number proceeds.
