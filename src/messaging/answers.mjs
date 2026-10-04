@@ -27,6 +27,8 @@
 //     the walk-through's step advance is C2's and is not here.)
 //   * `later` SNOOZES the request's reminders for 24 hours: one ledger line, the label stays, so it is NOT an answer (`snoozedUntil` is what the watcher reads).
 //   * `explain` and `stuck` each send the LIAISON one order, through a port (`orders`): this module queues nothing itself, and the one file that may queue is `converse.mjs`.
+//     When the liaison's queue refuses, `converse.mjs` queues it for `ceo` (the chairman's order, a11ign/a11ign#3538) and the press is told so in plain words (`told`); when neither
+//     takes it the press is told nothing was sent. **The chairman never reads a queue's refusal or an error's text here:** they go to the ledger (`error`), which is where they are kept.
 //   * `forme` is D1's request and is not wired: the chairman is told so, and nothing is written.
 // A press on a message whose request is answered (or no longer asking) is told so, and its keyboard is taken off (`clearKeyboard`): a second press cannot happen.
 //
@@ -38,6 +40,7 @@
 // **THE CHAIRMAN'S TEXT IS QUOTED, NEVER PASTED.** Row comments are read by line-anchored parsers (`Not-before:`, `Acceptance:`) and by a
 // regex for the `chairman-options` HTML comment, so a reply is written as a blockquote with its HTML comment markers escaped.
 
+import { FALLBACK_RECIPIENT, RECIPIENT } from "./converse.mjs";
 import { actionData, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
 import { describeError, STATUS } from "./ledger.mjs";
 import { latestBrief, NEEDS_CHAIRMAN, parseChairmanOptions, parseRequestKey } from "./sources/requests.mjs";
@@ -46,6 +49,8 @@ import { latestBrief, NEEDS_CHAIRMAN, parseChairmanOptions, parseRequestKey } fr
 export const STEPS = Object.freeze(["comment", "remove-label", "set-answer"]);
 
 const ANSWER_DIRECTION = "answer";
+/** What a press is told when neither the liaison nor the fallback took its order: plain words, nothing of the queue's refusal in them. */
+const ORDER_LOST = `I couldn't pass that to the ${RECIPIENT} or to ${FALLBACK_RECIPIENT}, so nothing was sent. Press again to retry.`;
 /** How long `later` holds a request's reminders back. */
 export const SNOOZE_MS = 24 * 60 * 60 * 1000;
 const MAX_ASK_QUOTED = 500;
@@ -116,9 +121,10 @@ export function answerComment({ ref, at, option, text }) {
  *   when the label is already absent, because a resumed answer may repeat it.
  *
  * @typedef {{
- *   liaison: (order: {text: string, messageRef: string}) => Promise<{queued: boolean, say: string, handoff: string | null}>,
+ *   liaison: (order: {text: string, messageRef: string}) => Promise<{queued: boolean, say: string, handoff: string | null, taker?: string | null, told?: string | null}>,
  * }} Orders  the one thing a press may ask the organisation for: an order to the liaison. `converse.mjs` is the only module that queues, so it builds this.
- *   `say` is the queue's own words for a refusal, passed on as they were said.
+ *   `say` is the queue's own words, for the LEDGER only; `taker` is who holds the order (the fallback when the liaison's queue refused) and `told` is what the chairman is told when it
+ *   went to the fallback.
  *
  * @typedef {{action: "not-an-answer"}
  *   | {action: "reply", reason: string, request: string | null, text: string, chatId: number, callbackQueryId: string | null, clearKeyboard: string | null}} Answered
@@ -238,7 +244,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     if (again) return reply(accepted, "already-asked", request, `The liaison already has that for ${name}. Nothing was sent again.`);
     if (orders === undefined) return reply(accepted, "no-liaison", request, "I cannot reach the liaison from here. Nothing was sent.");
     const lead = step === "explain" ? `the chairman asked for more on ${name}` : `the chairman is stuck at ${name}`;
-    /** @type {{queued: boolean, say: string, handoff: string | null}} */
+    /** @type {{queued: boolean, say: string, handoff: string | null, taker?: string | null, told?: string | null}} */
     let result;
     try {
       result = await orders.liaison({ text: `${lead}:\n\n${quoted(askOf(sent))}`, messageRef: ref });
@@ -247,9 +253,10 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     }
     if (!result.queued) {
       ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via: "button", error: result.say });
-      return reply(accepted, "order-refused", request, `The liaison did not take it: ${result.say}. Press again to retry.`);
+      return reply(accepted, "order-refused", request, ORDER_LOST);
     }
-    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via: "button", handoff: result.handoff });
+    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via: "button", handoff: result.handoff, taker: result.taker ?? RECIPIENT });
+    if (result.told) return reply(accepted, "asked-fallback", request, result.told);
     return reply(accepted, "asked", request, step === "explain" ? `Asked the liaison for more on ${name}.` : `Told the liaison you are stuck at ${name}.`);
   }
 

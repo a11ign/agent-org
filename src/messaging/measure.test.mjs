@@ -22,12 +22,12 @@ let nextCase = 0;
 /** @param {string} ts @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
 const line = (ts, fields) => ({ ...fields, ts });
 
-/** The chairman's message `ref`, received at `receivedAt`, acknowledged `ackAfterMs` later. @param {{ref: string, update: number, receivedAt: string, ackAfterMs: number | null}} message */
-function inbound({ ref, update, receivedAt, ackAfterMs }) {
+/** The chairman's message `ref`, received at `receivedAt`, acknowledged `ackAfterMs` later, and what became of it (`verdict`, and the fields that go with it). @param {{ref: string, update: number, receivedAt: string, ackAfterMs: number | null, verdict?: string, more?: Record<string, unknown>}} message */
+function inbound({ ref, update, receivedAt, ackAfterMs, verdict = "queued", more = {} }) {
   const ackedAt = new Date(Date.parse(receivedAt) + (ackAfterMs ?? 0)).toISOString();
   return [
     line(receivedAt, { direction: "in", updateId: update, verdict: "forward", reason: null, kind: "message" }),
-    line(ackedAt, { direction: "in", origin: "converse", updateId: update, messageRef: ref, verdict: "queued", ackRef: ackAfterMs === null ? null : `${ref}1` }),
+    line(ackedAt, { direction: "in", origin: "converse", updateId: update, messageRef: ref, verdict, ackRef: ackAfterMs === null ? null : `${ref}1`, ...more }),
   ];
 }
 
@@ -52,6 +52,24 @@ const TWO_MESSAGES = [
   line("2026-10-04T09:09:00.000Z", { direction: "reply", replyTo: "6", status: "replied", providerMessageId: "7" }),
   ...inbound({ ref: "8", update: 2, receivedAt: "2026-10-04T10:00:00.000Z", ackAfterMs: 3000 }),
 ];
+
+describe("(1b) a message the liaison's queue refused and ceo's took (a11ign/a11ign#3538) is counted, acknowledged and answered like any other", () => {
+  const REROUTED = [
+    ...inbound({ ref: "6", update: 1, receivedAt: "2026-10-04T09:00:00.000Z", ackAfterMs: 2000, verdict: "rerouted-to-ceo", more: { taker: "ceo", handoff: "handoff/ceo/ab12cd34", refusals: ["NOT PROMPTED, AND NOT QUEUED: no session named \"liaison\""] } }),
+    line("2026-10-04T09:09:00.000Z", { direction: "reply", replyTo: "6", status: "replied", providerMessageId: "7" }),
+    ...inbound({ ref: "8", update: 2, receivedAt: "2026-10-04T10:00:00.000Z", ackAfterMs: 3000, verdict: "rerouted-to-ceo", more: { taker: "ceo", handoff: "handoff/ceo/ef56ab78", refusals: [] } }),
+    ...inbound({ ref: "9", update: 3, receivedAt: "2026-10-04T11:00:00.000Z", ackAfterMs: 1000, verdict: "refused", more: { taker: null, handoff: null, refusals: ["a", "b"] } }),
+  ];
+
+  test("every message is in the count whatever became of it: a rerouted one is answered when ceo replies, unanswered when he has not, and a lost one is still counted", () => {
+    const { code, out } = measureOver(REROUTED);
+    assert.equal(code, EXIT.ok);
+    assert.match(out, /messages from the chairman: 3/, "none dropped from the count");
+    assert.match(out, /message 6 received 2026-10-04T09:00:00.000Z: acknowledged after 2 s; answered after 540 s$/m, "rerouted and answered");
+    assert.match(out, /message 8 received 2026-10-04T10:00:00.000Z: acknowledged after 3 s; unanswered$/m, "rerouted and not yet answered is unanswered, as any message is");
+    assert.match(out, /message 9 received 2026-10-04T11:00:00.000Z: acknowledged after 1 s; unanswered$/m, "the lost one is counted too (the control: the count is by line, not by verdict)");
+  });
+});
 
 describe("(1) per message: seconds to acknowledge, and seconds to the first reply that names it, or unanswered", () => {
   test("two messages, one acknowledged in 2 s and answered in 9 min, one acknowledged and never answered", () => {

@@ -1,7 +1,12 @@
 // no-token: clearBeforeOrder -- the real queue is driven only through queueOrLose (an append to a temp file); nothing here clears or prompts a session
 // @ts-check
 // CONVERSATION IN (a11ign/a11ign#2909 done-whens 1-4): an accepted chairman message is acknowledged AT ONCE, then becomes ONE queue entry for the `liaison`;
-// a queue refusal reaches the chairman in words, verbatim, saying nothing was done; nothing in `src/messaging/` queues for anyone else; `resolveSender` never yields the chairman.
+// nothing in `src/messaging/` queues for anyone else; `resolveSender` never yields the chairman.
+//
+// **THE CHAIRMAN REVERSED #3416'S "CEO IS NOT THE FALLBACK" (his order of 2026-10-04 19:55Z, a11ign/a11ign#3538).** A message the liaison's queue refuses, for ANY reason,
+// is queued for `ceo` with a line saying why, and the chairman is told in plain words (no queue text, handoff, path or error class); only when `ceo`'s queue refuses too is it
+// lost, and he is told that and asked to send it again. The tests that pinned the old rule ("... and ceo is NOT the fallback", "the queue's own words, verbatim") are
+// rewritten below, not deleted: each now pins what replaced it.
 //
 // **TWO QUEUES, SAID OUT LOUD.** `prompt-session.mjs` reads the project's declaration when it is imported, so it cannot load in a bare checkout of
 // this repository. The module under test loads the REAL queue on first use; this file therefore runs every behavioural case against
@@ -19,7 +24,7 @@ import { dirname, join, relative } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
+import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, FALLBACK_RECIPIENT, PASSED_REFUSED, PASSED_SEAT_ABSENT, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
 import { createFakeProvider } from "./fake-provider.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, readLedgerLines } from "./ledger.mjs";
@@ -49,12 +54,12 @@ async function loadReal() {
 }
 const real = await loadReal();
 
-/** @param {string} path @param {number} count a queue already holding `count` orders for the liaison */
-function fillQueue(path, count) {
+/** @param {string} path @param {number} count a queue already holding `count` orders for `session` (the liaison unless said) @param {string} [session] */
+function fillQueue(path, count, session = RECIPIENT) {
   for (let index = 0; index < count; index += 1) {
     const prompt = `earlier order ${index}`;
-    const id = `handoff/liaison/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`;
-    appendFileSync(path, `${JSON.stringify({ id, session: "liaison", prompt, queuedAt: START - 60_000, decision: false })}\n`);
+    const id = `handoff/${session}/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`;
+    appendFileSync(path, `${JSON.stringify({ id, session, prompt, queuedAt: START - 60_000, decision: false })}\n`);
   }
 }
 
@@ -204,35 +209,102 @@ function cases(queue, label) {
     assert.equal(run.provider.sent.length, 2);
   });
 
-  test("done-when 3: a queue refusal -- the liaison seat absent -- is told in words naming the refusal verbatim, says nothing was done, and ceo is NOT the fallback", async () => {
-    const run = ready({ roster: [{ label: "ceo", status: "idle" }, { label: "worker-7", status: "idle" }] });
+  /** What a chairman must never read in what he is told: the queue's vocabulary, a handoff, a path, an error class, or a session he does not know by name. */
+  const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.mjs|[/\\]|Error|\b(worker|reviewer)-\d+|\bwork:tick\b|prompt:session/i;
+  /** @param {string} text */
+  const plain = (text) => {
+    assert.ok(!INTERNAL.test(text), `plain words, no internal text: ${JSON.stringify(text)}`);
+    const names = text.match(/\b(liaison|ceo|orchestrator|product-manager|engineer|worker|reviewer)\b/g) ?? [];
+    assert.ok(names.every((name) => name === RECIPIENT || name === FALLBACK_RECIPIENT), `only the two sessions he knows by name: ${names}`);
+  };
+  const WITHOUT_LIAISON = ROSTER.filter((agent) => agent.label !== RECIPIENT);
+
+  test("done-when 1: the liaison seat ABSENT from the roster -- the message is queued for ceo, with its provenance and a line saying why, and the ledger says so", async () => {
+    const run = ready({ roster: WITHOUT_LIAISON });
     const result = await run.converse.forward(run.accept(chairmanUpdate(5)));
-    assert.equal(result.outcome, "refused");
-    assert.equal(run.queued().length, 0, "nothing was queued, for the liaison or for ceo");
-    assert.deepEqual(run.provider.sent.map((message) => message.text), ["Got it, looking.", notReached(run.said().trim())]);
-    assert.match(run.provider.sent[1].text, /^I could not reach the liaison: NOT PROMPTED, AND NOT QUEUED/);
-    assert.ok(!/\.\. /.test(run.provider.sent[1].text), "the queue's closing full stop is not doubled");
-    assert.equal(run.provider.sent[1].text, notReached(run.said().trim()));
+    assert.equal(result.outcome, "rerouted-to-ceo");
+    assert.notEqual(result.outcome, "refused");
+    const [entry] = run.queued();
+    assert.equal(run.queued().length, 1, "one entry, read back from the queue file");
+    assert.equal(entry.session, FALLBACK_RECIPIENT);
+    for (const line of [SOURCE_LINE, "This is the chairman speaking, not a session.", "Telegram message: 105 (update 5)", CHAIRMAN_SENDER, "why did the merge queue stall?",
+      `It came to you, ${FALLBACK_RECIPIENT}, and not to the ${RECIPIENT}, because the ${RECIPIENT}'s queue refused it: NOT PROMPTED, AND NOT QUEUED:`]) {
+      assert.ok(entry.prompt.includes(line), `ceo's entry carries ${JSON.stringify(line)}`);
+    }
+    assert.ok(entry.prompt.endsWith("\nwhy did the merge queue stall?"), "the chairman's words are still last");
+    const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.equal(line.verdict, "rerouted-to-ceo");
+    assert.equal(line.taker, FALLBACK_RECIPIENT);
+    assert.equal(line.handoff, entry.id, "the ledger carries ceo's handoff id");
+    assert.equal(run.ledgerLines().filter((candidate) => candidate.origin === "converse").length, 1, "one line per message");
+    assert.match(line.refusals[0], /^NOT PROMPTED, AND NOT QUEUED: /, "the queue's refusal is kept in the ledger, first line");
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, PASSED_SEAT_ABSENT]);
   });
 
-  test("done-when 3: a queue refusal -- a full inbox -- is told the same way, and the queue is no deeper", async () => {
+  test("done-when 1: the liaison's inbox FULL -- the message is queued for ceo, the liaison's queue is no deeper, and the ledger says so", async () => {
     const run = ready();
     fillQueue(run.queuePath, DEEP);
     const result = await run.converse.forward(run.accept(chairmanUpdate(6)));
-    assert.equal(result.outcome, "refused");
-    assert.equal(run.queued().length, DEEP, "the refused message did not join the queue it was refused for joining");
-    assert.equal(run.provider.sent[1].text, notReached(run.said().trim()));
-    assert.ok(run.provider.sent[1].text.includes("why did the merge queue stall?"), "the refusal returns the message, so it exists somewhere");
+    assert.equal(result.outcome, "rerouted-to-ceo");
+    assert.equal(run.queued().filter((entry) => entry.session === RECIPIENT).length, DEEP, "the refused message did not join the queue it was refused for joining");
+    const [entry] = run.queued().filter((candidate) => candidate.session === FALLBACK_RECIPIENT);
+    assert.ok(entry.prompt.includes("why did the merge queue stall?") && entry.prompt.includes(SOURCE_LINE));
+    assert.ok(entry.prompt.includes(`because the ${RECIPIENT}'s queue refused it: NOT PROMPTED, AND NOT QUEUED: "liaison" already has ${DEEP} order(s) waiting`), "the line names the reason");
+    assert.ok(entry.prompt.split("why did the merge queue stall?").length === 2, "the refusal text, which repeats the message, is cut to its first line: the words appear once");
+    const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.deepEqual([line.verdict, line.taker, line.handoff], ["rerouted-to-ceo", FALLBACK_RECIPIENT, entry.id]);
+    assert.ok(!JSON.stringify(line).includes("why did the merge queue stall?"), "the ledger holds refs and a verdict, never the chairman's words");
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, PASSED_REFUSED]);
   });
 
-  test("a queue that says QUEUED and holds nothing is reported as not reached, never left at the acknowledgement", async () => {
-    const liar = { ...queue, queueOrLose: () => queue.EXIT.QUEUED };
-    const run = harness({ queue: liar });
+  test("done-when 1: a liaison queue that says QUEUED and holds nothing (or cannot be written) is a refusal too, and goes to ceo", async () => {
+    const forgetful = { ...queue, queueOrLose: (/** @type {Record<string, any>} */ order) => (order.label === RECIPIENT ? queue.EXIT.QUEUED : queue.queueOrLose(order)) };
+    const run = harness({ queue: forgetful });
     const result = await run.converse.forward(run.accept(chairmanUpdate(7)));
-    assert.equal(result.outcome, "unverified");
-    assert.equal(run.provider.sent.length, 2);
-    assert.match(run.provider.sent[1].text, /^I could not reach the liaison: .*not in the queue file\. Nothing has been done with your message\.$/);
-    assert.equal(run.ledgerLines().find((line) => line.origin === "converse")?.handoff, null);
+    assert.equal(result.outcome, "rerouted-to-ceo");
+    assert.deepEqual(run.queued().map((entry) => entry.session), [FALLBACK_RECIPIENT]);
+    assert.match(run.ledgerLines().find((line) => line.origin === "converse").refusals[0], /not in the queue file/);
+  });
+
+  test("done-when 2: what he is told after \"Got it\" for a rerouted message holds none of the queue's words, a handoff, a path, an error class or a session he does not know", async () => {
+    for (const setup of [() => ready({ roster: WITHOUT_LIAISON }), () => { const run = ready(); fillQueue(run.queuePath, DEEP); return run; }]) {
+      const run = setup();
+      await run.converse.forward(run.accept(chairmanUpdate(5)));
+      assert.equal(run.provider.sent.length, 2);
+      plain(run.provider.sent[1].text);
+    }
+    assert.equal(PASSED_SEAT_ABSENT, "The liaison isn't running; I've passed this to ceo.");
+    assert.throws(() => plain("NOT PROMPTED, AND NOT QUEUED: no session named \"liaison\""), "the matcher notices the old refusal text (it can fail)");
+    assert.throws(() => plain("sent to worker-7"), "and a session he does not know");
+  });
+
+  test("done-when 2: ceo's queue refusing too is the one case a message is lost: he is told so in plain words and asked to send it again, and the ledger says refused", async () => {
+    const absent = ready({ roster: ROSTER.filter((agent) => agent.label !== RECIPIENT && agent.label !== FALLBACK_RECIPIENT) });
+    const full = ready();
+    fillQueue(full.queuePath, DEEP);
+    fillQueue(full.queuePath, DEEP, FALLBACK_RECIPIENT);
+    for (const run of [absent, full]) {
+      const before = run.queued().length;
+      const result = await run.converse.forward(run.accept(chairmanUpdate(5)));
+      assert.equal(result.outcome, "refused");
+      assert.equal(run.queued().length, before, "nothing was queued for anybody");
+      assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, notReached()]);
+      plain(run.provider.sent[1].text);
+      assert.match(run.provider.sent[1].text, /nothing was delivered\. Please send it again\.$/);
+      const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+      assert.deepEqual([line.verdict, line.taker, line.handoff, line.refusals.length], ["refused", null, null, 2], "both refusals are kept in the ledger");
+    }
+  });
+
+  test("done-when 2, the POSITIVE CONTROL: the liaison present -- one message, one acknowledgement and no extra message, nothing for ceo", async () => {
+    const run = ready();
+    const result = await run.converse.forward(run.accept(chairmanUpdate(5)));
+    assert.equal(result.outcome, "queued");
+    assert.deepEqual(run.queued().map((entry) => entry.session), [RECIPIENT]);
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT]);
+    const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.deepEqual([line.verdict, line.taker, line.refusals], ["queued", RECIPIENT, []]);
+    assert.ok(!run.queued()[0].prompt.includes("came to you"), "no reroute line when the liaison took it");
   });
 
   test("a value `createInbound` did not mint for THIS chairman queues nothing and sends nothing", async () => {
@@ -288,18 +360,33 @@ function cases(queue, label) {
     assert.ok(buttonOrderText({ text: "t", messageRef: "7" }, START).endsWith("\nt"), "the words are last");
   });
 
-  test("a button's order is refused in the queue's own words when the liaison is not there or its inbox is full, and the control above queues", async () => {
-    const absent = ready({ roster: ROSTER.filter((agent) => agent.label !== RECIPIENT) });
-    const refused = await absent.converse.orderLiaison({ text: "x", messageRef: "501" });
-    assert.equal(refused.queued, false);
-    assert.equal(refused.say, absent.said().trim());
-    assert.match(refused.say, /NOT PROMPTED, AND NOT QUEUED/);
-    assert.equal(absent.queued().length, 0);
+  test("done-when 3: a button's order the liaison's queue refuses (seat absent, or inbox full) is queued for ceo with the reason, and the chairman's line is plain; the control above queues for the liaison", async () => {
+    const absent = ready({ roster: WITHOUT_LIAISON });
+    const rerouted = await absent.converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.deepEqual([rerouted.queued, rerouted.taker, rerouted.told], [true, FALLBACK_RECIPIENT, PASSED_SEAT_ABSENT]);
+    const [entry] = absent.queued();
+    assert.equal(entry.session, FALLBACK_RECIPIENT);
+    assert.equal(rerouted.handoff, entry.id);
+    assert.ok(entry.prompt.includes("Telegram message: 501 (a button press)") && entry.prompt.includes(`because the ${RECIPIENT}'s queue refused it: NOT PROMPTED`));
+    assert.ok(entry.prompt.endsWith("\nx"), "the words are last");
+    plain(rerouted.told);
 
     const full = ready({ roster: ROSTER });
-    for (let index = 0; index < DEEP; index += 1) appendFileSync(full.queuePath, `${JSON.stringify({ id: `handoff/liaison/${index}`, session: RECIPIENT, prompt: `p${index}`, queuedAt: START - 60_000, decision: false })}\n`);
-    assert.equal((await full.converse.orderLiaison({ text: "x", messageRef: "501" })).queued, false);
-    assert.equal(full.queued().length, DEEP, "the queue is no deeper");
+    fillQueue(full.queuePath, DEEP);
+    const second = await full.converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.deepEqual([second.queued, second.taker, second.told], [true, FALLBACK_RECIPIENT, PASSED_REFUSED]);
+    assert.equal(full.queued().filter((queued) => queued.session === RECIPIENT).length, DEEP, "the liaison's queue is no deeper");
+
+    const control = await ready({ roster: ROSTER }).converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.deepEqual([control.queued, control.taker, control.told], [true, RECIPIENT, null]);
+  });
+
+  test("done-when 3: a button's order neither queue takes is not queued and carries no plain-words claim of delivery; `say` is the ledger's and `told` is null", async () => {
+    const neither = ready({ roster: [{ label: "worker-7", status: "idle" }] });
+    const lost = await neither.converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.deepEqual([lost.queued, lost.taker, lost.told, lost.handoff], [false, null, null, null]);
+    assert.match(lost.say, /^not delivered: NOT PROMPTED, AND NOT QUEUED: .* \| NOT PROMPTED, AND NOT QUEUED: /);
+    assert.equal(neither.queued().length, 0);
   });
 
   test("the queue is told WHY: a button's order says a button, and a message says a message (it is what the queue repeats when it refuses)", async () => {
@@ -311,11 +398,19 @@ function cases(queue, label) {
     assert.deepEqual(whys, ["the chairman pressed a button for the liaison", "the chairman wrote to the liaison"]);
   });
 
-  test("a queue that says QUEUED and holds nothing is not an order the liaison has", async () => {
+  test("a queue that says QUEUED and holds nothing is not an order anybody has: both unverified is not delivered", async () => {
     const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED }, roster: ROSTER });
     const result = await run.converse.orderLiaison({ text: "x", messageRef: "501" });
     assert.equal(result.queued, false);
-    assert.match(result.say, /NOT delivered/);
+    assert.match(result.say, /^not delivered: .*not in the queue file/);
+  });
+
+  test("a message neither queue holds (both say QUEUED, neither entry is there) is told as not delivered, and the outcome is `unverified`", async () => {
+    const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED } });
+    const result = await run.converse.forward(run.accept(chairmanUpdate(7)));
+    assert.equal(result.outcome, "unverified");
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, notReached()]);
+    assert.equal(run.ledgerLines().find((line) => line.origin === "converse")?.handoff, null);
   });
 
   test(`${label}: provenanceText no longer tells the reader to avoid prompt:session (that is the liaison's brief, B3, and ceo is reached through it)`, () => {
@@ -407,15 +502,20 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
     assert.notDeepEqual(queueCallersIn(fixture), ["converse.mjs"], "the assertion above would fail on this directory");
   });
 
-  test("its one call names the recipient by the constant, which is liaison, and no other label is anywhere in its code", () => {
+  test("its one call names the recipient by a constant: the liaison first, ceo only as the fallback, each written once and no other label anywhere in its code", () => {
     const code = withoutComments(readFileSync(join(MESSAGING, "converse.mjs"), "utf8"));
     assert.equal(RECIPIENT, "liaison");
+    assert.equal(FALLBACK_RECIPIENT, "ceo");
     assert.match(code, /export const RECIPIENT = "liaison";/);
+    assert.match(code, /export const FALLBACK_RECIPIENT = "ceo";/);
     assert.equal((code.match(/\.queueOrLose\(/g) ?? []).length, 1, "one call to the queue");
-    assert.deepEqual(code.match(/\blabel: [^,]+,/g), ["label: RECIPIENT,"], "the call's label is the constant; no other `label:` is passed anywhere");
+    assert.deepEqual(code.match(/\blabel: [^,]+,/g), ["label: recipient,"], "the call's label is a parameter; no other `label:` is passed anywhere");
+    assert.equal([...code.matchAll(/(?<!function )\benqueue\(q, recipient, /g)].length, 1, "enqueue is reached only through attempt");
+    const attempts = [...code.matchAll(/(?<!function )\battempt\(q, (\w+), /g)].map((match) => match[1]);
+    assert.deepEqual(attempts, ["RECIPIENT", "FALLBACK_RECIPIENT"], "attempt is reached twice, the liaison first and the fallback second, by the constants");
     assert.equal([...code.matchAll(/(?<!function )\bsubmit\(await port\(\), /g)].length, 2, "submit is reached twice: once for a message, once for a button, and neither names a recipient");
-    assert.equal([...code.matchAll(/(?<!function )\benqueue\(q, /g)].length, 1, "and enqueue is reached only through submit");
-    assert.ok(!/"ceo"/.test(code), "ceo is named nowhere in the code: it is reached by the liaison, never from here");
+    assert.equal((code.match(/"ceo"/g) ?? []).length, 1, "ceo is named once, as the fallback constant, and nowhere else");
+    assert.equal((code.match(/"liaison"/g) ?? []).length, 1, "and the liaison once, as its own");
   });
 });
 

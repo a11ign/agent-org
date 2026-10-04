@@ -24,7 +24,7 @@ const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.j
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { createForwarder, tellingWhenUndelivered, main, EXIT } = await import("./listen.mjs");
-const { createConverse } = await import("./converse.mjs");
+const { createConverse, notReached } = await import("./converse.mjs");
 const { createInbound } = await import("./inbound.mjs");
 const { createLedger, readLedgerLines } = await import("./ledger.mjs");
 const { createFakeProvider } = await import("./fake-provider.mjs");
@@ -123,14 +123,15 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
   const refusal = new Error("the declaration cannot be read: set AGENT_ORG_HOST");
   const unqueueable = async () => { throw refusal; };
 
-  test("a message: the chairman is SENT the reason, and the ledger line says refused", async () => {
+  test("a message: the chairman is told in plain words (never the error's text), and the ledger line says refused and keeps the error", async () => {
     const { ledger, inbound } = core();
     const provider = createFakeProvider();
     const accepted = mint(inbound, messageUpdate(4, "are you there?"));
     const forward = tellingWhenUndelivered({ ledger, send: (message) => provider.send(message), converse: unqueueable });
     await assert.rejects(forward(accepted), /queue could not be reached/);
     assert.equal(provider.sent.length, 1);
-    assert.match(provider.sent[0].text, /could not reach the liaison.*AGENT_ORG_HOST.*Nothing has been done with your message/s);
+    assert.equal(provider.sent[0].text, notReached());
+    assert.ok(!/AGENT_ORG_HOST|Error|declaration/.test(provider.sent[0].text), "no error text reaches the chairman (a11ign/a11ign#3538)");
     assert.equal(provider.sent[0].replyTo, String(accepted.messageId));
     const line = readLedgerLines(ledger.path).find((entry) => entry.origin === "converse");
     assert.ok(line, "no converse line was ledgered");
@@ -148,7 +149,7 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     const converse = createConverse({ chairman: CHAIRMAN, queuePath: join(scratch, "queue"), ledger, send, now: () => 1, agents: () => [], queue });
     await assert.rejects(tellingWhenUndelivered({ ledger, send, converse: converse.forward })(mint(inbound, messageUpdate(7, "hello"))), /queue could not be reached/);
     assert.equal(provider.sent[0].text, "Got it, looking.", "the acknowledgement went first, before the queue threw");
-    assert.match(provider.sent[1].text, /Nothing has been done with your message/);
+    assert.equal(provider.sent[1].text, notReached());
     assert.equal(readLedgerLines(ledger.path).filter((entry) => entry.origin === "converse").map((entry) => entry.verdict).join(), "refused");
   });
 
@@ -232,7 +233,7 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
     /** @type {string[]} */ const lines = [];
     const converse = async () => { throw new Error("the declaration cannot be read: set AGENT_ORG_HOST"); };
     await main({ root, home, env, github, converse, fetch: wire.fetch, signal: wire.signal, sleep: async () => {}, err: (line) => lines.push(line) });
-    assert.match(wire.said[0], /could not reach the liaison.*AGENT_ORG_HOST.*Nothing has been done with your message/s);
+    assert.equal(wire.said[0], notReached());
     assert.match(wire.said[1], /not a request I can resolve/, "the press after the refused message was still handled");
     assert.ok(lines.some((line) => /forward failed: the queue could not be reached/.test(line)), lines.join("\n"));
   });

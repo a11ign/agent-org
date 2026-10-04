@@ -390,6 +390,9 @@ describe("later snoozes for 24 hours and is not an answer (done-when 4)", () => 
   });
 });
 
+/** What the chairman must never read: the queue's vocabulary, a handoff, a path, an error class. */
+const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.mjs|[/\\]|Error/i;
+
 describe("explain and stuck queue ONE order for the liaison and nobody else (done-when 5)", () => {
   for (const [name, lead] of [["explain", "the chairman asked for more on a11ign/a11ign#2885"], ["stuck", "the chairman is stuck at a11ign/a11ign#2885"]]) {
     test(`${name}: one order, naming the ask as it was sent, and no write to the row`, async () => {
@@ -414,12 +417,15 @@ describe("explain and stuck queue ONE order for the liaison and nobody else (don
     assert.equal(again.reason, "already-asked");
     assert.equal(orders.calls.length, 1);
 
-    const refusing = fixtureOrders({ queued: false, say: "no session called liaison is running", handoff: null });
+    const refusing = fixtureOrders({ queued: false, say: "not delivered: NOT PROMPTED, AND NOT QUEUED: no session named liaison", handoff: null });
     const g = harness(openRow(), { orders: refusing });
     const refused = /** @type {any} */ (await g.hear(press(1, { data: actionData("stuck") })));
     assert.equal(refused.reason, "order-refused");
-    assert.ok(refused.text.includes("no session called liaison is running"), "the queue's own words, passed on");
-    assert.equal(g.lines().find((entry) => entry.step === "failed")?.failedStep, "stuck");
+    assert.equal(refused.text, "I couldn't pass that to the liaison or to ceo, so nothing was sent. Press again to retry.");
+    assert.ok(!INTERNAL.test(refused.text), "the chairman reads none of the queue's words");
+    const failed = g.lines().find((entry) => entry.step === "failed");
+    assert.equal(failed?.failedStep, "stuck");
+    assert.match(failed?.error, /NOT PROMPTED, AND NOT QUEUED/, "the queue's words are kept in the ledger");
     refusing.outcome = { queued: true, say: "ok", handoff: "h2" };
     Object.assign(refusing, { liaison: async (/** @type {any} */ order) => { refusing.calls.push(order); return { queued: true, say: "ok", handoff: "h2" }; } });
     assert.equal(/** @type {any} */ (await g.hear(press(2, { data: actionData("stuck") }))).reason, "asked");
@@ -430,9 +436,23 @@ describe("explain and stuck queue ONE order for the liaison and nobody else (don
     const h = harness(openRow(), { orders: throwing });
     const thrown = /** @type {any} */ (await h.hear(press(1, { data: actionData("explain") })));
     assert.equal(thrown.reason, "order-refused");
-    assert.match(thrown.text, /the queue could not load/);
+    assert.ok(!INTERNAL.test(thrown.text) && !/could not load|Error/.test(thrown.text), "no describeError text reaches the chairman");
+    assert.match(String(h.lines().find((entry) => entry.step === "failed")?.error), /the queue could not load/, "it is in the ledger");
     const none = /** @type {any} */ (await harness().hear(press(1, { data: actionData("explain") })));
     assert.equal(none.reason, "no-liaison");
+  });
+
+  test("done-when 3 (#3538): an order the liaison's queue refused and ceo's took is told in plain words, recorded once with its taker, and a second press sends nothing", async () => {
+    const told = "The liaison isn't running; I've passed this to ceo.";
+    const orders = fixtureOrders({ queued: true, say: "queued for ceo, handoff h9", handoff: "h9", taker: "ceo", told });
+    const h = harness(openRow(), { orders });
+    const result = /** @type {any} */ (await h.hear(press(1, { data: actionData("explain") })));
+    assert.equal(result.reason, "asked-fallback");
+    assert.equal(result.text, told);
+    assert.ok(!INTERNAL.test(result.text));
+    assert.deepEqual(h.lines().filter((entry) => entry.step === "explain").map((entry) => [entry.handoff, entry.taker]), [["h9", "ceo"]]);
+    assert.equal(/** @type {any} */ (await h.hear(press(2, { data: actionData("explain") }))).reason, "already-asked");
+    assert.equal(orders.calls.length, 1);
   });
 
   test("forme is D1's: it is told so, and nothing is written or queued", async () => {
