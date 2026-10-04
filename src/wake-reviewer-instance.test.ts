@@ -876,11 +876,13 @@ test("#2401: a workspace that will not close is left, said and retried -- no led
   assert.match(warned[0], /could not be closed \(herdr: refused\) -- retried next tick/);
 });
 
-test("#2401 (6): THE STANDING PANES ARE NEVER ENDED -- not in the registry, so a merged PR 2 and a `reviewer` label "
+test("#2401 (6): THE STANDING PANES ARE NEVER ENDED -- a merged PR 2, a merged PR 1 and a `reviewer` label "
   + "close nothing (cutover is `ceo`'s)", () => {
+  // `reviewer-9001` WAS in this fixture as "merely LOOKS like an instance" and is now ended on purpose (#3458): its label names a pull request, which answers
+  // whether it may stay. `packaging/reviewer-restored-by-herdr.test.ts` holds that case; the three names below are the ones that still must not be.
   const { got, closed } = teardown({ registry: {} },
-    { reviewer: "idle", "reviewer-2": "idle", "reviewer-9001": "idle" });
-  assert.deepEqual([got.ended, closed], [[], []], "a workspace that merely LOOKS like an instance is not one");
+    { reviewer: "idle", "reviewer-1": "idle", "reviewer-2": "idle" });
+  assert.deepEqual([got.ended, closed], [[], []], "a standing pane's name is not an instance's");
   // And a registry entry for the retired name is refused too: it names no pull request an instance could own.
   const stray = teardown({ registry: { "reviewer-2": { spawnedAt: T0 } } }, { "reviewer-2": "idle" });
   assert.deepEqual([stray.got.ended, stray.closed], [[], []]);
