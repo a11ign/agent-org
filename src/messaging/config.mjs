@@ -11,6 +11,10 @@
 // **THE PATHS ARE REFERENCES.** `tokenFile` and `chairmanFile` name files under `~/.config/agent-org/` and are returned resolved; the
 // content is `secret.mjs`'s business and is never read here. A path that climbs out of that directory is refused, so the key cannot be
 // pointed at `/etc/shadow` and have the secret reader's error describe it.
+//
+// **`milestones` IS A PATH TOO, BUT TO A FILE THE PROJECT OWNS (a11ign/a11ign#3414):** relative to the project root, returned resolved, and refused if it
+// climbs out of the root. Absent is `null` and constructs no milestone source, as an absent `summary` does. The file's content is `sources/milestones.mjs`'s
+// business and `messaging:check` validates it; this module never opens it.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,7 +28,7 @@ export const KNOWN_PROVIDERS = Object.freeze(["telegram"]);
 /** The field defaults of a summary that is DECLARED. It is not what an absent `summary` key means: that is no summary at all. */
 export const DEFAULT_SUMMARY = Object.freeze({ at: "08:00", timezone: "Europe/London" });
 
-const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "summary"]);
+const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "summary", "milestones"]);
 const ALLOWED_SUMMARY_KEYS = new Set(["at", "timezone"]);
 const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -122,16 +126,32 @@ function readSummary(summary, source) {
   };
 }
 
+/**
+ * THE MILESTONES FILE IS OPT-IN: an absent key is `null`. A present one is a path inside the project, resolved against its root.
+ * @param {unknown} value @param {string} root @param {string} source @returns {string | null}
+ */
+function readMilestonesPath(value, root, source) {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value === "") {
+    throw new MessagingConfigRefusal("messaging.milestones", `it must be a non-empty path, not ${describe(value)}`, source);
+  }
+  const resolved = resolve(root, value);
+  if (!resolved.startsWith(resolve(root) + sep)) {
+    throw new MessagingConfigRefusal("messaging.milestones", `\`${value}\` is not a file inside the project (the declaration is the project's own and is read from there)`, source);
+  }
+  return resolved;
+}
+
 /** @typedef {{ enabled: false }} MessagingOff */
-/** @typedef {{ enabled: true, provider: string, tokenFile: string, chairmanFile: string, summary: { at: string, timezone: string } | null }} MessagingOn */
+/** @typedef {{ enabled: true, provider: string, tokenFile: string, chairmanFile: string, summary: { at: string, timezone: string } | null, milestones: string | null }} MessagingOn */
 
 /**
  * PURE: a test drives every refusal with a plain object.
  * @param {unknown} parsed the whole parsed `project.json`
- * @param {{ home?: string, source?: string }} [options] `home` is where `~` and the secret directory are anchored
+ * @param {{ home?: string, source?: string, root?: string }} [options] `home` is where `~` and the secret directory are anchored, `root` where `milestones` is
  * @returns {MessagingOff | MessagingOn}
  */
-export function parseMessagingConfig(parsed, { home = homedir(), source = PROJECT_FILE } = {}) {
+export function parseMessagingConfig(parsed, { home = homedir(), source = PROJECT_FILE, root = process.cwd() } = {}) {
   if (!isObject(parsed)) throw new MessagingConfigRefusal("(file)", "it must be a JSON object", source);
   const document = /** @type {Record<string, unknown>} */ (parsed);
   if (!Object.hasOwn(document, "messaging")) return { enabled: false };
@@ -145,6 +165,7 @@ export function parseMessagingConfig(parsed, { home = homedir(), source = PROJEC
     tokenFile: readSecretReference(holder.tokenFile, "messaging.tokenFile", home, source),
     chairmanFile: readSecretReference(holder.chairmanFile, "messaging.chairmanFile", home, source),
     summary: readSummary(holder.summary, source),
+    milestones: readMilestonesPath(holder.milestones, root, source),
   };
 }
 
@@ -170,5 +191,5 @@ export function readMessagingConfig(root, { home, read = readFileSync } = {}) {
   } catch (cause) {
     throw new MessagingConfigRefusal("(file)", "it is not valid JSON", path, { cause });
   }
-  return parseMessagingConfig(parsed, { home, source: path });
+  return parseMessagingConfig(parsed, { home, source: path, root });
 }

@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { secretFileProblem } from "./secret.mjs";
+import { MilestonesRefusal, readMilestonesFile } from "./sources/milestones.mjs";
 
 /** @typedef {{ exitCode: number, lines: string[] }} Verdict */
 
@@ -28,6 +29,21 @@ function judgeFiles(config, { uid, exists = existsSync }) {
   const chairman = secretFileProblem(config.chairmanFile, { uid });
   lines.push(chairman === null ? `chairman file: ok (${config.chairmanFile}, mode 0600, owned by the running user)` : `chairman file: REFUSED -- ${chairman}`);
   return { failed: token !== null || chairman !== null, lines };
+}
+
+/**
+ * The declared milestones, read and validated, and nothing fetched: whether a condition is true is the watcher's question and needs the network.
+ * @param {string | null} path @returns {{ failed: boolean, lines: string[] }}
+ */
+function judgeMilestones(path) {
+  if (path === null) return { failed: false, lines: [] };
+  try {
+    const declared = readMilestonesFile(path);
+    return { failed: false, lines: [`milestones: ok (${declared.length} declared in ${path})`] };
+  } catch (error) {
+    if (error instanceof MilestonesRefusal) return { failed: true, lines: [`milestones: REFUSED -- ${error.message}`] };
+    throw error;
+  }
 }
 
 /**
@@ -46,7 +62,10 @@ export function runMessagingCheck({ root, home, uid, exists }) {
   if (!config.enabled) {
     return { exitCode: 0, lines: ["messaging: OFF (no `messaging` key in .agent-org/project.json); nothing is constructed and no unit is installed"] };
   }
-  const { failed, lines } = judgeFiles(config, { uid, exists });
+  const files = judgeFiles(config, { uid, exists });
+  const milestones = judgeMilestones(config.milestones);
+  const failed = files.failed || milestones.failed;
+  const lines = [...files.lines, ...milestones.lines];
   const summary = config.summary === null ? "no daily summary (opt-in, none declared)" : `summary at ${config.summary.at} ${config.summary.timezone}`;
   const header = [`messaging: ON, provider ${config.provider}, ${summary}`];
   return { exitCode: failed ? 1 : 0, lines: [...header, ...lines, "no network call was made"] };

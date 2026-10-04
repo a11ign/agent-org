@@ -62,6 +62,28 @@ describe("absent reads as OFF, and a present key reads ON (the pair is the posit
   });
 });
 
+describe("milestones is opt-in, a path inside the project (a11ign/a11ign#3414)", () => {
+  const ROOT = join(scratch, "milestone-root");
+  /** @param {unknown} milestones */
+  const parseIn = (milestones) => parseMessagingConfig(documentWith({ ...VALID, ...(milestones === undefined ? {} : { milestones }) }), { home: HOME, root: ROOT });
+
+  test("no `milestones` key reads back null: the source is opt-in and constructs nothing", () => {
+    const config = parseIn(undefined);
+    assert.ok(config.enabled);
+    assert.equal(config.milestones, null);
+  });
+
+  test("a declared path comes back resolved against the project root (the positive control for the null above)", () => {
+    const config = parseIn(".agent-org/chairman-milestones.json");
+    assert.ok(config.enabled);
+    assert.equal(config.milestones, join(ROOT, ".agent-org/chairman-milestones.json"));
+  });
+
+  for (const [name, value] of /** @type {[string, unknown][]} */ ([["a path that climbs out of the project", "../elsewhere.json"], ["an absolute path outside it", "/etc/passwd"], ["an empty string", ""], ["null", null], ["a number", 3]])) {
+    test(`${name} is refused, naming messaging.milestones`, () => refusedAt(documentWith({ ...VALID, milestones: value }), /^messaging\.milestones$/));
+  }
+});
+
 describe("summary is opt-in, its field defaults and its refusals (done-when 4)", () => {
   test("a config with NO summary key reads back with no summary: the summary is opt-in (chairman, 2026-10-04)", () => {
     const config = parse(documentWith(VALID));
@@ -211,5 +233,31 @@ describe("reading the file, and messaging:check", () => {
     } finally {
       globalThis.fetch = real;
     }
+  });
+
+  test("check, a declared file that parses: ok and its count; a malformed one: exit 1 naming the entry and field; an absent one: exit 1", () => {
+    writeFileSync(tokenPath, "123456:SECRET-TOKEN-VALUE\n", { mode: 0o600 });
+    chmodSync(tokenPath, 0o600);
+    const root = projectRoot("check-milestones", documentWith({ ...VALID, milestones: ".agent-org/chairman-milestones.json" }));
+    const file = join(root, ".agent-org/chairman-milestones.json");
+    const entry = { key: "split-move-1", what: "nvda-worker has moved", when: { row: 2701, closed: true } };
+    writeFileSync(file, JSON.stringify({ milestones: [entry] }));
+    const ok = runMessagingCheck({ root, home: HOME });
+    assert.equal(ok.exitCode, 0, ok.lines.join("\n"));
+    assert.match(ok.lines.join("\n"), /milestones: ok \(1 declared/);
+    writeFileSync(file, JSON.stringify({ milestones: [{ key: "split-move-1", when: entry.when }] }));
+    const bad = runMessagingCheck({ root, home: HOME });
+    assert.equal(bad.exitCode, 1);
+    assert.match(bad.lines.join("\n"), /milestones: REFUSED.*milestones\[0\] \(split-move-1\): what: it is missing/);
+    rmSync(file);
+    const absent = runMessagingCheck({ root, home: HOME });
+    assert.equal(absent.exitCode, 1);
+    assert.match(absent.lines.join("\n"), /milestones: REFUSED.*cannot be read/);
+  });
+
+  test("check, no `milestones` key: no milestones line at all", () => {
+    writeFileSync(tokenPath, "123456:SECRET-TOKEN-VALUE\n", { mode: 0o600 });
+    chmodSync(tokenPath, 0o600);
+    assert.doesNotMatch(runMessagingCheck({ root: projectRoot("check-no-milestones", documentWith(VALID)), home: HOME }).lines.join("\n"), /milestones/);
   });
 });

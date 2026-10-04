@@ -30,6 +30,8 @@ export const DEFAULT_CONFIG = Object.freeze({
     stall: Object.freeze({ holdDownMs: 0, remind: true, silent: false }),
     // No quiet hours: the summary is the only silent message (decision 1).
     summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true }),
+    // A milestone is told once and never reminded or cleared: it is a declared moment that happened, not a condition that stands. Not silent: it is news.
+    milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
   }),
   reminders: Object.freeze({ max: 3, everyMs: 24 * HOUR_MS }),
   rate: Object.freeze({ burst: DEFAULT_RATE.burst, hourlyCap: DEFAULT_RATE.hourlyCap, windowMs: HOUR_MS }),
