@@ -221,8 +221,16 @@ function beforeTicksOf(host, read) {
 /** How a `beforeTick` names one of the TOOL's own commands (`bin.mjs`'s table) instead of a program of the project's. */
 const TOOL_COMMAND_WORD = "agent-org";
 
+/**
+ * A declared `beforeTick` split into words, the ONE way both questions below read it: `parseBeforeTick` accepts any command whose
+ * `trim()` is unchanged, so a tab or a run of spaces between the words is a declaration it let through, and a split on a single
+ * space would read `agent-org<TAB>primary:update` as one word that is not the tool's and leave the project's pinned copy running.
+ * @param {string} command @returns {string[]}
+ */
+const commandWords = (command) => command.split(/\s+/);
+
 /** @param {string} command @returns {boolean} */
-const namesToolCommand = (command) => command.split(" ")[0] === TOOL_COMMAND_WORD;
+const namesToolCommand = (command) => commandWords(command)[0] === TOOL_COMMAND_WORD;
 
 /**
  * A `beforeTick` AS THE UNIT RUNS IT. One that names a tool command (`agent-org primary:update`) runs that command's program from the
@@ -234,7 +242,7 @@ const namesToolCommand = (command) => command.split(" ")[0] === TOOL_COMMAND_WOR
  */
 function beforeTickCommand(tool, command) {
   if (!namesToolCommand(command)) return command;
-  const [, name = "", ...args] = command.split(" ");
+  const [, name = "", ...args] = commandWords(command);
   if (!Object.hasOwn(COMMANDS, name)) {
     throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
   }

@@ -216,6 +216,9 @@ test("#3464: a tool command in a beforeTick is for the host's PRIMARY project on
       "POSITIVE CONTROL: the primary (widgets) may declare one, and it renders");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
     assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
+    writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org\tprimary:update" }));
+    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick",
+      "a TAB between the words is the same command, so the foreign project is refused for it too and not let through as 'the project's own'");
   });
 });
 

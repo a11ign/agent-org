@@ -40,7 +40,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
-import { HostConfigRefusal, homeHostConfig, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
+import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
 /**
  * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units the tool ships" hand it as `declaredKeys`
@@ -2711,4 +2711,18 @@ test("#3464: a `beforeTick` naming a tool command runs it from the tool, one tha
   assert.deepEqual(pre("npm run widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm run widgets:update`], "a command of the project's own is run as written");
   assert.throws(() => pre("agent-org no:such-command"), HostConfigRefusal, "an unknown tool command refuses");
   assert.throws(() => pre("agent-org"), HostConfigRefusal, "and so does a bare `agent-org`");
+});
+
+test("#3464: a tool command is the same command however its words are separated -- a tab or a run of spaces is accepted by parseBeforeTick, so it must not fall back to the project's pinned copy", () => {
+  const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
+  const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
+  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`];
+  for (const spelling of ["agent-org\tprimary:update", "agent-org  primary:update", "agent-org \t primary:update"]) {
+    const declared = JSON.stringify({ schema: 1, beforeTick: spelling });
+    assert.equal(parseBeforeTick(declared), spelling, `POSITIVE CONTROL: parseBeforeTick ACCEPTS ${JSON.stringify(spelling)}, so the rendering below is what decides`);
+    assert.deepEqual(pre(spelling), viaTool, `${JSON.stringify(spelling)} runs from the tool`);
+  }
+  assert.deepEqual(pre("agent-org  primary:update   --drift"), [`${viaTool[0]} --drift`], "arguments are split the same way, and joined by one space");
+  assert.throws(() => pre("agent-org\tno:such-command"), HostConfigRefusal, "an unknown tool command refuses however it is spelt");
+  assert.deepEqual(pre("npm\trun widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm\trun widgets:update`], "a project's own command is still run as written");
 });
