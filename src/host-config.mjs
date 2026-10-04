@@ -24,6 +24,13 @@ import { LATEST, isToolVersion } from "./lib/release-tag.mjs";
 export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 /** Where the host's declaration is, relative to a checkout, when `$AGENT_ORG_HOST` does not say. */
 export const HOST_DECLARATION_PATH = ".agent-org/host.json";
+/**
+ * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
+ * that runs it. Everything else `host-units.mjs` asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
+ * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
+ */
+export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+
 /** A template is this suffix on the shipped name; the rendered name is `<prefix><name>` without it. */
 export const TEMPLATE_SUFFIX = ".in";
 

@@ -44,7 +44,7 @@ import { COMMANDS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
-import { HostConfigRefusal, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
+import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
 /**
@@ -101,12 +101,9 @@ export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (O
   "chairman-listen.service.in": "messaging",
 }));
 
-/**
- * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
- * that runs it. Everything else this file asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
- * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
- */
-export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+// SERVICES NO CLOCK STARTS (#3025): see `LONG_RUNNING_TEMPLATES`, which lives in `host-config.mjs` (#3443: `update-tool.mjs` restarts them, and must not import this
+// file to name them, since its history readers would put them in the closure of the test that runs `update-tool`).
+export { LONG_RUNNING_TEMPLATES };
 
 /** @param {string} unit an installed unit name @param {string} prefix the project's unit prefix */
 const isLongRunning = (unit, prefix) => LONG_RUNNING_TEMPLATES.some((template) => renderedName(template, prefix) === unit);

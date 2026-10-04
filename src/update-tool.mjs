@@ -105,8 +105,7 @@ export function updateTool(root = gitIn(HERE)(["rev-parse", "--show-toplevel"]).
  */
 async function longRunningUnits() {
   try {
-    const { LONG_RUNNING_TEMPLATES } = await import("./host-units.mjs");
-    const { renderedName, readUnitsDeclaration } = await import("./host-config.mjs");
+    const { LONG_RUNNING_TEMPLATES, renderedName, readUnitsDeclaration } = await import("./host-config.mjs");
     const { prefix } = readUnitsDeclaration();
     return LONG_RUNNING_TEMPLATES.map((template) => renderedName(template, prefix));
   } catch (err) {
