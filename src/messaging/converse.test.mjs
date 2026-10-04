@@ -302,6 +302,15 @@ function cases(queue, label) {
     assert.equal(full.queued().length, DEEP, "the queue is no deeper");
   });
 
+  test("the queue is told WHY: a button's order says a button, and a message says a message (it is what the queue repeats when it refuses)", async () => {
+    const whys = [];
+    const spy = { ...queue, queueOrLose: (order) => { whys.push(order.why); return queue.queueOrLose(order); } };
+    const run = harness({ queue: spy });
+    await run.converse.orderLiaison({ text: "x", messageRef: "501" });
+    await run.converse.forward(run.accept(chairmanUpdate(7)));
+    assert.deepEqual(whys, ["the chairman pressed a button for the liaison", "the chairman wrote to the liaison"]);
+  });
+
   test("a queue that says QUEUED and holds nothing is not an order the liaison has", async () => {
     const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED }, roster: ROSTER });
     const result = await run.converse.orderLiaison({ text: "x", messageRef: "501" });
