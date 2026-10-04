@@ -73,7 +73,7 @@ import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.mjs";
 import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
-import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, readSpareRegistry } from "./wake.mjs";
+import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.mjs";
 import { readJsonObject, writeJsonObject } from "./claim-stall.mjs";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
@@ -847,14 +847,30 @@ function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed }) 
 }
 
 /**
+ * RULE: IS THE ASKING SESSION A PERSISTENT SEAT? -- #3415. A persistent seat is a conversation, not an engineer, so it is
+ * refused EVERY claim, resumed or new (it can hold none to resume). The router's half is `engineerEligibility`, which never
+ * offers it a row; **the offer alone is not the limit, the claim is the other half** -- a seat told to claim by hand goes
+ * around any router. THE FACT IS INJECTED, as `drained` is: {@link persistentNow} reads it at the CLI.
+ * @param {string} mySession @param {boolean} persistent
+ * @returns {string | null} a refusal reason, or null if `mySession` may claim
+ */
+export function persistentReason(mySession, persistent) {
+  if (!persistent) return null;
+  return `${mySession} is a PERSISTENT seat (\`"persistent": true\` in the roster's sessions.json, #3415): a standing conversation `
+    + "that is never cleared and is never offered a row or a work order. It claims no row; ask `product-manager` to route the "
+    + "work to an engineer.";
+}
+
+/**
  * @param {number} issueNumber
  * @param {string} mySession
  * @param {string[]} extraLabels labels written alongside `in-progress` + `session:<name>` -- `[]` for a
  *   dispatch, `[STARTED_LABEL]` for a claim/start
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
  *           worktree?: string, blockedBy?: string, drained?: readonly string[],
- *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string }} deps
- *   `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
+ *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, persistent?: boolean }} deps
+ *   `persistent` (#3415) is whether the roster marks the asking session a persistent seat -- see {@link persistentNow};
+ *   absent is not one. `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
  *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
  *   (#2407) is what the asking session's instance holds or has held -- see {@link instanceNow}, and the same
  *   convention: absent is a standing engineer with no rows.
@@ -862,10 +878,12 @@ function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed }) 
  */
 function writeRowLabels(issueNumber, mySession, extraLabels,
   { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
-    instance = { spare: false, rows: [] }, adoptedBranch } = {}) {
+    instance = { spare: false, rows: [] }, adoptedBranch, persistent = false } = {}) {
   const before = fetchLabels(issueNumber, { run });
   const decision = decideClaim(before.labels, mySession);
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
+  const notEngineer = persistentReason(mySession, persistent);
+  if (notEngineer) return { claimed: false, reason: notEngineer };
 
   // #707: THE TEMPLATE FIELDS, checked on EVERY claim attempt -- unlike the session-eligibility block
   // below, this is a property of the ROW, not of who is claiming it or when they last touched it, so it
@@ -1056,7 +1074,7 @@ export function dispatchRow(issueNumber, mySession, deps = {}) {
  * @param {string} mySession
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
  *           worktree?: string, blockedBy?: string, drained?: readonly string[],
- *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string }} [deps]
+ *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, persistent?: boolean }} [deps]
  * `adoptedBranch` (#2769) is set by `--adopt` alone: the branch of the tree it resumes, whose open PR is the row's own work for B4.
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
@@ -2200,7 +2218,7 @@ function claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt })
  */
 function claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt }) {
   if (mode === "dispatch") return dispatchRow(issueNumber, mySession);
-  const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber) };
+  const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber), persistent: persistentNow(mySession) };
   if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, claimDeps });
   return claimRow(issueNumber, mySession, claimDeps);
 }
@@ -2223,6 +2241,23 @@ function drainedNow() {
     process.stderr.write(`row-claim: could not read the drain (${String(/** @type {any} */ (error)?.message ?? error)
       .split("\n")[0]}) -- claiming as though it were lifted (#2324).\n`);
     return [];
+  }
+}
+
+/**
+ * #3415: is the asking session a persistent seat, for {@link persistentReason} -- read here, at the CLI, as {@link drainedNow} is.
+ * FAILS OPEN AND SAYS SO, like the drain: a claim guard that stops every claim when the roster is unreadable gets bypassed and
+ * then never consulted, and the router's own refusal (`engineerEligibility`) still never offers the seat a row.
+ * @param {string} mySession
+ * @returns {boolean}
+ */
+function persistentNow(mySession) {
+  try {
+    return isPersistentRole(mySession);
+  } catch (error) {
+    process.stderr.write(`row-claim: could not read the roster's persistent seats (${String(/** @type {any} */ (error)?.message ?? error)
+      .split("\n")[0]}) -- claiming as though ${mySession} were not one (#3415).\n`);
+    return false;
   }
 }
 
