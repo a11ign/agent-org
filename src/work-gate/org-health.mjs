@@ -22,6 +22,7 @@ import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
 import { readRulings, unreadableLine, rulingTick } from "../ruling-record.mjs";
+import { homeProjectDeclaration } from "../project-config.mjs";
 import { referencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds } from "../wait-condition.mjs";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.mjs";
 import { readFileSync } from "node:fs";
@@ -205,13 +206,14 @@ export function readWaitFacts({ items, open, run, limit = MAX_WAIT_READS }) {
 export function readRefFacts({ refs, open, run, limit = MAX_WAIT_READS }) {
   /** @type {Record<string, import("../wait-condition.mjs").RefFact>} */
   const known = {};
-  for (const raw of open) known[`#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
+  // An item of another repository is held under `owner/repo#n`, so `#148` of `agent-org` cannot answer for `#148` of the first repository (#3479).
+  for (const raw of open) known[raw.repoKey && raw.repo ? `${raw.repo}#${Number(raw.number)}` : `#${Number(raw.number)}`] = { state: "open", labels: (raw.labels ?? []).map((/** @type {any} */ l) => String(l?.name ?? l)),
     resolvedAt: null, changedAt: epochOrNull(raw.updatedAt) };
   /** @type {Record<string, import("../wait-condition.mjs").RefFact>} */
   const items_ = {};
   let spent = 0;
   for (const ref of refs) {
-    const held = ref.repo === null && Object.hasOwn(known, ref.key) ? known[ref.key] : null;
+    const held = Object.hasOwn(known, ref.key) ? known[ref.key] : null;
     const fact = held ?? (spent++ < limit ? readWaitRef(ref, run) : null);
     if (fact) items_[ref.key] = fact;
   }
@@ -258,25 +260,31 @@ const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
  * #3364: RELEASE ONE SESSION'S HOLD THROUGH THE MODULE THAT OWNS IT, `pr-hold.mjs --release`, which removes the label AND re-arms a pull request that carried
  * `rearm-on-release` (a bare label removal leaves it unarmed: "Lifting a hold does not arm"). A child process rather than an import, because the module is a
  * CLI whose `main` runs on load. Exit `0` is DONE; `2` (released but the re-arm could not be proven) is NOT done, so the order still goes to a session.
- * @param {number} number @param {string} session @returns {boolean} whether the release reported done
+ * #3479: `repoKey` AIMS IT at the pull request's repository, and the first repository's call is exactly what it was (no flag).
+ * @param {number} number @param {string} session @param {string} [repoKey] @returns {boolean} whether the release reported done
  */
-export function releaseHoldViaModule(number, session) {
-  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release"], { encoding: "utf8" });
-  if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${number} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
+export function releaseHoldViaModule(number, session, repoKey) {
+  const aim = repoKey ? [`--repo-key=${repoKey}`] : [];
+  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
+  if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${subjectRef(repoKey, number)} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
   return result.status === 0;
 }
+
+/** #3479: the keys of the repositories the project declares for code, the first's empty key left out. @returns {Set<string>} */
+const declaredRepoKeys = () => new Set(homeProjectDeclaration().code.map((entry) => entry.key).filter((key) => key !== ""));
 
 /**
  * #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of ordering a session to remove one label. Returns the stale waits that STILL
  * need a session: those `liftableHolds` leaves, and those whose release failed (so a failure falls back to today's order, as `performActions` does for a
  * refused `gh pr ready`, and says so on stderr). A lifted hold carries no label, so the next tick finds no stale wait for it.
- * @param {import("../wait-condition.mjs").StaleWait[]} stale @param {{ now: number, release?: typeof releaseHoldViaModule, log?: (line: string) => void }} io
+ * #3479: a pull request of a repository the project declares is lifted too, released WITH its key; `declared` is the test's seam for which keys those are.
+ * @param {import("../wait-condition.mjs").StaleWait[]} stale @param {{ now: number, release?: typeof releaseHoldViaModule, log?: (line: string) => void, declared?: ReadonlySet<string> }} io
  * @returns {import("../wait-condition.mjs").StaleWait[]}
  */
-export function liftResolvedHolds(stale, { now, release = releaseHoldViaModule, log = (line) => process.stderr.write(line) }) {
-  const { lifts, remaining } = liftableHolds(stale, now);
-  const failed = lifts.filter(({ item, holders }) => !holders.map((session) => release(item.number, session)).every(Boolean));
-  for (const { item, holders } of lifts.filter((l) => !failed.includes(l))) log(`DID lift-hold pr-${item.number} (${holders.join(", ")}) -- its Waiting-for is true; no session woken\n`);
+export function liftResolvedHolds(stale, { now, release = releaseHoldViaModule, log = (line) => process.stderr.write(line), declared = declaredRepoKeys() }) {
+  const { lifts, remaining } = liftableHolds(stale, now, declared);
+  const failed = lifts.filter(({ item, holders }) => !holders.map((session) => release(item.number, session, item.repoKey)).every(Boolean));
+  for (const { item, holders } of lifts.filter((l) => !failed.includes(l))) log(`DID lift-hold pr-${subjectRef(item.repoKey, item.number)} (${holders.join(", ")}) -- its Waiting-for is true; no session woken\n`);
   return [...remaining, ...failed.flatMap((l) => l.stale)];
 }
 
