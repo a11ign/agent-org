@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,6 +188,19 @@ describe("(6) the file is created 0600", () => {
     assert.equal(refused.outcome, "refused");
     assert.match(refused.say, /mode 644, not 600/);
     assert.equal(readFileSync(path, "utf8"), before);
+  });
+
+  test("a directory that already exists readable by others is refused, never written into, and not re-moded", () => {
+    const { queue, path } = freshQueue();
+    const directory = join(path, "..");
+    chmodSync(directory, 0o755);
+    const refused = queue.add({ ref: MESSAGE, words: WORDS, ...THE_ASK });
+    assert.equal(refused.outcome, "refused");
+    assert.match(refused.say, /mode 755, not 700/);
+    assert.equal(existsSync(path), false);
+    assert.equal(statSync(directory).mode & 0o777, 0o755);
+    chmodSync(directory, 0o700);
+    assert.equal(queue.add({ ref: MESSAGE, words: WORDS, ...THE_ASK }).outcome, "done", "the same ask queues once the directory is private: the refusal was the directory's");
   });
 
   test("a line that is not exactly the schema is a refusal to read, never a skip", () => {

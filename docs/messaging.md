@@ -394,7 +394,7 @@ pnpm run chairman:queue -- status                                               
 pnpm run chairman:queue -- list | take <id> | done <id> --result=<one line> [--hand-fix]  the chairman's session's side
 ```
 
-**There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600), and `session-queue.test.mjs` fails if a module under
+**There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600, in a directory that must be 0700: `add` refuses a looser one and does not re-mode it), and `session-queue.test.mjs` fails if a module under
 `src/messaging/` that touches it also spawns a process. The org never holds the credential the act needs; the ask says what, why and what result is wanted, and the chairman's session does the rest.
 **An ask needs his OK, verified as `chairman:record` verifies one**: a message ref the ledger took in with his words hashing to the receipt's, or a "Do it for me" press line (`direction: "answer"`, `step: "forme"`,
 which `answers.mjs` does not yet write). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may

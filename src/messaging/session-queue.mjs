@@ -85,8 +85,13 @@ export function readAsks(path) {
   });
 }
 
-/** @param {string} path @returns {string | null} why the file is not private to its owner, or null: a queue anyone can read is not the chairman's */
+/** @param {string} path @returns {string | null} why the file, or the directory it sits in, is not private to its owner, or null: a queue anyone can read is not the chairman's. A loose directory is refused and not repaired: it is shared with the ledger and is not this module's to re-mode. */
 function modeProblem(path) {
+  const directory = dirname(path);
+  if (existsSync(directory)) {
+    const mode = statSync(directory).mode & 0o777;
+    if ((mode & GROUP_AND_OTHER) !== 0) return `${directory} has mode ${mode.toString(8)}, not 700, so nothing was written`;
+  }
   if (!existsSync(path)) return null;
   const mode = statSync(path).mode & 0o777;
   return (mode & GROUP_AND_OTHER) === 0 ? null : `${path} has mode ${mode.toString(8)}, not 600, so nothing was written`;
