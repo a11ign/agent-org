@@ -6,7 +6,7 @@
  * THE BOUNDS ARE WRITTEN OUT AS 100 AND 135 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS, for the reason `org-health.test.ts` gives for its own: a test
  * built from the constant moves with it. `the bounds are the measurement's` pins the literals to the exports in ONE place, with the measurement beside them.
  *
- * EVERY NEW SHAPE BECOMES A FIXTURE HERE (done-when 2c of #3486): the four shapes the chairman found by hand on 2026-10-04 are in `SHAPES`, each built through
+ * EVERY NEW SHAPE BECOMES A FIXTURE HERE (done-when 2c of #3486): the five shapes the chairman found by hand on 2026-10-04 are in `SHAPES` (the fifth, Dependabot #3472, is the one with no gate order at all), each built through
  * the REAL classifier (`stallReasonOf`) and the REAL fact readers, so a fixture is the state the gate sees and not a hand-written `reason`. A fifth shape is one
  * more entry in `SHAPES`; the two tests over it (`raised at the bound`, `not raised one millisecond under`) then cover it with no further code.
  *
@@ -95,6 +95,10 @@ const SHAPES: Shape[] = [
     kind: "row", reason: "claimed",
     at: (age) => ({ rows: [{ number: 3465, labels: label("in-progress", "session:worker-3465") }],
       comments: [{ number: 3465, comments: [claimComment("worker-3465", NOW - age), { body: "still on it", createdAt: iso(NOW - MINUTE_MS), author: BOT }] }] }) },
+  { name: "#3472: a DEPENDABOT PR, approved, clean, ready and UNARMED for 1.5 h with no gate order of any kind -- a bot author is in the population like any other",
+    boundMs: PR_BOUND_MS, kind: "pr", reason: STALL_REASON.UNARMED,
+    at: (age) => ({ prs: [{ ...base, number: 3472, labels: [], author: { login: "app/dependabot", is_bot: true }, headRefName: "dependabot/npm_and_yarn/x-1.2.3",
+      reviewDecision: "APPROVED", mergeStateStatus: "CLEAN", armed: false, createdAt: iso(NOW - age), comments: [] }] }) },
 ];
 
 test("the bounds are the measurement's: 100 min for a PR (3 x 33.7) and 135 min for a claimed row (3 x 44.5), and the 180-minute net is GONE", () => {
@@ -122,9 +126,9 @@ for (const shape of SHAPES) {
   });
 }
 
-test("THE FOUR SHAPES ARE THE SET: a PR shape and a row shape are both here, and an emptiness above would be caught by this count", () => {
-  assert.equal(SHAPES.length, 4);
-  assert.deepEqual(SHAPES.map((s) => s.kind).sort(), ["pr", "pr", "pr", "row"]);
+test("THE FIVE SHAPES ARE THE SET: a PR shape and a row shape are both here, and an emptiness above would be caught by this count", () => {
+  assert.equal(SHAPES.length, 5);
+  assert.deepEqual(SHAPES.map((s) => s.kind).sort(), ["pr", "pr", "pr", "pr", "row"]);
 });
 
 // --- nothing restarts the clock, and nothing excuses an item ---------------------------------------------------------------------------------
