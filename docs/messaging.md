@@ -204,11 +204,12 @@ GraphQL and are not counted here):
 | `actions/runs?status=completed` (`readCiRuns`) | 1 |
 | `issues?labels=<key>&state=open` (`readFixRow`) | one per event that is about to be SENT, none otherwise |
 | `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
+| `releases?per_page=100` (the `releases` source, a11ign/a11ign#3413) | one per declared code repository (four for this project) |
 
 **Four calls per run when nothing new has failed and nothing is sent** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
-of the account's 5,000-point core pool. Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
+of the account's 5,000-point core pool. **The `releases` source adds one call per declared code repository on top** (four here, so eight a run, 2,304 a day, about 2%: computed from the table, not measured). Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
 calls, the 5 above and 3 annotation calls, which are not repeated. The account is the unit's declared `GH_CONFIG_DIR`, never
-a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for six REST paths and nothing after the path, so no flag can turn the read into a write.
+a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for seven REST paths and nothing after the path, so no flag can turn the read into a write.
 
 **What the first week's reading (row 13) counts:** how many `stall:no-merge` events fired while the queue was EMPTY. The ruling on #2904 keeps that event
 unconditional, and the count is what would change it. The queue at each moment is the `orders` of the sample at that time (`samples.jsonl`, a week deep);
@@ -221,6 +222,19 @@ off on purpose (`orchestrator`, ruling on #3008, 2026-10-02), and `fleet-watch` 
 and row 6 is blocked by it, so the unit is not installed while the alarm would fire. After it lands the state file lists no worker while the fleet is off.
 **What stays uncovered, for row 13's first-week reading to look for:** a fleet that is genuinely dead (power cut, switch down) reads the same as one that is off, so
 `incident:fleet-down` will not fire for it. `fleet:wake` is the cover, at the next capture window; catching a dead fleet between windows needs a different signal and its own row.
+
+## The releases source (a11ign/a11ign#3413, chairman point 2 of #3409)
+
+A release of a declared package is told in one line, `<package> <version> is out: <first sentence of the release notes>`, the release page last. `sources/releases.mjs` reads
+`gh api repos/<repo>/releases?per_page=100` for every `code` repository `project.json` declares and emits `release:<repo>@<tag>` for each PUBLISHED release not yet seen, oldest first.
+The core's kind `release` has no hold-down, never reminds, is not silent and is never cleared: a release is a thing that happened, not a condition that stands.
+
+- **The first read of a repository tells nothing.** It records every release it finds as seen and a `release-baseline:<repo>` marker, as `source-note` ledger lines (the only memory the
+  watcher keeps), and the log says so once. **The marker, not a count, says "not the first run"**: a repository with no release yet records none, and its first real release must not read as history.
+- **A read that failed records nothing** (`cannot-ask`), so that repository is the first run again when it answers. A draft and a pre-release are neither told nor recorded; one promoted later is told then.
+- **The sentence is read from the notes, never written for them.** Changesets' markdown has its heading, list marker, commit-hash prefix, backticks and link addresses removed, and is cut at 240 characters.
+  Empty notes say `(no summary was written)`.
+- **A burst** (three releases in 75 minutes, as on 2026-10-04) is collapsed by the core's rate limit, whose overflow is one digest line. Nothing here adds a limit.
 
 ## Stage 2, the inbound core (row 7 of 13)
 
