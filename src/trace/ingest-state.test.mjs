@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
-import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
+import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.mjs";
 import { openStore, QUIET_MS, readStore } from "./store.mjs";
 import { ingestTranscripts, render } from "./trace.mjs";
 
@@ -229,7 +229,7 @@ test("(6) a missing, unparseable, foreign-version or store-replaced state is a f
   assert.match(garbled.coldStart, /state file unreadable/);
   assert.equal(garbled.read, 1, "every transcript read again");
   writeFileSync(w.statePath, JSON.stringify({ version: 99, files: {} }));
-  assert.match(w.run().coldStart, /not version 1/);
+  assert.match(w.run().coldStart, new RegExp(`not version ${STATE_VERSION}`));
   assert.deepEqual(byId(w.stored()), idsBefore, "a cold start adds nothing the store had: the ids are idempotent");
   rmSync(w.storePath);
   const replaced = w.run();

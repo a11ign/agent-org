@@ -148,12 +148,12 @@ test("STORE: ingesting twice adds nothing; a run seen going and later complete i
   const path = join(mkdtempSync(join(tmpdir(), "trace-gh-")), "events.ndjson");
   const first = appendEvents(path, read());
   assert.ok(first.added >= 20);
-  assert.deepEqual(appendEvents(path, read()), { added: 0, skipped: first.added });
+  assert.deepEqual(appendEvents(path, read()), { added: 0, superseded: 0, skipped: first.added });
   const [going] = eventsOfCheckRuns({ subject: { number: 3406, isPull: true }, repo: REPO, checkRuns: RUNS[FORCED] });
   const [done] = eventsOfCheckRuns({ subject: { number: 3406, isPull: true }, repo: REPO, checkRuns: [{ ...RUNS[FORCED][0], status: "completed", conclusion: "success", completed_at: "2026-10-04T13:05:00Z" }] });
   assert.notEqual(going.id, done.id);
   assert.deepEqual([going.state, done.state, done.at], [null, "success", at("2026-10-04T13:05:00Z")]);
-  assert.deepEqual(appendEvents(path, [done]), { added: 1, skipped: 0 });
+  assert.deepEqual(appendEvents(path, [done]), { added: 1, superseded: 0, skipped: 0 });
   assert.equal(readStore(path).filter((event) => event.id === going.id).length, 1);
 });
 

@@ -1,7 +1,8 @@
 // @ts-check
 // a11ign/a11ign#3494, first slice: THE TRACE STORE -- one append-only record per event, keyed by row (and pull request, and repository).
 //
-// THREE SOURCES TODAY, and each record says which: `source: "transcript"` for a model turn (`message.usage` of a Claude transcript), `source: "wake-ledger"` for the
+// THREE SOURCES TODAY, and each record says which: `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
+// `codex-turns.mjs`, #3519, marked `harness: "codex"`), `source: "wake-ledger"` for the
 // order the gate delivered, `source: "github"` for what GitHub saw of a row and its pull requests (`github-events.mjs`, #3508). The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
 // it has no file exporter, needs a receiver the host does not run, and cannot reach a standing seat that is already running. So the transcript is the source and
 // OTel records can be added later under another `source` without changing a reader.
@@ -35,6 +36,10 @@ export const DEFINITIONS = [
   "HEAD_MOVED (inferred): `at` is the commit's own date, not the push's; the timeline carries no push event. CI RUN: each head the timeline names is asked for its check-runs; the merge queue's own runs, on its temporary branch, and legacy commit statuses are not read.",
   "OUTCOME of a queue exit (inferred): `merged` when it falls within 5 s of the pull request's merge, else `unmerged` (an ejection or a person). GitHub writes the same event for both.",
   "KEY: row, pr and repo come from the order's cause key, else the session's name (worker-<n> is row n, reviewer-<n> is pull request n). An event with none is kept, with row null.",
+  "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
+  "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
+  "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model. Its wall-clock runs from the last record sent to the model.",
+  "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
 ];
 
 const TOKENS_PER_MILLION = 1_000_000;
@@ -58,8 +63,8 @@ export const PRICES = [
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
  * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean,
- *   actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
+ *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
+ *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
  *   completedAt?: number | null, outcome?: "merged" | "unmerged" }} TraceEvent
  */
 
@@ -120,10 +125,25 @@ export function subjectOf(key) {
 }
 
 /**
+ * The rows or pull requests a cause key names when it names SEVERAL, as a comma list (`row-call-count-signal/3125,3404`): `subjectOf` keeps `row: null` for it,
+ * because the first of the list is a guess, and an event the key names twice was about both. `{}` for a key that names one subject or none.
+ * @param {string} key the ledger key, `<group>/<cause>/<subject...>`
+ * @returns {{ rows?: number[], prs?: number[] }}
+ */
+export function subjectsOf(key) {
+  const [, cause = "", ...rest] = key.split("/");
+  const subject = rest.join("/").split("@deferred:")[0];
+  const meaning = BARE_NUMBER_IS.get(cause);
+  if (!meaning || !/^\d+(,\d+)+$/.test(subject)) return {};
+  const numbers = subject.split(",").map(Number);
+  return meaning === "row" ? { rows: numbers } : { prs: numbers };
+}
+
+/**
  * What a session's NAME says when the order's key says nothing: a spawned `worker-<n>` is row n and `reviewer-<n>` is pull request n.
  * @param {string} session @param {string} rowRepo
  */
-function subjectOfSession(session, rowRepo) {
+export function subjectOfSession(session, rowRepo) {
   const worker = /^worker-(\d+)$/.exec(session);
   if (worker) return { row: Number(worker[1]), pr: null, repo: null };
   const reviewer = reviewerTarget(session, rowRepo);
@@ -153,7 +173,7 @@ const LEDGER_MEMORY_MS = 60 * 60 * 1000;
  * @returns {{ records: Rec[], unreadable: number[], end: number, tail: number | null }} `start` is a byte offset into `text`; `unreadable` the start of each line that is not JSON;
  *   `tail` where a final line WITHOUT its newline begins when it is not JSON (a half-written line, to be read again), else `null`; `end` where the readable text ends
  */
-function readRecords(text) {
+export function readRecords(text) {
   /** @type {Rec[]} */
   const records = [];
   /** @type {number[]} */
@@ -253,7 +273,8 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
     const key = ledger.find((entry) => entry.session === session && entry.at === wake.typedAt && entry.cause === wake.cause)?.key ?? null;
     if (key) spent.push({ at: wake.typedAt, key });
     const subject = key ? subjectOf(key) : { row: null, pr: null, repo: null };
-    const named_ = subject.row === null && subject.pr === null ? subjectOfSession(session, rowRepo) : subject;
+    const several = key ? subjectsOf(key) : {};
+    const named_ = subject.row === null && subject.pr === null && !several.rows && !several.prs ? { ...subjectOfSession(session, rowRepo) } : { ...subject, ...several };
     const id = `wake:${session}:${wake.at}`;
     const cause = wake.cause === "unknown" ? null : wake.cause;
     placed.push({ at: wake.at, id, ...named_, cause, causeKey: key });
@@ -265,7 +286,7 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   const owner = (/** @type {number} */ at) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
     ?? { id: null, ...subjectOfSession(session, rowRepo), cause: null, causeKey: null };
   const priorAt = carry?.lastAt ?? null;
-  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, owner, priorAt }), ...compactionsOf(settled, session, owner));
+  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, owner, priorAt, rowRepo }), ...compactionsOf(settled, session, owner));
   const lastAt = settled.findLast((candidate) => !Number.isNaN(candidate.at))?.at ?? priorAt;
   const remembered = [...used, ...spent].filter((entry) => latest === null || entry.at >= latest.at - LEDGER_MEMORY_MS);
   return {
@@ -274,14 +295,49 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   };
 }
 
-/** @typedef {(at: number) => { id: string | null, row: number | null, pr: number | null, repo: string | null, cause: string | null, causeKey: string | null }} Owner */
+/**
+ * The verbs of `gh issue` / `gh pr` that WRITE to the thing they name. A `view` is not here: a turn that only read a row was not what ruled on it, and a ruling's turn is
+ * the one that edits or comments.
+ */
+const GH_WRITES = /\bgh\s+(issue|pr)\s+(?:edit|comment|close|reopen|ready|merge|review)\s+(\d+)\b([^\n;&|]*)/g;
+
+/** Another repository's clone, named in a command: its `gh issue edit 187` is that repository's 187, not the primary's. */
+const OTHER_CLONE = /agent-org|screenreader-worker|documents/;
+
+/**
+ * The rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr <verb> <n>` (INFERRED from the command text: the harness records no cwd for a
+ * command, so a command that names another clone or another `--repo` is left out, and a `gh api` write is not read). Present only when the turn wrote to one.
+ * @param {Rec[]} blocks the records of one API message @param {string} rowRepo
+ * @returns {{ touchedRows?: number[], touchedPrs?: number[] }}
+ */
+export function touchesOf(blocks, rowRepo) {
+  const rows = new Set();
+  const prs = new Set();
+  for (const { record } of blocks) {
+    for (const block of Array.isArray(record?.message?.content) ? record.message.content : []) {
+      const command = block?.type === "tool_use" && typeof block.input?.command === "string" ? block.input.command : "";
+      if (OTHER_CLONE.test(command)) continue;
+      for (const [, noun, number, rest] of command.matchAll(GH_WRITES)) {
+        const repoFlag = /(?:--repo|-R)[ =](\S+)/.exec(rest)?.[1];
+        if (repoFlag && repoFlag !== rowRepo) continue;
+        (noun === "issue" ? rows : prs).add(Number(number));
+      }
+    }
+  }
+  return { ...(rows.size > 0 ? { touchedRows: [...rows].sort((a, b) => a - b) } : {}), ...(prs.size > 0 ? { touchedPrs: [...prs].sort((a, b) => a - b) } : {}) };
+}
+
+/** @typedef {(at: number) => { id: string | null, row: number | null, pr: number | null, repo: string | null, rows?: number[], prs?: number[], cause: string | null, causeKey: string | null }} Owner */
+
+/** The several subjects a wake's key named, as event fields: present only when it named several, so an event with one subject is the shape it always was. @param {{ rows?: number[], prs?: number[] }} own */
+const listedBy = ({ rows, prs }) => ({ ...(rows ? { rows } : {}), ...(prs ? { prs } : {}) });
 
 /**
  * One turn per `message.id`, from its last record. `priorAt` is the time of the record before this read began, for the wall-clock of a turn that is the first thing in it.
- * @param {{ records: Rec[], groups: MessageGroup[], session: string, owner: Owner, priorAt: number | null }} input
+ * @param {{ records: Rec[], groups: MessageGroup[], session: string, owner: Owner, priorAt: number | null, rowRepo: string }} input
  * @returns {TraceEvent[]}
  */
-function turnsOf({ records, groups, session, owner, priorAt }) {
+function turnsOf({ records, groups, session, owner, priorAt, rowRepo }) {
   const before = recordBefore(records, priorAt);
   return groups.map(({ id: messageId, first, last, record }) => {
     const endedAt = records[last].at;
@@ -289,9 +345,10 @@ function turnsOf({ records, groups, session, owner, priorAt }) {
     const tokens = tokensOf(record.message.usage);
     const own = owner(endedAt);
     return {
-      id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, row: own.row, pr: own.pr, repo: own.repo, cause: own.cause,
+      id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
       causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens),
       wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, sidechain: record.isSidechain === true,
+      ...touchesOf(records.slice(first, last + 1).filter(({ record: block }) => block?.message?.id === messageId), rowRepo),
     };
   });
 }
@@ -310,7 +367,7 @@ function recordBefore(records, priorAt) {
 function compactionsOf(records, session, owner) {
   return records.filter(({ record }) => record?.isCompactSummary === true && !Number.isNaN(Date.parse(record.timestamp))).map(({ at }) => {
     const own = owner(at);
-    return { id: `compaction:${session}:${at}`, kind: "compaction", source: "transcript", at, session, row: own.row, pr: own.pr, repo: own.repo,
+    return { id: `compaction:${session}:${at}`, kind: "compaction", source: "transcript", at, session, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own),
       cause: own.cause, causeKey: own.causeKey, wakeId: own.id };
   });
 }
@@ -318,40 +375,57 @@ function compactionsOf(records, session, owner) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The store: append-only, idempotent
 
-/** @param {string} path @returns {TraceEvent[]} */
+/**
+ * The events in a store file. The file is an append-only LOG: an event whose attribution was later corrected (`appendToStore`) is on it twice, and the LAST copy of an id
+ * is the event, at the position of its last copy.
+ * @param {string} path @returns {TraceEvent[]}
+ */
 export function readStore(path) {
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const lines = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const last = new Map(lines.map((event, position) => [event.id, position]));
+  return lines.filter((event, position) => last.get(event.id) === position);
 }
 
 /**
- * The store, read ONCE: its events and the ids it already holds. A run that appends in several batches (the transcripts, then GitHub) shares one of these, so the
+ * The store, read ONCE: its events and where each id sits. A run that appends in several batches (the transcripts, then GitHub) shares one of these, so the
  * file is parsed once per run, not once per transcript (the shipped `appendEvents` re-parsed all of it on every call, about 20 GB of JSON for 1,247 transcripts).
  * @param {string} path @param {(path: string) => TraceEvent[]} [read] a parameter so a test can count the reads
- * @returns {{ path: string, events: TraceEvent[], known: Set<string> }}
+ * @returns {{ path: string, events: TraceEvent[], at: Map<string, number> }} `at` is each id's index in `events`
  */
 export function openStore(path, read = readStore) {
   const events = read(path);
-  return { path, events, known: new Set(events.map((event) => event.id)) };
+  return { path, events, at: new Map(events.map((event, position) => [event.id, position])) };
 }
 
 /**
- * Append the events an open store does not have, as ONE write. Nothing already in it is rewritten, and a second call with the same events adds nothing.
- * @param {{ path: string, events: TraceEvent[], known: Set<string> }} store @param {TraceEvent[]} events
- * @returns {{ added: number, skipped: number }}
+ * Append what an open store does not have, as ONE write. An event it already holds is left alone when the new copy is identical (a second call with the same events adds
+ * nothing); a copy that DIFFERS supersedes it: it is appended, and `readStore` takes the last copy of an id. Nothing already on disk is rewritten. A correction is how a
+ * fix to the attribution of a turn reaches the turns stored before the fix: ids are stable, so without it they would stay as first read.
+ * @param {{ path: string, events: TraceEvent[], at: Map<string, number> }} store @param {TraceEvent[]} events
+ * @returns {{ added: number, superseded: number, skipped: number }}
  */
 export function appendToStore(store, events) {
-  const fresh = events.filter((event) => {
-    if (store.known.has(event.id)) return false;
-    store.known.add(event.id);
-    return true;
-  });
+  /** @type {TraceEvent[]} */
+  const fresh = [];
+  let superseded = 0;
+  for (const event of events) {
+    const held = store.at.get(event.id);
+    if (held === undefined) {
+      store.at.set(event.id, store.events.length);
+      store.events.push(event); // one at a time, never push(...fresh): a cold run is tens of thousands of events, past the argument limit
+      fresh.push(event);
+    } else if (JSON.stringify(store.events[held]) !== JSON.stringify(event)) {
+      store.events[held] = event;
+      fresh.push(event);
+      superseded += 1;
+    }
+  }
   if (fresh.length > 0) {
     mkdirSync(dirname(store.path), { recursive: true });
     appendFileSync(store.path, fresh.map((event) => `${JSON.stringify(event)}\n`).join(""));
-    for (const event of fresh) store.events.push(event); // not push(...fresh): a cold run is tens of thousands of events, past the argument limit
   }
-  return { added: fresh.length, skipped: events.length - fresh.length };
+  return { added: fresh.length - superseded, superseded, skipped: events.length - fresh.length };
 }
 
 /** Open, append, done: for a caller with one batch. @param {string} path @param {TraceEvent[]} events */
@@ -365,6 +439,8 @@ export const appendEvents = (path, events) => appendToStore(openStore(path), eve
 export function eventsForRow(events, { rows, prs }) {
   const wantedRows = new Set(rows);
   const wantedPulls = new Set(prs);
-  return events.filter((event) => (event.row !== null && wantedRows.has(event.row)) || (event.pr !== null && event.repo === null && wantedPulls.has(event.pr)))
+  const about = (/** @type {TraceEvent} */ event) => (event.row !== null && wantedRows.has(event.row)) || (event.pr !== null && event.repo === null && wantedPulls.has(event.pr))
+    || [...(event.rows ?? []), ...(event.touchedRows ?? [])].some((row) => wantedRows.has(row)) || [...(event.prs ?? []), ...(event.touchedPrs ?? [])].some((pr) => wantedPulls.has(pr));
+  return events.filter(about)
     .sort((a, b) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0) || a.id.localeCompare(b.id));
 }
