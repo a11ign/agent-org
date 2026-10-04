@@ -216,11 +216,15 @@ export function tellingWhenUndelivered({ ledger, send, converse }) {
  * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
  * the spinner of every press before the core sees it, and Telegram takes one answer per query.
  *
+ * A message the answers path says can no longer be answered has its keyboard taken off FIRST (a11ign/a11ign#3423), so a second press cannot happen while the
+ * reply is on its way; a failure to do it is logged and does not stop the reply, which is what the chairman is owed.
+ *
  * @param {{ answers: { answer: (accepted: unknown) => Promise<import("./answers.mjs").Answered> }, send: (message: { text: string }) => Promise<unknown>,
- *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void }} parts
+ *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void,
+ *   clearKeyboard?: (messageRef: string) => Promise<void> }} parts `clearKeyboard` is the provider's; a caller with none draws no keyboards
  * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
  */
-export function createForwarder({ answers, send, converse, log }) {
+export function createForwarder({ answers, send, converse, log, clearKeyboard }) {
   return async (accepted) => {
     /** @type {import("./answers.mjs").Answered | null} */
     let result = null;
@@ -232,8 +236,11 @@ export function createForwarder({ answers, send, converse, log }) {
       await send({ text: WRITE_FAILED_TEXT });
       return;
     }
-    if (result.action === "reply") await send({ text: result.text });
-    else await converse(accepted);
+    if (result.action !== "reply") return converse(accepted);
+    if (result.clearKeyboard !== null && clearKeyboard !== undefined) {
+      await clearKeyboard(result.clearKeyboard).catch((error) => log(`messaging:listen: could not take the keyboard off message ${result.clearKeyboard}: ${error instanceof Error ? error.message : String(error)}`));
+    }
+    await send({ text: result.text });
   };
 }
 
@@ -250,13 +257,14 @@ async function listen(deps, config) {
     const ledger = createLedger({ path: defaultLedgerPath(/** @type {string} */ (home)), now });
     const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
-    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now });
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
+    // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
+    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, orders: { liaison: (order) => conversation.orderLiaison(order) } });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(deps.signal),
-      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err }),
+      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: (ref) => provider.clearKeyboard(ref) }),
     });
   } finally {
     lock.release();

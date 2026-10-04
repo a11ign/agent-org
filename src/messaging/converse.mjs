@@ -19,7 +19,11 @@
 // or, when the queue refused or the entry is not in the queue file, one more message in plain words saying so and saying nothing was done. The queue's verdict
 // is still read back from the queue file; a queue that said it wrote and did not is reported as that. The handoff id is the ledger's and never the chat's.
 //
-// **WHAT THIS DOES NOT TAKE:** a button press (the answers path, #2908, owns it), and anything `isAccepted` does not vouch for. A value
+// **A BUTTON'S ORDER GOES TO THE SAME PLACE (a11ign/a11ign#3423).** `explain` and `stuck` ask the liaison for something, so `orderLiaison` is a second caller of `submit`, and so of
+// the one queue call, with the same constant `RECIPIENT`: the recipient is still never an argument, a field of a message or configuration, and a worker or a reviewer still has
+// no path. What it sends is the text the answers path built from a ledger-known request, never the chairman's own words.
+//
+// **WHAT THIS DOES NOT TAKE:** a button press as CONVERSATION (the answers path, #2908, owns it; `forward` still refuses one), and anything `isAccepted` does not vouch for. A value
 // that was not minted by `createInbound` for THIS chairman is not a chairman's message, whatever its fields say.
 //
 // THE QUEUE IS A PORT, LOADED ON FIRST USE. `prompt-session.mjs` and `wake.mjs` read the project's declaration at import and refuse to
@@ -40,6 +44,9 @@ export const CHAIRMAN_SENDER = "chairman via Telegram";
 /** Provenance the listener, and only the listener, can vouch for: `isAccepted` proved the ids match the paired chairman. */
 export const SOURCE_LINE = "Source: Telegram, verified (sender and chat matched the paired chairman)";
 const ORIGIN = "converse";
+/** What the queue is told an order is for, which is what it says back when it refuses one. */
+const WHY_MESSAGE = "the chairman wrote to the liaison";
+const WHY_BUTTON = "the chairman pressed a button for the liaison";
 
 /**
  * @typedef {{ queueOrLose: (order: Record<string, any>) => number, attributed: (text: string, sender: string | null) => string,
@@ -53,6 +60,22 @@ async function realQueue() {
   const { queueOrLose, attributed, EXIT, STANCE } = session;
   // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.mjs`, so the file's name is defined once, there.
   return { queueOrLose, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, defaultQueuePath: () => wake.handoffQueuePath(wake.ledgerPathFrom([])) };
+}
+
+/**
+ * The order the liaison reads for a button: the same provenance as a message, but the words are the organisation's own (what the press asked for).
+ *
+ * @param {{ text: string, messageRef: string }} order @param {number} receivedAt @returns {string}
+ */
+export function buttonOrderText({ text, messageRef }, receivedAt) {
+  return [
+    "This is the chairman pressing a button, not a session: do not answer it with `prompt:session`.",
+    SOURCE_LINE,
+    `Telegram message: ${messageRef} (a button press)`,
+    `Received: ${new Date(receivedAt).toISOString()}`,
+    "",
+    text,
+  ].join("\n");
 }
 
 /**
@@ -126,10 +149,10 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     return path;
   }
 
-  /** @param {QueuePort} q @param {string} text @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
-  function enqueue(q, text) {
+  /** @param {QueuePort} q @param {string} text @param {string} why @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
+  function enqueue(q, text, why) {
     const { value, stderr } = capturingStderr(() => q.queueOrLose({
-      label: RECIPIENT, text, why: "the chairman wrote to the liaison", agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
+      label: RECIPIENT, text, why, agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
     }));
     return { code: value, stderr };
   }
@@ -141,16 +164,16 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
   }
 
   /**
-   * `say` is null when the message was queued: the acknowledgement was already sent, and the liaison's answer is what follows.
-   * @param {QueuePort} q @param {string} text @returns {{ verdict: string, say: string | null, handoff: string | null }}
+   * `reason` is null when the message was queued, and otherwise the queue's own words for why it was not.
+   * @param {QueuePort} q @param {string} text @param {string} why @returns {{ verdict: string, reason: string | null, handoff: string | null }}
    */
-  function submit(q, text) {
-    const { code, stderr } = enqueue(q, text);
-    if (code !== q.EXIT.QUEUED) return { verdict: "refused", say: notReached(stderr.trim() || "the queue refused the message and said nothing"), handoff: null };
+  function submit(q, text, why) {
+    const { code, stderr } = enqueue(q, text, why);
+    if (code !== q.EXIT.QUEUED) return { verdict: "refused", reason: stderr.trim() || "the queue refused the message and said nothing", handoff: null };
     const handoff = verifiedEntry(q, text);
     return handoff === null
-      ? { verdict: "unverified", say: notReached("the queue said it held the message, but its entry is not in the queue file"), handoff }
-      : { verdict: "queued", say: null, handoff };
+      ? { verdict: "unverified", reason: "the queue said it held the message, but its entry is not in the queue file", handoff }
+      : { verdict: "queued", reason: null, handoff };
   }
 
   /** @param {string} text @param {string} replyTo @returns {Promise<{ ref: string | null, error: unknown }>} */
@@ -164,6 +187,17 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
 
   return {
     /**
+     * An order for the liaison, from a button the answers path vetted. Nothing is sent to the chairman and nothing is written to the ledger here: the caller
+     * (`answers.mjs`) records the outcome and tells the chairman, and a refusal is returned in the queue's own words.
+     *
+     * @param {{ text: string, messageRef: string }} order @returns {Promise<{ queued: boolean, say: string, handoff: string | null }>}
+     */
+    async orderLiaison(order) {
+      const verdict = submit(await port(), buttonOrderText(order, now()), WHY_BUTTON);
+      const say = verdict.verdict === "unverified" ? `${verdict.reason}: treat it as NOT delivered` : verdict.reason ?? `queued for ${RECIPIENT}, handoff ${verdict.handoff}`;
+      return { queued: verdict.verdict === "queued", say, handoff: verdict.handoff };
+    },
+    /**
      * @param {Readonly<Record<string, any>>} accepted what `createInbound(...).handle()` returned with `action: "forward"`
      * @returns {Promise<{ outcome: "queued" | "refused" | "unverified" | "not-conversation" | "not-accepted", handoff?: string | null }>}
      */
@@ -173,8 +207,8 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
       // The acknowledgement goes first, before the queue is even loaded, so a slow or absent liaison cannot delay it and a queue that throws still leaves the chairman told.
       const ack = await tell(ACKNOWLEDGEMENT, String(accepted.messageId));
       const ackAt = new Date(now()).toISOString();
-      const verdict = submit(await port(), provenanceText(accepted, now()));
-      const failure = verdict.say === null ? { ref: null, error: null } : await tell(verdict.say, String(accepted.messageId));
+      const verdict = submit(await port(), provenanceText(accepted, now()), WHY_MESSAGE);
+      const failure = verdict.reason === null ? { ref: null, error: null } : await tell(notReached(verdict.reason), String(accepted.messageId));
       const error = ack.error ?? failure.error;
       // The line holds refs and a verdict, never the words (as `inbound.mjs`'s do not): the chain is message -> handoff -> acknowledgement. `ackAt` is when
       // the acknowledgement was sent, so the time to acknowledge is `ackAt` less the inbound line's `ts`.

@@ -36,6 +36,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
+import { requestActions, snoozedUntil } from "./answers.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
@@ -154,13 +155,28 @@ export function createGhReader({ run = runGh } = {}) {
  *           history: Record<string, any>[], releaseRepos: readonly string[] }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
 
+/**
+ * A request that still asks carries the buttons the chairman may press under it (a11ign/a11ign#3423): its options, or Approve, then Explain more and Later.
+ * A request that no longer asks (`resolved`) carries none: it becomes a cleared notice, and a button under one would answer a request that is gone.
+ *
+ * @param {Record<string, unknown>[]} events @param {Record<string, { id: string, label: string }[]>} options keyed by event key
+ * @returns {Record<string, unknown>[]}
+ */
+function withButtons(events, options) {
+  return events.map((event) => {
+    if (event.kind !== "request" || event.resolved === true) return event;
+    const actions = requestActions(options[/** @type {string} */ (event.key)] ?? []);
+    return actions.length === 0 ? event : { ...event, actions };
+  });
+}
+
 /** @type {Source} */
 const REQUESTS = {
   name: "requests",
   async observe({ github, repo, now, openKeys }) {
-    const { events, problems } = await readRequests({ github, repo, openKeys, now });
+    const { events, options, problems } = await readRequests({ github, repo, openKeys, now });
     // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
-    return { events, notes: problems };
+    return { events: withButtons(events, options), notes: problems };
   },
 };
 
@@ -253,6 +269,17 @@ function openRequestKeys(state) {
   return [...state].filter(([key, record]) => record.open && parseRequestKey(key) !== null).map(([key]) => key);
 }
 
+/**
+ * THE SNOOZE (`later`, a11ign/a11ign#3423): a request the chairman pressed Later on is not observed for 24 hours, so the core sends it nothing, a reminder or
+ * a changed ask included (the core has no notion of a snooze, and the watcher is where an event is chosen). A request that stopped asking is never held back:
+ * its cleared notice is how the chairman learns it is gone. `snoozedUntil` ends a snooze at the answer or the clearing, so a re-ask is not swallowed.
+ *
+ * @param {Record<string, unknown>[]} events @param {{ history: Record<string, any>[], nowMs: number }} context @returns {Record<string, unknown>[]}
+ */
+function withoutSnoozed(events, { history, nowMs }) {
+  return events.filter((event) => event.kind !== "request" || event.resolved === true || typeof event.key !== "string" || snoozedUntil(history, event.key, nowMs) === null);
+}
+
 /** @param {Record<string, any>[]} history @param {Note} note @returns {boolean} whether this exact note about this key is already on the record */
 function alreadyNoted(history, note) {
   return history.some((line) => line.status === "invalid" && line.kind === "source-note" && line.key === note.key && line.error === note.reason);
@@ -318,7 +345,7 @@ export async function runWatch({
   const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos }, sources);
   recordNotes({ notes, ledger, history, log });
   const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
-  const decisions = await messenger.tick(events);
+  const decisions = await messenger.tick(withoutSnoozed(events, { history, nowMs: now() }));
   for (const failure of failures) log(failure);
   return { decisions, failures };
 }

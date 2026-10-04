@@ -73,11 +73,12 @@ async function rejection(action) {
 test("done-when 1: the provider passes runProviderConformance, and the checks it names actually RAN", async () => {
   const { provider } = harness();
   const { passed, skipped } = await runProviderConformance(provider);
-  for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted"]) {
+  for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted", "actions-are-accepted"]) {
     assert.ok(passed.includes(check), `${check} did not run: ${JSON.stringify({ passed, skipped })}`);
   }
-  // Declared absent and not half-built: rows 8 and 9. They are skipped WITH their reasons, never silently passed.
-  assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["actions-are-accepted", "poll-returns-updates-and-honours-abort"]);
+  // `poll` is the polling provider's (poll.mjs), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
+  assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["poll-returns-updates-and-honours-abort"]);
+  assert.equal(provider.capabilities.buttons, true, "and the provider says so");
 });
 
 test("done-when 2: a silent message carries disable_notification: true on the wire, an ordinary one carries no such key", async () => {
@@ -286,4 +287,75 @@ test("the token is scrubbed by its own value even when it has no shape a pattern
 test("a provider is built from a Secret and a chat, and refuses a bare string token", () => {
   assert.throws(() => createTelegramProvider({ token: /** @type {any} */ (TOKEN), chatId: CHAT_ID }), /Secret/);
   assert.throws(() => createTelegramProvider({ token: createSecret(TOKEN), chatId: /** @type {any} */ (undefined) }), /chatId/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// BUTTONS ARE DRAWN (a11ign/a11ign#3423 done-whens 1, 2 and 7): the WIRE is asserted, which the conformance suite does not look at.
+
+const ACTIONS = [{ label: "A: publish now", data: "ans:A" }, { label: "Later", data: "act:later" }];
+
+test("done-when 1: a send with actions puts reply_markup.inline_keyboard on the wire, each button's callback_data intact (the control: fails on a provider that drops actions)", async () => {
+  const { provider, requests } = harness();
+  await provider.send({ text: "a request", actions: ACTIONS });
+  assert.deepEqual(requests[0].body.reply_markup, { inline_keyboard: [[{ text: "A: publish now", callback_data: "ans:A" }], [{ text: "Later", callback_data: "act:later" }]] });
+  assert.equal("parse_mode" in requests[0].body, false, "and the message is still plain text");
+});
+
+test("done-when 2: a send with no actions, or an empty list, carries no reply_markup key at all", async () => {
+  const { provider, requests } = harness();
+  await provider.send({ text: "an incident" });
+  await provider.send({ text: "an empty list", actions: [] });
+  assert.equal(requests.length, 2);
+  for (const request of requests) assert.equal("reply_markup" in request.body, false);
+});
+
+test("a message split into parts carries the keyboard on the FIRST part only, which is the one the ledger keeps", async () => {
+  const { provider, requests } = harness();
+  const sent = await provider.send({ text: `${"x".repeat(3000)}\n${"y".repeat(3000)}`, actions: ACTIONS });
+  assert.equal(requests.length, 2);
+  assert.ok("reply_markup" in requests[0].body);
+  assert.equal("reply_markup" in requests[1].body, false);
+  assert.equal(sent.messageRef, sent.messageRefs[0]);
+});
+
+test("a malformed action is refused whole, before any request is made: no partial keyboard", async () => {
+  const { provider, requests } = harness();
+  const bad = [
+    [{ label: "", data: "ans:A" }], [{ label: "x", data: "" }], [{ label: "x" }], [{ data: "ans:A" }], ["ans:A"], [null],
+    [{ label: "x", data: "a".repeat(65) }],
+    [{ label: "x", data: "é".repeat(33) }],
+    [{ label: "x".repeat(65), data: "ans:A" }],
+    Array.from({ length: 9 }, (_, index) => ({ label: `b${index}`, data: `ans:${index}` })),
+    "ans:A",
+  ];
+  for (const actions of bad) {
+    const error = await rejection(() => provider.send({ text: "a request", actions: /** @type {any} */ (actions) }));
+    assert.ok(error instanceof RangeError, JSON.stringify(actions));
+  }
+  assert.equal(requests.length, 0);
+  await provider.send({ text: "the control", actions: [{ label: "x", data: "é".repeat(32) }] });
+  assert.equal(requests.length, 1, "64 bytes exactly, as two-byte characters, is accepted");
+});
+
+test("clearKeyboard asks Telegram to edit the message's markup to none, on the paired chat", async () => {
+  const { provider, requests } = harness();
+  await provider.clearKeyboard("501");
+  assert.equal(requests[0].url, `https://api.telegram.org/bot${TOKEN}/editMessageReplyMarkup`);
+  assert.deepEqual(requests[0].body, { chat_id: CHAT_ID, message_id: 501, reply_markup: { inline_keyboard: [] } });
+});
+
+test("clearKeyboard: a message with no keyboard left is fine; any other refusal is thrown, and a ref that is not an id is refused before a request", async () => {
+  const notModified = { status: 400, body: { ok: false, error_code: 400, description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same" } };
+  const h = harness({ script: [notModified] });
+  await h.provider.clearKeyboard("501");
+  assert.equal(h.requests.length, 1);
+
+  const gone = harness({ script: [{ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: message to edit not found" } }] });
+  const error = await rejection(() => gone.provider.clearKeyboard("501"));
+  assert.ok(error instanceof TelegramSendError);
+  assert.match(error.message, /editMessageReplyMarkup failed: 400 .*not found/);
+
+  const none = harness();
+  for (const ref of ["abc", "", "5.5", "0", "-3", " 7"]) assert.ok((await rejection(() => none.provider.clearKeyboard(ref))) instanceof TypeError, ref);
+  assert.equal(none.requests.length, 0);
 });

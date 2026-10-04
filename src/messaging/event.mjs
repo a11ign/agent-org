@@ -23,8 +23,9 @@ const FINGERPRINT_LENGTH = 16;
 /**
  * @typedef {{
  *   key: string, kind: string, severity: string, firstSeenAt: number, text: string,
- *   links: string[], resolved: boolean, state: string
- * }} MessagingEvent  `firstSeenAt` is milliseconds since the epoch once normalised.
+ *   links: string[], resolved: boolean, state: string, actions: {label: string, data: string}[]
+ * }} MessagingEvent  `firstSeenAt` is milliseconds since the epoch once normalised. `actions` are the buttons the watcher offers under this fact (none for most
+ *   kinds); the core hands them to a provider that declares `buttons`, and whether the data means anything is the answers path's, not this module's.
  */
 
 /** @param {unknown} value @param {string} field @returns {string} */
@@ -55,6 +56,14 @@ function toLinks(value) {
   return [...value];
 }
 
+/** @param {unknown} value @returns {{label: string, data: string}[]} */
+function toActions(value) {
+  if (value === undefined) return [];
+  const valid = Array.isArray(value) && value.every((action) => action !== null && typeof action === "object" && typeof action.label === "string" && typeof action.data === "string");
+  if (!valid) throw new TypeError("event.actions: an array of {label, data} strings is required");
+  return value.map(({ label, data }) => Object.freeze({ label, data }));
+}
+
 /** @param {unknown} key @returns {string} */
 function toKey(key) {
   const text = requireText(key, "key");
@@ -80,6 +89,7 @@ export function normalizeEvent(raw) {
     links: toLinks(candidate.links),
     resolved: candidate.resolved === true,
     state: typeof candidate.state === "string" ? candidate.state : "",
+    actions: Object.freeze(toActions(candidate.actions)),
   });
 }
 
