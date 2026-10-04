@@ -175,8 +175,8 @@ const NOT_STARTED = `reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: herdr r
 
 test("#3029: 30 ticks of a busy seat WAITING ITS TURN produce no repeating group, while the SAME 30 ticks of a refused-to-start order still do", () => {
   const allow = loadAllowlist();
-  // The wait grows by one tick each time, so the numbers differ per copy -- the normaliser must make them one line, or this proves nothing.
-  const busy = ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 2 * (i + 1))));
+  // The wait differs per copy (it cycles 2..14 minutes, under the 15-minute bound of #3448, past which the line is an UNDELIVERED fault, the next test) -- the normaliser must make them one line, or this proves nothing.
+  const busy = ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 2 * (1 + (i % 7)))));
   assert.equal([...(busy.at(-1)?.lines.values() ?? [])].filter((l) => l.startsWith("DEFERRED ")).length, 1, "the control: the lines are there, and the detector reads them");
   assert.deepEqual(repeatingLines({ ticks: busy, allow }), [], "waiting its turn is the queue working as designed");
   const stuck = repeatingLines({ ticks: ticksOf(run(30, (i) => refusalLines([NOT_STARTED], 2 * i))), allow });
@@ -186,11 +186,11 @@ test("#3029: 30 ticks of a busy seat WAITING ITS TURN produce no repeating group
 
 test("#3029: a busy seat that stays busy PAST THE LIMIT is a fault again -- its UNDELIVERED line and the summary are not allowlisted", () => {
   const allow = loadAllowlist();
-  const groups = repeatingLines({ ticks: ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 61 + 2 * i))), allow });
+  const groups = repeatingLines({ ticks: ticksOf(run(30, (i) => refusalLines([BUSY_CEO], 16 + 2 * i))), allow });
   assert.equal(groups.length, 1);
   assert.ok(groups[0].lines.some((l) => l.startsWith("UNDELIVERED handoff/ceo/")), groups[0].lines.join(" | "));
   assert.ok(allow.some((a) => a.pattern.test(normaliseLine(`DEFERRED ${BUSY_CEO} (waiting 12 min; retried next tick)`))), "the DEFERRED line IS the allowlisted one");
-  assert.ok(!allow.some((a) => a.pattern.test(normaliseLine(`UNDELIVERED ${BUSY_CEO} (deferred 61 min, over the 60-minute limit for a seat mid-turn)`))));
+  assert.ok(!allow.some((a) => a.pattern.test(normaliseLine(`UNDELIVERED ${BUSY_CEO} (deferred 16 min, over the 15-minute limit for a seat mid-turn)`))));
 });
 
 test("#2848: an allowlist entry with NO REASON, or no pattern, is refused at load: an exemption nobody explained is a silence", () => {

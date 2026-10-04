@@ -4,7 +4,7 @@
  *
  * The line fired for 30 consecutive ticks (2026-10-02) because `ceo` was `working` on one long turn and held two queued orders, and it shared
  * its count with three real faults. The row's positive controls are all here: a refused-to-start order ALONE still writes the line and exits 1,
- * and a busy-seat order under the limit yields neither. THE LIMIT IS WRITTEN OUT AS 60 MINUTES, never as `BUSY_SEAT_DEFERRAL_MS`: a test built
+ * and a busy-seat order under the limit yields neither. THE LIMIT IS WRITTEN OUT AS 15 MINUTES (it was 60 until #3448), never as `BUSY_SEAT_DEFERRAL_MS`: a test built
  * from the constant moves with it, so changing the limit would leave it green.
  */
 import { test } from "node:test";
@@ -24,8 +24,8 @@ const REFUSED_TO_START = "reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: he
 const NO_TAKER = "handoff/reviewer-3013/0f2761c3: \"reviewer-3013\" reviews PR #3013 and nothing else, and this order is about no pull request";
 const at = (minutes: number) => (keys: string[]) => new Map(keys.map((k) => [k, minutes * MINUTE]));
 
-test("#3029: the limit is one hour, measured: the first round number above the standing seats' longest delivered wait (50 min)", () => {
-  assert.equal(BUSY_SEAT_DEFERRAL_MS, 60 * MINUTE);
+test("#3448: the limit is fifteen minutes (it was one hour, #3029), and the measurement behind it is in `org-health.mjs` beside the signal that shares it", () => {
+  assert.equal(BUSY_SEAT_DEFERRAL_MS, 15 * MINUTE);
 });
 
 test("#3029: only `\"<seat>\" is working` is a busy seat -- every other refusal the tick writes is a fault", () => {
@@ -57,17 +57,17 @@ test("#3029 POSITIVE CONTROL: a refused-to-start order ALONE still writes the su
 });
 
 test("#3029 POSITIVE CONTROL: a busy-seat order younger than the limit yields NO summary and no fault line", () => {
-  const report = refusalReport([BUSY(), BUSY("ceo/blocker-cleared/row-2974/1931.1959")], at(59));
+  const report = refusalReport([BUSY(), BUSY("ceo/blocker-cleared/row-2974/1931.1959")], at(14));
   assert.equal(report.summary, null);
   assert.deepEqual(report.undelivered, []);
   assert.equal(report.deferred.length, 2);
 });
 
-test("#3029: a busy-seat order OVER the limit is `nowhere to go` after all, named with its age; exactly 60 minutes is not yet over", () => {
-  assert.equal(refusalReport([BUSY()], at(60)).summary, null, "the boundary is `over`, not `at`");
-  const over = refusalReport([BUSY(), BUSY("ceo/answer-owed/row-1")], (keys) => new Map([[keys[0], 61 * MINUTE], [keys[1], 5 * MINUTE]]));
+test("#3029: a busy-seat order OVER the limit is `nowhere to go` after all, named with its age; exactly 15 minutes is not yet over", () => {
+  assert.equal(refusalReport([BUSY()], at(15)).summary, null, "the boundary is `over`, not `at`");
+  const over = refusalReport([BUSY(), BUSY("ceo/answer-owed/row-1")], (keys) => new Map([[keys[0], 16 * MINUTE], [keys[1], 5 * MINUTE]]));
   assert.match(over.summary ?? "", /^1 order\(s\) had nowhere to go\./, "only the overdue one is counted");
-  assert.match(over.undelivered[0], /^handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 61 min, over the 60-minute limit/);
+  assert.match(over.undelivered[0], /^handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 16 min, over the 15-minute limit/);
   assert.equal(over.deferred.length, 1);
 });
 
@@ -142,12 +142,12 @@ test("#3029: a refused-to-start order alone exits 1 (the positive control for th
   });
 });
 
-test("#3029: the same busy-seat order, remembered as first deferred 61 minutes ago, exits 1 as `nowhere to go`", () => {
+test("#3029: the same busy-seat order, remembered as first deferred 16 minutes ago, exits 1 as `nowhere to go`", () => {
   inTmp((dir) => {
-    writeFileSync(join(dir, "wake-deferred"), `handoff/ceo/07ed9f53\t${Date.now() - 61 * MINUTE}\n`);
+    writeFileSync(join(dir, "wake-deferred"), `handoff/ceo/07ed9f53\t${Date.now() - 16 * MINUTE}\n`);
     const got = tick(dir, { handedRefused: [BUSY()] });
     assert.equal(got.status, 1, got.stderr);
-    assert.match(got.stderr, /^UNDELIVERED handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 61 min/m);
+    assert.match(got.stderr, /^UNDELIVERED handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 16 min/m);
     assert.match(got.stderr, /1 order\(s\) had nowhere to go/);
     assert.doesNotMatch(got.stderr, /^DEFERRED /m);
   });
