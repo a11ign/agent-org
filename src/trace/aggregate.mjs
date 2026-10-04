@@ -45,6 +45,8 @@ const PERCENT = 100;
 const DEAREST = 10;
 const UNPRICED_LISTED = 5;
 const DIFFERENCES_LISTED = 8;
+/** The classes read off GitHub's events, which a week with unread rows holds only part of. */
+const GITHUB_CLASSES = new Set(["rereview", "requeue", "ci-rerun"]);
 const DOLLAR_DECIMALS = 4;
 const SHARE_DECIMALS = 1;
 export const NOT_DERIVABLE = "not derivable";
@@ -371,10 +373,10 @@ function repeatClasses(context) {
   return [redelivered(context), rereviews(context), requeues(context), compactions(context), preambles(context), ciReruns(context), deferredWaits()];
 }
 
-/** The headline: the dollars of the classes that have a derivation, a floor when any of them is. @param {RepeatClass[]} classes */
+/** The headline: the dollars of the classes that have a derivation, a floor when any class has a turn it could not price (the tokens are every class's: they are measured). @param {RepeatClass[]} classes */
 function repeatTotal(classes) {
   const priced = classes.filter((entry) => typeof entry.dollars === "number");
-  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: classes.some((entry) => entry.floor), tokens: priced.reduce((sum, entry) => sum + entry.tokens, 0) };
+  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: classes.some((entry) => entry.floor), tokens: classes.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -461,11 +463,12 @@ function indexes({ events, keys }) {
  * @returns {string | null} why the week is partial, or `null` when the store holds all of it
  */
 function partialReason({ start, now, held, unread }) {
-  if (start + WEEK_MS > now) return "the week is not over";
-  if (unread > 0) return `GitHub's events are not yet read for ${unread} of its merged rows (a second run continues; the claims, reviews, queue entries and CI runs of those rows are missing)`;
-  if (held.from === null) return `the store's window is unknown (${held.basis})`;
-  if (start < held.from) return `the store holds transcripts only from ${new Date(held.from).toISOString()} (${held.basis})`;
-  return null;
+  const reasons = [];
+  if (start + WEEK_MS > now) reasons.push("the week is not over");
+  if (unread > 0) reasons.push(`GitHub's events are not yet read for ${unread} of its merged rows (a second run continues; the claims, reviews, queue entries and CI runs of those rows are missing)`);
+  if (held.from === null) reasons.push(`the store's window is unknown (${held.basis})`);
+  else if (start < held.from) reasons.push(`the store holds transcripts only from ${new Date(held.from).toISOString()} (${held.basis})`);
+  return reasons.length === 0 ? null : reasons.join("; ");
 }
 
 /**
@@ -485,9 +488,10 @@ export function aggregate({ events, pulls, rowRepo, now, since, held, readings =
   for (let start = weekStart(since); start <= weekStart(now); start += WEEK_MS) {
     const merged = everyMerge.filter((entry) => entry.mergedAt >= start && entry.mergedAt < start + WEEK_MS);
     const rows = merged.map((entry) => rowFigures(entry, { byRow, claims }));
+    const githubUnread = merged.filter((entry) => unreadSet.has(entry.row)).length;
     const classes = repeatClasses({ events, turns, keys, at: start, claimed: new Set(), turnsOf });
     weeks.push({
-      start, end: start + WEEK_MS, partial: partialReason({ start, now, held, unread: merged.filter((entry) => unreadSet.has(entry.row)).length }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows), dearest: dearest(rows),
+      start, end: start + WEEK_MS, githubUnread, partial: partialReason({ start, now, held, unread: githubUnread }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows), dearest: dearest(rows),
       spend: spendFigures(spendOf(placed.filter((entry) => inWeek(entry.turn, start))), unreadable), repeats: { classes, total: repeatTotal(classes) },
       wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
     });
@@ -539,11 +543,12 @@ const percent = (value) => (value === null ? "n/a" : `${(value * PERCENT).toFixe
 /** @param {number | null} value */
 const count = (value) => (value === null ? "n/a" : Math.round(value).toLocaleString("en-US"));
 
-/** @param {RepeatClass} entry */
-function classLine(entry) {
+/** @param {RepeatClass} entry @param {number} githubUnread the merged rows of the week whose GitHub events were not read */
+function classLine(entry, githubUnread) {
   const unpriced = entry.unpriced ? ` (${entry.unpriced} turns unpriced)` : "";
   const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens${unpriced}` : `dollars: ${entry.dollars}${unpriced}, ${count(entry.tokens)} tokens`;
-  return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}`;
+  const fromGithub = githubUnread > 0 && GITHUB_CLASSES.has(entry.id) ? `  [FLOOR: GitHub unread for ${githubUnread} rows of this week]` : "";
+  return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}${fromGithub}`;
 }
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
@@ -561,7 +566,7 @@ function weekLines(week) {
   lines.push(`  UNMEASURED (not overhead): ${spend.unmeasured.turns} turns, ${dollars(spend.unmeasured.dollars)}; transcripts the ingest could not read: ${spend.unmeasured.unreadableTranscripts.length}${spend.unmeasured.unreadableTranscripts.map((file) => `\n    ${file}`).join("")}`,
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
-    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.map(classLine));
+    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.map((entry) => classLine(entry, week.githubUnread)));
   return [...lines, ...dearestLines(week), ...wakeLines(week)];
 }
 

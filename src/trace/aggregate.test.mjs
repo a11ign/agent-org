@@ -205,6 +205,7 @@ test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and
   assert.deepEqual([byId["ci-rerun"].count, byId["ci-rerun"].dollars, byId["ci-rerun"].ms], [1, NOT_DERIVABLE, 15 * 60 * 1000]);
   assert.deepEqual([byId.deferred.count, byId.deferred.dollars], [0, NOT_HELD]);
   near(total.dollars, 0.5 + 0.022 + 0.3 + 0.4 + 0.011);
+  assert.equal(total.tokens, classes.reduce((sum, entry) => sum + entry.tokens, 0), "the headline's tokens are every class's, the not-derivable ones too");
   assert.equal(total.floor, false);
 });
 
@@ -271,6 +272,11 @@ test("UNREAD GITHUB: a week holding a merged row whose GitHub events the run did
   assert.equal(weekOf(short, WEEK_B).partial, null);
   assert.equal(compareWeeks(short.weeks).length, 0, "A is partial, so B has nothing complete to be compared with");
   assert.equal(weekOf(report({ unreadRows: [999] }), WEEK_A).partial, null, "a row of no week of the report changes nothing");
+  // Every reason is printed, not the first: a week that is not over AND has unread rows says both, and its GitHub-read classes are marked a floor.
+  const both = report({ now: at("2026-10-02T00:00:00Z"), unreadRows: [201] });
+  assert.match(weekOf(both, WEEK_B).partial, /^the week is not over; GitHub's events are not yet read for 1 of its merged rows/);
+  assert.match(renderAggregate(both), /re-reviews\s+1\s+\$0\.3000, 3 tokens\s+\[FLOOR: GitHub unread for 1 rows of this week\]/);
+  assert.doesNotMatch(renderAggregate(report()), /FLOOR: GitHub unread/);
 });
 
 test("RENDER: the definitions are printed once at the top, and a class with no derivation prints its words, never 0", () => {
