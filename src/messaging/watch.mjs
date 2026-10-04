@@ -58,7 +58,7 @@ export const READ_METHODS = Object.freeze(["issuesLabelled", "issueComments", "m
 const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
 /** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.mjs` reads, each a listing or a lookup. */
-const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
+const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|issues\/\d+\/comments|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
 
 /**
  * `gh api <path>` and nothing after the path: a GET is the default and every flag that would change it (`-X`, `-f`, `-F`, `--input`) is a token this refuses.

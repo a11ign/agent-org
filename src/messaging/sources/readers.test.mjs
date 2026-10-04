@@ -21,7 +21,7 @@ import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "
 import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
 import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
 import {
-  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
+  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readEpisodeStart, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
 } from "./readers.mjs";
 import { observeStalls } from "./stall.mjs";
 
@@ -286,52 +286,64 @@ describe("readGateUnit", () => {
 
 // ---- readFixRow --------------------------------------------------------------------------------------------------------------------------
 
-/** What `issues?labels=<key>&state=open` answers: the REST listing, which returns pull requests too. A route per label, as GitHub filters on it. */
-const fixRowIssue = (/** @type {number} */ number, /** @type {string[]} */ labels, /** @type {Record<string, unknown>} */ more = {}) => ({ number, labels: labels.map((name) => ({ name })), ...more });
-const listingFor = (/** @type {string} */ key, /** @type {unknown} */ answer) => /** @type {[RegExp, unknown]} */ ([new RegExp(`/issues\\?labels=${encodeURIComponent(key)}&state=open`), answer]);
+/** What `issues?labels=incident&state=open` answers: the REST listing WITH bodies, which returns pull requests too. */
+const fixRowIssue = (/** @type {number} */ number, /** @type {string | null} */ key, /** @type {Record<string, unknown>} */ more = {}) =>
+  ({ number, labels: [{ name: "incident" }], body: key === null ? "no marker here" : `## What\n\nIncident: ${key}\n\nmore`, comments: 0, ...more });
+const LISTING = /\/issues\?labels=incident&state=open/;
+const commentOf = (/** @type {string} */ login, /** @type {string} */ at, /** @type {string} */ body) => ({ user: { login }, created_at: at, body });
 
 describe("readFixRow", () => {
   const KEY = "incident:trunk-red";
 
-  test("an open row carrying the event's label gives its number and the holder from its session label", async () => {
-    const github = fakeGithub([listingFor(KEY, [fixRowIssue(3500, [KEY, "in-progress", "session:worker-3500", "lane:any"])])]);
-    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500, holder: "worker-3500" });
-    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident%3Atrunk-red&state=open&per_page=100`]);
+  test("an open `incident` row whose body names the key, with no comment yet, is just its number", async () => {
+    const github = fakeGithub([[LISTING, [fixRowIssue(3500, KEY)]]]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500 });
+    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident&state=open&per_page=100`], "no comments call for a row with none");
   });
 
-  test("a row nobody holds yet has a number and no holder", async () => {
-    const github = fakeGithub([listingFor(KEY, [fixRowIssue(3501, [KEY, "ready"])])]);
-    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3501 });
+  test("the newest comment BY AN ORG ACCOUNT is the one named, and a newer comment from anyone else is not the org's word", async () => {
+    const github = fakeGithub([
+      [LISTING, [fixRowIssue(3500, KEY, { comments: 4 })]],
+      [/\/issues\/3500\/comments\?per_page=100&page=1$/, [
+        commentOf("a11ign-ai-leads", "2026-10-04T10:00:00Z", "promoted"), commentOf("a11ign-ai-workers", "2026-10-04T11:00:00Z", "claimed, fixing"),
+        commentOf("a-person", "2026-10-04T11:30:00Z", "any news?"), commentOf("a11ign-ai-leads", "2026-10-04T09:00:00Z", "filed"),
+      ]],
+    ]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500, comment: { author: "a11ign-ai-workers", at: Date.parse("2026-10-04T11:00:00Z"), text: "claimed, fixing" } });
   });
 
-  test("GitHub answering an empty list is null: the one reading that says no row is open", async () => {
-    const github = fakeGithub([listingFor(KEY, [])]);
-    assert.equal(await readFixRow({ github, repo: REPO, key: KEY }), null);
+  test("the comments are read from the LAST page the listing's count names, and a page with no org comment sends the walk back one", async () => {
+    const github = fakeGithub([
+      [LISTING, [fixRowIssue(3500, KEY, { comments: 101 })]],
+      [/page=2$/, [commentOf("a-person", "2026-10-04T12:00:00Z", "one more from outside")]],
+      [/page=1$/, [commentOf("a11ign-bot", "2026-10-04T08:00:00Z", "first word")]],
+    ]);
+    const row = await readFixRow({ github, repo: REPO, key: KEY });
+    assert.equal(row?.comment?.text, "first word");
+    assert.deepEqual(github.calls.map((call) => call.split("&page=")[1]).filter(Boolean), ["2", "1"]);
+  });
+
+  test("a row with comments and none from the org is just its number (nobody from the org has spoken)", async () => {
+    const github = fakeGithub([[LISTING, [fixRowIssue(3500, KEY, { comments: 1 })]], [/comments/, [commentOf("a-person", "2026-10-04T12:00:00Z", "hello")]]]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500 });
+  });
+
+  test("GitHub answering with no row that names the key is null: the one reading that says nobody has picked it up", async () => {
+    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, []]]), repo: REPO, key: KEY }), null);
+    const others = [fixRowIssue(3501, "incident:fleet-down"), fixRowIssue(3502, null), fixRowIssue(3503, `${KEY}-extra`)];
+    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, others]]), repo: REPO, key: KEY }), null, "a row for another key, with no marker, or naming a longer key, is not this one's");
   });
 
   test("GitHub failing THROWS, which is not null (the positive control for the empty list above)", async () => {
-    await assert.rejects(readFixRow({ github: fakeGithub([listingFor(KEY, DOWN)]), repo: REPO, key: KEY }), /HTTP 502/);
-    await assert.rejects(readFixRow({ github: fakeGithub([listingFor(KEY, { message: "Bad credentials" })]), repo: REPO, key: KEY }), /an array was expected/);
-  });
-
-  test("a row for another incident key is not returned: the label asked for is the key's own", async () => {
-    const github = fakeGithub([listingFor("incident:fleet-down", [fixRowIssue(3502, ["incident:fleet-down", "session:worker-3502"])]), listingFor(KEY, [])]);
-    assert.equal(await readFixRow({ github, repo: REPO, key: KEY }), null);
-    assert.deepEqual(await readFixRow({ github, repo: REPO, key: "incident:fleet-down" }), { number: 3502, holder: "worker-3502" });
-  });
-
-  test("a closed row is not returned: the listing is asked for open rows only", async () => {
-    const github = fakeGithub([listingFor(KEY, [])]);
-    await readFixRow({ github, repo: REPO, key: KEY });
-    assert.match(github.calls[0], /[?&]state=open(&|$)/);
+    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
+    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, { message: "Bad credentials" }]]), repo: REPO, key: KEY }), /an array was expected/);
+    await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, [fixRowIssue(3500, KEY, { comments: 1 })]], [/comments/, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
   });
 
   test("a pull request in the listing is not a row, and of several rows the oldest is named", async () => {
-    const github = fakeGithub([listingFor(KEY, [
-      fixRowIssue(3600, [KEY], { pull_request: { url: "x" } }), fixRowIssue(3510, [KEY, "session:worker-3510"]), fixRowIssue(3505, [KEY, "session:worker-3505"]),
-    ])]);
-    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3505, holder: "worker-3505" });
-    assert.equal(await readFixRow({ github: fakeGithub([listingFor(KEY, [fixRowIssue(3600, [KEY], { pull_request: {} })])]), repo: REPO, key: KEY }), null);
+    const github = fakeGithub([[LISTING, [fixRowIssue(3600, KEY, { pull_request: { url: "x" } }), fixRowIssue(3510, KEY), fixRowIssue(3505, KEY)]]]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3505 });
+    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, [fixRowIssue(3600, KEY, { pull_request: {} })]]]), repo: REPO, key: KEY }), null);
   });
 
   test("a key that is not an incident or stall key is refused before GitHub is asked", async () => {
@@ -342,11 +354,49 @@ describe("readFixRow", () => {
     assert.deepEqual(github.calls, []);
   });
 
-  test("createReaders wires it, bound to the repository, and the path it asks passes the read-only allowlist", async () => {
-    const github = fakeGithub([listingFor("stall:no-merge", [fixRowIssue(3503, ["stall:no-merge", "session:worker-3503"])])]);
+  test("createReaders wires it, and every path it asks passes the read-only allowlist", async () => {
+    const github = fakeGithub([[LISTING, [fixRowIssue(3503, "stall:no-merge", { comments: 1 })]], [/comments/, [commentOf("a11ign-ai-workers", "2026-10-04T11:00:00Z", "on it")]]]);
     const { readers } = readersFor({ github });
-    assert.deepEqual(await readers.readFixRow("stall:no-merge"), { number: 3503, holder: "worker-3503" });
-    assert.doesNotThrow(() => assertReadOnlyGh(["api", github.calls[0]]));
+    assert.equal((await readers.readFixRow("stall:no-merge"))?.comment?.text, "on it");
+    assert.equal(github.calls.length, 2);
+    for (const call of github.calls) assert.doesNotThrow(() => assertReadOnlyGh(["api", call]), call);
+  });
+});
+
+// ---- readEpisodeStart --------------------------------------------------------------------------------------------------------------------
+
+describe("readEpisodeStart", () => {
+  const KEY = "incident:trunk-red";
+  const ledgerOf = (/** @type {Record<string, unknown>[]} */ ...lines) => {
+    const path = join(freshDirectory(), "ledger.jsonl");
+    writeFileSync(path, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    return path;
+  };
+  const line = (/** @type {string} */ ts, /** @type {string} */ kind, /** @type {string} */ status = "sent", /** @type {string} */ key = KEY) => ({ key, kind, status, ts });
+
+  test("is when the chairman was first told of the open episode, not the later update or reminder", () => {
+    const ledgerPath = ledgerOf(line("2026-10-04T10:00:00Z", "first"), line("2026-10-04T11:00:00Z", "reminder"), line("2026-10-04T11:30:00Z", "update"));
+    assert.equal(readEpisodeStart({ ledgerPath, key: KEY }), Date.parse("2026-10-04T10:00:00Z"));
+  });
+
+  test("after a clear it is the NEXT episode's first send, and null when no episode is open", () => {
+    const cleared = [line("2026-10-04T10:00:00Z", "first"), line("2026-10-04T10:40:00Z", "cleared")];
+    assert.equal(readEpisodeStart({ ledgerPath: ledgerOf(...cleared), key: KEY }), null);
+    assert.equal(readEpisodeStart({ ledgerPath: ledgerOf(...cleared, line("2026-10-04T13:00:00Z", "first")), key: KEY }), Date.parse("2026-10-04T13:00:00Z"));
+  });
+
+  test("a failed send is not being told, a withdrawn digest entry ends the episode, and another key's lines are not this one's", () => {
+    const ledgerPath = ledgerOf(line("2026-10-04T10:00:00Z", "first", "failed"), line("2026-10-04T10:05:00Z", "first", "sent", "incident:fleet-down"), line("2026-10-04T10:10:00Z", "first", "digested"),
+      line("2026-10-04T10:20:00Z", "withdrawn", "withdrawn"));
+    assert.equal(readEpisodeStart({ ledgerPath, key: KEY }), null);
+    assert.equal(readEpisodeStart({ ledgerPath, key: "incident:fleet-down" }), Date.parse("2026-10-04T10:05:00Z"));
+  });
+
+  test("a missing ledger is no episode, and createReaders reads the ledger beside the samples unless told otherwise", () => {
+    assert.equal(readEpisodeStart({ ledgerPath: join(freshDirectory(), "absent.jsonl"), key: KEY }), null);
+    const stateDir = freshDirectory();
+    writeFileSync(join(stateDir, "ledger.jsonl"), `${JSON.stringify(line("2026-10-04T10:00:00Z", "first"))}\n`);
+    assert.equal(readersFor({ github: fakeGithub([]), stateDir }).readers.readEpisodeStart(KEY), Date.parse("2026-10-04T10:00:00Z"));
   });
 });
 
@@ -495,6 +545,8 @@ describe("the read-only gh allowlist covers `gh api`", () => {
   const READS = [
     "repos/example/project/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=30",
     "repos/example/project/issues?labels=ready&state=open&per_page=100",
+    "repos/example/project/issues?labels=incident&state=open&per_page=100",
+    "repos/example/project/issues/3500/comments?per_page=100&page=2",
     "repos/example/project/actions/runs?status=completed&per_page=20",
     "repos/example/project/actions/workflows/trunk.yml/runs?branch=main&per_page=20",
     "repos/example/project/actions/runs/37018902747/jobs?per_page=100",
@@ -508,7 +560,7 @@ describe("the read-only gh allowlist covers `gh api`", () => {
   test("a method flag, a field, an input, another path and another verb are each refused", () => {
     const path = READS[0];
     for (const argv of [["api", path, "-X", "POST"], ["api", "-X", "DELETE", path], ["api", path, "-f", "state=closed"], ["api", path, "--input", "x.json"],
-      ["api", "repos/example/project/issues/1/comments"], ["api", "repos/example/project/git/refs"], ["api", "user"], ["api", "graphql"], ["api", "repos/example/project/pulls/1/merge"]]) {
+      ["api", "repos/example/project/issues/1/labels"], ["api", "repos/example/project/issues/1/comments/2"], ["api", "repos/example/project/git/refs"], ["api", "user"], ["api", "graphql"], ["api", "repos/example/project/pulls/1/merge"]]) {
       assert.throws(() => assertReadOnlyGh(argv), /reads only/, argv.join(" "));
     }
   });
@@ -518,7 +570,7 @@ describe("the read-only gh allowlist covers `gh api`", () => {
     const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return '{"workflow_runs": []}'; } });
     assert.deepEqual(await reader.api(READS[3]), { workflow_runs: [] });
     assert.deepEqual(commands, [["api", READS[3]]]);
-    await assert.rejects(reader.api("repos/example/project/issues/1/comments"), /reads only/);
+    await assert.rejects(reader.api("repos/example/project/issues/1/labels"), /reads only/);
   });
 });
 
