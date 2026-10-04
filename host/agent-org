@@ -1,0 +1,10 @@
+#!/bin/sh
+# The `agent-org` command, on PATH for every agent workspace.
+#
+# Shipped from host/agent-org and COPIED to `binDir` (host.json) by `agent-org host:install`; `agent-org host:check` reports it DIVERGED when
+# the installed bytes differ, or NOT INSTALLED when it is absent, as it does for `gh`. A copy and not a symlink, for the reason host/gh gives:
+# this is on every agent's PATH, and a link into a checkout that is mid-rebase would break the command for the whole org.
+#
+# It holds NO version of the tool. @@tool@@ is host.json's `tool`, rendered at install time, and that checkout is only ever moved by
+# `update-tool` (a detached checkout at the newest release tag), so this runs whatever the host runs and is never a second version.
+exec node "@@tool@@/src/bin.mjs" "$@"

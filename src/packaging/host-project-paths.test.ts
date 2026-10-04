@@ -76,7 +76,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 test("#2620: no home-directory literal remains in the tool's sources, its templates or its scripts", () => {
   const files = toolFiles();
-  assert.equal(files.length, 3 + 13, "POSITIVE CONTROL: sixteen files are scanned (three sources, thirteen host entries -- the two the shadow window added, #2867, the two chairman-watch templates, #2901, and the listener's, #2907, included), so an emptiness below is not a scan of nothing");
+  assert.equal(files.length, 3 + 14, "POSITIVE CONTROL: seventeen files are scanned (three sources, fourteen host entries -- the two the shadow window added, #2867, the two chairman-watch templates, #2901, the listener's, #2907, and the agent-org launcher, #3532, included), so an emptiness below is not a scan of nothing");
   const offenders = files.filter((file) => HOME_LITERAL.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
@@ -144,7 +144,7 @@ test("#2620: NO UNIT IS RENAMED -- the tool's units carry the names they had, an
 
 // --- 3. the tool's own entries are classified ---------------------------------------------------------------------------------------
 
-test("#2620: the tool's 13 entries are classified -- the original 8, the shadow window's two (#2867), the chairman watcher's two (#2901) and the listener's one (#2907) -- and the host-data entry is host.json's, not a file", () => {
+test("#2620: the tool's 14 entries are classified -- the original 8, the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907) and the agent-org launcher (#3532) -- and the host-data entry is host.json's, not a file", () => {
   // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
@@ -154,7 +154,9 @@ test("#2620: the tool's 13 entries are classified -- the original 8, the shadow 
   assert.equal(chairmanPair.length, 2, "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight");
   const chairmanListener = inTool.filter((name) => name === "chairman-listen.service.in");
   assert.equal(chairmanListener.length, 1, "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  const agentOrgLauncher = inTool.filter((name) => name === "agent-org");
+  assert.equal(agentOrgLauncher.length, 1, "POSITIVE CONTROL: #3532's launcher is one more, copied to binDir, so the 8 below is still the original eight");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length - agentOrgLauncher.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);

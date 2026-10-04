@@ -4658,6 +4658,7 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
  */
 const DECLARED_HISTORY_POPULATION: Declaration[] = [
   { name: "home-checkout-refusal.test.ts", reason: "#3039: imports `host-units.mjs` for `hostUnitDrift` and `hostUnitsInstall`, the same edge `host-units.test.ts` has" },
+  { name: "host-install-agent-org-launcher.test.ts", reason: "#3532: imports `host-units.mjs` for the owned list, the installer and `hostUnitDrift`, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.mjs` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
   { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.mjs` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
   { name: "host-units.test.ts", reason: "tests `host-units.mjs`, which calls `git log --all`: the edge every other entry here shares" },
