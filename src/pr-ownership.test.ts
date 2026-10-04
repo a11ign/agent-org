@@ -25,7 +25,9 @@ const NUDGE_TICK = Date.parse("2026-10-04T12:06:42Z");
 const MIN = 60_000;
 
 const CLAIMANT = { row: ROW, branch: BRANCH, session: SESSION, trackerRepo: TRACKER, soleHolder: true };
-const IO = { git: () => ({ status: 1, out: "" }), exists: () => false, mtime: () => null };
+// #3453: a merge in ANOTHER repository also reads that clone's worktrees (`worktree list`), and this clone lists none of the holder's.
+const IO = { git: (_dir: string, args: string[]) => (args[0] === "worktree" ? { status: 0, out: "" } : { status: 1, out: "" }), exists: () => false, mtime: () => null,
+  cloneOf: () => ({ clone: "/clone" }) };
 
 type Pr = { number: number; headRefName?: string; title?: string; labels?: { name: string }[]; mergedAt?: string; repoKey?: string };
 

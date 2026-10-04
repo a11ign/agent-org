@@ -96,10 +96,13 @@ function host(w: World = {}, ref = NOW) {
     }
     if (args[0] === "status") return { status: 0, out: args.includes("-z") ? dirty.map((d) => ` M ${d.file}\0`).join("") : dirty.map((d) => ` M ${d.file}\n`).join("") };
     if (args[0] === "rev-list") return { status: 0, out: `${w.unpushed ?? 0}\n` };
+    // #3453: a merged release in ANOTHER repository lists that clone's worktrees; this world's clone holds none of the holder's.
+    if (args[0] === "worktree") return { status: 0, out: "" };
     throw new Error(`unexpected git ${cmd}`);
   };
   const mtimes = new Map(dirty.map((d) => [`${WT}/${d.file}`, ago(d.ago)]));
-  return { calls, io: { git, exists: (p: string) => p === WT && w.worktreeExists !== false, mtime: (p: string) => mtimes.get(p) ?? null } };
+  return { calls, io: { git, exists: (p: string) => p === WT && w.worktreeExists !== false, mtime: (p: string) => mtimes.get(p) ?? null,
+    cloneOf: (key: string) => ({ clone: `/home/agent/repos/${key}` }) } };
 }
 
 /** The wake ledger's line for the nudge `worker-7` was sent at `nudgedAt`, recorded as delivered at `deliveredAt` -- the REAL writer's format. */

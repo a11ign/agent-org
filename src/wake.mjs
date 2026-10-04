@@ -76,7 +76,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
-import { workAtRisk, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
+import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
   INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions }
   from "./claim-stall.mjs";
@@ -1151,25 +1151,14 @@ export function reviewCheckoutPath(session, root = REVIEW_CHECKOUT_ROOT) {
 const reviewRef = (pr, key = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
 
 /**
- * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones` (`{ "<key>": "<absolute path>" }`), or why it cannot be said.
- * A clone is a machine fact no repository can know (ADR 0040, decision 3), and it is NOT a `projects` entry: a project there is one
- * with a declaration of its own that `host-units.mjs` reads a `beforeTick` from, and a keyed code repository has none. EVERY failure
- * is a refusal naming the host file and what is wrong -- an unreadable file is never read as "no clone declared", and a clone is
- * never defaulted to the primary's checkout, whose `origin` would put the wrong repository's pull request in front of a reviewer.
- * The reading is `host-config.mjs`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`.
- * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from]
+ * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones`, or why it cannot be said. The reading moved to `claim-stall.mjs`'s
+ * {@link cloneOfKey} (#3453: the merged release reads the same clones and that file cannot import this one); a clone is still never defaulted
+ * to the primary's checkout, whose `origin` would put the wrong repository's pull request in front of a reviewer.
+ * @param {string} key @param {Parameters<typeof cloneOfKey>[1]} [from]
  * @returns {{ clone: string } | { refusal: string }}
  */
-export function reviewCloneOf(key, { path = hostConfigPath(), read = readFileSync } = {}) {
-  /** @type {Readonly<import("./host-config.mjs").HostConfig>} */
-  let host;
-  try {
-    host = readHostConfig(path, read);
-  } catch (err) {
-    return { refusal: `${path} cannot be read as the host declaration (${firstLine(err)})` };
-  }
-  const clone = host.clones !== undefined && Object.hasOwn(host.clones, key) ? host.clones[key] : undefined;
-  return clone === undefined ? { refusal: `${path} declares no absolute \`clones.${key}\` path` } : { clone };
+export function reviewCloneOf(key, from) {
+  return cloneOfKey(key, from);
 }
 
 /**
@@ -5750,9 +5739,12 @@ function releasePlan(request, deps) {
     return { refusal: holds === false ? `\`${SESSION_PREFIX}${request.session}\` is no longer on #${request.row} -- a stale order, nothing to release`
       : `could not read #${request.row}'s labels -- not released, retried next tick` };
   }
-  const work = workAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo });
+  // THE SAME PREDICATE THE GATE READ (#3453): a merged release whose pull request is in another repository also reads THAT clone's worktrees on the holder's branches.
+  const merged = request.why === "merged" && request.mergedPrRepoKey !== undefined
+    ? { repoKey: request.mergedPrRepoKey, head: request.mergedPrHead, claimant: { row: request.row, branch: request.branch, session: request.session } } : undefined;
+  const work = holderWorkAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo, ...(merged === undefined ? {} : { merged }) });
   if (request.why !== "stalled" && request.why !== "gone" && work.state !== "none") {
-    return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed) -- not released` };
+    return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed${work.why === undefined ? "" : `; ${work.why}`}) -- not released` };
   }
   const onOrigin = request.branch !== null
     && deps.io.git(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${request.branch}`]).status === 0;
