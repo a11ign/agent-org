@@ -64,7 +64,9 @@ const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE } = {}) => {
     seen.push(args[0]);
     const path = args[0].split("?")[0];
     const issue = /issues\/(\d+)$/.exec(path);
-    if (issue) return ISSUES[issue[1]];
+    if (issue) return issue[1] === "3406" ? { ...ISSUES[3406], created_at: "2026-10-04T11:44:58Z" } : ISSUES[issue[1]]; // a pull request's ISSUE record, a second late as #3575's was
+    const ownRecord = /pulls\/(\d+)$/.exec(path);
+    if (ownRecord) return ISSUES[ownRecord[1]];
     const timeline = /issues\/(\d+)\/timeline$/.exec(path);
     if (timeline) return timeline[1] === "3406" ? pull : ROW_TIMELINE;
     const checks = /commits\/(\w+)\/check-runs$/.exec(path);
@@ -182,7 +184,7 @@ test("FAILURE: a call that fails THROWS; an empty answer would have printed a tr
     if (args[0].includes(needle)) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403" });
     return fakeGh()(args);
   };
-  for (const needle of ["/issues/3406/timeline", "/check-runs", "/issues/3508"]) {
+  for (const needle of ["/issues/3406/timeline", "/check-runs", "/issues/3508", "/pulls/3406"]) {
     assert.throws(() => readGithubEvents({ rows: [3508], prs: [3406], repo: REPO, gh: failing(needle) }), /403/, needle);
   }
   assert.throws(() => readGithubEvents({ rows: [], prs: [3406], repo: REPO, gh: (args) => (/timeline/.test(args[0]) ? { message: "x" } : fakeGh()(args)) }), /no list/);
@@ -201,4 +203,11 @@ test("PAGES: a list longer than a page is read whole, and one that never ends th
   assert.equal(events.filter((event) => event.kind === "labeled").length, 130, "both pages");
   const endless = (args) => (/timeline/.test(args[0]) ? many.slice(0, 100) : ISSUES[3508]);
   assert.throws(() => readGithubEvents({ rows: [3508], prs: [], repo: REPO, gh: endless }), /refusing to print a trace that stops part way/);
+});
+
+test("A PULL REQUEST IS OPENED AT ITS OWN `created_at` (`pulls/{n}`), not its issue record's, which was a second late for #3575: the outcome clock reads the first (#3517)", () => {
+  const opened = read().find((event) => event.kind === "opened" && event.pr === 3406);
+  assert.equal(opened.at, at("2026-10-04T11:44:57Z"), "the pull request's own time");
+  assert.notEqual(opened.at, at("2026-10-04T11:44:58Z"), "POSITIVE CONTROL: the issue record the fake also holds says another second, so reading it would be caught here");
+  assert.equal(read().find((event) => event.kind === "filed" && event.row === 3508).at, at("2026-10-04T17:54:45Z"), "a row has no pull record and is read from its issue");
 });
