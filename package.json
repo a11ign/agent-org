@@ -35,7 +35,8 @@
     "chairman:record": "node src/messaging/record.mjs",
     "chairman:correct": "node src/messaging/correct.mjs",
     "chairman:ask-ceo": "node src/messaging/ask-ceo.mjs",
-    "chairman:watch": "node src/messaging/watch-list.mjs"
+    "chairman:watch": "node src/messaging/watch-list.mjs",
+    "chairman:queue": "node src/messaging/session-queue.mjs"
   },
   "files": [
     "src",
