@@ -2,7 +2,7 @@
 // `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.mjs` checks a reply as a library;
 // this is the command that builds its four inputs from the host and calls it, so `ceo`'s brief (#2911) names a command that exists.
 //
-//   pnpm run chairman:reply -- "Row {{issue:3071.state}}" --reply-to 4172     (or the text on stdin)
+//   pnpm run chairman:reply -- "Row {{issue:3071.state}}" --to 4172     (or the text on stdin)
 //
 // **THE ONLY PROVIDER IS THE CONFIGURED ONE, AND THE ONLY READERS ARE `createGhReaders`.** `PROVIDERS` is keyed by `messaging.provider`, so a project that
 // configured nothing reaches nothing; the reads go through `gh` and `systemctl` runners that refuse every argv a reader does not build (`assertReadOnlyGh`),
@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
-import { createLedger, describeError } from "./ledger.mjs";
+import { createLedger, describeError, readLedgerLines } from "./ledger.mjs";
 import { createGhReaders } from "./placeholders.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
 import { createReply } from "./reply.mjs";
@@ -78,10 +78,18 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * `--to` names the chairman's message this answers, and `messaging:measure` reads time-to-answer off it, so a ref no inbound line holds would be a reply that answers nothing.
+ * @param {string | undefined} replyTo @param {string} ledgerPath @returns {boolean} true when it is absent (recorded as null) or the ref of a message the ledger took in
+ */
+function isKnownInbound(replyTo, ledgerPath) {
+  return replyTo === undefined || readLedgerLines(ledgerPath).some((line) => line.direction === "in" && line.messageRef === replyTo);
+}
+
 /** @param {string[]} argv @returns {{text: string | undefined, replyTo: string | undefined}} the text is undefined when it is to be read from stdin */
 function parseCommandLine(argv) {
-  const { values, positionals } = parseArgs({ args: argv, options: { "reply-to": { type: "string" } }, allowPositionals: true });
-  return { text: positionals.length > 0 ? positionals.join(" ") : undefined, replyTo: values["reply-to"] };
+  const { values, positionals } = parseArgs({ args: argv, options: { to: { type: "string" } }, allowPositionals: true });
+  return { text: positionals.length > 0 ? positionals.join(" ") : undefined, replyTo: values.to };
 }
 
 /** @param {Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, {outcome: "refused"}>} refusal @returns {string[]} one line per problem, then the sendable text */
@@ -122,7 +130,7 @@ function exitCodeFor(error) {
 }
 
 /**
- * @param {string[]} argv the arguments after the script: the text (or stdin) and `--reply-to <message ref>`
+ * @param {string[]} argv the arguments after the script: the text (or stdin) and `--to <message ref>`
  * @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps]
  * @returns {Promise<number>} the exit code
  */
@@ -137,6 +145,10 @@ export async function main(argv, deps = {}) {
     }
     if (!accountIsDeclared(env)) {
       err("chairman:reply: no GitHub account is declared (GH_CONFIG_DIR, or an agent workspace); refusing to read as whoever `gh` last logged in as (#1967)");
+      return EXIT.refused;
+    }
+    if (!isKnownInbound(replyTo, defaultLedgerPath(home))) {
+      err(`chairman:reply: REFUSED --to ${replyTo}: no message from the chairman with that ref is in the ledger, so the reply would answer nothing; nothing was sent`);
       return EXIT.refused;
     }
     const provider = providers[config.provider](config, { fetch: fetchImpl });
