@@ -22,9 +22,11 @@ import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
 import { readRulings, unreadableLine, rulingTick } from "../ruling-record.mjs";
-import { referencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits } from "../wait-condition.mjs";
+import { referencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds } from "../wait-condition.mjs";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.mjs";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
 /** Where the fleet watch writes the capture ledger (#2979), under the project checkout: `packages/control/src/fleet-watch.mjs`'s `DEFAULT_CAPTURES_STATE_PATH`. */
@@ -246,6 +248,34 @@ export function staleWaitOrders(stale) {
   });
 }
 
+const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+
+/**
+ * #3364: RELEASE ONE SESSION'S HOLD THROUGH THE MODULE THAT OWNS IT, `pr-hold.mjs --release`, which removes the label AND re-arms a pull request that carried
+ * `rearm-on-release` (a bare label removal leaves it unarmed: "Lifting a hold does not arm"). A child process rather than an import, because the module is a
+ * CLI whose `main` runs on load. Exit `0` is DONE; `2` (released but the re-arm could not be proven) is NOT done, so the order still goes to a session.
+ * @param {number} number @param {string} session @returns {boolean} whether the release reported done
+ */
+export function releaseHoldViaModule(number, session) {
+  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release"], { encoding: "utf8" });
+  if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${number} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
+  return result.status === 0;
+}
+
+/**
+ * #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of ordering a session to remove one label. Returns the stale waits that STILL
+ * need a session: those `liftableHolds` leaves, and those whose release failed (so a failure falls back to today's order, as `performActions` does for a
+ * refused `gh pr ready`, and says so on stderr). A lifted hold carries no label, so the next tick finds no stale wait for it.
+ * @param {import("../wait-condition.mjs").StaleWait[]} stale @param {{ now: number, release?: typeof releaseHoldViaModule, log?: (line: string) => void }} io
+ * @returns {import("../wait-condition.mjs").StaleWait[]}
+ */
+export function liftResolvedHolds(stale, { now, release = releaseHoldViaModule, log = (line) => process.stderr.write(line) }) {
+  const { lifts, remaining } = liftableHolds(stale, now);
+  const failed = lifts.filter(({ item, holders }) => !holders.map((session) => release(item.number, session)).every(Boolean));
+  for (const { item, holders } of lifts.filter((l) => !failed.includes(l))) log(`DID lift-hold pr-${item.number} (${holders.join(", ")}) -- its Waiting-for is true; no session woken\n`);
+  return [...remaining, ...failed.flatMap((l) => l.stale)];
+}
+
 /**
  * #2996: THE GREEN PULL REQUESTS, counting a PR whose hold has stopped excusing as the mergeable PR it would be with the hold lifted.
  * @param {any[]} prs @param {string[] | null} required @param {(pr: any) => boolean} holdStands
@@ -285,16 +315,17 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
- *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts }} [io] `readWaits` (#2996) is the test's seam for the
- *           referenced items, so nothing here needs a token
+ *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
+ *           release?: typeof releaseHoldViaModule }} [io] `readWaits` (#2996) is the test's seam for the
+ *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts } = {}) {
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release } = {}) {
   const { prs, required, primaryDrift, claimRefusals } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
-  const waits = readWaits({ prsRead, openRowsRead, now });
+  const waits = liftedWaits(readWaits({ prsRead, openRowsRead, now }), { now, release });
   const { holdStands, stale } = waitStanding(waits, now);
   const readings = orgHealthTick({
     now,
@@ -310,6 +341,14 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, dec
     waits,
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
+}
+
+/**
+ * #3364: THE WAIT READ AFTER THE GATE HAS LIFTED WHAT IT CAN, so the readings and the orders see only the stale waits a session still owes. `null` stays `null`.
+ * @param {ReturnType<typeof waitTickFacts>} waits @param {{ now: number, release?: typeof releaseHoldViaModule }} io
+ */
+function liftedWaits(waits, { now, release }) {
+  return waits === null ? null : { ...waits, stale: liftResolvedHolds(waits.stale, { now, release }) };
 }
 
 /**
