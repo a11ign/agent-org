@@ -11,7 +11,7 @@
 import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.mjs";
 import { claimRecordOf } from "../claim-stall.mjs";
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { notBeforeDate, notBeforeIso, todayIso, ANSWER_PREFIX } from "../waiting-condition.mjs";
+import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.mjs";
 import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
 import { subjectMention } from "../review-attribution.mjs";
 import { transcriptFiles, claudeTurns } from "../token-audit.mjs";
@@ -94,7 +94,8 @@ function isWaitLabel(name) {
  * when the read was refused -- never `0`, which would read as "never waited" and charge the wait's calls to the row.
  *
  * Two sources, the latest wins: an `unlabeled` event for a wait label (`issues/{n}/events`, the cheaper subset of the timeline
- * `readEvidenceLabelledAt` also reads), and a `Not-before:` that has now passed, whose own instant is the clearing. A cleared
+ * `readEvidenceLabelledAt` also reads), and a `Not-before:` or `Fleet-hold-until:` that has now passed, whose own instant is the
+ * clearing -- `rowDeclaresWait` reads both as a wait, so both must be datable or an expired hold keeps charging the hold's calls. A cleared
  * `blockedBy` edge is NOT dated: the events carry no close of the blocker, so that wait reads as `0`, today's behaviour.
  * @param {any} row @param {(args: string[]) => string} [run]
  * @returns {number | null}
@@ -106,8 +107,9 @@ export function readWaitClearedAt(row, run = defaultRun) {
     const lifted = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l))
       .filter((e) => isWaitLabel(String(e.name))).map((e) => Date.parse(e.at));
     const declared = notBeforeDate(row?.body);
-    const passed = declared === null ? NaN : Date.parse(notBeforeIso(declared));
-    return Math.max(0, ...lifted.filter(Number.isFinite), ...(Number.isFinite(passed) ? [passed] : []));
+    const held = fleetHoldUntil(row?.body);
+    const passed = [declared === null ? NaN : Date.parse(notBeforeIso(declared)), held === null ? NaN : Date.parse(held)];
+    return Math.max(0, ...lifted.filter(Number.isFinite), ...passed.filter(Number.isFinite));
   } catch (err) {
     console.error(`row-call-count-signal: could not read when #${row?.number}'s wait was lifted (${err instanceof Error ? err.message : err}); counting from the claim`);
     return null;
