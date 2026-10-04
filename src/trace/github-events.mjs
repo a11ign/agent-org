@@ -7,7 +7,9 @@
 // call would print a trace that silently lacks the reviews, and a truncated one would look complete.
 //
 // WHAT GITHUB HOLDS FOR IT (measured 2026-10-04 on #3406, #3494 and #3508):
-//   `issues/{n}`                      when it was filed or opened, and by whom. A pull request is an issue too, so the one call serves both.
+//   `issues/{n}`, `pulls/{n}`         when it was filed (a row: `issues`) or opened (a pull request: `pulls`), and by whom. A pull request is an issue too, but its
+//                                     issue record can read ONE SECOND LATER than the pull request's own `created_at`, which is what `gh pr list --json createdAt`
+//                                     and so the outcome clock read (measured 2026-10-04: 1 of 40 merged pull requests, #3575 among them), so a pull request asks `pulls`.
 //   `issues/{n}/timeline`             `reviewed`, `ready_for_review`, `added_to_merge_queue`, `removed_from_merge_queue`, `merged`, `closed`, `committed`,
 //                                     `labeled`/`unlabeled`, and the claim-record COMMENTS (`commented`, with the body). A row's own timeline carries milestones,
 //                                     labels, comments, cross-references and dependency edges and NO board status change: that is a GraphQL project field.
@@ -179,7 +181,7 @@ function headsOf(timeline) {
  * @param {{ subject: Subject, repo: string, gh: Gh }} input
  */
 function eventsOfSubject({ subject, repo, gh }) {
-  const issue = gh([`repos/${repo}/issues/${subject.number}`]);
+  const issue = gh([`repos/${repo}/${subject.isPull ? "pulls" : "issues"}/${subject.number}`]);
   const timeline = readPages(gh, `repos/${repo}/issues/${subject.number}/timeline`, (reply) => reply);
   const born = record(subject, repo, subject.isPull ? "opened" : "filed", "once", { at: timeOf(issue?.created_at, `#${subject.number}`), actor: issue?.user?.login ?? null });
   const events = [born, ...eventsOfTimeline({ subject, repo, timeline })];
