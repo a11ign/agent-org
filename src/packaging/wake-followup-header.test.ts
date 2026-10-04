@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { deliver as settlingDeliver } from "../wake.mjs";
 import { clearThenPrompt as settlingClearThenPrompt, deliveredText } from "../prompt-session.mjs";
 import { sessionOf } from "../token-audit.mjs";
+import { startedPanes } from "./started-pane.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -42,8 +43,11 @@ const counts = (text: string) => PREAMBLE_PHRASES.map((p) => count(text, p));
 /** A `run` that records every herdr call and answers a `workspace create` the way herdr does. */
 function recorder() {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (args.join(" ").includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }

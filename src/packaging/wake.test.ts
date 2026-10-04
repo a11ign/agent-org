@@ -49,6 +49,7 @@ import { sparePathsFrom } from "../wake.mjs";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.mjs";
+import { startedPanes } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -306,8 +307,11 @@ test("the `--` separator is present, or herdr eats the agent's flags as its own"
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
 function recordingHerdr(refuse: (said: string) => boolean = () => false) {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     const said = args.join(" ");
     // Multi-line on purpose: a refusal quotes the FIRST line, and a test that never sees a second one
     // cannot tell a bounded excerpt from the whole message.
@@ -817,7 +821,7 @@ test("every delivery CLEARS the session's context before prompting it", () => {
   assert.equal(calls[0][5], "/clear", "the clear must come FIRST, or the order pays the old context");
 });
 
-test("a REFUSED clear still delivers -- expensive beats undelivered", () => {
+test("a REFUSED clear still delivers -- expensive beats undelivered -- and is reported on the DELIVERED line, not as UNDELIVERED (#3546)", () => {
   const calls: string[][] = [];
   const run = (a: string[]) => {
     calls.push(a);
@@ -826,8 +830,9 @@ test("a REFUSED clear still delivers -- expensive beats undelivered", () => {
   };
   const { sent, refused } = deliver([{ session: "reviewer", causeKey: "k", prompt: "p" }],
     agents({ reviewer: "idle" }), ROSTER, { run, record: () => {} });
-  assert.deepEqual(sent, ["reviewer <- k"], "a bloated context is worse than a fresh one, not worse than none");
-  assert.match(refused[0], /\/clear refused.*delivered anyway/);
+  assert.equal(sent.length, 1, "a bloated context is worse than a fresh one, not worse than none");
+  assert.match(sent[0], /^reviewer <- k \[reviewer: \/clear refused \(agent_blocked\)\]$/, "the refusal rides on the line that says it was delivered");
+  assert.deepEqual(refused, [], "one order, one status: a delivered order is not also UNDELIVERED, and nothing says 'delivered anyway' (#3546)");
 });
 
 test("clearContext reports a refusal rather than throwing, and null on success", () => {

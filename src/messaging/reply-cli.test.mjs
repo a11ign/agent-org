@@ -231,6 +231,81 @@ describe("#3411 `--to` records the inbound message a reply answers, and refuses 
   });
 });
 
+describe("#3564 text that looks like a flag is refused, and `--dry-run` does everything but send", () => {
+  /** @param {Awaited<ReturnType<typeof run>>} result the three things every not-sent case asserts */
+  function assertNothingSent({ code, provider, ledger }) {
+    assert.equal(code, EXIT.refused);
+    assert.deepEqual(provider.sent, []);
+    assert.deepEqual(ledger, []);
+  }
+
+  test("`--session=liaison` after a `--` separator, the path argv takes it by, is refused naming the token", async () => {
+    const result = await run(["--", "--session=liaison"]);
+    assertNothingSent(result);
+    assert.match(result.err, /REFUSED "--session=liaison"/);
+    assert.match(result.err, /--to <ref>/);
+  });
+
+  test("the ledgered text, `--session=liaison` then a blank line then the stamp, arrives by stdin and is refused too", async () => {
+    const result = await run([], { stdin: "--session=liaison\n\nas of 20:59Z" });
+    assertNothingSent(result);
+    assert.match(result.err, /REFUSED "--session=liaison"/);
+  });
+
+  test("a flag-shaped word AFTER words is the same mistake: `as of 20:59Z --session=liaison` is refused", async () => {
+    const result = await run(["--", "as of 20:59Z --session=liaison"]);
+    assertNothingSent(result);
+    assert.match(result.err, /REFUSED "--session=liaison"/);
+  });
+
+  test("CONTROL: ordinary text still sends, and so do a spaced `--` and a rule of dashes, which are prose and not flags", async () => {
+    for (const text of ["as of now", "Thanks -- noted", "---", "wait -- or not"]) {
+      const { code, provider, ledger } = await run(["--", text]);
+      assert.equal(code, EXIT.ok, text);
+      assert.deepEqual(provider.sent.map((message) => message.text), [`${text}\n\n${STAMP}`]);
+      assert.equal(ledger.length, 1);
+    }
+  });
+
+  test("`--dry-run` on a sendable text prints it with what each placeholder resolved to, exits 0, calls no provider and leaves the ledger as it was", async () => {
+    const { code, out, provider, ledger, ledgerPath } = await run(["--dry-run", "--", "{{ready.count}} rows are ready"], { inbound: ["77"] });
+    assert.equal(code, EXIT.ok);
+    assert.match(out, new RegExp(`2 rows are ready\\n\\n${STAMP}`));
+    assert.match(out, /\{\{ready\.count\}\} = 2/);
+    assert.deepEqual(provider.sent, []);
+    assert.deepEqual(ledger, []);
+    assert.equal(readLedgerLines(ledgerPath).length, 1, "the ledger holds only the seeded inbound line");
+  });
+
+  test("`--dry-run` builds no provider at all, so a probe holds neither the token nor the chat id", async () => {
+    const { code } = await run(["--dry-run", "hello"], { providers: { telegram: () => { throw new Error("a dry run built the provider"); } } });
+    assert.equal(code, EXIT.ok);
+  });
+
+  test("`--dry-run` on a refused text exits 2 and prints the refusal", async () => {
+    const flagged = await run(["--dry-run", "--", "--session=liaison"]);
+    assertNothingSent(flagged);
+    assert.match(flagged.err, /REFUSED "--session=liaison"/);
+    const unreadable = await run(["--dry-run", "PR #{{pr:2881.nonsense}}"]);
+    assertNothingSent(unreadable);
+    assert.match(unreadable.err, /REFUSED/);
+  });
+
+  test("`--dry-run` with a `--to` no inbound line holds is refused as a send would be", async () => {
+    const { code, err, provider, ledger } = await run(["--dry-run", "hello", "--to", "999"], { inbound: ["77"] });
+    assert.equal(code, EXIT.refused);
+    assert.match(err, /REFUSED --to 999/);
+    assert.deepEqual(provider.sent, []);
+    assert.deepEqual(ledger, []);
+  });
+
+  test("`--dry-run` still refuses a project that declares no messaging, rather than printing a send that could not happen", async () => {
+    const { code, err } = await run(["--dry-run", "hello"], { messaging: false });
+    assert.equal(code, EXIT.refused);
+    assert.match(err, /messaging is OFF/);
+  });
+});
+
 describe("the real Telegram provider, built from the configured secret files, with a fake `fetch`", () => {
   /** @param {{ok?: boolean}} [options] @returns {{fetch: typeof fetch, calls: {url: string, body: any}[]}} */
   function fakeTelegram({ ok = true } = {}) {

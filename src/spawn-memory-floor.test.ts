@@ -22,6 +22,7 @@ import {
 } from "./spawn-memory-floor.mjs";
 import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
 import { deliver } from "./wake.mjs";
+import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
 const KB_PER_MB = 1024;
 const KB_PER_GB = 1024 * 1024;
@@ -50,8 +51,11 @@ const reviewOrder = (n: number) => ({
 /** A `herdr` that records every call and answers `workspace create` as the live org does. */
 function recordingHerdr() {
   const calls: string[] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args.join(" "));
+    const answered = pane(args);
+    if (answered !== null) return answered;
     return args.join(" ").includes("workspace create")
       ? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } }) : "{}";
   };
@@ -232,7 +236,7 @@ test("#2508 (reviewer): a NEW `reviewer-<n>` is held below the floor BEFORE its 
 function tick(dir: string, meminfoText: string | null) {
   const log = join(dir, "herdr-calls");
   writeFileSync(join(dir, "herdr"), `#!/bin/sh\necho "$*" >> ${log}\ncase "$*" in\n  *'workspace list') printf '%s' '{"result":{"workspaces":[]}}' ;;\n`
-    + `  *'workspace create'*) printf '%s' '{"result":{"root_pane":{"pane_id":"wB:p1"},"workspace":{"workspace_id":"wB"}}}' ;;\n  *) : ;;\nesac\n`);
+    + `  *'workspace create'*) printf '%s' '{"result":{"root_pane":{"pane_id":"wB:p1"},"workspace":{"workspace_id":"wB"}}}' ;;\n${STUB_STARTED_PANE}  *) : ;;\nesac\n`);
   writeFileSync(join(dir, "gh"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(dir, "herdr"), STUB_MODE);
   chmodSync(join(dir, "gh"), STUB_MODE);

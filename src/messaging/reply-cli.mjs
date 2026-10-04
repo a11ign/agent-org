@@ -3,6 +3,12 @@
 // this is the command that builds its four inputs from the host and calls it, so `ceo`'s brief (#2911) names a command that exists.
 //
 //   pnpm run chairman:reply -- "Row {{issue:3071.state}}" --to 4172     (or the text on stdin)
+//   pnpm run chairman:reply -- --dry-run "{{ready.count}} rows are ready"   (checks and resolves it, prints what WOULD go, sends and writes nothing)
+//
+// **TEXT THAT LOOKS LIKE A FLAG IS REFUSED, WHICHEVER WAY IT ARRIVED (#3564).** The chairman was once sent `--session=liaison` as a message: the `liaison` typed it
+// because every other org command asks which session it is. `parseArgs` already throws on an unknown `--x` in argv, so the text that got through did not come
+// through that door: a `--` separator or stdin hands the words over unparsed. The check therefore sits on the TEXT, after argv and stdin have both been
+// resolved, and not in the parser.
 //
 // **THE ONLY PROVIDER IS THE CONFIGURED ONE, AND THE ONLY READERS ARE `createGhReaders`.** `PROVIDERS` is keyed by `messaging.provider`, so a project that
 // configured nothing reaches nothing; the reads go through `gh` and `systemctl` runners that refuse every argv a reader does not build (`assertReadOnlyGh`),
@@ -26,7 +32,7 @@ import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createLedger, describeError, readLedgerLines } from "./ledger.mjs";
 import { createGhReaders } from "./placeholders.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
-import { createReply } from "./reply.mjs";
+import { createReply, prepareReply } from "./reply.mjs";
 import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
 
@@ -87,10 +93,45 @@ function isKnownInbound(replyTo, ledgerPath) {
   return replyTo === undefined || readLedgerLines(ledgerPath).some((line) => line.direction === "in" && line.messageRef === replyTo);
 }
 
-/** @param {string[]} argv @returns {{text: string | undefined, replyTo: string | undefined}} the text is undefined when it is to be read from stdin */
+/** @param {string[]} argv @returns {{text: string | undefined, replyTo: string | undefined, dryRun: boolean}} the text is undefined when it is to be read from stdin */
 function parseCommandLine(argv) {
-  const { values, positionals } = parseArgs({ args: argv, options: { to: { type: "string" } }, allowPositionals: true });
-  return { text: positionals.length > 0 ? positionals.join(" ") : undefined, replyTo: values.to };
+  const { values, positionals } = parseArgs({ args: argv, options: { to: { type: "string" }, "dry-run": { type: "boolean" } }, allowPositionals: true });
+  return { text: positionals.length > 0 ? positionals.join(" ") : undefined, replyTo: values.to, dryRun: values["dry-run"] === true };
+}
+
+/**
+ * A word is flag-shaped when it is `--` and a letter: `--session=liaison`, `--to`. ANY word, not only the first, because `as of 20:59Z --session=liaison` is the same
+ * mistake with a sentence in front of it. `--` followed by a letter and not `--` alone, so an em-dash typed as ` -- ` or a rule of dashes is still prose.
+ * @param {string} text @returns {string | undefined} the first such word
+ */
+function flagShapedWord(text) {
+  return text.split(/\s+/).find((word) => /^--[A-Za-z]/.test(word));
+}
+
+/** @param {string} word @returns {string} */
+function flagRefusal(word) {
+  return `chairman:reply: REFUSED ${JSON.stringify(word)}: it starts with "--", so it reads as a flag and not as words to the chairman. This command takes \`--to <ref>\`, \`--dry-run\` and the text, `
+    + "and nothing else (it asks no session); reword the text. Nothing was sent";
+}
+
+/**
+ * What `--dry-run` prints for a text that WOULD send: the stamped text, then what each placeholder resolved to.
+ * @param {Extract<Awaited<ReturnType<typeof prepareReply>>, {outcome: "checked"}>} checked @returns {string[]}
+ */
+function dryRunLines({ text, values }) {
+  const resolved = Object.entries(values).map(([placeholder, value]) => `chairman:reply:   ${placeholder} = ${value}`);
+  return ["chairman:reply: dry run, would send:", text, ...resolved, "chairman:reply: dry run: nothing was sent and nothing was written to the ledger"];
+}
+
+/**
+ * Everything `send` does short of the provider and the ledger: the same checks, the same readers.
+ * @param {string} text @param {Parameters<typeof prepareReply>[1]} deps @param {{out: (line: string) => void, err: (line: string) => void}} sinks @returns {Promise<number>} the exit code
+ */
+async function dryRun(text, deps, { out, err }) {
+  const prepared = await prepareReply(text, deps);
+  if (prepared.outcome === "refused") return report({ ...prepared }, { out, err });
+  for (const line of dryRunLines(prepared)) out(line);
+  return EXIT.ok;
 }
 
 /** @param {Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, {outcome: "refused"}>} refusal @returns {string[]} one line per problem, then the sendable text */
@@ -159,14 +200,20 @@ function exitCodeFor(error) {
 }
 
 /**
- * @param {string[]} argv the arguments after the script: the text (or stdin) and `--to <message ref>`
+ * @param {string[]} argv the arguments after the script: the text (or stdin), `--to <message ref>` and `--dry-run`
  * @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps]
  * @returns {Promise<number>} the exit code
  */
 export async function main(argv, deps = {}) {
   const { root, env, home, now, fetch: fetchImpl, providers, readStdin: stdin, wakeLedgerPath, gh, systemctl, out, err } = { ...DEFAULT_DEPS(), ...deps };
   try {
-    const { text, replyTo } = parseCommandLine(argv);
+    const { text: given, replyTo, dryRun: isDryRun } = parseCommandLine(argv);
+    const text = given ?? await stdin();
+    const flag = flagShapedWord(text);
+    if (flag !== undefined) {
+      err(flagRefusal(flag));
+      return EXIT.refused;
+    }
     const config = readMessagingConfig(resolve(root), { home });
     if (!config.enabled) {
       err("chairman:reply: messaging is OFF (no `messaging` key in .agent-org/project.json); nothing was sent");
@@ -180,10 +227,12 @@ export async function main(argv, deps = {}) {
       err(`chairman:reply: REFUSED --to ${replyTo}: no message from the chairman with that ref is in the ledger, so the reply would answer nothing; nothing was sent`);
       return EXIT.refused;
     }
-    const provider = providers[config.provider](config, { fetch: fetchImpl });
     const readers = createGhReaders({ gh, systemctl, repo: trackerRepo(resolve(root)), ...await hostFiles({ root: resolve(root), wakeLedger: () => wakeLedgerPath({ home, env }), err }), now });
+    // A dry run builds NO provider: that reads the token and the chairman's chat id, and a probe has no business holding either.
+    if (isDryRun) return await dryRun(text, { readers, now }, { out, err });
+    const provider = providers[config.provider](config, { fetch: fetchImpl });
     const reply = createReply({ send: (message) => provider.send(message), ledger: createLedger({ path: defaultLedgerPath(home), now }), readers, now });
-    return report(await reply.send(text ?? await stdin(), { replyTo }), { out, err });
+    return report(await reply.send(text, { replyTo }), { out, err });
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     err(`chairman:reply: ${error instanceof MessagingConfigRefusal ? "MALFORMED -- " : ""}${describeError(error)}`);
