@@ -87,7 +87,7 @@ test("#3458 a restored workspace that is WORKING is left; one at a prompt (idle,
   for (const status of ["idle", "done", "unknown", "blocked"]) assert.deepEqual(sweep({ ceo: "working", [RESTORED]: status }).got.ended, [RESTORED], status);
 });
 
-test("#3458 two workspaces under ONE label are not closed by guess: the id is not exactly one, so it is left and said", () => {
+test("#3458 two workspaces under ONE label are BOTH closed, by id (#3482 reversed #3458's \"left and said\": the label is the instance's, so every workspace under it goes)", () => {
   const closed: string[] = [];
   const warns: string[] = [];
   const run = (args: string[]) => {
@@ -99,10 +99,10 @@ test("#3458 two workspaces under ONE label are not closed by guess: the id is no
     return "{}";
   };
   const got = endFinishedReviewers([{ label: RESTORED, status: "idle" }, { label: RESTORED, status: "unknown" }], {
-    registry: {}, now: T0, run, prState: () => "closed", removeCheckout: () => null, record: () => { throw new Error("no ending happened"); }, warn: (l: string) => warns.push(l),
+    registry: {}, now: T0, run, prState: () => "closed", removeCheckout: () => null, record: () => undefined, warn: (l: string) => warns.push(l),
   } as never);
-  assert.deepEqual([got.ended, closed], [[], []]);
-  assert.match(warns.join("\n"), /workspace id is not exactly one/);
+  assert.deepEqual([got.ended, closed], [[RESTORED], ["--session org workspace close wA", "--session org workspace close wB"]]);
+  assert.match(warns.join("\n"), /held 2 workspaces \(wA, wB\); 2 closed/);
 });
 
 /** A directory of stubs for `herdr` (a fixed listing, its calls logged), `gh` (every pull request is closed) and `git` (every call logged and succeeding). */

@@ -1787,9 +1787,10 @@ export function registerReviewer(paths, session, now = Date.now()) {
 export const REVIEWER_DEAD_AFTER_TICKS = 3;
 
 /**
- * @typedef {{spawnedAt: number, absentTicks?: number, absentNoted?: string}} ReviewerInstance
+ * @typedef {{spawnedAt: number, absentTicks?: number, absentNoted?: string, duplicateNoted?: number}} ReviewerInstance
  * `absentTicks` counts complete listings that lacked it; `absentNoted` is the last thing written to the absences
- * ledger about it, so a state that does not change writes one line and not one per tick.
+ * ledger about it, so a state that does not change writes one line and not one per tick. `duplicateNoted` is how many
+ * agentless duplicates the ledger last said it saw (#3482).
  */
 
 /** `listingIsComplete` moved to `./herdr-agents.mjs` (#2747), which `claim-stall.mjs` needs too; imported above and re-exported below. */
@@ -1868,6 +1869,17 @@ export function restoredReviewers(agents, registry) {
 const mayBeEnded = (agent, restored) => (restored ? agent.status !== "working" : WAKEABLE.includes(agent.status));
 
 /**
+ * MAY THE WORKSPACES UNDER ONE LABEL ALL BE CLOSED NOW (#3482). A duplicate that holds no agent is not a reviewer in the middle of a
+ * turn, and its `unknown` status would otherwise stop the instance whose OTHER workspace is idle from ever being ended; it counts only
+ * when it is all there is, which is the lone agentless workspace {@link mayBeEnded} has always judged.
+ * @param {{status: string}[]} holders @param {boolean} restored
+ */
+function holdersMayBeEnded(holders, restored) {
+  const withAgent = holders.filter((h) => !hasNoAgent(h));
+  return (withAgent.length > 0 ? withAgent : holders).every((h) => mayBeEnded(h, restored));
+}
+
+/**
  * END ONE FINISHED INSTANCE: its workspace, its checkout, then the ledger line -- in that order, and `false` with a warning at the first step that
  * would not. The registry's key is the CALLER's to drop on `true`, so a restored workspace (no key) and a registered one end the same way.
  * @param {{session: string, instance: {key: string, number: number} | null, state: string, restored: boolean}} finished
@@ -1878,16 +1890,17 @@ const mayBeEnded = (agent, restored) => (restored ? agent.status !== "working" :
  */
 function endFinishedReviewer({ session, instance, state, restored }, agents, deps) {
   const pr = instance === null ? null : instance.number;
-  const agent = agents.find((a) => a.label === session);
-  if (agent !== undefined && !mayBeEnded(agent, restored)) return false;
-  if (agent !== undefined && !closeReviewer(session, deps)) return false;
+  const holders = agents.filter((a) => a.label === session);
+  const present = holders.length > 0;
+  if (present && !holdersMayBeEnded(holders, restored)) return false;
+  if (present && !closeReviewer(session, deps)) return false;
   const left = deps.removeCheckout(session, Number(pr), instance?.key ?? "");
   if (left !== null) {
     deps.warn(`reviewer teardown: "${session}" is finished but its checkout was not removed (${left}) -- retried next tick.`);
     return false;
   }
   deps.record({ session, pr, state, at: new Date(deps.now).toISOString(),
-    workspace: agent === undefined ? "already gone" : "closed", checkout: "removed" });
+    workspace: present ? "closed" : "already gone", checkout: "removed" });
   if (restored) deps.warn(`reviewer teardown: "${session}" was not registered -- herdr brought it back after an ending -- and PR #${pr} is ${state}.`);
   return true;
 }
@@ -1956,7 +1969,9 @@ export function endFinishedReviewers(agents, deps) {
  */
 function reconcileOpenReviewer({ session, pr, agents, registry }, deps) {
   const complete = listingIsComplete(agents);
-  const holder = agents.find((a) => a.label === session);
+  const holders = agents.filter((a) => a.label === session);
+  // the one that holds an agent speaks for the instance: a duplicate with none must not make a live reviewer look dead (#3482)
+  const holder = holders.find((h) => !hasNoAgent(h)) ?? holders[0];
   const agentless = holder !== undefined && hasNoAgent(holder);
   const before = registry[session];
   const seen = observeOpenReviewer(before, { listed: holder !== undefined && !agentless, complete, agentless });
@@ -1968,7 +1983,29 @@ function reconcileOpenReviewer({ session, pr, agents, registry }, deps) {
   else registry[session] = seen.entry ?? { ...before, absentTicks: REVIEWER_DEAD_AFTER_TICKS - 1, absentNoted: "close-failed" };
   const event = stuck ? "close-failed" : seen.event;
   if (event !== null) noteAbsence({ session, pr, event, ticks: seen.absentTicks, complete, agentless }, deps);
+  if (!dead) noteDuplicates({ session, pr, holders }, registry[session], deps);
   return dead;
+}
+
+/**
+ * A workspace with NO AGENT under a label whose other workspace HOLDS one (#3482), written to the absences ledger ONCE, so the
+ * duplicate is seen while the pull request is open and not only the day the teardown cannot end it. `duplicateNoted` on the registry
+ * entry (the caller's copy) is what makes it once, and is dropped when the duplicate goes so a later one is reported again.
+ * @param {{session: string, pr: number, holders: {status: string}[]}} at @param {ReviewerInstance} entry
+ * @param {{now: number, warn: (line: string) => void, recordAbsence?: (line: object) => void}} deps
+ */
+function noteDuplicates({ session, pr, holders }, entry, deps) {
+  const duplicates = holders.some((h) => !hasNoAgent(h)) ? holders.filter(hasNoAgent).length : 0;
+  if (duplicates === 0) {
+    delete entry.duplicateNoted;
+    return;
+  }
+  if (entry.duplicateNoted === duplicates) return;
+  entry.duplicateNoted = duplicates;
+  deps.recordAbsence?.({ session, pr, at: new Date(deps.now).toISOString(), event: "duplicate-agentless", duplicates,
+    presence: `${duplicates} workspace(s) with no agent beside one that holds one` });
+  deps.warn(`reviewer teardown: "${session}" for OPEN PR #${pr} has ${duplicates} more workspace(s) under its label that hold NO agent `
+    + `-- the ending closes every workspace under the label, so they go with it.`);
 }
 
 /**
@@ -1986,15 +2023,25 @@ function noteAbsence({ session, pr, event, ticks, complete, agentless }, deps) {
 }
 
 /**
- * Close one reviewer instance's workspace; `false`, with a warning, when it would not close.
+ * Close EVERY workspace under one reviewer instance's label; `false`, with a warning, when none was found or any would not close.
+ * Two workspaces under one label (#3482: herdr listed `reviewer-3460` twice) are both the instance's: closing neither left the
+ * pull request's teardown "left running" on every tick for as long as they lived. Each close is tried even after one fails, so a
+ * retry has less to do, and the instance stays registered until all are gone.
  * @param {string} session @param {{run: (args: string[]) => string, warn: (line: string) => void}} deps
  */
 function closeReviewer(session, deps) {
-  const id = workspaceIdOf(deps.run, session);
-  if (id === null) {
-    deps.warn(`reviewer teardown: "${session}" is finished but its workspace id is not exactly one -- left running.`);
+  const ids = workspaceIdsOf(deps.run, session);
+  if (ids.length === 0) {
+    deps.warn(`reviewer teardown: "${session}" is finished but no workspace is listed under its label -- left running.`);
     return false;
   }
+  const failed = ids.filter((id) => !closeWorkspace(session, id, deps));
+  if (ids.length > 1) deps.warn(`reviewer teardown: "${session}" held ${ids.length} workspaces (${ids.join(", ")}); ${ids.length - failed.length} closed.`);
+  return failed.length === 0;
+}
+
+/** One `workspace close`; `false`, with a warning, when it would not. @param {string} session @param {string} id @param {{run: (args: string[]) => string, warn: (line: string) => void}} deps */
+function closeWorkspace(session, id, deps) {
   try {
     deps.run(["--session", "org", "workspace", "close", id]);
     return true;
@@ -5385,21 +5432,31 @@ export function readSpareRegistry(path, read = readFileSync) {
 }
 
 /**
- * Where a live workspace's id is, by its label -- or `null` when there is not exactly one. `workspace close`
- * takes an id, and two workspaces under one label (the ambiguity `spawnableRole` refuses to create) must never
- * be closed by guessing which was meant.
+ * Where every live workspace under a label is -- `[]` when there is none or the listing could not be read. `workspace close`
+ * takes an id, so a caller that must end a label ends each id it names ({@link closeReviewer}).
+ *
+ * @param {(args: string[]) => string} run @param {string} label
+ * @returns {string[]}
+ */
+function workspaceIdsOf(run, label) {
+  try {
+    const list = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces;
+    return (Array.isArray(list) ? list : []).filter((w) => w.label === label && typeof w.workspace_id === "string").map((w) => w.workspace_id);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Where a live workspace's id is, by its label -- or `null` when there is not exactly one. A caller that ends ONE
+ * workspace (an engineer's) must never close by guessing which of two was meant; the reviewer's ending closes them all instead.
  *
  * @param {(args: string[]) => string} run @param {string} label
  * @returns {string | null}
  */
 function workspaceIdOf(run, label) {
-  try {
-    const list = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces;
-    const named = (Array.isArray(list) ? list : []).filter((w) => w.label === label);
-    return named.length === 1 && typeof named[0].workspace_id === "string" ? named[0].workspace_id : null;
-  } catch {
-    return null;
-  }
+  const ids = workspaceIdsOf(run, label);
+  return ids.length === 1 ? ids[0] : null;
 }
 
 /**
