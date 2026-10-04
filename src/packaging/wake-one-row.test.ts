@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { route, deliver, withSpareInstances, engineerRoles, engineerEligibility, spawnClaimer, spentSeen, isSpareRole,
   cycleVerdict, consecutiveClean, cyclesReport, endFinishedSpares, readSpareCycles, sparePathsFrom, registerSpawn,
   settleAbsentInstance, drainInForce, spareInstances } from "../wake.mjs";
+import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 
 const T0 = Date.UTC(2026, 8, 25, 0, 0, 0);
 const STUB_MODE = 0o755;
@@ -98,8 +99,11 @@ test("#2407 (2) an order that NAMES the spent spare is still delivered; the pool
   const named = { session: "worker-4", cause: "changes-requested", causeKey: "worker-4/changes-requested/pr-2380/abc",
     prompt: "Your PR has a refusal to answer." };
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (args.join(" ").includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }
@@ -242,6 +246,7 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
     const seen = join(dir, "registry-at-claim");
     writeFileSync(join(dir, "herdr"), `#!/bin/sh\ncase "$*" in\n  *'workspace list') printf '%s' '{"result":{"workspaces":[${listed}]}}' ;;\n`
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
+      + STUB_STARTED_PANE
       + "  *) : ;;\nesac\n");
     writeFileSync(join(dir, "gh"), "#!/bin/sh\nprintf '%s' '[]'\n");
     writeFileSync(join(dir, "git"), "#!/bin/sh\ncase \"$1\" in\n  worktree) mkdir -p \"$4\" ;;\n  *) : ;;\nesac\n");

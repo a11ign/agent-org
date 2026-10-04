@@ -23,6 +23,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startedPanes } from "./started-pane.ts";
 
 const CLONE = "/home/agent/repos/agent-org";
 
@@ -262,9 +263,10 @@ test("(3) the keyed reviewer's order and environment carry `GH_REPO=a11ign/agent
 test("(3) end to end: `deliver` makes the keyed tree from the clone, starts the pane with `GH_REPO`, and types the door line", () => {
   const git = fakeGit();
   const sent: string[][] = [];
+  const pane = startedPanes();
   const registered: string[] = [];
   const order = ordersOf("agent-org", [readyPr(6)]).orders.find((o) => o.session === SESSION)!;
-  const out = deliver([order], [], [], { run: (args) => { sent.push(args); return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" },
+  const out = deliver([order], [], [], { run: (args) => { sent.push(args); return pane(args) ?? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" },
     workspace: { workspace_id: "wB" } } }); }, checkout: git.seams, reviewerEnv: {}, registerReviewer: (s) => registered.push(s) });
   assert.deepEqual(out.refused, []);
   assert.deepEqual(registered, [SESSION], "POSITIVE CONTROL: an instance was started");

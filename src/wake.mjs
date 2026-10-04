@@ -1756,7 +1756,7 @@ function reviewerTarget(order, live, deps) {
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
   deps.registerReviewer?.(spawn.label);
-  return { label: spawn.label, profile: spawn.profile, reviewer: true, order: carried };
+  return { label: spawn.label, profile: spawn.profile, reviewer: true, order: carried, workspace: spawn.workspace };
 }
 
 /** @param {string} ledgerPath @returns {{registry: string, endings: string, absences: string}} */
@@ -4226,7 +4226,9 @@ function settleAfter(run, label, command, sleep) {
     // A REFUSED COMMAND IS NOT A REFUSED WAKE. The order still goes, on a context this command would have
     // shrunk: expensive is strictly better than undelivered, and the refusal is reported rather than
     // swallowed.
-    return `${label}: ${command} refused (${firstLine(err, CLEAR_REFUSAL_EXCERPT)})`;
+    // herdr's OWN WORDS (`herdrReason`), not the command we sent: `Command failed: herdr ... agent prompt X /compact` named
+    // neither `agent_not_found` nor `agent_blocked`, and {@link contextBefore} needs the code to tell a gone agent from a busy one.
+    return `${label}: ${command} refused (${herdrReason(err, CLEAR_REFUSAL_EXCERPT)})`;
   }
 }
 
@@ -4491,7 +4493,7 @@ export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESS
  *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
  *   ({@link spawnEnvironment}); `relane` is {@link relaneTarget}'s clock and deferral record (#3465)
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, claimed?: ClaimedRow,
- *   reviewer?: true, order?: {prompt: string}} | {refusal: string}}
+ *   workspace?: string, reviewer?: true, order?: {prompt: string}} | {refusal: string}}
  */
 function targetFor(order, live, roster, deps) {
   // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
@@ -4523,7 +4525,7 @@ function targetFor(order, live, roster, deps) {
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
-  return { label: spawn.label, profile: spawn.profile, claimed: spawn.claimed };
+  return { label: spawn.label, profile: spawn.profile, claimed: spawn.claimed, workspace: spawn.workspace };
 }
 
 /**
@@ -4544,21 +4546,137 @@ function carriedOrder(order, target) {
 }
 
 /**
- * WHAT HAPPENS TO THE WINDOW BEFORE THIS ORDER (see {@link prepareContext}), as a {@link CONTEXT_ACTION} value.
+ * A refusal that says the AGENT IS GONE (herdr's `agent_not_found`), as {@link settleAfter} quotes it. Such an order cannot land at all,
+ * so it is UNDELIVERED; every other refusal of a context command leaves a session the prompt can still reach.
+ */
+const AGENT_ABSENT = /agent_not_found/;
+
+/**
+ * WHAT HAPPENS TO THE WINDOW BEFORE THIS ORDER (see {@link prepareContext}): `action` is a {@link CONTEXT_ACTION} value, `note` the
+ * refusal of the context command when one was refused and the order still goes, and `undelivered` the refusal that stops it.
  * A process this tick STARTED has nothing to clear, so it is `cleared` without a command; a RESUME (#2470) is `kept` without one,
  * because its whole point is the context the session still has and a clear would wipe exactly what the interrupted turn had built.
- * A refusal is reported into `refused` and the order still goes.
+ *
+ * A REFUSED `/clear` OR `/compact` IS NOT A DELIVERY, AND IS NOT "DELIVERED ANYWAY" EITHER (#3546). The order goes after a refusal
+ * that left the session reachable -- a window left big costs more than one cleared, which beats an order not sent -- but the word for
+ * that was filed under `refused`, which the tick prints as UNDELIVERED, so one line said both. Now the order has ONE status: the
+ * refusal rides on the DELIVERED line as `note`, and the prompt that follows is the real check, whose own refusal is UNDELIVERED. A refusal
+ * that says the agent is gone (`agent_not_found`) is the one case where the order cannot land, and it stops here with herdr's words.
  * @param {{ causeKey: string, resume?: boolean }} order
  * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
- *   target: { label: string, profile?: object }, refused: string[] }} ctx `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688)
- * @returns {string}
+ *   target: { label: string, profile?: object } }} ctx `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688)
+ * @returns {{action: string, note: string | null} | {undelivered: string}}
  */
-function contextBefore(order, { run, sleep, contextRoot, clock, target, refused }) {
-  if (order.resume === true) return CONTEXT_ACTION.KEPT;
-  if (target.profile) return CONTEXT_ACTION.CLEARED;
+function contextBefore(order, { run, sleep, contextRoot, clock, target }) {
+  if (order.resume === true) return { action: CONTEXT_ACTION.KEPT, note: null };
+  if (target.profile) return { action: CONTEXT_ACTION.CLEARED, note: null };
   const { action, refusal } = prepareContext(run, target.label, { sleep, contextRoot, clock });
-  if (refusal) refused.push(`${order.causeKey}: ${refusal} -- delivered anyway`);
-  return action;
+  if (refusal === null) return { action, note: null };
+  return AGENT_ABSENT.test(refusal) ? { undelivered: refusal } : { action, note: refusal };
+}
+
+// --- #3546: A STARTED AGENT'S FIRST PROMPT IS CONFIRMED SUBMITTED, NOT ASSUMED ---
+
+/**
+ * How long a process this tick STARTED may take to report `interactive_ready` before its order is held back, and how long after the
+ * prompt it may take to leave `idle` before ONE Enter is sent. Both are 30 s, the chairman's suggestion, and MEASURED against it: on the
+ * live org, 2026-10-04, `agent start` returned with `interactive_ready: true` and the prompt took the agent to `working` 0.9 s later
+ * (one sample, then the live run recorded on #3546), so 30 s is about thirty times the reading, not a reading itself.
+ */
+export const READY_BOUND_MS = 30_000;
+export const SUBMIT_BOUND_MS = 30_000;
+
+/** After the Enter this gate sent, how long the agent has to leave `idle` before the order is UNDELIVERED. */
+export const ENTER_BOUND_MS = 10_000;
+
+/** How often a started agent is re-read while the gate waits on it. */
+const START_POLL_MS = 500;
+
+/**
+ * THE STATES THAT SAY A PROMPT WAS TAKEN. A prompt typed into the box and never submitted leaves herdr reading `idle` with
+ * `state_change_seq` unmoved (measured: typed text, 0.5 s later `idle`, same seq), so "not `idle`" is the observable. A turn that was
+ * taken and has already ended reads `done`, which counts: a fast reply must not be mistaken for a lost one.
+ */
+const PROMPT_TAKEN = new Set(["working", "blocked", "done"]);
+
+/**
+ * Read one agent: `{status, ready}`. THROWS when herdr cannot answer, and the caller says what that cost.
+ * @param {(args: string[]) => string} run @param {string} label
+ * @returns {{status: string, ready: boolean}}
+ */
+function readAgent(run, label) {
+  const agent = JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent;
+  if (agent === undefined) throw new Error("herdr's answer named no agent");
+  return { status: String(agent.agent_status), ready: agent.interactive_ready === true };
+}
+
+/**
+ * Re-read `label` every {@link START_POLL_MS} until `met` holds of what herdr says, or `boundMs` has gone by. The bound is the SUM OF
+ * THE WAITS, injected like {@link clearContext}'s settle, so a test does not pay it and a real call is bounded to a little over it.
+ * @param {(args: string[]) => string} run @param {string} label
+ * @param {{met: (facts: {status: string, ready: boolean}) => boolean, boundMs: number, sleep: (ms: number) => void}} how
+ * @returns {{met: true} | {met: false, last: string}} `last` is the final reading, or why there was none
+ */
+function pollAgent(run, label, { met, boundMs, sleep }) {
+  let last = "herdr never answered";
+  for (let waited = 0; ; waited += START_POLL_MS) {
+    try {
+      const facts = readAgent(run, label);
+      if (met(facts)) return { met: true };
+      last = `${facts.status}, interactive_ready=${facts.ready}`;
+    } catch (err) {
+      last = `unreadable: ${herdrReason(err)}`;
+    }
+    if (waited >= boundMs) return { met: false, last };
+    sleep(START_POLL_MS);
+  }
+}
+
+/**
+ * Has this STARTED agent reached the point where a prompt will be submitted, or why not (#3546, done-when 1)? `agent start` returning is
+ * not it: a prompt sent before herdr reports `interactive_ready` can be typed and never submitted. Nothing is typed until it does.
+ * @param {(args: string[]) => string} run @param {string} label @param {(ms: number) => void} sleep
+ * @returns {string | null} why the order is held back, or `null` when the agent is ready
+ */
+function notReadyWhy(run, label, sleep) {
+  const ready = pollAgent(run, label, { met: (f) => f.ready && f.status === "idle", boundMs: READY_BOUND_MS, sleep });
+  return ready.met ? null : `"${label}" started but herdr never reported it interactive-ready within ${READY_BOUND_MS / 1000}s `
+    + `(${ready.last}); nothing was typed`;
+}
+
+/**
+ * Did the agent TAKE the prompt just sent (#3546, done-when 2)? Waits {@link SUBMIT_BOUND_MS} for it to leave `idle`; if it has not, the text
+ * is in the box unsubmitted (a newline landed where the submit should have), so the gate sends ONE Enter and waits {@link ENTER_BOUND_MS}.
+ * The Enter is sent only on that evidence: an agent that went `working` is never sent one, or it would submit an empty line into its first turn.
+ * @param {(args: string[]) => string} run @param {string} label @param {(ms: number) => void} sleep
+ * @returns {string | null} why the order is UNDELIVERED, or `null` when the agent took it
+ */
+function untakenWhy(run, label, sleep) {
+  const taken = (/** @type {{status: string}} */ f) => PROMPT_TAKEN.has(f.status);
+  if (pollAgent(run, label, { met: taken, boundMs: SUBMIT_BOUND_MS, sleep }).met) return null;
+  try {
+    run(["--session", "org", "agent", "send-keys", label, "enter"]);
+  } catch (err) {
+    return `"${label}" stayed idle ${SUBMIT_BOUND_MS / 1000}s after its prompt and the Enter was refused (${herdrReason(err)})`;
+  }
+  const after = pollAgent(run, label, { met: taken, boundMs: ENTER_BOUND_MS, sleep });
+  return after.met ? null : `"${label}" never started a turn: still ${after.last} ${ENTER_BOUND_MS / 1000}s after one Enter, `
+    + `${SUBMIT_BOUND_MS / 1000}s after its prompt`;
+}
+
+/**
+ * Undo a start whose first prompt did not land: close the workspace this tick opened, and release the row it claimed for the
+ * role, so the gate offers the order again as an ORDER (the row reads unclaimed, a fresh process is started) and not as a second copy typed
+ * on top of the text already in this one's box. The same two undos {@link spawnWorker} makes when the start itself fails.
+ * @param {{label: string, workspace?: string, claimed?: ClaimedRow}} target
+ * @param {{run: (args: string[]) => string, claimer?: SpawnClaimer, env?: Record<string, string>}} how
+ * @returns {string} a clause to append to the refusal being reported
+ */
+function abandonedStart(target, { run, claimer, env }) {
+  const closed = target.workspace === undefined ? "" : closedNote(run, target.workspace);
+  const released = target.claimed !== undefined && claimer !== undefined
+    ? claimer.release(target.claimed, target.label, env ?? spawnEnvironment()) : "";
+  return `${closed}${released}`;
 }
 
 /**
@@ -4591,6 +4709,39 @@ function whyUnavailable(target, unavailable) {
 function recordCapped({ stuck, outaged }, order, already) {
   if (order.outageNow) outaged.push(order.causeKey);
   else stuck.push(`${order.causeKey}: delivered ${already} times and the cause is still true`);
+}
+
+/**
+ * Type the order into `target` and, for a process this tick STARTED, make sure it was TAKEN (#3546).
+ *
+ * A STARTED AGENT IS PROMPTED ONLY ONCE herdr reports it interactive-ready ({@link notReadyWhy}), and the prompt is CONFIRMED by the agent
+ * leaving `idle` ({@link untakenWhy}), with one Enter if it did not. Either failure ABANDONS the start ({@link abandonedStart}): the order
+ * is UNDELIVERED with the reason, never STARTED. A refused prompt keeps the old behaviour -- the process is left running for the next tick's
+ * `route` -- because nothing was typed into it. A standing session or a live instance is prompted exactly as before: it is not new, and its
+ * prompt is not the first thing its terminal has been asked.
+ *
+ * @param {{causeKey: string, session: string, prompt: string}} order
+ * @param {{label: string, profile?: object, claimed?: ClaimedRow, workspace?: string, order?: {prompt: string}}} target
+ * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void, launch?: LaunchFacts, context: string,
+ *   claimer?: SpawnClaimer, env?: Record<string, string>}} how
+ * @returns {string | null} why the order is UNDELIVERED, or `null` when it landed
+ */
+function promptTarget(order, target, { run, sleep = sleepSync, launch, context, claimer, env }) {
+  const started = target.profile !== undefined;
+  const notReady = started ? notReadyWhy(run, target.label, sleep) : null;
+  if (notReady !== null) return `${notReady}${abandonedStart(target, { run, claimer, env })}`;
+  try {
+    run(["--session", "org", "agent", "prompt", target.label,
+      addressed(carriedOrder(order, target), target.label,
+        { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context })]);
+  } catch (err) {
+    // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
+    // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
+    // path; closing it would throw away a working engineer to tidy up a failed prompt.
+    return `herdr refused the prompt to "${target.label}" (${firstLine(err)})`;
+  }
+  const untaken = started ? untakenWhy(run, target.label, sleep) : null;
+  return untaken === null ? null : `${untaken}${abandonedStart(target, { run, claimer, env })}`;
 }
 
 /**
@@ -4675,18 +4826,16 @@ export function deliver(orders, agents, roster,
     // output, an instance's window is its one row.
     // A RESUME IS NEVER PRECEDED BY A CLEAR (#2470): its whole point is the context the session still has. Sent to a standing seat it
     // would wipe exactly what the interrupted turn had built, and the ledger says so with the same `no-clear` mark an instance's carries.
-    const context = contextBefore(order, { run, sleep, contextRoot, clock, target, refused });
+    const before = contextBefore(order, { run, sleep, contextRoot, clock, target });
+    if ("undelivered" in before) {
+      refused.push(`${order.causeKey}: ${before.undelivered}`);
+      continue;
+    }
+    const { action: context, note } = before;
     const noClear = context !== CONTEXT_ACTION.CLEARED;
-    try {
-      run(["--session", "org", "agent", "prompt", target.label,
-        addressed(carriedOrder(order, target), target.label,
-          { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context })]);
-    } catch (err) {
-      // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
-      // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
-      // path; closing it would throw away a working engineer to tidy up a failed prompt.
-      refused.push(`${order.causeKey}: herdr refused the prompt to "${target.label}" `
-        + `(${firstLine(err)})`);
+    const failure = promptTarget(order, target, { run, sleep, launch, context, claimer, env });
+    if (failure !== null) {
+      refused.push(`${order.causeKey}: ${failure}`);
       continue;
     }
     // Woken agents are working NOW, so a second order in this same tick must not go to the same one. A
@@ -4707,7 +4856,7 @@ export function deliver(orders, agents, roster,
     // line is unchanged, and an instance's says it was left alone -- so the tick log shows no `/clear` to one.
     sent.push(target.profile
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
-      : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}`);
+      : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}`);
   }
   return { sent, refused, stuck, outaged };
 }

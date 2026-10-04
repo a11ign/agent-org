@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
   WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.mjs";
+import { startedPanes } from "./packaging/started-pane.ts";
 
 const ROW = 2405;
 const ORDER = {
@@ -81,11 +82,14 @@ function fakeHost(over: { claimExit?: number; claimOutput?: string; existing?: s
 /** A recording herdr that answers `workspace create` as the live org does, and can be made to fail one verb. */
 function fakeHerdr(events: string[], failing?: string) {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
     const line = args.join(" ");
     events.push(`herdr ${line}`);
     if (failing && line.includes(failing)) throw new Error(`herdr: ${failing} refused`);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (line.includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }

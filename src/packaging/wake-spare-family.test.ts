@@ -26,6 +26,7 @@ import { laneReason, runnerReason } from "../row-claim/runner-rule.mjs";
 import { labelAfterCreate } from "../pr-open.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.mjs";
+import { startedPanes } from "./started-pane.ts";
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -43,8 +44,11 @@ const SESSIONS_JSON = join(HOME_CHECKOUT, ".agent-org/roles/sessions.json");
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
 function recordingHerdr() {
   const calls: string[][] = [];
+  const pane = startedPanes();
   const run = (args: string[]) => {
     calls.push(args);
+    const answered = pane(args);
+    if (answered !== null) return answered;
     if (args.join(" ").includes("workspace create")) {
       return JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" }, workspace: { workspace_id: "wB" } } });
     }
