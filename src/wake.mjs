@@ -3325,9 +3325,12 @@ export const ENGINEER_BRIEF = roleBriefPath("engineer.md").relative;
  */
 function engineerBriefLine(label, engineers, families) {
   if (!engineers.includes(label) && familyNumber(label, families) === null) return "";
-  return `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
-    + "the habits every engineer is held to. Nothing else tells you them.\n\n";
+  return `${ENGINEER_BRIEF_SENTENCE}\n\n`;
 }
+
+/** The one sentence that sends an engineer to {@link ENGINEER_BRIEF}; a spawned order carries it WITHOUT the roster test (#3444). */
+const ENGINEER_BRIEF_SENTENCE = `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
+  + "the habits every engineer is held to. Nothing else tells you them.";
 
 /**
  * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
@@ -3352,7 +3355,8 @@ function engineerBriefLine(label, engineers, families) {
  *
  * A SPAWNED ENGINEER'S ORDER IS DIFFERENT IN KIND (#2405): its row is already claimed and it is already in the
  * row's worktree, so `spawned` REPLACES the order's text with {@link spawnedPrompt} -- there is no claim command
- * to run and no other directory to name. A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
+ * to run and no other directory to name -- AND IT CARRIES NO AUTONOMY PARAGRAPHS (#3444): identity, that text, and the one sentence sending it to
+ * `engineer.md`, which says them once ({@link autonomyParagraphs}). A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
  * filled by {@link launchAdvice}. `engineers` and `families` are parameters so a test can hand `addressed` a roster.
  *
  * A FOLLOW-UP GETS ONE LINE, NOT THIS WHOLE WRAPPER (#2538). `followUp` is `deliver`'s and `clearThenPrompt`'s say-so that the
@@ -3377,19 +3381,29 @@ export function addressed(order, label,
     : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch))
       .replaceAll(CONTEXT_PLACEHOLDER, contextSentence(context));
   if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}${staleReadingsClause(label, context)}\n\n${prompt}`;
-  return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
-    + `asks which session you are (\`--session=${label}\`).\n\n`
-    + `${prompt}\n\n`
-    + engineerBriefLine(label, engineers, families)
-    + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
+  const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
+    + `asks which session you are (\`--session=${label}\`).\n\n`;
+  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}`;
+  return `${identity}${prompt}\n\n${engineerBriefLine(label, engineers, families)}${autonomyParagraphs(order, label)}`;
+}
+
+/**
+ * THE THREE PARAGRAPHS A STANDING SEAT AND A REVIEWER READ AFTER THE ORDER, EVERY FIRST ORDER (#3444): autonomy, the end-of-turn rule and
+ * what to do when the action is not yours. A spawned engineer is NOT given them: they live in `engineer.md` ({@link ENGINEER_BRIEF}) once
+ * and the one sentence above sends it there, so the order does not repeat what it tells the engineer to read.
+ *
+ * THE STORY BEHIND THE END-OF-TURN RULE, moved here from the order (#3444) where it was read on every delivery by an agent that cannot
+ * use it: on 2026-09-21 `product-manager` ended two consecutive turns asking permission to file a COMPLETE, EVIDENCED ROW DRAFT (two
+ * incidents, commit hashes, timestamps) -- filing being the first line of its own brief -- and the row did not get filed.
+ * @param {{session: string, cause?: string}} order @param {string} label
+ */
+function autonomyParagraphs(order, label) {
+  return "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
-    + `human.${claimSentence(order, spawned)}\n\n`
+    + `human. ${isReviewerOrder(order) ? REVIEWER_CLAIMS_NO_ROW : REFUSED_CLAIM_IS_AN_ANSWER}\n\n`
     + "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING. Nobody reads this terminal, so "
     + "\"want me to file it?\" and not filing it are the same outcome -- except the first also looks "
-    + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID. Measured "
-    + "2026-09-21: `product-manager` ended two consecutive turns this way, the second holding a "
-    + "COMPLETE, EVIDENCED ROW DRAFT (two incidents, commit hashes, timestamps) and asking permission "
-    + "to file it -- when filing is the first line of its own brief. The row did not get filed.\n"
+    + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID.\n"
     + "IF IT IS GENUINELY NOT YOURS, that is not a question either: say what you would do, name who "
     + `owns it, and route it -- \`${ANSWER_PREFIX}<session>\` on the row for a ruling, or the row itself for work. `
     + "Then end your turn. The gate will bring you back when something changes; waiting is never your "
@@ -3407,7 +3421,7 @@ export function addressed(order, label,
  * exact phrase; a header that dropped them would leave a transcript that opens on a follow-up unattributed spend.
  * @param {string} label
  */
-const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.`;
+const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session.`;
 
 /** Where {@link addressed} writes what THIS delivery did to the window into an order whose text was composed before the delivery (#3440). */
 export const CONTEXT_PLACEHOLDER = "@@CONTEXT@@";
@@ -3443,16 +3457,6 @@ const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, 
  * refused because the PR's own author still held the claim -- the normal state -- and ended its turn without a verdict.
  */
 const REVIEWER_CLAIMS_NO_ROW = "You claim no row, and the author's claim on it is not a blocker: review the pull request.";
-
-/**
- * The claim sentence an order carries: none for a spawned one (already claimed, #2405), the reviewer's own for a reviewer (#2590),
- * the refusal-is-an-answer rule for any other.
- * @param {{session: string, cause?: string}} order @param {unknown} spawned
- */
-function claimSentence(order, spawned) {
-  if (spawned) return "";
-  return ` ${isReviewerOrder(order) ? REVIEWER_CLAIMS_NO_ROW : REFUSED_CLAIM_IS_AN_ANSWER}`;
-}
 
 /**
  * Does this delivery begin a new run -- i.e. was nobody told for longer than `RUN_IDLE_RESET_MS`?
@@ -6000,12 +6004,13 @@ export function recoverableWork({ now, restartAt, actedRestart, agents, paneText
 /**
  * The prompt an interrupted session gets: PLAIN (queued with `resume: true`, so it is never behind a `/clear`), naming what happened and what to
  * do -- and that nothing was cleared, because that is the property that makes it a resume.
+ * WHY "killed mid-turn" IS THE FIRST GUESS (moved out of the order, #3444): the OOM killer / a `herdr.service` restart on 2026-09-25 took every session
+ * at once, and `idle` is what herdr reports for each of them.
  * @returns {string}
  */
 export function resumePrompt() {
   return `YOU WERE INTERRUPTED. Your pane's last line reads \`${INTERRUPTED_TEXT}\` and has read it for at least ${INTERRUPTED_SETTLE_MS / 60_000} minutes: `
-    + "the process under you was most likely killed mid-turn (a restart of `herdr.service`, or the kernel's OOM killer -- 2026-09-25 lost every "
-    + "session at once), and `idle` is what herdr reports for that, so nothing has told you until now. Claude Code prints the same line when a "
+    + "the process under you was most likely killed mid-turn (a restart of `herdr.service`, or the kernel's OOM killer), and `idle` is what herdr reports for that, so nothing has told you until now. Claude Code prints the same line when a "
     + "PERSON presses Esc: if you were stopped on purpose, say so on the row and stop.\n"
     + "OTHERWISE RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
     + "row you hold and its pull request, run `git status` and `git log origin/main..HEAD` in your worktree, then continue what you were "

@@ -132,21 +132,19 @@ export function idleClaimantReading(facts, ctx) {
 /**
  * THE NUDGE, to an idle holder. It says the one thing the holder must do, and SPELLS THE FIELDS: "name your wait" must never again mean
  * "write it in the terminal" (the twelve sessions each did, and nothing read it). `idle-claimant.test.ts` pins every spelling in the text.
+ *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * chairman, 2026-10-02: twelve sessions waited correctly and set no field, and each looked exactly like a session that had stopped.
+ *
  * @param {{ row: number, branch: string | null, idleMinutes: number, releaseMinutes: number, canRelease: boolean }} what
  * @returns {string}
  */
 export function idleNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease }) {
-  const spellings = Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `  - \`${f.spelling}\``).join("\n");
-  return `#${row} IS YOURS AND YOU HAVE BEEN IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ. A wait you name in this `
-    + "terminal is not one: nobody reads it (chairman, 2026-10-02: twelve sessions waited correctly and set no field, and each looked "
-    + "exactly like a session that had stopped).\n"
-    + "NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. The fields, each of which clears itself:\n"
-    + `${spellings}\n`
-    + "  - a pull request with a reviewer asked for, a check still running, an approval the merge queue owns, or the "
-    + `\`${EVIDENCE_LABEL}\` label\n`
-    + `If you are not waiting, commit, push the branch (\`${branch ?? "your branch"}\`) or comment on the row: any of the three is a move.\n`
+  const spellings = Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `\`${f.spelling}\``).join(" | ");
+  return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (one named in this terminal is not one).\n`
+    + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each field clears itself: ${spellings} | an open pull request needing a reviewer, a check or the `
+    + `merge queue | the \`${EVIDENCE_LABEL}\` label. To continue: commit, push \`${branch ?? "your branch"}\` or comment on the row.\n`
     + (canRelease
-      ? `IF YOU DO NEITHER FOR ${releaseMinutes} MINUTES AFTER THIS REACHES YOU the claim is RELEASED. Your worktree and everything unpushed in it are KEPT, `
-        + "and the next instance starts in them."
-      : "You hold an open pull request, so nothing is released: this is asked again only if the claim changes hands or you go quiet again.");
+      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; your worktree and unpushed work are KEPT.`
+      : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
 }
