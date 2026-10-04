@@ -62,11 +62,16 @@ describe("absent reads as OFF, and a present key reads ON (the pair is the posit
   });
 });
 
-describe("summary defaults and refusals (done-when 4)", () => {
-  test("summary.at and summary.timezone default to 08:00 and Europe/London", () => {
+describe("summary is opt-in, its field defaults and its refusals (done-when 4)", () => {
+  test("a config with NO summary key reads back with no summary: the summary is opt-in (chairman, 2026-10-04)", () => {
     const config = parse(documentWith(VALID));
     assert.ok(config.enabled);
-    assert.deepEqual(config.summary, { at: "08:00", timezone: "Europe/London" });
+    assert.equal(config.summary, null);
+  });
+
+  test("a DECLARED summary with neither field takes the field defaults: `{}` is how a host asks for 08:00 London", () => {
+    const config = parse(documentWith({ ...VALID, summary: {} }));
+    assert.ok(config.enabled);
     assert.deepEqual(config.summary, DEFAULT_SUMMARY);
   });
 
@@ -84,7 +89,7 @@ describe("summary defaults and refusals (done-when 4)", () => {
   test("a real timezone other than the default is accepted (positive control for the refusal above)", () => {
     const config = parse(documentWith({ ...VALID, summary: { timezone: "America/New_York" } }));
     assert.ok(config.enabled);
-    assert.equal(config.summary.timezone, "America/New_York");
+    assert.equal(config.summary?.timezone, "America/New_York");
   });
 
   for (const at of ["8:00", "24:00", "08:60", "0800", "", 800, null]) {
@@ -156,6 +161,14 @@ describe("reading the file, and messaging:check", () => {
     assert.equal(verdict.exitCode, 0, verdict.lines.join("\n"));
     assert.match(verdict.lines.join("\n"), /token file: ok/);
     assert.match(verdict.lines.join("\n"), /NOT YET PAIRED/);
+    assert.match(verdict.lines[0], /no daily summary/, "no summary declared: the header says there is none, not a time");
+  });
+
+  test("check, a declared summary: the header names its time and zone (what keeps the line above from being a constant)", () => {
+    writeFileSync(tokenPath, "123456:SECRET-TOKEN-VALUE\n", { mode: 0o600 });
+    chmodSync(tokenPath, 0o600);
+    const verdict = runMessagingCheck({ root: projectRoot("check-summary", documentWith({ ...VALID, summary: { at: "07:30" } })), home: HOME });
+    assert.match(verdict.lines[0], /summary at 07:30 Europe\/London/);
   });
 
   test("check, token file 0644: exit 1, naming the mode, never the content", () => {

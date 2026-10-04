@@ -144,7 +144,7 @@ export function createGhReader({ run = runGh } = {}) {
 
 /** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
 
-/** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string }, readers: Record<string, any> }} SourceContext */
+/** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } | null, readers: Record<string, any> }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
 
 /** @type {Source} */
@@ -161,6 +161,7 @@ const REQUESTS = {
 const SUMMARY = {
   name: "summary",
   async observe({ github, repo, now, summary }) {
+    if (summary === null) return { events: [], notes: [] };
     const { events, unread } = await observeSummary({ github, repo, now, summary });
     return { events, notes: unread.map((reason) => ({ reason: `summary read: ${reason}` })) };
   },
@@ -205,11 +206,21 @@ const INCIDENTS = {
   },
 };
 
-/** The sources this program asks, in order. */
-export const DEFAULT_SOURCES = Object.freeze([REQUESTS, SUMMARY]);
+/** The sources this program asks, in order. `summary` is not among them: it is added only for a configuration that declares one (`sourcesFor`). */
+export const DEFAULT_SOURCES = Object.freeze([REQUESTS]);
 
 /** The sources that read the host (systemd, herdr, files) as well as GitHub, asked only when the caller hands over the `readers` they need. */
 export const HOST_SOURCES = Object.freeze([STALLS, INCIDENTS]);
+
+/**
+ * THE SUMMARY SOURCE EXISTS ONLY WHEN DECLARED (chairman, 2026-10-04): an absent `messaging.summary` constructs none, so nothing is read for it and
+ * nothing is sent. The source also answers nothing on a `null` summary, so a caller that hands one over in `sources` cannot send one either.
+ * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined }} input @returns {readonly Source[]}
+ */
+function sourcesFor({ summary, readers }) {
+  const declared = summary === null ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, SUMMARY];
+  return readers === undefined ? declared : [...declared, ...HOST_SOURCES];
+}
 
 /** @param {Map<string, import("./ledger.mjs").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
 function openRequestKeys(state) {
@@ -269,10 +280,10 @@ async function gather(context, sources) {
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
  *
  * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
- *           summary: { at: string, timezone: string }, log?: (line: string) => void, sources?: readonly Source[], coreConfig?: object }} input
+ *           summary: { at: string, timezone: string } | null, log?: (line: string) => void, sources?: readonly Source[], coreConfig?: object }} input
  * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
-export async function runWatch({ github, provider, ledger, now, repo, readers, summary, log = () => {}, sources = readers === undefined ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, ...HOST_SOURCES], coreConfig }) {
+export async function runWatch({ github, provider, ledger, now, repo, readers, summary, log = () => {}, sources = sourcesFor({ summary, readers }), coreConfig }) {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
   const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {} }, sources);

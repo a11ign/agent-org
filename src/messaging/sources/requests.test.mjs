@@ -605,6 +605,8 @@ describe("main", () => {
     return { root, home: mkdtempSync(join(scratch, "home-")) };
   }
   const ON = { tracker: [{ key: "", repo: REPO }], messaging: { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/telegram-chairman" } };
+  // The summary is opt-in (#3410): this is the declaration that asks for the 08:00 London one, for the test that expects both kinds sent.
+  const ON_WITH_SUMMARY = { ...ON, messaging: { ...ON.messaging, summary: {} } };
   /** @returns {{ out: string[], err: string[] }} */
   const quiet = () => ({ out: [], err: [] });
 
@@ -618,8 +620,8 @@ describe("main", () => {
     assert.throws(() => readFileSync(defaultLedgerPath(home)), /ENOENT/);
   });
 
-  test("on, with a provider, it sends through the ledger under the home and exits 0", async () => {
-    const { root, home } = checkout(ON);
+  test("on, with a provider and a declared summary, it sends through the ledger under the home and exits 0", async () => {
+    const { root, home } = checkout(ON_WITH_SUMMARY);
     const provider = createFakeProvider();
     const sink = quiet();
     const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => provider },
