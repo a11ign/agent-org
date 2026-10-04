@@ -5,7 +5,7 @@
 // **DEDUPE IS BY `key`, NEVER BY TEXT.** A tick that re-observes the same fact must send nothing, and the text of a fact is
 // exactly the part that drifts (a count, an age, a run number). `key` is the stable identity of the THING:
 // `request:a11ign/a11ign#2885`, `incident:trunk-red`, `stall:no-merge`, `summary:2026-10-02`,
-// `release:a11ign/agent-org@v0.7.8`.
+// `release:a11ign/agent-org@v0.7.8`, `milestone:split-move-1`.
 //
 // `state` is the one field beyond the design's event shape, and it exists for the reminder rule ("then silence until the state
 // changes"): the watcher declares what "the state" of the fact IS (a request's labels, an incident's failing check), and the core
@@ -14,7 +14,7 @@
 
 import { createHash } from "node:crypto";
 
-export const EVENT_KINDS = Object.freeze(["request", "incident", "stall", "summary", "release"]);
+export const EVENT_KINDS = Object.freeze(["request", "incident", "stall", "summary", "release", "milestone"]);
 export const SEVERITIES = Object.freeze(["info", "warning", "critical"]);
 
 const MAX_KEY_LENGTH = 200;

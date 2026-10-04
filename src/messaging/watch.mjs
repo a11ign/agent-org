@@ -27,6 +27,10 @@
 // **THE RELEASES SOURCE READS EVERY DECLARED CODE REPOSITORY'S RELEASES (a11ign/a11ign#3413)**, through `github.api`, and is asked only for a real host (`main` with
 // no injected `github`), as the host sources are: a test's fixture reader has no `api` and must not be asked. `sources/releases.mjs` holds the rules; what is
 // HERE is the wiring, and the memory (`history`): its first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each.
+//
+// **THE MILESTONES SOURCE READS THE PROJECT'S OWN DECLARATION (a11ign/a11ign#3414)**: `messaging.milestones` names the file, the source is constructed only when it is
+// set, and the file is read and validated INSIDE the source, so a malformed one costs that source its tick (logged, exit 1) and not the requests beside it. Its
+// first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each. It reads one issue, one pull request or the releases of a repository, each admitted by `READ_API_PATH` or `MILESTONE_API_PATH`.
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -44,6 +48,7 @@ import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
 import { observeIncidents } from "./sources/incidents.mjs";
 import { createReaders } from "./sources/readers.mjs";
+import { observeMilestones, readMilestonesFile, seenMilestoneKeys } from "./sources/milestones.mjs";
 import { observeReleases, seenKeys } from "./sources/releases.mjs";
 import { observeStalls } from "./sources/stall.mjs";
 import { observeSummary } from "./sources/summary.mjs";
@@ -66,13 +71,15 @@ const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
 /** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.mjs` reads, each a listing or a lookup. */
 const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|issues\/\d+\/comments|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|releases|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
+/** The two lookups the milestones source makes beyond `READ_API_PATH`, after `repos/<owner>/<name>/`: one issue, one pull request. A NUMBER, never a search. */
+const MILESTONE_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(issues|pulls)\/\d+$/;
 
 /**
  * `gh api <path>` and nothing after the path: a GET is the default and every flag that would change it (`-X`, `-f`, `-F`, `--input`) is a token this refuses.
  * @param {readonly string[]} argv
  */
 function assertReadOnlyApi(argv) {
-  if (argv.length !== 2 || !READ_API_PATH.test(argv[1])) throw new Error(`chairman-watch reads only: \`gh api ${argv.slice(1).join(" ")}\` is not an allowed read`);
+  if (argv.length !== 2 || !(READ_API_PATH.test(argv[1]) || MILESTONE_API_PATH.test(argv[1]))) throw new Error(`chairman-watch reads only: \`gh api ${argv.slice(1).join(" ")}\` is not an allowed read`);
 }
 
 /**
@@ -152,7 +159,7 @@ export function createGhReader({ run = runGh } = {}) {
 /** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
 
 /** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } | null, readers: Record<string, any>,
- *           history: Record<string, any>[], releaseRepos: readonly string[] }} SourceContext */
+ *           history: Record<string, any>[], releaseRepos: readonly string[], milestonesPath: string | null }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
 
 /**
@@ -243,6 +250,24 @@ export const RELEASES = {
   },
 };
 
+/** @type {Source} */
+export const MILESTONES = {
+  name: "milestones",
+  async observe({ github, repo, history, milestonesPath }) {
+    if (milestonesPath === null) return { events: [], notes: [] };
+    /** @type {import("./sources/milestones.mjs").MilestoneReaders} */
+    const readers = {
+      readIssue: ({ repo: where, number }) => github.api(`repos/${where}/issues/${number}`),
+      readPull: ({ repo: where, number }) => github.api(`repos/${where}/pulls/${number}`),
+      readReleases: ({ repo: where }) => github.api(`repos/${where}/releases?per_page=${RELEASES_PER_PAGE}`),
+    };
+    const { events, notes, cannotAsk } = await observeMilestones({
+      milestones: readMilestonesFile(milestonesPath), readers, seen: seenMilestoneKeys(history), defaultRepo: repo, log: () => {},
+    });
+    return { events, notes: [...notes, ...observed({ events: [], cannotAsk }).notes] };
+  },
+};
+
 /** The sources this program asks, in order. `summary` is not among them: it is added only for a configuration that declares one (`sourcesFor`). */
 export const DEFAULT_SOURCES = Object.freeze([REQUESTS]);
 
@@ -256,12 +281,14 @@ const RELEASES_PER_PAGE = 100;
  * THE SUMMARY SOURCE EXISTS ONLY WHEN DECLARED (chairman, 2026-10-04): an absent `messaging.summary` constructs none, so nothing is read for it and
  * nothing is sent. The source also answers nothing on a `null` summary, so a caller that hands one over in `sources` cannot send one either.
  * THE RELEASES SOURCE EXISTS ONLY FOR A HOST THAT DECLARES REPOSITORIES TO READ (`releaseRepos`), and `main` hands none to a caller that injected its own `github`.
- * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[] }} input @returns {readonly Source[]}
+ * THE MILESTONES SOURCE EXISTS ONLY WHEN `messaging.milestones` NAMES A FILE, and a caller that names none constructs none and reads nothing for it.
+ * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[], milestonesPath: string | null }} input @returns {readonly Source[]}
  */
-function sourcesFor({ summary, readers, releaseRepos }) {
+function sourcesFor({ summary, readers, releaseRepos, milestonesPath }) {
   const declared = summary === null ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, SUMMARY];
   const withReleases = releaseRepos.length === 0 ? declared : [...declared, RELEASES];
-  return readers === undefined ? withReleases : [...withReleases, ...HOST_SOURCES];
+  const withMilestones = milestonesPath === null ? withReleases : [...withReleases, MILESTONES];
+  return readers === undefined ? withMilestones : [...withMilestones, ...HOST_SOURCES];
 }
 
 /** @param {Map<string, import("./ledger.mjs").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
@@ -333,16 +360,17 @@ async function gather(context, sources) {
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
  *
  * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
- *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], log?: (line: string) => void, sources?: readonly Source[],
+ *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], milestonesPath?: string | null, log?: (line: string) => void, sources?: readonly Source[],
  *           coreConfig?: object }} input
  * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
 export async function runWatch({
-  github, provider, ledger, now, repo, readers, summary, releaseRepos = [], log = () => {}, sources = sourcesFor({ summary, readers, releaseRepos }), coreConfig,
+  github, provider, ledger, now, repo, readers, summary, releaseRepos = [], milestonesPath = null, log = () => {},
+  sources = sourcesFor({ summary, readers, releaseRepos, milestonesPath }), coreConfig,
 }) {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
-  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos }, sources);
+  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos, milestonesPath }, sources);
   recordNotes({ notes, ledger, history, log });
   const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
   const decisions = await messenger.tick(withoutSnoozed(events, { history, nowMs: now() }));
@@ -476,7 +504,7 @@ export async function main(deps = {}) {
   if (provider === null) return EXIT.failed;
   const reader = github ?? createGhReader();
   const result = await runWatch({
-    github: reader, provider, repo: trackerRepo(root), summary: config.summary, releaseRepos: github === undefined ? declaredCodeRepos(root) : [],
+    github: reader, provider, repo: trackerRepo(root), summary: config.summary, releaseRepos: github === undefined ? declaredCodeRepos(root) : [], milestonesPath: config.milestones,
     readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });
