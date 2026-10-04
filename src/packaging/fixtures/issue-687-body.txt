@@ -1,0 +1,103 @@
+The general form of #685, opened separately so that row stays about calendly and this one stays about the
+mechanism. Ruled by `ceo` after the calendly instability was found; filed by `orchestrator`.
+
+## The gap
+
+`environmentKey()` keys a capture on everything about the **environment** — browser and version, OS,
+architecture, NVDA, guidepup, screen-reader settings, `provisionRevision`, `CAPTURE_PROTOCOL_VERSION` —
+and on the page DIRECTORY for corpus pages. It records **nothing about what the server actually sent**.
+
+So two captures of one URL, under an identical key, can describe different documents, and nothing in the
+pipeline can notice. Measured on calendly (#685), by the browser's own census:
+
+```
+08:12   link=5   graphic=1   heading=1   formControl=6   tabbable=11
+10:50   link=64  graphic=28  heading=15  formControl=26  tabbable=98
+```
+
+Eight minutes apart, same worker, same command.
+
+## What to build
+
+1. **Every capture records the identity of the document it was served** — the `structureCensus` counts
+   plus the document title, as a digest. All of it is already captured; nothing new is observed, it is
+   summarised and stored where a comparison can reach it.
+2. **The judge and every comparison refuse to treat two captures of one URL with different digests as the
+   same page.** `evidence:check`, `gate:stability`, `repeat-capture` and anything diffing two captures:
+   a digest mismatch is a distinct outcome, never a field-level difference. Today it would present as
+   evidence changing, which sends the reader after the capture path.
+3. **The report says which render it describes.** A reader given "assessed 19 of 55 criteria" deserves to
+   know it was assessed against a page with eleven tabbable elements, if it was.
+
+## What NOT to build, and this is the load-bearing half
+
+**The digest does NOT go in `environmentKey`.** It would invalidate the whole cache for a property that
+cannot vary on the pages the cache is for:
+
+- **Real-page captures never cache** (`docs/lab-pipeline.md:115`), so there is no key to protect there.
+- **The corpus's pages are ours** — generated into a directory and served by our own page server, and the
+  key already covers every file in it. A generated page cannot serve two renders.
+
+So the population where a document digest would change a cache key is empty, and adding it would cost a
+full recapture of 2,122+ captures to guard a case that cannot arise. **Recorded per capture, consumed by
+comparisons, never a key.**
+
+## Its relationship to #426
+
+#426 (consent-overlay surfacing, #676 in flight) is the mechanism that must recognise a render like
+`tabbable=11, heading=1` as a **wall or a stub** rather than a page. This row is what makes that
+recognisable after the fact and comparable across runs; #426 is what says so during the run. The calendly
+captures are #426's live case and `ceo` has told worker-audit so.
+
+They are not the same row: #426 decides and warns inside one capture; this one gives every capture an
+identity so two of them can be compared at all.
+
+## Acceptance
+
+**Rewritten 2026-09-09 to the shape that was built, by `ceo`'s ruling on PR #722's three departures.**
+The row as filed asked for the census counts in the digest, and that was wrong in a way the build found:
+a real page recaptured an hour later has moved forty links and is the *same document*, so deciding
+identity on counts would refuse most of the population this runs against. What is compared is the served
+path and the title; the counts are recorded and reported, never compared.
+
+```
+npx tsx --test packages/evidence/src/document-identity.test.ts
+npx tsx --test packages/lab/src/capture/evidence-diff.test.ts
+npx tsx --test packages/lab/src/training/capture-cache.test.ts
+npx tsx --test packages/evidence/src/conformance.test.ts
+```
+
+1. **The two calendly captures on disk report as different documents, named as such.** They live under
+   `runs/witness/`, which CI cannot see, so the first command covers it both ways: a reduced fixture
+   (`packages/evidence/src/fixtures/calendly-687.json` — the three marks the code reads, each source path
+   and its sha256, every query VALUE emptied and every NAME kept) pins the property in CI, and a corpus
+   test asserts the fixture and the real files produce identical identities **and identical dropped-query
+   counts**, skipping honestly by name when the records are absent.
+2. **A mutation making the identity constant turns that red.** Recorded on PR #722: a constant digest → 2
+   red; `componentsIn` reading a constant URL instead of the mark → 3 red. Both restored from a copy.
+3. **`environmentKey` is unchanged**, and the third command says so with the COST rather than only the
+   field list: one test refuses any key field named after the served document, one refuses
+   `capture-cache.mjs` importing `document-identity` at all.
+
+**Three decisions the build made, all accepted by `ceo` (message of 2026-09-09):**
+
+- **The identity is DERIVED, not stored.** A stored digest beside its own inputs is a fact stated twice,
+  and deriving is what gives every capture already on disk an identity — which is what makes clause 1
+  answerable without a recapture.
+- **The counts are reported and never compared** (above).
+- **The served path drops the query string** — accepted with one condition, now built: each capture
+  records **how many** query parameters were dropped, never their values, so a "same document" verdict
+  carries its caveat where it applies. The limitation is `docs/known-gaps.md` §46.
+
+No `runs/`-reading gate is named here, and nothing in this row needs the fleet.
+
+## Region
+
+`packages/nvda-worker/src/capture-core.mjs` / `capture-probes.mjs` (where the census already lands),
+`capture-cache.mjs` (to prove it stays OUT of the key), `packages/lab/src/**` comparison tools, and
+`packages/evidence/src/conformance.ts` for the report line.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+https://claude.ai/code/session_01MfEpJWCGK9Nx1cKfx3GEjg
+
