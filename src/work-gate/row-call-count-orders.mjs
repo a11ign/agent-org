@@ -8,9 +8,11 @@
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
 // stayed behind also uses is IMPORTED from `work-gate.mjs`, the cycle that module documents, safe while nothing here
 // reads an imported binding at load time. `work-gate.mjs` re-exports every name this file exports that it exported before.
-import { labelsOf } from "../work-gate.mjs";
+import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.mjs";
 import { claimRecordOf } from "../claim-stall.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
+import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
+import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.mjs";
+import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
 import { subjectMention } from "../review-attribution.mjs";
 import { transcriptFiles, claudeTurns } from "../token-audit.mjs";
 import { readFileSync } from "node:fs";
@@ -41,7 +43,7 @@ export function claimedRowSession(row) {
  * (none posted, or the newest one is a release) contributes nothing -- a window with nothing to anchor it
  * is never guessed at, `claimedRowSession`'s own rule for an ambiguous label count applied one step further.
  * @param {any[]} openRows @param {Map<number, any[]>} byRow
- * @returns {{ row: number, session: string, at: number }[]}
+ * @returns {{ row: number, session: string, at: number, record: any }[]}
  */
 function claimedRowAnchors(openRows, byRow) {
   const anchors = [];
@@ -50,7 +52,7 @@ function claimedRowAnchors(openRows, byRow) {
     if (session === null) continue;
     const record = claimRecordOf(byRow.get(Number(row.number)) ?? []);
     if (record === null) continue;
-    anchors.push({ row: Number(row.number), session, at: record.at });
+    anchors.push({ row: Number(row.number), session, at: record.at, record: row });
   }
   return anchors;
 }
@@ -68,6 +70,70 @@ function windowEnd(anchor, anchors) {
 }
 
 /**
+ * Whether a CLAIMED row declares a wait, and so is not a candidate for a split: its calls are the session's other work, not
+ * the row's (#3384; #2905's one open item was a word from the chairman and cost three audits).
+ *
+ * `holderWaitingOn` IS THE PREDICATE, NOT A SIXTH LIST: it is what `blockerClearedOrders` asks of the same population -- a CLAIMED
+ * row -- and reads `blockedBy`, `Not-before:`, `Fleet-hold-until:`, `answer:<session>`, `needs:chairman` and `parked`. It does not
+ * read `blocked` or a `hold:` label, so those two are added here. `readPromotableRows`' filter could not be reused whole: it is
+ * inline in that reader, and its `NOT_STARTABLE` carries `in-progress`, which every row asked about here has.
+ * @param {any} row @param {number} now
+ */
+export function rowDeclaresWait(row, now) {
+  const labels = labelsOf(row);
+  return holderWaitingOn(row, todayIso(new Date(now)), now) || labels.includes(BLOCKED_LABEL) || holdersOf(labels).length > 0;
+}
+
+/** Whether `name` is a label that declares a wait -- the label half of `rowDeclaresWait`, for reading when one was lifted. */
+function isWaitLabel(name) {
+  return [NEEDS_CHAIRMAN_LABEL, PARKED_LABEL, BLOCKED_LABEL].includes(name) || name.startsWith(HOLD_PREFIX) || name.startsWith(ANSWER_PREFIX);
+}
+
+/**
+ * WHEN THE ROW'S LAST DECLARED WAIT WAS LIFTED, in epoch ms: `0` for none found (nothing to take off the claim's window), `null`
+ * when the read was refused -- never `0`, which would read as "never waited" and charge the wait's calls to the row.
+ *
+ * Two sources, the latest wins: an `unlabeled` event for a wait label (`issues/{n}/events`, the cheaper subset of the timeline
+ * `readEvidenceLabelledAt` also reads), and a `Not-before:` or `Fleet-hold-until:` that has now passed, whose own instant is the
+ * clearing -- `rowDeclaresWait` reads both as a wait, so both must be datable or an expired hold keeps charging the hold's calls. A cleared
+ * `blockedBy` edge is NOT dated: the events carry no close of the blocker, so that wait reads as `0`, today's behaviour.
+ * @param {any} row @param {(args: string[]) => string} [run]
+ * @returns {number | null}
+ */
+export function readWaitClearedAt(row, run = defaultRun) {
+  try {
+    const out = run(["api", `repos/${repoNow()}/issues/${Number(row.number)}/events`, "--paginate", "--jq",
+      '.[] | select(.event == "unlabeled") | {name: .label.name, at: .created_at}']);
+    const lifted = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l))
+      .filter((e) => isWaitLabel(String(e.name))).map((e) => Date.parse(e.at));
+    const declared = notBeforeDate(row?.body);
+    const held = fleetHoldUntil(row?.body);
+    const passed = [declared === null ? NaN : Date.parse(notBeforeIso(declared)), held === null ? NaN : Date.parse(held)];
+    return Math.max(0, ...lifted.filter(Number.isFinite), ...passed.filter(Number.isFinite));
+  } catch (err) {
+    console.error(`row-call-count-signal: could not read when #${row?.number}'s wait was lifted (${err instanceof Error ? err.message : err}); counting from the claim`);
+    return null;
+  }
+}
+
+/** The default `waitClearedAt`: no clearing known, so the window starts at the claim -- the behaviour before #3384. */
+const notRead = () => 0;
+
+/**
+ * `anchor`'s calls from the later of its claim and the clearing of its last wait. The clearing is read ONLY for a row already
+ * over the threshold from the claim (the read is one `gh` call, so it is never paid per tick for a row that cannot signal), and
+ * a refused read keeps the whole window, which is the behaviour before #3384.
+ * @param {{ row: number, at: number, record: any }} anchor
+ * @param {{ count: (since: number) => number, threshold: number, waitClearedAt: (row: any) => number | null }} how
+ */
+function callsAfterWait(anchor, { count, threshold, waitClearedAt }) {
+  const fromClaim = count(anchor.at);
+  if (fromClaim <= threshold) return fromClaim;
+  const cleared = waitClearedAt(anchor.record);
+  return cleared === null || cleared <= anchor.at ? fromClaim : count(cleared);
+}
+
+/**
  * Every open row whose claimed session has passed `threshold` CALLS made WHILE HOLDING THAT ROW -- from
  * its own claim record's `createdAt` up to whichever comes first, now or the same session's NEXT claim,
  * never the claiming session's whole lifetime (#2710). A spawned engineer's transcript IS its one row's
@@ -76,6 +142,11 @@ function windowEnd(anchor, anchors) {
  * regardless of which row it named -- the defect that reported the SAME figure on two different rows
  * `orchestrator` held at once.
  *
+ * A ROW THAT DECLARES A WAIT IS LEFT OUT, AND A CLEARED WAIT IS NOT CHARGED (#3384). `rowDeclaresWait` names the row
+ * that is only waiting; for one whose wait has been lifted the window starts at the lifting, so the calls a standing seat made
+ * elsewhere while the row waited are not the row's. It is still the SAME session's next claim that ends a window, so the
+ * anchors of waiting rows stay in the list for `windowEnd`.
+ *
  * A SIGNAL, NOT A SPLIT (#2691): whether and how to split stays `product-manager`'s judgement, so this
  * reports the count and stops there. A row at or under the threshold is left out entirely -- this names
  * split CANDIDATES, not every claimed row.
@@ -83,16 +154,21 @@ function windowEnd(anchor, anchors) {
  * @param {any[]} openRows @param {import("../token-audit.mjs").Turn[]} turns every live turn, any session
  * @param {any[] | null} [claimedComments] the comments on every claimed row (`readClaimedRowComments`'s
  *   own shape, `{ number, comments }[]`), read once by the caller and reused rather than re-fetched here
- * @param {number} [threshold]
+ * @param {{ threshold?: number, now?: number, waitClearedAt?: (row: any) => number | null }} [options]
+ *   `waitClearedAt` is `readWaitClearedAt` -- passed by the gate's tick, and NOT the default: a default that reached `gh` would
+ *   make every caller's test a live read of this tracker's issues (#3384), so the default counts from the claim.
  * @returns {{ row: number, session: string, calls: number }[]} most calls first
  */
-export function rowCallCountSignals(openRows, turns, claimedComments = [], threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD) {
+export function rowCallCountSignals(openRows, turns, claimedComments = [], options = {}) {
+  const { threshold = ROW_CALL_COUNT_SPLIT_THRESHOLD, now = Date.now(), waitClearedAt = notRead } = options;
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
   const anchors = claimedRowAnchors(openRows, byRow);
   const signals = [];
   for (const anchor of anchors) {
+    if (rowDeclaresWait(anchor.record, now)) continue;
     const end = windowEnd(anchor, anchors);
-    const calls = turns.filter((t) => t.session === anchor.session && t.at >= anchor.at && t.at < end).length;
+    const count = (/** @type {number} */ since) => turns.filter((t) => t.session === anchor.session && t.at >= since && t.at < end).length;
+    const calls = callsAfterWait(anchor, { count, threshold, waitClearedAt });
     if (calls <= threshold) continue;
     const assessedAt = rowCallCountAssessedCalls(byRow.get(anchor.row) ?? []);
     if (assessedAt !== null && calls < 2 * assessedAt) continue;

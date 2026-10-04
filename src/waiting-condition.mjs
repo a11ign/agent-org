@@ -164,7 +164,7 @@ const DATE_ONLY_LENGTH = 10;
  *
  * @param {string} declared a value `notBeforeDate` returned
  */
-const notBeforeIso = (declared) =>
+export const notBeforeIso = (declared) =>
   declared.length === DATE_ONLY_LENGTH ? `${declared}T00:00:00Z` : declared;
 
 /**
