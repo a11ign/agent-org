@@ -51,26 +51,29 @@ function linkFs(files: Record<string, string>, dirs: string[]) {
 const TREE_MANIFEST = { "/t/package.json": JSON.stringify({ name: "x", private: true, devDependencies: { tsx: "4.0.0" } }) };
 /** The remedy that did not work: `pnpm install` in a clone with no manifest. */
 const OLD_REMEDY = /cd \/c && pnpm install --no-lockfile/;
+/** The install of #3386 failing, so these cases read the REFUSAL and no process is run (the default install is `pnpm` in `/t`). */
+const offline = () => { throw new Error("offline"); };
 
 test("(1) a clone with NO `package.json` is not told to `pnpm install` there: the remedy installs from the tree and moves `node_modules` in", () => {
-  const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []) }));
+  const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []), install: offline }));
   assert.match(reason, /`tsx`, which \/t\/package\.json declares/, "it still names what is missing and where it is declared");
   assert.doesNotMatch(reason, OLD_REMEDY, "FAILING CONTROL (3a): the old text, which the clone cannot carry out");
   assert.match(reason, /cd \/t && pnpm install --no-lockfile --ignore-scripts/, "it names the install that works, in the TREE, which has the manifest");
   assert.doesNotMatch(reason, /--frozen-lockfile/, "and never a frozen install, which needs a lockfile the repository may not have: agent-org has none (#113)");
-  assert.match(reason, /mv \/t\/node_modules \/c\/node_modules/, "and the move that puts the result where the next tick looks");
+  assert.match(reason, /rm -rf \/c\/node_modules && cp -a \/t\/node_modules \/c\/node_modules/, "and the replacement that puts the result where the next tick looks (#3386: `mv` nests it over a clone that has one)");
+  assert.doesNotMatch(reason, /\bmv\b.*\/t\/node_modules/, "FAILING CONTROL (3a) of #3386: the old `mv`, which cannot be carried out over an existing `node_modules`");
   assert.match(reason, /ERR_PNPM_NO_PKG_MANIFEST/, "and says why, so the next operator does not 'simplify' it back");
   assert.doesNotMatch(reason, /\bnpm\b/, "and no npm spelling of it (#2896)");
 });
 
 test("(1) a clone WITH a manifest still gets the old text, unchanged", () => {
   const files = { ...TREE_MANIFEST, "/c/package.json": "{}" };
-  const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(files, []) }));
+  const reason = String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(files, []), install: offline }));
   assert.match(reason, OLD_REMEDY, "POSITIVE CONTROL (3b): the old remedy, present where it works");
   assert.match(reason, /which installs every declared dependency and writes no lockfile$/);
   assert.doesNotMatch(reason, /--ignore-scripts|ERR_PNPM_NO_PKG_MANIFEST/, "and none of the new one");
   // And the manifest is what decides it: the same fixture without `/c/package.json` is the no-manifest case above, so neither assertion is vacuous.
-  assert.doesNotMatch(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []) })), OLD_REMEDY);
+  assert.doesNotMatch(String(linkKeyedDependencies({ path: "/t", repoRoot: "/c", fs: linkFs(TREE_MANIFEST, []), install: offline })), OLD_REMEDY);
 });
 
 // --- (2) THE TRUST NOTE -----------------------------------------------------------------------------------------------------------

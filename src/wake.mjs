@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
@@ -1197,42 +1198,84 @@ function namedList(names) {
 }
 
 /**
- * THE COMMAND THAT SUPPLIES A KEYED CLONE'S MISSING PACKAGES, spelled for what the clone has. With a manifest it is `pnpm install` in the clone,
- * which reads the versions it declares and writes no lockfile. WITHOUT ONE -- a repository whose FIRST pull request adds the root `package.json`, and
- * the clone sits on `main` -- that command answers `ERR_PNPM_NO_PKG_MANIFEST`, so a remedy naming it cannot be carried out (#3264, found on
- * `screenreader-worker#2`, where a reviewer was undelivered for 92 minutes). The manifest that exists is the TREE's, so the install is made there and
- * what it makes is moved into the clone, which is the repair that worked. `--no-lockfile`, NOT `--frozen-lockfile`: the tree may have no
- * lockfile (`a11ign/agent-org` has none, so a frozen install cannot run there, #113), and the with-manifest remedy already installs this way. The tick still does not fetch from a registry itself: the clone is shared.
+ * THE INSTALL ARGUMENTS for a tree: `--frozen-lockfile` when the tree has a lockfile (it is the pull request's head, so what it pins is what
+ * the author ran), `--no-lockfile` when it has none (`a11ign/agent-org` has none, so a frozen install cannot run there, #113). `--ignore-scripts`
+ * because a review tree runs nobody's `postinstall`.
+ * @param {LinkFs} fs @param {string} path @returns {string[]}
+ */
+function installArgs(fs, path) {
+  return ["install", fs.existsSync(`${path}/pnpm-lock.yaml`) ? "--frozen-lockfile" : "--no-lockfile", "--ignore-scripts"];
+}
+
+/**
+ * THE COMMAND THAT SUPPLIES A KEYED CLONE'S MISSING PACKAGES BY HAND, spelled for what the clone has -- the refusal's remedy for when
+ * {@link installIntoTree} could not. With a manifest it is `pnpm install` in the clone, which reads the versions it declares and writes no
+ * lockfile. WITHOUT ONE -- a repository whose FIRST pull request adds the root `package.json`, and the clone sits on `main` -- that command
+ * answers `ERR_PNPM_NO_PKG_MANIFEST` (#3264, found on `screenreader-worker#2`), so the install is made in the TREE, whose manifest exists, and what
+ * it makes REPLACES the clone's `node_modules`. NOT `mv` over it: a clone from before a dependency was added already HAS a `node_modules`, and `mv`
+ * into an existing directory moves the tree's INSIDE it (`node_modules/node_modules`), leaving every declared package still missing (#3386,
+ * found on `screenreader-worker#10`). Not a merge either: `cp -a` onto it refuses an entry that is a directory in one and a link in the other (measured:
+ * `cannot overwrite directory`), and two pnpm layouts mixed is what a clone should not hold. A clone's `node_modules` is derived, so one that is
+ * replaced by a complete install is repaired, and the command is safe to run twice. `cp -a` rather than `mv`, so the tree being reviewed keeps its own.
  * @param {{fs: LinkFs, path: string, repoRoot: string}} args @returns {string}
  */
 function supplyCommand({ fs, path, repoRoot }) {
   if (fs.existsSync(`${repoRoot}/package.json`)) {
     return `\`cd ${repoRoot} && pnpm install --no-lockfile\`, which installs every declared dependency and writes no lockfile`;
   }
-  return `\`cd ${path} && pnpm install --no-lockfile --ignore-scripts\` and then \`mv ${path}/node_modules ${repoRoot}/node_modules\` `
-    + `(${repoRoot} has no package.json, so \`pnpm install\` there answers ERR_PNPM_NO_PKG_MANIFEST; the tree's is the manifest that exists)`;
+  return `\`cd ${path} && pnpm ${installArgs(fs, path).join(" ")}\` and then `
+    + `\`rm -rf ${repoRoot}/node_modules && cp -a ${path}/node_modules ${repoRoot}/node_modules\` `
+    + `(${repoRoot} has no package.json, so \`pnpm install\` there answers ERR_PNPM_NO_PKG_MANIFEST; the tree's is the manifest that exists, `
+    + "and the old `node_modules` is removed first because `mv` or `cp` into one that is there nests or refuses)";
+}
+
+/** How long a tree's install may run: the tick waits on it, so a registry that hangs must end in a refusal, not a stalled tick. */
+const TREE_INSTALL_TIMEOUT_MS = 300_000;
+
+/** The one real install: `pnpm` in `cwd`, which throws on a non-zero exit with the child's stderr on the error. @type {TreeInstall} */
+const defaultInstall = ({ cwd, args }) => {
+  const pnpm = pnpmCliInvocation(args);
+  execFileSync(pnpm.command, pnpm.args, { cwd, encoding: "utf8", stdio: "pipe", timeout: TREE_INSTALL_TIMEOUT_MS });
+};
+
+/**
+ * SUPPLY WHAT THE CLONE LACKS FROM THE TREE: install the tree's own declared packages into the TREE's `node_modules` and report `null`, or a
+ * refusal naming the first line of why it could not, with the hand remedy ({@link supplyCommand}). The tree is private to one review and is
+ * removed with it (`git worktree remove --force`), so nothing a reviewer shares is written and the clone is left as it was. Not a silent
+ * link of a partial tree: after the install every declared package must be at `<tree>/node_modules/<name>`.
+ * @param {{fs: LinkFs, path: string, repoRoot: string, declared: string[], missing: string[], install: TreeInstall}} args @returns {string | null}
+ */
+function installIntoTree({ fs, path, repoRoot, declared, missing, install }) {
+  const lacks = `${repoRoot}/node_modules lacks ${namedList(missing)}, which ${path}/package.json declares; supply `
+    + `${missing.length === 1 ? "it" : "them"} with ${supplyCommand({ fs, path, repoRoot })}`;
+  try {
+    install({ cwd: path, args: installArgs(fs, path) });
+  } catch (err) {
+    return `\`pnpm install\` in ${path} failed (${herdrReason(err)}); ${lacks}`;
+  }
+  const absent = declared.filter((name) => !fs.existsSync(`${path}/node_modules/${name}`));
+  return absent.length === 0 ? null : `\`pnpm install\` in ${path} finished without ${namedList(absent)}; ${lacks}`;
 }
 
 /**
  * A KEYED review tree takes its dependencies from the repository's own clone, and the tree's own `package.json` says which. A keyed
  * repository declares its own (`a11ign/agent-org`'s `devDependencies` are the three CI installs), so this is not {@link linkReviewDependencies}'s
  * hybrid link of `packages/*`: a clone that HAS every declared package is linked the plain way -- every entry, nothing of this tree's own
- * replaced -- and a declared package the clone lacks is a REFUSAL naming it and the command that supplies it (#3110: a reviewer
- * whose tests run under `node --import tsx` died on `ERR_MODULE_NOT_FOUND` because a clone with no `node_modules` read as "nothing
- * to link, nothing wrong"). The tree's manifest and not the clone's, because the tree is the pull request's head: a pull request that
- * adds a dependency is the one a clone from before it cannot review. A repository that declares nothing needs no `node_modules`.
- * It REFUSES rather than installs: the tick would be fetching from a registry into a clone every reviewer shares.
- * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
+ * replaced -- and a declared package the clone lacks is installed into the TREE ({@link installIntoTree}), or REFUSED naming it and the command
+ * that supplies it (#3110: a reviewer whose tests run under `node --import tsx` died on `ERR_MODULE_NOT_FOUND` because a clone with no
+ * `node_modules` read as "nothing to link, nothing wrong"; #3386: a clone's one install goes stale on the next dependency change, and each
+ * such change cost a reviewer until a person repaired it). The tree's manifest and not the clone's, because the tree is the pull request's head:
+ * a pull request that adds a dependency is the one a clone from before it cannot review. A repository that declares nothing needs no `node_modules`.
+ * THE CLONE IS NEVER WRITTEN: the objection to the tick fetching from a registry was to a clone every reviewer shares, and the tree is not one.
+ * @param {{path: string, repoRoot: string, fs?: LinkFs, install?: TreeInstall}} args @returns {string | null}
  */
-export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
+export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, install = defaultInstall }) {
   const modules = `${repoRoot}/node_modules`;
   const declared = declaredPackages(fs, path);
   if ("unreadable" in declared) return declared.unreadable;
-  const missing = Object.entries(declared.packages).filter(([name]) => !fs.existsSync(`${modules}/${name}`));
-  if (missing.length > 0) {
-    return `${modules} lacks ${namedList(missing.map(([name]) => name))}, which ${path}/package.json declares; supply `
-      + `${missing.length === 1 ? "it" : "them"} with ${supplyCommand({ fs, path, repoRoot })}`;
-  }
+  const names = Object.keys(declared.packages);
+  const missing = names.filter((name) => !fs.existsSync(`${modules}/${name}`));
+  if (missing.length > 0) return installIntoTree({ fs, path, repoRoot, declared: names, missing, install });
   if (!fs.existsSync(modules)) return null;
   try {
     fs.mkdirSync(`${path}/node_modules`, { recursive: true });
@@ -1244,6 +1287,8 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
     return `could not link dependencies into ${path}/node_modules: ${firstLine(err)}`;
   }
 }
+
+/** The install {@link linkKeyedDependencies} makes, as a seam so a test can count it, fail it or fake what it writes. @typedef {(run: {cwd: string, args: string[]}) => void} TreeInstall */
 
 /**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
