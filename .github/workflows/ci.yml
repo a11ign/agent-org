@@ -99,3 +99,31 @@ jobs:
           # that names it (`TOOL_REPO_ENV` in `lib/pin-ratchet.mjs`); without it the pins are judged STRICTLY, every entry declared and nothing grandfathered.
           AGENT_ORG_TOOL_REPO: ${{ github.workspace }}
         run: node --import tsx --test "packages/agent-org/src/**/*.test.ts" "packages/agent-org/src/**/*.test.mjs" # in-project
+
+  # THE TYPECHECK (a11ign/a11ign#3551, toolchain row 4a of #3550). `tsc` ran nowhere in this repository: 217 of its 244 `.mjs` files carry `// @ts-check` and 226 files are
+  # `*.test.ts`, and none of it was checked, so a wrong JSDoc type and a test calling a function wrongly passed review and the suite alike. `tsconfig.json` is the program; its
+  # `exclude` names the files NOT yet clean, so a new file is checked from its first commit and the list can only shrink. A file that is imported by an included one is checked
+  # whether it is excluded or not (TypeScript follows imports), which is why `tsconfig.json` names only files nothing included reaches.
+  #
+  # IT IS A SEPARATE JOB, NOT A STEP OF `gate`: `gate` waits minutes for the whole suite and a type error should not cost that wait, and a required check is a JOB name, so a job of
+  # its own is the only way `main` can demand it without demanding the suite twice. It runs on the same three events as `gate`, because a merge queue waits for a check reporting on
+  # `merge_group`. Making it REQUIRED is a repository setting, not this file's (see the pull request that added it for who sets it and the read-back).
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.1
+      - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml, tsx)
+        run: npm install --no-package-lock
+      - name: tsc --noEmit over tsconfig.json
+        run: npm run typecheck
+      # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 428 files were in the
+      # program when this job was added (201 of the 226 `*.test.ts`, 194 of the 218 `@ts-check` `.mjs`); the floor is below that so a deletion does not trip it, and an `exclude` that
+      # swallows a hundred files does. Raise it as the list shrinks.
+      - name: The program still holds the files it was added to check
+        run: |
+          count=$(npx tsc --noEmit -p tsconfig.json --listFilesOnly | grep -vc node_modules)
+          echo "tsc program: $count files outside node_modules"
+          test "$count" -ge 400

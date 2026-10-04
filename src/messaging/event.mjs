@@ -23,7 +23,7 @@ const FINGERPRINT_LENGTH = 16;
 /**
  * @typedef {{
  *   key: string, kind: string, severity: string, firstSeenAt: number, text: string,
- *   links: string[], resolved: boolean, state: string, actions: {label: string, data: string}[]
+ *   links: string[], resolved: boolean, state: string, actions: readonly {label: string, data: string}[]
  * }} MessagingEvent  `firstSeenAt` is milliseconds since the epoch once normalised. `actions` are the buttons the watcher offers under this fact (none for most
  *   kinds); the core hands them to a provider that declares `buttons`, and whether the data means anything is the answers path's, not this module's.
  */

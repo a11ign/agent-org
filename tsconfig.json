@@ -1,0 +1,75 @@
+{
+  // THE PROGRAM `npm run typecheck` CHECKS AND CI REQUIRES (a11ign/a11ign#3551, toolchain row 4a of #3550). It is every `.ts` and every `.mjs` under `src/`; a `.mjs` is
+  // checked only when it carries `// @ts-check` (`checkJs` stays false, so the pragma keeps meaning what it meant), and every `*.test.ts` is checked.
+  //
+  // `exclude` NAMES WHAT IS NOT YET CLEAN, so a NEW file is checked from its first commit and the list can only shrink: fix a file, delete its line. It is not a way to
+  // silence a file that others import, because TypeScript follows imports and checks an excluded file reached from an included one anyway. That is why the sources
+  // behind these tests were fixed in the pull request that added this file, and only the leaves nothing included imports are listed.
+  "compilerOptions": {
+    // ES2023, not ES2022: `toSorted`, `findLast` and `findLastIndex` are in the sources, and engines is node >=22, which has all three.
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    // The tests import each other as `./x.ts`, which Node strips types for and `tsc` refuses without this.
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.mjs"],
+  "exclude": [
+    // NOT YET CLEAN (47 files, 146 errors measured at the head of the pull request that added this file). Each is a test or an entry point nothing included imports.
+    "src/claimed-region-overlap.test.ts",
+    "src/keyed-scope-without-tracker.test.ts",
+    "src/liaison-seat.test.mjs",
+    "src/messaging/answers.test.mjs",
+    "src/messaging/classify.test.mjs",
+    "src/messaging/converse.test.mjs",
+    "src/messaging/core.test.mjs",
+    "src/messaging/correct.test.mjs",
+    "src/messaging/github-writer.test.mjs",
+    "src/messaging/listen.mjs",
+    "src/messaging/listen.test.mjs",
+    "src/messaging/placeholders.test.mjs",
+    "src/messaging/provider-contract.test.mjs",
+    "src/messaging/providers/telegram/poll.mjs",
+    "src/messaging/providers/telegram/poll.test.mjs",
+    "src/messaging/record.test.mjs",
+    "src/messaging/reply.test.mjs",
+    "src/messaging/secret.test.mjs",
+    "src/messaging/sources/incidents.test.mjs",
+    "src/messaging/sources/readers.test.mjs",
+    "src/messaging/sources/requests.test.mjs",
+    "src/messaging/sources/stall.test.mjs",
+    "src/messaging/sources/watched.test.mjs",
+    "src/messaging/watch-buttons.test.mjs",
+    "src/packaging/deferred-order-relane.test.ts",
+    "src/packaging/dora-report.test.ts",
+    "src/packaging/gate-b4-repo-scope.test.ts",
+    "src/packaging/gh-identity-declared.test.ts",
+    "src/packaging/keyed-repo-review.test.ts",
+    "src/packaging/multi-board-gate.test.ts",
+    "src/packaging/org-retro.test.ts",
+    "src/packaging/pr-stall-reason.test.ts",
+    "src/packaging/release-tag-on-merge.test.ts",
+    "src/packaging/reviewer-door-install.test.ts",
+    "src/packaging/ruling-check.test.ts",
+    "src/packaging/wake-keyed-first-review.test.ts",
+    "src/packaging/wake-order-shape.test.ts",
+    "src/row-file-board.test.ts",
+    "src/work-gate-claim-stalled.test.ts",
+    "src/work-gate-merged-release-cross-repo.test.ts",
+    "src/work-gate-shared-file-orders.test.ts",
+    "src/work-gate-stuck-escalation-keyed.test.ts",
+
+    // CANNOT BE CHECKED IN THIS TREE: each imports a sibling module that lives in the project the tool is installed in (`packages/lab/src/packaging/`), which the `gate` job copies
+    // in beside the tests and a checkout of this repository alone does not have (TS2307). Removing these needs the siblings here, or a typecheck run in the project's layout.
+    "src/packaging/auto-arm-token.test.ts",
+    "src/packaging/merge-guard-checks-rule.test.ts",
+    "src/packaging/merge-guard.test.ts",
+    "src/packaging/tracker-leak-refusal.test.ts",
+    "src/packaging/workflow-run-liveness.test.ts"
+  ]
+}

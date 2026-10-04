@@ -104,6 +104,7 @@ export function createLedger({ path, now }) {
   return {
     path,
     append(entry) {
+      /** @type {Record<string, any>} */
       const line = { ...entry, ts: new Date(now()).toISOString() };
       if (typeof line.error === "string") line.error = redact(line.error);
       appendFileSync(path, `${JSON.stringify(line)}\n`, { mode: 0o600 });

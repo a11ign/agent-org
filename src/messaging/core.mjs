@@ -190,7 +190,7 @@ export function createMessenger({ provider, ledger, now, config: overrides }) {
     return line;
   };
 
-  /** Asks the rate limiter, then the provider. @returns {Promise<{status: string, line: Record<string, any>}>} */
+  /** Asks the rate limiter, then the provider. @param {string} key @param {Record<string, any>} message @param {Record<string, unknown>} extra @returns {Promise<{status: string, line: Record<string, any>}>} */
   async function attemptSend(key, message, extra) {
     const gate = limiter.tryAcquire();
     if (!gate.ok) {

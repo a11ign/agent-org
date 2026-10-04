@@ -61,7 +61,7 @@ function comparedOf(pr, say) {
     say(`work-gate: ${subjectMention(pr)} lists ${paths.length} files, not the ${pr.changedFiles} it reports -- left out of the shared-file comparison, which is NOT a reading of "no overlap" (#3480)\n`);
     return [];
   }
-  return [{ pr, files: new Set(paths.filter((p) => !isChangeset(p))) }];
+  return [{ pr, files: new Set(paths.filter((/** @type {string} */ p) => !isChangeset(p))) }];
 }
 
 /** @param {Compared[]} compared */
