@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The number of `.mjs` source files the tool has can no longer rise (a11ign/a11ign#3556, toolchain row 4d of #3550). `src/packaging/mjs-source-count.test.ts` pins 202 non-test `.mjs` files (under `src/` outside `src/packaging/`, `host/` and `.github/`) and 41 `*.test.mjs`, read at `758ad90`, and fails when either count rises, naming the files the change added against its base (the merge group's first parent, or the merge-base with `origin/main`) where that base can be read. A drop passes and says the pin can be lowered, so two conversions merged together stay green. The README says where a contributor reads the rule: a new source file is `.ts`, a touched `.mjs` may convert in the same pull request, and a `.ts` a shipped command imports cannot load yet under the host's `node` (measured on `/usr/bin/node` 22.22.1: `ERR_NO_TYPESCRIPT`, and `agent-org messaging:watch` dies on `ERR_UNKNOWN_FILE_EXTENSION` when `watched.mjs`, the ADR's worked example, is converted), which is why that file is not converted here.
