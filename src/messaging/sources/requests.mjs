@@ -34,21 +34,41 @@ const OPTIONS_BLOCK = /<!--\s*chairman-options:([\s\S]*?)-->/g;
 const OPTION_ID = /^[A-Za-z0-9_-]{1,16}$/;
 const MAX_OPTION_LABEL = 64;
 const MAX_QUOTED_LINE = 300;
-/**
- * **THE ALERT STATES THE ACT, OR IT IS NOT SENT (chairman, 2026-10-03, a11ign/a11ign#3335).** Nine alerts went out as a row title and nothing
- * else, and four of the nine were cleared by a session without him. The newest org brief must carry all three lines, and all three are
- * the message. `Checked:` is a claim the source cannot re-read (whether a machine is already switched on is a fact about the machine); what
- * it can do is refuse an alert whose labeller did not say what they read.
- */
-const BRIEF_LINES = ["Ask", "Only you because", "Checked"].map((label) => ({
-  label,
-  // A line of the brief, optionally a list item or quoted, the label optionally bold: `**Ask:** x`, `**Ask**: x`, `- Ask: x`.
-  // `[ \t]` and not `\s`, so a bare `Ask:` never takes the next line as its text.
-  pattern: new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?${label}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(?:\\*\\*|__)?[ \\t]*(\\S.*)$`, "im"),
-}));
 const ELLIPSIS = "…";
 const KEY_PATTERN = /^request:([^#\s]+)#(\d+)$/;
 const KEY_PREFIX = "request:";
+/**
+ * **THE ALERT IS A BRIEF, NOT A TICKET WITH A HEADER (chairman, 2026-10-03 a11ign/a11ign#3335; 2026-10-04 #3412).** Nine alerts went out as a
+ * row title and nothing else; then they went out as `Needs you: <repo>#<n> <title>` over three lines, and he said that is a ticket. The
+ * message now OPENS with what is happening and carries the rest of the brief; the row's number and title are in it nowhere, and the link,
+ * which the core puts last, is the only reference. The newest org brief must carry every line below or no alert is sent. `Checked:` is a
+ * claim the source cannot re-read (whether a machine is already switched on is a fact about the machine); what it can do is refuse an
+ * alert whose labeller did not say what they read. Whether the words are plain English is the labeller's rule (E3), not a check here.
+ */
+const BASE_LABELS = ["What is happening", "Ask", "Only you because", "Checked", "How long", "Unblocks"];
+/** A brief that offers options (a `chairman-options` block) must also say which it would pick and what that costs. */
+const OPTION_LABELS = ["Recommend", "Trade-off"];
+/** A brief with no options is a physical or account ask: its author must have said why the chairman's own Claude session cannot do it. */
+const NOT_HIS_CLAUDE = "Not the chairman's Claude session because";
+const MISSING_HINTS = new Map([
+  // None of these hints may contain the words `chairman-options`: a grep for them must find only an options-block problem (#3344).
+  ["Recommend", "a brief that offers options must say which one it recommends"],
+  ["Trade-off", "a brief that offers options must say what choosing the recommendation costs"],
+  [NOT_HIS_CLAUDE, "a brief that offers no choice is a request for him alone, so it must say why his own Claude session cannot do it"],
+]);
+
+/** @param {string} label @returns {RegExp} */
+function briefLinePattern(label) {
+  // A line of the brief, optionally a list item or quoted, the label optionally bold: `**Ask:** x`, `**Ask**: x`, `- Ask: x`.
+  // `[ \t]` and not `\s`, so a bare `Ask:` never takes the next line as its text. An apostrophe in a label is either kind.
+  const spelled = label.replace(/'/g, "['\u2019]");
+  return new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?${spelled}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(?:\\*\\*|__)?[ \\t]*(\\S.*)$`, "im");
+}
+
+/** @param {boolean} offersOptions @returns {string[]} every label this brief must carry, in the order the message shows them */
+function requiredLabels(offersOptions) {
+  return [...BASE_LABELS, ...(offersOptions ? OPTION_LABELS : [NOT_HIS_CLAUDE])];
+}
 
 /** @typedef {{ body: string, createdAt: string, authorAssociation?: string }} RowComment */
 /** @typedef {{ number: number, title: string, url: string, comments?: RowComment[] }} RequestRow */
@@ -110,14 +130,14 @@ function plainLine(text) {
 }
 
 /**
- * @param {string} body the whole comment
+ * @param {string} body the whole comment @param {string[]} labels the lines this brief must carry
  * @returns {{ lines: string[], missing: string[] }} each required line as one plain `Label: text` line; `missing` names every label with no text after it
  */
-function readBriefLines(body) {
+function readBriefLines(body, labels) {
   const lines = [];
   const missing = [];
-  for (const { label, pattern } of BRIEF_LINES) {
-    const found = pattern.exec(body);
+  for (const label of labels) {
+    const found = briefLinePattern(label).exec(body);
     const text = found === null ? "" : plainLine(found[1]);
     if (text === "") missing.push(label);
     else lines.push(`${label}: ${text}`);
@@ -139,7 +159,9 @@ function requestState(briefLines, options) {
 /** @param {RowComment | null} brief @param {string[]} missing @returns {string} why no alert is sent, in words the log can show on its own */
 function refusalReason(brief, missing) {
   if (brief === null) return `alert not sent: the row has no brief for the chairman from an org account, so nothing says what he is to do`;
-  return `alert not sent: the newest brief for the chairman has no ${missing.map((label) => `"${label}:"`).join(", ")} line`;
+  const hints = missing.flatMap((label) => MISSING_HINTS.get(label) ?? []);
+  const why = hints.length > 0 ? ` (${hints.join("; ")})` : "";
+  return `alert not sent: the newest brief for the chairman has no ${missing.map((label) => `"${label}:"`).join(", ")} line${why}`;
 }
 
 /**
@@ -153,9 +175,11 @@ function refusalReason(brief, missing) {
  */
 export function requestEvent({ repo, row, now }) {
   const brief = latestBrief(row.comments);
-  const { lines, missing } = brief ? readBriefLines(brief.body) : { lines: [], missing: BRIEF_LINES.map(({ label }) => label) };
-  if (brief === null || missing.length > 0) return { event: null, options: [], problem: refusalReason(brief, missing) };
+  if (brief === null) return { event: null, options: [], problem: refusalReason(null, []) };
   const { options, problem } = parseChairmanOptions(brief.body);
+  // A malformed block still means the author meant to offer a choice, so it is held to the options lines, and its own problem is still reported.
+  const { lines, missing } = readBriefLines(brief.body, requiredLabels(options.length > 0 || problem !== null));
+  if (missing.length > 0) return { event: null, options: [], problem: refusalReason(brief, missing) };
   return {
     event: {
       key: requestKey(repo, row.number),
@@ -164,7 +188,8 @@ export function requestEvent({ repo, row, now }) {
       // The moment this tick saw it. The request policy has no hold-down, so the only use of the time is the core's "already cleared"
       // guard, and for that a later time is the right one: a row that regains the label is a NEW episode.
       firstSeenAt: now,
-      text: [`Needs you: ${repo}#${row.number} ${plainLine(row.title)}`, ...lines].join("\n"),
+      // The row's number and title are NOT here and not in the link's label: the brief opens the message, and the link is its last line.
+      text: lines.join("\n"),
       links: [row.url],
       resolved: false,
       state: requestState(lines, options),

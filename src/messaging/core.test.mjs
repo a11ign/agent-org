@@ -425,6 +425,28 @@ describe("the planner and the composers", () => {
     assert.ok(text.includes("…"));
   });
 
+  test("a brief cut to maxText keeps its opening line and its link whole and LAST, for every kind of send (a11ign/a11ign#3412 (5))", () => {
+    const link = "https://github.com/a11ign/a11ign/issues/3229";
+    const lines = ["What is happening: worker 4 is off", ...["Ask", "Only you because", "Checked", "How long", "Unblocks"].map((label) => `${label}: ${"w".repeat(80)}`)];
+    const brief = { ...event, text: lines.join("\n"), links: [link] };
+    const whole = composeText(brief, { action: "send", kind: "first" }, 10_000, 3);
+    assert.equal(whole, `${lines.join("\n")}\n${link}`, "POSITIVE CONTROL: with room, the text is the brief then the link, unchanged");
+    for (const plan of [{ action: "send", kind: "first" }, { action: "send", kind: "update" }, { action: "send", kind: "reminder", reminder: 2 }]) {
+      const cut = composeText(brief, /** @type {any} */ (plan), 200, 3);
+      assert.ok(cut.length <= 200, `${plan.kind}: ${cut.length} characters`);
+      assert.equal(cut.split("\n").at(-1), link, `${plan.kind}: the link is the last line, whole`);
+      assert.ok(cut.includes("…"), `${plan.kind}: the text is what gave way`);
+    }
+    assert.ok(composeText(brief, { action: "send", kind: "first" }, 200, 3).startsWith("What is happening: worker 4 is off\n"));
+  });
+
+  test("the ledger holds the text AS SENT, link included, so a reading of it needs nothing rebuilt", async () => {
+    const run = harness();
+    await run.tick([request(801)]);
+    assert.equal(run.lines()[0].text, run.provider.sent[0].text);
+    assert.ok(run.lines()[0].text.endsWith("\nhttps://example.test/801"));
+  });
+
   test("the digest says how many it could not fit, and never exceeds maxText", () => {
     const entries = Array.from({ length: 30 }, (_, index) => ({ key: `k${index}`, kind: "first", text: `event number ${index} with some words` }));
     const text = composeDigest(entries, 300);
