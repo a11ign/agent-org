@@ -13,7 +13,7 @@
 //
 // **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.mjs`
 // (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
-// What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for `ceo` and nobody else.
+// What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for the `liaison` and nobody else.
 //
 // **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.mjs` and `wake.mjs` read the project's declaration when they are
 // imported and REFUSE without it (the `chairman-listen` unit sets `$AGENT_ORG_HOST`, #3064). A message `converse` could not queue for that reason is TOLD to the
@@ -34,7 +34,7 @@ import { pathToFileURL } from "node:url";
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
-import { createConverse } from "./converse.mjs";
+import { createConverse, notReached } from "./converse.mjs";
 import { createGithubWriter } from "./github-writer.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, describeError } from "./ledger.mjs";
@@ -188,7 +188,7 @@ export function tellingWhenUndelivered({ ledger, send, converse }) {
     /** @type {{ ref: string | null, error: unknown }} */
     let ack = { ref: null, error: null };
     try {
-      ack = { ref: (await send({ text: `I could not queue that for ceo: ${describeError(cause)}. Treat it as NOT delivered.`, replyTo: String(accepted.messageId) })).messageRef, error: null };
+      ack = { ref: (await send({ text: notReached(describeError(cause)), replyTo: String(accepted.messageId) })).messageRef, error: null };
     } catch (error) {
       ack = { ref: null, error };
     }
@@ -257,7 +257,7 @@ async function listen(deps, config) {
     const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
-    // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for `ceo` lands where `ceo`'s next wake reads it.
+    // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
     // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, orders: { liaison: (order) => conversation.orderLiaison(order) } });
