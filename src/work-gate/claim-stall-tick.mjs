@@ -18,6 +18,7 @@ import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_S
 import { readAgents } from "../herdr-agents.mjs";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
 import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.mjs";
+import { homeProjectDeclaration } from "../project-config.mjs";
 import { readFileSync } from "node:fs";
 
 /**
@@ -133,6 +134,21 @@ function agentsFor(held, given) {
 }
 
 /**
+ * How many claimed rows each session holds: a pull request's `session:` label names a session, which is a claim's own only for a session holding one (#3445).
+ * @param {any[]} held @returns {Map<string, number>}
+ */
+function rowsPerSession(held) {
+  const counts = new Map();
+  for (const row of held) {
+    for (const label of labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX))) {
+      const session = label.slice(SESSION_PREFIX.length);
+      counts.set(session, (counts.get(session) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/**
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
  *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, io: import("../claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
  *   agents: {label: string, status: string}[] | null,
@@ -141,6 +157,7 @@ function agentsFor(held, given) {
 function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }) {
   /** @type {{ facts: import("../claim-stall.mjs").ClaimFacts, reading: import("../claim-stall.mjs").Reading }[]} */
   const readings = [];
+  const heldBy = rowsPerSession(held);
   for (const row of held) {
     const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
     if (sessions.length !== 1) {
@@ -150,6 +167,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
     const session = sessions[0].slice(SESSION_PREFIX.length);
     const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
       waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
+      trackerRepo: homeProjectDeclaration().tracker[0].repo, sessionRows: heldBy.get(session),
       ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
