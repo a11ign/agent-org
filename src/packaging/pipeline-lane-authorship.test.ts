@@ -130,6 +130,8 @@ function driveArm({ author, files, body = "Closes #1", labels = [] as string[], 
       return JSON.stringify({ labels: labels.map((name) => ({ name })), body, state: "OPEN", author: { login: author } });
     }
     if (args[0] === "api" && args[2]?.endsWith("/files")) return files.join("\n");
+    // #3487: the queue history `arm-pr` now asks last -- never queued, so never ejected.
+    if (args.some((x) => x.includes("timelineItems"))) return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } });
     if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [] });
     return "";
   };
@@ -258,6 +260,7 @@ function driveSweep(author: string, files: string[]) {
     writeFileSync(join(dir, "bin", "gh"), `#!/bin/bash
 echo "$*" >> "${dir}/calls"
 case "$*" in
+  *timelineItems*) echo '{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}' ;;
   *"api graphql"*) echo '[{"number":7,"isDraft":false,"merged":false,"autoMergeRequest":null,"mergeQueueEntry":null}]' ;;
   *"--json labels"*) echo '[]' ;;
   *"--json author"*) echo '${author}' ;;
