@@ -349,3 +349,31 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   KEY` header, combining accents and homoglyphs); false positives (a 40-hex SHA is read as a secret and deleted, `how do I remove a
   label from a row?` is refused); the content of a group or forwarded message is hashed before the identity check (at odds with "no
   hash of a secret"); and a stranger can grow the ledger by one line per update.
+
+## The liaison's commands: `chairman:record`, `chairman:correct`, `chairman:ask-ceo` (a11ign/a11ign#3417, #3490)
+
+The liaison acts for the chairman through three commands and no others; each takes a `--message=<ref>` that must be an accepted inbound line in the ledger, and each says in its
+own text that the liaison wrote it. `record` and `correct` write to a row (their source headers hold the rules: a closed set of three verbs, `needs:chairman` the only label removed).
+`ask-ceo` writes to no row: it asks `ceo` for a ruling.
+
+### `chairman:ask-ceo`: what "names something that clears it" is
+
+```
+pnpm run chairman:ask-ceo -- --row=3333 --message=45      (the question on stdin)
+```
+
+It is `prompt:session ceo --needs-decision` with two refusals in front, both before anything is sent: the ref is not in the ledger, or **the question carries no `Waiting-for:` line
+that the gate reads**. The predicate is `parseWaits` (`wait-condition.mjs`), the parser `work:tick` and `org-health` run, asked whether any wait in the text is `closed`, `merged`,
+`labelled` or `unlabelled` on a row. So `Waiting-for: unlabelled answer:ceo #3490` passes (the label coming off the row is the answer), and `Waiting-for: soon`, `Waiting-for: manual`,
+a bare `#3490` in a sentence and a `Waiting-for:` line inside a code fence do not.
+
+**Why this one of the candidates.** A waiting condition is data, not a sentence: a ruling asked in prose has nothing that ends the wait, so it is queued and left to stall. The
+candidates were a row reference plus the decision asked (prose, which no reader of the gate parses), or a named field the answer would set. The second is chosen, and it is
+the `Waiting-for:` grammar and not a new field, because that is the one the gate already reads and already reports as `wait-without-reason` when it cannot. What passes here is therefore
+what the gate can later find true. It is not a promise that the condition is a good one, or that the row named exists: `ask-ceo` checks the grammar and not the tracker.
+
+**The target is `ceo` and nothing else** (`RECIPIENT`; `parseArgs` is strict, so a `--to` is refused). **The order is sent by running `prompt:session`, not by importing its queue**, so it has
+the same refusals, the same `decision: true` entry and a sender derived from the caller's herdr workspace, which is `liaison` only when it is run in the liaison's seat; the order's first line
+names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported as queued and never retried.** One consequence to know: `converse.test.mjs` bounds the callers of the queue under
+`src/messaging/` by scanning for the queue's functions and `prompt-session.mjs`, and `ask-ceo.mjs` runs the command by name, so the scan does not see it. It is a second sender to a session
+other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.mjs` pins its own single target.
