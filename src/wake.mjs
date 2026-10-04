@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
@@ -1233,7 +1234,8 @@ const TREE_INSTALL_TIMEOUT_MS = 300_000;
 
 /** The one real install: `pnpm` in `cwd`, which throws on a non-zero exit with the child's stderr on the error. @type {TreeInstall} */
 const defaultInstall = ({ cwd, args }) => {
-  execFileSync("pnpm", args, { cwd, encoding: "utf8", stdio: "pipe", timeout: TREE_INSTALL_TIMEOUT_MS });
+  const pnpm = pnpmCliInvocation(args);
+  execFileSync(pnpm.command, pnpm.args, { cwd, encoding: "utf8", stdio: "pipe", timeout: TREE_INSTALL_TIMEOUT_MS });
 };
 
 /**

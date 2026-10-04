@@ -83,12 +83,14 @@ for (const name of Object.keys({ ...m.devDependencies, ...m.dependencies })) {
 
 /** Run `body` with `dir` first on `PATH`, so the default install (the real `execFileSync("pnpm")`) reaches the shim. */
 function withPath<T>(dir: string, body: () => T): T {
-  const before = process.env.PATH;
-  process.env.PATH = `${dir}${delimiter}${before}`;
+  const before = { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath };
+  process.env.PATH = `${dir}${delimiter}${before.PATH}`;
+  delete process.env.npm_execpath; // set when `pnpm run` started this process, and then `pnpmCliInvocation` would run THAT pnpm and not the shim
   try {
     return body();
   } finally {
-    process.env.PATH = before;
+    process.env.PATH = before.PATH;
+    if (before.npm_execpath !== undefined) process.env.npm_execpath = before.npm_execpath;
   }
 }
 
