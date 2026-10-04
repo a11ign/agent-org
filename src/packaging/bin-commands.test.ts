@@ -91,6 +91,23 @@ test("POSITIVE CONTROL: a known command dispatches to its program with the table
   assert.deepEqual(plan.run.args, [...FIXED_ARGS["pr:open"], "--title", "x"]);
 });
 
+for (const command of ["pr:open", "pr:edit"] as const) {
+  test(`#3357: \`${command}\` with and without the mode word the table already supplies reaches the program with exactly one`, () => {
+    const [mode] = FIXED_ARGS[command];
+    const flagsOnly = planInvocation([command, "--title", "t", "--body-file", "b.md"]);
+    const withMode = planInvocation([command, mode, "--title", "t", "--body-file", "b.md"]);
+    assert.ok("run" in flagsOnly && "run" in withMode);
+    assert.deepEqual(withMode.run.args, flagsOnly.run.args);
+    assert.deepEqual(withMode.run.args, [mode, "--title", "t", "--body-file", "b.md"]);
+  });
+}
+
+test("#3357: only a LEADING repeat is dropped -- the same word later in the caller's arguments is a value, not a mode", () => {
+  const plan = planInvocation(["pr:open", "--title", "create", "--body-file", "b.md"]);
+  assert.ok("run" in plan);
+  assert.deepEqual(plan.run.args, ["create", "--title", "create", "--body-file", "b.md"]);
+});
+
 for (const [what, argv, pattern] of [
   ["an unknown name", ["no-such-command"], /`no-such-command` is not a command/],
   ["no name at all", [], /no command given, and there is no default one/],
