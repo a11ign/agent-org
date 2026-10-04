@@ -22,6 +22,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
+import { toolVersionLine } from "./update-tool.mjs";
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
 // stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
@@ -132,6 +133,9 @@ function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
     entry: import.meta.url, command: "node packages/agent-org/src/work-tick.mjs",
   });
+  // FIRST, BEFORE ANYTHING CAN DECIDE (#3443): the host runs one agent-org version and a journal read must say which made each decision. Read from the
+  // checkout at this tick, never remembered; a checkout at no release says so rather than naming one.
+  console.log(toolVersionLine());
   /** @param {string} name */
   const here = (name) => fileURLToPath(new URL(name, import.meta.url));
   const passthrough = process.argv.slice(2);

@@ -299,6 +299,15 @@ const OTHER_TOOL_FORMS = Object.freeze({
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/board-report-dispatch.sh"],
   ],
+  // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
+  // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
+  // (`messaging:listen` -> `src/messaging/listen.mjs`, `messaging:watch` -> `src/messaging/watch.mjs`), run directly, which is the form `worktree-prune` has.
+  "chairman-listen.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node src/messaging/listen.mjs"],
+  ],
+  "chairman-watch.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node src/messaging/watch.mjs"],
+  ],
   "shadow-window.service.in": [
     [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/shadow-window\.mjs /m, "ExecStart=/usr/bin/node src/shadow-window.mjs "],
   ],
