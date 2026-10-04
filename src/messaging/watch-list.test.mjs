@@ -10,8 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
+import { createFakeProvider } from "./fake-provider.mjs";
 import { createLedger } from "./ledger.mjs";
 import { defaultLedgerPath } from "./state.mjs";
+import { WATCHED, runWatch } from "./watch.mjs";
 import { createWatchList, foldWatches, main } from "./watch-list.mjs";
 
 // THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
@@ -34,6 +36,9 @@ function freshLedger(now, { holdsMessage = true } = {}) {
   return ledger;
 }
 
+/** GitHub's own two words for a run: a status while it runs, and a conclusion beside `completed` once it has one. @param {string} state @returns {{status: string, conclusion: string | null}} */
+const runAsGithubSays = (state) => (["queued", "in_progress", "waiting"].includes(state) ? { status: state, conclusion: null } : { status: "completed", conclusion: state });
+
 /**
  * The vocabulary's readers over a table of states, keyed `row:<n>`, `pr:<n>`, `run:<n>`, `unit:<name>`. A thing not in the table THROWS, as a reader that cannot
  * answer does, and `asked` says what was read so an empty result is shown to have come from a source that looked.
@@ -51,7 +56,7 @@ function world(states) {
   const readers = {
     issue: async (/** @type {number} */ number) => ({ number, state: read(`row:${number}`), labels: [] }),
     pr: async (/** @type {number} */ number) => ({ number, state: read(`pr:${number}`), review: "none" }),
-    run: async (/** @type {number} */ id) => ({ conclusion: read(`run:${id}`) }),
+    run: async (/** @type {number} */ id) => runAsGithubSays(read(`run:${id}`)),
     unit: async (/** @type {string} */ name) => ({ state: read(`unit:${name}`) }),
     ready: unused, lastMerge: unused, comment: unused, fleet: unused, gate: unused, release: unused,
   };
@@ -138,13 +143,70 @@ describe("(5) a thing the readers cannot read is refused at add, not at the firs
     assert.equal((await watches.add({ kind: "row", id: "4", ref: MESSAGE })).outcome, "done", "the control: an open row is watched");
   });
 
-  test("a run is refused with the reason it cannot be watched yet: it is readable only once it has concluded", async () => {
-    const { watches } = listOver({ "run:9": "success" });
-    const concluded = await watches.add({ kind: "run", id: "9", ref: MESSAGE });
-    assert.equal(concluded.outcome, "refused");
-    assert.match(concluded.say, /already success/);
-    const running = await watches.add({ kind: "run", id: "10", ref: MESSAGE });
-    assert.match(running.say, /only once it has concluded/);
+  test("a run that has already concluded is still refused, whatever its conclusion: nothing will change", async () => {
+    const { ledger, watches } = listOver({ "run:9": "success", "run:10": "failure", "run:11": "cancelled", "run:12": "in_progress" });
+    for (const [id, conclusion] of [["9", "success"], ["10", "failure"], ["11", "cancelled"]]) {
+      const refused = await watches.add({ kind: "run", id, ref: MESSAGE });
+      assert.equal(refused.outcome, "refused");
+      assert.match(refused.say, new RegExp(`Run ${id} is already ${conclusion}`));
+    }
+    assert.equal(watchLines(ledger), 0);
+    assert.equal((await watches.add({ kind: "run", id: "12", ref: MESSAGE })).outcome, "done", "the control: the same add for a run still going is accepted");
+  });
+});
+
+describe("(7) a run in progress can be watched, and ends with its conclusion", () => {
+  /** @param {Record<string, string>} states */
+  function tickingOver(states) {
+    const fixture = world(states);
+    const ledger = freshLedger(clock);
+    const provider = createFakeProvider();
+    const watches = createWatchList({ ledger, readers: fixture.readers, now: clock });
+    const tick = () => runWatch({ github: {}, provider, ledger, now: clock, repo: "a11ign/a11ign", summary: null, watchReaders: fixture.readers, sources: [WATCHED] });
+    return { fixture, provider, watches, tick };
+  }
+
+  test("a run in progress is added and listed, its move to in_progress is told, and its conclusion is told ONCE, after which it leaves the list", async () => {
+    const { fixture, provider, watches, tick } = tickingOver({ "run:36891064128": "queued" });
+    const added = await watches.add({ kind: "run", id: "36891064128", ref: MESSAGE });
+    assert.equal(added.outcome, "done");
+    assert.match(added.say, /watching Run 36891064128 \(now queued\)/);
+    assert.deepEqual(watches.list().map(({ thing }) => thing), ["run:36891064128"], "the control for the empty list below");
+
+    fixture.states["run:36891064128"] = "in_progress";
+    await tick();
+    assert.deepEqual(provider.sent.map(({ text }) => text.split("\n")[0]), ["Run 36891064128: now in_progress"]);
+    assert.equal(watches.list().length, 1, "a status is not an end: it is still listed");
+
+    fixture.states["run:36891064128"] = "failure";
+    await tick();
+    assert.deepEqual(provider.sent.map(({ text }) => text.split("\n")[0]), ["Run 36891064128: now in_progress", "Run 36891064128: now failure"]);
+    assert.deepEqual(watches.list(), [], "gone from list once its conclusion was told");
+
+    fixture.asked.length = 0;
+    await tick();
+    await tick();
+    assert.equal(provider.sent.length, 2, "one final telling and no second: the end is derived from the conclusion, not from the run having been seen to end");
+    assert.deepEqual(fixture.asked, [], "and it is no longer even read");
+  });
+
+  test("every conclusion GitHub names ends a watch, and no status does", async () => {
+    const conclusions = ["success", "failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "stale", "startup_failure"];
+    for (const conclusion of conclusions) {
+      const { fixture, watches, tick } = tickingOver({ "run:5": "in_progress" });
+      await watches.add({ kind: "run", id: "5", ref: MESSAGE });
+      fixture.states["run:5"] = conclusion;
+      await tick();
+      assert.deepEqual(watches.list(), [], conclusion);
+    }
+    for (const status of ["queued", "waiting"]) {
+      const { fixture, provider, watches, tick } = tickingOver({ "run:5": "in_progress" });
+      await watches.add({ kind: "run", id: "5", ref: MESSAGE });
+      fixture.states["run:5"] = status;
+      await tick();
+      assert.equal(provider.sent.length, 1, `the control: ${status} is a change and is told`);
+      assert.equal(watches.list().length, 1, `${status} is not an end`);
+    }
   });
 });
 
