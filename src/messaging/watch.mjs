@@ -60,6 +60,7 @@ import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
 import { createWatchReaders } from "./watch-list.mjs";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { readAgents } from "../herdr-agents.mjs";
 import { completionPath } from "../lib/tick-completion.mjs";
 import { isBrokenRed } from "../red-pr.mjs";
@@ -500,9 +501,12 @@ async function buildProvider({ config, providers, fetch: fetchImpl, err }) {
   }
 }
 
-/** What a caller may leave out. A spread and not parameter defaults: each default is a branch, and `main` was past the complexity limit. */
+/**
+ * What a caller may leave out. A spread and not parameter defaults: each default is a branch, and `main` was past the complexity limit. `root` is `HOME_CHECKOUT`
+ * and NOT `process.cwd()` (#3485): the unit in tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so a cwd root exited 2 on the project declaration.
+ */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined),
+  root: HOME_CHECKOUT, env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined),
   watchReaders: /** @type {import("./placeholders.mjs").Readers | undefined} */ (undefined),
   providers: /** @type {Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>} */ ({ telegram: telegramProvider }), fetch: globalThis.fetch,
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
