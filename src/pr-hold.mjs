@@ -10,6 +10,12 @@
  *   pnpm run pr:hold <n> --session=<name> --until="closed #2867"
  *                                                 # take it AND say what it waits for: closed|merged <ref>,
  *                                                 # labelled|unlabelled <label> <ref>, or `manual` (#2996)
+ *   pnpm run pr:hold <n> --repo-key=agent-org --session=<name> --until="merged a11ign/agent-org#148"
+ *   pnpm run pr:hold a11ign/agent-org#<n> --session=<name>
+ *                                                 # a pull request of ANOTHER repository the project declares (#3479): the key
+ *                                                 # `.agent-org/project.json`'s `code` gives it, or `owner/repo#n`. Absent is the first
+ *                                                 # repository, so every call without it is what it always was. A key the project does
+ *                                                 # not declare is REFUSED, naming the declared ones, and nothing is written.
  *
  * **THERE IS NO `pr-release.mjs`.** `pr:release` is this file with `--release` (see `package.json`), and
  * the two being named as a pair everywhere else makes a sibling script the natural thing to go looking
@@ -42,8 +48,8 @@
  *   0  DONE -- the hold was taken or released as asked, or (no --session) reported
  *   1  REFUSED -- somebody else holds it and --steal was not passed; nothing was written. An unexpected
  *      failure BEFORE any label is written also exits 1, Node's own, with nothing written.
- *   2  CANNOT_ASK -- usage, a lookup that could not be answered, or a write whose read-back disagreed;
- *      each message names the state it found
+ *   2  CANNOT_ASK -- usage, a repository the project does not declare, a lookup that could not be answered, or a write whose
+ *      read-back disagreed; each message names the state it found
  *   3  DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold, and a later label write then failed,
  *      so this session's hold was not added. The message names every label that came off. Measured on
  *      #1481 at `8244cf0f`: that failure escaped as an uncaught throw and Node exited 1, "nothing done",
@@ -57,9 +63,49 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { disarmVerdict, armVerdict, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.mjs";
 import { parseWaits, WAIT_MARKER } from "./wait-condition.mjs";
 import { REPO } from "./project-identity.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
 const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, DISPLACED_NOT_HELD: 3 };
+
+/**
+ * @typedef {{ number: number, repo: string, key: string }} HeldPr
+ * The pull request a hold is about, with its repository (`owner/repo`) and the project's key for it: `""` is the first repository (#3479).
+ */
+
+/** @param {HeldPr} pr @returns {string} how a message names it: `#7`, or `agent-org#7` */
+const mention = (pr) => (pr.key === "" ? `#${pr.number}` : `${pr.key}#${pr.number}`);
+
+/**
+ * The calls of the first repository that never carried `--repo` (the merge and the auto-merge read) stay as they were; a keyed one
+ * is aimed, because without it `gh` answers for whatever repository the working directory is (#3479).
+ * @param {HeldPr} pr @returns {string[]}
+ */
+const aimedIfKeyed = (pr) => (pr.key === "" ? [] : ["--repo", pr.repo]);
+
+/** @param {HeldPr} pr @returns {string} the same aim as text for a command an operator is told to type, with its trailing space */
+const aimedFlags = (pr) => (pr.key === "" ? "" : `--repo ${pr.repo} `);
+
+/**
+ * WHICH REPOSITORY A HOLD IS ABOUT, resolved through the project declaration and REFUSED when the project does not declare it (#3479).
+ * Every `gh` call here is aimed at the answer, so a key can never fall back to the first repository's pull request of the same number.
+ * `ref` is the positional `owner/repo` of `owner/repo#n`, or `null`; `key` the `--repo-key=` value, or `undefined`.
+ * @param {{ key: string | undefined, ref: string | null }} asked @param {readonly { key: string, repo: string }[]} code the declared code repositories
+ * @returns {{ repo: string, key: string } | { error: string }}
+ */
+export function holdRepository({ key, ref }, code) {
+  const declared = code.map((entry) => `${entry.key === "" ? "(none: the first)" : entry.key} = ${entry.repo}`).join(", ");
+  const byKey = key === undefined ? undefined : code.find((entry) => entry.key === key);
+  const byRef = ref === null ? undefined : code.find((entry) => entry.repo === ref);
+  if ((key !== undefined && !byKey) || (ref !== null && !byRef)) {
+    return { error: `REFUSING: ${key !== undefined && !byKey ? `--repo-key=${key}` : ref} is not a repository this project declares, so nothing was written. Declared: ${declared}.` };
+  }
+  if (byKey && byRef && byKey !== byRef) {
+    return { error: `REFUSING: --repo-key=${key} names ${byKey.repo} and the pull request names ${ref}; they are two repositories. Say one.` };
+  }
+  const found = byKey ?? byRef ?? code.find((entry) => entry.key === "");
+  return found ? { repo: found.repo, key: found.key } : { error: `REFUSING: the project declares no first code repository. Declared: ${declared}.` };
+}
 
 /** @param {string[]} args */
 const gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -71,12 +117,12 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignor
  * you proceed — so a failed lookup returning it would hand out a hold on the strength of a network
  * error. The same rule `merge-guard.mjs` applies to every one of its own lookups.
  *
- * @param {number} number
+ * @param {number} number @param {string} [repo] `owner/repo`; the first repository's when absent
  * @returns {string[] | null}
  */
-export function prLabels(number) {
+export function prLabels(number, repo = REPO) {
   try {
-    const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", REPO, "--json", "labels"]));
+    const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", repo, "--json", "labels"]));
     if (!Array.isArray(pr.labels)) return null;
     const names = pr.labels.map((/** @type {{name?: unknown}} */ l) => l?.name);
     return names.every((/** @type {unknown} */ n) => typeof n === "string")
@@ -120,30 +166,30 @@ export function holdDecision({ holders, session, steal }) {
     message: `STEALING from ${others.join(", ")} — say why to them` };
 }
 
-/** @param {number} number @param {string} session @param {"add"|"remove"} how */
-function writeLabel(number, session, how) {
-  writeRawLabel(number, `${HOLD_PREFIX}${session}`, how);
+/** @param {HeldPr} pr @param {string} session @param {"add"|"remove"} how */
+function writeLabel(pr, session, how) {
+  writeRawLabel(pr, `${HOLD_PREFIX}${session}`, how);
 }
 
-/** @param {number} number @param {string} label @param {"add"|"remove"} how */
-function writeRawLabel(number, label, how) {
-  gh(["pr", "edit", String(number), "--repo", REPO, `--${how}-label`, label]);
+/** @param {HeldPr} pr @param {string} label @param {"add"|"remove"} how */
+function writeRawLabel(pr, label, how) {
+  gh(["pr", "edit", String(pr.number), "--repo", pr.repo, `--${how}-label`, label]);
 }
 
 /**
  * This PR's `autoMergeRequest`, or `null` when the answer could not be had -- and the two are NOT the
  * same thing, which is why the callers below check what they got rather than its truthiness.
  *
- * @param {number} number
+ * @param {HeldPr} pr
  * @returns {{ autoMergeRequest?: unknown } | null}
  */
-function readAutoMerge(number) {
+function readAutoMerge(pr) {
   try {
     // `state` ALONGSIDE `autoMergeRequest`, because a null `autoMergeRequest` means "disarmed" or
     // "merged" and the field cannot tell you which. `disarmVerdict` and `armVerdict` both need the
     // second one -- see their headings and #845, where three reads said NOT-ARMED about a PR that had
     // merged four seconds earlier.
-    return JSON.parse(gh(["pr", "view", String(number), "--repo", REPO,
+    return JSON.parse(gh(["pr", "view", String(pr.number), "--repo", pr.repo,
       "--json", "autoMergeRequest,state"]));
   } catch {
     return null;
@@ -151,27 +197,43 @@ function readAutoMerge(number) {
 }
 
 function usage() {
-  return "usage: pr-hold.mjs <pr-number> [--session=<name>] [--release] [--steal] [--until=<state> <ref> | manual]\n"
+  return "usage: pr-hold.mjs <pr-number | owner/repo#n> [--repo-key=<key>] [--session=<name>] [--release] [--steal] [--until=<state> <ref> | manual]\n"
     + "  with --session: takes the hold (or releases it with --release)\n"
     + "  without       : reports who holds it and writes nothing\n";
 }
 
-function main() {
-  refuseUnknownFlags(["--session=", "--release", "--steal", "--until="],
-    { entry: import.meta.url, command: "pnpm run pr:hold" });
-  const number = Number(process.argv.slice(2).find((a) => /^\d+$/.test(a)));
-  if (!Number.isInteger(number) || number <= 0) {
+/**
+ * THE PULL REQUEST THE COMMAND LINE NAMES (#3479): `<n>` or `owner/repo#<n>`, and `--repo-key=<key>`. A line that names none, or a repository the
+ * project does not declare, is a refusal and the process ends here with nothing written.
+ * @param {readonly string[]} argv @returns {HeldPr}
+ */
+function pullRequestOf(argv) {
+  const named = /^(?:([\w.-]+\/[\w.-]+)#)?(\d+)$/.exec(argv.slice(2).find((a) => /^(?:[\w.-]+\/[\w.-]+#)?\d+$/.test(a)) ?? "");
+  const number = Number(named?.[2]);
+  if (!named || !Number.isInteger(number) || number <= 0) {
     process.stderr.write(usage());
     process.exit(EXIT.CANNOT_ASK);
   }
+  const where = holdRepository({ key: flagValue(argv, "repo-key"), ref: named[1] ?? null }, homeProjectDeclaration().code);
+  if ("error" in where) {
+    process.stderr.write(`${where.error}\n`);
+    process.exit(EXIT.CANNOT_ASK);
+  }
+  return { number, ...where };
+}
+
+function main() {
+  refuseUnknownFlags(["--session=", "--release", "--steal", "--until=", "--repo-key="],
+    { entry: import.meta.url, command: "pnpm run pr:hold" });
+  const pr = pullRequestOf(process.argv);
   const until = untilOf(process.argv);
   if (until.error) {
     process.stderr.write(`${until.error}\n`);
     process.exit(EXIT.CANNOT_ASK);
   }
-  const labels = prLabels(number);
+  const labels = prLabels(pr.number, pr.repo);
   if (labels === null) {
-    process.stderr.write(`CANNOT SAY who holds #${number}: could not read its labels. This is `
+    process.stderr.write(`CANNOT SAY who holds ${mention(pr)}: could not read its labels. This is `
       + "INCONCLUSIVE, not 'nobody holds it' -- refusing rather than handing out a hold on a failed "
       + "lookup.\n");
     process.exit(EXIT.CANNOT_ASK);
@@ -183,14 +245,14 @@ function main() {
   const session = flagValue(process.argv, "session");
   if (!session) {
     process.stdout.write(holders.length === 0
-      ? `#${number} is UNHELD.\n`
-      : `#${number} is held by ${holders.join(", ")}.\n`);
+      ? `${mention(pr)} is UNHELD.\n`
+      : `${mention(pr)} is held by ${holders.join(", ")}.\n`);
     process.exit(EXIT.DONE);
   }
 
   process.exit(process.argv.includes("--release")
-    ? releaseHold(number, session, holders)
-    : takeHold(number, session, holders, { steal: process.argv.includes("--steal"), until: until.value }));
+    ? releaseHold(pr, session, holders)
+    : takeHold(pr, session, holders, { steal: process.argv.includes("--steal"), until: until.value }));
 }
 
 /**
@@ -212,16 +274,16 @@ function untilOf(argv) {
  * RECORD WHY THE PR IS HELD, as a comment, because a label holds no text. THE MARKER IS WRITTEN FOR EVERY TAKE, with or without \`--until\`: the
  * newest marker is the hold's reason, so a hold taken with none must supersede an older hold's condition rather than inherit it. Read back, like
  * every write here.
- * @param {number} number @param {string} session @param {string | null} until @returns {boolean} whether the marker is on the PR
+ * @param {HeldPr} pr @param {string} session @param {string | null} until @returns {boolean} whether the marker is on the PR
  */
-function writeUntilMarker(number, session, until) {
+function writeUntilMarker(pr, session, until) {
   const body = [WAIT_MARKER, `Held by \`${session}\`.`,
     until === null ? "No condition was named, so nothing says when this hold ends." : `Waiting-for: ${until}`].join("\n");
   try {
-    const write = ["pr", "comment", String(number), "--repo", REPO, "--body", body];
+    const write = ["pr", "comment", String(pr.number), "--repo", pr.repo, "--body", body];
     assertNoLeakInArgv("gh", write); // #1053: every script that sends a body to GitHub is declared in `TRACKER_WRITERS` and guarded
     gh(write);
-    const comments = JSON.parse(gh(["pr", "view", String(number), "--repo", REPO, "--json", "comments"])).comments ?? [];
+    const comments = JSON.parse(gh(["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "comments"])).comments ?? [];
     return comments.some((/** @type {{ body?: string }} */ c) => String(c?.body ?? "").trim() === body);
   } catch {
     return false;
@@ -233,12 +295,12 @@ function writeUntilMarker(number, session, until) {
  * is idempotent in the same direction `--add-label` is, so quietly succeeding here would be the same
  * false success `--steal` exists to prevent, pointed the other way.
  *
- * @param {number} number @param {string} session @param {string[]} holders
+ * @param {HeldPr} pr @param {string} session @param {string[]} holders
  * @returns {number} the exit code
  */
-function releaseHold(number, session, holders) {
+function releaseHold(pr, session, holders) {
   if (!holders.includes(session)) {
-    process.stdout.write(`#${number} was not held by ${session}`
+    process.stdout.write(`${mention(pr)} was not held by ${session}`
       + `${holders.length ? ` (it is held by ${holders.join(", ")})` : ""} — nothing released.\n`);
     return EXIT.DONE;
   }
@@ -247,22 +309,22 @@ function releaseHold(number, session, holders) {
   // unarmed is what this command did until today and is merely a PR waiting for somebody to arm it.
   // Armed-but-still-labelled is the dangerous half -- `merge-guard` refuses it while auto-merge merges
   // it, which is the pair #645 was filed about.
-  writeLabel(number, session, "remove");
-  process.stdout.write(`#${number}: ${session} released it.\n`);
+  writeLabel(pr, session, "remove");
+  process.stdout.write(`${mention(pr)}: ${session} released it.\n`);
 
-  const labels = prLabels(number);
+  const labels = prLabels(pr.number, pr.repo);
   if (labels === null) {
-    process.stderr.write(`#${number}: RELEASED, but its labels could not be read back, so whether the `
+    process.stderr.write(`${mention(pr)}: RELEASED, but its labels could not be read back, so whether the `
       + `hold disarmed it is unknown. Check for \`${REARM_LABEL}\` and re-arm by hand if it is there.\n`);
     return EXIT.CANNOT_ASK;
   }
   if (!labels.includes(REARM_LABEL)) {
-    process.stdout.write(`#${number}: not re-armed — it carried no \`${REARM_LABEL}\`, so it was `
+    process.stdout.write(`${mention(pr)}: not re-armed — it carried no \`${REARM_LABEL}\`, so it was `
       + "already unarmed when the hold was taken and putting auto-merge on it now would arm something "
       + "nobody armed.\n");
     return EXIT.DONE;
   }
-  return rearmAfterRelease(number);
+  return rearmAfterRelease(pr);
 }
 
 /**
@@ -277,24 +339,24 @@ function releaseHold(number, session, holders) {
  * this repo allows merge commits only, `--squash` fails at the API, and a caller that redirects stderr
  * sees only a non-zero exit.
  *
- * @param {number} number
+ * @param {HeldPr} pr
  * @returns {number} the exit code
  */
-function rearmAfterRelease(number) {
+function rearmAfterRelease(pr) {
   try {
-    gh(["pr", "merge", "--auto", "--merge", String(number)]);
+    gh(["pr", "merge", "--auto", "--merge", String(pr.number), ...aimedIfKeyed(pr)]);
   } catch {
     // NOT the verdict, in either direction -- the state read below is. `gh pr merge` can fail having
     // armed, and can succeed having done nothing, which is the asymmetry `disarmAutoMerge` records for
     // the mirror case.
   }
-  const verdict = armVerdict(readAutoMerge(number));
+  const verdict = armVerdict(readAutoMerge(pr));
   if (!verdict.armed) {
-    process.stderr.write(`#${number}: ${verdict.reason}\n`);
+    process.stderr.write(`${mention(pr)}: ${verdict.reason}\n`);
     return EXIT.CANNOT_ASK;
   }
-  writeRawLabel(number, REARM_LABEL, "remove");
-  process.stdout.write(`#${number}: re-armed with a merge commit — ${verdict.reason}.\n`);
+  writeRawLabel(pr, REARM_LABEL, "remove");
+  process.stdout.write(`${mention(pr)}: re-armed with a merge commit — ${verdict.reason}.\n`);
   return EXIT.DONE;
 }
 
@@ -309,14 +371,14 @@ function rearmAfterRelease(number) {
  * over its complexity budget: two writes verified the same way is one step written twice, and the
  * extraction is what makes them look alike rather than a coincidence.
  *
- * @param {number} number @param {string} session
+ * @param {HeldPr} pr @param {string} session
  * @returns {string | null}
  */
-function holdLanded(number, session) {
-  const after = prLabels(number);
+function holdLanded(pr, session) {
+  const after = prLabels(pr.number, pr.repo);
   const nowHeld = after === null ? null : holdersOf(after).map((l) => l.slice(HOLD_PREFIX.length));
   if (nowHeld !== null && nowHeld.length === 1 && nowHeld[0] === session) return null;
-  return `#${number}: THE WRITE DID NOT LAND AS INTENDED. Expected exactly `
+  return `${mention(pr)}: THE WRITE DID NOT LAND AS INTENDED. Expected exactly `
     + `${HOLD_PREFIX}${session}; the PR now reads `
     + `${nowHeld === null ? "unreadable" : nowHeld.join(", ") || "no holder"}.\n`
     + "  Fix it by hand with `gh pr edit --add-label/--remove-label` before anyone acts on this PR.\n";
@@ -330,26 +392,26 @@ function holdLanded(number, session) {
  * A failure before any label came off is rethrown unchanged: nothing is known to have landed, so it stays
  * the exit it always was. The displace-first ORDER stays too -- see `takeHold`'s own header for why.
  *
- * @param {number} number @param {string} session @param {string[]} displaces
+ * @param {HeldPr} pr @param {string} session @param {string[]} displaces
  * @returns {string | null} the operator-facing message for a partial write, or `null` when every write succeeded
  */
-function displaceThenTake(number, session, displaces) {
+function displaceThenTake(pr, session, displaces) {
   /** @type {string[]} */
   const removed = [];
   try {
     for (const displaced of displaces) {
-      writeLabel(number, displaced, "remove");
+      writeLabel(pr, displaced, "remove");
       removed.push(`${HOLD_PREFIX}${displaced}`);
     }
-    writeLabel(number, session, "add");
+    writeLabel(pr, session, "add");
     return null;
   } catch (error) {
     if (removed.length === 0) throw error;
-    return `#${number}: DISPLACED BUT NOT HELD (exit ${EXIT.DISPLACED_NOT_HELD}) -- removed ${removed.join(", ")}; `
+    return `${mention(pr)}: DISPLACED BUT NOT HELD (exit ${EXIT.DISPLACED_NOT_HELD}) -- removed ${removed.join(", ")}; `
       + `the next label write failed, so ${HOLD_PREFIX}${session} was NOT added: `
       + `${/** @type {Error} */ (error).message.trim()}\n`
-      + `  Read #${number}'s labels before acting, then take it again (\`pnpm run pr:hold ${number} `
-      + `--session=${session} --steal\`) or tell the displaced session its hold is gone.\n`;
+      + `  Read ${mention(pr)}'s labels before acting, then take it again (\`pnpm run pr:hold ${pr.number} `
+      + `${pr.key === "" ? "" : `--repo-key=${pr.key} `}--session=${session} --steal\`) or tell the displaced session its hold is gone.\n`;
   }
 }
 
@@ -360,34 +422,34 @@ function displaceThenTake(number, session, displaces) {
  * is visible and recoverable; two holders is the state that had `merge-guard` refusing the very session
  * that had just been told it succeeded.
  *
- * @param {number} number @param {string} session @param {string[]} holders
+ * @param {HeldPr} pr @param {string} session @param {string[]} holders
  * @param {{ steal: boolean, until: string | null }} options `until` is what the hold waits for (#2996), `null` for no stated reason
  * @returns {number} the exit code
  */
-function takeHold(number, session, holders, { steal, until }) {
+function takeHold(pr, session, holders, { steal, until }) {
   const decision = holdDecision({ holders, session, steal });
-  process.stdout.write(`#${number}: ${decision.message}\n`);
+  process.stdout.write(`${mention(pr)}: ${decision.message}\n`);
   if (!decision.act) return decision.code;
-  const partial = displaceThenTake(number, session, decision.displaces);
+  const partial = displaceThenTake(pr, session, decision.displaces);
   if (partial !== null) {
     process.stderr.write(partial);
     return EXIT.DISPLACED_NOT_HELD;
   }
-  const landed = holdLanded(number, session);
+  const landed = holdLanded(pr, session);
   if (landed !== null) {
     process.stderr.write(landed);
     return EXIT.CANNOT_ASK;
   }
-  if (!writeUntilMarker(number, session, until)) {
-    process.stderr.write(`#${number}: HELD, but the hold's reason did not land as a comment, so the gate reads it as a hold with NO reason. `
+  if (!writeUntilMarker(pr, session, until)) {
+    process.stderr.write(`${mention(pr)}: HELD, but the hold's reason did not land as a comment, so the gate reads it as a hold with NO reason. `
       + "Post a `Waiting-for:` line on the PR by hand, or release and take it again.\n");
     return EXIT.CANNOT_ASK;
   }
   // READ BEFORE DISARMING, because after the disarm the two states the release has to tell apart are the
   // same. This is the one round trip the disarm's own heading argues against, and it is worth it here
   // for a different reason: it decides nothing about whether to disarm, only what to put back.
-  const wasArmed = readAutoMerge(number)?.autoMergeRequest != null;
-  const disarm = disarmAutoMerge(number);
+  const wasArmed = readAutoMerge(pr)?.autoMergeRequest != null;
+  const disarm = disarmAutoMerge(pr);
   // THE MARKER IS READ BACK, because it is the only thing that survives to tell the release what to do
   // -- and on 2026-09-09 it did not land at all. `gh pr edit --add-label` REFUSES a label that does not
   // exist in the repository ("'rearm-on-release' not found"), and #822 shipped the label's name without
@@ -399,18 +461,18 @@ function takeHold(number, session, holders, { steal, until }) {
   // That is the same shape as the hold label's own read-back three lines above, which #822 added
   // deliberately and then did not apply to the second write in the same function. A fix at one of two
   // call sites, in the change that was about reading writes back.
-  if (wasArmed && disarm.disarmed && !markForRearm(number)) {
-    process.stderr.write(`#${number}: HELD AND DISARMED, but could not mark it \`${REARM_LABEL}\`.\n`
+  if (wasArmed && disarm.disarmed && !markForRearm(pr)) {
+    process.stderr.write(`${mention(pr)}: HELD AND DISARMED, but could not mark it \`${REARM_LABEL}\`.\n`
       + "  `pnpm run pr:release` will therefore leave this PR UNARMED, and nothing on the PR will say so.\n"
-      + `  Add the label by hand (\`gh pr edit ${number} --add-label ${REARM_LABEL}\`, creating it first `
+      + `  Add the label by hand (\`gh pr edit ${pr.number} ${aimedFlags(pr)}--add-label ${REARM_LABEL}\`, creating it first `
       + "if it does not exist), or re-arm by hand after releasing.\n");
     return EXIT.CANNOT_ASK;
   }
   if (!disarm.disarmed) {
-    process.stderr.write(`#${number}: ${disarm.reason}\n`);
+    process.stderr.write(`${mention(pr)}: ${disarm.reason}\n`);
     return EXIT.CANNOT_ASK;
   }
-  process.stdout.write(`#${number} is now held by ${session}${decision.displaces.length
+  process.stdout.write(`${mention(pr)} is now held by ${session}${decision.displaces.length
     ? `, and ${decision.displaces.join(", ")} no longer holds it` : ""}. ${disarm.reason}`
     + `${wasArmed ? `, and it WAS armed — labelled \`${REARM_LABEL}\` so the release puts it back`
       : ", and it was not armed, so a release will leave it that way"}.\n`);
@@ -429,16 +491,16 @@ function takeHold(number, session, holders, { steal, until }) {
  * states about the hold label: `gh pr edit` exiting 0 says the request was accepted, not that the PR now
  * says what you think.
  *
- * @param {number} number
+ * @param {HeldPr} pr
  * @returns {boolean} whether the PR now carries the marker
  */
-function markForRearm(number) {
+function markForRearm(pr) {
   try {
-    writeRawLabel(number, REARM_LABEL, "add");
+    writeRawLabel(pr, REARM_LABEL, "add");
   } catch {
     return false; // the read below decides; a throw here is not the verdict either
   }
-  const after = prLabels(number);
+  const after = prLabels(pr.number, pr.repo);
   return after !== null && after.includes(REARM_LABEL);
 }
 
@@ -456,19 +518,19 @@ function markForRearm(number) {
  * "already off" and "turned off" are the same end state and asking first would be one more round trip
  * that can race.
  *
- * @param {number} number
+ * @param {HeldPr} pr
  * @returns {{ disarmed: boolean, reason: string }}
  */
-function disarmAutoMerge(number) {
+function disarmAutoMerge(pr) {
   try {
-    gh(["pr", "merge", "--disable-auto", String(number)]);
+    gh(["pr", "merge", "--disable-auto", String(pr.number), ...aimedIfKeyed(pr)]);
   } catch {
     // NOT a failure on its own: `gh` exits non-zero when auto-merge was never enabled. The state read
     // below is what decides, which is the whole point of not trusting the exit code in either direction.
   }
   let after;
   try {
-    after = JSON.parse(gh(["pr", "view", String(number), "--json", "autoMergeRequest"]));
+    after = JSON.parse(gh(["pr", "view", String(pr.number), ...aimedIfKeyed(pr), "--json", "autoMergeRequest"]));
   } catch (cause) {
     return { disarmed: false, reason: "COULD NOT READ `autoMergeRequest` back after disarming: "
       + `${/** @type {Error} */ (cause).message}. Unverified is not disarmed -- check by hand.` };

@@ -115,7 +115,7 @@ const NEGATIVES: { name: string; raw: Record<string, unknown>; facts: Record<str
   { name: "one true wait and one still open (the hold may be waiting for that one)", raw: heldPr(["hold:ceo"], ["closed #3220", "closed #3221"]), facts: { "#3220": resolved("closed"), "#3221": OPEN } },
   { name: "a label condition, which is not a merged/closed one", raw: heldPr(["hold:ceo"], ["unlabelled needs:chairman #7"]), facts: { "#7": OPEN } },
   { name: "a ROW carrying hold:* (`pr-hold.mjs` releases pull requests)", raw: heldPr(["hold:ceo"], ["closed #3220"]), facts: { "#3220": resolved("closed") }, kind: "row" },
-  { name: "a pull request of ANOTHER repository (`pr-hold.mjs` is bound to this one)", raw: heldPr(["hold:ceo"], ["closed #3220"], { repoKey: "other/repo" }), facts: { "#3220": resolved("closed") } },
+  { name: "a pull request of a repository the project does NOT declare (`pr-hold.mjs` refuses its key, #3479)", raw: heldPr(["hold:ceo"], ["closed #3220"], { repoKey: "other/repo" }), facts: { "#3220": resolved("closed") } },
 ];
 
 for (const { name, raw, facts, kind } of NEGATIVES) {
