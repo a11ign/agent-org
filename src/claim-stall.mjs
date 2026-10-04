@@ -38,6 +38,8 @@ import { listingIsComplete } from "./herdr-agents.mjs";
 import { idleClaimantReading, idleNudgePrompt, IDLE_CLAIMANT_MS } from "./idle-claimant.mjs";
 // #3445: WHETHER A PULL REQUEST IS THE CLAIMANT'S, for the open lookup and the merged one alike: a sibling leaf, so this file stays one.
 import { ownsPr } from "./pr-ownership.mjs";
+// #3453: where a keyed repository's clone lives (`host.json`'s `clones`), for the read of the worktrees a merged pull request's work was in. A leaf too.
+import { hostConfigPath, readHostConfig } from "./host-config.mjs";
 
 const MINUTE_MS = 60_000;
 
@@ -215,7 +217,9 @@ export function commentMove(comments, record) {
  * One process run, WITHOUT a throw: the status decides what an answer MEANS (`rev-parse --verify` exits 1 for "no such
  * ref", which is an answer, and anything else is "could not ask", which is not one).
  * @typedef {(dir: string, args: string[]) => { status: number | null, out: string }} GitRun
- * @typedef {{ git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null }} HostReads
+ * @typedef {{ clone: string } | { refusal: string }} CloneAnswer
+ * @typedef {{ git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null, cloneOf?: (key: string) => CloneAnswer }} HostReads
+ *   `cloneOf` (#3453) is the seam for WHERE A KEYED REPOSITORY'S CLONE LIVES; absent, it is `host.json`'s declaration ({@link cloneOfKey})
  */
 
 /** A read that could not be made. NEVER an absence: "no commit" is `null`, "could not ask git" is this. */
@@ -303,7 +307,7 @@ export function fileMove({ git, mtime }, dir) {
  *
  * @param {HostReads} io
  * @param {{ worktree: string | null, branch: string | null, repo: string }} where `repo` is any checkout of the repository
- * @returns {{ state: "none" | "at-risk" | "unknown", dirty: number, unpushed: number, why?: string }}
+ * @returns {{ state: "none" | "at-risk" | "unknown", dirty: number, unpushed: number, why?: string, trees?: string[] }}
  */
 export function workAtRisk(io, { worktree, branch, repo }) {
   try {
@@ -325,6 +329,97 @@ export function workAtRisk(io, { worktree, branch, repo }) {
   }
 }
 
+// --- THE PULL REQUEST'S OWN REPOSITORY (#3453) -------------------------------------------------------------------------
+
+/**
+ * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones` (`{ "<key>": "<absolute path>" }`), or why it cannot be said. A clone is a
+ * machine fact no repository can know (ADR 0040, decision 3). EVERY failure is a refusal naming the host file and what is wrong -- an unreadable file
+ * is never read as "no clone declared", and a clone is never defaulted to the primary's checkout, whose `origin` is the wrong repository's. The reading
+ * is `host-config.mjs`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`. MOVED HERE from `wake.mjs`'s
+ * `reviewCloneOf` (which now calls it), because the merged release reads the same clones and this file cannot import `wake.mjs`.
+ * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from] @returns {CloneAnswer}
+ */
+export function cloneOfKey(key, { path = hostConfigPath(), read = readFileSync } = {}) {
+  /** @type {Readonly<import("./host-config.mjs").HostConfig>} */
+  let host;
+  try {
+    host = readHostConfig(path, read);
+  } catch (err) {
+    return { refusal: `${path} cannot be read as the host declaration (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]})` };
+  }
+  const clone = host.clones !== undefined && Object.hasOwn(host.clones, key) ? host.clones[key] : undefined;
+  return clone === undefined ? { refusal: `${path} declares no absolute \`clones.${key}\` path` } : { clone };
+}
+
+/**
+ * The worktrees `git worktree list --porcelain` names, each with its branch (`null` for a detached or bare one: a detached HEAD names no pull request,
+ * so no test can say whose it is, and it is not read).
+ * @param {string} out @returns {{ path: string, branch: string | null }[]}
+ */
+function worktreesListed(out) {
+  return out.split(/\n\s*\n/).flatMap((block) => {
+    const lines = block.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === undefined || lines.includes("bare")) return [];
+    const ref = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null;
+    return [{ path, branch: ref === null ? null : ref.replace(/^refs\/heads\//, "") }];
+  });
+}
+
+/**
+ * THE WORK THE HOLDER HOLDS IN THE REPOSITORY A MERGED PULL REQUEST WAS IN. #3390's claim named a branch in THIS repository and its work was a
+ * worktree of the `a11ign/agent-org` clone on another branch, so a read of the claim record's tree alone saw a clean, untouched one and would have
+ * released a holder with a follow-up dirty or unpushed THERE. The trees read are the clone's worktrees on a branch `ownsPr` says is the holder's (the
+ * claimed branch, one ending `-<row>`) or on the merged pull request's own head: the test the pull request itself was found by, not a naming convention.
+ *
+ * FAILS TOWARD REFUSING, as {@link workAtRisk} does: no declared clone, a clone that cannot be listed, or a tree that cannot be read is `unknown`, never
+ * "no worktree, so nothing to lose". A clone that LISTED and holds no tree of the holder's is `none`, which is an answer.
+ * @param {HostReads} io
+ * @param {{ repoKey: string, head?: string, claimant: import("./pr-ownership.mjs").Claim }} merged
+ * @returns {ReturnType<typeof workAtRisk>}
+ */
+export function workAtRiskInPrRepo(io, { repoKey, head, claimant }) {
+  const found = (io.cloneOf ?? cloneOfKey)(repoKey);
+  if ("refusal" in found) return { state: "unknown", dirty: 0, unpushed: 0, why: `no clone of \`${repoKey}\` to read (${found.refusal})`, trees: [] };
+  const listed = io.git(found.clone, ["worktree", "list", "--porcelain"]);
+  if (listed.status !== 0) {
+    return { state: "unknown", dirty: 0, unpushed: 0, why: `\`git worktree list\` in ${found.clone} exited ${listed.status}`, trees: [] };
+  }
+  const holders = worktreesListed(listed.out)
+    .filter((t) => t.branch !== null && ((head !== undefined && t.branch === head) || ownsPr(claimant, { headRefName: t.branch }) !== null));
+  const reads = holders.map((t) => ({ path: t.path, ...workAtRisk(io, { worktree: t.path, branch: t.branch, repo: found.clone }) }));
+  return combined(reads.map((r) => ({ ...r, why: r.why === undefined ? undefined : `${r.path}: ${r.why}` })), holders.map((t) => t.path));
+}
+
+/**
+ * Several readings as one: `unknown` outranks `at-risk` outranks `none`, the counts add, and the trees that were READ ride along so a live reading can
+ * name them.
+ * @param {ReturnType<typeof workAtRisk>[]} readings @param {string[]} [trees] @returns {ReturnType<typeof workAtRisk>}
+ */
+function combined(readings, trees = []) {
+  const unknown = readings.find((r) => r.state === "unknown");
+  const dirty = readings.reduce((n, r) => n + r.dirty, 0);
+  const unpushed = readings.reduce((n, r) => n + r.unpushed, 0);
+  if (unknown !== undefined) return { state: "unknown", dirty, unpushed, ...(unknown.why === undefined ? {} : { why: unknown.why }), trees };
+  return { state: dirty > 0 || unpushed > 0 ? "at-risk" : "none", dirty, unpushed, trees };
+}
+
+/**
+ * THE ONE PREDICATE for whether the holder holds work that exists nowhere else, for the gate's readings AND `performRelease`'s fresh re-read (which
+ * would otherwise be blind in the same place, and so could not catch what the gate missed): {@link workAtRisk} on the claim record's tree, and, when
+ * the merged pull request is in ANOTHER tracked repository, {@link workAtRiskInPrRepo} too.
+ * @param {HostReads} io
+ * @param {{ worktree: string | null, branch: string | null, repo: string,
+ *   merged?: { repoKey: string, head?: string, claimant: import("./pr-ownership.mjs").Claim } }} where
+ * @returns {ReturnType<typeof workAtRisk>}
+ */
+export function holderWorkAtRisk(io, { merged, ...home }) {
+  const here = workAtRisk(io, home);
+  if (merged === undefined) return here;
+  const there = workAtRiskInPrRepo(io, merged);
+  return combined([here, there], there.trees);
+}
+
 // --- THE READING ----------------------------------------------------------------------------------------------------
 
 /**
@@ -338,7 +433,7 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   comment: number | null, commit: number | null, push: number | null,
  *   file: () => number | null,
  *   work: () => ReturnType<typeof workAtRisk>,
- *   openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string } | null,
+ *   openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null,
  *   waiting: string | null, blockedBy: number[],
  *   waitKind?: string | null, ownPrs?: import("./idle-claimant.mjs").IdlePr[],
  *   nothing?: boolean,
@@ -350,7 +445,7 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   | { kind: "idle-watch", since: number }
  *   | { kind: "vacating", since: number }
  *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone", lastMoveAt: number | null, idleMs: number | null,
- *       nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, openPrs?: number[],
+ *       nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[],
  *       openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean }
  *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
@@ -503,6 +598,11 @@ function goneWithOpenPrReading(facts, ctx) {
   return { ...gone, openPrs: own.map((pr) => pr.number), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
 }
 
+/** @param {{ trees?: string[] }} work @returns {string} the worktrees of the pull request's repository that were read, for a line naming where the work is */
+function treesRead(work) {
+  return work.trees === undefined || work.trees.length === 0 ? "" : `, in ${work.trees.join(", ")}`;
+}
+
 /**
  * (10) A merged pull request on the claimed branch, no open one, nothing at risk: the work LANDED and the row stayed open
  * (`Closes: none`), so the instance is done and the ruling about the row is `product-manager`'s.
@@ -513,10 +613,11 @@ function mergedReading(facts) {
   const work = facts.work();
   if (work.state !== "none") {
     return { kind: "holding", expected: work.state !== "unknown",
-      why: `${prMention(facts.mergedPr.number, facts.mergedPr.repoKey)} merged, but ${work.state === "unknown" ? "the worktree could not be read" : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)`}` };
+      why: `${prMention(facts.mergedPr.number, facts.mergedPr.repoKey)} merged, but ${work.state === "unknown" ? `the worktree could not be read${work.why === undefined ? "" : ` (${work.why})`}` : `the holder still has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)${treesRead(work)}`}` };
   }
   return { kind: "release", why: "merged", lastMoveAt: null, idleMs: null, nudgedAt: null, mergedPr: facts.mergedPr.number,
-    ...(facts.mergedPr.repoKey ? { mergedPrRepoKey: facts.mergedPr.repoKey } : {}) };
+    ...(facts.mergedPr.repoKey ? { mergedPrRepoKey: facts.mergedPr.repoKey } : {}),
+    ...(facts.mergedPr.repoKey && facts.mergedPr.head ? { mergedPrHead: facts.mergedPr.head } : {}) };
 }
 
 /**
@@ -644,9 +745,11 @@ export function claimFactsFrom(input, io) {
       commit: branch === null ? null : newestOwnCommit(io.git, dir, branch),
       push: branch === null ? null : newestOwnCommit(io.git, dir, `origin/${branch}`),
       file: () => (worktree !== null && io.exists(worktree) ? fileMove(io, worktree) : null),
-      work: () => workAtRisk(io, { worktree, branch, repo: input.repo }),
+      work: () => holderWorkAtRisk(io, { worktree, branch, repo: input.repo,
+        ...(merged?.repoKey ? { merged: { repoKey: merged.repoKey, head: merged.headRefName, claimant } } : {}) }),
       openPrs: ownPrs.length,
-      mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)), ...(merged.repoKey ? { repoKey: merged.repoKey } : {}) },
+      mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)), ...(merged.repoKey ? { repoKey: merged.repoKey } : {}),
+        ...(merged.headRefName ? { head: merged.headRefName } : {}) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
       ownPrs, ...(record.nothing ? { nothing: true } : {}) };
@@ -660,12 +763,12 @@ export function claimFactsFrom(input, io) {
  * The newest pull request MERGED that the claimant owns (`ownsPr`) after `since`, or `null`: a merge before this claim is another instance's work on the row,
  * and that is a question about TIME, so it stays here and not in the ownership test.
  * @param {(MergedPr & { repoKey?: string })[]} merged @param {import("./pr-ownership.mjs").Claim} claimant @param {number} since
- * @returns {{ number: number, mergedAt: string, repoKey?: string } | null}
+ * @returns {{ number: number, mergedAt: string, repoKey?: string, headRefName?: string } | null}
  */
 function newestMergedAfter(merged, claimant, since) {
   const after = merged.filter((p) => ownsPr(claimant, p) !== null && Date.parse(String(p.mergedAt ?? "")) > since);
   const [newest] = after.sort((a, b) => Date.parse(String(b.mergedAt)) - Date.parse(String(a.mergedAt)));
-  return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt), repoKey: newest.repoKey };
+  return newest === undefined ? null : { number: newest.number, mergedAt: String(newest.mergedAt), repoKey: newest.repoKey, headRefName: newest.headRefName };
 }
 
 /**
@@ -782,7 +885,7 @@ const minutes = (ms) => Math.round(ms / MINUTE_MS);
 /**
  * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone", branch: string | null,
  *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
- *   mergedPr?: number, mergedPrRepoKey?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string }} ReleaseRequest
+ *   mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string }} ReleaseRequest
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
  *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
@@ -895,7 +998,8 @@ function releaseOrder(facts, reading) {
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
     ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager",
-      ...(reading.mergedPrRepoKey === undefined ? {} : { mergedPrRepoKey: reading.mergedPrRepoKey }) }),
+      ...(reading.mergedPrRepoKey === undefined ? {} : { mergedPrRepoKey: reading.mergedPrRepoKey }),
+      ...(reading.mergedPrHead === undefined ? {} : { mergedPrHead: reading.mergedPrHead }) }),
     // HELD, NOT POOLED (#3048): a gone holder's open PR is the work, so the row goes to `product-manager` and `ready` is not restored.
     ...(reading.openPrs === undefined || reading.openPrs.length === 0 ? {} : { openPrs: reading.openPrs, answer: "product-manager",
       ...(reading.openPrRepoKeys === undefined ? {} : { openPrRepoKeys: reading.openPrRepoKeys }) }) };
