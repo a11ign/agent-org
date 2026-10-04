@@ -209,6 +209,19 @@ test("#2793: a project whose declaration cannot be read, or holds a bad beforeTi
   });
 });
 
+test("#3464: a tool command in a beforeTick is for the host's PRIMARY project only, since the tool resolves its project from the host, not from where it runs", () => {
+  withProjects((dirs) => {
+    writeFileSync(join(dirs.widgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
+    assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} /usr/bin/node ${dirs.tool}/src/update-primary\\.mjs$`, "m"),
+      "POSITIVE CONTROL: the primary (widgets) may declare one, and it renders");
+    writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
+    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
+    writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org\tprimary:update" }));
+    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick",
+      "a TAB between the words is the same command, so the foreign project is refused for it too and not let through as 'the project's own'");
+  });
+});
+
 // --- 2b. #2974: EVERY SERVICE THE TOOL SHIPS RUNS FROM THE TOOL, and the tool is told where its project is -----------------------------
 
 /** The services the tool ships and a11ign installs (the work-tick, the worktree prune, the board report, the dormant shadow window). */

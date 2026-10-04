@@ -40,7 +40,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.mjs";
-import { COMMANDS } from "./commands.mjs";
+import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
@@ -208,10 +208,45 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
  * @param {HostConfig} host @param {typeof readFileSync} read @returns {BeforeTick[]}
  */
 function beforeTicksOf(host, read) {
-  return host.projects.flatMap(({ checkout }) => {
+  return host.projects.flatMap(({ id, checkout }) => {
     const command = readBeforeTick(checkout, /** @type {(path: string, encoding: "utf8") => string} */ (read));
-    return command === null ? [] : [{ checkout, command }];
+    if (command === null) return [];
+    if (namesToolCommand(command) && id !== host.primary) {
+      throw new HostConfigRefusal("beforeTick", `\`${command}\` runs the tool, which serves the host's primary project (\`${host.primary}\`) and not \`${id}\``, join(checkout, PROJECT_DECLARATION_PATH));
+    }
+    return [{ checkout, command }];
   });
+}
+
+/** How a `beforeTick` names one of the TOOL's own commands (`bin.mjs`'s table) instead of a program of the project's. */
+const TOOL_COMMAND_WORD = "agent-org";
+
+/**
+ * A declared `beforeTick` split into words, the ONE way both questions below read it: `parseBeforeTick` accepts any command whose
+ * `trim()` is unchanged, so a tab or a run of spaces between the words is a declaration it let through, and a split on a single
+ * space would read `agent-org<TAB>primary:update` as one word that is not the tool's and leave the project's pinned copy running.
+ * @param {string} command @returns {string[]}
+ */
+const commandWords = (command) => command.split(/\s+/);
+
+/** @param {string} command @returns {boolean} */
+const namesToolCommand = (command) => commandWords(command)[0] === TOOL_COMMAND_WORD;
+
+/**
+ * A `beforeTick` AS THE UNIT RUNS IT. One that names a tool command (`agent-org primary:update`) runs that command's program from the
+ * tool checkout, through the same table `bin.mjs` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
+ * is `agent-org primary:update` from the copy its lockfile pins, a second version of the tool running on every tick (#3464). Any other
+ * command is the project's own and is run as written. An unknown tool command REFUSES, since a unit that quietly ran nothing would leave
+ * the checkout it was declared to move stale.
+ * @param {string} tool @param {string} command
+ */
+function beforeTickCommand(tool, command) {
+  if (!namesToolCommand(command)) return command;
+  const [, name = "", ...args] = commandWords(command);
+  if (!Object.hasOwn(COMMANDS, name)) {
+    throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
+  }
+  return ["/usr/bin/node", `${tool}/src/${COMMANDS[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
 }
 
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
@@ -240,7 +275,7 @@ export function workTickToolForm(rendered, tool, beforeTicks) {
     "# TOOL FORM (ADR 0040, decision 3; #2793): the tool runs from its own checkout, so the update above is of THAT checkout, and each",
     "# project's declared `beforeTick` follows, run in the project's checkout, so the project keeps moving as its primary always did.",
     `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
-    ...beforeTicks.map(({ checkout, command }) => `ExecStartPre=-/usr/bin/env -C ${checkout} ${command}`),
+    ...beforeTicks.map(({ checkout, command }) => `ExecStartPre=-/usr/bin/env -C ${checkout} ${beforeTickCommand(tool, command)}`),
   ];
   return [
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],

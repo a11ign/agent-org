@@ -38,9 +38,9 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
-import { HostConfigRefusal, homeHostConfig, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
+import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
 /**
  * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units the tool ships" hand it as `declaredKeys`
@@ -2674,30 +2674,55 @@ test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` 
   }
 });
 
-/** The ONE command a tool-form unit runs that is not the tool's: the project's own declared `beforeTick`, run in the project's checkout by `env -C`. */
-const PROJECT_BEFORE_TICK = (checkout: string, command: string) => `/usr/bin/env -C ${checkout} ${command}`;
+/** The wrapper a project's declared `beforeTick` is run in: its own checkout, since a unit cannot set a directory per line. The command after it is checked like any other. */
+const IN_PROJECT_CHECKOUT = (command: string) => command.replace(/^\/usr\/bin\/env -C \S+ /, "");
 
-test("#3443: THE PROPERTY -- every shipped service in tool form runs agent-org code from the one tool checkout, and nothing else is exempt", () => {
+test("#3443 + #3464: THE PROPERTY -- every shipped service in tool form runs agent-org code from the one tool checkout, and NOTHING is exempt", () => {
   const units = readUnitsDeclaration();
   const { beforeTick } = JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/project.json"), "utf8")) as { beforeTick: string };
+  assert.equal(beforeTick, "agent-org primary:update", "POSITIVE CONTROL: the project declares a TOOL command, not `pnpm run`, so there is a beforeTick for the walk to reach");
   const templates = readdirSync(SHIPPED_DIR).filter((name: string) => name.endsWith(".service.in"));
   assert.ok(templates.includes("chairman-listen.service.in") && templates.includes("work-tick.service.in"), `POSITIVE CONTROL: the walk sees the services (${templates.join(", ")})`);
-  const exempt: string[] = [];
   for (const template of templates) {
     const unit = renderedName(template, units.prefix);
     const installed = shippedUnitText(unit, { host: toolHost3443() }) ?? "";
     assert.ok(hasLine(installed, `WorkingDirectory=${TOOL_3443}`), `${unit} runs from the tool checkout`);
     assert.ok(hasLine(installed, `Environment=AGENT_ORG_HOST=${PROJECT_ROOT}/.agent-org/host.json`), `${unit} resolves its project from the host's declaration`);
-    for (const command of execCommands(installed)) {
-      if (command === PROJECT_BEFORE_TICK(PROJECT_ROOT, beforeTick)) { exempt.push(`${unit}: ${command}`); continue; }
+    for (const command of execCommands(installed).map(IN_PROJECT_CHECKOUT)) {
       assert.doesNotMatch(command, /\bpnpm\b|\bnpm\b|packages\/agent-org/, `${unit} runs ${command}, which is not the tool checkout's code`);
       const [program, ...args] = command.split(/\s+/);
       const script = args.find((arg) => !arg.startsWith("-"));
       assert.ok(program === "/usr/bin/node" || program === "/usr/bin/bash", `${unit}: ${command} is run by an interpreter this walk knows`);
-      assert.ok(script !== undefined && !script.startsWith("/") && existsSync(join(TOOL_ROOT, script)), `${unit}: ${command} names a script relative to the tool that exists there`);
+      assert.ok(script !== undefined && existsSync(script.startsWith("/") ? script.replace(TOOL_3443, TOOL_ROOT) : join(TOOL_ROOT, script)),
+        `${unit}: ${command} names a script of the tool that exists there`);
     }
   }
-  // THE EXEMPTION IS ONE LINE, NAMED: the project's `beforeTick` moves the PROJECT's checkout, and is the project's declaration. It is the remaining place a project's
-  // pinned copy of the tool can run (`pnpm run primary:update` is `agent-org primary:update` from the project's `node_modules`), filed as its own row.
-  assert.deepEqual(exempt, [`a11ign-work-tick.service: ${PROJECT_BEFORE_TICK(PROJECT_ROOT, beforeTick)}`], "exactly the work-tick's beforeTick is exempt, and it is present");
+  const workTick = shippedUnitText(renderedName("work-tick.service.in", units.prefix), { host: toolHost3443() }) ?? "";
+  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`),
+    "POSITIVE CONTROL: the project's beforeTick is rendered, and it is the tool's own update-primary");
+});
+
+test("#3464: a `beforeTick` naming a tool command runs it from the tool, one that does not is the project's own, and an unknown or foreign one REFUSES", () => {
+  const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
+  const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
+  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`]);
+  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs --drift`], "arguments follow");
+  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/host-units.mjs --install`], "the table's own fixed arguments come first, as in bin.mjs");
+  assert.deepEqual(pre("npm run widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm run widgets:update`], "a command of the project's own is run as written");
+  assert.throws(() => pre("agent-org no:such-command"), HostConfigRefusal, "an unknown tool command refuses");
+  assert.throws(() => pre("agent-org"), HostConfigRefusal, "and so does a bare `agent-org`");
+});
+
+test("#3464: a tool command is the same command however its words are separated -- a tab or a run of spaces is accepted by parseBeforeTick, so it must not fall back to the project's pinned copy", () => {
+  const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
+  const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
+  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`];
+  for (const spelling of ["agent-org\tprimary:update", "agent-org  primary:update", "agent-org \t primary:update"]) {
+    const declared = JSON.stringify({ schema: 1, beforeTick: spelling });
+    assert.equal(parseBeforeTick(declared), spelling, `POSITIVE CONTROL: parseBeforeTick ACCEPTS ${JSON.stringify(spelling)}, so the rendering below is what decides`);
+    assert.deepEqual(pre(spelling), viaTool, `${JSON.stringify(spelling)} runs from the tool`);
+  }
+  assert.deepEqual(pre("agent-org  primary:update   --drift"), [`${viaTool[0]} --drift`], "arguments are split the same way, and joined by one space");
+  assert.throws(() => pre("agent-org\tno:such-command"), HostConfigRefusal, "an unknown tool command refuses however it is spelt");
+  assert.deepEqual(pre("npm\trun widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm\trun widgets:update`], "a project's own command is still run as written");
 });
