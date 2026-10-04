@@ -9,14 +9,19 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 import { acceptUpdate, createInbound, DROP_REASON, isAccepted } from "./inbound.mjs";
+
+// The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
+// `listen.test.mjs` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.
+const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
+if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 const STRANGER_ID = 9001;
