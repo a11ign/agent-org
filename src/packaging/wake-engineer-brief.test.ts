@@ -24,6 +24,8 @@ const SESSIONS = JSON.parse(read(".agent-org/roles/sessions.json")) as {
   live: { name: string; role: string; brief: string | null; family?: { prefix: string; from: number } }[];
   retired: { name: string }[];
 };
+// Derived, not listed: a role the project adds tomorrow (`liaison`, #3421) is a singleton without this file being edited (#3467).
+const SINGLETONS = SESSIONS.live.filter((s) => s.role !== "engineer" && s.family === undefined).map((s) => s.name);
 const ROLES_DIR = ".agent-org/roles";
 const ORDER = { session: "engineers", prompt: "claim row 1 as `<you>`" };
 const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
@@ -56,8 +58,9 @@ test("#2403: a SPARE-FAMILY member is told, though no address in the roster name
 
 test("the singletons and a reviewer are NOT told, whatever roster is supplied or read", () => {
   const notEngineers = SESSIONS.live.filter((s) => s.role !== "engineer").map((s) => s.name);
-  assert.deepEqual(notEngineers.sort(), ["ceo", "orchestrator", "product-manager"],
-    "the positive control for the loop below: the three singletons really are the non-engineer roles");
+  for (const name of ["ceo", "orchestrator", "product-manager"]) {
+    assert.ok(notEngineers.includes(name), `the positive control for the loop below: ${name} is among the non-engineer roles`);
+  }
   for (const label of [...notEngineers, "reviewer", "reviewer-2"]) {
     assert.doesNotMatch(addressed(ORDER, label, { engineers: ["worker-6"] }), BRIEF_LINE, `${label}, with an injected roster`);
     assert.doesNotMatch(addressed(ORDER, label), BRIEF_LINE, `${label}, with the roster read from sessions.json`);
@@ -66,11 +69,11 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
 
 test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", () => {
   const engineers = engineerRoles();
-  // The population is derived a SECOND way -- every live name that is not one of the three singletons the test
-  // above pins -- and compared by EQUALITY, so a count floor is not standing in for "the roster is right" (#1067).
-  const singletons = ["ceo", "orchestrator", "product-manager"];
+  // The population is derived a SECOND way -- every live name that is not a singleton (`SINGLETONS`, the roster's own
+  // non-engineer roles, with the three the test above names asserted among them) -- and compared by EQUALITY, so a
+  // count floor is not standing in for "the roster is right" (#1067).
   assert.deepEqual(engineers,
-    SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name).filter((n) => !singletons.includes(n)),
+    SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name).filter((n) => !SINGLETONS.includes(n)),
     "the engineer addresses are every live session that is not a singleton and not a family (#2403)");
   assert.deepEqual(engineers, [], "the three standing engineers are retired, not live (#2505)");
   // An emptiness needs its positive control (`.claude/rules/guards-and-assertions.md`): it is the `#2403` test above,
