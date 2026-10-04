@@ -115,7 +115,6 @@ const UNNAMED_CALLS: Reason[] = [
   { file: "src/ready-label-audit.mjs", call: '"git"', kind: "session", reason: "`ready:audit`, run nightly by CI in the project checkout; `row-claim` imports only its label constants" },
   { file: "src/reconstitution-drill.mjs", call: '"clone"', kind: "param", reason: "clones an explicit URL into an explicit temp directory and reads no cwd repository" },
   { file: "src/reconstitution-drill.mjs", call: '"remote", "get-url"', kind: "session", reason: "`--clone` with no `--repo-url` DELIBERATELY means this checkout (its documented default); no importer, no unit" },
-  { file: "src/region-paths.mjs", call: '"git", ["ls-files"]', kind: "filed", reason: "#3366: `trackedTopLevelDirs` reads the project's top-level directories, and the tick reaches it from the tool's directory" },
   { file: "src/region-paths.mjs", call: '"ls-files", "--"', kind: "session", reason: "`trackedFilesUnder` is the default of `directoryReservations`, whose only caller is `row-file`, run in the author's worktree" },
   { file: "src/rescue-hunk.mjs", call: '"git", args', kind: "session", reason: "the `rescue:hunk` CLI reads and writes the tree it is run in; no importer" },
   { file: "src/rescue-hunk.mjs", call: '"merge-file"', kind: "param", reason: "`merge-file` works on absolute temp-directory paths and reads no repository" },
@@ -145,9 +144,16 @@ test("#3363 (4) CONTROL: every table entry still names a call site that exists, 
   const stale = UNNAMED_CALLS.filter((r) => !unnamed.some((s) => s.file === r.file && s.call.includes(r.call)));
   assert.deepEqual(stale.map((r) => `${r.file}: ${r.call}`), [], "an entry for a call that is gone, or that now names its checkout, is dead weight");
   assert.deepEqual(UNNAMED_CALLS.filter((r) => r.reason.trim().length < 20).map((r) => r.file), [], "a reason");
-  const unfiled = UNNAMED_CALLS.filter((r) => r.kind === "filed" && !/^#\d+:/.test(r.reason)).map((r) => r.file);
-  assert.deepEqual(unfiled, [], "a DEFECT held in this table names the row that fixes it, so it is a ratchet and not an exemption");
-  assert.ok(UNNAMED_CALLS.some((r) => r.kind === "filed"), "positive control: the table holds the defects the census found, so the filed-row check above ran");
+  assert.deepEqual(filedWithoutRow(UNNAMED_CALLS), [], "a DEFECT held in this table names the row that fixes it, so it is a ratchet and not an exemption");
+});
+
+/** The files whose `filed` entry names no row (`#<n>:` first): a defect held without its fix is an exemption. */
+const filedWithoutRow = (table: Reason[]) => table.filter((r) => r.kind === "filed" && !/^#\d+:/.test(r.reason)).map((r) => r.file);
+
+test("#3366 (4) CONTROL: the filed-row check flags a `filed` entry with no row and passes one with a row (the table itself holds none once the defects land)", () => {
+  const entry = (reason: string): Reason => ({ file: "src/x.mjs", call: '"git"', kind: "filed", reason });
+  assert.deepEqual(filedWithoutRow([entry("a defect with no row named here")]), ["src/x.mjs"]);
+  assert.deepEqual(filedWithoutRow([entry("#3366: a defect with its row named here")]), []);
 });
 
 const OLD_DEFAULT_GIT = `
@@ -175,6 +181,12 @@ test("#3363 (2) the module this row fixes is IN the population and its call name
   const own = sites.filter((s) => s.file === "src/hand-fix-ledger.mjs");
   assert.ok(own.length >= 1, "the parser sees hand-fix-ledger.mjs");
   assert.deepEqual(own.filter((s) => !namesItsCheckout(s)), []);
+});
+
+test("#3366 (2) the `ls-files` of `trackedTopLevelDirs` is IN the population and names its checkout (the marker notices the remedy)", () => {
+  const own = sites.filter((s) => s.file === "src/region-paths.mjs" && s.call.includes('["ls-files"]'));
+  assert.equal(own.length, 1, "the parser sees the whole-tree `ls-files` in region-paths.mjs, and only that one");
+  assert.equal(namesItsCheckout(own[0]), true);
 });
 
 // --- (1) behaviour ----------------------------------------------------------------------------------------------------------------
