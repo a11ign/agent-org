@@ -313,13 +313,14 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * #2980: THE FLEET FACTS ARE PASSED, because `orgHealthReadings` reads an OMITTED `fleet` as "this caller does not ask" -- silent -- so
  * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[] }} tick
+ * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
+ * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule }} [io] `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
-export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided },
+export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release } = {}) {
   const { prs, required, primaryDrift, claimRefusals } = decideArgs;
@@ -339,6 +340,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, dec
     fleet: readCaptures(now),
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
+    ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
 }

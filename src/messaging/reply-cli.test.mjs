@@ -10,12 +10,13 @@
 // break one rule (expecting that rule), so a scan that finds nothing in everything fails by name.
 
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { completionPath, writeCompletion } from "../lib/tick-completion.mjs";
 import { createFakeProvider } from "./fake-provider.mjs";
 import { readLedgerLines } from "./ledger.mjs";
 import { EXIT, assertReadOnlyGh, assertReadOnlySystemctl, main } from "./reply-cli.mjs";
@@ -78,7 +79,7 @@ async function fixtureSystemctl(argv) {
  * Runs the command with everything injected and collects what it said.
  * @param {string[]} argv
  * @param {{messaging?: boolean, env?: Record<string, string | undefined>, stdin?: string, gh?: typeof fixtureGh, provider?: ReturnType<typeof createFakeProvider>,
- *   providers?: Record<string, any>, fetch?: typeof fetch, home?: string, root?: string, inbound?: string[]}} [options] `inbound` seeds the ledger with a message from the chairman
+ *   providers?: Record<string, any>, fetch?: typeof fetch, home?: string, root?: string, wakeLedgerPath?: () => Promise<string>, inbound?: string[]}} [options] `inbound` seeds the ledger with a message from the chairman
  *   under each ref, which is what `--to` is checked against (`ledger` in the result is what the command wrote AFTER those); with `fetch` given and no `providers`, the command builds the
  *   REAL Telegram provider, which is how the secret-file wiring is exercised; otherwise it is handed `provider`
  */
@@ -88,7 +89,7 @@ async function run(argv, { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh
   const [root, home] = [where.root ?? fixture.root, where.home ?? fixture.home];
   const [out, err] = [/** @type {string[]} */ ([]), /** @type {string[]} */ ([])];
   const code = await main(argv, {
-    root, home, env, now: () => NOW, gh, systemctl: fixtureSystemctl, readStdin: async () => stdin,
+    root, home, env, now: () => NOW, gh, systemctl: fixtureSystemctl, readStdin: async () => stdin, ...(where.wakeLedgerPath === undefined ? {} : { wakeLedgerPath: where.wakeLedgerPath }),
     ...(fetch === undefined ? { providers: providers ?? { telegram: () => provider } } : { fetch }),
     out: (line) => out.push(line), err: (line) => err.push(line),
   });
@@ -274,10 +275,63 @@ describe("the real Telegram provider, built from the configured secret files, wi
   });
 });
 
+describe("#3446 the fleet-watch files and the gate record reach the readers, so {{fleet.*}} and {{gate.*}} can be stated by the real command", () => {
+  const MINUTE = 60_000;
+  const FACTS = "Up: {{fleet.workers-up}}. Gate: {{gate.last-tick.age}}.";
+
+  /**
+   * A project with the two files `fleet-watch` writes under `<root>/runs/` (polled 10 minutes ago) and, unless `gate` is false, a tick that completed 4 minutes ago,
+   * recorded beside a wake ledger the injected `wakeLedgerPath` names: the test never resolves the host, and never touches the host's own state directory.
+   * @param {{files?: boolean, gate?: boolean}} [options]
+   */
+  function withHostFiles({ files = true, gate = true } = {}) {
+    const fixture = project();
+    const wakeLedger = join(fixture.root, "..", "state", "wake-ledger");
+    if (files) {
+      const wroteAt = NOW - 10 * MINUTE;
+      const stamp = { captures: 0, seenAt: wroteAt, lastRoseAt: null, rises: [] };
+      const [statePath, capturesPath] = ["fleet-watch-state.json", "fleet-captures-state.json"].map((name) => join(fixture.root, "runs", name));
+      mkdirSync(join(fixture.root, "runs"), { recursive: true });
+      writeFileSync(statePath, JSON.stringify({}));
+      writeFileSync(capturesPath, JSON.stringify({ since: 1, workers: { "worker-a": stamp } }));
+      for (const path of [statePath, capturesPath]) utimesSync(path, wroteAt / 1000, wroteAt / 1000);
+    }
+    if (gate) writeCompletion(completionPath(wakeLedger), { at: NOW - 4 * MINUTE, exit: 0 });
+    return { root: fixture.root, home: fixture.home, wakeLedgerPath: async () => wakeLedger };
+  }
+
+  test("with the files in place the message states who is up and how long since a tick, and goes out (exit 0)", async () => {
+    const { code, err, provider } = await run([FACTS], withHostFiles());
+    assert.equal(code, EXIT.ok, err);
+    assert.equal(provider.sent[0].text, `Up: worker-a (fleet-watch poll 10m ago). Gate: 4m.\n\n${STAMP}`);
+  });
+
+  test("CONTROL for the one above: with the files absent it exits 2 naming the placeholder, sends nothing and writes no ledger line", async () => {
+    const { code, err, provider, ledger } = await run([FACTS], withHostFiles({ files: false, gate: false }));
+    assert.equal(code, EXIT.refused);
+    assert.match(err, /REFUSED \{\{fleet\.workers-up\}\}/);
+    assert.match(err, /REFUSED \{\{gate\.last-tick\.age\}\}/);
+    assert.deepEqual(provider.sent, []);
+    assert.deepEqual(ledger, []);
+  });
+
+  test("a host that cannot name the state directory costs {{gate.*}} alone: the diagnostic is on stderr and the fleet and every other placeholder still read", async () => {
+    const wakeLedgerPath = async () => { throw new Error("no host resolved"); };
+    const gateOnly = await run([FACTS], { ...withHostFiles(), wakeLedgerPath });
+    assert.equal(gateOnly.code, EXIT.refused);
+    assert.match(gateOnly.err, /could not name the work-tick completion record.*no host resolved/);
+    assert.match(gateOnly.err, /REFUSED \{\{gate\.last-tick\.age\}\}/);
+    assert.doesNotMatch(gateOnly.err, /REFUSED \{\{fleet\./);
+    const fleetOnly = await run(["Up: {{fleet.workers-up}}."], { ...withHostFiles(), wakeLedgerPath });
+    assert.equal(fleetOnly.code, EXIT.ok, fleetOnly.err);
+    assert.equal(fleetOnly.provider.sent[0].text, `Up: worker-a (fleet-watch poll 10m ago).\n\n${STAMP}`);
+  });
+});
+
 const SHARED_HELPERS = ["defaultLedgerPath", "accountIsDeclared", "trackerRepo", "readChairman"];
 
 describe("done-when 4: the command reaches no provider but the configured one, and no reader but `createGhReaders`", () => {
-  const ALLOWED_IMPORTS = new Set(["node:child_process", "node:fs", "node:os", "node:path", "node:url", "node:util", "./config.mjs", "./ledger.mjs", "./placeholders.mjs",
+  const ALLOWED_IMPORTS = new Set(["node:child_process", "node:fs", "node:os", "node:path", "node:url", "node:util", "../lib/tick-completion.mjs", "./config.mjs", "./ledger.mjs", "./placeholders.mjs",
     "./providers/telegram/send.mjs", "./reply.mjs", "./secret.mjs", "./state.mjs"]);
 
   /** @param {string} source @returns {string[]} what breaks the done-when, one string per rule broken */

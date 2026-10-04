@@ -4,8 +4,9 @@
 //
 //   pnpm run messaging:measure -- --window=24h        (the default)
 //
-// **TIME TO ACKNOWLEDGE** is two lines of one update: the receipt line `inbound.mjs` writes (`direction: "in"`, no `origin`) and the `converse` line, whose `ts` is when the
-// acknowledgement went out (`ackRef` names it). **TIME TO ANSWER** is the receipt to the first `replied` line whose `replyTo` is the message's ref, which is why
+// **TIME TO ACKNOWLEDGE** is two lines of one update: the receipt line `inbound.mjs` writes (`direction: "in"`, no `origin`) and the `converse` line, whose `ackAt` is when the
+// acknowledgement went out (`ackRef` names it). `ackAt` is read when the line has it; a line written before a11ign/a11ign#3416 has none, and its `ts` stands in for it (`ts` is
+// written AFTER the queue write and any refusal message, so it overstates the time to acknowledge). **TIME TO ANSWER** is the receipt to the first `replied` line whose `replyTo` is the message's ref, which is why
 // `chairman:reply --to` exists: a reply that names nothing (`replyTo: null`) answers no message here, and is not guessed at.
 //
 // **AN ASK IS A CYCLE, NOT A KEY.** A row asks (`first`), may be answered, and is `cleared`; it may ask again later. So an answer counts for the ask it was made under and
@@ -50,7 +51,7 @@ function conversations(lines) {
       messageRef: converse.messageRef,
       receivedAt,
       // A converse line with no `ackRef` did not tell the chairman anything, so there was no acknowledgement to time.
-      acknowledgedAfter: converse.ackRef === null || converse.ackRef === undefined ? null : secondsBetween(receivedAt, at(converse.ts)),
+      acknowledgedAfter: converse.ackRef === null || converse.ackRef === undefined ? null : secondsBetween(receivedAt, at(converse.ackAt ?? converse.ts)),
       answeredAfter: reply === undefined ? null : secondsBetween(receivedAt, at(reply.ts)),
     };
   });

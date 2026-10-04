@@ -70,6 +70,26 @@ export const RED_PR_MINUTES = 120;
 export const REFUSED_TICKS = 75;
 /** A primary checkout that has stood off `origin/main` this long. */
 export const PRIMARY_STALE_MINUTES = 60;
+/**
+ * HOW LONG AN ORDER MAY WAIT ON A SESSION THAT IS BUSY BEFORE THE WAIT IS A STALL: FIFTEEN MINUTES (#3448, the chairman, 2026-10-04). ONE number for
+ * both of its readers: `wake.mjs`'s deferred order (`BUSY_SEAT_DEFERRAL_MS` is this) and a standing seat's queue, whose oldest entry is the same wait
+ * seen from the inbox.
+ *
+ * WHY NOT THE HOUR IT WAS: #3406 sat green and approved for forty minutes behind `orchestrator`, and the hour said nothing for all of them. MEASURED
+ * 2026-10-04 from `journalctl --user -u a11ign-work-tick -o short-iso` over 2026-10-02T16:12+01:00 to 2026-10-04T14:12+01:00 (the window `DEFERRED` has
+ * existed in, #3029): every run of consecutive ticks deferring one causeKey with `"<seat>" is working` (a gap over 10 minutes ends a run), kept only if a
+ * `WOKE <seat> <- <causeKey>` followed within 6 minutes. Of 212 such runs for `ceo`, `product-manager` and `orchestrator`: p50 1.9 min, p90 15.2, p99 46.2,
+ * MAX 50.8; 22 ran over 15 minutes. SO THIS IS NOT A PERCENTILE THAT CLEARS THE HEALTHY WAITS: about one in ten waits that ENDED in a turn is raised
+ * (roughly eleven a day), which `ceo` is asked about once per two hours as a judgment cause. The chairman's ruling is that a wait past a quarter of an hour
+ * is worth a look, and the cost is stated here so the next reader does not mistake the bound for a measurement of health. A tick is 2 minutes: each is good to +-2.
+ */
+export const ORDER_STALL_MINUTES = 15;
+/**
+ * A POOL BELOW A FIFTH OF ITS LIMIT IS RAISED (#3448): 1,000 of 5,000 GraphQL points. THE REASON IS THE BURN RATE, NOT A PERCENTILE: `a11ign-ai-leads`
+ * spent a whole window in the hour 2026-10-04 11:57Z-12:57Z (the chairman's read, #3448), about 83 points a minute, so a fifth is about twelve minutes of
+ * warning at that rate -- six tick grids and a `ceo` turn, which a tenth (about six minutes) is not. A reading at a moment: re-derive before quoting.
+ */
+export const POOL_LOW_FRACTION = 0.2;
 
 const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
@@ -118,6 +138,8 @@ export const SIGNALS = Object.freeze({
   PR_NOT_PROGRESSING: "pr-not-progressing",
   STALE_WAIT: "stale-wait",
   WAIT_WITHOUT_REASON: "wait-without-reason",
+  ORDER_STALLED: "order-deferred-too-long",
+  POOL_LOW: "api-pool-low",
 });
 
 /**
@@ -400,6 +422,61 @@ export function waitWithoutReasonReading({ now, bare, manual = 0 }) {
 }
 
 /**
+ * @typedef {{ kind: "deferred" | "queue", name: string, since: number }} StalledOrder
+ * One order that has not reached a seat: `deferred` is a derived order the waker refused because its seat is mid-turn, named by its causeKey and dated by the
+ * tick that FIRST deferred it; `queue` is a standing seat's inbox, named by the seat and dated by its OLDEST authored order. `since` is epoch ms.
+ */
+
+/**
+ * SIGNAL 10: AN ORDER HAS WAITED ON A BUSY SESSION FOR OVER `ORDER_STALL_MINUTES` (#3448). A deferral is not a fault -- it is what the queue is for -- and a
+ * deferral that outlasts the bound is a stall nobody was told of: #3406 held a green, approved draft for forty minutes while the one session that could act
+ * on it was on another row. `stalled` is `null` when the waker's record could not be read, which is a stated unknown and never a clear.
+ *
+ * STRICTLY OVER, as `refusalReport`'s `isOverdue` is, so the signal and the `UNDELIVERED` line it sits beside agree on the minute. Keyed on the SET of names,
+ * not an hour: one order delivered or one more stalled changes it, and an unchanged set holds for the two hours the cause holds for.
+ * @param {{ now: number, stalled: StalledOrder[] | null }} input
+ * @returns {Reading}
+ */
+export function orderStallReading({ now, stalled }) {
+  if (stalled === null) return unknown(SIGNALS.ORDER_STALLED, "the waker's record of deferred orders and queued orders could not be read");
+  const over = stalled.filter((s) => now - s.since > ORDER_STALL_MINUTES * MS_PER_MINUTE).sort((a, b) => a.since - b.since || a.name.localeCompare(b.name));
+  if (over.length === 0) return clear(SIGNALS.ORDER_STALLED);
+  const named = over.slice(0, MAX_NAMED).map((s) => `${s.kind === "queue" ? `the queue of ${s.name}` : s.name} (${ageText(s.since, now)})`);
+  const more = over.length > MAX_NAMED ? `, and ${over.length - MAX_NAMED} more` : "";
+  const key = over.map((s) => `${s.kind}:${s.name}`).sort().join(",");
+  return { signal: SIGNALS.ORDER_STALLED, status: "tripped", firstTrippedAt: over[0].since + ORDER_STALL_MINUTES * MS_PER_MINUTE,
+    discriminator: `${SIGNALS.ORDER_STALLED}@${key}`,
+    detail: `${over.length} order(s) or queue(s) have waited over ${ORDER_STALL_MINUTES} min on a session that is busy: ${named.join("; ")}${more}` };
+}
+
+/**
+ * @typedef {{ account: string | null, resource: string, remaining: number, limit: number, resetAt: string | null }} PoolReading
+ * One API budget as a real call's answer gave it (`poolFromHeaders`, or a `rateLimit` field in a query the gate was sending anyway), NEVER `/rate_limit`, which
+ * has reported a full pool during a total outage (#1967). `account` is the login the call ran as, `null` when the answer did not name one.
+ */
+
+/**
+ * SIGNAL 11: A POOL IS BELOW `POOL_LOW_FRACTION` OF ITS LIMIT (#3448). A session that meets an exhausted pool sleeps on the reset, and three standing seats did at
+ * once on 2026-10-04 with nothing in the org knowing why its inbox was three orders deep. The reading names the account, the pool and the reset, because "low"
+ * with no window is not a measurement. `pools` is `null` when no pool was read this tick.
+ *
+ * A POOL AT EXACTLY THE FRACTION IS NOT RAISED (at or above clears), and a limit of 0 is unread and never a divide. Keyed on the account, the pool and the
+ * reset time, so one spent window is one signal however many ticks it lasts and the next window starts a new one.
+ * @param {{ pools: PoolReading[] | null }} input
+ * @returns {Reading}
+ */
+export function poolLowReading({ pools }) {
+  if (pools === null) return unknown(SIGNALS.POOL_LOW, "no API pool was read this tick");
+  const low = pools.filter((p) => p.limit > 0 && p.remaining / p.limit < POOL_LOW_FRACTION).sort((a, b) => `${a.account}/${a.resource}`.localeCompare(`${b.account}/${b.resource}`));
+  if (low.length === 0) return clear(SIGNALS.POOL_LOW);
+  const named = low.slice(0, MAX_NAMED).map((p) => `${p.account ?? "an unnamed account"}'s ${p.resource} pool has ${p.remaining} of ${p.limit} left`
+    + ` (${Math.round((p.remaining / p.limit) * 100)}%), resetting ${p.resetAt ?? "at a time the answer did not give"}`);
+  const key = low.map((p) => `${p.account}/${p.resource}/${p.resetAt}`).join(",");
+  return { signal: SIGNALS.POOL_LOW, status: "tripped", firstTrippedAt: null, discriminator: `${SIGNALS.POOL_LOW}@${key}`,
+    detail: `${low.length} API pool(s) are below ${Math.round(POOL_LOW_FRACTION * 100)}% of their limit: ${named.join("; ")}` };
+}
+
+/**
  * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
  * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
  * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
@@ -569,7 +646,8 @@ export function readLastMergedAt(run, repo) {
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, stalledPrs?: QuietPr[] | null,
- *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null }} facts
+ *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
+ *           pools?: PoolReading[] | null }} facts `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -582,6 +660,7 @@ export function orgHealthReadings(facts) {
     readings.push(staleWaitReading({ now: facts.now, stale: facts.waits?.stale ?? null }),
       waitWithoutReasonReading({ now: facts.now, bare: facts.waits?.bare ?? null, manual: facts.waits?.manual }));
   }
+  if (facts.pools !== undefined) readings.push(poolLowReading({ pools: facts.pools }));
   return readings;
 }
 
@@ -608,6 +687,13 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.STALE_WAIT]: "Each wait named still stands although the condition it declared is true: the reason is gone and the wait is a stall, not "
     + "health. The setter was ordered with the exact field to remove and did not. Remove it yourself (`pnpm run pr:hold -- <n> --session=<s> --release` "
     + "for a hold, `gh issue edit <n> --remove-label <label>` for a label, or the `Waiting-for:` line), or re-lane the item to a session that will.",
+  [SIGNALS.ORDER_STALLED]: "Each order named has waited on a session that is busy for longer than the bound, and an order that waits is a stall nobody was told of "
+    + "(#3406 held a green, approved draft this way). READ THE ORDER (`causeKey` names its cause and subject), then do what it asks yourself if it is a "
+    + "finishing act (a ready-flip, a close-out), re-lane it by putting the label of a free session on the row or PR, or tell the busy session's owner what it "
+    + "is not reading. A queue named is a standing seat's inbox whose oldest order is that old: that seat is never between tasks, so reduce what is sent to it.",
+  [SIGNALS.POOL_LOW]: "An API pool is nearly spent. Every session on that account is about to sleep on its reset. READ WHICH CALLS SPENT IT before the "
+    + "reset (a `gh` read is 1 point or more; `gh project item-*` and the board snapshot read the whole Project), prefer `gh api` REST reads for polling, "
+    + "and do NOT switch to another account's `gh` config to get past it: which account a write is attributed to is `ceo`'s, and the pool comes back.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",

@@ -43,6 +43,8 @@ import { profileFor, agentArgs } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
+// A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, orgHealthOrders } from "./org-health.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
@@ -3053,8 +3055,8 @@ function batchedOrder(take, held, now) {
       + `waited ${oldest}. \`prompt:session\` could not deliver any of them when they were written, `
       + "because you were mid-turn each time, so the gate held them until you were between tasks.\n"
       + `${decisionHeader(take)}\n`
-      + "THIS IS ONE WAKE CARRYING MANY REPORTS, NOT MANY WAKES: each delivery clears your context "
-      + "first, so sending them one at a time would erase what the previous one built (#1966, #2102).\n"
+      + `THIS IS ONE WAKE CARRYING MANY REPORTS, NOT MANY WAKES: ${CONTEXT_PLACEHOLDER} Sending them one at a time `
+      + "would pay that again for each (#1966, #2102, #3440).\n"
       + "They are from several senders and were written over the whole period above. RE-READ WHAT THEY "
       + "NAME BEFORE ACTING: some will already be settled, and the row, the PR and the API are the "
       + "state -- not this message."
@@ -3081,7 +3083,8 @@ function batchedOrder(take, held, now) {
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
  *          now?: number, budget?: number, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void, contextRoot?: string, checkout?: CheckoutDeps}} [deps] `sleep` is `deliver`'s clear settle,
+ *          sleep?: (ms: number) => void, contextRoot?: string, checkout?: CheckoutDeps, clock?: OrderClock}} [deps] `clock` is
+ *   `deliver`'s last-order record (#3440), passed straight through; `sleep` is `deliver`'s clear settle,
  *   passed straight through (#2546); `contextRoot` is `deliver`'s compact-check transcript root, the same way (#2688);
  *   `checkout` is the seam a live reviewer's re-point reads, the same way (#3031: a handoff now reaches one)
  * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
@@ -3089,12 +3092,12 @@ function batchedOrder(take, held, now) {
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot, checkout } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot, checkout, clock } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
   const { sent, refused } = deliver(batches, agents, roster,
-    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot, checkout });
+    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot, checkout, clock });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -3356,19 +3359,24 @@ function engineerBriefLine(label, engineers, families) {
  * target was neither started nor cleared for this order, so its window already holds all of the above; the default is the full
  * form, so a caller that does not know is never the one that leaves a session unbriefed. A `spawned` order is never a follow-up.
  *
+ * `context` IS WHAT {@link prepareContext} DID TO THIS WINDOW (#3440): it fills {@link CONTEXT_PLACEHOLDER} in a batched order's header,
+ * and a kept or compacted STANDING seat's follow-up says its earlier readings are stale ({@link staleReadingsClause}). Absent, the
+ * placeholder reads as a clear -- the sentence that was true of every delivery before #3440.
+ *
  * @param {{session: string, prompt: string, title?: string, causeKey?: string, cause?: string}} order
  * @param {string} label the concrete session this went to
- * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, engineers?: string[],
+ * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, context?: string, engineers?: string[],
  *   families?: readonly import("./arm-pr.mjs").SpareFamily[]}} [facts]
  */
 export function addressed(order, label,
-  { spawned, followUp = false, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
+  { spawned, followUp = false, context, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
   const prompt = spawned ? spawnedPrompt(order, spawned)
-    : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch));
-  if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}\n\n${prompt}`;
+    : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch))
+      .replaceAll(CONTEXT_PLACEHOLDER, contextSentence(context));
+  if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}${staleReadingsClause(label, context)}\n\n${prompt}`;
   return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`
     + `${prompt}\n\n`
@@ -3400,6 +3408,31 @@ export function addressed(order, label,
  * @param {string} label
  */
 const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.`;
+
+/** Where {@link addressed} writes what THIS delivery did to the window into an order whose text was composed before the delivery (#3440). */
+export const CONTEXT_PLACEHOLDER = "@@CONTEXT@@";
+
+/**
+ * WHAT THIS DELIVERY DID TO THE WINDOW, in the words an order's header quotes (#3440). The sentence "each delivery clears your context
+ * first" was true of every standing delivery until a recent window was kept, and is false of a kept one, so it is said per delivery.
+ * @param {string | undefined} context a {@link CONTEXT_ACTION} value; absent reads as a clear, as it did before #3440
+ */
+function contextSentence(context) {
+  if (context === CONTEXT_ACTION.KEPT) return "THIS DELIVERY KEPT YOUR CONTEXT (your previous order was recent and your window is small).";
+  if (context === CONTEXT_ACTION.COMPACTED) return "THIS DELIVERY COMPACTED YOUR CONTEXT (your previous order was recent and your window is large): a summary of it remains.";
+  return "THIS DELIVERY CLEARED YOUR CONTEXT first, so what a previous order built is gone.";
+}
+
+/**
+ * ONE CLAUSE FOR A STANDING SEAT WHOSE WINDOW WAS KEPT (#3440): it holds readings from earlier turns, and acting on an hour-old reading
+ * of a row is the failure the clear used to prevent for free. A per-row instance's follow-up is unchanged byte for byte (#2483).
+ * @param {string} label @param {string | undefined} context
+ */
+function staleReadingsClause(label, context) {
+  const kept = context === CONTEXT_ACTION.KEPT || context === CONTEXT_ACTION.COMPACTED;
+  if (!kept || isPerRowInstance(label)) return "";
+  return " Your window was NOT cleared, so what it holds from earlier turns is a reading at a moment: re-read the row, the PR and the API before acting on it.";
+}
 
 /** What a session that must claim its row is told about a refusal; a spawned one has nothing left to claim (#2405). */
 const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, or the claim refuses), that is an "
@@ -3589,18 +3622,15 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
 }
 
 /**
- * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL (#3029): ONE HOUR.
+ * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL: {@link ORDER_STALL_MINUTES}, FIFTEEN (#3448; it was an hour, #3029).
  *
- * MEASURED 2026-10-02 from `journalctl --user -u a11ign-work-tick --since "7 days ago"` (2026-09-25T15:26+01:00 onward, 7,089 `UNDELIVERED`
- * lines): every run of consecutive ticks refusing one causeKey with `"<seat>" is working` (a gap over 10 minutes ends a run), kept only if a
- * `WOKE <seat>` followed within 6 minutes, i.e. the wait ENDED in a delivery and so was a real turn rather than a stuck seat. Of 263 such runs
- * for the standing seats (`ceo`, `product-manager`, `orchestrator`): p50 0 min, p90 10, p99 40, MAX 50 (`orchestrator/fleet-batch-due/2734`,
- * 2026-09-28); the longest for `ceo` was 36 min and for `product-manager` 40. A tick is 2 minutes, so each is good to +-2. One hour is the
- * first round number above the standing seats' maximum. The row-working seats are not the population this is sized for and run longer
- * (`worker-capture` 103 min, 3 of 308 runs over an hour): their order is reported as `nowhere to go` after an hour, which for a seat that has
- * been `working` that long is the line's own meaning, "no session is taking this work".
+ * THE NUMBER AND ITS MEASUREMENT LIVE WITH THE SIGNAL THAT SHARES THEM (`org-health.mjs`), so a deferred order and a standing seat's queue cannot be given two
+ * bounds. The hour was the first round number above the standing seats' longest delivered wait (50 min, 2026-10-02) and was right for "is this order lost"; it
+ * was wrong for "is this work stalled", which #3406 answered by sitting green and approved for forty minutes. The row-working seats run longer
+ * (`worker-capture` 103 min, 3 of 308 runs over an hour) and their orders are reported after the same bound, which for a seat `working` that long is the
+ * line's own meaning, "no session is taking this work".
  */
-export const BUSY_SEAT_DEFERRAL_MS = 60 * 60 * 1000;
+export const BUSY_SEAT_DEFERRAL_MS = ORDER_STALL_MINUTES * 60 * 1000;
 
 /** `<causeKey>: "<seat>" is working`, which is `route`'s own refusal for a seat mid-turn, with `routeWithFallback`'s second half when the order had one. */
 const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?)$/;
@@ -3671,6 +3701,19 @@ export function splitRefusals(refused) {
  * @returns {Map<string, number>} each of `keys` to how long (ms) it has been deferred, 0 for one first seen now
  */
 export function deferralAges(path, keys, now, { read = readFileSync, write = writeFileSync } = {}) {
+  const since = readDeferralHistory(path, read);
+  const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
+  mkdirSync(dirname(path), { recursive: true });
+  write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
+  return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
+}
+
+/**
+ * The file {@link deferralAges} keeps, read and not written: each causeKey to the epoch ms it was FIRST deferred. A missing file is no history; a malformed
+ * one THROWS, for the reason {@link deferralAges} gives.
+ * @param {string} path @param {typeof readFileSync} [read] @returns {Map<string, number>}
+ */
+export function readDeferralHistory(path, read = readFileSync) {
   /** @type {Map<string, number>} */
   const since = new Map();
   try {
@@ -3683,10 +3726,30 @@ export function deferralAges(path, keys, now, { read = readFileSync, write = wri
   } catch (err) {
     if (/** @type {any} */ (err)?.code !== "ENOENT") throw err;
   }
-  const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
-  mkdirSync(dirname(path), { recursive: true });
-  write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
-  return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
+  return since;
+}
+
+/**
+ * #3448: THE ORDERS A TICK HAS WAITING ON A BUSY SESSION, AS THE STALL SIGNAL READS THEM -- the deferred derived orders and the standing seats' queues. PURE.
+ *
+ * A DEFERRED KEY COUNTS ONLY IF THE GATE EMITTED IT THIS TICK (`emitted`): `wake-deferred` is rewritten by the tick that reaches `finishTick`, and a tick with
+ * nothing to deliver exits first and leaves the last file behind, so an order delivered since would otherwise be read as still waiting and its age as a stall.
+ * NOT `org-health` ORDERS, whose own deferral would otherwise name the signal in the signal about it and mint a new key (so a new delivery) every tick.
+ * NOT `engineers/...`, a ready row waiting for a free seat: it has its own, measured bound ({@link CAPACITY_WAIT_LIMIT_MS}, #3266) and "no engineer is idle" is
+ * `ceo`'s question about capacity, not a stall.
+ *
+ * A QUEUE COUNTS ONLY FOR A STANDING SEAT (`standing`): a spawned instance mid-turn on its row for an hour is working, and its inbox is read when it finishes.
+ * A standing seat is never between tasks while it works, which is what makes its oldest queued order a stall and not a wait (#3448: `ceo` held three, oldest 28 min).
+ * @param {{ deferredSince: Map<string, number>, emitted: Set<string>, backlog: ReturnType<typeof handoffBacklog>, standing: Set<string>, now: number }} facts
+ * @returns {import("./org-health.mjs").StalledOrder[]}
+ */
+export function stalledOrdersOf({ deferredSince, emitted, backlog, standing, now }) {
+  const deferred = [...deferredSince]
+    .filter(([key]) => emitted.has(key) && !key.includes("/org-health/") && !key.startsWith("engineers/"))
+    .map(([key, since]) => ({ kind: /** @type {const} */ ("deferred"), name: key, since }));
+  const queued = backlog.filter((b) => standing.has(b.session))
+    .map((b) => ({ kind: /** @type {const} */ ("queue"), name: b.session, since: now - b.oldestMs }));
+  return [...deferred, ...queued];
 }
 
 /**
@@ -4104,8 +4167,8 @@ export function clearContext(run, label, sleep = sleepSync) {
  * `clearContext`, and for the same reason: `/compact` returns to a prompt with no observable
  * state-change signal either.
  *
- * NEVER FOR A STANDING SEAT, which is `/clear`ed to the floor at every delivery already and so has nothing
- * to compact; only {@link clearBeforeOrder} calls this, and only past {@link isPerRowInstance}.
+ * ONLY {@link prepareContext} CALLS THIS, for a seat whose window is kept (a per-row instance, a persistent seat) or recent
+ * (a standing lead, #3440) and over its threshold. A standing lead that is not recent is `/clear`ed to the floor, which has nothing to compact.
  *
  * COMPACTION KEEPS THE THREAD; A CLEAR DOES NOT. #2483 stands unchanged -- a per-row instance is still
  * never `/clear`ed, because its one row is its whole life and a failing check on its own pull request is
@@ -4163,39 +4226,121 @@ export function isPerRowInstance(label) {
 }
 
 /**
- * THE CLEAR BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
- * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}) and for
- * a PERSISTENT seat ({@link isPersistentRole}). Both callers go through it, because fixing one leaves the reviewer
- * wiped by its own author.
+ * WHAT A STANDING LEAD'S WINDOW IS WORTH KEEPING FOR (#3440, chairman's order of 2026-10-04, lever 1 on #928): a clear re-writes
+ * the whole starting context at the cache-write price, and the orders to the busiest leads arrive close together, so most clears
+ * threw away a window that was minutes old. BOTH NUMBERS ARE UNMEASURED STARTING CONSTANTS (`ceo`'s ruling) and live here, in one
+ * place, so the measurement that moves them edits one line.
  *
- * A SEAT THAT KEEPS ITS CONTEXT MAY STILL BE `/compact`ED (#2688), never `/clear`ed: its own transcript's last turn
- * is read for `cache_read_input_tokens` ({@link instanceCacheRead}) and, over
- * {@link COMPACT_THRESHOLD_TOKENS}, sent `/compact` first ({@link compactContext}). Below the threshold, or
- * when no transcript can be read for it ("cannot tell", never assumed small), nothing is sent -- exactly
- * the #2483 behaviour this extends. `sent` still means "cleared", so a compacted seat reads the same
- * as an untouched one to every caller that only asks whether to send the first-contact preamble.
+ * `KEEP_WITHIN_MS` -- N, 30 minutes: the previous order's age at or under which the window is kept. WOULD CHANGE ON: the gap
+ * distribution per lead at the point where the cache-write saving of a kept order stops exceeding the cost of the stale context
+ * it carries, read from the transcripts (`token-audit.mjs` sums `cache_creation_input_tokens` per session). Measured 2026-10-04 over
+ * 2026-10-01..04: 32 of 50 gaps to `ceo` and 18 of 39 to `product-manager` were at or under 30 minutes, 3 of 11 to `orchestrator`.
  *
- * A PERSISTENT SEAT IS THE SAME RULE FOR A DIFFERENT REASON (#3415, chairman point 1). A per-row instance keeps its
- * window because its one row is its whole life; a persistent seat keeps it because a conversation IS its work, and
- * a message answered by a session that has forgotten the last one is the defect. Its orders are not one topic, so
- * `/compact` (which summarises the thread) is the only bound on its growth.
+ * `KEEP_FILL_TOKENS` -- 50% of a 200k window: the cache read at or under which a recent window is kept and over which it is
+ * `/compact`ed. WOULD CHANGE ON: where answers start to degrade, which nothing here measures and nobody has.
+ */
+export const KEEP_WITHIN_MS = 30 * 60 * 1000;
+export const CONTEXT_WINDOW_TOKENS = 200_000;
+export const KEEP_FILL_FRACTION = 0.5;
+export const KEEP_FILL_TOKENS = CONTEXT_WINDOW_TOKENS * KEEP_FILL_FRACTION;
+
+/** What was done to a seat's window before an order -- the one word every caller's wording is read from (#3440). */
+export const CONTEXT_ACTION = Object.freeze({ KEPT: "kept", COMPACTED: "compacted", CLEARED: "cleared" });
+
+/**
+ * WHEN THE SEAT'S LAST ORDER LANDED, for a decision that must read the clock and not a transcript: one file per seat in a
+ * directory the caller names, written only after a prompt landed ({@link orderClockIn}).
+ *
+ * A DIRECTORY THE CALLER NAMES, NEVER A DEFAULT: a test that delivers to `ceo` would otherwise stamp the host's real record and
+ * keep the real `ceo`'s window. Without a clock the answer is "cannot tell", which is a clear.
+ * @typedef {{ now: () => number, lastOrderAt: (label: string) => number | null, recordOrder: (label: string) => void }} OrderClock
+ */
+
+/** @param {string} dir @param {string} label */
+const lastOrderFile = (dir, label) => join(dir, `last-order-${label.replaceAll(/[^\w.-]/g, "_")}`);
+
+/**
+ * @param {string} dir where the per-seat records live (the ledger's directory)
+ * @param {() => number} [now] @returns {OrderClock}
+ */
+export function orderClockIn(dir, now = Date.now) {
+  return {
+    now,
+    lastOrderAt(label) {
+      try {
+        const at = Number(readFileSync(lastOrderFile(dir, label), "utf8").trim());
+        return Number.isFinite(at) && at > 0 ? at : null;
+      } catch { return null; } // absent or unreadable is "cannot tell", never "long ago" and never "just now"
+    },
+    recordOrder(label) {
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(lastOrderFile(dir, label), `${now()}\n`);
+      } catch (/** @type {any} */ err) {
+        process.stderr.write(`the order to ${label} WAS delivered, but its time could not be recorded in ${dir} `
+          + `(${String(err?.message ?? err).split("\n")[0].slice(0, 120)}), so the next order clears. Do not send it again.\n`);
+      }
+    },
+  };
+}
+
+/** What a caller that has no record directory hands the decision: nothing is known, so every standing seat is cleared. */
+const NO_CLOCK = { now: Date.now, lastOrderAt: () => null, recordOrder: () => {} };
+
+/**
+ * THE RECENT-ORDER DECISION FOR A STANDING SEAT THAT IS NOT PERSISTENT (#3440): `kept` when its previous order was at or under
+ * {@link KEEP_WITHIN_MS} ago and its window at or under {@link KEEP_FILL_TOKENS}, `compacted` when recent and over, `cleared` otherwise.
+ * EVERY UNREADABLE FACT IS A CLEAR: no previous order on record, a transcript that cannot be read, a record dated in the future.
+ * @param {string} label @param {OrderClock} clock @param {string} [contextRoot]
+ */
+function recentOrderAction(label, clock, contextRoot) {
+  const last = clock.lastOrderAt(label);
+  const age = last === null ? null : clock.now() - last;
+  if (age === null || age < 0 || age > KEEP_WITHIN_MS) return CONTEXT_ACTION.CLEARED;
+  const tokens = instanceCacheRead(label, contextRoot);
+  if (tokens === null) return CONTEXT_ACTION.CLEARED;
+  return tokens > KEEP_FILL_TOKENS ? CONTEXT_ACTION.COMPACTED : CONTEXT_ACTION.KEPT;
+}
+
+/**
+ * WHAT HAPPENS TO THE WINDOW BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
+ * `prompt-session.mjs`): a per-row instance ({@link isPerRowInstance}) and a PERSISTENT seat ({@link isPersistentRole}) keep it and are
+ * `/compact`ed over {@link COMPACT_THRESHOLD_TOKENS} (#2483, #2688, #3415); any OTHER standing seat reads the clock second
+ * ({@link recentOrderAction}, #3440) -- a persistent seat never reaches it. Both callers go through here, because fixing one leaves the
+ * reviewer wiped by its own author.
+ *
+ * AN UNREADABLE TRANSCRIPT HAS TWO OPPOSITE DEFAULTS, one for each reason a window is kept: an instance's is not assumed large
+ * (nothing is sent, #2688), a lead's is not assumed small (it is cleared, #3440), because each is the one that costs less when the reading is wrong.
  *
  * @param {(args: string[]) => string} run @param {string} label
- * @param {(ms: number) => void} [sleep] `clearContext`'s settle, which is where the real default lives -- passed on as it came
- * @param {string} [contextRoot] {@link instanceCacheRead}'s transcript root, injectable for a test
- * @param {string | URL} [sessions] the roster {@link isPersistentRole} reads, injectable for a test
- * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s
- *   (or, for a compacted seat, `compactContext`'s) refusal
+ * @param {{sleep?: (ms: number) => void, contextRoot?: string, sessions?: string | URL, clock?: OrderClock}} [deps]
+ *   `sleep` is `clearContext`'s settle, passed on as it came; `contextRoot` is {@link instanceCacheRead}'s transcript root;
+ *   `sessions` the roster {@link isPersistentRole} reads; `clock` the seat's last-order record and the time, all injectable
+ * @returns {{action: string, refusal: string | null}} what was done ({@link CONTEXT_ACTION}), and the refusal of the command that did it
  */
-export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESSIONS_FILE) {
-  if (isPerRowInstance(label) || isPersistentRole(label, sessions)) {
-    const tokens = instanceCacheRead(label, contextRoot);
-    if (tokens !== null && tokens > COMPACT_THRESHOLD_TOKENS) {
-      return { sent: false, refusal: compactContext(run, label, sleep) };
-    }
-    return { sent: false, refusal: null };
-  }
-  return { sent: true, refusal: clearContext(run, label, sleep) };
+export function prepareContext(run, label, { sleep, contextRoot, sessions = SESSIONS_FILE, clock = NO_CLOCK } = {}) {
+  const action = keepsContext(label, sessions) ? overThreshold(label, contextRoot) : recentOrderAction(label, clock, contextRoot);
+  if (action === CONTEXT_ACTION.CLEARED) return { action, refusal: clearContext(run, label, sleep) };
+  if (action === CONTEXT_ACTION.COMPACTED) return { action, refusal: compactContext(run, label, sleep) };
+  return { action, refusal: null };
+}
+
+/** An instance's or a persistent seat's action: compacted over {@link COMPACT_THRESHOLD_TOKENS}, otherwise kept -- never cleared. */
+function overThreshold(label, contextRoot) {
+  const tokens = instanceCacheRead(label, contextRoot);
+  return tokens !== null && tokens > COMPACT_THRESHOLD_TOKENS ? CONTEXT_ACTION.COMPACTED : CONTEXT_ACTION.KEPT;
+}
+
+/**
+ * {@link prepareContext} in the shape #2483 gave its callers, which the tests that pin that behaviour still read: `sent` is "cleared",
+ * so a compacted or kept seat reads the same to every caller that only asks whether to send the first-contact preamble.
+ * @param {(args: string[]) => string} run @param {string} label @param {(ms: number) => void} [sleep]
+ * @param {string} [contextRoot] @param {string | URL} [sessions] @param {OrderClock} [clock]
+ * @returns {{sent: boolean, refusal: string | null}}
+ */
+export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESSIONS_FILE, clock = NO_CLOCK) {
+  const { action, refusal } = prepareContext(run, label, { sleep, contextRoot, sessions, clock });
+  return { sent: action === CONTEXT_ACTION.CLEARED, refusal };
 }
 
 /**
@@ -4271,41 +4416,31 @@ function carriedOrder(order, target) {
 }
 
 /**
- * The clear before an order (see {@link clearContext}), NOT for a session this tick started -- it has nothing to clear.
+ * WHAT HAPPENS TO THE WINDOW BEFORE THIS ORDER (see {@link prepareContext}), as a {@link CONTEXT_ACTION} value.
+ * A process this tick STARTED has nothing to clear, so it is `cleared` without a command; a RESUME (#2470) is `kept` without one,
+ * because its whole point is the context the session still has and a clear would wipe exactly what the interrupted turn had built.
  * A refusal is reported into `refused` and the order still goes.
- * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string}} herdr `run`, the
- *   settle's seam ({@link clearContext}), and {@link instanceCacheRead}'s transcript root (#2688)
- * @param {{label: string, profile?: object}} target
- * @param {string} causeKey @param {string[]} refused
- * @returns {boolean} true when an existing session was left uncleared because it is a per-row instance
- */
-function clearUnlessStarted({ run, sleep, contextRoot }, target, causeKey, refused) {
-  if (target.profile) return false;
-  const clear = clearBeforeOrder(run, target.label, sleep, contextRoot);
-  if (clear.refusal) refused.push(`${causeKey}: ${clear.refusal} -- delivered anyway`);
-  return !clear.sent;
-}
-
-/**
- * The clear before an order, or NONE for a resume (#2470): its whole point is the context the session still has, and a clear would wipe
- * exactly what the interrupted turn had built. Same return as {@link clearUnlessStarted}: whether the session was left uncleared.
  * @param {{ causeKey: string, resume?: boolean }} order
- * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string,
- *   target: { label: string, profile?: object }, refused: string[] }} ctx
- * @returns {boolean}
+ * @param {{ run: (args: string[]) => string, sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
+ *   target: { label: string, profile?: object }, refused: string[] }} ctx `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688)
+ * @returns {string}
  */
-function clearedFirst(order, { run, sleep, contextRoot, target, refused }) {
-  return order.resume === true || clearUnlessStarted({ run, sleep, contextRoot }, target, order.causeKey, refused);
+function contextBefore(order, { run, sleep, contextRoot, clock, target, refused }) {
+  if (order.resume === true) return CONTEXT_ACTION.KEPT;
+  if (target.profile) return CONTEXT_ACTION.CLEARED;
+  const { action, refusal } = prepareContext(run, target.label, { sleep, contextRoot, clock });
+  if (refusal) refused.push(`${order.causeKey}: ${refusal} -- delivered anyway`);
+  return action;
 }
 
 /**
  * IS THIS ORDER A FOLLOW-UP, whose session already holds the first-contact preamble (#2538)? Only a target that was neither
- * started this tick (`profile`) nor cleared before the order (`noClear` is false) does. A resume is `noClear` too, but a
- * process this tick STARTED for one is new and knows nothing, so it is briefed however it was ordered.
- * @param {{profile?: object}} target @param {boolean} noClear
+ * started this tick (`profile`) nor cleared before the order does. A resume is kept too, but a process this tick STARTED for one is
+ * new and knows nothing, so it is briefed however it was ordered.
+ * @param {{profile?: object}} target @param {string} context a {@link CONTEXT_ACTION} value
  */
-function isFollowUp(target, noClear) {
-  return noClear && target.profile === undefined;
+function isFollowUp(target, context) {
+  return context !== CONTEXT_ACTION.CLEARED && target.profile === undefined;
 }
 
 /**
@@ -4347,8 +4482,9 @@ function recordCapped({ stuck, outaged }, order, already) {
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void, contextRoot?: string} & Partial<ReviewerDeps>} [deps]
- *   `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
+ *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock} & Partial<ReviewerDeps>} [deps]
+ *   `clock` is the standing seats' last-order record and the time ({@link OrderClock}, #3440); absent, no seat's window is kept for
+ *   being recent. `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
  *   `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688), real `~/.claude/projects` by default, injected only by a test;
  *   `unavailable` says why a session cannot ANSWER now (`unavailableReason`), and an order to one is refused with that
  *   reason and neither sent nor recorded (#2256); `registerReviewer` is told of every reviewer instance this tick starts (#2401), for the auth detector;
@@ -4366,7 +4502,7 @@ function recordCapped({ stuck, outaged }, order, already) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock } = {}) {
   const sent = [];
   const refused = [];
   /** @type {string[]} */
@@ -4404,16 +4540,17 @@ export function deliver(orders, agents, roster,
     // Spending that on a session whose context is its own prefix would be paying the standing path's cost
     // to reach a floor the spawn already started at -- which is the whole argument for spawning.
     spawned += engineerStarts(target);
-    // CLEARED BEFORE PROMPTED, except a per-row instance (#2483). See `clearContext` for the measurement and for
-    // who is cleared: a standing seat's 500th turn costs ~24x its 10th for identical output, an instance's
-    // window is its one row.
+    // CLEARED BEFORE PROMPTED, except a per-row instance (#2483) and a standing lead whose previous order was recent (#3440). See
+    // `clearContext` for the measurement and for who is cleared: a standing seat's 500th turn costs ~24x its 10th for identical
+    // output, an instance's window is its one row.
     // A RESUME IS NEVER PRECEDED BY A CLEAR (#2470): its whole point is the context the session still has. Sent to a standing seat it
     // would wipe exactly what the interrupted turn had built, and the ledger says so with the same `no-clear` mark an instance's carries.
-    const noClear = clearedFirst(order, { run, sleep, contextRoot, target, refused });
+    const context = contextBefore(order, { run, sleep, contextRoot, clock, target, refused });
+    const noClear = context !== CONTEXT_ACTION.CLEARED;
     try {
       run(["--session", "org", "agent", "prompt", target.label,
         addressed(carriedOrder(order, target), target.label,
-          { ...launch, spawned: target.claimed, followUp: isFollowUp(target, noClear) })]);
+          { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context })]);
     } catch (err) {
       // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
       // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
@@ -4429,6 +4566,8 @@ export function deliver(orders, agents, roster,
     const entry = live.find((a) => a.label === target.label);
     if (entry) entry.status = "working";
     else live.push({ label: target.label, status: "working" });
+    // THE TIME THIS ORDER LANDED IS WHAT THE NEXT ONE'S KEEP-OR-CLEAR READS (#3440), so it is written only after the prompt did.
+    if (!target.profile) clock?.recordOrder(target.label);
     // A POOL ORDER'S RECIPIENT IS RECORDED (#2226): its causeKey names `engineers`, so the ledger alone could
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
@@ -6200,6 +6339,24 @@ function claimerFor(spares, ledgerPath, hostLayout) {
 }
 
 /**
+ * #3448: THE ONE `org-health` ORDER FOR AN ORDER THAT HAS WAITED ON A BUSY SESSION TOO LONG, built from what this tick holds, or none. Read BEFORE the
+ * delivery, from the last tick's deferral record and this tick's queues, so it goes to `ceo` through the same door as every other health signal and is held
+ * for the same two hours. EVERY READ IS A STATED UNKNOWN WHEN REFUSED, NEVER A CLEAR: an unreadable record or roster says so on stderr and raises nothing.
+ * @param {{ ledgerPath: string, emitted: Set<string>, backlog: ReturnType<typeof handoffBacklog>, now?: number, log?: (line: string) => void,
+ *   standingSeats?: () => string[] }} tick
+ */
+export function orderStallOrdersNow({ ledgerPath, emitted, backlog, now = Date.now(), log = (line) => process.stderr.write(line), standingSeats = () => persistentRoles() }) {
+  try {
+    const deferredSince = readDeferralHistory(`${dirname(ledgerPath)}/wake-deferred`);
+    const stalled = stalledOrdersOf({ deferredSince, emitted, backlog, standing: new Set(standingSeats()), now });
+    return orgHealthOrders([orderStallReading({ now, stalled })]);
+  } catch (err) {
+    log(`org-health: ${SIGNALS.ORDER_STALLED} UNKNOWN -- ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 160)}; it is not read as clear.\n`);
+    return [];
+  }
+}
+
+/**
  * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
@@ -6279,12 +6436,16 @@ function main() {
   const { orders, failed: releasesNotDone } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
   const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
-  for (const line of backlogReport(handoffBacklog(waiting), agents)) process.stderr.write(line);
+  const backlog = handoffBacklog(waiting);
+  for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
+  // #3448: AN ORDER THAT HAS WAITED ON A BUSY SESSION PAST THE BOUND IS TOLD TO `ceo`, and it is told before this tick delivers: it rides `orders` like any gate order.
+  const withStalls = [...orders, ...orderStallOrdersNow({ ledgerPath, emitted: new Set(orders.map((o) => o.causeKey)), backlog })];
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
   const unavailable = memoised(unavailableReason);
-  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable });
+  const clock = orderClockIn(join(dirname(ledgerPath), "last-order"));
+  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable, clock });
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
   for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
@@ -6292,7 +6453,7 @@ function main() {
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
-  const todo = undelivered(orders, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
+  const todo = undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
   const record = (key, recipient, noClear) => writeFileSync(ledgerPath,
@@ -6300,13 +6461,13 @@ function main() {
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.
-  for (const key of endedRuns(orders.map((o) => o.causeKey), emittedPath)) {
+  for (const key of endedRuns(withStalls.map((o) => o.causeKey), emittedPath)) {
     writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
   }
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable,
+  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable, clock,
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     memory: spawnMemoryGate(), claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,

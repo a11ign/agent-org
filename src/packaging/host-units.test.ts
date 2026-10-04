@@ -40,6 +40,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
+import { HostConfigRefusal, homeHostConfig, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
 /**
  * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units the tool ships" hand it as `declaredKeys`
@@ -2572,4 +2573,87 @@ test("#2971: no other timer is excused -- one that names no record reads NOT ENA
   }
   assert.match(shippedText(WINDOW_TIMER), /^Requires=\S*shadow-window\.service$/m, "the pair is what the reader walks");
   assert.match(shippedText("a11ign-shadow-window.service"), /--record=\S+diff-record\.jsonl/, "and the service is where the record is named");
+});
+
+// --- #3443: THE HOST RUNS ONE AGENT-ORG VERSION -- `toolVersion` pins it, and every unit that runs agent-org code runs the one tool checkout ---------------
+// The tool checkout follows release TAGS (`update-tool.test.mjs` is that half). This half is the host's declaration of which one, and the units: the chairman
+// listener and watcher ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version its lockfile pins, so the host ran two versions at once.
+
+const TOOL_3443 = "/srv/tools/agent-org";
+const fixtureHostJson = () => JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/host.json"), "utf8")) as Record<string, unknown>;
+const hostWith = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...fixtureHostJson(), ...extra }), "toolVersion test host.json");
+const refusedField = (extra: Record<string, unknown>): string | undefined => {
+  try {
+    hostWith(extra);
+  } catch (err) {
+    assert.ok(err instanceof HostConfigRefusal, `a refusal, not a crash: ${String(err)}`);
+    return err.field;
+  }
+  return undefined;
+};
+
+test("#3443 (5): `toolVersion` is `latest` or one release tag, every other value is refused BY NAME, and it rides with `tool`", () => {
+  assert.equal(hostWith({ tool: TOOL_3443 }).toolVersion, "latest", "absent means latest");
+  assert.equal(hostWith({ tool: TOOL_3443, toolVersion: "latest" }).toolVersion, "latest");
+  assert.equal(hostWith({ tool: TOOL_3443, toolVersion: "v0.7.8" }).toolVersion, "v0.7.8", "a pin is read as written");
+  assert.equal(hostWith({ tool: TOOL_3443, toolVersion: "v0.7.10" }).toolVersion, "v0.7.10");
+  for (const bad of ["main", "0.7.8", "", "v0.7", "v0.7.8-rc1", "v01.2.3", "latest ", null, 7]) {
+    assert.equal(refusedField({ tool: TOOL_3443, toolVersion: bad }), "toolVersion", `${JSON.stringify(bad)} must be refused naming the field`);
+  }
+  assert.equal(refusedField({ toolVersion: "v0.7.8" }), "toolVersion", "a pin on a host with no `tool` pins nothing, so it is refused rather than ignored");
+  assert.equal(Object.hasOwn(hostWith({}), "toolVersion"), false, "and a host with no `tool` carries no `toolVersion` key, as it carries no `tool`");
+});
+
+/** The fixture host moved into tool form: the same machine, with the tool installed beside the project. */
+const toolHost3443 = () => hostWith({ tool: TOOL_3443 });
+const plainHost3443 = () => hostWith({});
+
+test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` with AGENT_ORG_HOST in tool form, and today's bytes without a tool", () => {
+  const units = readUnitsDeclaration();
+  const checkout = PROJECT_ROOT;
+  for (const [template, script, pnpmLine] of [
+    ["chairman-listen.service.in", "src/messaging/listen.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:listen"],
+    ["chairman-watch.service.in", "src/messaging/watch.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:watch"],
+  ] as const) {
+    const unit = renderedName(template, units.prefix);
+    const plain = shippedUnitText(unit, { host: plainHost3443() }) ?? "";
+    const todays = renderTemplate(readFileSync(join(SHIPPED_DIR, template), "utf8"), templateValues(plainHost3443(), units), unit);
+    assert.equal(plain, todays, `${unit}: with no tool the unit is today's bytes, unchanged`);
+    assert.ok(hasLine(plain, pnpmLine), `POSITIVE CONTROL: today's form runs ${pnpmLine}`);
+
+    const installed = shippedUnitText(unit, { host: toolHost3443() }) ?? "";
+    assert.ok(hasLine(installed, `ExecStart=/usr/bin/node ${script}`), `${unit} runs the tool's script: ${execCommands(installed).join(" | ")}`);
+    assert.ok(hasLine(installed, `WorkingDirectory=${TOOL_3443}`), `${unit} runs from the tool checkout`);
+    assert.ok(hasLine(installed, `Environment=AGENT_ORG_HOST=${checkout}/.agent-org/host.json`), `${unit} says where the host's declaration is`);
+    assert.doesNotMatch(installed, /^ExecStart=.*pnpm/m, `${unit} no longer runs the project's pinned copy through pnpm`);
+    assert.ok(existsSync(join(TOOL_ROOT, script)), `and the script it names exists in the tool: ${script}`);
+  }
+});
+
+/** The ONE command a tool-form unit runs that is not the tool's: the project's own declared `beforeTick`, run in the project's checkout by `env -C`. */
+const PROJECT_BEFORE_TICK = (checkout: string, command: string) => `/usr/bin/env -C ${checkout} ${command}`;
+
+test("#3443: THE PROPERTY -- every shipped service in tool form runs agent-org code from the one tool checkout, and nothing else is exempt", () => {
+  const units = readUnitsDeclaration();
+  const { beforeTick } = JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/project.json"), "utf8")) as { beforeTick: string };
+  const templates = readdirSync(SHIPPED_DIR).filter((name: string) => name.endsWith(".service.in"));
+  assert.ok(templates.includes("chairman-listen.service.in") && templates.includes("work-tick.service.in"), `POSITIVE CONTROL: the walk sees the services (${templates.join(", ")})`);
+  const exempt: string[] = [];
+  for (const template of templates) {
+    const unit = renderedName(template, units.prefix);
+    const installed = shippedUnitText(unit, { host: toolHost3443() }) ?? "";
+    assert.ok(hasLine(installed, `WorkingDirectory=${TOOL_3443}`), `${unit} runs from the tool checkout`);
+    assert.ok(hasLine(installed, `Environment=AGENT_ORG_HOST=${PROJECT_ROOT}/.agent-org/host.json`), `${unit} resolves its project from the host's declaration`);
+    for (const command of execCommands(installed)) {
+      if (command === PROJECT_BEFORE_TICK(PROJECT_ROOT, beforeTick)) { exempt.push(`${unit}: ${command}`); continue; }
+      assert.doesNotMatch(command, /\bpnpm\b|\bnpm\b|packages\/agent-org/, `${unit} runs ${command}, which is not the tool checkout's code`);
+      const [program, ...args] = command.split(/\s+/);
+      const script = args.find((arg) => !arg.startsWith("-"));
+      assert.ok(program === "/usr/bin/node" || program === "/usr/bin/bash", `${unit}: ${command} is run by an interpreter this walk knows`);
+      assert.ok(script !== undefined && !script.startsWith("/") && existsSync(join(TOOL_ROOT, script)), `${unit}: ${command} names a script relative to the tool that exists there`);
+    }
+  }
+  // THE EXEMPTION IS ONE LINE, NAMED: the project's `beforeTick` moves the PROJECT's checkout, and is the project's declaration. It is the remaining place a project's
+  // pinned copy of the tool can run (`pnpm run primary:update` is `agent-org primary:update` from the project's `node_modules`), filed as its own row.
+  assert.deepEqual(exempt, [`a11ign-work-tick.service: ${PROJECT_BEFORE_TICK(PROJECT_ROOT, beforeTick)}`], "exactly the work-tick's beforeTick is exempt, and it is present");
 });

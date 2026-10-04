@@ -19,10 +19,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA } from "./project-config.mjs";
+import { LATEST, isToolVersion } from "./lib/release-tag.mjs";
 
 export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 /** Where the host's declaration is, relative to a checkout, when `$AGENT_ORG_HOST` does not say. */
 export const HOST_DECLARATION_PATH = ".agent-org/host.json";
+/**
+ * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
+ * that runs it. Everything else `host-units.mjs` asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
+ * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
+ */
+export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+
 /** A template is this suffix on the shipped name; the rendered name is `<prefix><name>` without it. */
 export const TEMPLATE_SUFFIX = ".in";
 
@@ -31,7 +39,7 @@ export const TEMPLATE_SUFFIX = ".in";
  * @typedef {{ workers: string, leads: string, leadsHeader: string[], leadsWorkspaces: LeadsWorkspace[] }} GhDirectories
  * @typedef {{ id: string, checkout: string }} HostProject
  * @typedef {{ schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories,
- *   tool?: string, stateDir?: string, clones?: Readonly<Record<string, string>> }} HostConfig
+ *   tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>> }} HostConfig
  * `tool`, `stateDir` and `clones` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed
  * form, and a11ign's `host.json` is exactly that host until #2623 cuts over.
  * @typedef {{ prefix: string, boardReportWorkflow: string, own: string[] }} UnitsDeclaration
@@ -172,6 +180,7 @@ export function parseHostConfig(text, source = HOST_DECLARATION_PATH) {
   }
   const tool = optionalPath(host, "tool", "", source);
   const stateDir = optionalPath(host, "stateDir", "", source);
+  const toolVersion = readToolVersion(host, tool, source);
   const clones = readClones(host, source);
   if (tool !== undefined) checkToolForm(tool, projects, source);
   return Object.freeze({
@@ -181,10 +190,25 @@ export function parseHostConfig(text, source = HOST_DECLARATION_PATH) {
     primary,
     projects,
     gh: readGh(host, source),
-    ...(tool === undefined ? {} : { tool }),
+    ...(tool === undefined ? {} : { tool, toolVersion }),
     ...(stateDir === undefined ? {} : { stateDir }),
     ...(clones === undefined ? {} : { clones }),
   });
+}
+
+/**
+ * WHICH RELEASE THE TOOL'S CHECKOUT FOLLOWS (#3443): `"latest"` (the newest release tag, and the default) or one `vX.Y.Z`, which pins the host there -- the whole
+ * of a rollback. Anything else is REFUSED by name, a branch (`main`) and a bare `0.7.8` and `""` included, because `update-tool` would otherwise have to decide what
+ * they meant. Named without a `tool` it is refused too: there is no checkout for it to pin, so it would be a pin that quietly pinned nothing.
+ * @param {Record<string, unknown>} host @param {string | undefined} tool @param {string} source @returns {string}
+ */
+function readToolVersion(host, tool, source) {
+  if (!Object.hasOwn(host, "toolVersion")) return LATEST;
+  if (tool === undefined) throw new HostConfigRefusal("toolVersion", "it pins the tool's checkout, and this host names no `tool`", source);
+  if (!isToolVersion(host.toolVersion)) {
+    throw new HostConfigRefusal("toolVersion", `it must be "${LATEST}" or a release tag like "v0.7.8", not ${JSON.stringify(host.toolVersion)}`, source);
+  }
+  return /** @type {string} */ (host.toolVersion);
 }
 
 /** A path a unit line can carry as one argument: nothing systemd splits on, expands (`%`, `$`) or unquotes. */

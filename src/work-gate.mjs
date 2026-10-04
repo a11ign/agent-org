@@ -72,7 +72,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.mjs` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
-import { poolDiagnosis, refusalPoolLine } from "./api-pool.mjs";
+import { poolDiagnosis, refusalPoolLine, poolFromRateLimitField } from "./api-pool.mjs";
 import { declaredGhAccount } from "./gh-identity.mjs";
 import { stateEntryPath } from "./host-config.mjs"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
@@ -122,7 +122,7 @@ import { worktreeOwner } from "./worktree-owner.mjs";
 // `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { requiredWhenRed, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
+import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
   stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
@@ -409,6 +409,7 @@ export const GH_READS = Object.freeze({
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.
+  // #3448: AND ON A GREEN DRAFT, which the ready-flip over a red verify stamp needs the required list for (`requiredWhenNeeded`).
   conditionalOnRed: "api branches/main (requiredCheckNames)",
   // #2117: ONE MORE CORE READ ON THE SAME RED TICK -- `main`'s tip commit, so the `pr-checks-failing` prompt can
   // say whether `main` moved after the failing run started. `branches/main` already carries that commit, but
@@ -1207,8 +1208,8 @@ export function sessionOf(pr) {
 }
 
 /**
- * PAID ONLY BY A RED TICK, and by the same condition as `requiredWhenRed`, so the two reads ride together
- * and a healthy queue pays neither (#2117). Extracted from `main` for `requiredWhenRed`'s reason, and
+ * PAID ONLY BY A RED TICK, the condition `requiredWhenNeeded` had before a green draft also asked it (#3448), so a healthy
+ * queue pays neither this nor the base-tip read (#2117). Extracted from `main` for `requiredWhenNeeded`'s reason, and
  * exported with a `run` seam so a test can assert a healthy tick makes NO call.
  *
  * @param {any[]} prs @param {(args: string[]) => string} [run]
@@ -1219,7 +1220,7 @@ export function baseTipWhenRed(prs, run = defaultRun) {
 }
 
 /**
- * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenRed`/`epicsWhenShelfEmpty` shape: the
+ * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenNeeded`/`epicsWhenShelfEmpty` shape: the
  * condition is derived from rows already in hand, so an org holding nothing makes no call.
  *
  * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
@@ -1513,6 +1514,9 @@ export function fleetBatchOrders(rows, clock = {}) {
  */
 export const ROW_OFF_BOARD_QUERY = `
   query($owner: String!, $name: String!, $after: String) {
+    # #3448: THE ACCOUNT AND ITS GRAPHQL BUDGET, IN AN ANSWER THIS TICK ALREADY PAYS FOR. \`rateLimit\` is never charged, so the pool-low signal costs no point.
+    viewer { login }
+    rateLimit { limit remaining resetAt }
     repository(owner: $owner, name: $name) {
       issues(states: OPEN, first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
@@ -1559,10 +1563,14 @@ function boardFactsOf(node) {
  * with empty stdout, and an empty answer would read as a clean board. `errors` beside `data` is refused too (#555), and so is
  * a list still paging at `ROW_OFF_BOARD_MAX_PAGES`.
  *
+ * #3448: THE GRAPHQL POOL THE ANSWER NAMES IS PUSHED ONTO `pools` (the first page's: one budget, read once), so the tick learns its own account's budget from the
+ * read it was making. A refused read pushes nothing, and the pool-low signal then says it was not read.
+ *
  * @param {(args: string[]) => string} [run]
+ * @param {import("./org-health.mjs").PoolReading[]} [pools]
  * @returns {BoardFacts[] | null}
  */
-export function readRowsOffBoard(run = defaultRun) {
+export function readRowsOffBoard(run = defaultRun, pools = []) {
   const [owner, name] = repoNow().split("/");
   /** @type {BoardFacts[]} */
   const facts = [];
@@ -1574,6 +1582,8 @@ export function readRowsOffBoard(run = defaultRun) {
       const parsed = JSON.parse(run(args));
       const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
       if (!Array.isArray(issues?.nodes)) return null;
+      const pool = page === 0 ? poolFromRateLimitField(parsed.data) : null;
+      if (pool !== null) pools.push(pool);
       facts.push(...issues.nodes.map(boardFactsOf));
       if (issues.pageInfo?.hasNextPage !== true) return facts;
       after = issues.pageInfo.endCursor;
@@ -3266,7 +3276,7 @@ const BRANCH_JQ = "{protected, contexts: .protection.required_status_checks.cont
  * and nothing said so. A read that fails open must announce it, or "fails open" is indistinguishable from
  * "never worked"; silence is what this repository's diagnostics model exists to refuse.
  *
- * ONCE PER TICK, because `requiredWhenRed` is the only caller and calls this at most once.
+ * ONCE PER TICK, because `requiredWhenNeeded` is the only caller and calls this at most once.
  *
  * @param {(args: string[]) => string} [run]
  * @param {(line: string) => void} [log]
@@ -5893,10 +5903,10 @@ export function dispatchedLabJobsOrSay(read = readDispatchedLabJobs) {
 /**
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
- * @param {(line: string) => void} [log]
+ * @param {(line: string) => void} [log] @param {import("./org-health.mjs").PoolReading[]} [pools] where the read leaves the GraphQL pool it saw (#3448)
  */
-export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line)) {
-  const facts = readRowsOffBoard();
+export function rowsOffBoardOrSay(log = (line) => process.stderr.write(line), pools = []) {
+  const facts = readRowsOffBoard(defaultRun, pools);
   if (facts === null) {
     log("CANNOT ASK which open rows are off Project 1: the read was refused. row-off-board was NOT evaluated "
       + "this tick, and that silence is not a clean board.\n");
@@ -6067,7 +6077,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
  * @param {any[]} openPrs @param {Scope} scope
  */
 function codeReadings(openPrs, scope) {
-  const required = requiredWhenRed(openPrs);
+  const required = requiredWhenNeeded(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
   return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
@@ -6288,11 +6298,12 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
-  const offBoard = rowsOffBoardOrSay(), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
+  const pools = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
+  const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
-  // `requiredWhenRed` makes a `gh` call when anything is red -- calling it inline in both places would
+  // `requiredWhenNeeded` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
-  const required = requiredWhenRed(openPrs);
+  const required = requiredWhenNeeded(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
   const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
@@ -6324,7 +6335,7 @@ function main() {
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, decideArgs, decided, pools }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.

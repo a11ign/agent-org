@@ -19,7 +19,7 @@ import { dirname, join, relative } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, RECIPIENT, SOURCE_LINE, createConverse, notReached, provenanceText } from "./converse.mjs";
+import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
 import { createFakeProvider } from "./fake-provider.mjs";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, readLedgerLines } from "./ledger.mjs";
@@ -250,7 +250,7 @@ function cases(queue, label) {
 
   test("a button press is not conversation: it is the answers path's, and nothing here queues it", async () => {
     const run = ready();
-    const press = { update_id: 10, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: "approve:2885", message: { message_id: 5, chat: { id: CHAIRMAN.chatId, type: "private" } } } };
+    const press = { update_id: 10, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: "ans:A", message: { message_id: 5, chat: { id: CHAIRMAN.chatId, type: "private" } } } };
     assert.equal((await run.converse.forward(run.accept(press))).outcome, "not-conversation");
     assert.equal(run.queued().length, 0);
     assert.equal(run.provider.sent.length, 0);
@@ -270,6 +270,52 @@ function cases(queue, label) {
     await assert.rejects(() => run.converse.forward(run.accept(chairmanUpdate(12))), /acknowledgement could not be sent/);
     assert.equal(run.queued().length, 1, "the message is queued whatever the acknowledgement did");
     assert.equal(run.ledgerLines().find((line) => line.origin === "converse")?.error, "Error: telegram is down");
+  });
+
+  test("a button's order for the liaison: ONE entry, for the liaison and nobody else, with its provenance, and nothing sent to the chairman here", async () => {
+    const run = ready({ roster: ROSTER });
+    const result = await run.converse.orderLiaison({ text: "the chairman asked for more on a11ign/a11ign#2885:\n\n> row 2885 needs you", messageRef: "501" });
+    assert.equal(result.queued, true);
+    assert.equal(run.queued().length, 1);
+    const [entry] = run.queued();
+    assert.equal(entry.session, RECIPIENT);
+    assert.equal(result.handoff, entry.id);
+    for (const line of [SOURCE_LINE, "Telegram message: 501 (a button press)", "Received: 2026-10-02T10:00:", "the chairman asked for more on a11ign/a11ign#2885", CHAIRMAN_SENDER]) {
+      assert.ok(entry.prompt.includes(line), `the entry carries ${JSON.stringify(line)}`);
+    }
+    assert.deepEqual(run.queued().map((queued) => queued.session).filter((session) => session !== RECIPIENT), [], "nobody else");
+    assert.equal(run.provider.sent.length, 0, "telling the chairman is the caller's");
+    assert.ok(buttonOrderText({ text: "t", messageRef: "7" }, START).endsWith("\nt"), "the words are last");
+  });
+
+  test("a button's order is refused in the queue's own words when the liaison is not there or its inbox is full, and the control above queues", async () => {
+    const absent = ready({ roster: ROSTER.filter((agent) => agent.label !== RECIPIENT) });
+    const refused = await absent.converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.equal(refused.queued, false);
+    assert.equal(refused.say, absent.said().trim());
+    assert.match(refused.say, /NOT PROMPTED, AND NOT QUEUED/);
+    assert.equal(absent.queued().length, 0);
+
+    const full = ready({ roster: ROSTER });
+    for (let index = 0; index < DEEP; index += 1) appendFileSync(full.queuePath, `${JSON.stringify({ id: `handoff/liaison/${index}`, session: RECIPIENT, prompt: `p${index}`, queuedAt: START - 60_000, decision: false })}\n`);
+    assert.equal((await full.converse.orderLiaison({ text: "x", messageRef: "501" })).queued, false);
+    assert.equal(full.queued().length, DEEP, "the queue is no deeper");
+  });
+
+  test("the queue is told WHY: a button's order says a button, and a message says a message (it is what the queue repeats when it refuses)", async () => {
+    const whys = [];
+    const spy = { ...queue, queueOrLose: (order) => { whys.push(order.why); return queue.queueOrLose(order); } };
+    const run = harness({ queue: spy });
+    await run.converse.orderLiaison({ text: "x", messageRef: "501" });
+    await run.converse.forward(run.accept(chairmanUpdate(7)));
+    assert.deepEqual(whys, ["the chairman pressed a button for the liaison", "the chairman wrote to the liaison"]);
+  });
+
+  test("a queue that says QUEUED and holds nothing is not an order the liaison has", async () => {
+    const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED }, roster: ROSTER });
+    const result = await run.converse.orderLiaison({ text: "x", messageRef: "501" });
+    assert.equal(result.queued, false);
+    assert.match(result.say, /NOT delivered/);
   });
 
   test(`${label}: provenanceText no longer tells the reader to avoid prompt:session (that is the liaison's brief, B3, and ceo is reached through it)`, () => {
@@ -367,6 +413,8 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
     assert.match(code, /export const RECIPIENT = "liaison";/);
     assert.equal((code.match(/\.queueOrLose\(/g) ?? []).length, 1, "one call to the queue");
     assert.deepEqual(code.match(/\blabel: [^,]+,/g), ["label: RECIPIENT,"], "the call's label is the constant; no other `label:` is passed anywhere");
+    assert.equal([...code.matchAll(/(?<!function )\bsubmit\(await port\(\), /g)].length, 2, "submit is reached twice: once for a message, once for a button, and neither names a recipient");
+    assert.equal([...code.matchAll(/(?<!function )\benqueue\(q, /g)].length, 1, "and enqueue is reached only through submit");
     assert.ok(!/"ceo"/.test(code), "ceo is named nowhere in the code: it is reached by the liaison, never from here");
   });
 });
