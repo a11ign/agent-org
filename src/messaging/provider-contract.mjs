@@ -129,14 +129,14 @@ async function checkPoll(provider) {
   aborted.abort();
   let timer;
   const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), POLL_DEADLINE_MS); });
-  const settled = provider.poll(undefined, aborted.signal).then((value) => ({ value }), () => ({ rejected: true }));
+  const settled = provider.poll(undefined, aborted.signal).then((/** @type {{updates?: unknown}} */ value) => ({ value }), () => ({ rejected: true }));
   const outcome = await Promise.race([settled, deadline]);
   clearTimeout(timer);
   expect(!outcome.timedOut, `poll with an already-aborted signal did not settle within ${POLL_DEADLINE_MS} ms`);
   if ("value" in outcome) expect(Array.isArray(outcome.value?.updates), "poll must resolve { updates: [...], cursor }");
 }
 
-/** @param {string} check @param {() => Promise<void> | void} run @param {{check: string, message: string}[]} failures @returns {Promise<boolean>} */
+/** @param {string} check @param {() => unknown} run @param {{check: string, message: string}[]} failures @returns {Promise<boolean>} */
 async function attempt(check, run, failures) {
   try {
     await run();

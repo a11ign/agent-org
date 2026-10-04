@@ -145,7 +145,7 @@ export const IDLE_CLAIM_REASON = Object.freeze({ NEVER_STARTED: "never-started",
  * The wait kinds a claimed row DECLARES as fields, which `idleClaimantReading` counts: `claim-stall-tick.mjs`'s `declaredWaitOf` plus its open `blockedBy`
  * edges, restated because that function is not exported and the file is not this row's Region. `answer:<the holder>` is not the holder's wait.
  * THE TICK'S `now` DECIDES WHETHER A `Not-before:` HOLDS, never the wall clock (`waitingOn` defaults to it), or a clock handed a time reads another day's wait.
- * @param {any} row @param {string} holder @param {number} now @returns {string[]}
+ * @param {any} row @param {string | null} holder @param {number} now @returns {string[]}
  */
 function waitKindsOf(row, holder, now) {
   const today = todayIso(new Date(now));
@@ -439,7 +439,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
- *           release?: typeof releaseHoldViaModule, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement }} [io] `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
+ *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement }} [io] `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */

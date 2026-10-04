@@ -1340,13 +1340,19 @@ function relink(fs, target, link) {
 /** How many links {@link pointsIntoPackages} follows: a review tree's link to the primary's link to its `packages/` is two. */
 const LINK_HOPS = 4;
 
-/** Where the symlink `link` points, absolute (`readlink` is relative to the link's own directory, and the primary's workspace links are); `null` when it is not one. */
+/**
+ * Where the symlink `link` points, absolute (`readlink` is relative to the link's own directory, and the primary's workspace links are); `null` when it is not one.
+ * @param {LinkFs} fs @param {string} link @returns {string | null}
+ */
 function linkTarget(fs, link) {
   const found = fs.lstatSync(link, { throwIfNoEntry: false });
   return found?.isSymbolicLink() ? resolve(dirname(link), fs.readlinkSync(link)) : null;
 }
 
-/** Does `link` lead, by symlinks alone, into one of `packagesDirs`: a workspace package rather than a third-party dependency? */
+/**
+ * Does `link` lead, by symlinks alone, into one of `packagesDirs`: a workspace package rather than a third-party dependency?
+ * @param {LinkFs} fs @param {string} link @param {string[]} packagesDirs @returns {boolean}
+ */
 function pointsIntoPackages(fs, link, packagesDirs) {
   let at = link;
   for (let hop = 0; hop < LINK_HOPS; hop++) {
@@ -1377,7 +1383,10 @@ function declaredLinks(fs, path) {
   return links;
 }
 
-/** The `name` of the manifest at `file`, or `null` for one that is absent (a file where a directory was expected included), unparseable or nameless. */
+/**
+ * The `name` of the manifest at `file`, or `null` for one that is absent (a file where a directory was expected included), unparseable or nameless.
+ * @param {LinkFs} fs @param {string} file @returns {string | null}
+ */
 function manifestName(fs, file) {
   try {
     const { name } = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -4026,7 +4035,7 @@ export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
  * to the row, and nothing is recorded, so the same key escalates the tick after the session is back if it is still at
  * the cap. `engineers` is a pool, not a session, and is not asked.
  *
- * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null}} [memory]
+ * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null, repoOf?: (repoKey: string) => string | null}} [memory]
  */
 export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stderr.write(l),
   { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf } = {}) {
@@ -4437,7 +4446,10 @@ export function prepareContext(run, label, { sleep, contextRoot, sessions = SESS
   return { action, refusal: null };
 }
 
-/** An instance's or a persistent seat's action: compacted over {@link COMPACT_THRESHOLD_TOKENS}, otherwise kept -- never cleared. */
+/**
+ * An instance's or a persistent seat's action: compacted over {@link COMPACT_THRESHOLD_TOKENS}, otherwise kept -- never cleared.
+ * @param {string} label @param {string} [contextRoot]
+ */
 function overThreshold(label, contextRoot) {
   const tokens = instanceCacheRead(label, contextRoot);
   return tokens !== null && tokens > COMPACT_THRESHOLD_TOKENS ? CONTEXT_ACTION.COMPACTED : CONTEXT_ACTION.KEPT;

@@ -447,7 +447,7 @@ function main() {
 
     const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
     // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
-    const refusal = arm ? refusalBeforeArming({ number, repo, author, run: gh }) : { kind: "clear" };
+    const refusal = arm ? refusalBeforeArming({ number, repo, author, run: gh }) : /** @type {{ kind: "clear" }} */ ({ kind: "clear" });
     if (refusal.kind !== "clear") {
       console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
       if (refusal.kind === "cannot-ask") failed.push(number);

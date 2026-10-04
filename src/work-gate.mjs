@@ -6390,7 +6390,7 @@ function decideAndTap(args) {
  * @param {Parameters<typeof decide>[0]} args
  */
 function reportClearingDrops({ openRows, prs, closings, claimFacts }) {
-  process.stderr.write(blockerClearedReading(openRows, todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
+  process.stderr.write(blockerClearedReading(/** @type {any[]} */ (openRows), todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
 }
 
 /**
@@ -6470,6 +6470,7 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
+  /** @type {import("./org-health.mjs").PoolReading[]} */
   const pools = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and

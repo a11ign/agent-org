@@ -102,7 +102,9 @@ function transcriptsSince(root, since, depth) {
 
 /** The two kinds of session file, and how each is read: a Codex session has no wake, no ledger line and no message held back. */
 const READERS = {
+  /** @param {Parameters<typeof eventsOfTranscript>[0]} input */
   claude: ({ text, file, ledger, rowRepo, carry, now }) => eventsOfTranscript({ text, file, ledger, rowRepo, carry, now }),
+  /** @param {Parameters<typeof eventsOfCodexSession>[0]} input */
   codex: ({ text, file, rowRepo, carry }) => ({ ...eventsOfCodexSession({ text, file, rowRepo, carry }), held: 0, settleAt: null, namedLate: false }),
 };
 

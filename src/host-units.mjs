@@ -247,7 +247,7 @@ function beforeTickCommand(tool, command) {
   if (!Object.hasOwn(COMMANDS, name)) {
     throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
   }
-  return ["/usr/bin/node", `${tool}/src/${COMMANDS[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
+  return ["/usr/bin/node", `${tool}/src/${/** @type {Record<string, string>} */ (COMMANDS)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
 }
 
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
@@ -351,7 +351,7 @@ const OTHER_TOOL_FORMS = Object.freeze({
  * runs from the tool's checkout and is told where the host's declaration is, because the tool resolves its project from that and
  * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node src/work-gate.mjs` from the checkout, with no `AGENT_ORG_HOST`, died on
  * `<home>/.agent-org/project.json`). A template this does not know is returned as it rendered: a timer names no path of its own.
- * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[] }} where
+ * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[], repo?: string | null }} where
  */
 export function toolForm(shipped, rendered, { tool, checkout, beforeTicks, repo = null }) {
   const body = shipped === WORK_TICK_TEMPLATE ? workTickToolForm(rendered, tool, beforeTicks)
@@ -644,7 +644,7 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
       const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
       // The project's scripts run the tool through its one bin (`agent-org worktrees:prune`, #2975), which is the table's program, not a path.
       const command = agentOrgCommand([tool, ...argv.slice(1)]);
-      if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, COMMANDS[command]));
+      if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, /** @type {Record<string, string>} */ (COMMANDS)[command]));
       else if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
         entries.push(resolve(repoRoot, script));
         if (cwd !== undefined) entries.push(resolve(cwd, script));
@@ -680,6 +680,7 @@ export function programCandidates(command, { repoRoot = REPO_ROOT,
  * option is not a path. `entriesFromCommand`'s behaviour is unchanged -- it dropped these anyway -- and
  * the header's claim is now true because of a decision instead of a coincidence.
  * @param {string | undefined} arg
+ * @returns {arg is string}
  */
 function isPath(arg) {
   return typeof arg === "string" && arg !== "" && !arg.startsWith("-");

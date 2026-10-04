@@ -112,7 +112,7 @@ function prWaitKinds(pr, agents) {
  * `blocked` never trip it. Then the fields -- ANY ONE clears it. Only then the clock: `idleSince` is the first tick of an unbroken run of
  * idle readings (the caller keeps it; `herdr` reports a status and never since when), and a holder idle for less than N is `watching`.
  *
- * @param {{ session: string, waitKinds?: string[], prs?: IdlePr[] }} facts `waitKinds` are the ROW's, already decided by the gate
+ * @param {{ session: string | null, waitKinds?: string[], prs?: IdlePr[] }} facts `waitKinds` are the ROW's, already decided by the gate
  * @param {{ now: number, agents?: Agent[] | null, idleSince?: number | null }} ctx
  * @returns {IdleReading}
  */

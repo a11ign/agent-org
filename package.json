@@ -15,6 +15,7 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0"
@@ -23,6 +24,7 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",

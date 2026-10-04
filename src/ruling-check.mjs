@@ -20,7 +20,7 @@ const ROW_LABEL = "no-open-row-label";
 const EXCEPT = /\s+except\s+((?:#\d+(?:\s+|$))+)$/;
 
 /**
- * @typedef {{ kind: "ref", text: string, wait: import("./wait-condition.mjs").Wait }
+ * @typedef {{ kind: "ref", text: string, wait: import("./wait-condition.mjs").ReadableWait }
  *   | { kind: "row-body", text: string, pattern: RegExp }
  *   | { kind: "pr-label", text: string, label: string }
  *   | { kind: "row-label", text: string, label: string, except: number[] }} Check
