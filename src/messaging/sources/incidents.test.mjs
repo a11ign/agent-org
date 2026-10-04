@@ -319,3 +319,89 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
     assert.match(seen.cannotAsk[0].reason, /readTrunkRuns/);
   });
 });
+
+describe("a sent incident says what it MEANS and what is being done (a11ign/a11ign#3424)", () => {
+  const unresolved = {
+    readTrunkRuns: () => [trunkRun("failure", NOW - HOUR)],
+    readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
+    readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
+    readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
+  };
+  const IMPACTS = {
+    "incident:trunk-red": "Impact: Nothing can merge.",
+    "incident:gate-crash": "Impact: No worker can be woken.",
+    "incident:fleet-down": "Impact: Captures are paused.",
+    "incident:ci-permission": "Impact: Pull requests waiting on the named workflows cannot get a passing check.",
+  };
+  const observeWith = (/** @type {Record<string, unknown>} */ more) => observeIncidents({ now: () => NOW, log: () => {}, readers: { ...unresolved, ...more } });
+  const lineOf = (/** @type {Record<string, unknown>} */ event, /** @type {string} */ name) => String(event.text).split("\n").find((line) => line.startsWith(`${name}:`));
+
+  test("(1) each of the four kinds carries its Impact line from the table", async () => {
+    const { events } = await observeWith({ readFixRow: () => null });
+    assert.equal(events.length, 4);
+    for (const event of events) assert.equal(lineOf(event, "Impact"), IMPACTS[/** @type {keyof typeof IMPACTS} */ (String(event.key))], String(event.key));
+  });
+
+  test("(2) with a fix row open, Doing names that row and its holder", async () => {
+    const asked = /** @type {string[]} */ ([]);
+    const { events } = await observeWith({ readFixRow: (/** @type {string} */ key) => { asked.push(key); return { number: 3500, holder: "worker-3500" }; } });
+    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: row #3500 is open for this, held by worker-3500.");
+    assert.deepEqual(asked.sort(), Object.keys(IMPACTS).sort(), "asked once per kind, by the event's own key");
+  });
+
+  test("(2) an open row nobody holds is said as exactly that", async () => {
+    const { events } = await observeWith({ readFixRow: () => ({ number: 3501 }) });
+    assert.equal(lineOf(events[0], "Doing"), "Doing: row #3501 is open for this and nobody holds it yet.");
+  });
+
+  test("(3) with no row open, Doing says `no row is open for this yet`", async () => {
+    const { events } = await observeWith({ readFixRow: () => null });
+    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: no row is open for this yet.");
+  });
+
+  test("(4) a fix-row reader that fails says `not known`, never `none`, and the event is still sent", async () => {
+    const lines = /** @type {string[]} */ ([]);
+    const { events, cannotAsk } = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: { ...unresolved, readFixRow: () => { throw new Error("gh: HTTP 502"); } } });
+    assert.equal(events.length, 4);
+    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: not known.");
+    assert.deepEqual(cannotAsk, [], "the fix-row read is not a reason to withhold the incident");
+    assert.match(lines[0], /^cannot-ask fix-row incident:[a-z-]+: .*HTTP 502/);
+  });
+
+  test("(4) a reader that is not wired, and one that hands back a non-row, are `not known` too", async () => {
+    for (const readers of [{}, { readFixRow: () => undefined }, { readFixRow: () => ({ number: "3500" }) }]) {
+      const { events } = await observeWith(readers);
+      assert.equal(lineOf(events[0], "Doing"), "Doing: not known.", JSON.stringify(readers));
+    }
+  });
+
+  test("(5) the cleared event's text is byte-for-byte what it was, and the reader is not even asked", async () => {
+    const green = { readTrunkRuns: () => [trunkRun("success", NOW)], readGateUnit: () => ({ failed: false, lastRunAt: NOW, lastRecordAt: NOW }),
+      readFleetState: () => ({ state: {} }), readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW), updated_at: iso(NOW), annotations: [] }] };
+    let asked = 0;
+    const { events } = await observeIncidents({ now: () => NOW, log: () => {}, readers: { ...green, readFixRow: () => { asked += 1; return null; } } });
+    assert.deepEqual(events.map((event) => event.text).sort(),
+      ["CI permission failures have stopped.", "Every worker is ready again.", "The gate is ticking again.", "main is green again."]);
+    assert.ok(events.every((event) => event.resolved === true), "positive control: all four are resolved events, so (5) is not vacuous");
+    assert.equal(asked, 0);
+  });
+
+  test("(6) the key, firstSeenAt and everything but the text are the bare event's, and the core still holds it down 30 minutes", async () => {
+    const justRed = () => [trunkRun("failure", NOW)];
+    const bare = trunkRedEvents(justRed(), NOW)[0];
+    const [meant] = (await observeWith({ readTrunkRuns: justRed, readFixRow: () => null })).events.filter((event) => event.key === "incident:trunk-red");
+    const { text: bareText, ...bareRest } = bare;
+    const { text: meantText, ...meantRest } = meant;
+    assert.deepEqual(meantRest, bareRest);
+    assert.ok(String(meantText).startsWith(String(bareText)), "the original sentence is first and unedited");
+    const run = messenger();
+    run.set(NOW + 29 * MINUTE);
+    await run.tick([meant]);
+    assert.equal(run.provider.sent.length, 0, "29 minutes: still held");
+    run.set(NOW + 31 * MINUTE);
+    await run.tick([meant]);
+    await run.tick([meant]);
+    assert.equal(run.provider.sent.length, 1, "31 minutes: ONE message, however many ticks");
+    assert.match(run.provider.sent[0].text, /Impact: Nothing can merge\.\nDoing: no row is open for this yet\./);
+  });
+});
