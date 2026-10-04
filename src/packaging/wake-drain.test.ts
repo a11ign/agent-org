@@ -25,6 +25,14 @@ const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "wake-drain-roster-"));
 after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
 const PROJECT = join(FIXTURE_DIR, "project");
 cpSync(fileURLToPath(new URL("./fixtures/wake-drain/project", import.meta.url)), PROJECT, { recursive: true });
+// The project is a REPOSITORY tracking `packages/`, because `trackedTopLevelDirs` asks git in the PROJECT's checkout (#3366): a Region path such as
+// `packages/agent-org/src/wake.mjs` below is read as a path only when its first directory is tracked THERE, and a directory that is no repository
+// answers nothing, so the claim's Region lookup failed open and every "refused" test below spawned.
+mkdirSync(join(PROJECT, "packages/agent-org/src"), { recursive: true });
+writeFileSync(join(PROJECT, "packages/agent-org/src/wake.mjs"), "");
+for (const args of [["init", "--quiet"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "fixture"]]) {
+  execFileSync("git", args, { cwd: PROJECT, env: sandboxGitEnv(), stdio: "pipe" });
+}
 const HOST_FILE = join(FIXTURE_DIR, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: FIXTURE_DIR, binDir: join(FIXTURE_DIR, "bin"), primary: "fixture",
   projects: [{ id: "fixture", checkout: PROJECT }],
