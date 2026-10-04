@@ -260,8 +260,8 @@ test("the real CHANGELOG.md carries an entry for the package.json version, and t
   assert.match(readFileSync(`${REPO}CHANGELOG.md`, "utf8"), new RegExp(`^## ${version.replace(/\./g, "\\.")}$`, "m"));
   assert.ok(README.includes("## Releases"));
   const releases = README.slice(README.indexOf("## Releases"));
-  for (const phrase of ["never moved or deleted", "release commit", "changeset", "#semver:", "not a deploy", "lag"]) assert.ok(releases.includes(phrase), `README's Releases section lacks "${phrase}"`);
-  for (const gone of ["publish-for-real", "dry run", "gh workflow run", "version pull request", "reopen"]) assert.ok(!releases.includes(gone), `README's Releases section still says "${gone}", which the workflow no longer has`);
+  for (const phrase of ["never moved or deleted", "release commit", "changeset", "#semver:", "toolVersion", "lag"]) assert.ok(releases.includes(phrase), `README's Releases section lacks "${phrase}"`);
+  for (const gone of ["publish-for-real", "dry run", "gh workflow run", "version pull request", "reopen", "tracks `main`", "not a deploy"]) assert.ok(!releases.includes(gone), `README's Releases section still says "${gone}", which the workflow no longer has`);
 });
 
 // ---- the shell is the platform's, and a failure is not hidden by a pipe (a11ign/a11ign#3174) ---------------------------------------------------------------

@@ -5,8 +5,10 @@ name: release
 # `v0.1.0` and `0.1.0` resolve; this file cuts `v<version>`). So this workflow creates the tag `v<version>` and a GitHub Release carrying the CHANGELOG entry, and has no
 # npm, no OIDC and no registry token. If a registry is ever wanted that is a later decision under a name the chairman owns, and it is a different workflow.
 #
-# THE TAG IS NOT A DEPLOY. The host that runs the org is not a consumer of the tag: its gate tracks `main` within two minutes (ADR 0040, decision 3). A release here
-# changes what a PROJECT's CI installs, never what the running org does.
+# THE TAG IS WHAT REACHES THE RUNNING ORG (a11ign/a11ign#3443, agent-org#151). The host that runs the org runs the newest `vX.Y.Z` tag: `update-tool` checks that tag out, and
+# `host.json`'s `toolVersion` pins one tag instead, which is the whole of a rollback. A merge that carries a changeset is tagged and so is live about nine minutes after it lands
+# (measured from the tag history on #3443); a merge with no changeset is never tagged and so is never live. A release here changes what a PROJECT's CI installs AND what the
+# running org does, so whoever decides to cut one is deciding both. This file changes nothing of how a tag is cut.
 #
 # THE MERGE THAT CARRIES A CHANGESET IS TAGGED, WITH NO VERSION PULL REQUEST (ceo, a11ign/a11ign#3175). The version pull request this file used to open was made with
 # GITHUB_TOKEN, and an event that token makes starts no workflow, so `gate` and `auto-arm` never ran on it and a person had to close and reopen it for every release. No token is
