@@ -100,6 +100,8 @@ import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.mjs"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.mjs";
+// #3390: the first line of the comment `answers.mjs` writes when the chairman answers, so a half-finished answer can be recognised by what it says.
+import { PROVENANCE as CHAIRMAN_ANSWER_PROVENANCE } from "./messaging/answers.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL, BLOCKED_LABEL,
@@ -399,6 +401,8 @@ export const GH_READS = Object.freeze({
     // #2936: ONE REST CALL on the core pool -- the 20 newest-updated closed pull requests, of which the latest `merged_at` is the last merge.
     "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
+  // #3390: TWO REST CALLS PER ROW LABELLED `needs:chairman` (its `labeled` events, and its comments), and NONE when nothing carries the label.
+  conditionalOnChairmanLabelledRow: "api repos/{owner}/{repo}/issues/{n}/events and /comments (withChairmanEventTimes -- chairman-answered)",
   // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
   // it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
   perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs (readTrunkRed -- trunk-red for a declared code repository)",
@@ -711,10 +715,113 @@ export function readChairmanBlocked(run = defaultRun) {
       "--json", "number,title,updatedAt"]);
     const parsed = JSON.parse(out);
     if (!Array.isArray(parsed)) return null;
-    return parsed.sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt)));
+    return withChairmanEventTimes(parsed.sort((a, b) => String(a.updatedAt).localeCompare(String(b.updatedAt))), run);
   } catch {
     return null;
   }
+}
+
+/**
+ * #3390: THE CHAIRMAN'S OWN GITHUB LOGIN. A comment from it after the label went on is an answer. The org's accounts are deliberately
+ * absent: `ceo` recording an answer is the half-finished state this check catches, and it is recognised by the provenance line instead.
+ * A renamed account reads as "never answered" until this moves, which is the quiet direction, so a rename is a row to file.
+ */
+export const CHAIRMAN_LOGINS = Object.freeze(["DanBeckDev"]);
+
+/** @param {string[]} times ISO times @returns {string | null} the newest, or `null` for none */
+function newestTime(times) {
+  const dated = times.filter((t) => Number.isFinite(Date.parse(t)));
+  return dated.length === 0 ? null : dated.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+}
+
+/** @param {string} out `gh api --jq` output, one JSON object per line @returns {any[]} */
+function jsonLines(out) {
+  return out.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
+}
+
+/**
+ * When `needs:chairman` was LAST applied to the row, or `null` when no `labeled` event could be read for it. The last one, because a
+ * label taken off and applied again is a new ask -- that is how a row is re-asked, as data rather than prose.
+ * @param {number} number @param {(args: string[]) => string} run
+ */
+function readChairmanLabelledAt(number, run) {
+  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
+    `.[] | select(.event == "labeled" and .label.name == "${CHAIRMAN_LABEL}") | .created_at`]);
+  return newestTime(out.split("\n").map((line) => line.trim()));
+}
+
+/**
+ * When the chairman last acted on the row: a comment by the chairman's own login, or the answer comment `answers.mjs` writes (a bot's
+ * account carrying `PROVENANCE` as its FIRST words -- a line quoted further down is somebody repeating it, not the chairman answering).
+ * `null` when there is none. The body is cut in the projection: the provenance line is the first line and nothing else is read.
+ * @param {number} number @param {(args: string[]) => string} run
+ */
+function readChairmanEventAt(number, run) {
+  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/comments`, "--paginate", "--jq",
+    ".[] | {author: (.user.login // \"\"), at: .created_at, body: ((.body // \"\") | .[0:200])}"]);
+  const events = jsonLines(out).filter((c) => CHAIRMAN_LOGINS.includes(c.author) || String(c.body).startsWith(CHAIRMAN_ANSWER_PROVENANCE));
+  return newestTime(events.map((c) => String(c.at)));
+}
+
+/**
+ * Each row with `labelledAt` and `chairmanEventAt` (ISO or `null`) attached -- the two times `chairmanAnsweredOrders` compares.
+ * ONE PAIR OF REST CALLS PER LABELLED ROW and none when nothing carries the label (`GH_READS.conditionalOnChairmanLabelledRow`).
+ *
+ * A ROW WHOSE READ WAS REFUSED, OR WHOSE LABEL TIME COULD NOT BE FOUND, CARRIES `chairmanReadRefused` AND NEITHER TIME: "could not
+ * determine" shares a value with neither "answered" nor "not answered" (`chairmanReadsRefused` reports them, the tick says so).
+ * @param {any[]} rows @param {(args: string[]) => string} run
+ */
+export function withChairmanEventTimes(rows, run) {
+  return rows.map((row) => {
+    try {
+      const labelledAt = readChairmanLabelledAt(Number(row.number), run);
+      if (labelledAt === null) return { ...row, chairmanReadRefused: true };
+      return { ...row, labelledAt, chairmanEventAt: readChairmanEventAt(Number(row.number), run) };
+    } catch {
+      return { ...row, chairmanReadRefused: true };
+    }
+  });
+}
+
+/** @param {any[]} rows rows from {@link readChairmanBlocked} @returns {number[]} the rows whose timeline could not be read */
+export function chairmanReadsRefused(rows) {
+  return rows.filter((row) => row.chairmanReadRefused === true).map((row) => Number(row.number));
+}
+
+/**
+ * #3390: ONE ORDER TO `ceo` PER `needs:chairman` ROW WHOSE NEWEST CHAIRMAN-SIDE EVENT IS NEWER THAN ITS NEWEST LABEL EVENT.
+ *
+ * #3228 was labelled 2026-10-03T14:05:56Z, the chairman's session commented 2026-10-04T10:17:05Z, and the label stood for hours:
+ * the daily reminder covers the whole set and cannot tell an answered row from an unanswered one. THE GATE WRITES NO LABELS, so it
+ * orders the session whose job it is: take the label off, or take it off and apply it again after stating the new act (a newer label
+ * event ends the order, so re-asking is data and not prose).
+ *
+ * KEYED ON THE ROW AND THE CHAIRMAN EVENT'S TIME: a new event is a new question, the same one is not asked as new. A row without both
+ * times (never read, or refused) is skipped here and reported by {@link chairmanReadsRefused}; `NaN > NaN` is false, so absence is not "answered".
+ *
+ * @param {any[]} rows @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ */
+export function chairmanAnsweredOrders(rows) {
+  const answered = rows.filter((row) => Date.parse(row.chairmanEventAt) > Date.parse(row.labelledAt));
+  return answered.slice(0, MAX_ROW_ORDERS_PER_TICK).map((row) => {
+    const ref = subjectRef(row.repoKey, row.number);
+    const stamp = String(row.chairmanEventAt).replace(/[-:]/g, "");
+    return {
+      session: "ceo",
+      cause: "chairman-answered",
+      subject: `row-${ref}`,
+      discriminator: stamp,
+      prompt: `${subjectMention(row)} STILL CARRIES \`${CHAIRMAN_LABEL}\` AND THE CHAIRMAN HAS ACTED ON IT SINCE: the label was last `
+        + `applied at ${row.labelledAt}, and the chairman-side event (their own comment, or the answer comment carrying the messaging `
+        + `provenance line) is at ${row.chairmanEventAt}.\n`
+        + "Read the row and do ONE of two things:\n"
+        + `- it was answered: \`gh issue edit ${row.number} --remove-label ${CHAIRMAN_LABEL}\`, and record what you will do about it;\n`
+        + "- it was NOT answered and something is still owed: remove the label and apply it again, after stating the NEW act the chairman "
+        + "must take. The label's newer event is what ends this order, so re-asking is a field and not a sentence.\n"
+        + "A stale label re-alerts the chairman and makes the count meaningless (#3228 held it for hours).",
+      causeKey: `ceo/chairman-answered/row-${ref}/${stamp}`,
+    };
+  });
 }
 
 /**
@@ -5241,7 +5348,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // deliberately NOT withheld by a drain: see `START_CAUSES`.
   orders.push(...hostDriftOrders(hostDrift), ...rowOffBoardOrders(offBoard)); // #2075: beside it; see `rowOffBoardOrders`
 
-  orders.push(...chairmanOrders(chairmanBlocked, nowMs));
+  orders.push(...chairmanOrders(chairmanBlocked, nowMs), ...chairmanAnsweredOrders(chairmanBlocked)); // #3390: beside it, and a row the reminder names may be named here too
 
 
   // DRAIN WITHHOLDS, IT DOES NOT STOP. Filtering here rather than at each producer keeps the partition
@@ -6161,6 +6268,8 @@ function main() {
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   const promotableRows = readPromotableRows();
   const chairmanBlocked = readChairmanBlocked();
+  const unreadChairmanRows = chairmanReadsRefused(chairmanBlocked ?? []); // #3390: said, not skipped -- an unread row is not an unanswered one
+  if (unreadChairmanRows.length > 0) process.stderr.write(`chairman-answered: could not read the timeline of ${unreadChairmanRows.map((n) => `#${n}`).join(", ")}; those rows are NOT checked this tick\n`);
   // ONE COALESCE PER REFUSED LANE, NAMED. `prs ?? []` was written three times and `readyRows ?? []` twice;
   // each repetition is a branch `complexity` counts, and the names say what an empty list MEANS here --
   // a lane that could not be read, already reported as PARTIAL below, never a lane that is empty.
