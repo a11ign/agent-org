@@ -14,7 +14,7 @@
 //
 // A LEAF AND INJECTED, as `stall.mjs` is, and the same rule about a failed read: `cannot-ask`, no event, never a false clear.
 
-import { TICK_INTERVAL_MS, instant, observe, requireReader, span } from "./stall.mjs";
+import { TICK_INTERVAL_MS, instant, observe, requireReader, span, withMeaning } from "./stall.mjs";
 
 const MINUTE_MS = 60_000;
 const SHA_LENGTH = 7;
@@ -178,16 +178,17 @@ export function ciPermissionEvents(runs, now) {
 
 /**
  * @param {{ now: () => number, config?: Partial<typeof DEFAULT_INCIDENT_CONFIG>, log?: (line: string) => void,
- *   readers: { readTrunkRuns?: Function, readGateUnit?: Function, readFleetState?: Function, readCiRuns?: Function } }} options
+ *   readers: { readTrunkRuns?: Function, readGateUnit?: Function, readFleetState?: Function, readCiRuns?: Function,
+ *   readFixRow?: import("./stall.mjs").FixRowReader } }} options
  * @returns {Promise<import("./stall.mjs").Observation>} the four incident kinds, each independently able to fail to ask
  */
 export async function observeIncidents({ now, config: overrides = {}, log = console.error, readers }) {
   const config = { ...DEFAULT_INCIDENT_CONFIG, ...overrides };
   const parts = await Promise.all([
-    observe("incident:trunk-red", async () => trunkRedEvents(await requireReader(readers, "readTrunkRuns")(), now()), log),
-    observe("incident:gate-crash", async () => gateCrashEvents(await requireReader(readers, "readGateUnit")(), now(), config), log),
-    observe("incident:fleet-down", async () => fleetDownEvents(await requireReader(readers, "readFleetState")(), now(), config), log),
-    observe("incident:ci-permission", async () => ciPermissionEvents(await requireReader(readers, "readCiRuns")(), now()), log),
+    observe("incident:trunk-red", async () => withMeaning(trunkRedEvents(await requireReader(readers, "readTrunkRuns")(), now()), readers, log), log),
+    observe("incident:gate-crash", async () => withMeaning(gateCrashEvents(await requireReader(readers, "readGateUnit")(), now(), config), readers, log), log),
+    observe("incident:fleet-down", async () => withMeaning(fleetDownEvents(await requireReader(readers, "readFleetState")(), now(), config), readers, log), log),
+    observe("incident:ci-permission", async () => withMeaning(ciPermissionEvents(await requireReader(readers, "readCiRuns")(), now()), readers, log), log),
   ]);
   return { events: parts.flatMap((part) => part.events), cannotAsk: parts.flatMap((part) => part.cannotAsk) };
 }
