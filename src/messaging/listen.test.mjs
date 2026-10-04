@@ -130,7 +130,7 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     const forward = tellingWhenUndelivered({ ledger, send: (message) => provider.send(message), converse: unqueueable });
     await assert.rejects(forward(accepted), /queue could not be reached/);
     assert.equal(provider.sent.length, 1);
-    assert.match(provider.sent[0].text, /could not queue that for ceo.*AGENT_ORG_HOST.*NOT delivered/s);
+    assert.match(provider.sent[0].text, /could not reach the liaison.*AGENT_ORG_HOST.*Nothing has been done with your message/s);
     assert.equal(provider.sent[0].replyTo, String(accepted.messageId));
     const line = readLedgerLines(ledger.path).find((entry) => entry.origin === "converse");
     assert.ok(line, "no converse line was ledgered");
@@ -147,7 +147,8 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     const queue = /** @type {any} */ ({ queueOrLose: () => { throw refusal; }, STANCE: { UNDECLARED: "undeclared" }, EXIT: { QUEUED: 2 }, attributed: (/** @type {string} */ text) => text, handoffId: () => "h", readHandoffs: () => [] });
     const converse = createConverse({ chairman: CHAIRMAN, queuePath: join(scratch, "queue"), ledger, send, now: () => 1, agents: () => [], queue });
     await assert.rejects(tellingWhenUndelivered({ ledger, send, converse: converse.forward })(mint(inbound, messageUpdate(7, "hello"))), /queue could not be reached/);
-    assert.match(provider.sent[0].text, /NOT delivered/);
+    assert.equal(provider.sent[0].text, "Got it, looking.", "the acknowledgement went first, before the queue threw");
+    assert.match(provider.sent[1].text, /Nothing has been done with your message/);
     assert.equal(readLedgerLines(ledger.path).filter((entry) => entry.origin === "converse").map((entry) => entry.verdict).join(), "refused");
   });
 
@@ -231,7 +232,7 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
     /** @type {string[]} */ const lines = [];
     const converse = async () => { throw new Error("the declaration cannot be read: set AGENT_ORG_HOST"); };
     await main({ root, home, env, github, converse, fetch: wire.fetch, signal: wire.signal, sleep: async () => {}, err: (line) => lines.push(line) });
-    assert.match(wire.said[0], /could not queue that for ceo.*AGENT_ORG_HOST.*NOT delivered/s);
+    assert.match(wire.said[0], /could not reach the liaison.*AGENT_ORG_HOST.*Nothing has been done with your message/s);
     assert.match(wire.said[1], /not a request I can resolve/, "the press after the refused message was still handled");
     assert.ok(lines.some((line) => /forward failed: the queue could not be reached/.test(line)), lines.join("\n"));
   });
@@ -256,7 +257,7 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
       calls,
       port: {
         EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: { UNDECLARED: "undeclared" }, attributed: (/** @type {string} */ text) => text,
-        handoffId: () => "handoff/ceo/recorded", readHandoffs: () => [{ id: "handoff/ceo/recorded", session: "ceo", prompt: "" }],
+        handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
         queueOrLose(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
       },
     };
@@ -276,7 +277,7 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
       answerCallbackQuery: async () => {}, leaveChat: async () => {},
     };
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
-    const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "ceo", status: "idle" }] });
+    const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "liaison", status: "idle" }] });
     const answers = { answer: async (/** @type {Record<string, any>} */ accepted) => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
     const offsets = /** @type {ReturnType<typeof createOffsetStore>} */ ({ read: () => undefined, write: () => {} });
     await runListener({
