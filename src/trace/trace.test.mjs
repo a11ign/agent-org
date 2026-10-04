@@ -324,12 +324,12 @@ const mergedItem = (number, body = "") => ({ number, created_at: "2026-09-29T09:
 
 test("BUDGET: the (budget+1)th call is refused BEFORE it is made, every call is counted, and the refusal says why", () => {
   const underlying = listingGh();
-  const gh = budgetedGh({ gh: underlying, budget: 2 });
-  gh(["a"]);
-  gh(["b"]);
-  assert.throws(() => gh(["c"]), { code: "GH_CALLS_SPENT", message: /--calls 2 is spent/ });
+  const bounded = budgetedGh({ gh: underlying, budget: 2 });
+  bounded(["a"]);
+  bounded(["b"]);
+  assert.throws(() => bounded(["c"]), { code: "GH_CALLS_SPENT", message: /--calls 2 is spent/ });
   assert.deepEqual(underlying.seen, ["a", "b"], "the third call never reached gh");
-  assert.equal(gh.calls, 2);
+  assert.equal(bounded.calls, 2);
   const failing = budgetedGh({ gh: () => { throw new Error("HTTP 500"); }, budget: 5 });
   assert.throws(() => failing(["x"]), /HTTP 500/);
   assert.equal(failing.calls, 1, "a call that failed was still a call");
