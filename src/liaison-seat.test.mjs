@@ -1,5 +1,5 @@
 // @ts-check
-// no-token: clearBeforeOrder -- every herdr call is the injected `run` and the roster is a temp-dir fixture; nothing here reaches gh or a pane
+// no-token: clearContext -- every herdr and gh call is the injected `run` and the roster is a temp-dir fixture; nothing here reaches a pane or a network
 // A PERSISTENT SEAT IS NEVER CLEARED (a11ign/a11ign#3415, chairman messaging B1): `"persistent": true` on a roster entry is a ROLE
 // fact, and `clearBeforeOrder` keeps (and, over the threshold, `/compact`s) that seat's window instead of wiping it before an order.
 //
