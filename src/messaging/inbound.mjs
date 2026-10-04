@@ -10,6 +10,11 @@
 //   3. `createInbound({ ledger, chairman }).handle(update)` -- the two above, plus DEDUPE by the provider's update id, plus ONE ledger line
 //      per verdict. It returns what the caller (the listener, row 8) must do; it does none of it.
 //
+// **A BUTTON'S DATA IS A CLOSED VOCABULARY (a11ign/a11ign#3423).** `ans:<option id>` for an option a brief offers, and `act:<name>` for one of the
+// fixed words in `BUTTON_ACTIONS`. Anything else is a DROP with its own reason and a hash of the data, never forwarded: the data is read back from
+// Telegram, so it is the chat's and not the organisation's, and a press the organisation never drew must reach nothing. What each word MEANS is
+// `answers.mjs`'s; this module only says which words exist.
+//
 // **THE ACCEPTED VALUE IS BRANDED, AND ONLY `handle` MINTS ONE.** (b): "there is no code path from a chat message to a worker", and the
 // function that writes a chairman-attributed row comment (row 9) accepts only what `isAccepted(value, chairman)` says this module minted
 // FOR THAT CHAIRMAN. Three things carry that, and each closes a hole the one before leaves:
@@ -44,7 +49,40 @@ export const DROP_REASON = Object.freeze({
   wrongChat: "wrong-chat",
   forwarded: "forwarded",
   notText: "not-text",
+  unknownCallbackData: "unknown-callback-data",
 });
+
+const OPTION_PREFIX = "ans:";
+const ACTION_PREFIX = "act:";
+/** The same shape `parseChairmanOptions` accepts for an option id (`sources/requests.mjs` `OPTION_ID`); `inbound.test.mjs` pins the two together, because this module is a leaf and does not import it. */
+const OPTION_ID_SHAPE = /^[A-Za-z0-9_-]{1,16}$/;
+/** The fixed words a button may carry beside an option id: the closed set of the chairman's point 5 (Approve, Done, Stuck, Later, Explain more, Do it for me). */
+export const BUTTON_ACTIONS = Object.freeze(["approve", "done", "stuck", "later", "explain", "forme"]);
+
+/** @param {string} optionId @returns {string} what a button offering that option carries as `callback_data` */
+export function optionData(optionId) {
+  return `${OPTION_PREFIX}${optionId}`;
+}
+
+/** @param {string} action one of `BUTTON_ACTIONS` @returns {string} what a button for that word carries as `callback_data` */
+export function actionData(action) {
+  return `${ACTION_PREFIX}${action}`;
+}
+
+/**
+ * The one reading of a button's data. PURE, and null for everything outside the vocabulary: no prefix, an id of the wrong shape, a word not in the set.
+ *
+ * @param {unknown} data @returns {{kind: "option", id: string} | {kind: "action", name: string} | null}
+ */
+export function parseButtonData(data) {
+  if (typeof data !== "string") return null;
+  if (data.startsWith(OPTION_PREFIX)) {
+    const id = data.slice(OPTION_PREFIX.length);
+    return OPTION_ID_SHAPE.test(id) ? { kind: "option", id } : null;
+  }
+  const name = data.startsWith(ACTION_PREFIX) ? data.slice(ACTION_PREFIX.length) : null;
+  return name !== null && BUTTON_ACTIONS.includes(name) ? { kind: "action", name } : null;
+}
 
 const KNOWN_CHAT_TYPES = new Set(["private", "group", "supergroup", "channel"]);
 const FORWARD_FIELDS = ["forward_origin", "forward_date", "forward_from", "forward_from_chat", "forward_sender_name", "forward_from_message_id"];
@@ -238,9 +276,16 @@ export function createInbound({ ledger, chairman }) {
     if (facts.updateId !== null) seen.add(facts.updateId);
   }
 
+  /** @param {Facts} facts @param {string} reason @returns {Handled} a drop, with the hash of the data `facts` already holds */
+  function dropped(facts, reason) {
+    record(facts, { verdict: VERDICT.drop, reason });
+    return { action: "ignore", reason, chatId: facts.chatId, chatType: facts.chatType };
+  }
+
   /** @param {Readonly<Record<string, any>>} accepted @param {Facts} facts @returns {Handled} */
   function classified(accepted, facts) {
-    // A button's data is the organisation's own (it chose what each button says), so only free text is classified.
+    // A button's data is classified by VOCABULARY and not as text: it is a word the organisation drew or it is nothing, so no secret can be in it.
+    if (accepted.kind === "button" && parseButtonData(accepted.data) === null) return dropped(facts, DROP_REASON.unknownCallbackData);
     const result = accepted.kind === "button" ? { verdict: VERDICT.forward } : classifyText(accepted.text);
     if (result.verdict === VERDICT.forward) {
       record(facts, { verdict: VERDICT.forward, reason: null });
@@ -260,9 +305,7 @@ export function createInbound({ ledger, chairman }) {
       if (updateId !== null && seen.has(updateId)) return { action: "replayed", updateId };
       const acceptance = acceptUpdate(update, { chairman });
       if (acceptance.ok) return classified(acceptance.accepted, acceptance.facts);
-      const { facts, reason } = acceptance;
-      record(facts, { verdict: VERDICT.drop, reason });
-      return { action: "ignore", reason, chatId: facts.chatId, chatType: facts.chatType };
+      return dropped(acceptance.facts, acceptance.reason);
     },
   };
 }

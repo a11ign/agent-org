@@ -342,3 +342,42 @@ describe("the unit and the source", () => {
     assert.match(SOURCE, /converse: tellingWhenUndelivered\(/, "the converse path is no longer wrapped, so a queue that will not load is dropped again");
   });
 });
+
+describe("a message that can no longer be answered has its keyboard taken off (a11ign/a11ign#3423 done-when 6)", () => {
+  /** @param {string | null} clear @returns {{ answer: (accepted: unknown) => Promise<any> }} an answers that replies, naming the message to clear */
+  const replying = (clear) => ({ answer: async () => ({ action: "reply", text: "That was already answered.", clearKeyboard: clear }) });
+
+  test("the keyboard comes off BEFORE the reply goes, and the control: with nothing to clear no call is made", async () => {
+    const { inbound } = core();
+    const order = /** @type {string[]} */ ([]);
+    const forward = createForwarder({
+      answers: replying(String(REQUEST_MESSAGE)), converse: async () => {}, log: () => {},
+      send: async ({ text }) => { order.push(`send ${text}`); }, clearKeyboard: async (ref) => { order.push(`clear ${ref}`); },
+    });
+    await forward(mint(inbound, pressUpdate(60)));
+    assert.deepEqual(order, [`clear ${REQUEST_MESSAGE}`, "send That was already answered."]);
+
+    const quiet = /** @type {string[]} */ ([]);
+    const none = createForwarder({ answers: replying(null), converse: async () => {}, log: () => {}, send: async () => {}, clearKeyboard: async (ref) => { quiet.push(ref); } });
+    await none(mint(inbound, pressUpdate(61)));
+    assert.deepEqual(quiet, []);
+  });
+
+  test("a keyboard that cannot be taken off is logged, and the reply still goes", async () => {
+    const { inbound } = core();
+    const logged = /** @type {string[]} */ ([]);
+    const sent = /** @type {string[]} */ ([]);
+    const forward = createForwarder({
+      answers: replying("501"), converse: async () => {}, log: (line) => logged.push(line),
+      send: async ({ text }) => { sent.push(text); }, clearKeyboard: async () => { throw new Error("message to edit not found"); },
+    });
+    await forward(mint(inbound, pressUpdate(62)));
+    assert.deepEqual(sent, ["That was already answered."]);
+    assert.match(logged.join("\n"), /could not take the keyboard off message 501: message to edit not found/);
+  });
+
+  test("the program wires both: the provider's clearKeyboard to the forwarder, and the liaison's order to the answers", () => {
+    assert.match(SOURCE, /clearKeyboard: \(ref\) => provider\.clearKeyboard\(ref\)/);
+    assert.match(SOURCE, /orders: \{ liaison: \(order\) => conversation\.orderLiaison\(order\) \}/);
+  });
+});

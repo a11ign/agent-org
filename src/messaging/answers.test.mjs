@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { answerComment, buttonData, createAnswers, STEPS } from "./answers.mjs";
-import { createInbound } from "./inbound.mjs";
+import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.mjs";
+import { actionData, createInbound, parseButtonData } from "./inbound.mjs";
 import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.mjs";
 import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.mjs";
 
@@ -70,7 +70,7 @@ function fixtureGithub(initial = openRow()) {
 }
 
 /** A ledger already holding the ask (sent as message 501) and a reminder (502), an inbound and an answers over it. `restart()` is a NEW process, same file. */
-function harness(initial = openRow()) {
+function harness(initial = openRow(), { orders } = /** @type {{orders?: any}} */ ({})) {
   const path = join(scratch, `ledger-${nextLedger += 1}.jsonl`);
   let at = Date.parse("2026-10-02T10:00:00Z");
   const now = () => at += 1000;
@@ -78,9 +78,9 @@ function harness(initial = openRow()) {
   const ledger = () => createLedger({ path, now });
   const seed = ledger();
   for (const [ref, kind] of [[ASK_REF, "request"], [REMINDER_REF, "reminder"]]) {
-    seed.append(deliveryLine({ key: KEY, provider: "fake", status: STATUS.sent, providerMessageId: ref, kind, stateHash: "h" }));
+    seed.append(deliveryLine({ key: KEY, provider: "fake", status: STATUS.sent, providerMessageId: ref, kind, stateHash: "h", text: `row ${ROW} needs you\nhttps://github.com/${REPO}/issues/${ROW}` }));
   }
-  const build = () => ({ ledger: ledger(), github, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
+  const build = () => ({ ledger: ledger(), github, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now, orders });
   let inbound = createInbound({ ledger: ledger(), chairman: CHAIRMAN });
   let answers = createAnswers(build());
   return {
@@ -90,6 +90,10 @@ function harness(initial = openRow()) {
       const handled = inbound.handle(update);
       assert.equal(handled.action, "forward", `the update was not forwarded: ${JSON.stringify(handled)}`);
       return answers.answer(handled.accepted);
+    },
+    /** @param {unknown} update @returns {any} what the core said to do with it, whatever it was */
+    handled(update) {
+      return inbound.handle(update);
     },
     /** @param {unknown} update */
     minted(update) {
@@ -168,11 +172,12 @@ describe("a button press (done-whens 1 and 4)", () => {
     assert.match(h.lines().find((line) => line.step === "failed").error, /set-answer failed/);
   });
 
-  test("an option the brief does not offer (or data that is not ours) writes nothing", async () => {
+  test("an option the brief does not offer writes nothing; data that is not ours never gets this far (inbound.mjs drops it)", async () => {
     const h = harness();
-    for (const [id, data] of [[1, buttonData("Z")], [2, "approve:2885"], [3, buttonData("")]]) {
-      const result = await h.hear(press(/** @type {number} */ (id), { data: /** @type {string} */ (data) }));
-      assert.equal(/** @type {any} */ (result).reason, "option-not-offered", String(data));
+    const result = await h.hear(press(1, { data: buttonData("Z") }));
+    assert.equal(/** @type {any} */ (result).reason, "option-not-offered");
+    for (const [id, data] of [[2, "approve:2885"], [3, buttonData("")]]) {
+      assert.equal(h.handled(press(/** @type {number} */ (id), { data: /** @type {string} */ (data) })).action, "ignore", String(data));
     }
     assert.deepEqual(h.github.writes(), []);
   });
@@ -318,5 +323,180 @@ describe("what the ledger keeps", () => {
   test("the provenance line is the one the design names", () => {
     assert.equal(answerComment({ ref: "9", at: "2026-10-02T10:00:00.000Z", option: { id: "B", label: "hold" }, text: null }),
       "Chairman answered via Telegram, verified id, message 9, 2026-10-02T10:00:00.000Z: B (hold)");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// THE BUTTONS' MEANINGS (a11ign/a11ign#3423 done-whens 4 to 6). Each is the harness above with ONE press changed, so "writes nothing" is read against the
+// positive control at the top of this file (a real press does write three things).
+
+/** An orders port that records each order and answers as `outcome` says. @param {{queued: boolean, say: string, handoff: string | null}} [outcome] */
+function fixtureOrders(outcome = { queued: true, say: "queued for liaison, handoff h1", handoff: "h1" }) {
+  /** @type {{text: string, messageRef: string}[]} */
+  const calls = [];
+  return { calls, outcome, liaison: async (/** @type {{text: string, messageRef: string}} */ order) => { calls.push(order); return outcome; } };
+}
+
+describe("approve and done are answers in their own words (done-when 4's counterpart: they RESOLVE)", () => {
+  for (const [name, label] of [["approve", "Approve"], ["done", "Done"]]) {
+    test(`${name} writes the three steps with the comment naming it, and takes the keyboard off`, async () => {
+      const h = harness(openRow({ comments: [{ body: "**Brief for the chairman**\nShall we?", createdAt: "2026-10-02T09:00:00Z", authorAssociation: "OWNER" }] }));
+      const result = /** @type {any} */ (await h.hear(press(1, { data: actionData(name) })));
+      assert.deepEqual(h.github.writes(), ["comment", "remove-label", "set-answer"]);
+      assert.match(/** @type {any} */ (h.github.rows.get(`${REPO}#${ROW}`)).comments[1].body, new RegExp(`: ${name} \\(${label}\\)$`));
+      assert.equal(result.reason, "answered");
+      assert.equal(result.clearKeyboard, ASK_REF);
+    });
+  }
+});
+
+describe("later snoozes for 24 hours and is not an answer (done-when 4)", () => {
+  test("it writes one snooze line, touches no label and no comment, and leaves the keyboard", async () => {
+    const h = harness();
+    const result = /** @type {any} */ (await h.hear(press(1, { data: actionData("later") })));
+    assert.equal(result.reason, "snoozed");
+    assert.equal(result.clearKeyboard, null, "the request still needs an answer, so its buttons stay");
+    assert.deepEqual(h.github.writes(), [], "no label and no comment");
+    const row = /** @type {any} */ (h.github.rows.get(`${REPO}#${ROW}`));
+    assert.ok(row.labels.includes(NEEDS_CHAIRMAN), "the label stays");
+    const [line, ...others] = h.lines().filter((entry) => entry.step === "snooze");
+    assert.equal(others.length, 0);
+    assert.equal(line.request, KEY);
+    // The fixture clock ticks a second on every read, and `until` is taken one read before the line is stamped.
+    assert.ok(Math.abs(Date.parse(line.until) - Date.parse(line.ts) - SNOOZE_MS) <= 5000, "24 hours from the press");
+    assert.equal(stepsDone(h.lines()).length, 0, "and it is not one of the answer's steps");
+    assert.equal(snoozedUntil(h.lines(), KEY, Date.parse(line.ts) + 1000), Date.parse(line.until));
+    assert.equal(snoozedUntil(h.lines(), KEY, Date.parse(line.until) + 1), null, "and it ends");
+  });
+
+  test("a second press while snoozed writes nothing more", async () => {
+    const h = harness();
+    await h.hear(press(1, { data: actionData("later") }));
+    const again = /** @type {any} */ (await h.hear(press(2, { data: actionData("later") })));
+    assert.equal(again.reason, "already-snoozed");
+    assert.equal(h.lines().filter((entry) => entry.step === "snooze").length, 1);
+  });
+
+  test("an answer, or a cleared notice, ends the snooze: a re-ask is a new ask (and the control: without either it holds)", async () => {
+    const h = harness();
+    await h.hear(press(1, { data: actionData("later") }));
+    const at = Date.now();
+    assert.ok(snoozedUntil(h.lines(), KEY, Date.parse(h.lines().at(-1)?.ts)) !== null, "control: the snooze holds");
+    const answered = [...h.lines(), { direction: "answer", request: KEY, step: "set-answer", messageRef: ASK_REF }];
+    assert.equal(snoozedUntil(answered, KEY, at), null);
+    const cleared = [...h.lines(), { key: KEY, kind: "cleared", status: STATUS.sent }];
+    assert.equal(snoozedUntil(cleared, KEY, at), null);
+    assert.equal(snoozedUntil(h.lines(), `request:${REPO}#1`, at), null, "another request's snooze is not this one's");
+  });
+});
+
+describe("explain and stuck queue ONE order for the liaison and nobody else (done-when 5)", () => {
+  for (const [name, lead] of [["explain", "the chairman asked for more on a11ign/a11ign#2885"], ["stuck", "the chairman is stuck at a11ign/a11ign#2885"]]) {
+    test(`${name}: one order, naming the ask as it was sent, and no write to the row`, async () => {
+      const orders = fixtureOrders();
+      const h = harness(openRow(), { orders });
+      const result = /** @type {any} */ (await h.hear(press(1, { data: actionData(name) })));
+      assert.equal(result.reason, "asked");
+      assert.equal(orders.calls.length, 1);
+      assert.ok(orders.calls[0].text.startsWith(lead), orders.calls[0].text);
+      assert.ok(orders.calls[0].text.includes("> row 2885 needs you"), "the ask, quoted, as the ledger holds it");
+      assert.deepEqual(h.github.writes(), []);
+      assert.equal(result.clearKeyboard, null);
+      assert.equal(h.lines().filter((entry) => entry.step === name && entry.handoff === "h1").length, 1);
+    });
+  }
+
+  test("the same press again sends nothing more; a refused order is recorded and the next press retries", async () => {
+    const orders = fixtureOrders();
+    const h = harness(openRow(), { orders });
+    await h.hear(press(1, { data: actionData("explain") }));
+    const again = /** @type {any} */ (await h.hear(press(2, { data: actionData("explain") })));
+    assert.equal(again.reason, "already-asked");
+    assert.equal(orders.calls.length, 1);
+
+    const refusing = fixtureOrders({ queued: false, say: "no session called liaison is running", handoff: null });
+    const g = harness(openRow(), { orders: refusing });
+    const refused = /** @type {any} */ (await g.hear(press(1, { data: actionData("stuck") })));
+    assert.equal(refused.reason, "order-refused");
+    assert.ok(refused.text.includes("no session called liaison is running"), "the queue's own words, passed on");
+    assert.equal(g.lines().find((entry) => entry.step === "failed")?.failedStep, "stuck");
+    refusing.outcome = { queued: true, say: "ok", handoff: "h2" };
+    Object.assign(refusing, { liaison: async (/** @type {any} */ order) => { refusing.calls.push(order); return { queued: true, say: "ok", handoff: "h2" }; } });
+    assert.equal(/** @type {any} */ (await g.hear(press(2, { data: actionData("stuck") }))).reason, "asked");
+  });
+
+  test("a port that throws is a refusal the chairman is told, not a crash; with no port at all nothing is sent", async () => {
+    const throwing = { liaison: async () => { throw new Error("the queue could not load"); } };
+    const h = harness(openRow(), { orders: throwing });
+    const thrown = /** @type {any} */ (await h.hear(press(1, { data: actionData("explain") })));
+    assert.equal(thrown.reason, "order-refused");
+    assert.match(thrown.text, /the queue could not load/);
+    const none = /** @type {any} */ (await harness().hear(press(1, { data: actionData("explain") })));
+    assert.equal(none.reason, "no-liaison");
+  });
+
+  test("forme is D1's: it is told so, and nothing is written or queued", async () => {
+    const orders = fixtureOrders();
+    const h = harness(openRow(), { orders });
+    const result = /** @type {any} */ (await h.hear(press(1, { data: actionData("forme") })));
+    assert.equal(result.reason, "not-available");
+    assert.deepEqual(h.github.writes(), []);
+    assert.equal(orders.calls.length, 0);
+  });
+});
+
+describe("a press on a message that can no longer be answered is told so, and its keyboard comes off (done-when 6)", () => {
+  test("already answered, whichever button it is, and after the label is gone on ANOTHER message of the request", async () => {
+    const orders = fixtureOrders();
+    const h = harness(openRow(), { orders });
+    await h.hear(press(1));
+    for (const [id, data] of [[2, buttonData("A")], [3, actionData("later")], [4, actionData("explain")]]) {
+      const result = /** @type {any} */ (await h.hear(press(/** @type {number} */ (id), { data: /** @type {string} */ (data) })));
+      assert.equal(result.reason, "already-answered", String(data));
+      assert.equal(result.clearKeyboard, ASK_REF);
+    }
+    const onReminder = /** @type {any} */ (await h.hear(press(5, { messageId: Number(REMINDER_REF), data: actionData("later") })));
+    assert.equal(onReminder.reason, "no-longer-asking");
+    assert.equal(onReminder.clearKeyboard, REMINDER_REF);
+    assert.equal(orders.calls.length, 0, "no order went for a request that was answered");
+    assert.equal(h.github.writes().length, 3, "one answer's three writes, and no more");
+  });
+
+  test("a typed reply that answers takes the keyboard off the message it replied to; a failed write does not", async () => {
+    const h = harness();
+    const typed = /** @type {any} */ (await h.hear(reply(1, "yes, publish")));
+    assert.equal(typed.reason, "answered");
+    assert.equal(typed.clearKeyboard, ASK_REF);
+    const g = harness();
+    g.github.failOnce.add("remove-label");
+    const failed = /** @type {any} */ (await g.hear(press(1)));
+    assert.equal(failed.reason, "write-failed");
+    assert.equal(failed.clearKeyboard, null, "the press must be possible again to resume the answer");
+  });
+});
+
+describe("the keyboard a request carries", () => {
+  const OPTIONS = [{ id: "A", label: "publish now" }, { id: "B", label: "hold" }];
+
+  test("options, then Explain more and Later; and with none to choose between, Approve", () => {
+    assert.deepEqual(requestActions(OPTIONS).map(({ label }) => label), ["A: publish now", "B: hold", ACTION_LABELS.explain, ACTION_LABELS.later]);
+    assert.deepEqual(requestActions([]).map(({ label }) => label), [ACTION_LABELS.approve, ACTION_LABELS.explain, ACTION_LABELS.later]);
+  });
+
+  test("every button it draws is in the vocabulary inbound accepts (the drawing and the reading cannot disagree)", () => {
+    for (const { data } of [...requestActions(OPTIONS), ...requestActions([])]) assert.notEqual(parseButtonData(data), null, data);
+    assert.deepEqual(parseButtonData(requestActions(OPTIONS)[1].data), { kind: "option", id: "B" });
+  });
+
+  test("more options than the keyboard has room for draws NO keyboard, never a partial one", () => {
+    const many = Array.from({ length: 7 }, (_, index) => ({ id: `O${index}`, label: "x" }));
+    assert.deepEqual(requestActions(many), []);
+    assert.equal(requestActions(many.slice(0, 6)).length, 8, "the control: six still fit");
+  });
+
+  test("a long label is cut to what a button holds, and callback_data stays within Telegram's 64 bytes", () => {
+    const [button] = requestActions([{ id: "A".repeat(16), label: "l".repeat(200) }]);
+    assert.ok(button.label.length <= 64);
+    assert.ok(Buffer.byteLength(button.data) <= 64);
   });
 });

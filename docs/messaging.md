@@ -285,8 +285,16 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   not text. So a stranger's DM is `wrong-user` (its chat is also wrong, and the user is what they got wrong first), and the chairman
   in a group is `not-private-chat`.
 - **A button press is held to the same identity**, with its chat read from the message the button sits under; a press with no
-  message (inline mode) has no chat to check and is dropped. A button's `data` is **not classified**: the organisation chose what each
-  button says, and row 9 validates it against the requests it has pending.
+  message (inline mode) has no chat to check and is dropped. A button's `data` is **not classified as text**: it is held to a **closed
+  vocabulary** instead (a11ign/a11ign#3423): `ans:<option id>` (the shape a brief's options block accepts) or `act:<word>` for one of
+  `approve`, `done`, `stuck`, `later`, `explain`, `forme`. Anything else is dropped as `unknown-callback-data`, with a hash of the data in
+  its ledger line, and is never forwarded. The press is then routed by the ledger-known message it sits under, never by the data
+  (`answers.mjs`): an option, `approve` or `done` resolves the request; `later` snoozes its reminders for 24 hours (one ledger line, the label
+  stays, so it is not an answer, and the watcher does not observe the request until the snooze ends, or the request is answered or cleared);
+  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.mjs`, the only module that queues); `forme` is D1's and is
+  told "not available". A press on a message whose request is answered or no longer asking is told so and its keyboard is taken off
+  (`editMessageReplyMarkup`). The Telegram provider draws `actions` as `reply_markup.inline_keyboard`, one button per row, on the first part of
+  a split message only; a request with more options than fit (6) carries no keyboard, since a partial one is a quieter wrong than none.
 - **A secret's ledger line has no sha256.** The design says every verdict carries one; for this verdict a hash of a short password is
   a dictionary attack away from the password, and the update id and the length already say what a reader needs about a message that
   was thrown away.

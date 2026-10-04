@@ -16,7 +16,11 @@
 // **THE ACKNOWLEDGEMENT IS A FACT THE CORE VERIFIED.** "queued for ceo, handoff <id>" is sent only after reading the entry back from the
 // queue file; a queue that said it wrote and did not is reported as that, never as success.
 //
-// **WHAT THIS DOES NOT TAKE:** a button press (the answers path, #2908, owns it), and anything `isAccepted` does not vouch for. A value
+// **THE LIAISON IS THE ONE OTHER RECIPIENT (a11ign/a11ign#3423), AND ONLY FOR A BUTTON.** `explain` and `stuck` ask the liaison for something, so `orderLiaison` is
+// the second caller of the one queue call, with the second constant `LIAISON`: the recipient is still never an argument, a field of a message or configuration,
+// and a worker or a reviewer still has no path. What it sends is the text the answers path built from a ledger-known request, never the chairman's own words.
+//
+// **WHAT THIS DOES NOT TAKE:** a button press as CONVERSATION (the answers path, #2908, owns it; `forward` still refuses one), and anything `isAccepted` does not vouch for. A value
 // that was not minted by `createInbound` for THIS chairman is not a chairman's message, whatever its fields say.
 //
 // THE QUEUE IS A PORT, LOADED ON FIRST USE. `prompt-session.mjs` and `wake.mjs` read the project's declaration at import and refuse to
@@ -30,11 +34,15 @@ import { describeError } from "./ledger.mjs";
 
 /** The only session a chat message is ever queued for. Changing it is changing decision 2(b). */
 export const RECIPIENT = "ceo";
+/** The only other session this module queues for, and only through `orderLiaison`. Changing it is changing the button decision (a11ign/a11ign#3423). */
+export const LIAISON = "liaison";
 /** The sender line `ceo` reads. Not derivable by `resolveSender`, which only ever yields a herdr workspace's label. */
 export const CHAIRMAN_SENDER = "chairman via Telegram";
 /** Provenance the listener, and only the listener, can vouch for: `isAccepted` proved the ids match the paired chairman. */
 export const SOURCE_LINE = "Source: Telegram, verified (sender and chat matched the paired chairman)";
 const ORIGIN = "converse";
+/** What the queue is told the order is for, which is what it says back when it refuses one. */
+const WHY = Object.freeze({ [RECIPIENT]: "the chairman wrote to ceo", [LIAISON]: "the chairman pressed a button for the liaison" });
 
 /**
  * @typedef {{ queueOrLose: (order: Record<string, any>) => number, attributed: (text: string, sender: string | null) => string,
@@ -48,6 +56,22 @@ async function realQueue() {
   const { queueOrLose, attributed, EXIT, STANCE } = session;
   // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.mjs`, so the file's name is defined once, there.
   return { queueOrLose, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, defaultQueuePath: () => wake.handoffQueuePath(wake.ledgerPathFrom([])) };
+}
+
+/**
+ * The order the liaison reads for a button: the same provenance as a message, but the words are the organisation's own (what the press asked for).
+ *
+ * @param {{ text: string, messageRef: string }} order @param {number} receivedAt @returns {string}
+ */
+export function buttonOrderText({ text, messageRef }, receivedAt) {
+  return [
+    "This is the chairman pressing a button, not a session: do not answer it with `prompt:session`.",
+    SOURCE_LINE,
+    `Telegram message: ${messageRef} (a button press)`,
+    `Received: ${new Date(receivedAt).toISOString()}`,
+    "",
+    text,
+  ].join("\n");
 }
 
 /**
@@ -115,28 +139,28 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     return path;
   }
 
-  /** @param {QueuePort} q @param {string} text @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
-  function enqueue(q, text) {
+  /** @param {QueuePort} q @param {string} recipient one of the two constants above @param {string} text @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
+  function enqueue(q, recipient, text) {
     const { value, stderr } = capturingStderr(() => q.queueOrLose({
-      label: RECIPIENT, text, why: "the chairman wrote to ceo", agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
+      label: recipient, text, why: WHY[recipient], agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
     }));
     return { code: value, stderr };
   }
 
-  /** @param {QueuePort} q @param {string} text @returns {string | null} the id of the entry, read back from the queue file; null when it is not there */
-  function verifiedEntry(q, text) {
-    const id = q.handoffId(RECIPIENT, q.attributed(text, CHAIRMAN_SENDER));
-    return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === RECIPIENT) ? id : null;
+  /** @param {QueuePort} q @param {string} recipient @param {string} text @returns {string | null} the id of the entry, read back from the queue file; null when it is not there */
+  function verifiedEntry(q, recipient, text) {
+    const id = q.handoffId(recipient, q.attributed(text, CHAIRMAN_SENDER));
+    return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === recipient) ? id : null;
   }
 
-  /** @param {QueuePort} q @param {string} text @returns {{ verdict: string, say: string, handoff: string | null }} */
-  function submit(q, text) {
-    const { code, stderr } = enqueue(q, text);
+  /** @param {QueuePort} q @param {string} recipient @param {string} text @returns {{ verdict: string, say: string, handoff: string | null }} */
+  function submit(q, recipient, text) {
+    const { code, stderr } = enqueue(q, recipient, text);
     if (code !== q.EXIT.QUEUED) return { verdict: "refused", say: stderr.trim() || "the queue refused the message and said nothing", handoff: null };
-    const handoff = verifiedEntry(q, text);
+    const handoff = verifiedEntry(q, recipient, text);
     return handoff === null
       ? { verdict: "unverified", say: "the queue said it held the message, but its entry is not in the queue file: treat it as NOT delivered", handoff }
-      : { verdict: "queued", say: `queued for ${RECIPIENT}, handoff ${handoff}`, handoff };
+      : { verdict: "queued", say: `queued for ${recipient}, handoff ${handoff}`, handoff };
   }
 
   /** @param {string} text @param {string} replyTo @returns {Promise<{ ref: string | null, error: unknown }>} */
@@ -150,13 +174,23 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
 
   return {
     /**
+     * An order for the liaison, from a button the answers path vetted. Nothing is sent to the chairman and nothing is written to the ledger here: the caller
+     * (`answers.mjs`) records the outcome and tells the chairman, and a refusal is returned in the queue's own words.
+     *
+     * @param {{ text: string, messageRef: string }} order @returns {Promise<{ queued: boolean, say: string, handoff: string | null }>}
+     */
+    async orderLiaison(order) {
+      const verdict = submit(await port(), LIAISON, buttonOrderText(order, now()));
+      return { queued: verdict.verdict === "queued", say: verdict.say, handoff: verdict.handoff };
+    },
+    /**
      * @param {Readonly<Record<string, any>>} accepted what `createInbound(...).handle()` returned with `action: "forward"`
      * @returns {Promise<{ outcome: "queued" | "refused" | "unverified" | "not-conversation" | "not-accepted", handoff?: string | null }>}
      */
     async forward(accepted) {
       if (!isAccepted(accepted, chairman)) return { outcome: "not-accepted" };
       if (accepted.kind !== "message") return { outcome: "not-conversation" };
-      const verdict = submit(await port(), provenanceText(accepted, now()));
+      const verdict = submit(await port(), RECIPIENT, provenanceText(accepted, now()));
       const ack = await tell(verdict.say, String(accepted.messageId));
       // The line holds refs and a verdict, never the words (as `inbound.mjs`'s do not): the chain is message -> handoff -> acknowledgement.
       ledger.append({

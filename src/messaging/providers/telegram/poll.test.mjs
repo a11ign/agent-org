@@ -55,7 +55,7 @@ function update(id, more = {}) {
 
 /** @param {number} id @param {{ from?: number, queryId?: string }} [who] a button press under one of the bot's messages */
 function press(id, { from = CHAIRMAN.userId, queryId = `q${id}` } = {}) {
-  return { update_id: id, callback_query: { id: queryId, from: { id: from }, data: "approve:2885", message: { message_id: 5, chat: { id: CHAIRMAN.chatId, type: "private" } } } };
+  return { update_id: id, callback_query: { id: queryId, from: { id: from }, data: "ans:A", message: { message_id: 5, chat: { id: CHAIRMAN.chatId, type: "private" } } } };
 }
 
 /** @typedef {{ method: string, body: Record<string, any>, url: string }} Request */

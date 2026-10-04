@@ -455,3 +455,41 @@ describe("the planner and the composers", () => {
     assert.match(text, /^30 notifications held back/);
   });
 });
+
+describe("an event's actions reach a provider that draws buttons (a11ign/a11ign#3423)", () => {
+  const actions = [{ label: "A: publish now", data: "ans:A" }, { label: "Later", data: "act:later" }];
+
+  test("a first message, an update and a reminder carry them; the control is an event with none, whose message has no `actions` key at all", async () => {
+    const run = harness({ config: { reminders: { max: 3, spacingMs: HOUR } } });
+    await run.tick([request(901, { actions, state: "one" })]);
+    await run.tick([request(901, { actions, state: "two" })]);
+    run.clock.advance(DAY);
+    await run.tick([request(901, { actions, state: "two" })]);
+    assert.deepEqual(run.lines().map((line) => line.kind), ["first", "update", "reminder"], "the three kinds of send ran");
+    for (const sent of run.provider.sent) assert.deepEqual(sent.actions, actions);
+    await run.tick([incident()]);
+    assert.equal("actions" in (run.provider.sent.at(-1) ?? {}) && run.provider.sent.at(-1)?.actions !== undefined, false);
+  });
+
+  test("a cleared notice carries none, whatever the event holds: it would answer a request that is gone", async () => {
+    const run = harness();
+    await run.tick([request(902, { actions })]);
+    await run.tick([request(902, { actions, resolved: true })]);
+    const cleared = run.provider.sent.at(-1);
+    assert.match(cleared?.text ?? "", /^Cleared: /);
+    assert.equal(cleared?.actions, undefined);
+  });
+
+  test("a provider that declares no buttons is handed none, and the message is still sent", async () => {
+    const run = harness({ capabilities: { buttons: false } });
+    await run.tick([request(903, { actions })]);
+    assert.equal(run.provider.sent.length, 1);
+    assert.equal(run.provider.sent[0].actions, undefined);
+  });
+
+  test("an event whose actions are not {label, data} strings is invalid, loudly, and the others behind it still go", async () => {
+    const run = harness();
+    const decisions = await run.tick([request(904, { actions: [{ label: "x" }] }), request(905)]);
+    assert.deepEqual(decisions.map((decision) => decision.action), ["invalid", "sent"]);
+  });
+});
