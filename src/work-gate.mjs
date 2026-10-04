@@ -6103,7 +6103,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const rows = readyRows ?? [];
   const allOpen = openRows ?? [];
   const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
-  const tracker = inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
+  const tracker = scope.tracker === null ? NO_TRACKER_READINGS : inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
   const prFiles = comparablePrFiles([...openPrs, ...(read.siblingPrs ?? [])], { trackerRepo: scope.tracker?.repo });
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
@@ -6147,6 +6147,13 @@ function withEjections(prs, ejections) {
   if (!ejections || ejections.size === 0) return prs;
   return prs.map((pr) => (ejections.has(Number(pr?.number)) ? { ...pr, ejection: ejections.get(Number(pr.number)) } : pr));
 }
+
+/**
+ * What a scope with NO tracker of its own reads from a tracker: nothing, in the shapes an empty tracker returns. `inRepo(undefined)` means the
+ * AMBIENT repository, which is the primary's, so asking would hand the primary's closed rows to a scope that has no such rows, and each would
+ * come back as an `answer-owed` order naming a repository where the row does not exist (#3493).
+ */
+const NO_TRACKER_READINGS = { claimedComments: [], epics: [], closedRows: [], closings: null };
 
 /**
  * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
