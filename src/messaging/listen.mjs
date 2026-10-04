@@ -32,6 +32,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { toolVersionLine } from "../lib/tool-version.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
@@ -152,9 +153,13 @@ export function stateDirectory(home) {
   return dirname(defaultLedgerPath(home));
 }
 
-/** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
+/**
+ * What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. `root` is `HOME_CHECKOUT` and NOT `process.cwd()` (#3485): the unit in
+ * tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so a cwd root exited 2 on the project declaration; `$AGENT_ORG_HOST` names the project there,
+ * and where it is unset the installed layout still answers the directory the command ran in.
+ */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: /** @type {AbortSignal | undefined} */ (undefined),
+  root: HOME_CHECKOUT, home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: /** @type {AbortSignal | undefined} */ (undefined),
   sleep: (/** @type {number} */ ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
   onForward: /** @type {(accepted: Readonly<Record<string, any>>) => Promise<void> | void} */ (undefined),
