@@ -22,7 +22,7 @@ export const DEFINITIONS = [
   "OVERHEAD: turns that name no row by any route (not `row`, `rows`, a pull request that closes a merged row, nor a `touchedRows` write), as a share of the week's priced dollars and of its tokens, one line per standing session. A standing session's turn that WROTE to a row is on that row, as the store places it, and is printed as its own `on a row` figure so the share does not hide it.",
   "UNMEASURED: turns of a session no order ever named (`unnamed:<file>`) or a Codex session in no reviewer directory (`codex:<dir>`), and transcripts that could not be read. They are counted apart and are NOT overhead: nobody knows whose they were.",
   "UNPLACED: turns on a pull request that closes no row merged in the window of this reading (a review of a pull request still open). Counted apart, in no average.",
-  "OPEN ROW: a row with turns in the store and no merge. Listed apart with its spend so far, in no average. A row closed with no merge is listed beside it.",
+  "OPEN ROW: a row GitHub says is open at the reading, with turns in the store. Listed apart with its spend so far, in no average. A row with turns that is neither open nor merged in the weeks of this reading (merged before them, or closed with no merge) is listed beside it as OUTSIDE: its spend is real, and it is in no average either.",
   "CACHE-READ SHARE OF INPUT: cacheRead / (input + cacheRead + cacheWrite5m + cacheWrite1h), summed over every turn of the week. Output tokens are not in the denominator.",
   "REPEAT WASTE, priced from the store, each turn priced ONCE in the first class that claims it, in this order, so the classes add up: re-delivered order, re-review, re-queue, compaction, preamble reload. A class never counts a turn another class already counted; its COUNT is every occurrence.",
   "  re-delivered order: a wake whose session and ledger key (without the `@deferred` suffix) were delivered before. Dollars: every turn that wake started.",
@@ -43,6 +43,8 @@ const FIRST_RANK_PERCENT = 50;
 const LAST_RANK_PERCENT = 90;
 const PERCENT = 100;
 const DEAREST = 10;
+const UNPRICED_LISTED = 5;
+const DIFFERENCES_LISTED = 8;
 const DOLLAR_DECIMALS = 4;
 const SHARE_DECIMALS = 1;
 export const NOT_DERIVABLE = "not derivable";
@@ -56,7 +58,7 @@ const DEFERRAL_LOG_HELD = false;
  * @typedef {import("./store.mjs").Tokens} Tokens
  * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
  * @typedef {{ dollars: number, priced: number, unpriced: number, turns: number, tokens: number }} Tally
- * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, ms?: number }} RepeatClass
+ * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number }} RepeatClass
  */
 
 /** @param {number} ms the Monday 00:00 UTC of the week holding `ms` */
@@ -157,9 +159,12 @@ function spendOf(turns) {
   /** @type {Map<string, Tally & { onRows: Tally }>} */
   const standing = new Map();
   const input = { cacheRead: 0, side: 0 };
+  /** @type {Map<string, number>} */
+  const unpricedModels = new Map();
   for (const { turn, kind } of turns) {
     addTurn(all, turn);
     addTurn(kinds[kind], turn);
+    if (typeof turn.costUsd !== "number") unpricedModels.set(String(turn.model), (unpricedModels.get(String(turn.model)) ?? 0) + 1);
     if (turn.tokens) {
       input.cacheRead += turn.tokens.cacheRead;
       input.side += inputSide(turn.tokens);
@@ -170,7 +175,7 @@ function spendOf(turns) {
       standing.set(turn.session, own);
     }
   }
-  return { all, ...kinds, standing, input };
+  return { all, ...kinds, standing, input, unpricedModels };
 }
 
 /** A standing lead: not a spawned worker or reviewer, which belong to one row or pull request. @param {string} session */
@@ -189,6 +194,7 @@ function spendFigures(spend, unreadable) {
     overhead: { ...spend.overhead, share: shareOf(spend.overhead, spend.all), bySession: standing.map(([session, own]) => ({ session, ...own, onRows: own.onRows })) },
     unmeasured: { ...spend.unmeasured, unreadableTranscripts: unreadable },
     unplaced: spend.unplaced,
+    unpricedModels: [...spend.unpricedModels].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).slice(0, UNPRICED_LISTED),
     cacheRead: { share: spend.input.side > 0 ? spend.input.cacheRead / spend.input.side : null, cacheRead: spend.input.cacheRead, inputSide: spend.input.side },
   };
 }
@@ -247,19 +253,26 @@ function priceOnce(turns, claimed, part) {
   let dollars = 0;
   let tokens = 0;
   let floor = false;
+  let priced = 0;
+  let unpriced = 0;
   for (const turn of turns) {
     if (claimed.has(turn.id) || !turn.tokens) continue;
     claimed.add(turn.id);
     const cost = part === "whole" ? turn.costUsd ?? null : costOf(turn.model, { ...turn.tokens, output: 0 });
     tokens += part === "whole" ? allTokens(turn.tokens) : inputSide(turn.tokens);
-    if (typeof cost === "number") dollars += cost;
-    else floor = true;
+    if (typeof cost === "number") {
+      dollars += cost;
+      priced += 1;
+    } else {
+      floor = true;
+      unpriced += 1;
+    }
   }
-  return { dollars, tokens, floor };
+  return { dollars, tokens, floor, priced, unpriced };
 }
 
-/** @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
-const classOf = (head, priced) => ({ ...head, dollars: priced.dollars, floor: priced.floor, tokens: priced.tokens });
+/** A class whose every turn is unpriced is NOT zero dollars: it is not derivable, and says how many turns it could not price. @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
+const classOf = (head, priced) => ({ ...head, dollars: priced.priced === 0 && priced.unpriced > 0 ? NOT_DERIVABLE : priced.dollars, floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
 
 /** @param {Repeat} context */
 function redelivered({ events, turnsOf, at, claimed }) {
@@ -361,7 +374,7 @@ function repeatClasses(context) {
 /** The headline: the dollars of the classes that have a derivation, a floor when any of them is. @param {RepeatClass[]} classes */
 function repeatTotal(classes) {
   const priced = classes.filter((entry) => typeof entry.dollars === "number");
-  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: priced.some((entry) => entry.floor), tokens: priced.reduce((sum, entry) => sum + entry.tokens, 0) };
+  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: classes.some((entry) => entry.floor), tokens: priced.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -457,11 +470,11 @@ function partialReason({ start, now, held, unread }) {
 
 /**
  * The report. `readings` is wakes-per-row's `measure` result for each week by its start (`null` for a week it was not run for).
- * `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
+ * `openRows` are the rows GitHub says are open at the reading (`null` when not asked: none is then called open). `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
  * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
- *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[] }} input
+ *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null }} input
  */
-export function aggregate({ events, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [] }) {
+export function aggregate({ events, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
   const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
   const { turns, placed, byRow, turnsOf } = indexes({ events, keys });
   const everyMerge = mergedRows(pulls, { from: -Infinity, to: Infinity }, rowRepo);
@@ -479,18 +492,22 @@ export function aggregate({ events, pulls, rowRepo, now, since, held, readings =
       wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
     });
   }
-  return { weeks, ...unmerged({ events, byRow, merged: everyMerge }), held, since: weekStart(since), now };
+  return { weeks, ...unmerged({ byRow, merged: everyMerge, openRows }), held, since: weekStart(since), now };
 }
 
-/** Rows with turns and no merge, listed apart: an open row, or one closed with no merge. @param {{ events: TraceEvent[], byRow: Map<number, Tally>, merged: MergedRow[] }} input */
-function unmerged({ events, byRow, merged }) {
+/**
+ * Rows with turns and no merge IN THIS READING, split by what GitHub says of them: still open (`openRows`, read at the run), or not open and not merged in the window of this
+ * reading (merged before it, or closed with no merge): their spend is real and in no average. With `openRows` unknown, none is called open.
+ * @param {{ byRow: Map<number, Tally>, merged: MergedRow[], openRows: number[] | null }} input
+ */
+function unmerged({ byRow, merged, openRows }) {
   const done = new Set(merged.map((entry) => entry.row));
-  const closed = new Set(events.filter((event) => event.kind === "closed" && event.row !== null && event.pr === null).map((event) => event.row));
+  const stillOpen = new Set(openRows ?? []);
   const listed = [...byRow].filter(([row]) => !done.has(row)).map(([row, tally]) => ({
-    row, status: /** @type {"open" | "closed without a merge"} */ (closed.has(row) ? "closed without a merge" : "open"), turns: tally.turns, tokens: tally.tokens,
+    row, status: /** @type {"open" | "outside"} */ (stillOpen.has(row) ? "open" : "outside"), turns: tally.turns, tokens: tally.tokens,
     dollars: tally.priced > 0 ? tally.dollars : null, floor: tally.unpriced > 0,
   })).sort((a, b) => (b.dollars ?? -1) - (a.dollars ?? -1) || b.tokens - a.tokens || a.row - b.row);
-  return { open: listed.filter((entry) => entry.status === "open"), closedUnmerged: listed.filter((entry) => entry.status !== "open") };
+  return { open: listed.filter((entry) => entry.status === "open"), outside: listed.filter((entry) => entry.status === "outside"), openKnown: openRows !== null };
 }
 
 /** Consecutive COMPLETE weeks only: a partial week is printed and never compared (a week the store holds half of would read as a saving). @param {ReturnType<typeof aggregate>["weeks"]} weeks */
@@ -524,7 +541,8 @@ const count = (value) => (value === null ? "n/a" : Math.round(value).toLocaleStr
 
 /** @param {RepeatClass} entry */
 function classLine(entry) {
-  const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens` : `dollars: ${entry.dollars}`;
+  const unpriced = entry.unpriced ? ` (${entry.unpriced} turns unpriced)` : "";
+  const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens${unpriced}` : `dollars: ${entry.dollars}${unpriced}, ${count(entry.tokens)} tokens`;
   return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}`;
 }
 
@@ -536,9 +554,10 @@ function weekLines(week) {
   lines.push(`  per merged row  dollars   p50 ${dollars(perRow.dollars.p50)}  p90 ${dollars(perRow.dollars.p90)}  (n=${perRow.dollars.n})`,
     `                  tokens    p50 ${count(perRow.tokens.p50)}  p90 ${count(perRow.tokens.p90)}  (n=${perRow.tokens.n})`,
     `                  wall-clock p50 ${perRow.wallClock.p50 === null ? "n/a" : hours(perRow.wallClock.p50)}  p90 ${perRow.wallClock.p90 === null ? "n/a" : hours(perRow.wallClock.p90)}  (n=${perRow.wallClock.n}; no claim record: ${perRow.noClaim})`);
-  lines.push(`  the week's spend by turn time: ${dollars(spend.dollars)} priced over ${spend.turns} turns (${spend.unpriced} unpriced), ${count(spend.tokens)} tokens`,
-    `  overhead (no row): ${dollars(spend.overhead.dollars)} = ${percent(spend.overhead.share.dollars)} of dollars, ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
-  for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars)}  ${count(own.tokens)} tokens  (on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars)})`);
+  lines.push(`  the week's spend by turn time: ${dollars(spend.dollars, spend.unpriced > 0)} over ${spend.turns - spend.unpriced} priced turns; ${spend.unpriced} turns have a model with no price and are NOT in it (${percent(spend.turns > 0 ? spend.unpriced / spend.turns : null)}), ${count(spend.tokens)} tokens`,
+    `    models with no price, by turns: ${spend.unpricedModels.map(([model, turns]) => `${model} ${turns}`).join(", ") || "none"}`,
+    `  overhead (no row): ${dollars(spend.overhead.dollars, spend.overhead.unpriced > 0)} = ${percent(spend.overhead.share.dollars)} of the priced dollars (${spend.overhead.unpriced} of its ${spend.overhead.turns} turns unpriced), ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
+  for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars, own.unpriced > 0)}  ${count(own.tokens)} tokens  (${own.unpriced} unpriced; on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars, own.onRows.unpriced > 0)})`);
   lines.push(`  UNMEASURED (not overhead): ${spend.unmeasured.turns} turns, ${dollars(spend.unmeasured.dollars)}; transcripts the ingest could not read: ${spend.unmeasured.unreadableTranscripts.length}${spend.unmeasured.unreadableTranscripts.map((file) => `\n    ${file}`).join("")}`,
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
@@ -548,6 +567,7 @@ function weekLines(week) {
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function dearestLines(week) {
+  if (week.dearest.length === 0) return [`  the ${DEAREST} dearest merged rows: none, because no merged row has a priced turn`];
   return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.map((row) => `    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`)];
 }
 
@@ -555,7 +575,7 @@ function dearestLines(week) {
 function wakeLines(week) {
   if (week.wakes === null) return ["  wakes: wakes-per-row was not run for this week, so the counts are not compared"];
   return [`  wakes against wakes-per-row: ${week.wakes.agree} of ${week.wakes.rows} rows agree`,
-    ...week.wakes.differ.map((entry) => `    #${entry.row}: store ${entry.store}, wakes-per-row ${entry.wakesPerRow ?? "n/a"} -- ${entry.reason}`)];
+    ...groupByReason(week.wakes.differ)];
 }
 
 /** @param {ReturnType<typeof aggregate>} report @param {{ ingestFooter?: string[] }} [footer] */
@@ -567,7 +587,8 @@ export function renderAggregate(report, footer = {}) {
   lines.push("WEEK OVER WEEK (complete weeks only; a partial week is never compared):");
   for (const step of trend) lines.push(`  ${day(step.from)} -> ${day(step.to)}: p50 dollars ${signed(step.p50Dollars)}, p90 ${signed(step.p90Dollars)}, overhead share ${signedShare(step.overheadShare)}, repeat waste ${signed(step.repeatDollars)}, cache-read share ${signedShare(step.cacheReadShare)}`);
   if (trend.length === 0) lines.push("  fewer than two complete weeks: nothing to compare yet");
-  lines.push("", `OPEN ROWS, in no average (${report.open.length}):`, ...report.open.slice(0, DEAREST).map(openLine), `ROWS CLOSED WITHOUT A MERGE, in no average (${report.closedUnmerged.length}):`, ...report.closedUnmerged.slice(0, DEAREST).map(openLine));
+  lines.push("", `OPEN ROWS, in no average (${report.openKnown ? report.open.length : "not asked"}); the ${DEAREST} dearest:`, ...report.open.slice(0, DEAREST).map(openLine),
+    `ROWS MERGED BEFORE THESE WEEKS OR CLOSED WITH NO MERGE (OUTSIDE), in no average (${report.outside.length}); the ${DEAREST} dearest:`, ...report.outside.slice(0, DEAREST).map(openLine));
   return [...lines, ...(footer.ingestFooter ?? [])].join("\n");
 }
 
@@ -577,3 +598,17 @@ const signed = (value) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}$${
 const signedShare = (value) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}${Math.abs(value * PERCENT).toFixed(SHARE_DECIMALS)} points`);
 /** @param {ReturnType<typeof unmerged>["open"][number]} row */
 const openLine = (row) => `  #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns  (${row.status})`;
+
+/** One line per reason, with the rows it explains and, for a row whose two counts are both known, what they were: a reason is stated once, however many rows share it. @param {WakeDifference[]} differ */
+function groupByReason(differ) {
+  /** @type {Map<string, WakeDifference[]>} */
+  const groups = new Map();
+  for (const entry of differ) {
+    const reason = entry.reason.replace(/\d+ wakes and wakes-per-row \d+$/, "N wakes and wakes-per-row M");
+    groups.set(reason, [...(groups.get(reason) ?? []), entry]);
+  }
+  return [...groups].sort(([, a], [, b]) => b.length - a.length).map(([reason, entries]) => {
+    const shown = entries.slice(0, DIFFERENCES_LISTED).map((entry) => `#${entry.row} (${entry.store} v ${entry.wakesPerRow ?? "n/a"})`).join(", ");
+    return `    ${entries.length} rows -- ${reason}: ${shown}${entries.length > DIFFERENCES_LISTED ? `, and ${entries.length - DIFFERENCES_LISTED} more` : ""}`;
+  });
+}

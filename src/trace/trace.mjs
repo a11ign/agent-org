@@ -408,6 +408,13 @@ function githubEventsOfMerged({ pulls, rowRepo, held, budget, gh }) {
   return { events, unreadRows };
 }
 
+/** The rows GitHub says are open now: one paginated list on the REST pool, pull requests (which the issues endpoint also lists) left out. @param {string} rowRepo @returns {number[]} */
+function readOpenRows(rowRepo) {
+  const out = execFileSync("gh", ["api", "--paginate", `repos/${rowRepo}/issues?state=open&per_page=${SEARCH_PAGE}`, "--jq", ".[] | select(.pull_request | not) | .number"],
+    { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+  return out.split("\n").filter(Boolean).map(Number);
+}
+
 /** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.mjs").LedgerEntry[], cache: string }} input */
 function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
   const transcripts = readTranscripts(join(homedir(), ".claude", "projects"), starts[0]);
@@ -433,7 +440,7 @@ async function mainAggregate() {
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
-  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows });
+  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows: readOpenRows(rowRepo) });
   console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), `GitHub: ${github.calls} REST calls (gh api, budget ${budget}); ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`, NOT_HELD] }));
 }
 

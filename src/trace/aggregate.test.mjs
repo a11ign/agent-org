@@ -92,7 +92,7 @@ const READINGS = new Map([
 ]);
 
 const report = (overrides = {}) => aggregate({
-  events: EVENTS, pulls: PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "test fixture" }, readings: READINGS, unreadable: ["/x/broken.jsonl"], ...overrides,
+  events: EVENTS, pulls: PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "test fixture" }, readings: READINGS, unreadable: ["/x/broken.jsonl"], openRows: [301], ...overrides,
 });
 const weekOf = (result, start) => result.weeks.find((week) => week.start === start);
 
@@ -120,6 +120,11 @@ test("PER ROW: p50 and p90 of dollars and tokens, EACH WEEK ITS OWN (positive co
 test("OPEN ROW: in its own list and in NO average (positive control: row 301 is $100, and p90 of week B is 20, not 100)", () => {
   const result = report();
   assert.deepEqual(result.open.map((row) => [row.row, row.status, row.dollars]), [[301, "open", 100]]);
+  assert.deepEqual(result.outside, [], "every other row with turns is merged in the reading");
+  // A row GitHub does not call open and the reading did not merge (merged earlier, or closed with no merge) is OUTSIDE, in no average, and not called open.
+  const outside = report({ openRows: [] });
+  assert.deepEqual([outside.open.length, outside.outside.map((row) => row.row)], [0, [301]]);
+  assert.equal(report({ openRows: null }).openKnown, false, "unasked is not 'none are open'");
   for (const week of result.weeks) assert.ok(!week.rows.some((row) => row.row === 301), "an open row is not among the merged rows");
   assert.equal(weekOf(result, WEEK_B).perRow.rows, 2);
   assert.ok(/** @type {number} */ (weekOf(result, WEEK_B).perRow.dollars.p90) < 21);
@@ -203,10 +208,12 @@ test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and
   assert.equal(total.floor, false);
 });
 
-test("REPEAT CLASSES: a class with an unpriced turn is a floor, and the week before has none of week B's repeats", () => {
+test("REPEAT CLASSES: a class whose turns are all unpriced is not derivable (never 0), and the week before has none of week B's repeats", () => {
   const unpriced = EVENTS.map((event) => (event.id === EVENTS.find((candidate) => candidate.kind === "turn" && candidate.wakeId === "wake:pm:2").id ? { ...event, costUsd: null } : event));
   const { classes, total } = weekOf(report({ events: unpriced }), WEEK_B).repeats;
-  assert.deepEqual([classes[0].dollars, classes[0].floor, total.floor], [0, true, true]);
+  // The class's only turn is unpriced: its dollars are NOT 0, they are not derivable, and the class says how many turns it could not price.
+  assert.deepEqual([classes[0].dollars, classes[0].floor, classes[0].unpriced, classes[0].count], [NOT_DERIVABLE, true, 1, 1]);
+  assert.equal(total.floor, true);
   assert.equal(weekOf(report(), WEEK_A).repeats.classes.find((entry) => entry.id === "redelivered").count, 0);
 });
 
@@ -271,10 +278,11 @@ test("RENDER: the definitions are printed once at the top, and a class with no d
   assert.ok(text.indexOf("DEFINITIONS") < text.indexOf("WEEK 2026-09-21"));
   for (const line of DEFINITIONS) assert.ok(text.includes(line), `missing definition: ${line.slice(0, 40)}`);
   assert.equal(text.split("DEFINITIONS").length, 2, "printed once");
-  assert.match(text, /CI re-runs\s+1\s+dollars: not derivable, 0\.3h of runner time/);
-  assert.match(text, /deferred waits\s+0\s+dollars: not held/);
-  assert.match(text, /row #102 differs|#102: store 2, wakes-per-row 3 -- the store starts at its ingest window/);
-  assert.match(text, /#202: store 2, wakes-per-row 1 -- UNEXPLAINED/);
+  assert.match(text, /CI re-runs\s+1\s+dollars: not derivable, 0 tokens, 0\.3h of runner time/);
+  assert.match(text, /deferred waits\s+0\s+dollars: not held, 0 tokens/);
+  assert.match(text, /UNEXPLAINED: the store holds N wakes and wakes-per-row M: #202 \(2 v 1\)/);
   assert.match(text, /OPEN ROWS, in no average \(1\)/);
+  assert.match(text, /models with no price, by turns: <synthetic> 1/);
+  assert.match(text, /1 rows -- the store starts at its ingest window.*: #102 \(2 v 3\)/);
   assert.match(text, /PARTIAL|complete/);
 });
