@@ -326,7 +326,7 @@ test("#2793: a host with no `stateDir` gets a REFUSAL from `stateFilePath`, neve
   assert.equal(refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
 });
 
-// --- 4. `update-tool`: moves to origin/main, refuses a dirty tree, touches no other checkout ---------------------------------
+// --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.mjs`'s, #3443) ---------------------------------
 
 /** git in a directory, with every `GIT_*` variable stripped so a leaked one cannot reach a real repository. */
 const gitAt = (dir: string) => (args: string[]) => execFileSync("git", args, { cwd: dir, env: sandboxGitEnv(), encoding: "utf8" });
@@ -355,20 +355,6 @@ function withUpstreamAndClones<T>(fn: (ctx: { upstream: ReturnType<typeof gitAt>
   });
 }
 
-test("#2793: `update-tool` moves the tool checkout to origin/main and leaves the project checkout beside it exactly where it was", () => {
-  withUpstreamAndClones(({ commit, tool, project, at }) => {
-    const first = at(project)(["rev-parse", "HEAD"]).trim();
-    assert.equal(at(tool)(["rev-parse", "HEAD"]).trim(), first, "POSITIVE CONTROL: both clones start at the first commit");
-    const second = commit("second");
-    assert.notEqual(second, first);
-    assert.equal(updateTool(tool, at(tool)), second, "it reports the commit it moved to");
-    assert.equal(at(tool)(["rev-parse", "HEAD"]).trim(), second, "the tool checkout is at the new origin/main");
-    assert.equal(at(project)(["rev-parse", "HEAD"]).trim(), first, "the project checkout was not moved");
-    assert.equal(at(project)(["status", "--porcelain"]).trim(), "", "and not touched");
-    assert.equal(at(project)(["rev-parse", "origin/main"]).trim(), first, "not even fetched: its origin/main is what it was");
-  });
-});
-
 test("#2793: `update-tool` REFUSES a tree with a modified tracked file, naming it, and moves nothing", () => {
   withUpstreamAndClones(({ commit, tool, at }) => {
     const first = at(tool)(["rev-parse", "HEAD"]).trim();
@@ -378,15 +364,6 @@ test("#2793: `update-tool` REFUSES a tree with a modified tracked file, naming i
     assert.throws(() => updateTool(tool, at(tool)), /uncommitted changes[\s\S]*file\.txt/);
     assert.equal(at(tool)(["rev-parse", "HEAD"]).trim(), first, "HEAD did not move");
     assert.equal(readFileSync(join(tool, "file.txt"), "utf8"), "edited by hand\n", "and the edit was neither stashed nor reset");
-  });
-});
-
-test("#2793: an UNTRACKED file is not dirt -- the tool still updates", () => {
-  withUpstreamAndClones(({ commit, tool, at }) => {
-    writeFileSync(join(tool, "build-product.txt"), "x\n");
-    assert.match(at(tool)(["status", "--porcelain"]), /\?\? build-product\.txt/, "POSITIVE CONTROL: git sees the untracked file");
-    const second = commit("second");
-    assert.equal(updateTool(tool, at(tool)), second);
   });
 });
 
