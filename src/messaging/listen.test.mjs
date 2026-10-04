@@ -1,3 +1,4 @@
+// no-token: clearBeforeOrder -- every consumer here is injected (a recording `converse`, a recording queue port, a recording `answers`); the real queue is never reached, so nothing here clears or prompts a session
 // @ts-check
 // THE LISTENER'S `onForward` (a11ign/a11ign#3064 done-whens 1 to 4): an accepted MESSAGE that is not an answer reaches `converse`, a BUTTON PRESS and a
 // REPLY TO A REQUEST reach `answers` and never `converse`; a queue that cannot load is TOLD to the chairman and ledgered; the unit sets `AGENT_ORG_HOST`;
