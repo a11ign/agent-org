@@ -236,7 +236,9 @@ function tick(present: string[] | null, queued: object[], { teardown = true } = 
     const before = readFileSync(queue, "utf8");
     // PATH is the stub's directory ALONE: no `gh` exists to be reached.
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
-      input: "", encoding: "utf8", env: { HOME: dir, PATH: dir } });
+      input: "", encoding: "utf8",
+      // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
+      env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST } });
     const after = readFileSync(queue, "utf8");
     return { ...ran, before, after, waiting: readHandoffs(handoffQueuePath(ledger)), left: existsSync(queue) };
   });
