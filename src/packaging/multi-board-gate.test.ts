@@ -119,7 +119,7 @@ test("the collision holds over EVERY cause: the same fixture in two repositories
     openRows: tag(input.openRows, key), key, repo: `acme/${key}` });
   const primary = asOrders(decide(BUSY_INPUT));
   const other = asOrders(decide(asKey(BUSY_INPUT, "other") as Parameters<typeof decide>[0]));
-  assert.equal(primary.length, RECORDED_BUSY.length, "POSITIVE CONTROL: the fixture emits exactly the recorded orders -- fourteen, across eight causes, not a handful");
+  assert.equal(primary.length, RECORDED_BUSY.length, "POSITIVE CONTROL: the fixture emits exactly the recorded orders -- thirteen, across eight causes, not a handful");
   assert.equal(other.length, primary.length, "the same causes fire for the same facts, in either repository");
   const primaryKeys = new Set(primary.map((o) => o.causeKey));
   const shared = other.filter((o) => primaryKeys.has(o.causeKey)).map((o) => o.causeKey);
@@ -248,6 +248,9 @@ function fixtures() {
  * 13 bytes shorter, which is the entire diff in the four prompts that name it -- re-run against the new code, not restated
  * by hand.
  *
+ * #3476 REMOVED the `draft-awaiting-verdict` entry for pr-103, the fixture's DIRTY / CONFLICTING pull request: it recorded the defect (a
+ * reviewer asked to read a head that cannot merge). Its `pr-merge-conflict` entry stays, and the other three review entries are unchanged.
+ *
  * #2896 RE-DERIVED the one `pr-review-blocked` entry (104): its prompt names `pnpm run prompt:session` where it named
  * `npm run prompt:session --`, 2 bytes shorter, which is the entire diff in that prompt -- re-run against the new code, not restated by hand.
  */
@@ -256,7 +259,6 @@ const RECORDED_BUSY = [
   { session: "product-manager", cause: "answer-owed", subject: "row-302", discriminator: "302", causeKey: "product-manager/answer-owed/row-302", promptSha256: "e07bbd685428471fa8b38152345645bc00d2be843bf8e4406060502910d98d2f", promptLength: 557 },
   { session: "reviewer-101", cause: "draft-awaiting-verdict", subject: "pr-101", discriminator: "abc12345", causeKey: "reviewer-101/draft-awaiting-verdict/pr-101/abc12345", promptSha256: "39ebb471c3b4bc9287a48459d7d5c4bdb6936693ef03e0cea25687209613afff", promptLength: 166 },
   { session: "worker-x", cause: "pr-checks-failing", subject: "pr-102", discriminator: "abc12345", causeKey: "worker-x/pr-checks-failing/pr-102/abc12345", promptSha256: "4b867314bbbbbb5b63129a0cd85357157ec328118500592a7819f0da60438313", promptLength: 668 },
-  { session: "reviewer-103", cause: "draft-awaiting-verdict", subject: "pr-103", discriminator: "abc12345", causeKey: "reviewer-103/draft-awaiting-verdict/pr-103/abc12345", promptSha256: "0473ecf3537e3d9e7d53224f2307a80377c9c6242d9227b6849e82934844282e", promptLength: 180 },
   { session: "reviewer-104", cause: "draft-awaiting-verdict", subject: "pr-104", discriminator: "abc12345", causeKey: "reviewer-104/draft-awaiting-verdict/pr-104/abc12345", promptSha256: "2cfd74cea471f3a9b8bba72b2b1c1376558a142580a3522f139fad2f59d7aa8c", promptLength: 180 },
   { session: "reviewer-105", cause: "draft-awaiting-verdict", subject: "pr-105", discriminator: "abc12345", causeKey: "reviewer-105/draft-awaiting-verdict/pr-105/abc12345", promptSha256: "4c1bb79eb40777da555e29a8e29dad386c7567bc5c73b94bc6e29e231da78b86", promptLength: 180 },
   { session: "engineers", cause: "ready-row-unclaimed", subject: "row-202", discriminator: "202", causeKey: "engineers/ready-row-unclaimed/202", title: "row 202", promptSha256: "db0b62244a043edc9bf8e6a6188a20e0ed2b385346ac5d666c56c63f5aa600a5", promptLength: 339 },
