@@ -161,6 +161,8 @@ test("reviewerTarget names the repository and the number", () => {
   assert.deepEqual(reviewerTarget("reviewer-tool2-9", "acme/board"), { repo: "acme/tool2", number: 9 });
   assert.deepEqual(reviewerTarget("reviewer-3d-viewer-12", "acme/board"), { repo: "acme/3d-viewer", number: 12 });
   assert.deepEqual(reviewerTarget("reviewer-12", "acme/board"), { repo: "acme/board", number: 12 });
+  // A key ending in -<digits> is refused by the declaration, so the name is no reviewer's rather than a reviewer of "tool-2".
+  assert.equal(reviewerTarget("reviewer-tool-2-9", "acme/board"), null);
 });
 
 // ---- (4) a standing lead is its own line ---------------------------------------------------------------------------------------------------------------
