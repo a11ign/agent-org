@@ -1,4 +1,5 @@
 // a11ign/a11ign#3452: wakes per merged row. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub.
+// no-token: gh -- every source is an injected fixture; the only `gh` calls in the module are `readMergedPulls` and `readClaimedAt`, which no test here calls
 // The worker-3390 fixture is the worked example on the row, in the real record shape (a `user` record whose string content is wrapped in `<pasted_content`).
 import assert from "node:assert/strict";
 import { test } from "node:test";
