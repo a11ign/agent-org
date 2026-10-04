@@ -163,8 +163,17 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
 | `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState` and `InactiveEnterTimestamp` (when the unit last RAN), and the tick's own completion record (when a tick last COMPLETED) | `incident:gate-crash` |
 | `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
 | `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
+| `readFixRow(key)` | the open row that holds the fix for an incident or stall: `issues?labels=<key>&state=open`, the oldest, its `session:<name>` label as the holder. **`null` only when GitHub answered and none is open; a failed call throws** | the `Doing` line of every SENT incident and stall |
 
 **Decisions this row made that the design did not spell out:**
+
+- **A fix row says which incident it fixes by a LABEL NAMED FOR THE EVENT KEY (`incident:trunk-red`, `stall:no-merge`; a11ign/a11ign#3439).** Whoever opens the
+  fix adds that one label (the REST add-labels call creates it on first use), and `readFixRow` reads it back. Not a `Fixes-incident: <key>` body line: the issues
+  listing filters on a label exactly and on the pool `readWaitingRows` already spends, where a body line needs the search API, which matches words not lines and
+  has its own smaller pool. No incident row carried either marker when this was chosen (the existing ones, such as the `trunk-red` fixes, say it only in their
+  titles), so the choice follows the org's other conditions, which are fields: `answer:<session>`, `session:<name>`. The holder is the row's `session:` label, absent while nobody holds it,
+  and several open rows for one key name the oldest. **Opening the row is not this program's job**; until one carries the label a sent event reads "no row is open
+  for this yet", which is true of every incident filed before the label existed.
 
 - **The gate's last COMPLETED tick is a record the tick writes, not systemd's timestamp (#3040).** `InactiveEnterTimestamp` answers "did the unit run", and a tick
   that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.mjs` writes
@@ -193,9 +202,10 @@ GraphQL and are not counted here):
 | `pulls?state=closed&base=main` (`readLastMerge`) | 1 |
 | `actions/workflows/trunk.yml/runs` (`readTrunkRuns`) | 1 |
 | `actions/runs?status=completed` (`readCiRuns`) | 1 |
+| `issues?labels=<key>&state=open` (`readFixRow`) | one per event that is about to be SENT, none otherwise |
 | `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
 
-**Four calls per run when nothing new has failed** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
+**Four calls per run when nothing new has failed and nothing is sent** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
 of the account's 5,000-point core pool. Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
 calls, the 5 above and 3 annotation calls, which are not repeated. The account is the unit's declared `GH_CONFIG_DIR`, never
 a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for six REST paths and nothing after the path, so no flag can turn the read into a write.
