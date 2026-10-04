@@ -14,6 +14,7 @@ import { after, describe, test } from "node:test";
 import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.mjs";
 import { actionData, createInbound, parseButtonData } from "./inbound.mjs";
 import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.mjs";
+import { FORME_STEP, verifyApproval } from "./session-queue.mjs";
 import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.mjs";
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
@@ -455,13 +456,67 @@ describe("explain and stuck queue ONE order for the liaison and nobody else (don
     assert.equal(orders.calls.length, 1);
   });
 
-  test("forme is D1's: it is told so, and nothing is written or queued", async () => {
+  test("forme (#3581): a press writes ONE line chairman:queue accepts as his OK, leaves the row asking, and tells him in plain words", async () => {
     const orders = fixtureOrders();
     const h = harness(openRow(), { orders });
+    const before = h.lines().length;
     const result = /** @type {any} */ (await h.hear(press(1, { data: actionData("forme") })));
-    assert.equal(result.reason, "not-available");
+    assert.equal(result.reason, "queued-for-session");
+    assert.equal(result.text, "I've asked your session to do this. Nothing happens until it reads the queue.");
+    assert.ok(!/chairman:queue|\.mjs|#\d|\bq-/.test(result.text), "it names the queue as a place, and says nothing of what it holds");
+    assert.equal(result.clearKeyboard, null, "the request is still asking, so its keyboard stays");
+    const written = h.lines().slice(before).filter((entry) => entry.direction === "answer");
+    assert.deepEqual(written.map(({ direction, step, via, messageRef }) => ({ direction, step, via, messageRef })),
+      [{ direction: "answer", step: FORME_STEP, via: "button", messageRef: ASK_REF }]);
+    assert.equal("key" in written[0], false, "no `key`, so the delivery fold never mistakes it for a notification");
+    assert.deepEqual(h.github.writes(), [], "a press is not an answer: no comment, and the label is untouched");
+    assert.deepEqual(h.github.rows.get(`${REPO}#${ROW}`)?.labels, ["ready", NEEDS_CHAIRMAN]);
+    assert.equal(orders.calls.length, 0, "the ask is the liaison's `chairman:queue add`, not this press");
+  });
+
+  test("forme (#3581): the two files agree on the shape: verifyApproval accepts the ref the press wrote, and only that ref", async () => {
+    const h = harness();
+    assert.equal(verifyApproval(h.lines(), { ref: ASK_REF, words: null }).ok, false, "before the press there is no OK");
+    await h.hear(press(1, { data: actionData("forme") }));
+    assert.deepEqual(verifyApproval(h.lines(), { ref: ASK_REF, words: null }), { ok: true });
+    assert.equal(verifyApproval(h.lines(), { ref: REMINDER_REF, words: null }).ok, false, "a press is the OK for the message it sat under, not for its sibling");
+  });
+
+  test("forme (#3581): the same press twice writes one line and says so, across a restart too", async () => {
+    const h = harness();
+    const first = /** @type {any} */ (await h.hear(press(1, { data: actionData("forme") })));
+    const again = /** @type {any} */ (await h.hear(press(2, { data: actionData("forme") })));
+    h.restart();
+    const afterRestart = /** @type {any} */ (await h.hear(press(3, { data: actionData("forme") })));
+    assert.deepEqual([first.reason, again.reason, afterRestart.reason], ["queued-for-session", "already-queued", "already-queued"]);
+    assert.match(again.text, /already asked/);
+    assert.equal(h.lines().filter((entry) => entry.step === FORME_STEP).length, 1);
     assert.deepEqual(h.github.writes(), []);
-    assert.equal(orders.calls.length, 0);
+  });
+
+  test("forme (#3581): each message is its own OK, and the request's other presses are unaffected (snooze still works after)", async () => {
+    const h = harness();
+    await h.hear(press(1, { data: actionData("forme") }));
+    const onReminder = /** @type {any} */ (await h.hear(press(2, { messageId: Number(REMINDER_REF), data: actionData("forme") })));
+    assert.equal(onReminder.reason, "queued-for-session");
+    assert.deepEqual(h.lines().filter((entry) => entry.step === FORME_STEP).map((entry) => entry.messageRef), [ASK_REF, REMINDER_REF]);
+    assert.equal(/** @type {any} */ (await h.hear(press(3, { data: actionData("later") }))).reason, "snoozed");
+    assert.equal(/** @type {any} */ (await h.hear(press(4))).reason, "answered", "the request can still be answered: the forme line is not one of the answer's steps");
+  });
+
+  test("forme (#3581) POSITIVE CONTROL: a press on an unknown message, or on a request no longer asking, writes nothing, and verifyApproval refuses its ref", async () => {
+    const h = harness();
+    const before = h.raw();
+    const unknown = /** @type {any} */ (await h.hear(press(1, { messageId: 777, data: actionData("forme") })));
+    assert.equal(unknown.reason, "unknown-message");
+    assert.equal(h.lines().some((entry) => entry.step === FORME_STEP), false);
+    assert.equal(verifyApproval(h.lines(), { ref: "777", words: null }).ok, false);
+    assert.equal(h.raw().replace(before, "").includes('"step":"forme"'), false);
+    // The same press on a real request is what writes the line: the control is not a writer that never writes.
+    assert.equal(/** @type {any} */ (await h.hear(press(2, { data: actionData("forme") }))).reason, "queued-for-session");
+    const gone = harness(openRow({ labels: ["ready"] }));
+    assert.equal(/** @type {any} */ (await gone.hear(press(1, { data: actionData("forme") }))).reason, "no-longer-asking");
+    assert.equal(gone.lines().some((entry) => entry.step === FORME_STEP), false);
   });
 });
 
