@@ -12,13 +12,18 @@
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
 // themselves. The calls are counted and the report says how many were made.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseLedger, rowsClosedBy } from "../wakes-per-row.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
-import { appendEvents, DEFINITIONS, eventsForRow, eventsOfTranscript, readStore } from "./store.mjs";
+import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
+import { appendToStore, DEFINITIONS, eventsForRow, eventsOfTranscript, openStore, readStore } from "./store.mjs";
+
+/** @typedef {import("./ingest-state.mjs").FileState} FileState
+ * @typedef {import("./ingest-state.mjs").IngestState} IngestState
+ * @typedef {import("./ingest-state.mjs").Carry} Carry */
 
 const DEFAULT_SINCE_DAYS = 3;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -46,29 +51,117 @@ export function parseArgs(argv) {
 }
 
 /**
- * Ingest every transcript modified since `since`. A file that cannot be read is listed, never skipped quietly.
- * @param {{ root: string, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, store: string }} input
+ * @typedef {{ read: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
+ *   coldStart: string | null, firstRunAt: number, firstRunSince: number }} IngestReport
  */
-export function ingest({ root, since, ledger, rowRepo, store }) {
-  let read = 0;
-  let unreadableLines = 0;
-  /** @type {string[]} */
-  const failed = [];
+
+/** Read `[start, end)` of a file, counting what was read: the report says how many bytes a run touched, so "only what changed" is a measurement. @param {string} file @param {number} start @param {number} end @param {{ bytes: number }} meter */
+function readRange(file, start, end, meter) {
+  const buffer = Buffer.alloc(Math.max(0, end - start));
+  const descriptor = openSync(file, "r");
+  try {
+    readSync(descriptor, buffer, 0, buffer.length, start);
+  } finally {
+    closeSync(descriptor);
+  }
+  meter.bytes += buffer.length;
+  return buffer;
+}
+
+/** @param {string} root @param {number} since @returns {{ file: string, stat: import("node:fs").Stats }[]} the transcripts modified since `since`; a file that vanishes mid-listing is not one */
+function transcriptsSince(root, since) {
+  /** @type {{ file: string, stat: import("node:fs").Stats }[]} */
+  const found = [];
   for (const dir of readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
     for (const name of readdirSync(join(root, dir.name)).filter((file) => file.endsWith(".jsonl"))) {
       const file = join(root, dir.name, name);
-      if (statSync(file).mtimeMs < since) continue;
-      try {
-        const result = eventsOfTranscript({ text: readFileSync(file, "utf8"), file, ledger, rowRepo });
-        appendEvents(store, result.events);
-        unreadableLines += result.unreadable;
-        read += 1;
-      } catch (cause) {
-        failed.push(`${file}: ${/** @type {Error} */ (cause).message}`);
-      }
+      const stat = statSync(file);
+      if (stat.mtimeMs >= since) found.push({ file, stat });
     }
   }
-  return { read, unreadableLines, failed };
+  return found;
+}
+
+/**
+ * Read one transcript from where the state says to, and say what the state becomes: `null` when nothing is to be read. A transcript the state cannot be trusted for
+ * is read from byte 0 and `reread` says why.
+ * @param {{ file: string, stat: { size: number, mtimeMs: number }, entry: FileState | undefined, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string,
+ *   now: number }} input @param {{ bytes: number }} meter
+ */
+function readTranscript({ file, stat, entry, ledger, rowRepo, now }, meter) {
+  const headMatches = () => !entry || fingerprint(readRange(file, 0, entry.headBytes, meter)) === entry.headHash;
+  const plan = planRead({ entry, stat, now, headMatches });
+  if (plan.action === "skip") return null;
+  const readFrom = (/** @type {number} */ start, /** @type {Carry | null} */ carry) => {
+    const bytes = readRange(file, start, stat.size, meter);
+    return { bytes, start, result: eventsOfTranscript({ text: bytes.toString("utf8"), file, ledger, rowRepo, carry, now }) };
+  };
+  let reread = plan.reason;
+  let pass = plan.action === "resume" && entry ? readFrom(entry.offset, entry.carry) : readFrom(0, null);
+  if (pass.result.namedLate) { // the order that names the session came after turns already read under `unnamed:`
+    reread = "its session was named by an order after turns it had already read";
+    pass = readFrom(0, null);
+  }
+  const { bytes, start, result } = pass;
+  const head = start === 0 ? bytes.subarray(0, Math.min(HEAD_BYTES, result.consumed)) : null;
+  return { result, reread: reread ? `${file}: ${reread}` : null, next: /** @type {FileState} */ ({
+    offset: start + result.consumed, size: stat.size, mtimeMs: stat.mtimeMs, firstReadAt: entry?.firstReadAt ?? now, settleAt: result.settleAt, carry: result.carry,
+    headBytes: head ? head.length : (entry?.headBytes ?? 0), headHash: head ? fingerprint(head) : (entry?.headHash ?? fingerprint(Buffer.alloc(0))),
+  }) };
+}
+
+/**
+ * Ingest the transcripts modified since `since` that gained bytes since the state last saw them. Their events are appended to the open store as ONE batch, and the
+ * state returned is to be saved AFTER that append: a run killed in between leaves a state older than the store, which costs a re-read and no more. A file that cannot
+ * be read is listed, never skipped quietly.
+ * @param {{ root: string, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, store: ReturnType<typeof openStore>, state: IngestState,
+ *   coldStart?: string | null, now?: number }} input
+ * @returns {IngestReport & { state: IngestState }}
+ */
+export function ingest({ root, since, ledger, rowRepo, store, state, coldStart = null, now = Date.now() }) {
+  const meter = { bytes: 0 };
+  const files = { ...state.files };
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const batch = [];
+  /** @type {string[]} */
+  const failed = [];
+  /** @type {string[]} */
+  const reread = [];
+  const counts = { read: 0, unchanged: 0, unreadableLines: 0, heldBack: 0 };
+  for (const { file, stat } of transcriptsSince(root, since)) {
+    try {
+      const done = readTranscript({ file, stat, entry: state.files[file], ledger, rowRepo, now }, meter);
+      if (!done) {
+        counts.unchanged += 1;
+        continue;
+      }
+      for (const event of done.result.events) batch.push(event);
+      counts.unreadableLines += done.result.unreadable;
+      counts.heldBack += done.result.held;
+      if (done.reread) reread.push(done.reread);
+      files[file] = done.next;
+      counts.read += 1;
+    } catch (cause) {
+      failed.push(`${file}: ${/** @type {Error} */ (cause).message}`);
+    }
+  }
+  const { added } = appendToStore(store, batch);
+  return { ...counts, bytesRead: meter.bytes, failed, reread, added, coldStart, firstRunAt: state.firstRunAt, firstRunSince: state.firstRunSince, state: { ...state, files } };
+}
+
+/**
+ * One run's transcript half: open the store (the one read of it), load the state, ingest, and save the state once the events are in. The state is saved even when a
+ * file failed, because the files that did not fail were read.
+ * @param {{ root: string, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, now?: number }} input
+ * @param {(path: string) => import("./store.mjs").TraceEvent[]} [readEvents] a parameter so a test can count the reads of the store
+ */
+export function ingestTranscripts({ root, since, ledger, rowRepo, storePath, now = Date.now() }, readEvents = readStore) {
+  const store = openStore(storePath, readEvents);
+  const statePath = stateFileFor(storePath);
+  const { state, coldStart } = loadState({ statePath, storePath, now, since });
+  const { state: next, ...report } = ingest({ root, since, ledger, rowRepo, store, state, coldStart, now });
+  saveState(statePath, { ...next, storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
+  return { store, report };
 }
 
 /**
@@ -153,9 +246,22 @@ function line(event) {
   return `${when}  ${who} COMPACTION`;
 }
 
+/** The transcript half of the footer: what this run read, and from when the state holds the transcripts, so an absence before that is not read as "nothing happened". @param {IngestReport} ingested */
+function ingestLines(ingested) {
+  const iso = (/** @type {number} */ ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
+  const lines = [`ingested ${ingested.read} transcripts (${ingested.bytesRead} bytes read; ${ingested.unchanged} unchanged since the last run); ${ingested.unreadableLines} unreadable lines; `
+    + `${ingested.failed.length} files failed${ingested.failed.map((f) => `\n  ${f}`).join("")}`];
+  if (ingested.coldStart) lines.push(`COLD START (every transcript in the window read from its first byte): ${ingested.coldStart}`);
+  for (const reason of ingested.reread) lines.push(`read again from byte 0: ${reason}`);
+  if (ingested.heldBack > 0) lines.push(`${ingested.heldBack} messages written in the last 5 minutes are held back to the next run (a message may still be gaining blocks, and its turn is built from the last)`);
+  lines.push(`TRANSCRIPT STATE: holds each transcript from the run that first read it, the first run being ${iso(ingested.firstRunAt)}Z over transcripts modified after ${iso(ingested.firstRunSince)}Z. `
+    + "A transcript is read from its first byte then, but one last modified before that window is not in the store: absence before it is not \"nothing happened\".");
+  return lines;
+}
+
 /**
  * The report for one row's events, as text.
- * @param {{ number: number, rows: number[], prs: number[], events: import("./store.mjs").TraceEvent[], ingest?: { read: number, unreadableLines: number, failed: string[] },
+ * @param {{ number: number, rows: number[], prs: number[], events: import("./store.mjs").TraceEvent[], ingest?: IngestReport,
  *   github?: { calls: number, read: number, added: number } }} input
  */
 export function render({ number, rows, prs, events, ingest: ingested, github }) {
@@ -170,25 +276,23 @@ export function render({ number, rows, prs, events, ingest: ingested, github }) 
   for (const event of events) out.push(line(event));
   out.push("", `${events.length} events (${fromGithub} from GitHub), ${turns.length} turns across ${sessions.length} sessions (${sessions.join(", ")})`);
   out.push(`cost $${total.toFixed(COST_DECIMALS)} over ${priced.length} priced turns; ${turns.length - priced.length} turns have a model with no price and are NOT in that total`);
-  if (ingested) {
-    out.push(`ingested ${ingested.read} transcripts; ${ingested.unreadableLines} unreadable lines; ${ingested.failed.length} files failed${ingested.failed.map((f) => `\n  ${f}`).join("")}`);
-  }
+  if (ingested) out.push(...ingestLines(ingested));
   if (github) out.push(`GitHub: ${github.calls} REST calls (gh api); ${github.read} events read, ${github.added} new to the store`);
   out.push(NOT_HELD, "", ...DEFINITIONS);
   return out.join("\n");
 }
 
 async function main() {
-  const { number, since, store, json } = parseArgs(process.argv.slice(2));
+  const { number, since, store: storePath, json } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
-  const ingested = ingest({ root: join(homedir(), ".claude", "projects"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, store });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath });
   const gh = countingGh(ghApi);
   const { rows, prs } = resolveSubject(number, rowRepo, gh);
   const seen = readGithubEvents({ rows, prs, repo: rowRepo, gh });
-  const github = { calls: gh.calls, read: seen.length, added: appendEvents(store, seen).added };
-  const events = eventsForRow(readStore(store), { rows, prs });
+  const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
+  const events = eventsForRow(store.events, { rows, prs });
   console.log(json ? JSON.stringify({ number, rows, prs, github, events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github }));
 }
 

@@ -137,46 +137,121 @@ function subjectOfSession(session, rowRepo) {
 const SESSION_NAME = /You are `([^`]+)`/;
 
 /**
- * @param {string} text one transcript
- * @returns {{ records: { index: number, at: number, record: any }[], unreadable: number }}
+ * A message whose last block is younger than this may still be gaining blocks, and its turn is built from the LAST one, so it is held back to the next run.
+ * Measured 2026-10-04 on 80 transcripts (1,985 messages): the longest gap between two blocks of one message was 47 s, and blocks of one message are sometimes
+ * separated by other records, so "a record follows it" does not settle a message and only its age does.
+ */
+export const QUIET_MS = 5 * 60 * 1000;
+
+/** How long a consumed ledger line is remembered: it must exceed wakes-per-row's `LEDGER_LEAD_MS` (10 min), the window in which a later wake could claim it again. */
+const LEDGER_MEMORY_MS = 60 * 60 * 1000;
+
+/** @typedef {{ start: number, index: number, at: number, record: any }} Rec */
+
+/**
+ * @param {string} text one transcript, or the part of one that starts at a line boundary
+ * @returns {{ records: Rec[], unreadable: number[], end: number, tail: number | null }} `start` is a byte offset into `text`; `unreadable` the start of each line that is not JSON;
+ *   `tail` where a final line WITHOUT its newline begins when it is not JSON (a half-written line, to be read again), else `null`; `end` where the readable text ends
  */
 function readRecords(text) {
-  /** @type {{ index: number, at: number, record: any }[]} */
+  /** @type {Rec[]} */
   const records = [];
-  let unreadable = 0;
-  for (const [index, line] of text.split("\n").entries()) {
-    if (!line.trim()) continue;
-    let record;
-    try {
-      record = JSON.parse(line);
-    } catch {
-      unreadable += 1; // a live transcript's last line is often half written; counted and reported, never silently dropped
-      continue;
+  /** @type {number[]} */
+  const unreadable = [];
+  let start = 0;
+  let tail = null;
+  const lines = text.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const length = Buffer.byteLength(line);
+    if (line.trim()) {
+      try {
+        const record = JSON.parse(line);
+        const at = Date.parse(record?.timestamp);
+        records.push({ start, index, at: Number.isNaN(at) ? NaN : at, record });
+      } catch {
+        unreadable.push(start); // a live transcript's last line is often half written; counted and reported, never silently dropped
+        if (index === lines.length - 1) tail = start;
+      }
     }
-    const at = Date.parse(record?.timestamp);
-    records.push({ index, at: Number.isNaN(at) ? NaN : at, record });
+    start += length + 1;
   }
-  return { records, unreadable };
+  return { records, unreadable, end: tail ?? Buffer.byteLength(text), tail };
+}
+
+/** @typedef {{ id: string, first: number, last: number, record: any }} MessageGroup */
+
+/**
+ * One group per `message.id`: the position of its first and last block (in `records`) and its last record, whose usage is final.
+ * @param {Rec[]} records
+ * @returns {MessageGroup[]}
+ */
+function messageGroups(records) {
+  /** @type {Map<string, MessageGroup>} */
+  const byMessage = new Map();
+  for (const [position, { record }] of records.entries()) {
+    const id = record?.type === "assistant" ? record.message?.id : null;
+    if (!id || !record.message.usage) continue;
+    byMessage.set(id, { id, first: byMessage.get(id)?.first ?? position, last: position, record });
+  }
+  return [...byMessage.values()];
 }
 
 /**
- * Every event one transcript holds. A turn belongs to the latest wake before it; a turn before any wake belongs to the session itself.
- * @param {{ text: string, file: string, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string }} input
- * @returns {{ session: string, events: TraceEvent[], unreadable: number }}
+ * The byte before which everything is settled: the start of the earliest message still young enough to be gaining blocks, or `end`. A message is wholly before the
+ * boundary or wholly after it: a settled message with blocks on both sides pulls the boundary back to its first block.
+ * @param {{ records: Rec[], groups: MessageGroup[], end: number, now: number }} input
+ * @returns {{ boundary: number, held: MessageGroup[], settleAt: number | null }}
  */
-export function eventsOfTranscript({ text, file, ledger, rowRepo }) {
-  const { records, unreadable } = readRecords(text);
-  const wakeRecords = records.filter(({ record }) => isWake(record) && !Number.isNaN(Date.parse(record.timestamp)));
+function settledBoundary({ records, groups, end, now }) {
+  const young = groups.filter((group) => now - records[group.last].at < QUIET_MS);
+  let boundary = Math.min(end, ...young.map((group) => records[group.first].start));
+  for (let moved = true; moved;) {
+    moved = false;
+    for (const group of groups) {
+      if (records[group.first].start < boundary && records[group.last].start >= boundary) {
+        boundary = records[group.first].start;
+        moved = true;
+      }
+    }
+  }
+  const held = groups.filter((group) => records[group.last].start >= boundary);
+  const settleAt = young.length > 0 ? Math.max(...young.map((group) => records[group.last].at)) + QUIET_MS : null;
+  return { boundary, held, settleAt };
+}
+
+/** @typedef {import("./ingest-state.mjs").Carry} Carry */
+
+/**
+ * Every event one transcript holds, or the part of it from a resume point. A turn belongs to the latest wake before it; a turn before any wake belongs to the session
+ * itself. `carry` is what the read before this one left (`null` for a read from byte 0), and the returned `carry` and `consumed` are what the next one starts from:
+ * `consumed` is how many bytes of `text` are turned into events (the rest is a half-written line or a message that may still be gaining blocks), so a caller that
+ * resumes at `consumed` sees every event exactly as one read of the whole file would have given it. `now` defaults to "nothing is young": a caller that reads
+ * a finished file in one piece holds nothing back.
+ * @param {{ text: string, file: string, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, carry?: Carry | null, now?: number }} input
+ * @returns {{ session: string, events: TraceEvent[], unreadable: number, carry: Carry, consumed: number, held: number, settleAt: number | null, namedLate: boolean }}
+ */
+export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, now = Number.POSITIVE_INFINITY }) {
+  const { records, unreadable, end, tail } = readRecords(text);
+  const groups = messageGroups(records);
+  const { boundary, held, settleAt } = settledBoundary({ records, groups, end, now });
+  const settled = records.filter(({ start }) => start < boundary);
+  const wakeRecords = settled.filter(({ record }) => isWake(record) && !Number.isNaN(Date.parse(record.timestamp)));
   // The session's name is the first ORDER's, never a mention of one further down (a tool result can quote another session's brief).
-  const session = wakeRecords.map(({ record }) => SESSION_NAME.exec(record.message.content)?.[1]).find(Boolean) ?? `unnamed:${file.split("/").pop()}`;
+  const named = wakeRecords.map(({ record }) => SESSION_NAME.exec(record.message.content)?.[1]).find(Boolean) ?? null;
+  const session = carry?.session ?? named ?? `unnamed:${file.split("/").pop()}`;
   const wakes = wakeRecords.map(({ record }) => ({ at: Date.parse(record.timestamp), bytes: Buffer.byteLength(record.message.content), session }));
-  const paired = matchLedger(wakes, ledger.filter((entry) => entry.session === session));
+  const used = carry?.used ?? [];
+  const free = ledger.filter((entry) => entry.session === session && !used.some((spent) => spent.at === entry.at && spent.key === entry.key));
+  const paired = matchLedger(wakes, free);
   /** @type {TraceEvent[]} */
   const events = [];
-  /** @type {{ at: number, id: string, row: number | null, pr: number | null, repo: string | null, cause: string | null, causeKey: string | null }[]} */
+  /** @type {NonNullable<Carry["owner"]>[]} */
   const placed = [];
+  /** @type {{ at: number, key: string }[]} */
+  const spent = [];
   for (const wake of paired.wakes) {
     const key = ledger.find((entry) => entry.session === session && entry.at === wake.typedAt && entry.cause === wake.cause)?.key ?? null;
+    if (key) spent.push({ at: wake.typedAt, key });
     const subject = key ? subjectOf(key) : { row: null, pr: null, repo: null };
     const named_ = subject.row === null && subject.pr === null ? subjectOfSession(session, rowRepo) : subject;
     const id = `wake:${session}:${wake.at}`;
@@ -185,38 +260,49 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo }) {
     events.push({ id, kind: "wake", source: "wake-ledger", at: wake.at, session, ...named_, cause, causeKey: key, wakeId: id, bytes: wake.bytes,
       deliveryLagMs: cause === null ? null : Math.max(0, wake.at - wake.typedAt) });
   }
-  const owner = (/** @type {number} */ at) => placed.findLast((wake) => wake.at <= at)
+  // The wake in force at the offset: the carried one answers for a turn before the first wake of this read, which is how the row survives a resume.
+  const latest = placed.at(-1) ?? carry?.owner ?? null;
+  const owner = (/** @type {number} */ at) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
     ?? { id: null, ...subjectOfSession(session, rowRepo), cause: null, causeKey: null };
-  events.push(...turnsOf(records, session, owner), ...compactionsOf(records, session, owner));
-  return { session, events, unreadable };
+  const priorAt = carry?.lastAt ?? null;
+  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, owner, priorAt }), ...compactionsOf(settled, session, owner));
+  const lastAt = settled.findLast((candidate) => !Number.isNaN(candidate.at))?.at ?? priorAt;
+  const remembered = [...used, ...spent].filter((entry) => latest === null || entry.at >= latest.at - LEDGER_MEMORY_MS);
+  return {
+    session, events, unreadable: unreadable.filter((start) => start < boundary || start === tail).length, consumed: boundary, held: held.length, settleAt,
+    carry: { session: carry?.session ?? named, owner: latest, lastAt, used: remembered }, namedLate: carry !== null && carry.session === null && named !== null,
+  };
 }
 
 /** @typedef {(at: number) => { id: string | null, row: number | null, pr: number | null, repo: string | null, cause: string | null, causeKey: string | null }} Owner */
 
 /**
- * One turn per `message.id`, from its last record.
- * @param {{ index: number, at: number, record: any }[]} records @param {string} session @param {Owner} owner
+ * One turn per `message.id`, from its last record. `priorAt` is the time of the record before this read began, for the wall-clock of a turn that is the first thing in it.
+ * @param {{ records: Rec[], groups: MessageGroup[], session: string, owner: Owner, priorAt: number | null }} input
  * @returns {TraceEvent[]}
  */
-function turnsOf(records, session, owner) {
-  /** @type {Map<string, { first: number, last: number, record: any }>} */
-  const byMessage = new Map();
-  for (const [position, { record }] of records.entries()) {
-    const id = record?.type === "assistant" ? record.message?.id : null;
-    if (!id || !record.message.usage) continue;
-    const known = byMessage.get(id);
-    byMessage.set(id, { first: known?.first ?? position, last: position, record });
-  }
-  return [...byMessage.entries()].map(([messageId, { first, last, record }]) => {
+function turnsOf({ records, groups, session, owner, priorAt }) {
+  const before = recordBefore(records, priorAt);
+  return groups.map(({ id: messageId, first, last, record }) => {
     const endedAt = records[last].at;
-    const before = records.slice(0, first).findLast((candidate) => !Number.isNaN(candidate.at));
+    const previous = before[first];
     const tokens = tokensOf(record.message.usage);
     const own = owner(endedAt);
     return {
       id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, row: own.row, pr: own.pr, repo: own.repo, cause: own.cause,
       causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens),
-      wallClockMs: before && !Number.isNaN(endedAt) ? Math.max(0, endedAt - before.at) : null, sidechain: record.isSidechain === true,
+      wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, sidechain: record.isSidechain === true,
     };
+  });
+}
+
+/** For each position, the time of the last record before it that has one, in one pass (a search per message was quadratic in the file). @param {Rec[]} records @param {number | null} priorAt */
+function recordBefore(records, priorAt) {
+  let latest = priorAt;
+  return records.map(({ at }) => {
+    const before = latest;
+    if (!Number.isNaN(at)) latest = at;
+    return before;
   });
 }
 
@@ -239,19 +325,37 @@ export function readStore(path) {
 }
 
 /**
- * Append the events the store does not have. Nothing already in it is rewritten, and a second call with the same events adds nothing.
- * @param {string} path @param {TraceEvent[]} events
+ * The store, read ONCE: its events and the ids it already holds. A run that appends in several batches (the transcripts, then GitHub) shares one of these, so the
+ * file is parsed once per run, not once per transcript (the shipped `appendEvents` re-parsed all of it on every call, about 20 GB of JSON for 1,247 transcripts).
+ * @param {string} path @param {(path: string) => TraceEvent[]} [read] a parameter so a test can count the reads
+ * @returns {{ path: string, events: TraceEvent[], known: Set<string> }}
+ */
+export function openStore(path, read = readStore) {
+  const events = read(path);
+  return { path, events, known: new Set(events.map((event) => event.id)) };
+}
+
+/**
+ * Append the events an open store does not have, as ONE write. Nothing already in it is rewritten, and a second call with the same events adds nothing.
+ * @param {{ path: string, events: TraceEvent[], known: Set<string> }} store @param {TraceEvent[]} events
  * @returns {{ added: number, skipped: number }}
  */
-export function appendEvents(path, events) {
-  const known = new Set(readStore(path).map((event) => event.id));
-  const fresh = events.filter((event, index) => !known.has(event.id) && events.findIndex((other) => other.id === event.id) === index);
+export function appendToStore(store, events) {
+  const fresh = events.filter((event) => {
+    if (store.known.has(event.id)) return false;
+    store.known.add(event.id);
+    return true;
+  });
   if (fresh.length > 0) {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, fresh.map((event) => `${JSON.stringify(event)}\n`).join(""));
+    mkdirSync(dirname(store.path), { recursive: true });
+    appendFileSync(store.path, fresh.map((event) => `${JSON.stringify(event)}\n`).join(""));
+    for (const event of fresh) store.events.push(event); // not push(...fresh): a cold run is tens of thousands of events, past the argument limit
   }
   return { added: fresh.length, skipped: events.length - fresh.length };
 }
+
+/** Open, append, done: for a caller with one batch. @param {string} path @param {TraceEvent[]} events */
+export const appendEvents = (path, events) => appendToStore(openStore(path), events);
 
 /**
  * The events about a subject: those of its rows, and of its pull requests (the ones that close the rows, and the one asked about when it IS a pull request).
