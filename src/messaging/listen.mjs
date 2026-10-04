@@ -31,6 +31,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { toolVersionLine } from "../lib/tool-version.mjs";
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
@@ -298,5 +299,8 @@ export async function main(deps = {}) {
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // #3443: THE LISTENER IS LONG-RUNNING AND HOLDS ITS MODULES, so its journal's first line says which agent-org version it loaded: the proof that a move of the tool
+  // checkout was followed by a restart, and the line `orchestrator`'s read-back after a move looks for.
+  console.log(toolVersionLine());
   process.exitCode = await main();
 }
