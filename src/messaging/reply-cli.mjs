@@ -17,10 +17,11 @@
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
+import { completionPath } from "../lib/tick-completion.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createLedger, describeError, readLedgerLines } from "./ledger.mjs";
 import { createGhReaders } from "./placeholders.mjs";
@@ -116,10 +117,38 @@ function report(result, { out, err }) {
   return EXIT.failed;
 }
 
+/**
+ * Where the tick writes its completion record, resolved the way `watch.mjs` does (`stateEntryPath("wake-ledger")`). IMPORTED WHEN ASKED, not at the top:
+ * `host-config.mjs` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.mjs`), so a host that cannot answer
+ * must cost `{{gate.*}}` and nothing else.
+ * @param {{ home: string, env: Record<string, string | undefined> }} where @returns {Promise<string>}
+ */
+async function hostWakeLedgerPath({ home, env }) {
+  const { stateEntryPath } = await import("../host-config.mjs");
+  return stateEntryPath("wake-ledger", { home, env });
+}
+
+/**
+ * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs`'s `hostReaders` names them for the watcher: the two files `fleet-watch` writes under the
+ * project's `runs/`, and the tick's completion record beside the wake ledger. Without them those placeholders refuse ("this host named no fleet-watch state files").
+ *
+ * @param {{ root: string, wakeLedger: () => Promise<string>, err: (line: string) => void }} where
+ * @returns {Promise<{ fleet: { statePath: string, capturesPath: string }, gateRecordPath?: string }>} no `gateRecordPath` when the host could not name one, said on `err`
+ */
+async function hostFiles({ root, wakeLedger, err }) {
+  const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
+  try {
+    return { fleet, gateRecordPath: completionPath(await wakeLedger()) };
+  } catch (error) {
+    err(`chairman:reply: this host could not name the work-tick completion record, so {{gate.*}} will refuse: ${describeError(error)}`);
+    return { fleet };
+  }
+}
+
 /** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: /** @type {Record<string, string | undefined>} */ (process.env), home: homedir(), now: Date.now, fetch: globalThis.fetch,
-  providers: PROVIDERS, readStdin, gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),
+  providers: PROVIDERS, readStdin, wakeLedgerPath: hostWakeLedgerPath, gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
 });
 
@@ -135,7 +164,7 @@ function exitCodeFor(error) {
  * @returns {Promise<number>} the exit code
  */
 export async function main(argv, deps = {}) {
-  const { root, env, home, now, fetch: fetchImpl, providers, readStdin: stdin, gh, systemctl, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, env, home, now, fetch: fetchImpl, providers, readStdin: stdin, wakeLedgerPath, gh, systemctl, out, err } = { ...DEFAULT_DEPS(), ...deps };
   try {
     const { text, replyTo } = parseCommandLine(argv);
     const config = readMessagingConfig(resolve(root), { home });
@@ -152,7 +181,7 @@ export async function main(argv, deps = {}) {
       return EXIT.refused;
     }
     const provider = providers[config.provider](config, { fetch: fetchImpl });
-    const readers = createGhReaders({ gh, systemctl, repo: trackerRepo(resolve(root)) });
+    const readers = createGhReaders({ gh, systemctl, repo: trackerRepo(resolve(root)), ...await hostFiles({ root: resolve(root), wakeLedger: () => wakeLedgerPath({ home, env }), err }), now });
     const reply = createReply({ send: (message) => provider.send(message), ledger: createLedger({ path: defaultLedgerPath(home), now }), readers, now });
     return report(await reply.send(text ?? await stdin(), { replyTo }), { out, err });
   } catch (error) {
