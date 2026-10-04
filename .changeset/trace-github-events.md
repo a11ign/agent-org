@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`agent-org trace -- <row-or-pr>` now holds what GitHub saw (a11ign/a11ign#3508, second slice of #3494): when each row was filed, claimed and released (the claim-record comments), when a hold or an `answer:` order was set and lifted, when each pull request was opened, made ready, reviewed (the state, and the head it was posted on), moved to a new head, run through CI (each check-run: name, conclusion, start, end, head), queued, taken out of the queue and merged or closed. Every record is `source: "github"` with a stable id, so a second ingest adds nothing. Only the REST pool is spent (`gh api`), the report states how many calls were made, and a call that fails or a list that would not fit in the pages read throws rather than printing a trace that lacks the reviews. `NOT_HELD` no longer lists GitHub events and still lists the `gh` call ledger, the gate's deferral spans and Codex reviewer turns. A queue exit is `outcome: "merged"` when it falls within five seconds of the merge and `"unmerged"` otherwise, which is how an ejection reads; a head move is dated by its commit, because the timeline carries no push event.

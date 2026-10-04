@@ -156,6 +156,25 @@ test("REPORT: events in order with tokens and wall-clock, a priced total that ex
   assert.ok(text.includes(NOT_HELD));
 });
 
+test("REPORT: GitHub events print between the turns, the footer says how many calls were made, and NOT_HELD no longer lists GitHub", () => {
+  const github = (kind, iso, extra) => ({ id: `gh:${kind}:${iso}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: 9100, repo: null, cause: null, causeKey: null,
+    wakeId: null, actor: "a11ign-bot", ...extra });
+  const events = [...eventsForRow([...worker().events, ...orchestrator().events], { rows: [9001], prs: [9100] }),
+    github("reviewed", "2026-10-04T10:35:00Z", { state: "APPROVED", headSha: "0fde4737ea065e2d794cfab07b39373e715fede4" }),
+    github("added_to_merge_queue", "2026-10-04T10:36:00Z"), github("removed_from_merge_queue", "2026-10-04T10:46:00Z", { outcome: "unmerged" })]
+    .sort((a, b) => a.at - b.at);
+  const text = render({ number: 9001, rows: [9001], prs: [9100], events, github: { calls: 6, read: 3, added: 3 } });
+  assert.match(text, /10:35:00 +github +REVIEW +APPROVED by a11ign-bot at head 0fde473/);
+  assert.match(text, /QUEUED +by a11ign-bot/);
+  assert.match(text, /DEQUEUED \(unmerged\)/);
+  assert.match(text, /GitHub: 6 REST calls \(gh api\); 3 events read, 3 new to the store/);
+  assert.match(text, /3 from GitHub/);
+  assert.equal(text.indexOf("REVIEW") > text.indexOf("WAKE"), true, "the review falls between the turns, in time order");
+  assert.doesNotMatch(NOT_HELD, /GitHub/);
+  for (const still of ["gh call ledger", "deferral spans", "Codex reviewer turns"]) assert.ok(NOT_HELD.includes(still), still);
+  assert.match(text, /across 2 sessions/, "`github` is a source, not a session");
+});
+
 test("ARGS: the row is required and `--` is tolerated", () => {
   assert.equal(parseArgs(["--", "3406"]).number, 3406);
   assert.equal(parseArgs(["3406", "--json", "1"]).json, true);

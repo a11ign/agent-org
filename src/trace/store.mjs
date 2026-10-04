@@ -1,8 +1,8 @@
 // @ts-check
 // a11ign/a11ign#3494, first slice: THE TRACE STORE -- one append-only record per event, keyed by row (and pull request, and repository).
 //
-// TWO SOURCES TODAY, and each record says which: `source: "transcript"` for a model turn (`message.usage` of a Claude transcript), `source: "wake-ledger"` for the
-// order the gate delivered. The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
+// THREE SOURCES TODAY, and each record says which: `source: "transcript"` for a model turn (`message.usage` of a Claude transcript), `source: "wake-ledger"` for the
+// order the gate delivered, `source: "github"` for what GitHub saw of a row and its pull requests (`github-events.mjs`, #3508). The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
 // it has no file exporter, needs a receiver the host does not run, and cannot reach a standing seat that is already running. So the transcript is the source and
 // OTel records can be added later under another `source` without changing a reader.
 //
@@ -26,11 +26,14 @@ import { dirname } from "node:path";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.mjs";
 
 export const DEFINITIONS = [
-  "EVENT: one record in the store, `kind` turn | wake | compaction. A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
+  "EVENT: one record in the store, `kind` turn | wake | compaction, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
   "TURN: one API message of a Claude session (de-duplicated by message id), with its tokens, cost and wall-clock. It belongs to the wake that precedes it in its transcript.",
   "WAKE: a delivery that started a model turn (wakes-per-row's definition). `deliveryLagMs` is delivery minus the time `wake` typed the order, when the ledger line pairs (not the gate's deferral, which no record keeps).",
   "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. A turn after a slow tool call includes that call.",
   "COST: tokens x the rate in PRICES, cache writes at the 1-hour rate when the split is absent (every transcript seen writes 1-hour). `null` for a model with no price.",
+  "GITHUB EVENT: what GitHub's REST API holds of a row or pull request (`source: github`, session `github`): filed/opened, claimed/released (the claim-record comments), labeled/unlabeled for an order to a session or a hold, ready_for_review, reviewed (state, and the head it was posted on), head_moved, ci_run, added_to_merge_queue, removed_from_merge_queue, merged, closed.",
+  "HEAD_MOVED (inferred): `at` is the commit's own date, not the push's; the timeline carries no push event. CI RUN: each head the timeline names is asked for its check-runs; the merge queue's own runs, on its temporary branch, and legacy commit statuses are not read.",
+  "OUTCOME of a queue exit (inferred): `merged` when it falls within 5 s of the pull request's merge, else `unmerged` (an ejection or a person). GitHub writes the same event for both.",
   "KEY: row, pr and repo come from the order's cause key, else the session's name (worker-<n> is row n, reviewer-<n> is pull request n). An event with none is kept, with row null.",
 ];
 
@@ -53,9 +56,11 @@ export const PRICES = [
 
 /**
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
- * @typedef {{ id: string, kind: "turn" | "wake" | "compaction", source: "transcript" | "wake-ledger", at: number, session: string, row: number | null,
+ * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean }} TraceEvent
+ *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean,
+ *   actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
+ *   completedAt?: number | null, outcome?: "merged" | "unmerged" }} TraceEvent
  */
 
 /**
@@ -257,5 +262,5 @@ export function eventsForRow(events, { rows, prs }) {
   const wantedRows = new Set(rows);
   const wantedPulls = new Set(prs);
   return events.filter((event) => (event.row !== null && wantedRows.has(event.row)) || (event.pr !== null && event.repo === null && wantedPulls.has(event.pr)))
-    .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+    .sort((a, b) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0) || a.id.localeCompare(b.id));
 }
