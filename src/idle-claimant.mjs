@@ -153,10 +153,10 @@ export function idleClaimantReading(facts, ctx) {
  */
 export function idleNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease }) {
   const spellings = Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `\`${f.spelling}\``).join(" | ");
-  return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (one named in this terminal is not one).\n`
-    + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each field clears itself: ${spellings} | an open pull request needing a reviewer, a check or the `
-    + `merge queue | the \`${EVIDENCE_LABEL}\` label | \`pnpm run pr:hold <n> --until "merged #<m>"\` for an event outside this repository. To continue: commit, push \`${branch ?? "your branch"}\` or comment on the row.\n`
+  return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (the terminal is not one).\n`
+    + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each clears itself: ${spellings} | an open PR awaiting review, checks or the queue | `
+    + `\`${EVIDENCE_LABEL}\` | \`pnpm run pr:hold <n> --until "merged #<m>"\` (outside event). To continue: commit, push \`${branch ?? "your branch"}\` or comment.\n`
     + (canRelease
-      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; your worktree and unpushed work are KEPT.`
+      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; worktree and unpushed work are KEPT.`
       : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
 }
