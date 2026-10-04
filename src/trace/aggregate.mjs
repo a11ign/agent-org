@@ -1,0 +1,579 @@
+// @ts-check
+// a11ign/a11ign#3513 (slice 6 of #3494): THE TOKEN-EFFICIENCY TRACKER -- `trace --aggregate`. Dollars, tokens and wall-clock per merged row, the overhead of the standing
+// leads, the repeat waste by class and the cache-read share, PER WEEK, so a fix shows a before and an after.
+//
+// A PURE FUNCTION over what the store holds: it opens no file and calls no `gh`. `trace.mjs` reads the store, the merged pull requests and wakes-per-row's reading for each
+// week and hands them in, so the test runs on fixtures. It reads wakes-per-row's WAKE COUNTS by import (`mergedRows`, `reviewerTarget`, `rowsClosedBy`, and the `measure`
+// result it is handed) and does not count a second time beside them: where its own count of the same rows differs, the report says why (`compareWakes`).
+//
+// A FIGURE WITHOUT ITS DEFINITION IS THE DEFECT THIS SLICE EXISTS TO REMOVE, so `DEFINITIONS` is printed once at the top of every report. Three rules decide most numbers:
+//   NEVER ZERO FOR UNKNOWN. A turn with no price makes its row's dollars a FLOOR (marked); a class with no derivation prints `not derivable`; a source the store does not hold
+//   prints `not held`. A row with no turn in the store has no figure and is counted apart.
+//   NEVER MIXED. A week is its own population: nothing is pooled across weeks, and a week the store holds only part of is marked PARTIAL and left out of the comparison.
+//   NEVER AVERAGED OPEN. A row with no merge is listed apart and is in no percentile.
+import { costOf } from "./store.mjs";
+import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.mjs";
+
+export const DEFINITIONS = [
+  "WEEK: Monday 00:00:00 UTC to the next Monday (UTC is the org's clock). A merged row is in the week of its MERGE time (the last merge of the pull requests that close it). The spend figures (overhead, cache-read share, repeat waste) are by the time of the turn or event, in the same week.",
+  "PER MERGED ROW: dollars and tokens are the sum of every turn the store holds for the row, over all time, not only the week (a turn naming several rows is in each, so two rows' totals are not to be added). TOKENS are all five fields: input, output, cacheRead, cacheWrite5m, cacheWrite1h. DOLLARS are the priced turns only: a row with an unpriced turn is a FLOOR (marked), and a row with no priced turn has no dollar figure. P50 and P90 are NEAREST-RANK (the value at rank ceil(p x n) of the sorted rows), no interpolation.",
+  "WALL-CLOCK PER ROW: from the row's first claim record (GitHub's `claimed` event) to its merge. A row with no claim in the store has none and is counted apart.",
+  "A ROW WITH NO TURN IN THE STORE has no figure at all (never 0 dollars) and is counted apart: a row merged before the store's first transcript is not a free row.",
+  "OVERHEAD: turns that name no row by any route (not `row`, `rows`, a pull request that closes a merged row, nor a `touchedRows` write), as a share of the week's priced dollars and of its tokens, one line per standing session. A standing session's turn that WROTE to a row is on that row, as the store places it, and is printed as its own `on a row` figure so the share does not hide it.",
+  "UNMEASURED: turns of a session no order ever named (`unnamed:<file>`) or a Codex session in no reviewer directory (`codex:<dir>`), and transcripts that could not be read. They are counted apart and are NOT overhead: nobody knows whose they were.",
+  "UNPLACED: turns on a pull request that closes no row merged in the window of this reading (a review of a pull request still open). Counted apart, in no average.",
+  "OPEN ROW: a row with turns in the store and no merge. Listed apart with its spend so far, in no average. A row closed with no merge is listed beside it.",
+  "CACHE-READ SHARE OF INPUT: cacheRead / (input + cacheRead + cacheWrite5m + cacheWrite1h), summed over every turn of the week. Output tokens are not in the denominator.",
+  "REPEAT WASTE, priced from the store, each turn priced ONCE in the first class that claims it, in this order, so the classes add up: re-delivered order, re-review, re-queue, compaction, preamble reload. A class never counts a turn another class already counted; its COUNT is every occurrence.",
+  "  re-delivered order: a wake whose session and ledger key (without the `@deferred` suffix) were delivered before. Dollars: every turn that wake started.",
+  "  re-review: a `reviewed` event on a pull request after an earlier one. Dollars: the turns of that pull request's reviewer session between its first review and the later one.",
+  "  re-queue: an `added_to_merge_queue` after an earlier one on the same pull request. Dollars: the turns on the pull request's rows between its last unmerged exit from the queue and the re-entry.",
+  "  compaction: a compaction of a session. Dollars: the INPUT side (input, cacheRead, cacheWrite; not output) of the first turn the session took after it, which re-reads the window.",
+  "  preamble reload: a wake that is not its session's first. Dollars: the INPUT side of its first turn, the re-read of the window every wake pays; the turn's own output is the work and is not waste.",
+  "  CI re-run: a check run of a name already run on the same pull request. Counted with its runner time; CI minutes are not tokens, so its dollars are `not derivable`.",
+  "  deferred wait: how long a busy seat held an order before it was typed. The deferral log is not in the store (#3510), so it is `not held`, never 0.",
+  "WAKES, against wakes-per-row: for the rows of the week, the store's count of the wakes of the row's own worker and reviewer sessions (a reviewer's only inside its pull request's open-to-merge window, as wakes-per-row places them) is compared with wakes-per-row's `wakes` for the same row. The week prints how many rows agree and the reason for each that does not.",
+];
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DAYS_PER_WEEK = 7;
+const WEEK_MS = DAYS_PER_WEEK * MS_PER_DAY;
+const THURSDAY = 3; // 1970-01-01 was a Thursday, and a Monday-first week numbers Thursday 3
+const FIRST_RANK_PERCENT = 50;
+const LAST_RANK_PERCENT = 90;
+const PERCENT = 100;
+const DEAREST = 10;
+const DOLLAR_DECIMALS = 4;
+const SHARE_DECIMALS = 1;
+export const NOT_DERIVABLE = "not derivable";
+export const NOT_HELD = "not held";
+
+/** The deferral log (#3510) is not merged: this is the one place that says so, and the reader is added with the log. */
+const DEFERRAL_LOG_HELD = false;
+
+/**
+ * @typedef {import("./store.mjs").TraceEvent} TraceEvent
+ * @typedef {import("./store.mjs").Tokens} Tokens
+ * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
+ * @typedef {{ dollars: number, priced: number, unpriced: number, turns: number, tokens: number }} Tally
+ * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, ms?: number }} RepeatClass
+ */
+
+/** @param {number} ms the Monday 00:00 UTC of the week holding `ms` */
+export function weekStart(ms) {
+  const day = Math.floor(ms / MS_PER_DAY);
+  return (day - ((day + THURSDAY) % DAYS_PER_WEEK)) * MS_PER_DAY;
+}
+
+/** @param {number[]} values @param {number} percent @returns {number | null} */
+export function nearestRank(values, percent) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil((percent / PERCENT) * sorted.length) - 1)];
+}
+
+/** @param {number[]} values */
+const spread = (values) => ({ n: values.length, p50: nearestRank(values, FIRST_RANK_PERCENT), p90: nearestRank(values, LAST_RANK_PERCENT) });
+
+/** @param {Tokens} tokens */
+const allTokens = (tokens) => tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
+/** @param {Tokens} tokens */
+const inputSide = (tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
+
+/** @returns {Tally} */
+const emptyTally = () => ({ dollars: 0, priced: 0, unpriced: 0, turns: 0, tokens: 0 });
+
+/** @param {Tally} tally @param {TraceEvent} turn */
+function addTurn(tally, turn) {
+  tally.turns += 1;
+  tally.tokens += turn.tokens ? allTokens(turn.tokens) : 0;
+  if (typeof turn.costUsd === "number") {
+    tally.dollars += turn.costUsd;
+    tally.priced += 1;
+  } else tally.unpriced += 1;
+}
+
+/** @param {TraceEvent} event @param {number} at */
+const inWeek = (event, at) => event.at >= at && event.at < at + WEEK_MS;
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Where an event belongs: the rows it names, by any route the store keeps
+
+/** @typedef {{ rowRepo: string, org: string, prRows: Map<string, number[]> }} Keys */
+
+/** `a11ign/a11ign#3513`: the pull request's key, whatever repository it is in. `repo` is the store's short name, `null` for the primary. @param {Keys} keys @param {string | null} repo @param {number} number */
+const prKey = (keys, repo, number) => `${repo === null ? keys.rowRepo : `${keys.org}/${repo}`}#${number}`;
+
+/**
+ * The rows an event names, and the pull requests it names that close no known row. A `touched` write counts only for a turn: a wake names its subject by the order.
+ * @param {TraceEvent} event @param {Keys} keys
+ * @returns {{ rows: number[], unresolved: boolean }}
+ */
+function subjectsOfEvent(event, keys) {
+  const rows = new Set([event.row, ...(event.rows ?? []), ...(event.touchedRows ?? [])].filter((row) => typeof row === "number"));
+  const named = [event.pr, ...(event.prs ?? [])].filter((pr) => typeof pr === "number").map((pr) => prKey(keys, event.repo, pr));
+  named.push(...(event.touchedPrs ?? []).map((pr) => prKey(keys, null, pr)));
+  let resolved = rows.size > 0;
+  for (const key of named) {
+    for (const row of keys.prRows.get(key) ?? []) rows.add(row);
+    resolved ||= (keys.prRows.get(key) ?? []).length > 0;
+  }
+  return { rows: [...rows].sort((a, b) => a - b), unresolved: named.length > 0 && !resolved };
+}
+
+const UNATTRIBUTABLE = /^(unnamed|codex):/;
+
+/**
+ * @param {TraceEvent} turn @param {Keys} keys
+ * @returns {{ kind: "rowed", rows: number[] } | { kind: "unplaced" | "unmeasured" | "overhead" }}
+ */
+function place(turn, keys) {
+  const { rows, unresolved } = subjectsOfEvent(turn, keys);
+  if (rows.length > 0) return { kind: "rowed", rows };
+  if (unresolved) return { kind: "unplaced" };
+  return { kind: UNATTRIBUTABLE.test(turn.session) ? "unmeasured" : "overhead" };
+}
+
+/**
+ * @param {import("../wakes-per-row.mjs").PullRequest[]} pulls @param {string} rowRepo
+ * @returns {Map<string, number[]>} pull request key -> the rows its body closes (a pull request that closes none is not in it)
+ */
+function prRowsOf(pulls, rowRepo) {
+  const closing = pulls.map((pull) => /** @type {[string, number[]]} */ ([`${pull.repo}#${pull.number}`, rowsClosedBy(pull.body ?? "", rowRepo)]));
+  return new Map(closing.filter(([, rows]) => rows.length > 0));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// The week's spend
+
+/**
+ * @typedef {{ turn: TraceEvent, kind: "rowed" | "unplaced" | "unmeasured" | "overhead", rows?: number[] }} Placed
+ */
+
+/** @param {Placed[]} turns */
+function spendOf(turns) {
+  const all = emptyTally();
+  const kinds = { rowed: emptyTally(), unplaced: emptyTally(), unmeasured: emptyTally(), overhead: emptyTally() };
+  /** @type {Map<string, Tally & { onRows: Tally }>} */
+  const standing = new Map();
+  const input = { cacheRead: 0, side: 0 };
+  for (const { turn, kind } of turns) {
+    addTurn(all, turn);
+    addTurn(kinds[kind], turn);
+    if (turn.tokens) {
+      input.cacheRead += turn.tokens.cacheRead;
+      input.side += inputSide(turn.tokens);
+    }
+    if (kind === "overhead" || (kind === "rowed" && isStanding(turn.session))) {
+      const own = standing.get(turn.session) ?? { ...emptyTally(), onRows: emptyTally() };
+      addTurn(kind === "overhead" ? own : own.onRows, turn);
+      standing.set(turn.session, own);
+    }
+  }
+  return { all, ...kinds, standing, input };
+}
+
+/** A standing lead: not a spawned worker or reviewer, which belong to one row or pull request. @param {string} session */
+const isStanding = (session) => !/^(worker|reviewer)-/.test(session) && !UNATTRIBUTABLE.test(session);
+
+/** @param {Tally} part @param {Tally} whole */
+function shareOf(part, whole) {
+  return { dollars: whole.dollars > 0 ? part.dollars / whole.dollars : null, tokens: whole.tokens > 0 ? part.tokens / whole.tokens : null };
+}
+
+/** @param {ReturnType<typeof spendOf>} spend @param {string[]} unreadable the transcripts the ingest could not read: no turn of theirs is in the store, so they are listed, not folded in */
+function spendFigures(spend, unreadable) {
+  const standing = [...spend.standing].filter(([, own]) => own.turns > 0).sort(([a], [b]) => a.localeCompare(b));
+  return {
+    turns: spend.all.turns, dollars: spend.all.dollars, unpriced: spend.all.unpriced, tokens: spend.all.tokens,
+    overhead: { ...spend.overhead, share: shareOf(spend.overhead, spend.all), bySession: standing.map(([session, own]) => ({ session, ...own, onRows: own.onRows })) },
+    unmeasured: { ...spend.unmeasured, unreadableTranscripts: unreadable },
+    unplaced: spend.unplaced,
+    cacheRead: { share: spend.input.side > 0 ? spend.input.cacheRead / spend.input.side : null, cacheRead: spend.input.cacheRead, inputSide: spend.input.side },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Per merged row
+
+/** The first claim record of each row: the earliest `claimed` event, in one pass. @param {TraceEvent[]} events @returns {Map<number, number>} */
+export function claimsOf(events) {
+  /** @type {Map<number, number>} */
+  const first = new Map();
+  for (const event of events) {
+    if (event.kind === "claimed" && typeof event.row === "number") first.set(event.row, Math.min(first.get(event.row) ?? event.at, event.at));
+  }
+  return first;
+}
+
+/**
+ * @param {MergedRow} merged @param {{ byRow: Map<number, Tally>, claims: Map<number, number> }} held
+ */
+function rowFigures(merged, { byRow, claims }) {
+  const tally = byRow.get(merged.row);
+  const claimedAt = claims.get(merged.row) ?? null;
+  const base = { row: merged.row, repo: merged.repo, mergedAt: merged.mergedAt, wallClockMs: claimedAt === null ? null : Math.max(0, merged.mergedAt - claimedAt) };
+  if (!tally || tally.turns === 0) return { ...base, held: false, turns: 0, tokens: null, dollars: null, floor: false, unpriced: 0 };
+  return { ...base, held: true, turns: tally.turns, tokens: tally.tokens, dollars: tally.priced > 0 ? tally.dollars : null, floor: tally.unpriced > 0, unpriced: tally.unpriced };
+}
+
+/** The dearest first; a tie in dollars is broken by tokens, then by row number, so two runs print the same list. @param {ReturnType<typeof rowFigures>[]} rows */
+function dearest(rows) {
+  return rows.filter((row) => row.dollars !== null)
+    .sort((a, b) => /** @type {number} */ (b.dollars) - /** @type {number} */ (a.dollars) || /** @type {number} */ (b.tokens) - /** @type {number} */ (a.tokens) || a.row - b.row).slice(0, DEAREST);
+}
+
+/** @param {ReturnType<typeof rowFigures>[]} rows */
+function perRowSpread(rows) {
+  const held = rows.filter((row) => row.held);
+  const priced = held.filter((row) => row.dollars !== null);
+  return {
+    rows: rows.length, noTurns: rows.length - held.length, noPrice: held.length - priced.length, floors: priced.filter((row) => row.floor).length,
+    dollars: spread(priced.map((row) => /** @type {number} */ (row.dollars))), tokens: spread(held.map((row) => /** @type {number} */ (row.tokens))),
+    wallClock: spread(rows.flatMap((row) => (row.wallClockMs === null ? [] : [row.wallClockMs]))), noClaim: rows.filter((row) => row.wallClockMs === null).length,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Repeat waste
+
+/**
+ * @typedef {{ events: TraceEvent[], turns: TraceEvent[], keys: Keys, at: number, claimed: Set<string>,
+ *   turnsOf: { wake: Map<string, TraceEvent[]>, session: Map<string, TraceEvent[]>, row: Map<number, TraceEvent[]> } }} Repeat
+ */
+
+/** Price `turns` once each (a turn another class took is skipped), whole or by its input side. @param {TraceEvent[]} turns @param {Set<string>} claimed @param {"whole" | "input"} part */
+function priceOnce(turns, claimed, part) {
+  let dollars = 0;
+  let tokens = 0;
+  let floor = false;
+  for (const turn of turns) {
+    if (claimed.has(turn.id) || !turn.tokens) continue;
+    claimed.add(turn.id);
+    const cost = part === "whole" ? turn.costUsd ?? null : costOf(turn.model, { ...turn.tokens, output: 0 });
+    tokens += part === "whole" ? allTokens(turn.tokens) : inputSide(turn.tokens);
+    if (typeof cost === "number") dollars += cost;
+    else floor = true;
+  }
+  return { dollars, tokens, floor };
+}
+
+/** @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
+const classOf = (head, priced) => ({ ...head, dollars: priced.dollars, floor: priced.floor, tokens: priced.tokens });
+
+/** @param {Repeat} context */
+function redelivered({ events, turnsOf, at, claimed }) {
+  const seen = new Set();
+  /** @type {TraceEvent[]} */
+  const repeats = [];
+  for (const wake of events.filter((event) => event.kind === "wake" && event.causeKey).sort((a, b) => a.at - b.at)) {
+    const key = `${wake.session}\t${String(wake.causeKey).split("@deferred:")[0]}`;
+    if (seen.has(key) && inWeek(wake, at)) repeats.push(wake);
+    seen.add(key);
+  }
+  const turns = repeats.flatMap((wake) => turnsOf.wake.get(wake.id) ?? []);
+  return classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, priceOnce(turns, claimed, "whole"));
+}
+
+/** The events of one kind, by pull request key, in time order. @param {TraceEvent[]} events @param {string} kind @param {Keys} keys */
+function byPullRequest(events, kind, keys) {
+  /** @type {Map<string, TraceEvent[]>} */
+  const groups = new Map();
+  for (const event of events.filter((candidate) => candidate.kind === kind && typeof candidate.pr === "number").sort((a, b) => a.at - b.at)) {
+    const key = prKey(keys, event.repo, /** @type {number} */ (event.pr));
+    groups.set(key, [...(groups.get(key) ?? []), event]);
+  }
+  return groups;
+}
+
+/** @param {Repeat} context */
+function rereviews({ events, turns, keys, at, claimed }) {
+  let count = 0;
+  /** @type {TraceEvent[]} */
+  const between = [];
+  for (const [key, reviews] of byPullRequest(events, "reviewed", keys)) {
+    const later = reviews.slice(1).filter((review) => inWeek(review, at));
+    count += later.length;
+    if (later.length === 0) continue;
+    const reviewers = turns.filter((turn) => { const target = reviewerTarget(turn.session, keys.rowRepo); return target !== null && `${target.repo}#${target.number}` === key; });
+    between.push(...reviewers.filter((turn) => turn.at > reviews[0].at && turn.at <= later[later.length - 1].at && inWeek(turn, at)));
+  }
+  return classOf({ id: "rereview", label: "re-reviews", count }, priceOnce(between, claimed, "whole"));
+}
+
+/** @param {Repeat} context */
+function requeues({ events, keys, at, claimed, turnsOf }) {
+  let count = 0;
+  /** @type {TraceEvent[]} */
+  const between = [];
+  const exits = byPullRequest(events, "removed_from_merge_queue", keys);
+  for (const [key, entries] of byPullRequest(events, "added_to_merge_queue", keys)) {
+    for (const [index, entry] of entries.entries()) {
+      if (index === 0 || !inWeek(entry, at)) continue;
+      count += 1;
+      const exit = (exits.get(key) ?? []).filter((candidate) => candidate.outcome === "unmerged" && candidate.at < entry.at).pop();
+      const from = exit?.at ?? entries[index - 1].at;
+      for (const row of keys.prRows.get(key) ?? []) between.push(...(turnsOf.row.get(row) ?? []).filter((turn) => turn.at > from && turn.at <= entry.at));
+    }
+  }
+  return classOf({ id: "requeue", label: "re-queues", count }, priceOnce(between, claimed, "whole"));
+}
+
+/** @param {Repeat} context */
+function compactions({ events, turnsOf, at, claimed }) {
+  const made = events.filter((event) => event.kind === "compaction" && inWeek(event, at));
+  const after = made.flatMap((event) => (turnsOf.session.get(event.session) ?? []).filter((turn) => !turn.sidechain && turn.at > event.at).slice(0, 1));
+  return classOf({ id: "compaction", label: "compactions (re-read of the window after each)", count: made.length }, priceOnce(after, claimed, "input"));
+}
+
+/** @param {Repeat} context */
+function preambles({ events, turnsOf, at, claimed }) {
+  /** @type {Map<string, TraceEvent[]>} */
+  const bySession = new Map();
+  for (const wake of events.filter((event) => event.kind === "wake").sort((a, b) => a.at - b.at)) bySession.set(wake.session, [...(bySession.get(wake.session) ?? []), wake]);
+  const later = [...bySession.values()].flatMap((wakes) => wakes.slice(1)).filter((wake) => inWeek(wake, at));
+  const first = later.flatMap((wake) => (turnsOf.wake.get(wake.id) ?? []).filter((turn) => !turn.sidechain).slice(0, 1));
+  return classOf({ id: "preamble", label: "preamble reloads at each wake after the first", count: later.length }, priceOnce(first, claimed, "input"));
+}
+
+/** @param {Repeat} context @returns {RepeatClass} */
+function ciReruns({ events, keys, at }) {
+  const runs = events.filter((event) => event.kind === "ci_run" && typeof event.pr === "number");
+  const seen = new Set();
+  const again = runs.sort((a, b) => a.at - b.at).filter((run) => {
+    const key = `${prKey(keys, run.repo, /** @type {number} */ (run.pr))}\t${run.name}`;
+    const repeat = seen.has(key);
+    seen.add(key);
+    return repeat && inWeek(run, at);
+  });
+  const ms = again.reduce((sum, run) => sum + Math.max(0, (run.completedAt ?? run.startedAt ?? 0) - (run.startedAt ?? 0)), 0);
+  return { id: "ci-rerun", label: "CI re-runs", count: again.length, dollars: NOT_DERIVABLE, floor: false, tokens: 0, ms };
+}
+
+/** @returns {RepeatClass} */
+const deferredWaits = () => ({ id: "deferred", label: "deferred waits", count: 0, dollars: DEFERRAL_LOG_HELD ? 0 : NOT_HELD, floor: false, tokens: 0 });
+
+/** Every class for one week, the whole-turn ones before the input-side ones: the ORDER is the definition of who claims a turn. @param {Repeat} context */
+function repeatClasses(context) {
+  return [redelivered(context), rereviews(context), requeues(context), compactions(context), preambles(context), ciReruns(context), deferredWaits()];
+}
+
+/** The headline: the dollars of the classes that have a derivation, a floor when any of them is. @param {RepeatClass[]} classes */
+function repeatTotal(classes) {
+  const priced = classes.filter((entry) => typeof entry.dollars === "number");
+  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: priced.some((entry) => entry.floor), tokens: priced.reduce((sum, entry) => sum + entry.tokens, 0) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Wake counts, against wakes-per-row's
+
+/**
+ * @typedef {{ row: number, store: number, wakesPerRow: number | null, reason: string }} WakeDifference
+ */
+
+/**
+ * How many wakes of each row's own worker and reviewer sessions the store holds, by wakes-per-row's placement rule (a reviewer's wake counts only inside its pull request's
+ * open-to-merge window). The standing leads' wakes naming the row are the store's alone and are not in this count.
+ * @param {{ events: TraceEvent[], keys: Keys, pulls: import("../wakes-per-row.mjs").PullRequest[] }} input
+ * @returns {Map<number, number>}
+ */
+function storeWakeCounts({ events, keys, pulls }) {
+  const windows = new Map(pulls.map((pull) => [`${pull.repo}#${pull.number}`, { from: Date.parse(pull.createdAt), to: Date.parse(pull.mergedAt) }]));
+  /** @type {Map<number, number>} */
+  const counts = new Map();
+  for (const wake of events.filter((event) => event.kind === "wake" && /^(worker|reviewer)-/.test(event.session))) {
+    const target = reviewerTarget(wake.session, keys.rowRepo);
+    const inside = target ? windows.get(`${target.repo}#${target.number}`) : undefined;
+    if (target && !(inside && wake.at >= inside.from && wake.at <= inside.to)) continue;
+    for (const row of subjectsOfEvent(wake, keys).rows) counts.set(row, (counts.get(row) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * Why the store's count of a row's wakes and wakes-per-row's differ, from what is known of the two: a row wakes-per-row could not measure, a row claimed before the store's
+ * ingest window (its first transcripts are not here), else UNEXPLAINED, which is printed as such and counted.
+ * @param {{ reading: import("../wakes-per-row.mjs").RowReading | undefined, claimedAt: number | null, heldFrom: number | null, store: number }} facts
+ */
+function whyDifferent({ reading, claimedAt, heldFrom, store }) {
+  if (!reading) return "wakes-per-row has no reading for this row (it is not among the rows merged in its window)";
+  if (!reading.measured) return `wakes-per-row has it UNMEASURED (${reading.unmeasured})`;
+  if (heldFrom !== null && claimedAt !== null && claimedAt < heldFrom) return `the store starts at its ingest window (${new Date(heldFrom).toISOString()}), after the row was claimed`;
+  return `UNEXPLAINED: the store holds ${store} wakes and wakes-per-row ${reading.wakes}`;
+}
+
+/**
+ * @param {{ merged: MergedRow[], readings: import("../wakes-per-row.mjs").RowReading[] | null, wakeCounts: Map<number, number>, claims: Map<number, number>,
+ *   heldFrom: number | null }} input
+ */
+function compareWakes({ merged, readings, wakeCounts, claims, heldFrom }) {
+  if (readings === null) return null;
+  /** @type {WakeDifference[]} */
+  const differ = [];
+  for (const { row } of merged) {
+    const reading = readings.find((candidate) => candidate.row === row);
+    const store = wakeCounts.get(row) ?? 0;
+    if (reading?.measured && reading.wakes === store) continue;
+    differ.push({ row, store, wakesPerRow: reading?.measured ? reading.wakes : null, reason: whyDifferent({ reading, claimedAt: claims.get(row) ?? null, heldFrom, store }) });
+  }
+  return { rows: merged.length, agree: merged.length - differ.length, differ };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// The report
+
+/** @param {{ events: TraceEvent[], keys: Keys }} input */
+function indexes({ events, keys }) {
+  const turns = events.filter((event) => event.kind === "turn").sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  const placed = turns.map((turn) => ({ turn, ...place(turn, keys) }));
+  /** @type {Map<number, Tally>} */
+  const byRow = new Map();
+  /** @type {{ wake: Map<string, TraceEvent[]>, session: Map<string, TraceEvent[]>, row: Map<number, TraceEvent[]> }} */
+  const turnsOf = { wake: new Map(), session: new Map(), row: new Map() };
+  for (const entry of placed) {
+    const { turn } = entry;
+    if (turn.wakeId) turnsOf.wake.set(turn.wakeId, [...(turnsOf.wake.get(turn.wakeId) ?? []), turn]);
+    turnsOf.session.set(turn.session, [...(turnsOf.session.get(turn.session) ?? []), turn]);
+    if (entry.kind !== "rowed") continue;
+    for (const row of entry.rows) {
+      addTurn(byRow.get(row) ?? byRow.set(row, emptyTally()).get(row) ?? emptyTally(), turn);
+      turnsOf.row.set(row, [...(turnsOf.row.get(row) ?? []), turn]);
+    }
+  }
+  return { turns, placed, byRow, turnsOf };
+}
+
+/**
+ * @param {{ start: number, now: number, held: { from: number | null, basis: string }, unread: number }} input
+ * @returns {string | null} why the week is partial, or `null` when the store holds all of it
+ */
+function partialReason({ start, now, held, unread }) {
+  if (start + WEEK_MS > now) return "the week is not over";
+  if (unread > 0) return `GitHub's events are not yet read for ${unread} of its merged rows (a second run continues; the claims, reviews, queue entries and CI runs of those rows are missing)`;
+  if (held.from === null) return `the store's window is unknown (${held.basis})`;
+  if (start < held.from) return `the store holds transcripts only from ${new Date(held.from).toISOString()} (${held.basis})`;
+  return null;
+}
+
+/**
+ * The report. `readings` is wakes-per-row's `measure` result for each week by its start (`null` for a week it was not run for).
+ * `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
+ * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
+ *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[] }} input
+ */
+export function aggregate({ events, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [] }) {
+  const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
+  const { turns, placed, byRow, turnsOf } = indexes({ events, keys });
+  const everyMerge = mergedRows(pulls, { from: -Infinity, to: Infinity }, rowRepo);
+  const claims = claimsOf(events);
+  const unreadSet = new Set(unreadRows);
+  const wakeCounts = storeWakeCounts({ events, keys, pulls });
+  const weeks = [];
+  for (let start = weekStart(since); start <= weekStart(now); start += WEEK_MS) {
+    const merged = everyMerge.filter((entry) => entry.mergedAt >= start && entry.mergedAt < start + WEEK_MS);
+    const rows = merged.map((entry) => rowFigures(entry, { byRow, claims }));
+    const classes = repeatClasses({ events, turns, keys, at: start, claimed: new Set(), turnsOf });
+    weeks.push({
+      start, end: start + WEEK_MS, partial: partialReason({ start, now, held, unread: merged.filter((entry) => unreadSet.has(entry.row)).length }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows), dearest: dearest(rows),
+      spend: spendFigures(spendOf(placed.filter((entry) => inWeek(entry.turn, start))), unreadable), repeats: { classes, total: repeatTotal(classes) },
+      wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
+    });
+  }
+  return { weeks, ...unmerged({ events, byRow, merged: everyMerge }), held, since: weekStart(since), now };
+}
+
+/** Rows with turns and no merge, listed apart: an open row, or one closed with no merge. @param {{ events: TraceEvent[], byRow: Map<number, Tally>, merged: MergedRow[] }} input */
+function unmerged({ events, byRow, merged }) {
+  const done = new Set(merged.map((entry) => entry.row));
+  const closed = new Set(events.filter((event) => event.kind === "closed" && event.row !== null && event.pr === null).map((event) => event.row));
+  const listed = [...byRow].filter(([row]) => !done.has(row)).map(([row, tally]) => ({
+    row, status: /** @type {"open" | "closed without a merge"} */ (closed.has(row) ? "closed without a merge" : "open"), turns: tally.turns, tokens: tally.tokens,
+    dollars: tally.priced > 0 ? tally.dollars : null, floor: tally.unpriced > 0,
+  })).sort((a, b) => (b.dollars ?? -1) - (a.dollars ?? -1) || b.tokens - a.tokens || a.row - b.row);
+  return { open: listed.filter((entry) => entry.status === "open"), closedUnmerged: listed.filter((entry) => entry.status !== "open") };
+}
+
+/** Consecutive COMPLETE weeks only: a partial week is printed and never compared (a week the store holds half of would read as a saving). @param {ReturnType<typeof aggregate>["weeks"]} weeks */
+export function compareWeeks(weeks) {
+  const complete = weeks.filter((week) => week.partial === null);
+  return complete.slice(1).map((week, index) => {
+    const before = complete[index];
+    const delta = (/** @type {number | null} */ a, /** @type {number | null} */ b) => (a === null || b === null ? null : b - a);
+    return {
+      from: before.start, to: week.start,
+      p50Dollars: delta(before.perRow.dollars.p50, week.perRow.dollars.p50), p90Dollars: delta(before.perRow.dollars.p90, week.perRow.dollars.p90),
+      overheadShare: delta(before.spend.overhead.share.dollars, week.spend.overhead.share.dollars), repeatDollars: week.repeats.total.dollars - before.repeats.total.dollars,
+      cacheReadShare: delta(before.spend.cacheRead.share, week.spend.cacheRead.share),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Text
+
+/** @param {number} ms */
+const day = (ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DD".length);
+/** @param {number} ms */
+const hours = (ms) => `${(ms / (60 * 60 * 1000)).toFixed(1)}h`;
+/** @param {number | null} value @param {boolean} [floor] */
+const dollars = (value, floor = false) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(DOLLAR_DECIMALS)}`);
+/** @param {number | null} value */
+const percent = (value) => (value === null ? "n/a" : `${(value * PERCENT).toFixed(SHARE_DECIMALS)}%`);
+/** @param {number | null} value */
+const count = (value) => (value === null ? "n/a" : Math.round(value).toLocaleString("en-US"));
+
+/** @param {RepeatClass} entry */
+function classLine(entry) {
+  const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens` : `dollars: ${entry.dollars}`;
+  return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}`;
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
+function weekLines(week) {
+  const { perRow, spend } = week;
+  const head = `WEEK ${day(week.start)} .. ${day(week.end)}  ${week.partial === null ? "complete" : `PARTIAL, not compared: ${week.partial}`}`;
+  const lines = [head, `  merged rows: ${perRow.rows} (no turn in the store: ${perRow.noTurns}; turns but no priced one: ${perRow.noPrice}; dollars a floor: ${perRow.floors})`];
+  lines.push(`  per merged row  dollars   p50 ${dollars(perRow.dollars.p50)}  p90 ${dollars(perRow.dollars.p90)}  (n=${perRow.dollars.n})`,
+    `                  tokens    p50 ${count(perRow.tokens.p50)}  p90 ${count(perRow.tokens.p90)}  (n=${perRow.tokens.n})`,
+    `                  wall-clock p50 ${perRow.wallClock.p50 === null ? "n/a" : hours(perRow.wallClock.p50)}  p90 ${perRow.wallClock.p90 === null ? "n/a" : hours(perRow.wallClock.p90)}  (n=${perRow.wallClock.n}; no claim record: ${perRow.noClaim})`);
+  lines.push(`  the week's spend by turn time: ${dollars(spend.dollars)} priced over ${spend.turns} turns (${spend.unpriced} unpriced), ${count(spend.tokens)} tokens`,
+    `  overhead (no row): ${dollars(spend.overhead.dollars)} = ${percent(spend.overhead.share.dollars)} of dollars, ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
+  for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars)}  ${count(own.tokens)} tokens  (on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars)})`);
+  lines.push(`  UNMEASURED (not overhead): ${spend.unmeasured.turns} turns, ${dollars(spend.unmeasured.dollars)}; transcripts the ingest could not read: ${spend.unmeasured.unreadableTranscripts.length}${spend.unmeasured.unreadableTranscripts.map((file) => `\n    ${file}`).join("")}`,
+    `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
+    `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
+    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.map(classLine));
+  return [...lines, ...dearestLines(week), ...wakeLines(week)];
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
+function dearestLines(week) {
+  return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.map((row) => `    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`)];
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
+function wakeLines(week) {
+  if (week.wakes === null) return ["  wakes: wakes-per-row was not run for this week, so the counts are not compared"];
+  return [`  wakes against wakes-per-row: ${week.wakes.agree} of ${week.wakes.rows} rows agree`,
+    ...week.wakes.differ.map((entry) => `    #${entry.row}: store ${entry.store}, wakes-per-row ${entry.wakesPerRow ?? "n/a"} -- ${entry.reason}`)];
+}
+
+/** @param {ReturnType<typeof aggregate>} report @param {{ ingestFooter?: string[] }} [footer] */
+export function renderAggregate(report, footer = {}) {
+  const lines = ["TRACE --AGGREGATE (a reading at a moment: re-run it, do not quote it)", "", "DEFINITIONS", ...DEFINITIONS.map((line) => `- ${line}`), "",
+    `reading taken ${new Date(report.now).toISOString()}; weeks from ${day(report.since)}; the store holds transcripts from ${report.held.from === null ? "an unknown time" : new Date(report.held.from).toISOString()} (${report.held.basis})`, ""];
+  for (const week of report.weeks) lines.push(...weekLines(week), "");
+  const trend = compareWeeks(report.weeks);
+  lines.push("WEEK OVER WEEK (complete weeks only; a partial week is never compared):");
+  for (const step of trend) lines.push(`  ${day(step.from)} -> ${day(step.to)}: p50 dollars ${signed(step.p50Dollars)}, p90 ${signed(step.p90Dollars)}, overhead share ${signedShare(step.overheadShare)}, repeat waste ${signed(step.repeatDollars)}, cache-read share ${signedShare(step.cacheReadShare)}`);
+  if (trend.length === 0) lines.push("  fewer than two complete weeks: nothing to compare yet");
+  lines.push("", `OPEN ROWS, in no average (${report.open.length}):`, ...report.open.slice(0, DEAREST).map(openLine), `ROWS CLOSED WITHOUT A MERGE, in no average (${report.closedUnmerged.length}):`, ...report.closedUnmerged.slice(0, DEAREST).map(openLine));
+  return [...lines, ...(footer.ingestFooter ?? [])].join("\n");
+}
+
+/** @param {number | null} value */
+const signed = (value) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}$${Math.abs(value).toFixed(DOLLAR_DECIMALS)}`);
+/** @param {number | null} value */
+const signedShare = (value) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}${Math.abs(value * PERCENT).toFixed(SHARE_DECIMALS)} points`);
+/** @param {ReturnType<typeof unmerged>["open"][number]} row */
+const openLine = (row) => `  #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns  (${row.status})`;

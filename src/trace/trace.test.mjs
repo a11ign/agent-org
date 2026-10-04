@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
-import { NOT_HELD, parseArgs, render, resolveSubject } from "./trace.mjs";
+import { weekStart } from "./aggregate.mjs";
+import { isAggregate, NOT_HELD, parseAggregateArgs, parseArgs, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -181,6 +182,19 @@ test("ARGS: the row is required and `--` is tolerated", () => {
   assert.equal(parseArgs(["3406", "--json", "1"]).json, true);
   assert.throws(() => parseArgs(["--", "abc"]), /usage: trace/);
   assert.throws(() => parseArgs([]), /usage: trace/);
+});
+
+test("ARGS --aggregate: the flag takes no value, --since is rounded down to its Monday, and a bad time is refused", () => {
+  assert.equal(isAggregate(["--", "--aggregate"]), true);
+  assert.equal(isAggregate(["--", "3406"]), false);
+  const parsed = parseAggregateArgs(["--", "--aggregate", "--since", "2026-09-24T13:00:00Z", "--store", "/s/events.ndjson", "--json", "1"]);
+  assert.deepEqual(parsed, { since: at("2026-09-21T00:00:00Z"), store: "/s/events.ndjson", json: true, budget: 1500 });
+  assert.equal(parseAggregateArgs(["--aggregate"]).since, weekStart(parseAggregateArgs(["--aggregate"]).since), "the default start is a Monday too");
+  assert.ok(parseAggregateArgs(["--aggregate"]).since < Date.now(), "and it is in the past");
+  assert.throws(() => parseAggregateArgs(["--aggregate", "--since", "last week"]), /--since must be an ISO time/);
+  assert.equal(parseAggregateArgs(["--aggregate"]).budget, 1500, "the default spends a third of the hourly REST pool");
+  assert.equal(parseAggregateArgs(["--aggregate", "--calls", "0"]).budget, 0);
+  assert.throws(() => parseAggregateArgs(["--aggregate", "--calls", "many"]), /--calls must be a whole number/);
 });
 
 /** A `gh api` that answers from a table and fails like gh does for anything else. */
