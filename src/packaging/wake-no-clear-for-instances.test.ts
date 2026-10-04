@@ -177,7 +177,9 @@ function cli(label: string) {
     writeFileSync(git, "#!/bin/sh\nexit 1\n");
     chmodSync(git, STUB_MODE);
     const res = spawnSync(process.execPath, [PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
-      encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir },
+      // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it: without it the
+      // child dies on a ProjectDeclarationRefusal before it reaches herdr, and this test asserts on herdr's calls.
+      encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST },
     });
     return { out: res.stdout, err: res.stderr, status: res.status,
       calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [] };
