@@ -52,6 +52,23 @@ function declaredWaitOf(row, holder) {
 }
 
 /**
+ * @typedef {{ claimedAt: number, comment: number | null, commit: number | null, push: number | null,
+ *   openPrs: { createdAt?: string, labels?: ({ name?: string } | string)[] }[], mergedAt: number | null }} ClaimMoves what a claim's holder has DONE, as plain data: the times
+ *   of the claim and of the holder's newest comment, commit and push, the pull requests that are the claim's own (`ownsPr`, in every tracked repository) and the
+ *   merge of one since the claim. Data and not `ClaimFacts`, whose `file` and `work` are thunks that a Map in `decide`'s arguments could not carry through the shadow tap
+ * @typedef {{ moves: Map<number, ClaimMoves>, skipped: Map<number, string> }} ClaimFactsOfTick every claimed row's moves, and for the rows whose facts could not be
+ *   built the reason (`skipped`): a row in neither is one this tick did not evaluate at all
+ * @typedef {(facts: ClaimFactsOfTick | null) => void} OnClaimFacts `null` is a tick that evaluated NO claim (a refused read), never "no claims"
+ */
+
+/** @param {import("../claim-stall.mjs").ClaimFacts} facts @returns {ClaimMoves} */
+function movesOf(facts) {
+  return { claimedAt: facts.claimedAt, comment: facts.comment, commit: facts.commit, push: facts.push,
+    openPrs: (facts.ownPrs ?? []).map((/** @type {any} */ pr) => ({ createdAt: pr.createdAt, labels: pr.labels })),
+    mergedAt: facts.mergedPr?.mergedAt ?? null };
+}
+
+/**
  * THE WHOLE OF `claim-stalled` FOR ONE TICK: read every claimed row, decide, keep the nudge memory, and return the orders
  * (a nudge to a holder; a RELEASE that `wake.mjs` performs).
  *
@@ -67,6 +84,10 @@ function declaredWaitOf(row, holder) {
  * key, and the grace runs from the delivery it finds (`claimReading`). `ledger` is the seam for that read; an unreadable ledger reads as "not
  * delivered", which only DELAYS a release.
  *
+ * `onFacts` (#3451) is how the facts this tick built reach `blockerClearedOrders`, which asks of the same holder "did you claim after the clearing, own a
+ * pull request, move since" and would otherwise re-derive a narrower copy of these. A callback and not a second return value, because `decide` and every
+ * caller of this function take ORDERS; it is called once per tick, with `null` when no claim was evaluated.
+ *
  * `agents` (#2747) is herdr's own workspace listing, read the same way `restartAt` is: the caller's reading when given, else a live one --
  * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
  *
@@ -74,7 +95,7 @@ function declaredWaitOf(row, holder) {
  *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, io?: import("../claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
  *   agents?: {label: string, status: string}[] | null,
  *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
- *   read?: typeof readStallState, write?: typeof writeStallState }} args
+ *   read?: typeof readStallState, write?: typeof writeStallState, onFacts?: OnClaimFacts }} args
  * @returns {import("../claim-stall.mjs").StallOrder[]}
  */
 export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: statMtime }, repo = REPO_CHECKOUT, now = Date.now(),
@@ -83,6 +104,7 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
     return evaluateClaims({ ...inputs, io, repo, now, stateDir, log, read, write });
   } catch (/** @type {any} */ err) {
     log(`claim-stall: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no claim-stalled order this tick.\n`);
+    inputs.onFacts?.(null);
     return [];
   }
 }
@@ -92,20 +114,22 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
  *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, agents?: {label: string, status: string}[] | null,
  *   ledger?: () => string, io: import("../claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
- *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState }} args
+ *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState, onFacts?: OnClaimFacts }} args
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write }) {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write, onFacts }) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   if (held.length > 0 && claimedComments === null) {
     log("claim-stall: the comments on the claimed rows could not be read -- NO claim was evaluated this tick.\n");
+    onFacts?.(null);
     return [];
   }
   const statePath = `${stateDir}/${STALL_STATE_FILE}`;
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
-  const readings = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
+  const { readings, skipped } = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
     ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt),
     agents: agentsFor(held, agents) });
+  onFacts?.({ moves: new Map(readings.map(({ facts }) => [facts.row, movesOf(facts)])), skipped });
   const after = nextStallState(before, readings, now);
   if (after !== before) write(statePath, after);
   return claimStalledOrders(readings, now);
@@ -149,6 +173,7 @@ function rowsPerSession(held) {
 }
 
 /**
+ * @returns {{ readings: { facts: import("../claim-stall.mjs").ClaimFacts, reading: import("../claim-stall.mjs").Reading }[], skipped: Map<number, string> }}
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
  *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, io: import("../claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
  *   agents: {label: string, status: string}[] | null,
@@ -157,6 +182,8 @@ function rowsPerSession(held) {
 function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }) {
   /** @type {{ facts: import("../claim-stall.mjs").ClaimFacts, reading: import("../claim-stall.mjs").Reading }[]} */
   const readings = [];
+  /** @type {Map<number, string>} the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451) */
+  const skipped = new Map();
   const heldBy = rowsPerSession(held);
   for (const row of held) {
     const sessions = labelsOf(row).filter((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX));
@@ -171,6 +198,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
       ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in facts) {
       log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
+      skipped.set(Number(row.number), facts.skip);
       continue;
     }
     const reading = readClaim(facts, { now, restartAt: restart, agents, ...rememberedFor({ entry: before[facts.row], session, row: facts.row, ledger }) });
@@ -183,7 +211,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
     }
     readings.push({ facts, reading });
   }
-  return readings;
+  return { readings, skipped };
 }
 
 /**
@@ -216,14 +244,17 @@ function ledgerText(path) {
  * missing nothing is evaluated and nothing is written. A refused pull-request read coalesced to "none open" would read a holder whose PR is in
  * review as one with no PR at all (nudged, or, with a `blockedBy` edge, released), and a refused row read would empty the nudge memory.
  * @param {any[] | null} rows @param {any[] | null} claimedComments @param {any[] | null} prs
- * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, elsewhere?: typeof readElsewherePrs, log?: (line: string) => void }} [deps]
+ * @param {{ tick?: typeof claimStallTick, merged?: typeof readMergedPrs, elsewhere?: typeof readElsewherePrs, log?: (line: string) => void,
+ *   onFacts?: OnClaimFacts }} [deps]
  */
 export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTick, merged = readMergedPrs, elsewhere = readElsewherePrs,
-  log = (line) => process.stderr.write(line) } = {}) {
+  log = (line) => process.stderr.write(line), onFacts } = {}) {
   if (rows === null || prs === null) {
     log(`claim-stall: the ${rows === null ? "open rows" : "open pull requests"} could not be read -- NO claim was evaluated this tick.\n`);
+    onFacts?.(null);
     return [];
   }
   const anyClaimed = rows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
-  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null, ...(anyClaimed ? { elsewhere: elsewhere() } : {}) });
+  return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null, ...(anyClaimed ? { elsewhere: elsewhere() } : {}),
+    ...(onFacts === undefined ? {} : { onFacts }) });
 }
