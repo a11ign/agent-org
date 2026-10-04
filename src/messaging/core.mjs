@@ -183,7 +183,10 @@ export function createMessenger({ provider, ledger, now, config: overrides }) {
       const result = await provider.send(message);
       if (typeof result?.messageRef !== "string" || result.messageRef === "") throw new Error("provider returned no messageRef");
       limiter.noteDelivered();
-      return { status: STATUS.sent, line: record({ key, status: STATUS.sent, providerMessageId: result.messageRef, ...extra }) };
+      // `silent` is what the provider says it APPLIED, not what was asked: a bot cannot read `disable_notification` back, so this line is
+      // the only evidence "was it silent" will ever have. A provider that returns none is `null` (unknown), never `false` (loud).
+      const silent = typeof result.silent === "boolean" ? result.silent : null;
+      return { status: STATUS.sent, line: record({ key, status: STATUS.sent, providerMessageId: result.messageRef, silent, ...extra }) };
     } catch (error) {
       return { status: STATUS.failed, line: record({ key, status: STATUS.failed, error: describeError(error), ...extra }) };
     }

@@ -22,7 +22,7 @@ decision 8).
   asked 19 times in a day), then silence until the state changes. All the numbers are config, with these defaults.
 - **Rate limit**, in the core, from the provider's declared capability (Telegram: about one message a second per chat): a token
   bucket, plus an hourly cap (default 12) whose overflow collapses into ONE digest line, never a drop.
-- **Delivery log:** append-only JSONL, one line per attempt `{ ts, key, provider, status, providerMessageId, error }`. Error text
+- **Delivery log:** append-only JSONL, one line per attempt `{ ts, key, provider, status, providerMessageId, error }`, and a `sent` line adds `silent`: the flag the provider APPLIED (`null` when it returned none; lines written before this field carry none). Error text
   is passed through the secret redactor first. Inbound lines (stages 2 and 3) go in the same file as
   `{ ts, direction: "in", updateId, verdict, reason }`, **with content stored as a length and a sha256, never the text** (a dropped
   message is attacker-chosen text).
