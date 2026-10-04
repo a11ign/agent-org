@@ -103,7 +103,9 @@ describe("all seats idle while rows wait (done-when 2)", () => {
     const old = [{ at: NOW - HOUR, seats: seats("idle"), orders: rows(1) }];
     assert.throws(() => allIdleEvents(old, NOW, DEFAULT_STALL_CONFIG), /old/);
     assert.throws(() => allIdleEvents([], NOW, DEFAULT_STALL_CONFIG), /no tick/);
-    assert.throws(() => allIdleEvents([{ at: NOW, seats: "idle" }], NOW, DEFAULT_STALL_CONFIG), /ticks\[0\]/);
+    // Malformed on purpose: this is the shape a corrupt tick file would hand over.
+    const malformed = /** @type {Parameters<typeof allIdleEvents>[0]} */ (/** @type {unknown} */ ([{ at: NOW, seats: "idle" }]));
+    assert.throws(() => allIdleEvents(malformed, NOW, DEFAULT_STALL_CONFIG), /ticks\[0\]/);
   });
 });
 

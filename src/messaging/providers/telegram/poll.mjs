@@ -232,7 +232,8 @@ function performerFor({ provider, chairman, onForward, log }) {
     if (leaving !== null) await attempt(`leaveChat ${leaving}`, () => provider.leaveChat(leaving));
     if (action.action === "reply") {
       // The deletion first: the longer a credential sits in the chat, the longer it is there.
-      if (action.deleteMessage !== null) await attempt("deleteMessage", () => provider.deleteMessage(action.deleteMessage));
+      const doomed = action.deleteMessage; // a local, so the null check still holds inside the closure
+      if (doomed !== null) await attempt("deleteMessage", () => provider.deleteMessage(doomed));
       await attempt("reply", () => provider.send({ text: action.text }));
     }
     if (action.action === "forward") await attempt("forward", () => onForward(action.accepted));

@@ -170,7 +170,9 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
     }
     const answers = createAnswers({ ledger, github: writer, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
     const send = async (/** @type {{text: string}} */ { text }) => { events.push(`send ${text}`); return { messageRef: "1" }; };
-    const onForward = createForwarder({ answers, send, converse: consumer({ ledger, say: (text) => events.push(text) }), log: (line) => events.push(`log ${line}`) });
+    const consume = consumer({ ledger, say: (text) => events.push(text) });
+    // The forwarder's converse port reports nothing, and the real `converse` reports an outcome: the wrapper drops it, as the forwarder does.
+    const onForward = createForwarder({ answers, send, converse: async (accepted) => { await consume(accepted); }, log: (line) => events.push(`log ${line}`) });
     const stop = new AbortController();
     let served = false;
     const provider = {

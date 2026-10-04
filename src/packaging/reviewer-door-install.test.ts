@@ -23,7 +23,8 @@ const PR_ORDERS = here("../work-gate/pr-orders.mjs");
 /** The door as it stood before #3030, 7,227 bytes: the very file the reviewers were running on 2026-10-03. */
 const PRE_3030 = readFileSync(here("./fixtures/reviewer-door/pr-review-verdict.pre-3030.sh"), "utf8");
 const INCIDENT_BYTES = 7227;
-const NO_HOST = { host: { home: "/nonexistent-home" } } as never;
+// Only `home` is read; the rest of the host config is not what these tests are about.
+const NO_HOST = { host: { home: "/nonexistent-home" } } as unknown as Parameters<typeof reviewerDoorPath>[0];
 
 /** The spelling the installer writes to, READ from its default and not restated: `${A11Y_REVIEWER_BIN:-$HOME/reviewer/bin}/pr-review-verdict`. */
 function installerDefault(): string {

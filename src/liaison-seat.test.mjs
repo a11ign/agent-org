@@ -34,7 +34,7 @@ writeFileSync(SESSIONS, JSON.stringify({ live: [
 /** A transcript root holding no transcript at all: "cannot tell". */
 const NO_TRANSCRIPTS = join(scratch, "no-transcripts");
 
-/** A transcript root whose newest turn for `label` read `cacheRead` tokens (`instanceCacheRead`'s own reader). */
+/** A transcript root whose newest turn for `label` read `cacheRead` tokens (`instanceCacheRead`'s own reader). @param {string} label @param {number} cacheRead */
 function transcriptRootFor(label, cacheRead) {
   const dir = mkdtempSync(join(scratch, "t-"));
   writeFileSync(join(dir, "t.jsonl"), `${[
@@ -159,7 +159,7 @@ describe("the seat is never offered a row, and cannot claim one", () => {
   });
 
   test("(4) row-claim refuses it, naming `persistent`, before a single write", () => {
-    const calls = [];
+    const calls = /** @type {string[][]} */ ([]);
     const run = (/** @type {string} */ cmd, /** @type {string[]} */ args) => {
       calls.push([cmd, ...args]);
       return JSON.stringify({ number: 3415, title: "t", state: "OPEN", labels: [{ name: "ready" }] });

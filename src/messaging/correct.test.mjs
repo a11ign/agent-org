@@ -162,6 +162,7 @@ describe("chairman:correct", () => {
   });
 
   test("a ref the ledger does not hold, or words it did not hash, are refused by every verb", async () => {
+    /** @type {[string, string | undefined][]} */
     const verbs = [["withdraw", "stale"], ["reroute", undefined], ["re-ask", undefined]];
     for (const [as, reason] of verbs) {
       const { github, correct } = corrector();

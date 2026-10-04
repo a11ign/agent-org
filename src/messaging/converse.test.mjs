@@ -75,10 +75,10 @@ function entries(path) {
 const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 const fakeQueue = {
   EXIT,
-  STANCE: { DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" },
+  STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }),
   attributed: (/** @type {string} */ text, /** @type {string | null} */ sender) => `Sent to you by \`${sender}\`:\n\n${text}`,
   handoffId: (/** @type {string} */ session, /** @type {string} */ prompt) => `handoff/${session}/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`,
-  readHandoffs: entries,
+  readHandoffs: /** @type {(path: string) => any[]} */ (entries),
   queueOrLose(/** @type {Record<string, any>} */ { label, text, path, agents, sender }) {
     if (!agents?.some((/** @type {{label: string}} */ agent) => agent.label === label)) {
       process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: no session named "${label}". Fix the name and run it again.\n`);
@@ -96,7 +96,7 @@ const fakeQueue = {
   },
 };
 
-/** @param {Record<string, any>} [more] */
+/** @param {number} id @param {Record<string, any>} [more] */
 function chairmanUpdate(id, more = {}) {
   return { update_id: id, message: { message_id: 100 + id, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "why did the merge queue stall?", ...more } };
 }
@@ -109,7 +109,7 @@ function chairmanUpdate(id, more = {}) {
 function recordingQueue(queue, events = /** @type {string[]} */ ([])) {
   let words = "";
   if (!queue) return { port: undefined, words: () => words };
-  const port = {
+  const port = /** @type {import("./converse.mjs").QueuePort} */ ({
     ...queue,
     queueOrLose(/** @type {Record<string, any>} */ order) {
       events.push("queue");
@@ -123,7 +123,7 @@ function recordingQueue(queue, events = /** @type {string[]} */ ([])) {
         process.stderr.write(words);
       }
     },
-  };
+  });
   return { port, words: () => words };
 }
 
@@ -151,7 +151,7 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   return { queuePath, provider, clock, converse, accept, events, said: said.words, ledgerLines: () => readLedgerLines(ledgerPath), queued: () => entries(queuePath) };
 }
 
-/** @param {Record<string, any>} queue */
+/** @param {Record<string, any>} queue @param {string} label */
 function cases(queue, label) {
   const ready = (/** @type {Record<string, any>} */ more = {}) => harness({ queue, ...more });
 
@@ -233,6 +233,7 @@ function cases(queue, label) {
     }
     assert.ok(entry.prompt.endsWith("\nwhy did the merge queue stall?"), "the chairman's words are still last");
     const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.ok(line, "the ledger holds the converse line");
     assert.equal(line.verdict, "rerouted-to-ceo");
     assert.equal(line.taker, FALLBACK_RECIPIENT);
     assert.equal(line.handoff, entry.id, "the ledger carries ceo's handoff id");
@@ -252,6 +253,7 @@ function cases(queue, label) {
     assert.ok(entry.prompt.includes(`because the ${RECIPIENT}'s queue refused it: NOT PROMPTED, AND NOT QUEUED: "liaison" already has ${DEEP} order(s) waiting`), "the line names the reason");
     assert.ok(entry.prompt.split("why did the merge queue stall?").length === 2, "the refusal text, which repeats the message, is cut to its first line: the words appear once");
     const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.ok(line, "the ledger holds the converse line");
     assert.deepEqual([line.verdict, line.taker, line.handoff], ["rerouted-to-ceo", FALLBACK_RECIPIENT, entry.id]);
     assert.ok(!JSON.stringify(line).includes("why did the merge queue stall?"), "the ledger holds refs and a verdict, never the chairman's words");
     assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, PASSED_REFUSED]);
@@ -263,7 +265,9 @@ function cases(queue, label) {
     const result = await run.converse.forward(run.accept(chairmanUpdate(7)));
     assert.equal(result.outcome, "rerouted-to-ceo");
     assert.deepEqual(run.queued().map((entry) => entry.session), [FALLBACK_RECIPIENT]);
-    assert.match(run.ledgerLines().find((line) => line.origin === "converse").refusals[0], /not in the queue file/);
+    const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.ok(line, "the ledger holds the converse line");
+    assert.match(line.refusals[0], /not in the queue file/);
   });
 
   test("done-when 2: what he is told after \"Got it\" for a rerouted message holds none of the queue's words, a handoff, a path, an error class or a session he does not know", async () => {
@@ -292,6 +296,7 @@ function cases(queue, label) {
       plain(run.provider.sent[1].text);
       assert.match(run.provider.sent[1].text, /nothing was delivered\. Please send it again\.$/);
       const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+      assert.ok(line, "the ledger holds the converse line");
       assert.deepEqual([line.verdict, line.taker, line.handoff, line.refusals.length], ["refused", null, null, 2], "both refusals are kept in the ledger");
     }
   });
@@ -303,6 +308,7 @@ function cases(queue, label) {
     assert.deepEqual(run.queued().map((entry) => entry.session), [RECIPIENT]);
     assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT]);
     const line = run.ledgerLines().find((candidate) => candidate.origin === "converse");
+    assert.ok(line, "the ledger holds the converse line");
     assert.deepEqual([line.verdict, line.taker, line.refusals], ["queued", RECIPIENT, []]);
     assert.ok(!run.queued()[0].prompt.includes("came to you"), "no reroute line when the liaison took it");
   });
@@ -369,6 +375,7 @@ function cases(queue, label) {
     assert.equal(rerouted.handoff, entry.id);
     assert.ok(entry.prompt.includes("Telegram message: 501 (a button press)") && entry.prompt.includes(`because the ${RECIPIENT}'s queue refused it: NOT PROMPTED`));
     assert.ok(entry.prompt.endsWith("\nx"), "the words are last");
+    assert.ok(rerouted.told);
     plain(rerouted.told);
 
     const full = ready({ roster: ROSTER });
@@ -390,8 +397,9 @@ function cases(queue, label) {
   });
 
   test("the queue is told WHY: a button's order says a button, and a message says a message (it is what the queue repeats when it refuses)", async () => {
+    /** @type {unknown[]} */
     const whys = [];
-    const spy = { ...queue, queueOrLose: (order) => { whys.push(order.why); return queue.queueOrLose(order); } };
+    const spy = { ...queue, queueOrLose: (/** @type {Record<string, any>} */ order) => { whys.push(order.why); return queue.queueOrLose(order); } };
     const run = harness({ queue: spy });
     await run.converse.orderLiaison({ text: "x", messageRef: "501" });
     await run.converse.forward(run.accept(chairmanUpdate(7)));

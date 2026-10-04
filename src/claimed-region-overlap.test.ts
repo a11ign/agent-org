@@ -215,7 +215,7 @@ test("(7) the claim REFUSES as INCONCLUSIVE when it cannot read who holds what -
 });
 
 test("(7) `check` says the same: refused, could-not-ask, or clear -- never silence", () => {
-  const say = (claimed: () => unknown) => {
+  const say = (claimed: NonNullable<NonNullable<Parameters<typeof reportB4>[1]>["claimed"]>) => {
     const out: string[] = [];
     reportB4(3414, { write: (t: string) => out.push(t), mine: () => REGION_3414, others: () => [], claimed, repo: TRACKER });
     return out.join("");
@@ -236,7 +236,7 @@ test("(7) THE GATE treats an unread list as today: nothing is shelved, the row i
 // --- (8) a keyed Region entry compares only with keyed entries of the same repository -----------------------------------------------
 
 test("(8) `agent-org:` compares only with `agent-org:`, a bare entry only with bare ones (#2617's rule)", () => {
-  const ask = (mine: string, theirs: string) => claimedRegionOverlapReason([mine], [{ number: 7, files: [theirs], blockedBy: [] }], { rowNumber: 1 });
+  const ask = (mine: string, theirs: string) => claimedRegionOverlapReason([mine], [{ number: 7, files: [theirs] }], { rowNumber: 1 });
   assert.notEqual(ask("agent-org:src/a.mjs", "agent-org:src/a.mjs"), null, "control: the same key and path");
   assert.notEqual(ask("src/a.mjs", "src/a.mjs"), null, "control: two bare entries");
   assert.equal(ask("agent-org:src/a.mjs", "src/a.mjs"), null);
@@ -245,9 +245,9 @@ test("(8) `agent-org:` compares only with `agent-org:`, a bare entry only with b
 });
 
 test("(8) a directory entry meets every entry under it, and the refusal names the more specific of the two", () => {
-  const reason = claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/messaging/core.mjs"], blockedBy: [] }], { rowNumber: 1 });
+  const reason = claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/messaging/core.mjs"] }], { rowNumber: 1 });
   assert.deepEqual(namedIn(reason), ["agent-org:src/messaging/core.mjs"]);
-  assert.equal(claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/other.mjs"], blockedBy: [] }], { rowNumber: 1 }), null);
+  assert.equal(claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/other.mjs"] }], { rowNumber: 1 }), null);
 });
 
 // --- (9) THE GATE -------------------------------------------------------------------------------------------------------------------
@@ -297,9 +297,9 @@ const ROOT = { rootFiles: new Set(["package.json"]) };
 const WATCH_LIST = "agent-org:src/messaging/watch-list.mjs";
 const holder = (number: number, body: string, labels = ["in-progress"]) =>
   ({ number, labels: labels.map((name) => ({ name })), body, blockedBy: { nodes: [] } });
-const shelvedBy = (ready: unknown, openRows: unknown[], prFiles: unknown[] = []) =>
+const shelvedBy = (ready: unknown, openRows: unknown[], prFiles: Parameters<typeof partitionUnclaimed>[1] = []) =>
   partitionUnclaimed([ready], prFiles, { ...ROOT, openRows }).blocked;
-const offered = (ready: unknown, openRows: unknown[], prFiles: unknown[] = []) =>
+const offered = (ready: unknown, openRows: unknown[], prFiles: Parameters<typeof partitionUnclaimed>[1] = []) =>
   partitionUnclaimed([ready], prFiles, { ...ROOT, openRows }).offerable.length;
 
 test("(10)(1) THE INCIDENT: a claimed row labelled `no-code-left` does not shelve a ready row on its Region; the same two rows without the label DO", () => {

@@ -22,13 +22,15 @@ const scopes = scopesOf([{
 }]);
 const scopeOf = (key: string) => scopes.find((scope) => scope.key === key)!;
 
+type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
+
 /** A tracker that answers with the one closed row, and counts how often it was asked. */
 function stubTracker() {
   const calls: unknown[] = [];
   return { calls, readings: {
     code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
     tracker: (lists: unknown) => { calls.push(lists); return { claimedComments: [], epics: [], closedRows: [CLOSED_ROW], closings: null }; },
-  } };
+  } as unknown as Readings }; // deliberately partial: the real reads return more fields than the gate's tests read
 }
 
 const ordersOf = (scope: ReturnType<typeof scopeOf>, readings: ReturnType<typeof stubTracker>["readings"]) =>

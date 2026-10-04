@@ -82,14 +82,16 @@ const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const HEAD = "abc12345deadbeefcafe000011112222";
 const readyPr = (number: number) => ({ number, isDraft: false, headRefOid: HEAD, statusCheckRollup: GREEN, author: { login: "a11ign-ai-leads" },
   comments: [], labels: [], reviews: [], reviewRequests: [] });
+/** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
+type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
 const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
-  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) };
+  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
 /** The reviewer order for pull request 6 of scope `key` (`""` is the primary), made the way `main` makes it. */
 function reviewerOrder(key: string) {
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
   const run = (args: string[]) => (args[0] === "pr" ? JSON.stringify([readyPr(6)]) : "[]");
-  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string }[];
+  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return orders.find((o) => o.cause === "draft-awaiting-verdict")!;
 }
 

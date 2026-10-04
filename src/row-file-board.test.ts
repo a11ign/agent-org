@@ -114,11 +114,12 @@ test("#3330 ACCEPTANCE 2: a CLAIMED row that is already on the board is left alo
   assert.deepEqual(row.writes, []);
 });
 
-for (const [name, options] of [
-  ["a closed row", { state: "CLOSED" as const }],
+const REFUSED_ROWS: [string, NonNullable<Parameters<typeof fakeRow>[0]>][] = [
+  ["a closed row", { state: "CLOSED" }],
   ["a claimed row", { labels: ["regression", CLAIM_LABEL] }],
   ["a body the claim side would refuse (no Open-check)", { body: NO_OPEN_CHECK }],
-] as const) {
+];
+for (const [name, options] of REFUSED_ROWS) {
   test(`#3330 ACCEPTANCE 3: ${name} changes nothing and exits 1`, () => {
     const { row, deps } = fakeRow(options);
     const r = board(["--board=3329", "--lane=any"], deps);

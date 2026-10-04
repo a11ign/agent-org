@@ -61,8 +61,10 @@ function fakeGh(byRepo: Record<string, { prs?: unknown[] | Error, ready?: unknow
   return { run, calls };
 }
 
+/** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
+type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
 const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null }),
-  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) };
+  tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null }) } as unknown as Readings;
 
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `decide` (the per-tick extras stubbed). */
 function ordersOf(scope: ReturnType<typeof scopesOf>[number], gh: ReturnType<typeof fakeGh>) {
@@ -324,7 +326,7 @@ test("the per-tick tracker readings are TAGGED by the scope, so an epic or a clo
   const untagged = { code: NO_READINGS.code,
     tracker: () => ({ claimedComments: [], closings: null,
       epics: [{ number: 601, title: "an epic", subIssuesSummary: { total: 0, completed: 0 } }],
-      closedRows: [{ number: 302, title: "closed", state: "CLOSED", labels: [{ name: "answer:ceo" }] }] }) };
+      closedRows: [{ number: 302, title: "closed", state: "CLOSED", labels: [{ name: "answer:ceo" }] }] }) } as unknown as Readings;
   const keys = asOrders(scopeTick(other, false, readLanes(other, gh.run), untagged).orders).map((o) => o.causeKey);
   assert.ok(keys.includes("product-manager/epic-unfiled/epic-other#601"), `POSITIVE CONTROL: the epic order exists, keyed (${keys.join(", ")})`);
   assert.ok(keys.includes("ceo/answer-owed/row-other#302"), "and so does the closed row's answer-owed order");

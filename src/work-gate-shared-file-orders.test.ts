@@ -149,7 +149,7 @@ test("(7) pull requests of DIFFERENT repositories never overlap on a path name",
 });
 
 test("(7) a keyed repository's order names its pull requests by key, and a wait is read against ITS repository", () => {
-  const keyed = (n: number, paths: string[], over: Partial<Pr> = {}) => prOf(n, paths, { repoKey: "agent-org", repo: "a11ign/agent-org", ...over });
+  const keyed = (n: number, paths: string[], over: Parameters<typeof prOf>[2] = {}) => prOf(n, paths, { repoKey: "agent-org", repo: "a11ign/agent-org", ...over });
   const [order] = ordersOf([keyed(148, PR_148), keyed(149, PR_149, { session: "worker-3419" })]);
   assert.equal(order.subject, "pr-agent-org#149");
   assert.match(order.prompt, /agent-org#149 changes files that another open pull request also changes:/);

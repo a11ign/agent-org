@@ -10,7 +10,7 @@ const DEFAULT_MAX_TEXT = 4096;
 export const FULL_CAPABILITIES = Object.freeze({ silent: true, buttons: true, replies: true, conversation: true, maxText: DEFAULT_MAX_TEXT });
 
 /**
- * @param {{id?: string, capabilities?: Partial<typeof FULL_CAPABILITIES> & {ratePerSecond?: number}}} [options]
+ * @param {{id?: string, capabilities?: {silent?: boolean, buttons?: boolean, replies?: boolean, conversation?: boolean, maxText?: number, ratePerSecond?: number}}} [options]
  */
 export function createFakeProvider({ id = "fake", capabilities = {} } = {}) {
   const declared = { ...FULL_CAPABILITIES, ...capabilities };

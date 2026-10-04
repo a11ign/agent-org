@@ -182,7 +182,7 @@ test("#2997 THE GATE: no unresolved ruling is NO read; a pending one reads its r
   const calls: string[][] = [];
   const run = (args: string[]) => { calls.push(args); return args[0] === "api" ? JSON.stringify({ state: "open", closed_at: null, updated_at: null, merged_at: null, labels: [] }) : ""; };
   assert.deepEqual(rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run }), []);
-  assert.deepEqual(calls, [], "an empty record costs the tick nothing");
+  assert.deepEqual<string[][]>(calls, [], "an empty record costs the tick nothing"); // typed, or the assertion narrows `calls` to `never[]` for the pushes that follow
   recordRuling({ stateDir: dir, by: "ceo", on: 2988, checks: ["closed #2867"], at: RULED_AT });
   const orders = rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run });
   assert.equal(orders.length, 1);
