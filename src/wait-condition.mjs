@@ -46,6 +46,11 @@ export const WAIT_STATES = Object.freeze(["closed", "merged", "labelled", "unlab
  * drops a closed blocker. `hold:*`, `answer:*` and `blocked` do NOT -- somebody must remove them -- so each needs a `Waiting-for:`
  * condition, and an item carrying one without it is `wait-without-reason`. `wait-condition.test.ts` pins this set and gives each
  * kind a case, so a kind added here without one is red.
+ *
+ * WHO REMOVES THEM (#3364): THE GATE LIFTS a PULL REQUEST's `hold:*` once every `Waiting-for:` it declares is `merged`/`closed` and true
+ * (`liftableHolds`, through `pr-hold.mjs --release`, which re-arms). A SESSION lifts everything else: a `hold:*` on a row, a hold whose
+ * condition is a label, `manual`, unreadable or unread, and every `answer:*` (its removal IS the answer) and `blocked` (no referent).
+ * `gate-lifts-resolved-holds.test.ts` gives each kind above its verdict and reason.
  */
 export const WAIT_FIELDS = Object.freeze([
   { kind: "Not-before", selfClears: true },
@@ -241,6 +246,46 @@ export function staleWaits({ items, facts, now }) {
       return [{ item, wait, setter: setterOf(item), remove: fieldsToRemove(item, wait, now), resolvedAt }];
     });
   });
+}
+
+/** @param {string} kind @returns {boolean} the wait field is one somebody must remove (`selfClears: false`) */
+const needsRemoving = (kind) => WAIT_FIELDS.find((w) => w.kind === kind)?.selfClears === false;
+
+/**
+ * @typedef {{ item: WaitItem, holders: string[], stale: StaleWait[] }} HoldLift
+ * A pull request whose holds the gate may release: the sessions whose `hold:<session>` labels they are.
+ */
+
+/**
+ * #3364: THE STALE WAITS THE GATE ENDS ITSELF, AND THE ONES IT LEAVES TO A SESSION. A stale wait is lifted by the gate only when removing the
+ * `hold:*` label(s) IS the whole remedy, which is when ALL of these hold: the item is a PULL REQUEST of this repository (`pr-hold.mjs` is the
+ * release and it is bound to one); EVERY `Waiting-for:` it declares is `merged` or `closed` and true (one still open, a label condition, or a
+ * line the gate could not read keeps the hold, because the hold may be waiting for that one); and the only wait fields that need removing are
+ * `hold:*` (an `answer:*` label's removal IS the answer, and `blocked` has no referent, so an item carrying either stays with a session whole).
+ * @param {StaleWait[]} stale @param {number} now
+ * @returns {{ lifts: HoldLift[], remaining: StaleWait[] }}
+ */
+export function liftableHolds(stale, now) {
+  /** @type {Map<WaitItem, StaleWait[]>} */
+  const byItem = new Map();
+  for (const entry of stale) byItem.set(entry.item, [...(byItem.get(entry.item) ?? []), entry]);
+  /** @type {HoldLift[]} */
+  const lifts = [];
+  for (const [item, group] of byItem) {
+    const holders = gateLiftHolders(item, group, now);
+    if (holders.length > 0) lifts.push({ item, holders, stale: group });
+  }
+  const lifted = new Set(lifts.map((l) => l.item));
+  return { lifts, remaining: stale.filter((entry) => !lifted.has(entry.item)) };
+}
+
+/** @param {WaitItem} item @param {StaleWait[]} group @param {number} now @returns {string[]} the sessions to release, empty when the gate must not lift this item */
+function gateLiftHolders(item, group, now) {
+  if (item.kind !== "pr" || item.repoKey !== undefined) return [];
+  const everyWaitResolved = declaredWaitsOf(item).waits.length === group.length && group.every((s) => s.wait.state === "merged" || s.wait.state === "closed");
+  const fields = waitFieldsOf(item, now).filter((f) => needsRemoving(f.kind));
+  if (!everyWaitResolved || !fields.every((f) => f.kind === "hold:*")) return [];
+  return fields.flatMap((f) => (f.label ? [f.label.slice("hold:".length)] : []));
 }
 
 /**
