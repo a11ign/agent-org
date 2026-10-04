@@ -108,7 +108,6 @@ const UNNAMED_CALLS: Reason[] = [
   { file: "src/lib/tree-wide-guard.mjs", call: '"git"', kind: "session", reason: "a test-time library: the checkout whose suite is running is the one it means; only tests import it" },
   { file: "src/mark-primary-checkout.mjs", call: '"git"', kind: "session", reason: "`primary:mark` marks THIS checkout by design: the directory the operator runs it in" },
   { file: "src/merge-guard/lookups.mjs", call: '"ls-remote"', kind: "session", reason: "`lookupBranchTip` is called only by the merge-guard CLI, which CI and the pre-push hook run in the project checkout" },
-  { file: "src/merge-guard/merge-ref-staleness-rule.mjs", call: '"git"', kind: "filed", reason: "#3367: `fetchMergeRefBehindBy` reads the project's remote and has no caller; the row deletes it" },
   { file: "src/merge-guard/reconciliation.mjs", call: '"--git-common-dir"', kind: "param", reason: "the checkout is the spawner's `cwd`: CI, the pre-push hook, or the `row-claim` child whose `cwd` the tick sets (`wake.mjs` `launch.dir`)" },
   { file: "src/pr-open.mjs", call: '"git"', kind: "session", reason: "`pr:open`/`pr:edit` read the diff of the branch tree the author stands in; no importer" },
   { file: "src/queue-stalled.mjs", call: '"git"', kind: "session", reason: "a CLI CI runs in the project checkout (`auto-arm.yml`), and a helper injected into `queue-table`" },
