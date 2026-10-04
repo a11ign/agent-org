@@ -5,7 +5,7 @@
  * Decision 1). "As touched" is only measured if the count of what is left is pinned, so a new source file is `.ts`, and a pull request that
  * converts a `.mjs` lowers the pin in the same diff: **the pin is the progress report.**
  *
- * THE PIN IS A READING AT A COMMIT, not a fact about every tree: 202 source and 41 test files at agent-org `758ad90`, counted by this test's own walk. The row's own figures (204 and 244) were read at `b404507` over every tracked `.mjs`; this test counts a narrower population
+ * THE PIN IS A READING AT A COMMIT, not a fact about every tree: 203 source and 42 test files at agent-org `7aa43b4`, counted by this test's own walk, less the one source file this pull request converts (`src/messaging/fake-provider.ts`): 202 and 42. The row's own figures (204 and 244) were read at `b404507` over every tracked `.mjs`; this test counts a narrower population
  * that reads the same in a checkout and in the copy `ci.yml`'s `gate` lays under a project, and the difference is named below.
  *
  *   - SOURCE: every non-test `.mjs` under `src/`, `host/` and `.github/`, EXCEPT `src/packaging/`. That directory is left out because the gate
@@ -17,7 +17,8 @@
  * A `.ts` THAT A SHIPPED COMMAND IMPORTS CANNOT RUN YET (measured, not assumed): `/usr/bin/node` 22.22.1 on the host is built without TypeScript support
  * (`ERR_NO_TYPESCRIPT`, `process.features.typescript === false`), and node refuses to strip types under `node_modules` whatever the build. Converting
  * `src/messaging/sources/watched.mjs` (the ADR's worked example) passes `tsc` and its tests under `tsx`, and `agent-org messaging:watch`, which
- * `chairman-watch.service` runs, then dies on `ERR_UNKNOWN_FILE_EXTENSION`. That file is therefore still `.mjs` and counted here (#3556).
+ * `chairman-watch.service` runs, then dies on `ERR_UNKNOWN_FILE_EXTENSION`. That file is therefore still `.mjs` and counted here (#3556). So a file to convert is one
+ * only `tsx` runs, and a new source file a shipped command imports is the one exception to "new is `.ts`": raise the pin in that diff and say why.
  *
  * IT FAILS ON A RISE ONLY. A drop passes and says the pin can be lowered, because a pin that also failed on a shrink would turn two honest
  * conversions merged together red (`lib/pin-ratchet.mjs`, #3232). A rise names the files the change added against its base, where the base
@@ -32,7 +33,7 @@ import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 const SOURCE_MJS_PIN = 202;
-const TEST_MJS_PIN = 41;
+const TEST_MJS_PIN = 42;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
@@ -47,11 +48,17 @@ function mjsFiles(root: string, keep: (path: string) => boolean): string[] {
 
 type Judgement = { ok: boolean; message: string };
 
+/** What a claimant is told to do about a rise. A shipped command cannot import a `.ts` yet, so that one case raises the pin and says why (product-manager, #3556). */
+const RISE_RULE: Record<string, string> = {
+  source: "a new source file is `.ts`, unless a shipped command imports it; then raise the pin in this diff and say why",
+  test: "a new test is `.ts`",
+};
+
 /** A rise is refused, naming `added` where it is known; a drop passes and says the pin can come down. */
 function judgeCount({ kind, current, pin, added }: { kind: string; current: string[]; pin: number; added: string[] | string }): Judgement {
   if (current.length > pin) {
     const named = typeof added === "string" ? `which of them is new could not be read (${added})` : added.length === 0 ? "none is new against the base, so the pin itself sits below the tree" : `added since the base: ${added.join(", ")}`;
-    return { ok: false, message: `${current.length} ${kind} \`.mjs\` files, pinned at ${pin}: a new source file is \`.ts\`, or this pull request converts another \`.mjs\` and lowers the pin with it; ${named}` };
+    return { ok: false, message: `${current.length} ${kind} \`.mjs\` files, pinned at ${pin}: ${RISE_RULE[kind] ?? RISE_RULE.source}, or this pull request converts another \`.mjs\` and lowers the pin with it; ${named}` };
   }
   if (current.length < pin) return { ok: true, message: `${kind}: ${current.length} \`.mjs\` files against a pin of ${pin}: the pin can be lowered to ${current.length}` };
   return { ok: true, message: `${kind}: ${current.length} \`.mjs\` files, equal to the pin` };
@@ -92,6 +99,13 @@ test("a list with one extra `.mjs` is REFUSED, naming the file", () => {
   assert.equal(verdict.ok, false);
   assert.match(verdict.message, /src\/new-thing\.mjs/);
   assert.match(verdict.message, /is `\.ts`/);
+});
+
+test("the refusal tells a claimant the one case where the pin is raised, and the README says the same", () => {
+  const { message } = judgeCount({ kind: "source", current: [...FIXTURE, "src/new-thing.mjs"], pin: FIXTURE.length, added: ["src/new-thing.mjs"] });
+  assert.match(message, /a new source file is `\.ts`, unless a shipped command imports it; then raise the pin in this diff and say why/);
+  assert.doesNotMatch(judgeCount({ kind: "test", current: [...FIXTURE, "src/x.test.mjs"], pin: FIXTURE.length, added: [] }).message, /shipped command/, "a test is never imported by a command");
+  assert.match(readFileSync(join(TOOL_ROOT, "README.md"), "utf8"), /unless a shipped command imports it; then raise the pin in this diff and say why/);
 });
 
 test("a rise whose base cannot be read is still refused, and says why it names no file", () => {

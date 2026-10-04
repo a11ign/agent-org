@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { composeDigest, composeText, createMessenger, planNotification, resolveConfig } from "./core.mjs";
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, describeError, readLedgerLines, redact } from "./ledger.mjs";
 
 const MINUTE = 60_000;

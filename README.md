@@ -39,8 +39,8 @@ many `.mjs` source files there are and fails when the count RISES; a pull reques
 The mapping from `@ts-check` JSDoc to types is in the ADR's table.
 
 **One limit, until the tool is built rather than run from source:** a `.ts` that a shipped command imports does not load under the host's `node` (22.22.1 is built without
-TypeScript support, and node does not strip types under `node_modules`), so convert only files that run under `tsx` (tests, test support, CI and dev tools) and say so on the row
-when a file a command reaches is the one you are touching.
+TypeScript support, and node does not strip types under `node_modules`). So a new source file is `.ts`, unless a shipped command imports it; then raise the pin in this diff and say why.
+Convert only files that run under `tsx` (tests, test support, CI and dev tools): `src/messaging/fake-provider.ts` is the first, and a file a command reaches stays `.mjs`.
 
 ## Releases
 

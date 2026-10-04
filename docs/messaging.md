@@ -115,7 +115,7 @@ Nothing in this row sends a message to anyone.
 | `src/messaging/ledger.mjs` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
 | `src/messaging/rate-limit.mjs` | The token bucket and the hourly cap, on an injected clock. |
 | `src/messaging/provider-contract.mjs` | `runProviderConformance(provider)`. |
-| `src/messaging/fake-provider.mjs` | The in-memory provider that passes it, and records what it was given. |
+| `src/messaging/fake-provider.ts` | The in-memory provider that passes it, and records what it was given. |
 
 The clock, the ledger path and the provider are injected, so every test is hermetic and fast. The core takes no `fetch`: only a
 provider reaches a network. `node --test "src/messaging/**/*.test.mjs"` runs in `gate`.

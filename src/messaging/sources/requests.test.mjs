@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createMessenger } from "../core.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger, foldLedger, readLedgerLines } from "../ledger.mjs";
 import { READ_METHODS, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
 import { defaultLedgerPath } from "../state.mjs";
