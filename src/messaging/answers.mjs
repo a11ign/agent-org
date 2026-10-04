@@ -38,7 +38,7 @@ export const STEPS = Object.freeze(["comment", "remove-label", "set-answer"]);
 
 const BUTTON_PREFIX = "ans:";
 const ANSWER_DIRECTION = "answer";
-const PROVENANCE = "Chairman answered via Telegram, verified id";
+export const PROVENANCE = "Chairman answered via Telegram, verified id";
 
 /**
  * What a request message's button carries as `callback_data`. Only the option id: the row comes from the ledger, so the 64 bytes

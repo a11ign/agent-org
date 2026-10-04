@@ -214,6 +214,15 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the output is a brief for a person outside the org, and a vague one costs another day of "
       + "everything downstream standing still",
   }),
+  declareCause("chairman-answered", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND LOW: the gate hands over the row and the two times it compared (the label, and the chairman's later event), and the
+    // woken turn reads the row and does ONE of two writes -- takes `needs:chairman` off, or takes it off and applies it again with the
+    // new act stated (#3390). Nothing is diagnosed; the judgment is whether the chairman's comment answered the ask.
+    model: "sonnet",
+    effort: "low",
+    why: "reading one row and doing one of two label writes over times the gate already compared",
+  }),
   declareCause("org-stalled", GROUPS.JUDGMENT_START, {
     kind: "claude",
     model: "sonnet",
