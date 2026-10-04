@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { HOME_CHECKOUT } from "./project-config.mjs";
 import { REPO } from "./project-identity.mjs";
 
 const DAY_MS = 86_400_000;
@@ -294,9 +295,14 @@ export function ledgerLine(reading) {
 
 /** @typedef {(args: string[]) => string} Run */
 
-/** @type {Run} */
-const defaultGit = (args) =>
-  execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: sandboxGitEnv() });
+/**
+ * `git` run IN `cwd`, which the caller must name (#3363). The tick's working directory is the TOOL's checkout, so a `git` with no `cwd`
+ * answered about `a11ign/agent-org` while `gh` answered about the project: two repositories, one count, and a refusal on every tick.
+ * @param {string} cwd
+ * @returns {Run}
+ */
+const gitIn = (cwd) => (args) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: sandboxGitEnv() });
 /** @type {Run} */
 const defaultGh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
@@ -369,27 +375,59 @@ function pullRequestNumber({ subject, parents }) {
 }
 
 /**
+ * Whether a remote URL names `repo` (`https://github.com/o/r.git`, `git@github.com:o/r`): the LAST two path segments, so `o/r-fork` and
+ * `x/o/r` are other repositories.
+ * @param {string} url @param {string} repo
+ */
+function namesRepository(url, repo) {
+  const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[/:])${escaped}(?:\\.git)?/?$`, "i").test(url.trim());
+}
+
+/**
+ * WHY a base is not main's head, which is two different facts with two different remedies (#3363): the checkout is the
+ * project's and BEHIND (update it), or it is ANOTHER REPOSITORY's (point the read at the project's). Told apart by the
+ * checkout's `origin`; one that cannot be read says so and claims neither.
+ * @param {{ git: Run, repo: string, base: string, local: string, live: string }} facts
+ * @returns {string}
+ */
+function whyNotLive({ git, repo, base, local, live }) {
+  const seen = `the base ref ${base} is ${local} but main is ${live} on GitHub`;
+  let origin;
+  try {
+    origin = git(["remote", "get-url", "origin"]).trim();
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message.split("\n")[0] : String(cause);
+    return `${seen}: this checkout is stale, or it is not ${repo}'s (its origin could not be read: ${reason}), so the log it reads is not main's`;
+  }
+  if (!namesRepository(origin, repo)) {
+    return `${seen}: the checkout this read ran git in is ${origin}, not ${repo}, so the log it reads is another repository's. It is not stale; it is the wrong checkout`;
+  }
+  return `${seen}: this checkout is stale, so the log it reads is not main's`;
+}
+
+/**
  * A READ AGAINST A STALE BASE IS NOT A READING (#3096). `base` is a ref in the checkout that ran the gate, and the tick's
  * `primary:update` is `ExecStartPre=-`, so a failed update is ignored and the log is read as of whenever it last worked,
- * while the logins come live. Throws, naming both shas, when `base` is not the head `main` has now.
+ * while the logins come live. Throws, naming both shas, when `base` is not the head `main` has now -- and says whether the
+ * checkout is behind or is not the project's at all (#3363: the tick ran git in the tool's checkout, and "stale" was false).
  * @param {{ git: Run, gh: Run, repo: string, base: string }} where
  */
 export function assertBaseIsLive({ git, gh: runGh, repo, base }) {
   const local = git(["rev-parse", base]).trim();
   const live = runGh(["api", `repos/${repo}/commits/main`, "--jq", ".sha"]).trim();
-  if (local !== live) {
-    throw new Error(`the base ref ${base} is ${local} but main is ${live} on GitHub: this checkout is stale, so the log it reads is not main's`);
-  }
+  if (local !== live) throw new Error(whyNotLive({ git, repo, base, local, live }));
 }
 
 /**
  * THE READ over git and GitHub: one Change per merged pull request (its author plus every non-merge commit it carried)
  * and one per commit that no merge groups. The commits a merge carries are `<first parent>..<second parent>`, read
  * locally; their LOGINS come from the commits API.
- * @param {{ git?: Run, gh?: Run, repo?: string, base?: string }} [seams]
+ * `git` runs in `checkout`, the PROJECT's (`HOME_CHECKOUT`), whatever directory the process works in (#3363).
+ * @param {{ checkout?: string, git?: Run, gh?: Run, repo?: string, base?: string }} [seams]
  * @returns {(range: { from: Date, to: Date }) => Change[]}
  */
-export function gatherChanges({ git = defaultGit, gh: runGh = defaultGh, repo = REPO, base = "origin/main" } = {}) {
+export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout), gh: runGh = defaultGh, repo = REPO, base = "origin/main" } = {}) {
   return ({ from }) => {
     assertBaseIsLive({ git, gh: runGh, repo, base });
     const prs = mergedPullRequests(runGh, repo, from);
