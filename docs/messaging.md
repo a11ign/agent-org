@@ -163,7 +163,7 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
 | `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState` and `InactiveEnterTimestamp` (when the unit last RAN), and the tick's own completion record (when a tick last COMPLETED) | `incident:gate-crash` |
 | `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
 | `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
-| `readFixRow(key)` | the open row that holds the fix for an incident or stall, and the org's newest word on it: `issues?labels=incident&state=open` filtered to the row whose body carries an `Incident: <key>` line (the oldest), then the newest comment by an org account from `issues/<n>/comments` (the page the listing's `comments` count names). **`null` only when GitHub answered and no row names the key; a failed call throws** | the `Being done` line of every SENT incident and stall |
+| `readFixRow(key)` | the open row OR PULL REQUEST that holds the fix for an incident or stall, and the org's newest word on it: `issues?labels=incident&state=open` filtered to the item whose body carries an `Incident: <key>` line (the oldest; its `session:` label is returned as `holder`), then the newest comment by an org account from `issues/<n>/comments` (the page the listing's `comments` count names). **`null` only when GitHub answered and no item names the key; a failed call throws** | the `Being done` line of every SENT incident and stall |
 | `readEpisodeStart(key)` | when the chairman was TOLD of the episode open now: the ledger's first delivered line since the last clear. No `gh` call. A floor on how long it stood, never the start itself | the `Lasted` line of every CLEARED incident and stall |
 
 **Decisions this row made that the design did not spell out:**
@@ -172,6 +172,14 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
   The chairman's row names that shape, and one label for every kind is one listing call instead of one per key. The listing returns bodies, so the key is matched here
   and the search API (a separate, smaller pool that matches words, not lines) is not touched. Several open rows for one key name the oldest. **Opening the row is not this
   program's job**; until one carries the line a sent event reads `Being done: nobody has picked this up yet`, which is the useful fact.
+- **The reader accepts an open PULL REQUEST, and the own-path order does not ask for a second artefact (a11ign/a11ign#3449).** `trunkRedOrders` tells the fixer to open a
+  pull request, and the issues listing returns pull requests with the same `labels=` filter, so the choice was between the reader skipping them (which hid the fix exactly while
+  it was open: the first real `incident:trunk-red` would have been sent with `nobody has picked this up yet` beside an open fix PR) and the order also asking for a row whose only
+  job is to be read, which nobody would remember to open. The reader changed; the item's `session:` label comes back as `holder` (rendering it belongs to the `Doing` line, not
+  here). **Both orders (own path, routed path) carry one sentence** telling the fixer to label what it opens `incident` and put `Incident: incident:trunk-red` on a line of its
+  own in the body; `src/trunk-red.test.ts` follows that sentence through `readFixRow`, so the two cannot drift apart. The `incident` label is not created by anything: the
+  sentence says to `gh label create incident` first when `gh` reports it missing. **The other keys (`incident:gate-crash`, `incident:fleet-down`, `incident:ci-permission`, `stall:*`)
+  have no standing order that opens a fix, so no instruction of theirs can carry the sentence: label it by hand until one exists.**
 - **What is being done is the newest comment by an ORG account on that row, quoted with its age** (`readers.mjs`'s `ORG_LOGINS`, restated from `hand-fix-ledger.mjs` because
   the sources are a leaf). A comment from anyone else is not the org's word. A row the org has not commented on says so, which is not `nobody has picked this up yet`; a read that
   failed says `I could not read it`, and the event is still sent. The path `issues/<n>/comments` was added to `watch.mjs`'s `READ_API_PATH`: without it every live read

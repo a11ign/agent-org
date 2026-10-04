@@ -2554,6 +2554,50 @@ test("#2971: it is NAMED, not silent -- the ended window is a note with its caus
     "a timer that is enabled has nothing to explain");
 });
 
+// --- #3484: the installer declines the one timer whose window ended on purpose, exactly as the checker above excuses it ---------------
+
+/** `hostUnitsInstall` over the REAL shipped directory, the window timer's state and record faked, every systemctl call kept and every line it printed. */
+const installOver = (host: { record: string | null; marker: string | null; enabled: "enabled" | "disabled" }) => {
+  const base = windowHost(host);
+  const calls: string[][] = [];
+  const lines: string[] = [];
+  const systemctl = (args: string[]) => {
+    calls.push(args);
+    return ["is-enabled", "is-active"].includes(args[0]) ? base.systemctl(args) : "";
+  };
+  hostUnitsInstall({ ...base, systemctl: systemctl as never, declaredKeys: WITHOUT_MESSAGING, write: (() => undefined) as never,
+    mkdir: (() => undefined) as never, out: (l: string) => { lines.push(l); } } as never);
+  return { enables: calls.filter((c) => c[0] === "enable"), lines };
+};
+const enablesWindowTimer = (enables: string[][]) => enables.some((c) => c[2] === WINDOW_TIMER);
+
+test("#3484: a disabled timer with a `stop` row gets NO enable and is SKIPPED with the cause; the same install without the row DOES enable it", () => {
+  const ended = installOver({ record: `${TICK_ROW}\n${STOP_ROW}\n`, marker: null, enabled: "disabled" });
+  assert.equal(enablesWindowTimer(ended.enables), false, "the ended window is not restarted");
+  assert.ok(ended.lines.some((l) => l.startsWith(`SKIPPED ${WINDOW_TIMER} -- its window ended (cancelled-by-chairman-ruling, 355 ticks, 2026-10-02T06:52:12.000Z)`)), ended.lines.join(""));
+  assert.ok(ended.enables.length > 0, "CONTROL: it skips ONE timer and still enables the others");
+  const control = installOver({ record: TICK_ROW, marker: null, enabled: "disabled" });
+  assert.equal(enablesWindowTimer(control.enables), true, "POSITIVE CONTROL: no stop row, the same timer is enabled --now");
+  assert.ok(!control.lines.some((l) => l.startsWith("SKIPPED")), "and nothing is reported skipped");
+  assert.equal(control.enables.length, ended.enables.length + 1, "the skip declines exactly one timer");
+});
+
+test("#3484: the other two cases are enabled as before -- no record at all (a deliberate stop), and a stop that a LATER marker superseded", () => {
+  assert.equal(enablesWindowTimer(installOver({ record: null, marker: null, enabled: "disabled" }).enables), true, "no window record: not this installer's to decide, so enabled");
+  assert.equal(enablesWindowTimer(installOver({ record: `${STOP_ROW}\n`, marker: REARMED, enabled: "disabled" }).enables), true, "re-armed after the stop: enabled");
+  assert.equal(enablesWindowTimer(installOver({ record: `${STOP_ROW}\n`, marker: null, enabled: "enabled" }).enables), true,
+    "an enabled timer keeps its idempotent enable --now, which is what restarts one that is enabled but dead (#1858)");
+});
+
+test("#3484: no enable the installer makes is bare, skip or not -- and the checker's note says what the installer does", () => {
+  for (const enables of [installOver({ record: `${STOP_ROW}\n`, marker: null, enabled: "disabled" }).enables, installOver({ record: null, marker: null, enabled: "disabled" }).enables]) {
+    for (const call of enables) assert.deepEqual(call.slice(0, 2), ["enable", "--now"], `bare enable in ${JSON.stringify(call)}`);
+  }
+  const [note] = windowEndNotes(windowHost({ record: `${STOP_ROW}\n`, marker: null, enabled: "disabled" }));
+  assert.doesNotMatch(note.detail, /would restart it/, "the installer no longer restarts it");
+  assert.match(note.detail, /`host:install` skips it/);
+});
+
 test("#2971: a record or marker that cannot be read keeps the finding -- could-not-tell is not ended", () => {
   const unparsable = windowHost({ record: `${STOP_ROW}\nnot json\n`, marker: null, enabled: "disabled" });
   assert.equal(windowEnd(WINDOW_TIMER, unparsable), null, "a record with a line nobody can parse is not read");

@@ -374,8 +374,15 @@ const RULING_PARAGRAPH = "THE RULING (chairman, 2026-09-24): the org always fixe
   + "#2341 would have removed a correct doc for a two-entry map miss in a test, and the fix was smaller "
   + "than the re-land.\n";
 
+/**
+ * What makes the fix findable by `readFixRow` (`messaging/sources/readers.mjs`), which lists open items labelled `incident` and matches an `Incident: <key>` body
+ * line. Without this sentence the fix is invisible and the chairman's message says nobody has picked the incident up while a pull request is open (#3449).
+ */
+const FIX_MARKER = "Mark it so the chairman's messages can find it: label it `incident` (`gh label create incident` first if `gh` says it does not exist) "
+  + "and put the line `Incident: incident:trunk-red` on a line of its own in its body.";
+
 const OWN_INSTRUCTIONS = "SO: read the failing test, find the smallest change that makes it true, and open THAT as a pull "
-  + "request now, naming this merge in it. Other pull requests KEEP MERGING while you do (a red main "
+  + "request now, naming this merge in it. " + FIX_MARKER + " Other pull requests KEEP MERGING while you do (a red main "
   + "already stops the ones that touch the break, and `trunkGate` still refuses a merge that silently "
   + "undoes work); the fix goes first because this order outranks every other, not because the queue stops.\n"
   + "If you cannot tell what to fix, say so on the merged pull request and route it -- but say it there, "
@@ -385,6 +392,6 @@ const OWN_INSTRUCTIONS = "SO: read the failing test, find the smallest change th
 const ROUTED_INSTRUCTIONS = "SO, AND YOU ARE NOT ASKED TO FIX IT YOURSELF: read the run, then FILE ONE "
   + `\`${READY_LABEL}\`, \`${LANE_PREFIX}any\` row (\`pnpm run row-file\`; `
   + "rows for this repository are tracked in the primary's tracker) naming the run above, the failing job and this sha, with the failing file "
-  + "as its Region and the fix-forward as its done-when. An engineer claims it from the gate's `ready-row-unclaimed` order. If a row for "
+  + "as its Region and the fix-forward as its done-when. " + FIX_MARKER + " An engineer claims it from the gate's `ready-row-unclaimed` order. If a row for "
   + "this red is already open, say so on it and stop. Other pull requests KEEP MERGING meanwhile. "
   + "It is offered again every twenty minutes until `main` is green.";

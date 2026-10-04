@@ -87,7 +87,7 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.mjs";
 // held. The rule was written here and `arm-pr.mjs`'s refusal path did not call it, which is the third
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
 // file is now one of its readers rather than its owner.
-import { armedFromApi, armedQueryArgs } from "./pr-armed-state.mjs";
+import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.mjs";
 
 // RE-EXPORTED, NOT REDEFINED. `work-gate.mjs` imports `armedFromApi` from this file and its own header
 // reasons about the shape of that import graph -- `pr-armed-state.mjs` is leaf-shaped, so the property
@@ -168,6 +168,18 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
     };
   }
   return { arm: true, reason: `${checkRunCount} check run(s) on its head` };
+}
+
+/**
+ * #3487: THE ASKS THE SWEEP MAKES OF THE API AFTER `sweepDecision` SAID YES, as one verdict so a test drives the path
+ * `main` takes. Authorship first (#3254), then the queue history: an ejected PR with an unmoved head is not armed,
+ * because `arm-pr` refuses it and the sweep would arm on the same event what `arm-pr` just refused.
+ * @param {{ number: string, repo: string, author: string, run: (ghArgs: string[]) => string }} pr
+ * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string }}
+ */
+export function refusalBeforeArming({ number, repo, author, run }) {
+  const authorship = authorshipVerdict({ number, repo, author, run });
+  return authorship.kind === "clear" ? ejectionVerdict({ number, repo, run }) : authorship;
 }
 
 /**
@@ -435,10 +447,10 @@ function main() {
 
     const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
     // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
-    const authorship = arm ? authorshipVerdict({ number, repo, author, run: gh }) : { kind: "clear" };
-    if (authorship.kind !== "clear") {
-      console.log(`SWEEP: #${number} SKIPPED -- ${authorship.why}`);
-      if (authorship.kind === "cannot-ask") failed.push(number);
+    const refusal = arm ? refusalBeforeArming({ number, repo, author, run: gh }) : { kind: "clear" };
+    if (refusal.kind !== "clear") {
+      console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
+      if (refusal.kind === "cannot-ask") failed.push(number);
       continue;
     }
     if (!arm) {

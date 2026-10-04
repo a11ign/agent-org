@@ -340,10 +340,29 @@ describe("readFixRow", () => {
     await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, [fixRowIssue(3500, KEY, { comments: 1 })]], [/comments/, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
   });
 
-  test("a pull request in the listing is not a row, and of several rows the oldest is named", async () => {
-    const github = fakeGithub([[LISTING, [fixRowIssue(3600, KEY, { pull_request: { url: "x" } }), fixRowIssue(3510, KEY), fixRowIssue(3505, KEY)]]]);
+  test("of several open items naming the key, the oldest is named", async () => {
+    const github = fakeGithub([[LISTING, [fixRowIssue(3600, KEY), fixRowIssue(3510, KEY), fixRowIssue(3505, KEY)]]]);
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3505 });
-    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, [fixRowIssue(3600, KEY, { pull_request: {} })]]]), repo: REPO, key: KEY }), null);
+  });
+
+  test("#3449: an open PULL REQUEST labelled `incident` with the key's line is the fix, and its `session:` label is the holder", async () => {
+    const pr = fixRowIssue(3600, KEY, { pull_request: { url: "x" }, labels: [{ name: "incident" }, { name: "session:worker-3449" }] });
+    const github = fakeGithub([[LISTING, [pr]]]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3600, holder: "worker-3449" });
+    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident&state=open&per_page=100`], "only OPEN items are asked for: a merged or closed fix is not the fix in flight");
+  });
+
+  test("#3449: a pull request with no `session:` label is still the fix, with no holder; one naming another key, or none, is not", async () => {
+    const bare = fixRowIssue(3601, KEY, { pull_request: {} });
+    assert.deepEqual(await readFixRow({ github: fakeGithub([[LISTING, [bare]]]), repo: REPO, key: KEY }), { number: 3601 });
+    const notThis = [fixRowIssue(3602, "incident:fleet-down", { pull_request: {} }), fixRowIssue(3603, null, { pull_request: {} })];
+    assert.equal(await readFixRow({ github: fakeGithub([[LISTING, notThis]]), repo: REPO, key: KEY }), null);
+  });
+
+  test("#3449: a fix PR and a row both open: the older number is named, and its holder travels with it", async () => {
+    const row = fixRowIssue(3700, KEY, { labels: [{ name: "incident" }, { name: "session:product-manager" }] });
+    const pr = fixRowIssue(3650, KEY, { pull_request: {}, labels: [{ name: "incident" }, { name: "session:worker-1" }] });
+    assert.deepEqual(await readFixRow({ github: fakeGithub([[LISTING, [row, pr]]]), repo: REPO, key: KEY }), { number: 3650, holder: "worker-1" });
   });
 
   test("a key that is not an incident or stall key is refused before GitHub is asked", async () => {

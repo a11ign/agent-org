@@ -170,3 +170,33 @@ export function queueEjectionOf(pr) {
   const pushedSince = lastQueueAt < nodes.length - 1;
   return pushedSince ? notEjected : { ejected: true, removedAt: String(last.createdAt ?? "") || null };
 }
+
+/**
+ * #3487: THE ONE PLACE THE ARMING PATHS ASK "WAS THIS PR EJECTED, AND IS ITS HEAD UNMOVED?" -- `arm-pr` and the
+ * `auto-arm-sweep` both call it, so neither can queue what the other refuses (`authorshipVerdict`'s shape, for
+ * `authorshipVerdict`'s reason). #2046's one-place-decides rule: `queueEjectionOf` decides, this only asks it.
+ *
+ * Measured 2026-10-04 on `a11ign/a11ign#3460`: approved, CLEAN, head `11aa53a` throughout, armed by `a11ign-ci` FOUR
+ * times and ejected for `failed_checks` four times, each pass about seven minutes of CI on a run that could only fail
+ * the same way. #3019 fixed the REPORT; the two doors that arm kept re-queueing.
+ *
+ * `cannot-ask` IS A REFUSAL TO ARM, NOT A CLEAR: a refused read is `null` from `queueEjectionOf`, and `null` is never
+ * "not ejected" -- the direction `armabilityOf` already takes for an unreadable label list. Both callers already have
+ * a "could not ask" outcome, and it is that one.
+ *
+ * @param {{ number: string | number, repo: string, run: (ghArgs: string[]) => string }} pr `run` is the caller's own `gh`
+ * @returns {{ kind: "clear" } | { kind: "ejected" | "cannot-ask", why: string }}
+ */
+export function ejectionVerdict({ number, repo, run }) {
+  let ejection;
+  try {
+    ejection = queueEjectionOf(JSON.parse(run(ejectionQueryArgs({ number, repo }))));
+  } catch (cause) {
+    return { kind: "cannot-ask", why: `could not read #${number}'s merge-queue history: ${/** @type {Error} */ (cause).message}` };
+  }
+  if (ejection === null) return { kind: "cannot-ask", why: `the API did not return #${number}'s merge-queue history` };
+  if (!ejection.ejected) return { kind: "clear" };
+  return { kind: "ejected", why: `the merge queue EJECTED it for failed checks${ejection.removedAt ? ` at ${ejection.removedAt}` : ""} `
+    + "and nothing has been pushed to its head since. Arming it again without a push re-enters the queue and fails the "
+    + "same way (and makes the entries behind it rebuild); the remedy is a push to the head" };
+}
