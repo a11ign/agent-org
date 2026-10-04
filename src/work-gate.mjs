@@ -2407,10 +2407,12 @@ export function holderWaitingOn(row, today, nowMs) {
  * green draft (#2031), 1m47s (#2145), and 2m24s after APPROVED and in the merge queue (#2170) -- and
  * because this is an ACTION cause `wake`'s twenty-minute expiry re-offers it for as long as the key still
  * matches, so the bound is `MAX_DELIVERIES` and reaching it labels a built, green row `needs:chairman`.
- * THE PR IS THE DISCRIMINATOR AND A CLAIM TIMESTAMP IS NOT, on `worker-judge`'s argument on the row: a
- * claim that post-dates the clearing means STARTED, an open PR means ACTED ON, and a row claimed after its
- * clearing and then abandoned is exactly the holder this cause must still reach. `prs` is the read
- * `draftOrder` already made, so the narrowing spends no call and does not touch `GH_READS`.
+ * THE PR IS THE DISCRIMINATOR, on `worker-judge`'s argument on the row: an open PR means ACTED ON. `prs` is the read
+ * `draftOrder` already made, so the narrowing spends no call and does not touch `GH_READS`. #3451 OVERTURNED THE SECOND HALF of that
+ * argument, "a claim timestamp is not one": a claim is REFUSED while a `blockedBy` edge is open, so a holder that claimed after
+ * the last blocker closed was told by the claim itself, and "abandoned after claiming" is `claim-stalled`'s to find, not this
+ * cause's (#3390: claimed 101 s after the clearing, woken 91 minutes later, 1 min 46 s after its PR opened). `claimFacts` carries
+ * what the claim-stall tick already read, and a drop is returned with its reason beside the orders -- see `staleClearing`.
  *
  * #2741: A CLEARING THAT DOES NOT RECUR BACKS OFF THE SAME WAY `unclaimedBlockerClearedOrders` DOES.
  * `closings` says when each blocker closed, and the causeKey then carries `promotionAskWindow`'s suffix
@@ -2428,17 +2430,20 @@ export function holderWaitingOn(row, today, nowMs) {
  * @param {any[]} rows every open row
  * @param {string} [today]
  * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
- * @param {{openPrs?: any[], closings?: Map<number, number> | null}} [reads] the two reads this cause takes
- *   BEYOND `rows` itself, bundled so a 5th positional parameter does not join `nowMs` (`max-params`).
+ * @param {{openPrs?: any[], closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null}} [reads]
+ *   the reads this cause takes BEYOND `rows` itself, bundled so a 5th positional parameter does not join `nowMs` (`max-params`).
  *   `openPrs` is `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then behaves
  *   exactly as before #2161: it fails toward telling the holder, never toward silence.
  *   `closings` is `readRecentlyClosed`'s map, or `null` for "not asked or refused" -- see this function's
  *   own header for what that falls back to.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ *   `claimFacts` (#3451) is the claim-stall tick's reading of every claimed row (`onFacts`). OMITTED MEANS NOT ASKED (no drop, no line); `null` is a tick that
+ *   read no claim, which keeps every order and says so.
+ * @returns {{ orders: {session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[],
+ *   drops: BlockerClearedDrop[], log: string[] }} `drops` are the orders NOT emitted and why; `log` is every line the tick prints about them
  */
-export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(), { openPrs = [], closings = null } = {}) {
-  const orders = [];
+export function blockerClearedReading(rows, today = todayIso(), nowMs = Date.now(), { openPrs = [], closings = null, claimFacts } = {}) {
+  /** @type {ReturnType<typeof blockerClearedReading>} */
+  const reading = { orders: [], drops: [], log: [] };
   const resumed = rowsWithOpenPr(openPrs);
   for (const row of rows ?? []) {
     const session = sessionOf(row);
@@ -2452,7 +2457,14 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
     const window = clearingAskWindow(cleared, nowMs, closings);
     if (!window) continue;
     const key = cleared.join(".");
-    orders.push({
+    const causeKey = `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}${window.suffix}`;
+    const verdict = staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs });
+    reading.log.push(...verdict.log);
+    if (verdict.drop !== null) {
+      reading.drops.push(verdict.drop);
+      continue;
+    }
+    reading.orders.push({
       session,
       cause: "blocker-cleared",
       subject: `row-${subjectRef(row.repoKey, row.number)}`,
@@ -2463,11 +2475,83 @@ export function blockerClearedOrders(rows, today = todayIso(), nowMs = Date.now(
         + "IF IT IS STILL NOT RUNNABLE, say so in a FIELD, not a comment: "
         + `\`gh issue edit ${row.number} --add-blocked-by <n>\`, a \`Not-before: YYYY-MM-DD\` line, or `
         + `\`${ANSWER_PREFIX}<session>\` if you wait on a decision. Each clears itself.`,
-      causeKey: `${session}/blocker-cleared/row-${subjectRef(row.repoKey, row.number)}/${key}${window.suffix}`,
+      causeKey,
     });
-    if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
+    if (reading.orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
-  return orders;
+  return reading;
+}
+
+/**
+ * `blockerClearedReading`'s orders alone, for every caller that has no use for what was dropped (`decide`: the drops are said by `main`, once).
+ * @param {Parameters<typeof blockerClearedReading>} args
+ */
+export function blockerClearedOrders(...args) {
+  return blockerClearedReading(...args).orders;
+}
+
+/**
+ * THE THREE REASONS A `blocker-cleared` ORDER IS DROPPED (#3451), a CLOSED set: a fourth is a new decision, not a spelling, and `work-gate-stale-blocker-cleared.test.ts` fails on one.
+ * @typedef {"claimed-after-clearing" | "own-pull-request" | "moved-since-clearing"} BlockerClearedDropReason
+ * @typedef {{ causeKey: string, reason: BlockerClearedDropReason, at: number }} BlockerClearedDrop `at` is the time that decided it: the claim's, the pull request's
+ *   open or merge, or the holder's newest move
+ */
+export const BLOCKER_CLEARED_DROP_REASONS = Object.freeze(["claimed-after-clearing", "own-pull-request", "moved-since-clearing"]);
+
+/** @param {number} ms @returns {string} */
+const isoOf = (ms) => new Date(ms).toISOString();
+
+/**
+ * WHY NO `blocker-cleared` ORDER IS NEEDED, or `null` when the holder still has to be told -- from facts the same tick already read (#3451).
+ * #3390 was told "PICK IT BACK UP" 91 minutes after its blocker closed, 1 min 46 s after it had opened its pull request, having CLAIMED 101 s after the clearing.
+ * In the order asked: (1) the claim post-dates the clearing, which the claim itself refused to be made before; (2) a pull request of the claim's own
+ * (`ownsPr`, in ANY tracked repository) is open and not held (#2493: a held PR is a declared wait, whose owner must hear the last edge close) or merged since the
+ * claim; (3) the holder commented, committed or pushed AFTER the clearing. A holder who claimed before and has done none of that (#1908) is not here.
+ * @param {import("./work-gate/claim-stall-tick.mjs").ClaimMoves} moves @param {number} clearedAtMs @param {number} nowMs
+ * @returns {{ reason: BlockerClearedDropReason, at: number } | null}
+ */
+function whyNotNeeded(moves, clearedAtMs, nowMs) {
+  if (moves.claimedAt >= clearedAtMs) return { reason: "claimed-after-clearing", at: moves.claimedAt };
+  const opened = moves.openPrs.filter((pr) => holdersOf(labelsOf(pr)).length === 0).map((pr) => Date.parse(String(pr.createdAt)));
+  const acts = [...opened.map((at) => (Number.isFinite(at) ? at : nowMs)), ...(moves.mergedAt === null ? [] : [moves.mergedAt])];
+  if (acts.length > 0) return { reason: "own-pull-request", at: Math.min(...acts) };
+  const moved = Math.max(...[moves.comment, moves.commit, moves.push].filter((t) => t !== null));
+  return moved > clearedAtMs ? { reason: "moved-since-clearing", at: moved } : null;
+}
+
+/**
+ * The read that was REFUSED, as a phrase, or `null` when every read the drop needs was made. FAILING TOWARD TELLING THE HOLDER: a refusal drops nothing, because
+ * an order that should not have gone costs a wake and a drop that should not have happened strands a row (this function's own header).
+ * @param {{ row: any, cleared: number[], closings: Map<number, number> | null, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} reads
+ * @returns {string | null}
+ */
+function refusedRead({ row, cleared, closings, claimFacts }) {
+  if (claimFacts === null) return "the claim-stall tick read no claim";
+  if (closings === null) return "the closing times were not read";
+  const unclosed = cleared.find((n) => !closings.has(n));
+  if (unclosed !== undefined) return `the closing time of #${unclosed} was not read`;
+  if (claimFacts.moves.has(Number(row.number))) return null;
+  return `the claim read was refused (${claimFacts.skipped.get(Number(row.number)) ?? "the claim-stall tick did not evaluate this row"})`;
+}
+
+/**
+ * `blockerClearedReading`'s drop for ONE row about to be ordered, with the lines to print. `claimFacts` undefined is a caller that did not ask: no drop, no line.
+ * @param {{ row: any, cleared: number[], causeKey: string, closings: Map<number, number> | null, nowMs: number,
+ *   claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} args
+ * @returns {{ drop: BlockerClearedDrop | null, log: string[] }}
+ */
+function staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs }) {
+  if (claimFacts === undefined) return { drop: null, log: [] };
+  const refused = refusedRead({ row, cleared, closings, claimFacts });
+  if (refused !== null || closings === null || claimFacts === null) {
+    return { drop: null, log: [`blocker-cleared ${subjectMention(row)}: order KEPT -- ${refused}, so nothing was checked against it\n`] };
+  }
+  const moves = /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimMoves} */ (claimFacts.moves.get(Number(row.number)));
+  const clearedAtMs = Math.max(...cleared.map((n) => /** @type {number} */ (closings.get(n))));
+  const why = whyNotNeeded(moves, clearedAtMs, nowMs);
+  if (why === null) return { drop: null, log: [] };
+  return { drop: { causeKey, ...why },
+    log: [`SHELVED row ${subjectMention(row)}: blocker-cleared order dropped, ${why.reason} (claimed ${isoOf(moves.claimedAt)}, blockers closed ${isoOf(clearedAtMs)}, decided ${isoOf(why.at)})\n`] };
 }
 
 export const HOUR_MS = 60 * 60 * 1000;
@@ -5254,7 +5338,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
  *           primaryDrift?: import("./update-primary.mjs").PrimaryDrift | null,
- *           closings?: Map<number, number> | null, trunkRed?: ReturnType<typeof readTrunkRed>,
+ *           closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
  *           claimStalls?: import("./claim-stall.mjs").StallOrder[], offBoard?: BoardFacts[] | null,
  *           callCountSignals?: { row: number, session: string, calls: number }[],
@@ -5318,12 +5402,14 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `claimRefusals` is `claimRefusalStreaksNow(offerable)` (#2845) -- each offered row's consecutive-refusal streak. OMITTED MEANS
  *        NOT ASKED, so no `ready-row-unclaimable` order, and `unclaimableRowOrders` carries the absence handling for `rowBranches`'s reason.
  *        `nowMs` is the clock `chairmanOrders` windows on (#2989); omitted is `Date.now()`, so only a test passes it.
+ *        `claimFacts` is the claim-stall tick's reading of every claimed row (#3451) -- what `blockerClearedOrders` drops an order on. OMITTED MEANS NOT ASKED, so no drop;
+ *        `null` is a tick that read no claim. It carries no `= undefined` default for `rowBranches`'s reason.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs }) {
+  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -5338,7 +5424,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // closed is not waiting on a decision -- it is stopped on work it can resume this minute, with whatever
   // is queued behind that row stopped with it. Ahead of every cause that offers NEW work: a row already
   // claimed and now runnable beats a row nobody has picked up.
-  orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), { openPrs: prs, closings })); // #2741 backoff
+  orders.push(...blockerClearedOrders(openRows, todayIso(), Date.now(), { openPrs: prs, closings, claimFacts })); // #2741 backoff; #3451 the drops
   // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
@@ -6286,7 +6372,30 @@ function exitPartial(unread, delivered) {
 function decideAndTap(args) {
   const orders = decide(args);
   tapShadowReads({ args, orders, stateDir: REVIEWER_STATE_DIR });
+  reportClearingDrops(args);
   return orders;
+}
+
+/**
+ * #3451: what `decide`'s `blocker-cleared` cause did NOT order, said on the tick's log the way `SHELVED row #n:` says a shelved row, so a row that stopped being asked is
+ * findable. A second pure reading of the same arguments (no read, no write) rather than a side channel out of `decide`, which returns orders and nothing else.
+ * @param {Parameters<typeof decide>[0]} args
+ */
+function reportClearingDrops({ openRows, prs, closings, claimFacts }) {
+  process.stderr.write(blockerClearedReading(openRows, todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
+}
+
+/**
+ * `claimStallsNow`'s orders beside the facts it built them from, as the two arguments `decide` takes: the facts reach `blockerClearedOrders` and the orders reach
+ * `claim-stalled`. `claimFacts` stays `undefined` when the tick never reported one, which `blockerClearedReading` reads as "not asked".
+ * @param {Parameters<typeof claimStallsNow>[0]} rows @param {Parameters<typeof claimStallsNow>[1]} claimedComments @param {Parameters<typeof claimStallsNow>[2]} prs
+ * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined }}
+ */
+function claimStallsWithFacts(rows, claimedComments, prs) {
+  /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined} */
+  let claimFacts;
+  const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; } });
+  return { claimStalls, claimFacts };
 }
 
 /**
@@ -6370,7 +6479,7 @@ function main() {
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
     claimedComments: claimedComments ?? [],
     // #2470: the SAME comments, read once, and the raw `null` kept for the reader that must tell "refused" from "none".
-    claimStalls: claimStallsNow(openRowsRead, claimedComments, prs),
+    ...claimStallsWithFacts(openRowsRead, claimedComments, prs), // #3451: the orders AND the facts they were built from
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
