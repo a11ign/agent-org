@@ -24,7 +24,7 @@ import {
   pruneGoneKeptClaims, readKeptClaims, writeKeptClaims, PRIMARY_CHECKOUT,
 } from "./wake.mjs";
 import {
-  claimRecordComment, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
+  claimRecordComment, claimRow, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
   implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
 } from "./row-claim.mjs";
 import { unknownFlags } from "./lib/cli-flags.mjs";
@@ -267,6 +267,94 @@ test("#2470 a REFUSED comments read evaluates NOTHING, because a row read withou
 });
 
 // --- Done-when 4 & Acceptance 2: the second reading ---------------------------------------------------------------------------------
+
+// --- #3407: a claim that names no branch or worktree has its OWN record, so the stall check can read it -----------------------------
+
+/** A claim that names no git object (a host act, a hand-claim), exactly as `postClaimRecord` writes it -- the REAL writer. */
+const claimNothing = (minutesAgo: number, { session = "worker-7", author = "a11ign-ai-workers" } = {}): Comment => ({
+  body: claimRecordComment({ session, nothing: "the claim named no branch and no worktree" }), createdAt: iso(ago(minutesAgo)), author: { login: author },
+});
+const released = (minutesAgo: number): Comment => ({ body: claimRecordComment({ session: "worker-7", released: true }), createdAt: iso(ago(minutesAgo)), author: { login: "x" } });
+
+test("#3407 (1) a nothing-claim round-trips through the REAL writer as a CLAIM with a null branch and worktree; a release is still `null`", () => {
+  const record = claimRecordOf([claimNothing(300)]);
+  assert.notEqual(record, null);
+  assert.deepEqual([record?.branch, record?.worktree, record?.nothing, record?.at, record?.author], [null, null, true, ago(300), "a11ign-ai-workers"]);
+  assert.equal(claimRecordOf([claimNothing(300), released(10)]), null, "CONTROL: the release spelling is not a claim, so the two spellings stay distinct");
+  assert.equal(claimRecordOf([claim(300)])?.nothing, false, "CONTROL: a claim that names a branch is not a nothing-claim");
+});
+
+test("#3407 (1) `claimRow` with no branch and no worktree POSTS the nothing-claim, and a claim naming a branch posts the one it always did", () => {
+  const post = (opts: { branch?: string; worktree?: string }) => {
+    const bodies: string[] = [];
+    let reads = 0;
+    const run = (_cmd: string, args: string[]): string => {
+      if (args[1] === "comment") bodies.push(args[args.indexOf("--body") + 1]);
+      if (args[1] === "view" && args.includes("number,title,labels,state")) {
+        reads += 1;
+        const labels = reads === 1 ? ["ready"] : ["session:worker-3407", "in-progress", "started", "was-ready"];
+        return JSON.stringify({ number: 3407, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) });
+      }
+      if (args[1] === "view") throw new Error("simulated: no body and no blockedBy");
+      return "[]";
+    };
+    const got = claimRow(3407, "worker-3407", { run, moveStatus: () => ({ moved: true }), instance: { spare: false, rows: [] }, ...opts });
+    assert.equal(got.claimed, true);
+    return bodies.filter((b) => b.includes(CLAIM_RECORD_MARKER));
+  };
+  const [none] = post({});
+  assert.match(none, /claimed by `worker-3407`/);
+  assert.match(none, /^Claimed-nothing: .+$/m);
+  assert.equal(claimRecordOf([{ body: none, createdAt: iso(ago(5)) }])?.nothing, true, "what the writer posts, the reader reads as a nothing-claim");
+  const [named] = post({ branch: BRANCH, worktree: WORKTREE });
+  assert.doesNotMatch(named, /Claimed-nothing/);
+  assert.match(named, new RegExp(`^Claimed-branch: ${BRANCH}$`, "m"));
+});
+
+test("#3407 (2) a row whose only record is a RELEASE followed by a nothing-claim is EVALUATED, not skipped -- and the release alone still is", () => {
+  const evaluated = tickWith({ commit: null }, [claim(N_MIN * 5), released(N_MIN * 4), claimNothing(N_MIN + 30)]);
+  assert.equal(evaluated.log.join("").includes("not evaluated"), false, "nothing is skipped: the nothing-claim is the newest record and is a claim");
+  assert.equal(evaluated.orders.length, 1, "and the clock reads it: past the interval, with no move, it is nudged");
+  const skipped = tickWith({ commit: null }, [claim(N_MIN * 5), released(N_MIN * 4)]);
+  assert.match(skipped.log.join(""), /no claim record names when or where.*not evaluated/, "CONTROL: the release alone is the skip it was");
+  assert.deepEqual(tickWith({ commit: null }, [claimNothing(N_MIN - 1)]).orders, [], "CONTROL: inside the interval the same claim is moving, and nothing is sent");
+  assert.deepEqual(tickWith({ commit: null }, [claimNothing(N_MIN + 30), said(N_MIN - 1)]).orders, [], "CONTROL: a comment by the claimant is a move for it too");
+});
+
+test("#3407 (3) an evaluated nothing-claim past the interval gets the NUDGE and is NEVER released, however long it stays quiet", () => {
+  const memory: Record<string, unknown> = {};
+  const comments = [claimNothing(N_MIN * 3)];
+  const first = tickWith({ commit: null }, comments, { memory });
+  assert.equal(first.orders.length, 1);
+  assert.equal(first.orders[0].cause, "claim-stalled");
+  assert.equal(first.orders[0].release, undefined, "the first reading is the nudge");
+  const nudgedAt = (memory["2407"] as { nudgedAt: number }).nudgedAt;
+  const delivered = nudgeDelivered(nudgedAt, NOW + 5 * MIN);
+  // The very shapes that RELEASE a branch claim: N after the nudge was delivered, and 2N after one that never was.
+  for (const [minutes, ledger] of [[5 + N_MIN, delivered], [N_MIN * 10, delivered], [N_MIN * 10, ""]] as [number, string][]) {
+    const later = tickWith({ commit: null }, comments, { memory: { ...memory }, now: NOW + minutes * MIN, ledger });
+    assert.deepEqual(later.orders.filter((o) => o.release), [], `no release at +${minutes} minutes (ledger ${ledger === "" ? "empty" : "delivered"})`);
+    assert.deepEqual(Object.keys(later.memory), ["2407"], "and the nudge stays remembered, so it is not sent a second time as a fresh first reading");
+  }
+  // POSITIVE CONTROL: the SAME fixture claiming a branch is released at the first of those times.
+  const branchMemory: Record<string, unknown> = {};
+  tickWith({ commit: null }, [claim(N_MIN * 3)], { memory: branchMemory });
+  const branchNudgedAt = (branchMemory["2407"] as { nudgedAt: number }).nudgedAt;
+  const branchRelease = tickWith({ commit: null }, [claim(N_MIN * 3)], { memory: { ...branchMemory }, now: NOW + (5 + N_MIN) * MIN,
+    ledger: nudgeDelivered(branchNudgedAt, NOW + 5 * MIN) });
+  assert.equal(branchRelease.orders[0]?.release?.why, "stalled", "CONTROL: a claim naming a branch releases on exactly this clock");
+});
+
+test("#3407 (3) the OTHER releases do not reach a nothing-claim either: a blockedBy edge, and a holder gone from herdr's listing", () => {
+  const blocked = tickWith({ commit: null }, [claimNothing(10)], { blockedBy: [99] });
+  assert.deepEqual(blocked.orders, [], "(8) holds nothing built is NOT said of a claim whose work is not a commit");
+  assert.equal(tickWith({ commit: null }, [claim(10)], { blockedBy: [99] }).orders[0]?.release?.why, "blocked", "CONTROL: a branch claim is released on the same edge");
+  const memory: Record<string, unknown> = { "2407": { session: "worker-7", goneSince: NOW - GONE_CONFIRM_MS - MIN } };
+  const gone = tickWith({ commit: null }, [claimNothing(10)], { memory: { ...memory }, agents: GONE_LISTING });
+  assert.deepEqual(gone.orders.filter((o) => o.release), [], "a gone holder's nothing-claim is not released by the gone clock");
+  assert.equal(tickWith({ commit: null }, [claim(10)], { memory: { ...memory }, agents: GONE_LISTING }).orders[0]?.release?.why, "gone",
+    "CONTROL: the same listing releases a branch claim");
+});
 
 test("#2470 a second reading with nothing moved RELEASES -- N after the nudge was DELIVERED; with something moved it does NOT", () => {
   const memory: Record<string, unknown> = {};
@@ -688,6 +776,17 @@ test("#2470 (7a) a CLEAN tree with UNPUSHED commits keeps them across the releas
   declineRow(2416, "worker-7", { run: releaseBoard().run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
     removeWorktree: ((p: string) => { control.push(p); return { removed: true }; }) as never });
   assert.deepEqual(control, [WT], "without `keepWorktree` the tree IS removed -- the defect this clause is about");
+});
+
+test("#3407 releasing a nothing-claim POSTS the release record, so a later claim that wrote nothing cannot inherit the old one's time", () => {
+  const release = (comments: string[]) => {
+    const board = releaseBoard();
+    const got = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => comments, moveStatus: NO_STATUS as never, recordGone: NOOP_RECORD_GONE });
+    assert.equal(got.declined, true);
+    return board.calls.filter((a) => a[1] === "comment" && a.join(" ").includes("released by"));
+  };
+  assert.equal(release([claimRecordComment({ session: "worker-7", nothing: "the claim named no branch and no worktree" })]).length, 1);
+  assert.deepEqual(release([]), [], "CONTROL: a row that recorded nothing at all still has no record to supersede, and none is posted");
 });
 
 test("#2470 (7a) a DIRTY tree is neither removed nor refused into a stuck claim", () => {

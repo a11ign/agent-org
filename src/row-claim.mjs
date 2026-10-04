@@ -163,6 +163,10 @@ export const WORKTREE_LABEL_PREFIX = "worktree:";
 export { CLAIM_RECORD_MARKER };
 const CLAIM_RECORD_BRANCH = "Claimed-branch:";
 const CLAIM_RECORD_WORKTREE = "Claimed-worktree:";
+// #3407: the spelling of a claim that names NO git object (a host act, a fleet or lab reading, a hand-claim). It is a CLAIM -- "claimed by", with
+// a field -- and so is not a release, which has no field; the stall check reads it by the clock and never releases it.
+const CLAIM_RECORD_NOTHING = "Claimed-nothing:";
+const NOTHING_REASON = "the claim named no branch and no worktree";
 
 /**
  * Pure: the claim-record comment for a claim (or, with both fields absent, for a RELEASE).
@@ -174,14 +178,18 @@ const CLAIM_RECORD_WORKTREE = "Claimed-worktree:";
  * A release writes the marker with NO field lines rather than writing nothing, because "released" and
  * "never recorded" have to be distinguishable: without it the last CLAIM comment would still be the
  * newest record, and `check` would keep naming a worktree this tool had already removed.
- * @param {{ session: string, branch?: string | null, worktree?: string | null, released?: boolean }} record
+ *
+ * #3407: `nothing` is the reason a CLAIM names no git object (`Claimed-nothing: <reason>`). It is what makes that claim legible to the stall
+ * check, which reads a record's own time and cannot evaluate a claim that wrote none.
+ * @param {{ session: string, branch?: string | null, worktree?: string | null, nothing?: string | null, released?: boolean }} record
  * @returns {string}
  */
-export function claimRecordComment({ session, branch, worktree, released = false }) {
+export function claimRecordComment({ session, branch, worktree, nothing, released = false }) {
   const what = released ? `released by \`${session}\`` : `claimed by \`${session}\``;
   const lines = released ? [] : [
     ...(branch ? [`${CLAIM_RECORD_BRANCH} ${branch}`] : []),
     ...(worktree ? [`${CLAIM_RECORD_WORKTREE} ${worktree}`] : []),
+    ...(nothing ? [`${CLAIM_RECORD_NOTHING} ${nothing}`] : []),
   ];
   return [CLAIM_RECORD_MARKER, `**Claim record** -- ${what}.`, "", ...lines,
     ...(lines.length === 0 ? ["No branch or worktree is recorded for this row."] : []),
@@ -197,7 +205,8 @@ export function claimRecordComment({ session, branch, worktree, released = false
  * claimed again, and each of those appended its own record. `comments` is oldest-first, the order
  * `gh issue view --json comments` returns.
  * @param {string[]} comments comment bodies, oldest first
- * @returns {{ branch: string | null, worktree: string | null, recorded: boolean }}
+ * @returns {{ branch: string | null, worktree: string | null, recorded: boolean, nothing?: true }} `nothing` is present only for a
+ *   #3407 nothing-claim, so every reading that does not know of it is unchanged
  */
 export function claimRecordFrom(comments) {
   const records = comments.filter((c) => c.includes(CLAIM_RECORD_MARKER));
@@ -207,7 +216,8 @@ export function claimRecordFrom(comments) {
     const match = new RegExp(`^${key}\\s*(.+)$`, "m").exec(newest);
     return match ? match[1].trim() : null;
   };
-  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true };
+  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true,
+    ...(read(CLAIM_RECORD_NOTHING) === null ? {} : { nothing: true }) };
 }
 
 /**
@@ -244,7 +254,9 @@ export function claimRecordSession(comments) {
  */
 export function claimedObjects({ labels, comments }) {
   const fromComment = claimRecordFrom(comments);
-  if (fromComment.recorded) return { branch: fromComment.branch, worktree: fromComment.worktree };
+  if (fromComment.recorded) {
+    return { branch: fromComment.branch, worktree: fromComment.worktree, ...(fromComment.nothing ? { nothing: true } : {}) };
+  }
   const labelled = claimStatus(labels);
   return { branch: labelled.branch, worktree: labelled.worktree };
 }
@@ -665,16 +677,16 @@ function postBlockedByNoteIfAny(issueNumber, blockedByNote, runFn) {
 /**
  * #987: posts the claim record -- the branch and worktree, in a comment, because neither fits in a label.
  *
- * A claim that names NEITHER posts nothing: a dispatch, or a non-code row, has no git object to record,
- * and a marker comment carrying no fields is how a RELEASE is spelled (`claimRecordFrom` would read this
- * as "released" rather than "claimed with nothing"). Those two states must not share a spelling.
+ * A claim that names NEITHER posts the #3407 nothing-claim (`Claimed-nothing:`): it has no git object to record, but it
+ * still has a time and a claimant, and a claim that wrote no record was skipped by the stall check on every tick, so an
+ * abandoned one could never be told from a live one. A RELEASE is spelled "released by" with no field, and the two states
+ * must not share a spelling.
  * @param {number} issueNumber
  * @param {{ session: string, branch?: string, worktree?: string }} record
  * @param {(cmd: string, args: string[]) => string} runFn
  */
 function postClaimRecord(issueNumber, { session, branch, worktree }, runFn) {
-  if (!branch && !worktree) return;
-  const body = claimRecordComment({ session, branch, worktree });
+  const body = claimRecordComment({ session, branch, worktree, nothing: !branch && !worktree ? NOTHING_REASON : null });
   runFn("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body", body]);
 }
 
@@ -684,13 +696,15 @@ function postClaimRecord(issueNumber, { session, branch, worktree }, runFn) {
  * function's own branches are not the caller's, and `declineRow` sits one step from the complexity gate).
  *
  * Nothing is posted when nothing was recorded: a row that never named a branch or worktree has no record
- * to supersede, and a marker comment on it would be noise a future `claimRecordFrom` then has to read.
+ * to supersede, and a marker comment on it would be noise a future `claimRecordFrom` then has to read. A
+ * #3407 nothing-claim IS a record, and it is superseded like any other: left newest, a later claim that
+ * wrote nothing would inherit its time.
  * @param {number} issueNumber
- * @param {{ session: string, recorded: { branch: string | null, worktree: string | null } }} release
+ * @param {{ session: string, recorded: { branch: string | null, worktree: string | null, nothing?: true } }} release
  * @param {(cmd: string, args: string[]) => string} runFn
  */
 function postReleaseRecord(issueNumber, { session, recorded }, runFn) {
-  if (!recorded.branch && !recorded.worktree) return;
+  if (!recorded.branch && !recorded.worktree && !recorded.nothing) return;
   runFn("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body",
     claimRecordComment({ session, released: true })]);
 }
@@ -954,7 +968,7 @@ function completeClaim(issueNumber,
   // did not get to keep. `branch`/`worktree` are the values this claim was GIVEN, not values read back:
   // there is nothing to read back yet, and the comment IS the record.
   postClaimRecord(issueNumber, { session: mySession, branch, worktree }, run);
-  if (branch || worktree) landed.push(`posted the claim record (branch ${branch ?? "none"}, worktree ${worktree ?? "none"})`);
+  landed.push(`posted the claim record (branch ${branch ?? "none"}, worktree ${worktree ?? "none"})`);
   // #400: THE LABEL IS THE RECORD; THIS MOVES THE VIEW TO MATCH IT, IN THE SAME ACT. A view corrected only
   // by a later sweep is wrong between sweeps, and "between sweeps" is where a worker reads it -- measured
   // live, a row read `unlabeled ready / labeled in-progress` for the three minutes between a real claim and
@@ -1786,7 +1800,7 @@ export function declineRow(issueNumber, mySession,
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, blockedReason?: string,
  *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, predecessorGone: boolean, answer?: string, mySession: string,
- *   before: IssueClaim, status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null },
+ *   before: IssueClaim, status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null, nothing?: true },
  *   landed: string[], recordGone: typeof recordPredecessorGone }} state
  * @returns {ReturnType<typeof declineRow>}
  */
@@ -1816,7 +1830,7 @@ function releaseRow(issueNumber,
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
   // this call has just removed.
   postReleaseRecord(issueNumber, { session: mySession, recorded }, run);
-  if (recorded.branch || recorded.worktree) landed.push("posted the release record");
+  if (recorded.branch || recorded.worktree || recorded.nothing) landed.push("posted the release record");
 
   if (blockedReason && !isClosed) {
     // A LABEL CARRIES NO FREE TEXT -- the reason has to live somewhere a future reader can see it, and an

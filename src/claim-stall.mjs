@@ -153,18 +153,21 @@ const DONE_FOOTER = /\bdone \d{1,2}:\d{2}\b/;
 
 const CLAIMED_BRANCH = /^Claimed-branch:\s*(.+)$/m;
 const CLAIMED_WORKTREE = /^Claimed-worktree:\s*(.+)$/m;
+const CLAIMED_NOTHING = /^Claimed-nothing:\s*(.+)$/m;
 const CLAIMED_BY = /-- claimed by `/;
 
 /**
  * @typedef {{ body?: string, createdAt?: string, author?: { login?: string } | null, id?: string }} RowComment
- * @typedef {{ at: number, author: string | null, branch: string | null, worktree: string | null }} ClaimRecord
+ * @typedef {{ at: number, author: string | null, branch: string | null, worktree: string | null, nothing: boolean }} ClaimRecord `nothing` is #3407's
+ * `Claimed-nothing:` claim: a claim that names no git object on purpose, which is evaluated by the clock and never released
  */
 
 /**
  * The newest claim record on a row, or `null` when none is a CLAIM: no record at all (a dispatch, or a claim that named
  * neither a branch nor a worktree), or the newest one is a RELEASE. `row-claim.mjs` owns the format
- * (`claimRecordComment`) and is unimportable from a tick, so this reads it by the same marker and the same two field
- * names, and the test round-trips the real writer through it.
+ * (`claimRecordComment`) and is unimportable from a tick, so this reads it by the same marker and the same three field
+ * names, and the test round-trips the real writer through it. A `Claimed-nothing:` record (#3407) IS a claim, with a null
+ * branch and worktree; a release has no field and is "released by", so the two never share a spelling.
  *
  * `at` is the record's own time and `author` its account -- which is how "a row comment BY THAT SESSION" is answered
  * without a session-to-account table: the claim was made under the account the claimant runs as.
@@ -179,7 +182,8 @@ export function claimRecordOf(comments) {
   const at = Date.parse(String(newest.createdAt ?? ""));
   if (Number.isNaN(at)) return null;
   return { at, author: newest.author?.login ?? null,
-    branch: CLAIMED_BRANCH.exec(body)?.[1].trim() ?? null, worktree: CLAIMED_WORKTREE.exec(body)?.[1].trim() ?? null };
+    branch: CLAIMED_BRANCH.exec(body)?.[1].trim() ?? null, worktree: CLAIMED_WORKTREE.exec(body)?.[1].trim() ?? null,
+    nothing: CLAIMED_NOTHING.test(body) };
 }
 
 /**
@@ -335,7 +339,8 @@ export function workAtRisk(io, { worktree, branch, repo }) {
  *   openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string } | null,
  *   waiting: string | null, blockedBy: number[],
  *   waitKind?: string | null, ownPrs?: import("./idle-claimant.mjs").IdlePr[],
- * }} ClaimFacts
+ *   nothing?: boolean,
+ * }} ClaimFacts `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  *
  * @typedef {{ kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string }
  *   | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean }
@@ -370,7 +375,7 @@ function latest(times) {
  *   agents?: {label: string, status: string}[] | null, goneSince?: number | null, idleSince?: number | null, intervalMs?: number }} ctx
  * @returns {Reading}
  */
-export function claimReading(facts, ctx) {
+function overlayReading(facts, ctx) {
   const base = clockReading(facts, ctx);
   if (base.kind !== "pr-owned" && base.kind !== "moving") return base;
   const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [],
@@ -382,6 +387,23 @@ export function claimReading(facts, ctx) {
   if (idle.kind === "watching") return { kind: "idle-watch", since: idle.since };
   if (idle.kind === "unknown" && ctx.idleSince != null) return { kind: "idle-watch", since: ctx.idleSince };
   return base;
+}
+
+/**
+ * (#3407) THE READING OF ONE CLAIM, with the one thing no reading may do to a `Claimed-nothing:` claim taken off it: RELEASE it. A claim that names no
+ * git object (a host act, a fleet or lab reading, a hand-claim) holds nothing the release's "holds nothing built" can be said of, because its work is not
+ * a commit; the clock can only ask its holder, so a stalled one stays `nudged` (the nudge is sent once, and its memory kept) and every other release
+ * is `holding`, EXPECTED and so silent -- a line said every tick about it is the defect this row removes. Releasing one is a ruling for `product-manager`.
+ * @param {ClaimFacts} facts @param {Parameters<typeof overlayReading>[1]} ctx @returns {Reading}
+ */
+export function claimReading(facts, ctx) {
+  const reading = overlayReading(facts, ctx);
+  if (facts.nothing !== true || reading.kind !== "release") return reading;
+  if (reading.why === "stalled" && reading.nudgedAt !== null) {
+    return { kind: "nudged", nudgedAt: reading.nudgedAt, deliveredAt: ctx.nudge?.deliveredAt ?? null, lastMoveAt: /** @type {number} */ (reading.lastMoveAt),
+      ...(reading.idle ? { idle: true } : {}) };
+  }
+  return { kind: "holding", expected: true, why: `a claim that names no branch or worktree is never released (${reading.why})` };
 }
 
 /**
@@ -622,7 +644,7 @@ export function claimFactsFrom(input, io) {
       mergedPr: merged === null ? null : { number: merged.number, mergedAt: Date.parse(String(merged.mergedAt)), ...(merged.repoKey ? { repoKey: merged.repoKey } : {}) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
-      ownPrs };
+      ownPrs, ...(record.nothing ? { nothing: true } : {}) };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
