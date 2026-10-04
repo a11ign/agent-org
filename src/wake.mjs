@@ -439,6 +439,32 @@ export function routeWithFallback(order, agents, roster, ineligibleReason) {
 }
 
 /**
+ * #3465: A FINISHING ORDER DEFERRED PAST {@link BUSY_SEAT_DEFERRAL_MS} GOES TO A FREE ENGINEER, WHERE ITS CAUSE ALLOWS. PURE; the clock and the roster are inputs.
+ *
+ * #3448 bounded the wait and REPORTED it, so an order a busy `product-manager` could not take was told to `ceo`, who re-laned it by hand. Re-laning is safe only for
+ * an order any session can carry out, so the CAUSE declares it (`mayRelane` on the order, `pr-orders.mjs`: a ready-flip of a verdict somebody else wrote) and
+ * nothing is inferred: a decision only the owner can make (`docs/lane-ownership.json`'s `_claimVsAuthorRuling`) stays queued and is raised as before.
+ *
+ * ONLY A KEY THE WAKER HAS SEEN DEFERRED CAN BE OLD (`deferredSince`), so an order refused for another reason (no such workspace, a blocked seat) is `null`
+ * here and keeps its own refusal. NO SPAWN: an engineer started for a ready-flip would spend a row's worth of process on one `gh` call, so with nobody free the
+ * order stays queued and the refusal says why, in the busy-seat shape ({@link BUSY_SEAT_REFUSAL}) so its age keeps counting.
+ *
+ * @param {{session: string, causeKey: string, prompt: string, mayRelane?: boolean}} order
+ * @param {{ deferredSince?: Map<string, number>, now: number, live: {label: string, status: string}[], roster: string[],
+ *   ineligibleReason?: (label: string) => string | null }} facts `deferredSince` is {@link readDeferralHistory}'s; absent, nothing is re-laned
+ * @returns {{label: string, order: {prompt: string}} | {refusal: string} | null} `null` when this order is not re-laned: undeclared, not yet over the bound, or not deferred
+ */
+export function relaneTarget(order, { deferredSince, now, live, roster, ineligibleReason }) {
+  if (order.mayRelane !== true || order.session === "engineers") return null;
+  const since = deferredSince?.get(order.causeKey);
+  if (since === undefined || now - since <= BUSY_SEAT_DEFERRAL_MS) return null;
+  const free = route("engineers", live, withSpareInstances(roster, live), ineligibleReason);
+  if ("refusal" in free) return free;
+  const minutes = Math.round((now - since) / 60_000);
+  return { label: free.label, order: { prompt: `RE-LANED TO YOU: "${order.session}" has been busy for ${minutes} minutes (the bound is ${ORDER_STALL_MINUTES}) and this is a finishing act any session can carry out.\n\n${order.prompt}` } };
+}
+
+/**
  * B2's verdict on one session, SHORT enough to sit in a `seen` list -- or `null` when B2 would let it claim.
  *
  * THE DECIDER IS `inBuildReason` ITSELF, called rather than restated: a copy of B2's clauses here would go
@@ -3632,8 +3658,8 @@ export function endedRuns(emitted, path, { read = readFileSync, write = writeFil
  */
 export const BUSY_SEAT_DEFERRAL_MS = ORDER_STALL_MINUTES * 60 * 1000;
 
-/** `<causeKey>: "<seat>" is working`, which is `route`'s own refusal for a seat mid-turn, with `routeWithFallback`'s second half when the order had one. */
-const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?)$/;
+/** `<causeKey>: "<seat>" is working`, which is `route`'s own refusal for a seat mid-turn, with `routeWithFallback`'s second half when the order had one, and {@link relaneTarget}'s when it was over the bound and nobody was free. */
+const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"]+": "[^"]+" is working)?(?:; not re-laned: [^;]+)?)$/;
 
 /**
  * HOW LONG A READY ROW MAY WAIT FOR A FREE ENGINEER SEAT BEFORE IT IS "NOWHERE TO GO" AFTER ALL (a11ign/a11ign#3266): HALF AN HOUR.
@@ -4359,12 +4385,13 @@ export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESS
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
+ *   relane?: {deferredSince: Map<string, number>, now: number},
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer} & ReviewerDeps} deps
  *   (`memory`, from {@link ReviewerDeps}, is the memory hold both spawn paths ask -- {@link spawnMemoryGate});
  *   `spawned` is how many ENGINEER processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`, which a
  *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
- *   ({@link spawnEnvironment})
+ *   ({@link spawnEnvironment}); `relane` is {@link relaneTarget}'s clock and deferral record (#3465)
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, claimed?: ClaimedRow,
  *   reviewer?: true, order?: {prompt: string}} | {refusal: string}}
  */
@@ -4384,6 +4411,9 @@ function targetFor(order, live, roster, deps) {
     return reviewerInstance(routed.label) === null ? { label: routed.label }
       : { label: routed.label, order: repointedForReviewer({ session: routed.label, prompt: order.prompt }, deps.checkout) };
   }
+  // #3465: A DECLARED FINISHING ORDER OVER THE BOUND TRIES A FREE ENGINEER BEFORE IT IS LEFT TO WAIT; nothing else here is a candidate (`relaneTarget`).
+  const relaned = deps.relane === undefined ? null : relaneTarget(order, { ...deps.relane, live, roster, ineligibleReason: deps.ineligibleReason });
+  if (relaned !== null) return "label" in relaned ? relaned : { refusal: `${routed.refusal}; not re-laned: ${relaned.refusal}` };
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
@@ -4482,7 +4512,9 @@ function recordCapped({ stuck, outaged }, order, already) {
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock} & Partial<ReviewerDeps>} [deps]
+ *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
+ *          relane?: {deferredSince: Map<string, number>, now: number}} & Partial<ReviewerDeps>} [deps]
+ *   `relane` (#3465) is {@link relaneTarget}'s clock and the deferral record: a declared finishing order over the bound goes to a free engineer. Absent, none is re-laned.
  *   `clock` is the standing seats' last-order record and the time ({@link OrderClock}, #3440); absent, no seat's window is kept for
  *   being recent. `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
  *   `contextRoot` is {@link instanceCacheRead}'s transcript root (#2688), real `~/.claude/projects` by default, injected only by a test;
@@ -4502,7 +4534,7 @@ function recordCapped({ stuck, outaged }, order, already) {
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane } = {}) {
   const sent = [];
   const refused = [];
   /** @type {string[]} */
@@ -4521,7 +4553,7 @@ export function deliver(orders, agents, roster,
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry, codexConfig });
+      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -6357,6 +6389,21 @@ export function orderStallOrdersNow({ ledgerPath, emitted, backlog, now = Date.n
 }
 
 /**
+ * #3465: THE DEFERRAL RECORD AND THE CLOCK {@link relaneTarget} READS, or `undefined` when the record cannot be read. An unreadable record says so on stderr and
+ * re-lanes nothing (`orderStallOrdersNow`'s rule): a wrong age would hand an order to an engineer that its owner was about to take.
+ * @param {string} ledgerPath @param {(line: string) => void} [log]
+ * @returns {{deferredSince: Map<string, number>, now: number} | undefined}
+ */
+export function relaneFacts(ledgerPath, log = (line) => process.stderr.write(line)) {
+  try {
+    return { deferredSince: readDeferralHistory(`${dirname(ledgerPath)}/wake-deferred`), now: Date.now() };
+  } catch (err) {
+    log(`wake: re-laning UNKNOWN -- ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 160)}; nothing is re-laned this tick.\n`);
+    return undefined;
+  }
+}
+
+/**
  * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
@@ -6467,7 +6514,7 @@ function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable, clock,
+  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     memory: spawnMemoryGate(), claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,

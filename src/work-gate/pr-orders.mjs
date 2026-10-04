@@ -1153,6 +1153,10 @@ function settledVerdictOrder(pr, found, heads, required = null) {
       // the one case where a human should look. Automating the attributed case and waking on the rest
       // keeps `ceo`'s one-in-five spot-check pointed at the verdicts that can actually be wrong.
       ...(found.byIsAuthor === false ? { action: { kind: "ready", pr: Number(pr.number), ...(pr.repo === undefined ? {} : { repo: pr.repo }) } } : {}),
+      // #3465: THE SAME CONDITION DECLARES THE ORDER RE-LANEABLE, and for the same reason: an attributed verdict by someone who is not the author is a
+      // finishing act ANY session can carry out, so a `product-manager` busy past the bound (#3448) does not hold it. A self-signed or unattributed
+      // verdict is the one a human should look at (above), and re-laning it to whichever engineer is idle would hand that look to the wrong reader.
+      ...(found.byIsAuthor === false ? { mayRelane: true } : {}),
     };
   }
   if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads);
