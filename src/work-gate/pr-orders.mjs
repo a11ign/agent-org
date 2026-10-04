@@ -1257,6 +1257,13 @@ function draftOrder(pr, required = null, baseTip = null) {
   // the label removes the MACHINERY's order and never the reviewer's ability to answer, and it sits after the
   // red-checks order because a red build is the author's work whether or not evidence is pending.
   if (awaitingEvidence(pr)) return null;
+  // #3476: A PULL REQUEST THAT CONFLICTS WITH ITS BASE IS NOT ASKED FOR A FIRST LOOK. Its next move is the rebase, which
+  // `pr-merge-conflict` orders the owner to make and which changes the head, so a verdict now is paid for and then outlived:
+  // #148 was approved 7m42s after #145 made it DIRTY, at a head the rebase replaced. It sits AFTER the settled-verdict read on
+  // purpose, as `awaitingEvidence` does: a verdict already given (rework owed, a convinced draft not yet ready) is still acted on,
+  // and only the REQUEST is withheld. After the rebase the head is new, `reviewHeadsOf` keys a new discriminator, and the review is
+  // asked once, at the head that can merge. `UNREAD` is not `CONFLICTING`: an unknown state is never an accusation.
+  if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return null;
 
   // PULL REQUEST n IS `reviewer-<n>`'S (#2401; the odd/even split it replaced is retired). The name is
   // herdr's, and `wake.mjs` starts the instance when none is live. The arithmetic lives in
