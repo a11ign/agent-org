@@ -23,6 +23,7 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
+import { pnpmCliInvocation } from "../lib/npm-cli-executable.mjs";
 import { checkMessage, runCommand } from "./record.mjs";
 
 /** The only session a ruling is asked of. Changing it is changing what the liaison may ask, and the test pins it. */
@@ -92,10 +93,19 @@ export function createAsker({ ledger, parseWaits, run, cwd, env }) {
   };
 }
 
-/** @param {Invocation} invocation @returns {Ran} `pnpm run prompt:session` in the project's checkout, with the caller's environment so the sender is the caller's workspace */
+/**
+ * @param {Invocation} invocation @returns {Ran} `pnpm run prompt:session` in the project's checkout, with the caller's environment so the sender is the caller's workspace.
+ *   pnpm is reached through `pnpmCliInvocation` and never spawned by name (`pnpm.cmd` on Windows is refused by CVE-2024-27980; `no-npm-spawn.test.ts` holds the tree to it). The helper throws when
+ *   it finds no pnpm, and that is a value here, `error`, so the outcome is `failed` and says nothing was sent.
+ */
 function runPnpm({ args, input, cwd, env }) {
-  const { status, stdout, stderr, error } = spawnSync("pnpm", args, { input, cwd, env, encoding: "utf8" });
-  return { status, stdout, stderr, ...(error ? { error } : {}) };
+  try {
+    const pnpm = pnpmCliInvocation(args);
+    const { status, stdout, stderr, error } = spawnSync(pnpm.command, pnpm.args, { input, cwd, env, encoding: "utf8" });
+    return { status, stdout, stderr, ...(error ? { error } : {}) };
+  } catch (cause) {
+    return { status: null, stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) };
+  }
 }
 
 /** @returns {Promise<ParseWaits>} the gate's own parser: imported when asked, as `correct.mjs` does the vocabulary, so this file loads outside a configured host */
