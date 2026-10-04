@@ -50,6 +50,7 @@ const LEDGER_3390 = [
 
 const PR_134 = { repo: "a11ign/agent-org", number: 134, createdAt: "2026-10-04T11:06:00Z", mergedAt: "2026-10-04T11:19:39Z", body: "Closes a11ign/a11ign#3390\n" };
 const INSTANCE_3390 = { session: "worker-3390", rows: [3390], spawnedAt: at("2026-10-04T10:37:49.168Z"), endedAt: null };
+const ROW_REPO = "a11ign/a11ign";
 const CLAIMED = new Map([[3390, at("2026-10-04T10:35:57Z")]]);
 
 const run = (overrides = {}) => measure({
@@ -59,6 +60,7 @@ const run = (overrides = {}) => measure({
   ledger: parseLedger(LEDGER_3390),
   instances: [INSTANCE_3390],
   claimedAt: CLAIMED,
+  rowRepo: ROW_REPO,
   ...overrides,
 });
 
@@ -150,10 +152,11 @@ test("a reviewer's wakes belong to the row its pull request closes, inside the p
 });
 
 test("reviewerTarget names the repository and the number", () => {
-  assert.deepEqual(reviewerTarget("reviewer-3402"), { repo: "a11ign/a11ign", number: 3402 });
-  assert.deepEqual(reviewerTarget("reviewer-agent-org-141"), { repo: "a11ign/agent-org", number: 141 });
-  assert.equal(reviewerTarget("worker-3390"), null);
-  assert.equal(reviewerTarget("ceo"), null);
+  assert.deepEqual(reviewerTarget("reviewer-3402", ROW_REPO), { repo: "a11ign/a11ign", number: 3402 });
+  assert.deepEqual(reviewerTarget("reviewer-agent-org-141", ROW_REPO), { repo: "a11ign/agent-org", number: 141 });
+  assert.equal(reviewerTarget("worker-3390", ROW_REPO), null);
+  assert.equal(reviewerTarget("ceo", ROW_REPO), null);
+  assert.deepEqual(reviewerTarget("reviewer-tool-9", "acme/board"), { repo: "acme/tool", number: 9 });
 });
 
 // ---- (4) a standing lead is its own line ---------------------------------------------------------------------------------------------------------------
@@ -226,9 +229,12 @@ test("parseLedger skips RESET, ESCALATED and blank lines, and reads the session 
 
 // ---- rows, windows, comparison -------------------------------------------------------------------------------------------------------------------------
 test("rowsClosedBy: `Closes: none` closes nothing, a list closes each, another repository's issue is not a row", () => {
-  assert.deepEqual(rowsClosedBy("Closes: none -- a11ign/a11ign#3390 stays open\n"), []);
-  assert.deepEqual(rowsClosedBy("Closes #1, #2 and a11ign/a11ign#3\nCloses other/repo#4\n"), [1, 2, 3]);
-  assert.deepEqual(rowsClosedBy("nothing here"), []);
+  assert.deepEqual(rowsClosedBy("Closes: none -- a11ign/a11ign#3390 stays open\n", ROW_REPO), []);
+  assert.deepEqual(rowsClosedBy("Closes #1, #2 and a11ign/a11ign#3\nCloses other/repo#4\n", ROW_REPO), [1, 2, 3]);
+  assert.deepEqual(rowsClosedBy("nothing here", ROW_REPO), []);
+  // Positive control: the repository is an argument, not a constant -- the same body names a row of one project and none of another's.
+  assert.deepEqual(rowsClosedBy("Closes acme/board#7\n", "acme/board"), [7]);
+  assert.deepEqual(rowsClosedBy("Closes acme/board#7\n", ROW_REPO), []);
 });
 
 test("a pull request merged outside the window closes no row in it", () => {
@@ -258,4 +264,7 @@ test("parseArgs refuses a missing or inverted window", () => {
   assert.throws(() => parseArgs([]), /usage/);
   assert.throws(() => parseArgs(["--from", "2026-10-05T00:00:00Z", "--to", "2026-10-04T00:00:00Z"]), /from < to/);
   assert.deepEqual(parseArgs(["--from", "2026-10-01T00:00:00Z", "--to", "2026-10-04T12:00:00Z"]).window, { from: at("2026-10-01T00:00:00Z"), to: at("2026-10-04T12:00:00Z") });
+  // No `--repos` means "the declaration's code repositories", which only `main` can read; the flag overrides it.
+  assert.equal(parseArgs(["--from", "2026-10-01T00:00:00Z", "--to", "2026-10-04T12:00:00Z"]).repos, null);
+  assert.deepEqual(parseArgs(["--from", "2026-10-01T00:00:00Z", "--to", "2026-10-04T12:00:00Z", "--repos", "a/b,c/d"]).repos, ["a/b", "c/d"]);
 });
