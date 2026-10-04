@@ -45,6 +45,7 @@ export const COMMANDS = {
   "spawn:cycles": "wake.mjs",
   "stash:whose": "stash-whose.mjs",
   "survey": "survey.mjs",
+  "trace": "trace/trace.mjs",
   "tracker:comment": "tracker-comment.mjs",
   "wakes:per-row": "wakes-per-row.mjs",
   "work:gate": "work-gate.mjs",
