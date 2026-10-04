@@ -14,9 +14,13 @@
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
 // import and its one caller stay together. `work-gate.mjs` re-exports every name this file exports that it exported before.
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
-  shouldBeMerging, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed } from "../work-gate.mjs";
+  shouldBeMerging, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers } from "../work-gate.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.mjs";
 import { claimRecordOf } from "../claim-stall.mjs";
+import { idleClaimantReading } from "../idle-claimant.mjs";
+import { readAgents } from "../herdr-agents.mjs";
+import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
+import { NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
 import { FLEET_IDLE_HOURS, readLastMergedAt, orgHealthTick,
   primaryStandingSince } from "../org-health.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
@@ -110,34 +114,148 @@ export function stalledPrFacts(prs, required, { now }) {
 }
 
 /**
+ * #3486 (slice 2b): HOW LONG A HOLDER MAY SIT IDLE ON A CLAIM THAT HAS MOVED NOTHING before the row is NAMED for it (`never-started`, `wait-premise-gone`).
+ * MEASURED 2026-10-04 (a reading at a moment: re-derive before quoting), and read as the LAST commit a holder that is going to move still makes, not as a
+ * multiple of a median: the median is 4 minutes, so "3 x median" would be 12 minutes, and a bound that short names a holder between two turns.
+ *   POPULATION  33 rows closed by a merged pull request, the newest 45 merged of the project's own repository (`gh pr list --state merged --limit 45
+ *               --json number,createdAt,mergedAt,commits,closingIssuesReferences`, a larger page is refused by GitHub's node limit), each with the
+ *               newest `claimed by` record before its first commit (`gh issue list --state closed --limit 300 --json number,closedAt,comments`).
+ *   THE GAP     claim record to the pull request's FIRST COMMIT: p50 / p75 / p90 / p95 / max = 4.0 / 8.3 / 50.4 / 77.0 / 101.4 min; claim to the pull
+ *               request OPENING, for comparison: 26.7 / 43.8 / 62.9 / 103.4 / 133.6 (`IDLE_CLAIMANT_MINUTES`'s own 27-42 reading agrees).
+ *   RESULT      77.0 is the p95, plus one tick (about 2 minutes) of margin, rounded to 80.
+ * WHAT THIS DOES NOT PROVE: that 33 rows are the distribution (the thinnest of this file's three readings), nor that a holder was `idle` throughout
+ * (`herdr` keeps no history). **IT IS BELOW `OVERDUE_ROW_MINUTES` (135) AND THE CLOCK DOES NOT YET READ IT AS A BOUND**: `boundOf` is in `org-health.mjs`,
+ * a file #3533 declares, so today it only decides whether a row the 135-minute clock raises is NAMED for the shape. #3495's 100 minutes is therefore
+ * NOT raised by it (`outcome-clock.test.ts` says so), and the follow-up is `boundOf` reading a per-item bound.
+ */
+export const OVERDUE_IDLE_CLAIM_MINUTES = 80;
+const IDLE_CLAIM_MS = OVERDUE_IDLE_CLAIM_MINUTES * 60_000;
+
+/** The reasons an idle claimed row is NAMED for, besides `claimed` and `held`. A LABEL on the alarm and never a condition for raising it. */
+export const IDLE_CLAIM_REASON = Object.freeze({ NEVER_STARTED: "never-started", WAIT_PREMISE_GONE: "wait-premise-gone" });
+
+/**
+ * @typedef {import("./claim-stall-tick.mjs").ClaimMoves} ClaimMoves
+ * @typedef {{ moves: Map<number, ClaimMoves> | null, agents: {label: string, status: string}[] | null, now: number }} Holders
+ * `moves` is the claim-stall tick's reading of every claimed row (`ClaimFactsOfTick.moves`; `null` when that tick evaluated none), `agents` herdr's own
+ * workspace listing (`null` when herdr could not be asked).
+ */
+
+/**
+ * The wait kinds a claimed row DECLARES as fields, which `idleClaimantReading` counts: `claim-stall-tick.mjs`'s `declaredWaitOf` plus its open `blockedBy`
+ * edges, restated because that function is not exported and the file is not this row's Region. `answer:<the holder>` is not the holder's wait.
+ * THE TICK'S `now` DECIDES WHETHER A `Not-before:` HOLDS, never the wall clock (`waitingOn` defaults to it), or a clock handed a time reads another day's wait.
+ * @param {any} row @param {string} holder @param {number} now @returns {string[]}
+ */
+function waitKindsOf(row, holder, now) {
+  const today = todayIso(new Date(now));
+  const waiting = waitingOn({ ...row, blockedBy: { nodes: [] } }, today, now) ?? fleetWaitingOn(row, today, now);
+  const kind = waiting === null || (waiting.kind === "answer" && waiting.session === holder) ? [] : [waiting.kind === "date" ? "not-before" : waiting.kind];
+  return [...kind, ...(labelsOf(row).includes(NEEDS_CHAIRMAN_LABEL) ? ["chairman"] : []), ...(openBlockers(row).length > 0 ? ["blocked-by"] : [])];
+}
+
+/**
+ * The moves of a claimed row that is IN QUESTION for the idle shapes: read, owning no pull request (that clock is the PR's) and untouched for
+ * `OVERDUE_IDLE_CLAIM_MINUTES`. `null` for any row outside that, so neither the herdr listing nor a reading is spent on it.
+ * @param {number} number @param {Holders} holders @returns {{ moves: ClaimMoves, lastMove: number } | null}
+ */
+function untouchedMoves(number, holders) {
+  const moves = holders.moves?.get(Number(number));
+  if (moves === undefined || moves.openPrs.length > 0 || moves.mergedAt !== null) return null;
+  const lastMove = Math.max(...[moves.claimedAt, moves.comment, moves.commit, moves.push].filter((at) => at !== null));
+  return holders.now - lastMove >= IDLE_CLAIM_MS ? { moves, lastMove } : null;
+}
+
+/**
+ * ONE CLAIMED ROW'S IDLE SHAPE: `{ reason }` when its holder is idle on a row nothing has moved, naming the shape; `{ unknown }` when the listing could not
+ * say whether the holder is idle (a refused or partial one -- never a clear and never a trip); `null` when the row is not in question or its holder is
+ * working, waiting on a declared field, or gone. `idleSince` is the row's last move, so `idleClaimantReading`'s stall is "idle NOW and nothing has moved
+ * for the bound": herdr keeps no history, so the real idle run is at least as short, and a holder that is BUSY now is never named.
+ * `never-started` is a claim with no commit, push or comment of the holder's; `wait-premise-gone` a `Not-before:` the row still carries although `waitingOn`
+ * no longer holds it (the field is in the past), and it is asked first because it names the CAUSE.
+ * @param {any} row @param {Holders} holders @returns {{ reason: string } | { unknown: string } | null}
+ */
+function idleShapeOf(row, holders) {
+  const touched = untouchedMoves(row.number, holders);
+  if (touched === null) return null;
+  const holder = sessionOf(row);
+  const reading = idleClaimantReading({ session: holder, waitKinds: waitKindsOf(row, holder, holders.now) }, { now: holders.now, agents: holders.agents, idleSince: touched.lastMove });
+  if (reading.kind === "unknown") return { unknown: reading.why };
+  if (reading.kind !== "stall") return null;
+  const { commit, push, comment } = touched.moves;
+  if (notBeforeDate(row.body) !== null) return { reason: IDLE_CLAIM_REASON.WAIT_PREMISE_GONE };
+  return commit === null && push === null && comment === null ? { reason: IDLE_CLAIM_REASON.NEVER_STARTED } : null;
+}
+
+/**
  * #3486: EVERY CLAIMED ROW AS A CANDIDATE FOR THE OUTCOME CLOCK: the age runs from the NEWEST claim record (`claimRecordOf`, which is the claim and
  * not a release) and nothing but the row closing stops it. `claimedComments` is `readClaimedRowComments`'s page; a claimed row it does not carry, or
- * one with no claim record, is `since: null` -- an unknown, never young. The reason is `held` for a row carrying a `hold:` label and `claimed` otherwise.
- * @param {any[]} openRows @param {any[]} claimedComments
+ * one with no claim record, is `since: null` -- an unknown, never young. The reason is `held` for a row carrying a `hold:` label and `claimed` otherwise,
+ * and, when `holders` is given (slice 2b), the idle shape the row is in (`idleShapeOf`). `unknown` is why a shape could not be told, for `unread`.
+ * @param {any[]} openRows @param {any[]} claimedComments @param {Holders} [holders]
+ * @returns {{ items: import("../org-health.mjs").OverdueCandidate[], unknown: string[] }}
+ */
+function claimedRowReadings(openRows, claimedComments, holders) {
+  const commentsOf = new Map(claimedComments.map((row) => [Number(row.number), row.comments ?? []]));
+  /** @type {string[]} */
+  const unknown = [];
+  const items = openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL)).map((row) => {
+    const shape = holders === undefined ? null : idleShapeOf(row, holders);
+    if (shape !== null && "unknown" in shape) unknown.push(shape.unknown);
+    const base = labelsOf(row).some((label) => label.startsWith("hold:")) ? "held" : "claimed";
+    return { kind: /** @type {const} */ ("row"), number: row.number, reason: shape !== null && "reason" in shape ? shape.reason : base,
+      owner: sessionOf(row), since: claimRecordOf(commentsOf.get(Number(row.number)) ?? [])?.at ?? null };
+  });
+  return { items, unknown };
+}
+
+/**
+ * @param {any[]} openRows @param {any[]} claimedComments @param {Holders} [holders]
  * @returns {import("../org-health.mjs").OverdueCandidate[]}
  */
-export function claimedRowFacts(openRows, claimedComments) {
-  const commentsOf = new Map(claimedComments.map((row) => [Number(row.number), row.comments ?? []]));
-  return openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL)).map((row) => ({
-    kind: "row", number: row.number, reason: labelsOf(row).some((label) => label.startsWith("hold:")) ? "held" : "claimed",
-    owner: sessionOf(row), since: claimRecordOf(commentsOf.get(Number(row.number)) ?? [])?.at ?? null,
-  }));
+export function claimedRowFacts(openRows, claimedComments, holders) {
+  return claimedRowReadings(openRows, claimedComments, holders).items;
+}
+
+/**
+ * Whether the herdr listing is NEEDED: some claimed row is in question for the idle shapes. A quiet org, and a tick whose claims are all moving or own a
+ * pull request, makes no herdr call (`work-gate.mjs` pays for a read only when a condition derived from rows in hand asks for it).
+ * @param {any[]} openRows @param {Map<number, ClaimMoves> | null} moves @param {number} now
+ */
+export function needsHolderAgents(openRows, moves, now) {
+  return openRows.some((row) => labelsOf(row).includes(CLAIM_LABEL) && untouchedMoves(row.number, { moves, agents: null, now }) !== null);
 }
 
 /**
  * #3486: THE OUTCOME CLOCK'S FACTS: the PRs and, when the tick holds the claimed rows' comments, the rows. `claimedComments` is `undefined` for a caller
  * that does not ask (silent: the rows are not clocked), and `null` for a refused read (a stated unknown). An open list that was refused clocks
- * nothing and says so; a refused PR list is `items: null`.
- * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, required: string[] | null, now: number }} input
+ * nothing and says so; a refused PR list is `items: null`. `holders` (slice 2b) is whom the rows are held by: omitted, the rows are named `claimed`/`held`
+ * only; `moves: null` is a claim-stall tick that read no claim, and a listing herdr could not give is `unread` -- said when some row needed it.
+ * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, required: string[] | null, now: number, holders?: Holders }} input
  * @returns {{ items: import("../org-health.mjs").OverdueCandidate[] | null, unread: string[] }}
  */
-export function overdueFacts({ prsRead, openRowsRead, claimedComments, required, now }) {
+export function overdueFacts({ prsRead, openRowsRead, claimedComments, required, now, holders }) {
   if (prsRead === null) return { items: null, unread: [] };
   const prs = stalledPrFacts(prsRead, required, { now });
   if (claimedComments === undefined) return { items: prs, unread: [] };
   if (openRowsRead === null) return { items: prs, unread: ["the open rows"] };
   if (claimedComments === null) return { items: prs, unread: ["the claimed rows' comments"] };
-  return { items: [...prs, ...claimedRowFacts(openRowsRead, claimedComments)], unread: [] };
+  const rows = claimedRowReadings(openRowsRead, claimedComments, holders);
+  const unread = holders !== undefined && holders.moves === null && rows.items.length > 0 ? ["the claim-stall tick's reading of the claimed rows"] : [];
+  return { items: [...prs, ...rows.items], unread: rows.unknown.length > 0 ? [...unread, "the herdr listing"] : unread };
+}
+
+/**
+ * #3486: WHOM THE CLAIMED ROWS ARE HELD BY, for `overdueFacts`: the claim-stall tick's moves (`decideArgs.claimFacts`; `undefined` is a caller that did not
+ * ask, so the rows are named `claimed`/`held` only) and, only when some row is in question for the idle shapes, herdr's listing.
+ * @param {{ openRowsRead: any[] | null, claimFacts: import("./claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined, now: number,
+ *   readHolderAgents: typeof readAgents }} input
+ * @returns {Holders | undefined}
+ */
+function holdersForClock({ openRowsRead, claimFacts, now, readHolderAgents }) {
+  if (claimFacts === undefined) return undefined;
+  const moves = claimFacts?.moves ?? null;
+  return { moves, now, agents: openRowsRead !== null && needsHolderAgents(openRowsRead, moves, now) ? readHolderAgents() : null };
 }
 
 /**
@@ -326,8 +444,8 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release } = {}) {
-  const { prs, required, primaryDrift, claimRefusals } = decideArgs;
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents } = {}) {
+  const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
   const waits = liftedWaits(readWaits({ prsRead, openRowsRead, now }), { now, release });
@@ -337,7 +455,8 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     lastMergedAt: lastMergedAt(),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
     redPrs: prsRead === null ? null : redPrFacts(prs, decided, { holdStands }),
-    overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now }),
+    overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now,
+      holders: holdersForClock({ openRowsRead, claimFacts, now, readHolderAgents }) }),
     refusals: claimRefusals ?? null,
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),

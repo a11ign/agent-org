@@ -6,6 +6,11 @@
  * THE BOUNDS ARE WRITTEN OUT AS 100 AND 135 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS, for the reason `org-health.test.ts` gives for its own: a test
  * built from the constant moves with it. `the bounds are the measurement's` pins the literals to the exports in ONE place, with the measurement beside them.
  *
+ * SLICE 2b (the two CLAIMED-ROW shapes of `ceo`'s 19:47Z fixture): (5) #3131, a claimed row whose holder sits idle on a `Not-before` that is in the past, and (6) #3495,
+ * a claim that never started. They are named by the REAL idle reading (`idleClaimantReading`) over the REAL claim moves, a herdr listing that is idle, and the row's own
+ * fields. THE ROW BOUND IS STILL 135 MINUTES: the shapes' own, shorter bound (`OVERDUE_IDLE_CLAIM_MINUTES`, 80) is not read by `boundOf`, which lives in a file
+ * this slice does not declare, so a shape is NAMED on the row the 135-minute clock raises and `#3495 AT 100 MINUTES` IS NOT RAISED (a test below says so).
+ *
  * EVERY NEW SHAPE BECOMES A FIXTURE HERE (done-when 2c of #3486): the five shapes the chairman found by hand on 2026-10-04 are in `SHAPES` (the fifth, Dependabot #3472, is the one with no gate order at all), each built through
  * the REAL classifier (`stallReasonOf`) and the REAL fact readers, so a fixture is the state the gate sees and not a hand-written `reason`. A fifth shape is one
  * more entry in `SHAPES`; the two tests over it (`raised at the bound`, `not raised one millisecond under`) then cover it with no further code.
@@ -38,7 +43,7 @@ process.chdir(PROJECT);
 const orgHealth = await import("../org-health.mjs");
 const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS, overdueReading, orgHealthTick } = orgHealth;
 const { stallReasonOf, STALL_REASON } = await import("../work-gate.mjs");
-const { overdueFacts, claimedRowFacts } = await import("../work-gate/org-health.mjs");
+const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.mjs");
 const { claimRecordComment } = await import("../row-claim.mjs");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
@@ -56,6 +61,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const label = (...names: string[]) => names.map((name) => ({ name }));
 const BOT = { login: "a11ign-ai-workers" };
 
+type Moves = { claimedAt: number; comment: number | null; commit: number | null; push: number | null; openPrs: unknown[]; mergedAt: number | null };
+type HoldersIn = { moves: Map<number, Moves> | null; agents: { label: string; status: string }[] | null };
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string };
 type Items = ReturnType<typeof overdueFacts>["items"];
 
@@ -64,8 +71,10 @@ const quiet = (over: Record<string, unknown> = {}) => ({ now: NOW, lastMergedAt:
   refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] as string[] }, primarySince: null, ...over });
 
 /** What the gate hands the tick for these PRs and rows, through the real classifier and fact readers, and what the tick OFFERS for the clock. */
-function clock({ prs = [], rows = [], comments = [] }: { prs?: Record<string, unknown>[]; rows?: Record<string, unknown>[]; comments?: Record<string, unknown>[] }) {
-  const facts = overdueFacts({ prsRead: prs, openRowsRead: rows, claimedComments: comments, required: REQUIRED, now: NOW });
+function clock({ prs = [], rows = [], comments = [], holders }: { prs?: Record<string, unknown>[]; rows?: Record<string, unknown>[]; comments?: Record<string, unknown>[];
+  holders?: HoldersIn }) {
+  const facts = overdueFacts({ prsRead: prs, openRowsRead: rows, claimedComments: comments, required: REQUIRED, now: NOW,
+    ...(holders === undefined ? {} : { holders: { ...holders, now: NOW } as never }) });
   const orders = orgHealthTick(quiet({ overdue: facts }) as never, { log: () => undefined }) as Order[];
   return { facts, orders: orders.filter((o) => o.subject === SIGNALS.OVERDUE) };
 }
@@ -78,7 +87,20 @@ const claimComment = (session: string, at: number) => ({ body: claimRecordCommen
 
 const base = { isDraft: false, statusCheckRollup: GREEN, headRefOid: HEAD, labels: label("session:worker-9"), reviews: [] as unknown[] };
 type Shape = { name: string; boundMs: number; reason: string; kind: "pr" | "row";
-  at: (ageMs: number) => { prs?: Record<string, unknown>[]; rows?: Record<string, unknown>[]; comments?: Record<string, unknown>[] } };
+  at: (ageMs: number) => { prs?: Record<string, unknown>[]; rows?: Record<string, unknown>[]; comments?: Record<string, unknown>[]; holders?: HoldersIn } };
+
+// --- who holds a claimed row: the claim-stall tick's moves and herdr's own listing, as the gate hands them to the clock ----------------------------------------
+const STANDING = [{ label: "ceo", status: "done" }, { label: "orchestrator", status: "done" }];
+const listing = (worker: string, status: string) => [...STANDING, { label: worker, status }];
+const NOTHING_DONE = (claimedAt: number): Moves => ({ claimedAt, comment: null, commit: null, push: null, openPrs: [], mergedAt: null });
+/** A claimed row of `number`, held by `worker-<number>`, claimed `age` ago, its `status` in herdr and its `moves` over the untouched ones. */
+function heldRow(number: number, age: number, { status = "idle", body = "", moves = {} }: { status?: string; body?: string; moves?: Partial<Moves> } = {}) {
+  const claimedAt = NOW - age;
+  return { rows: [{ number, body, labels: label("in-progress", `session:worker-${number}`) }], comments: [{ number, comments: [claimComment(`worker-${number}`, claimedAt)] }],
+    holders: { moves: new Map([[number, { ...NOTHING_DONE(claimedAt), ...moves }]]), agents: listing(`worker-${number}`, status) } };
+}
+const PAST_NOT_BEFORE = "## When\nNot-before: 2026-10-04T10:00:00Z\n";
+const FUTURE_NOT_BEFORE = "## When\nNot-before: 2026-10-04T20:00:00Z\n";
 
 const SHAPES: Shape[] = [
   { name: "#3406: an APPROVED DRAFT with no stamp, which nobody was told to mark ready (about 2 h 15 min)", boundMs: PR_BOUND_MS, kind: "pr", reason: STALL_REASON.AWAITING_AUTHOR_DRAFT,
@@ -99,6 +121,11 @@ const SHAPES: Shape[] = [
     boundMs: PR_BOUND_MS, kind: "pr", reason: STALL_REASON.UNARMED,
     at: (age) => ({ prs: [{ ...base, number: 3472, labels: [], author: { login: "app/dependabot", is_bot: true }, headRefName: "dependabot/npm_and_yarn/x-1.2.3",
       reviewDecision: "APPROVED", mergeStateStatus: "CLEAN", armed: false, createdAt: iso(NOW - age), comments: [] }] }) },
+  { name: "#3131: a claimed row, no pull request, its worker IDLE on a `Not-before` that is in the PAST (it waited for a rebuild that never ran, 17 h)", boundMs: ROW_BOUND_MS,
+    kind: "row", reason: IDLE_CLAIM_REASON.WAIT_PREMISE_GONE,
+    at: (age) => heldRow(3131, age, { body: PAST_NOT_BEFORE, moves: { comment: NOW - age + 10 * MINUTE_MS } }) },
+  { name: "#3495: a claim that NEVER STARTED -- no commit, no push, no comment, no pull request, its worker idle", boundMs: ROW_BOUND_MS, kind: "row",
+    reason: IDLE_CLAIM_REASON.NEVER_STARTED, at: (age) => heldRow(3495, age) },
 ];
 
 test("the bounds are the measurement's: 100 min for a PR (3 x 33.7) and 135 min for a claimed row (3 x 44.5), and the 180-minute net is GONE", () => {
@@ -126,9 +153,115 @@ for (const shape of SHAPES) {
   });
 }
 
-test("THE FIVE SHAPES ARE THE SET: a PR shape and a row shape are both here, and an emptiness above would be caught by this count", () => {
-  assert.equal(SHAPES.length, 5);
-  assert.deepEqual(SHAPES.map((s) => s.kind).sort(), ["pr", "pr", "pr", "pr", "row"]);
+test("THE SEVEN SHAPES ARE THE SET: a PR shape and a row shape are both here, and an emptiness above would be caught by this count", () => {
+  assert.equal(SHAPES.length, 7);
+  assert.deepEqual(SHAPES.map((s) => s.kind).sort(), ["pr", "pr", "pr", "pr", "row", "row", "row"]);
+  assert.deepEqual(SHAPES.filter((s) => s.kind === "row").map((s) => s.reason).sort(), ["claimed", IDLE_CLAIM_REASON.NEVER_STARTED, IDLE_CLAIM_REASON.WAIT_PREMISE_GONE].sort());
+});
+
+// --- the two claimed-row shapes of slice 2b, and the controls that make them mean something ---------------------------------------------------------------
+
+/** The reason the clock gives the one row in these facts, and whether the tick offers an order for it. */
+function rowReading(args: ReturnType<typeof heldRow>) {
+  const { facts, orders } = clock(args);
+  return { reason: (facts.items as NonNullable<Items>).find((i) => i.kind === "row")?.reason, raised: orders.length, unread: facts.unread };
+}
+
+test("THE MEASURED IDLE BOUND is 80 minutes (p95 77.0 of claim-to-first-commit, plus one tick), BELOW the 135-minute row bound", () => {
+  assert.equal(OVERDUE_IDLE_CLAIM_MINUTES, 80, "77.0 min is the p95 of 33 rows' claim to first commit; the measurement is beside the constant");
+  assert.ok(OVERDUE_IDLE_CLAIM_MINUTES < OVERDUE_ROW_MINUTES);
+});
+
+test("CONTROL: the same row with the worker BUSY is not named for the shape, at the idle bound or at the row bound (where the clock still raises it as `claimed`)", () => {
+  const busy = (age: number) => heldRow(3131, age, { status: "working", body: PAST_NOT_BEFORE, moves: { comment: NOW - age + 10 * MINUTE_MS } });
+  assert.deepEqual(rowReading(busy(100 * MINUTE_MS)), { reason: "claimed", raised: 0, unread: [] });
+  assert.deepEqual(rowReading(busy(ROW_BOUND_MS)), { reason: "claimed", raised: 1, unread: [] }, "the clock has no exemption: a busy row is still raised at 135, labelled `claimed`");
+  assert.equal(rowReading(heldRow(3131, ROW_BOUND_MS, { body: PAST_NOT_BEFORE, moves: { comment: NOW - ROW_BOUND_MS + 10 * MINUTE_MS } })).reason, IDLE_CLAIM_REASON.WAIT_PREMISE_GONE,
+    "POSITIVE CONTROL: the same row, idle, is named");
+});
+
+test("CONTROL: a `Not-before` still in the FUTURE with the worker idle is a wait that holds -- not named, and not raised under the row bound", () => {
+  const waiting = (age: number) => heldRow(3131, age, { body: FUTURE_NOT_BEFORE });
+  assert.deepEqual(rowReading(waiting(100 * MINUTE_MS)), { reason: "claimed", raised: 0, unread: [] });
+  assert.equal(rowReading(waiting(ROW_BOUND_MS)).reason, "claimed");
+  assert.equal(rowReading(heldRow(3131, 100 * MINUTE_MS, { body: PAST_NOT_BEFORE })).reason, IDLE_CLAIM_REASON.WAIT_PREMISE_GONE, "POSITIVE CONTROL: the same row with the field in the past");
+});
+
+test("CONTROL: a REFUSED or PARTIAL herdr listing is reported UNREAD and names nothing -- the reading is unknown, never clear and never a trip", () => {
+  const at = 100 * MINUTE_MS;
+  for (const [what, agents] of [["refused", null], ["partial (no standing pane)", [{ label: "worker-3495", status: "idle" }]]] as const) {
+    const held = { ...heldRow(3495, at), holders: { ...heldRow(3495, at).holders, agents: agents as HoldersIn["agents"] } };
+    const reading = rowReading(held);
+    assert.deepEqual(reading, { reason: "claimed", raised: 0, unread: ["the herdr listing"] }, what);
+    const facts = overdueFacts({ prsRead: [], openRowsRead: held.rows, claimedComments: held.comments, required: REQUIRED, now: NOW, holders: { ...held.holders, now: NOW } as never });
+    assert.equal(overdueReading({ now: NOW, ...facts }).status, "unknown", `${what}: unknown`);
+  }
+  const idle = heldRow(3495, at);
+  const facts = overdueFacts({ prsRead: [], openRowsRead: idle.rows, claimedComments: idle.comments, required: REQUIRED, now: NOW, holders: { ...idle.holders, now: NOW } as never });
+  assert.equal(overdueReading({ now: NOW, ...facts }).status, "clear", "POSITIVE CONTROL: the same row with a whole listing is read, and is clear under the row bound");
+  assert.equal(rowReading(idle).reason, IDLE_CLAIM_REASON.NEVER_STARTED);
+});
+
+test("A claim-stall tick that read NO claim is reported unread, and a caller that passes no holders is silent (the rows are `claimed`/`held` only)", () => {
+  const held = heldRow(3495, 100 * MINUTE_MS);
+  const unread = clock({ ...held, holders: { moves: null, agents: null } }).facts;
+  assert.deepEqual(unread.unread, ["the claim-stall tick's reading of the claimed rows"]);
+  assert.deepEqual(clock({ rows: held.rows, comments: held.comments }).facts.unread, []);
+});
+
+test("NOT NAMED: a row that has MOVED (a commit, or a comment) is not `never-started`; one owning a pull request is the PR's clock; one younger than the idle bound is left alone", () => {
+  const age = 100 * MINUTE_MS;
+  assert.equal(rowReading(heldRow(1, age, { moves: { commit: NOW - 90 * MINUTE_MS } })).reason, "claimed", "a commit is a move");
+  assert.equal(rowReading(heldRow(2, age, { moves: { comment: NOW - 90 * MINUTE_MS } })).reason, "claimed", "a comment is a move");
+  assert.equal(rowReading(heldRow(3, age, { moves: { openPrs: [{ createdAt: iso(NOW - 30 * MINUTE_MS), labels: [] }] } })).reason, "claimed", "a pull request owns the clock");
+  assert.equal(rowReading(heldRow(4, age, { moves: { mergedAt: NOW - MINUTE_MS } })).reason, "claimed", "a merged one is the merge's");
+  assert.equal(rowReading(heldRow(5, (OVERDUE_IDLE_CLAIM_MINUTES - 1) * MINUTE_MS)).reason, "claimed", "under the idle bound a holder between two turns is not named");
+  assert.equal(rowReading(heldRow(6, OVERDUE_IDLE_CLAIM_MINUTES * MINUTE_MS)).reason, IDLE_CLAIM_REASON.NEVER_STARTED, "POSITIVE CONTROL: at the idle bound it is");
+});
+
+test("A HOLD NAMES NOTHING NEW WHEN NOBODY IS IDLE, and a hold on an idle claim that never started is still named for the shape (the reason is a label, the hold excuses nothing)", () => {
+  const held = heldRow(3495, ROW_BOUND_MS);
+  const withHold = { ...held, rows: [{ ...held.rows[0], labels: label("in-progress", "session:worker-3495", "hold:ceo") }] };
+  assert.equal(rowReading(withHold).reason, IDLE_CLAIM_REASON.NEVER_STARTED);
+  assert.equal(rowReading(withHold).raised, 1);
+});
+
+test("TODAY #3495'S 100 MINUTES IS NAMED BUT NOT RAISED: the shape is below the 135-minute row bound and `boundOf` reads one bound per kind (the follow-up reads a per-item one)", () => {
+  const reading = rowReading(SHAPES[6].at(100 * MINUTE_MS) as ReturnType<typeof heldRow>);
+  assert.deepEqual(reading, { reason: IDLE_CLAIM_REASON.NEVER_STARTED, raised: 0, unread: [] });
+});
+
+// --- the tick hands the clock whom the rows are held by, and pays for herdr only when a row needs it -----------------------------------------------------
+
+function wired({ rows, comments, claimFacts, agents }: { rows: Record<string, unknown>[]; comments: Record<string, unknown>[]; claimFacts: unknown; agents: HoldersIn["agents"] }) {
+  const asked: string[] = [];
+  const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [], claimFacts };
+  const orders = orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: rows, claimedComments: comments, decideArgs, decided: [] } as never,
+    { now: NOW, lastMergedAt: () => NOW - 60 * MINUTE_MS, log: () => undefined, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+      readWaits: (() => null) as never, release: (() => false) as never, readHolderAgents: (() => { asked.push("herdr"); return agents; }) as never });
+  return { orders: (orders as Order[]).filter((o) => o.subject === SIGNALS.OVERDUE), asked };
+}
+
+test("THE TICK: `orgHealthNow` reads the claim-stall tick's moves from `decideArgs.claimFacts` and herdr's listing ONLY for a row in question, and names #3495 at the row bound", () => {
+  const held = heldRow(3495, ROW_BOUND_MS);
+  const claimFacts = { moves: held.holders.moves, skipped: new Map() };
+  const raised = wired({ rows: held.rows, comments: held.comments, claimFacts, agents: held.holders.agents });
+  assert.equal(raised.orders.length, 1);
+  assert.match(raised.orders[0].prompt, /#3495 \(row, never-started, open 2\.3 h, owner worker-3495\)/);
+  assert.equal(raised.asked.length, 1, "one listing");
+  const young = heldRow(3495, 10 * MINUTE_MS);
+  const quiet = wired({ rows: young.rows, comments: young.comments, claimFacts: { moves: young.holders.moves, skipped: new Map() }, agents: young.holders.agents });
+  assert.deepEqual([quiet.orders, quiet.asked], [[], []], "a claim that moved inside the bound makes no herdr call");
+  const notAsked = wired({ rows: held.rows, comments: held.comments, claimFacts: undefined, agents: held.holders.agents });
+  assert.deepEqual([notAsked.asked, (notAsked.orders[0].prompt.match(/#3495 \(row, ([a-z-]+),/) ?? [])[1]], [[], "claimed"], "a caller that offers no claim facts is not asked about holders");
+});
+
+test("`needsHolderAgents` is false for no claimed row, a moving one and a PR-owned one, and true for an untouched one past the idle bound", () => {
+  const held = heldRow(3495, 100 * MINUTE_MS);
+  assert.equal(needsHolderAgents(held.rows, held.holders.moves, NOW), true);
+  assert.equal(needsHolderAgents([{ number: 1, labels: label("ready") }], held.holders.moves, NOW), false);
+  assert.equal(needsHolderAgents(held.rows, null, NOW), false);
+  assert.equal(needsHolderAgents(held.rows, heldRow(3495, 100 * MINUTE_MS, { moves: { openPrs: [{}] } }).holders.moves, NOW), false);
 });
 
 // --- nothing restarts the clock, and nothing excuses an item ---------------------------------------------------------------------------------
