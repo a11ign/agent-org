@@ -426,6 +426,16 @@ test("the flag the rules file tells an author to type is the flag this command a
   assert.ok(rules.includes("ROW WRITE"), "with the routing change itself stated, not just its flag");
 });
 
+test("the loaded rules are the host project's, and an absent or empty rule set is refused rather than read as \"\"", () => {
+  // The positive control for the two assertions above and for worker-profile.test.ts's PRACTICES: a reader that
+  // returned "" for a missing directory would fail them with a message about wording, and pass any "does not say".
+  assert.ok(readLoadedRules().length > 0, "the host project's rules directory is found and not empty");
+  inTempDir((dir) => {
+    assert.throws(() => readLoadedRules(dir), /no rules files under/, "an empty directory is refused");
+    assert.throws(() => readLoadedRules(join(dir, "absent")), /ENOENT/, "a missing directory is refused");
+  });
+});
+
 // ---------------------------------------------------------------------------------------------------
 // THE CLEARED SESSION WAKES KNOWING WHO IT IS AND WHO ASKED (#2344).
 //
