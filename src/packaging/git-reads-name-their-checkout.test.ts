@@ -1,3 +1,4 @@
+// no-token: gh -- every `gatherChanges` and `assertBaseIsLive` call below passes a fake `gh`, so nothing here reaches the real one.
 /**
  * #3363: A `git` READ THAT NAMES NO CHECKOUT ASKS WHICHEVER REPOSITORY THE PROCESS HAPPENS TO BE IN. The tick's `WorkingDirectory` is the
  * TOOL's checkout (`a11ign/agent-org`) since the cut-over, and `hand-fix-ledger.mjs` ran `git log origin/main` there while `gh` asked about
