@@ -231,6 +231,13 @@ function tarballManifest(tarball) {
 }
 
 /**
+ * A caret or tilde range is how a package consumes one that PUBLISHES FROM ANOTHER REPOSITORY (#3125: `cli` takes `@a11ign/documents`
+ * by `^0.1.0`). With no sibling directory here, such a range names nothing to pack and npm fetches it from the
+ * registry, where it exists; a sibling that DOES exist is packed and range-checked whatever the range's spelling. A typo'd one still fails, at the gate's install, with the E404 it would give a consumer.
+ */
+const REGISTRY_RANGE = /^[\^~]\d/;
+
+/**
  * Sibling packages this one depends on, as directories, transitively.
  *
  * Only `@a11ign/*` — everything else comes from the registry, which is the point of the gate: a
@@ -250,6 +257,7 @@ export function internalDependencies(packageDir, seen = new Set()) {
     if (optional[dependency]?.optional && !existsSync(siblingDir(packageDir, dependency))) continue;
     seen.add(dependency);
     const dir = siblingDir(packageDir, dependency);
+    if (!existsSync(join(dir, "package.json")) && REGISTRY_RANGE.test(wanted[dependency])) continue;
     if (!existsSync(join(dir, "package.json"))) {
       throw new Error(`${manifest.name} depends on ${dependency}, which is not a package in this repo`);
     }
