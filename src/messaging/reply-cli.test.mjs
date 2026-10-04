@@ -78,11 +78,13 @@ async function fixtureSystemctl(argv) {
  * Runs the command with everything injected and collects what it said.
  * @param {string[]} argv
  * @param {{messaging?: boolean, env?: Record<string, string | undefined>, stdin?: string, gh?: typeof fixtureGh, provider?: ReturnType<typeof createFakeProvider>,
- *   providers?: Record<string, any>, fetch?: typeof fetch, home?: string, root?: string}} [options] with `fetch` given and no `providers`, the command builds the
+ *   providers?: Record<string, any>, fetch?: typeof fetch, home?: string, root?: string, inbound?: string[]}} [options] `inbound` seeds the ledger with a message from the chairman
+ *   under each ref, which is what `--to` is checked against (`ledger` in the result is what the command wrote AFTER those); with `fetch` given and no `providers`, the command builds the
  *   REAL Telegram provider, which is how the secret-file wiring is exercised; otherwise it is handed `provider`
  */
-async function run(argv, { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh" }, stdin = "", gh = fixtureGh, provider = createFakeProvider(), providers, fetch, ...where } = {}) {
+async function run(argv, { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh" }, stdin = "", gh = fixtureGh, provider = createFakeProvider(), providers, fetch, inbound = [], ...where } = {}) {
   const fixture = project({ messaging });
+  if (inbound.length > 0) writePrivate(fixture.ledgerPath, inbound.map((messageRef) => `${JSON.stringify({ direction: "in", origin: "converse", messageRef, ackRef: "0", ts: "2026-10-02T14:00:00.000Z" })}\n`).join(""));
   const [root, home] = [where.root ?? fixture.root, where.home ?? fixture.home];
   const [out, err] = [/** @type {string[]} */ ([]), /** @type {string[]} */ ([])];
   const code = await main(argv, {
@@ -90,12 +92,12 @@ async function run(argv, { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh
     ...(fetch === undefined ? { providers: providers ?? { telegram: () => provider } } : { fetch }),
     out: (line) => out.push(line), err: (line) => err.push(line),
   });
-  return { code, out: out.join("\n"), err: err.join("\n"), provider, ledger: readLedgerLines(defaultLedgerPath(home)), ledgerPath: defaultLedgerPath(home) };
+  return { code, out: out.join("\n"), err: err.join("\n"), provider, ledger: readLedgerLines(defaultLedgerPath(home)).slice(inbound.length), ledgerPath: defaultLedgerPath(home) };
 }
 
 describe("done-when 2: with a fake provider and fixture readers it sends one message and exits 0", () => {
   test("the text argument, re-read at send time, goes out once with the stamp and the reply-to, exit 0", async () => {
-    const { code, out, provider, ledger } = await run(["PR #{{pr:2881.number}} is {{pr:2881.state}}", "--reply-to", "77"]);
+    const { code, out, provider, ledger } = await run(["PR #{{pr:2881.number}} is {{pr:2881.state}}", "--to", "77"], { inbound: ["77"] });
     assert.equal(code, EXIT.ok);
     assert.deepEqual(provider.sent.map(({ text, replyTo }) => ({ text, replyTo })), [{ text: `PR #2881 is merged\n\n${STAMP}`, replyTo: "77" }]);
     assert.match(out, /sent fake-1/);
@@ -200,6 +202,34 @@ describe("the command refuses to START, with exit 2, rather than guess", () => {
   });
 });
 
+describe("#3411 `--to` records the inbound message a reply answers, and refuses one nobody sent", () => {
+  test("a ref an inbound line holds is written as `replyTo`", async () => {
+    const { code, ledger } = await run(["Row {{issue:3071.state}}", "--to=45"], { inbound: ["44", "45"] });
+    assert.equal(code, EXIT.ok);
+    assert.deepEqual(ledger.map(({ replyTo }) => replyTo), ["45"]);
+  });
+
+  test("a ref no inbound line holds is refused (exit 2), nothing is sent and the ledger gains no line", async () => {
+    const { code, err, provider, ledger } = await run(["Row {{issue:3071.state}}", "--to", "999"], { inbound: ["44", "45"] });
+    assert.equal(code, EXIT.refused);
+    assert.match(err, /REFUSED --to 999: no message from the chairman with that ref/);
+    assert.deepEqual(provider.sent, []);
+    assert.deepEqual(ledger, []);
+  });
+
+  test("with no ledger at all every ref is unknown, and the refusal does not create the file", async () => {
+    const { code, ledgerPath } = await run(["Row {{issue:3071.state}}", "--to", "1"]);
+    assert.equal(code, EXIT.refused);
+    assert.equal(existsSync(ledgerPath), false);
+  });
+
+  test("omitting `--to` still sends and writes `replyTo: null`", async () => {
+    const { code, ledger } = await run(["Row {{issue:3071.state}}"], { inbound: ["45"] });
+    assert.equal(code, EXIT.ok);
+    assert.deepEqual(ledger.map(({ replyTo }) => replyTo), [null]);
+  });
+});
+
 describe("the real Telegram provider, built from the configured secret files, with a fake `fetch`", () => {
   /** @param {{ok?: boolean}} [options] @returns {{fetch: typeof fetch, calls: {url: string, body: any}[]}} */
   function fakeTelegram({ ok = true } = {}) {
@@ -214,7 +244,7 @@ describe("the real Telegram provider, built from the configured secret files, wi
 
   test("one sendMessage to the chairman's chat as a reply, carrying the token; exit 0 and the ledger holds Telegram's message id", async () => {
     const telegram = fakeTelegram();
-    const { code, ledger } = await run(["Row {{issue:3071.state}}", "--reply-to", "77"], { fetch: telegram.fetch });
+    const { code, ledger } = await run(["Row {{issue:3071.state}}", "--to", "77"], { fetch: telegram.fetch, inbound: ["77"] });
     assert.equal(code, EXIT.ok);
     assert.equal(telegram.calls.length, 1);
     assert.equal(telegram.calls[0].url, `https://api.telegram.org/bot${TOKEN}/sendMessage`);
