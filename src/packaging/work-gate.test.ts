@@ -23,16 +23,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
-  existsSync, writeFileSync, cpSync } from "node:fs";
+  existsSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
-import { deriveClosureRequirements } from "../acceptance-commands.mjs";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
@@ -4723,27 +4723,85 @@ const DECLARED_HISTORY_POPULATION: Declaration[] = [
   { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.mjs` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },
 ];
 
-/** The `*.test.ts` files of `packagingDir` whose import closure derives a `history` requirement. */
-function historyChargedTests(packagingDir: string): string[] {
+/**
+ * The `*.test.ts` files of `packagingDir` whose import closure derives a `history` requirement.
+ * (#3549) ONE MEMO FOR THE SCAN, because every entry walks mostly the same modules: 182 CPU-s for one pass over 190 files was nearly all re-reading
+ * and re-parsing text it had already seen, and the test ran two passes. `carried` answers an entry WITHOUT walking it, for the scan of the base.
+ */
+function historyChargedTests(packagingDir: string, { memo = createClosureMemo(), carried = () => undefined }: {
+  memo?: ReturnType<typeof createClosureMemo>, carried?: (file: string) => boolean | undefined } = {}): string[] {
   return readdirSync(packagingDir).filter((f) => f.endsWith(".test.ts"))
     .filter((f) => {
+      const known = carried(f);
+      if (known !== undefined) return known;
       try {
-        return deriveClosureRequirements(join(packagingDir, f))
+        return deriveClosureRequirements(join(packagingDir, f), memo)
           .some((r: { requirement: string }) => r.requirement === "history");
       } catch { return false; }
     }).sort();
 }
 
+/**
+ * The entries of the live tree whose answer the base shares: every file their walk read is outside what this change touched, so the base walk would
+ * read the same bytes and say the same thing. `touched` is repository-relative; `null` (a deletion) carries nothing, and the whole base is scanned.
+ */
+function carriedFromLiveTree({ liveDir, current, memo, touched }: {
+  liveDir: string, current: string[], memo: ReturnType<typeof createClosureMemo>, touched: Set<string> | null }): (file: string) => boolean | undefined {
+  if (touched === null) return () => undefined;
+  const touchedHere = new Set([...touched].map((path) => join(TOOL_ROOT, path)));
+  return (file) => {
+    const visited = memo.visited.get(join(liveDir, file));
+    return visited !== undefined && ![...visited].some((read) => touchedHere.has(read)) ? current.includes(file) : undefined;
+  };
+}
+
 test("#2174: no test file joins the history-requirement population without a declaration", () => {
-  const current = historyChargedTests(fileURLToPath(new URL("./", import.meta.url)));
+  const liveDir = fileURLToPath(new URL("./", import.meta.url));
+  const memo = createClosureMemo();
+  const current = historyChargedTests(liveDir, { memo });
   // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
   assert.ok(current.includes("work-gate.test.ts"), "this very file is in the population, and the scan dropped it");
   const { undeclared, judged } = judgePin({
-    repo: TOOL_ROOT, paths: ["src"], scan: (root) => historyChargedTests(join(root, "src/packaging")), current, declared: DECLARED_HISTORY_POPULATION,
+    repo: TOOL_ROOT, paths: ["src"], current, declared: DECLARED_HISTORY_POPULATION,
+    scan: (root, { changed }) => historyChargedTests(join(root, "src/packaging"), {
+      carried: carriedFromLiveTree({ liveDir, current, memo, touched: changed }),
+    }),
   });
   assert.deepEqual(undeclared, [],
     `(judged ${judged}) adding a \`history\` reader to the gate's import closure taxes every test file that reaches it -- if a file joined `
     + "this population, check what was imported, and declare the file in DECLARED_HISTORY_POPULATION only if it genuinely needs history");
+});
+
+/**
+ * (#3549) THE MEMOISED SCAN STILL CATCHES A JOINER, and the reuse for the base does not hide one. A fixture directory is scanned the way the guard
+ * scans the tree: one memo across entries, and a carried-over answer for the entries the change did not touch.
+ */
+test("#3549: the memoised scan flags a file that joins the history population, and one it shares a module with stays clean", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "history-scan-")));
+  try {
+    // The flag is assembled so THIS file does not itself contain it: a literal here would make the guard's own scan charge this file at this line.
+    const SHALLOW_CHECK = ["--is-shallow-repo", "sitory"].join("");
+    // `reader.mjs` asks the shallow-checkout question, the one read that needs full history; two tests import it, one imports a clean module.
+    writeFileSync(join(dir, "reader.mjs"), `export const isShallow = () => "git rev-parse ${SHALLOW_CHECK}";\n`);
+    writeFileSync(join(dir, "clean.mjs"), "export const answer = () => 42;\n");
+    writeFileSync(join(dir, "joiner.test.ts"), `import { isShallow } from "./reader.mjs";\nisShallow();\n`);
+    writeFileSync(join(dir, "second.test.ts"), `import { isShallow } from "./reader.mjs";\nisShallow();\n`);
+    writeFileSync(join(dir, "bystander.test.ts"), `import { answer } from "./clean.mjs";\nanswer();\n`);
+    const memo = createClosureMemo();
+    assert.deepEqual(historyChargedTests(dir, { memo }), ["joiner.test.ts", "second.test.ts"],
+      "the shared memo must still charge BOTH tests that reach the reader, and not the one that does not");
+    // Same answer as a scan with no memo shared: the saving is not allowed to change a verdict.
+    assert.deepEqual(historyChargedTests(dir), historyChargedTests(dir, { memo }), "a shared memo and a fresh one must agree");
+    // THE CARRIED HALF: with `reader.mjs` touched, both entries that visit it are re-walked (carried says nothing); `bystander` is carried as clean.
+    const carried = carriedFromLiveTree({ liveDir: dir, current: ["joiner.test.ts", "second.test.ts"], memo,
+      touched: new Set([relative(TOOL_ROOT, join(dir, "reader.mjs"))]) });
+    assert.equal(carried("joiner.test.ts"), undefined, "an entry that read a touched file is re-walked, not carried");
+    assert.equal(carried("bystander.test.ts"), false, "an entry whose walk touched nothing changed carries its answer");
+    assert.equal(carriedFromLiveTree({ liveDir: dir, current: [], memo, touched: null })("bystander.test.ts"), undefined,
+      "a deletion (touched === null) carries nothing: the whole base is scanned");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 /**

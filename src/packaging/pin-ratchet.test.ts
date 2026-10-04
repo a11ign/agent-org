@@ -14,6 +14,8 @@
  *     REMOVES one is green (`LEGACY_EXACT` is red on it, which is the second fault the ratchet drops);
  *   - the base is READ: an entry held at the base with no declaration passes only where a base was readable, so a green ratchet is not
  *     the strict form wearing its name;
+ *   - (#3549) `changedSince` names the paths a change touches so a scan of the base can re-read only those, and says `null` (scan it all) where a deletion
+ *     or a rename would make "nothing I read was touched" prove nothing; `judgePin` hands the scan that answer.
  *   - (#3245) `ci.yml`'s `gate` lays the tool out WITHOUT its `.git`: `AGENT_ORG_TOOL_REPO` names the checkout it came from, and the ratchet runs
  *     there. Unset, empty, absent or not a repository of its own, the strict form runs. The last test reads the variable `gate` really sets.
  */
@@ -21,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.mjs";
+import { changedSince, judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.mjs";
 import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
@@ -253,4 +255,63 @@ test("#3245: the tool's real tree, under the environment this run was given, rea
   // `gate` sets the variable and checks out the whole history; there, a strict reading is the defect this row closed. Off CI the form depends on where
   // the checkout lives (a worktree has `origin/main`, an exported tree does not), so only the CI case is asserted: it is the one with a cause.
   if (process.env.GITHUB_ACTIONS === "true") assert.match(real.judged, /^as a ratchet against /, `${TOOL_REPO_ENV}=${process.env[TOOL_REPO_ENV] ?? "(unset)"}`);
+});
+
+/** The base `changedSince` is asked against: the seed commit on `main`, then `next` branches off it. */
+function branchFromSeed(box: GitSandbox): string {
+  seed(box);
+  const base = box.run(["rev-parse", "HEAD"]).trim();
+  box.run(["checkout", "-q", "-b", "next"]);
+  return base;
+}
+
+test("#3549 changedSince: a committed edit, a committed addition, an uncommitted edit and an untracked file are each named, and nothing else", () => {
+  withGitSandbox((box) => {
+    const base = branchFromSeed(box);
+    write(box, "pop/b", "edited");
+    write(box, "pop/added", "");
+    box.run(["add", "-A"]);
+    box.commit("an edit and an addition");
+    write(box, "pop/m", "edited, uncommitted");
+    write(box, "pop/untracked", "");
+    assert.deepEqual([...(changedSince(box.dir, base) ?? [])].sort(), ["pop/added", "pop/b", "pop/m", "pop/untracked"],
+      "the paths this change touches, and not `pop/y`, which it left alone");
+  });
+});
+
+test("#3549 changedSince: a deletion or a rename is `null`, because the base held a file the live tree no longer shows", () => {
+  withGitSandbox((box) => {
+    const base = branchFromSeed(box);
+    rmSync(join(box.dir, "pop/b"));
+    box.run(["add", "-A"]);
+    box.commit("remove b");
+    assert.equal(changedSince(box.dir, base), null, "a deletion: scan the whole base");
+    box.run(["checkout", "-q", "main"]);
+    box.run(["checkout", "-q", "-b", "renames"]);
+    box.run(["mv", "pop/m", "pop/m-renamed"]);
+    box.run(["add", "-A"]);
+    box.commit("rename m");
+    assert.equal(changedSince(box.dir, base), null, "a rename is a deletion of the old path");
+  });
+  assert.equal(changedSince("/nonexistent-repository", "HEAD"), null, "where git cannot say, it is `null` (scan it all), never an empty set");
+});
+
+test("#3549 judgePin: the scan of the base is handed the paths the change touched, and `null` after a deletion", () => {
+  withGitSandbox((box) => {
+    branchFromSeed(box);
+    box.run(["update-ref", "refs/remotes/origin/main", "main"]);
+    write(box, "pop/b", "edited");
+    box.run(["add", "-A"]);
+    box.commit("edit b");
+    const seen: (Set<string> | null)[] = [];
+    const record = (root: string, { changed }: { changed: Set<string> | null }): string[] => { seen.push(changed); return scan(root); };
+    judgePin({ repo: box.dir, paths: ["pop"], scan: record, current: scan(box.dir), declared: declarationsIn(box.dir), env: {} });
+    assert.deepEqual(seen.map((changed) => changed && [...changed]), [["pop/b"]], "the scan of the base saw the one path this change edited");
+    rmSync(join(box.dir, "pop/y"));
+    box.run(["add", "-A"]);
+    box.commit("remove y");
+    seen.length = 0;
+    judgePin({ repo: box.dir, paths: ["pop"], scan: record, current: scan(box.dir), declared: declarationsIn(box.dir), env: {} });
+    assert.deepEqual(seen, [null], "after a deletion the scan is told to read the whole base");
+  });
 });

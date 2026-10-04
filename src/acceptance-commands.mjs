@@ -928,12 +928,13 @@ function loadTypescript() {
  * @param {string} fileName for the parser's diagnostics only
  * @param {Set<string>} imported the names the importing file's reachable code uses from this module
  * @param {boolean} isEntry
+ * @param {ClosureMemo} [memo] the parse is kept here, so a file reached from many entries is parsed once
  * @returns {{ scope: string, referenced: Set<string> | null }}
  */
-function reachableScope(codeOnly, fileName, imported, isEntry) {
+function reachableScope(codeOnly, fileName, imported, isEntry, memo = createClosureMemo()) {
   const ts = loadTypescript();
   if (ts === null) return { scope: codeOnly, referenced: null }; // no parser: scan everything, follow every name
-  const source = ts.createSourceFile(fileName, codeOnly, ts.ScriptTarget.Latest, true);
+  const source = parsedSource(memo, ts, fileName, codeOnly);
   if (isEntry) return { scope: codeOnly, referenced: referencedNames(ts, source, null) };
   const kept = new Set(imported);
   for (let size = -1; size !== kept.size;) {
@@ -955,17 +956,48 @@ function reachableScope(codeOnly, fileName, imported, isEntry) {
 function referencedNames(ts, source, kept) {
   /** @type {Set<string>} */
   const names = new Set();
-  /** @param {import("typescript").Node} node */
-  const visit = (node) => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
-    if (kept !== null && ts.isSourceFile(node.parent) && isEntryGuard(ts, node, source)) return;
-    if (kept !== null && ts.isSourceFile(node.parent) && ts.isFunctionDeclaration(node)
-      && !(node.name && kept.has(node.name.text))) return;
-    if (ts.isIdentifier(node)) names.add(node.text);
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(source, visit);
+  for (const { identifiers, isGuard, functionName, isFunction } of topLevelStatements(ts, source)) {
+    if (kept !== null && isGuard) continue;
+    if (kept !== null && isFunction && !(functionName !== null && kept.has(functionName))) continue;
+    for (const identifier of identifiers) names.add(identifier);
+  }
   return names;
+}
+
+/**
+ * (#3549) What `referencedNames` needs of each top-level statement, read off the tree ONCE per parse: `reachableScope` asks it again for every step of
+ * its fixpoint, for every set of names an importer reaches, and re-walking the whole tree each time was the largest cost left in the scan. Keyed on
+ * the parsed source itself, so a changed file (a new parse) can never read an old answer. Import and export declarations are not statements here:
+ * they bind or list a name and run nothing.
+ * @type {WeakMap<import("typescript").SourceFile, { identifiers: string[], isGuard: boolean, functionName: string | null, isFunction: boolean }[]>}
+ */
+const statementFacts = new WeakMap();
+
+/** @param {typeof import("typescript")} ts @param {import("typescript").SourceFile} source */
+function topLevelStatements(ts, source) {
+  let facts = statementFacts.get(source);
+  if (facts === undefined) {
+    facts = [];
+    ts.forEachChild(source, (statement) => {
+      if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) return;
+      /** @type {string[]} */
+      const identifiers = [];
+      /** @param {import("typescript").Node} node */
+      const collect = (node) => {
+        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
+        if (ts.isIdentifier(node)) identifiers.push(node.text);
+        ts.forEachChild(node, collect);
+      };
+      collect(statement);
+      const isFunction = ts.isFunctionDeclaration(statement);
+      facts.push({
+        identifiers, isGuard: isEntryGuard(ts, statement, source), isFunction,
+        functionName: isFunction && statement.name ? statement.name.text : null,
+      });
+    });
+    statementFacts.set(source, facts);
+  }
+  return facts;
 }
 
 /**
@@ -1013,11 +1045,15 @@ function blankUnkept(ts, source, codeOnly, kept) {
     ts.forEachChild(node, visit);
   };
   ts.forEachChild(source, visit);
-  const chars = [...codeOnly];
+  // Sliced, not spread into a character array (#3549): this runs once per file per set of names reached, and the spread of a whole module was the
+  // largest single cost left in the scan. A body is blanked to spaces with its newlines kept, as before.
+  let out = "";
+  let from = 0;
   for (const [start, end] of bodies) {
-    for (let i = start; i < end; i += 1) if (chars[i] !== "\n") chars[i] = " ";
+    out += codeOnly.slice(from, start) + codeOnly.slice(start, end).replace(/[^\n]+/g, (run) => " ".repeat(run.length));
+    from = end;
   }
-  return chars.join("");
+  return out + codeOnly.slice(from);
 }
 
 /**
@@ -1129,30 +1165,92 @@ function lineNumberOf(text, index) {
  *              wrongDeclaration?: boolean, malformedDeclaration?: boolean }} ClosureHit */
 
 /**
- * #1636: the names `file` binds from `next` that its reachable code actually uses -- or every bound name when there
- * was no parser to say (`referenced === null`), which over-charges.
- * @param {string} file @param {string} next @param {Set<string> | null} referenced
- * @returns {Set<string>}
+ * #1636: the names of `bound` that reachable code actually uses -- or every bound name when there was no parser to say (`referenced === null`),
+ * which over-charges.
+ * @param {string[]} bound @param {Set<string> | null} referenced @returns {Set<string>}
  */
-function reachedNames(file, next, referenced) {
-  return keepReferenced(importedNamesFor(file, next), referenced);
-}
-
-/** @param {string[]} bound @param {Set<string> | null} referenced @returns {Set<string>} */
 function keepReferenced(bound, referenced) {
   return new Set(referenced === null ? bound : bound.filter((name) => referenced.has(name)));
 }
 
 /**
+ * (#3549) WHAT ONE SCAN OF MANY ENTRIES SHARES. `deriveClosureRequirements` over a whole directory of tests walks the SAME modules once per entry, and
+ * each visit read the file, stripped its comments, parsed it and blanked its bodies again: measured at 182 CPU-s for one pass over 190 files, nearly
+ * all of it re-doing work on text it had already seen. A memo holds those results per FILE, for as long as the caller says the tree is not changing.
+ *
+ * IT IS PASSED, NEVER GLOBAL, and that is the whole safety argument: `acceptance-commands.test.ts` rewrites a fixture at the same path and asks
+ * again, so a module-level cache would answer for the old text. A caller that omits it gets a fresh memo per call, which is what it always had.
+ * `scopes` and `matches` are keyed by what decides them (the file, the names reached in it, whether it is the entry), not by the entry that asked.
+ * @typedef {{ sources: Map<string, { text: string, codeOnly: string }>, parsed: Map<string, import("typescript").SourceFile>,
+ *   scopes: Map<string, { scope: string, referenced: Set<string> | null, matches: Map<number, RegExpExecArray | null> }>,
+ *   edges: Map<string, { target: string, names: Set<string> }[]>, visited: Map<string, Set<string>> }} ClosureMemo
+ * `visited` is every file each entry's walk read: an entry's answer can only change if one of those did, which is what lets a caller reuse it.
+ * @returns {ClosureMemo}
+ */
+export function createClosureMemo() {
+  return { sources: new Map(), parsed: new Map(), scopes: new Map(), edges: new Map(), visited: new Map() };
+}
+
+/** @param {ClosureMemo} memo @param {string} file @returns {{ text: string, codeOnly: string }} */
+function sourceOf(memo, file) {
+  let held = memo.sources.get(file);
+  if (held === undefined) {
+    const text = readFileSync(file, "utf8");
+    held = { text, codeOnly: stripComments(text) };
+    memo.sources.set(file, held);
+  }
+  return held;
+}
+
+/** @param {ClosureMemo} memo @param {typeof import("typescript")} ts @param {string} file @param {string} codeOnly */
+function parsedSource(memo, ts, file, codeOnly) {
+  let source = memo.parsed.get(file);
+  if (source === undefined) {
+    source = ts.createSourceFile(file, codeOnly, ts.ScriptTarget.Latest, false); // no parent pointers: nothing here walks upward
+    memo.parsed.set(file, source);
+  }
+  return source;
+}
+
+/**
+ * `reachableScope` for one visit, kept by what decides it: the file, the names reached in it, and whether it is the entry. Two entries that reach the
+ * same module by the same names read one answer, and that sharing is the whole saving.
+ * @param {ClosureMemo} memo
+ * @param {{ file: string, codeOnly: string, names: Set<string>, isEntry: boolean }} visit
+ */
+function scopeFor(memo, { file, codeOnly, names, isEntry }) {
+  const key = `${isEntry ? "entry" : "module"}\0${file}\0${[...names].sort().join(",")}`;
+  let held = memo.scopes.get(key);
+  if (held === undefined) {
+    held = { ...reachableScope(codeOnly, file, names, isEntry, memo), matches: new Map() };
+    memo.scopes.set(key, held);
+  }
+  return held;
+}
+
+/** `pattern` over `text`, answered once per scope: the patterns carry no `g` flag, so a match is a pure function of the text. */
+function matchOf({ matches }, { index, pattern, text }) {
+  if (!matches.has(index)) matches.set(index, pattern.exec(text));
+  return matches.get(index);
+}
+
+/**
  * Every file `file` imports that the closure walk follows, with the names it reaches in each: the relative imports, and (#3103) the tool's own
  * `agent-org/src/...` ones, which a project reaches it through and `localImports` cannot see.
- * @param {string} file @param {Set<string> | null} referenced
+ * @param {string} file @param {Set<string> | null} referenced @param {ClosureMemo} [memo]
  * @returns {{ target: string, names: Set<string> }[]}
  */
-function closureEdges(file, referenced) {
-  const relative = localImports(file).map((target) => ({ target, names: reachedNames(file, target, referenced) }));
-  const viaTool = toolImports(file).map(({ target, names }) => ({ target, names: keepReferenced(names, referenced) }));
-  return [...relative, ...viaTool];
+function closureEdges(file, referenced, memo = createClosureMemo()) {
+  let bound = memo.edges.get(file);
+  if (bound === undefined) {
+    // What each import BINDS depends on the file alone; which of those names are reached depends on who asked, so only the first is kept.
+    bound = [
+      ...localImports(file).map((target) => ({ target, names: new Set(importedNamesFor(file, target)) })),
+      ...toolImports(file).map(({ target, names }) => ({ target, names: new Set(names) })),
+    ];
+    memo.edges.set(file, bound);
+  }
+  return bound.map(({ target, names }) => ({ target, names: keepReferenced([...names], referenced) }));
 }
 
 /**
@@ -1182,9 +1280,10 @@ function isFile(path) {
  * #827: `token`'s mirror, checked once against `entry` itself before the walk begins -- see `NO_TOKEN_DECLARATION`'s
  * own header for why the declaration cannot live beside the risky call the way `// writes:` does.
  * @param {string} entry absolute path to the entry file
+ * @param {ClosureMemo} [memo] (#3549) shared across entries by a caller scanning a tree that is not changing under it; see `createClosureMemo`
  * @returns {ClosureHit[]}
  */
-export function deriveClosureRequirements(entry) {
+export function deriveClosureRequirements(entry, memo = createClosureMemo()) {
   /** @type {Map<string, ClosureHit>} */
   const found = new Map();
   // A VERIFIED WRITE-ONLY `corpus` HIT MARKS THE WHOLE CLOSURE EXEMPT, not just this one file's own match.
@@ -1238,8 +1337,7 @@ export function deriveClosureRequirements(entry) {
     if ((prior && [...names].every((name) => prior.has(name))) || !isFile(file)) return;
     const union = new Set([...(prior ?? []), ...names]);
     seen.set(file, union);
-    const text = readFileSync(file, "utf8");
-    const codeOnly = stripComments(text);
+    const { text, codeOnly } = sourceOf(memo, file);
     // #967: THE ENTRY IS SCANNED WHOLE; AN IMPORTED MODULE ONLY AT ITS TOP LEVEL.
     //
     // The two are different questions and conflating them is the defect. The ENTRY is the command about to
@@ -1253,17 +1351,19 @@ export function deriveClosureRequirements(entry) {
     // declaration written to work around it -- two of them were added tonight. Widening this to `token`
     // would make those declarations no-ops and change two merged pull requests' behaviour, which is a
     // second row, not a quiet extra in this one.
-    const { scope: corpusScope, referenced } = reachableScope(codeOnly, file, union, file === entry);
+    const reach = scopeFor(memo, { file, codeOnly, names: union, isEntry: file === entry });
     const hereChain = [...chain, file];
-    for (const [pattern, requirement] of CLOSURE_REQUIREMENT_PATTERNS) {
+    CLOSURE_REQUIREMENT_PATTERNS.forEach(([pattern, requirement], index) => {
       if (found.has(requirement) || (requirement === "corpus" && exemptCorpus)
-        || (requirement === "token" && exemptToken)) continue;
-      const match = pattern.exec(requirement === "corpus" ? corpusScope : codeOnly);
+        || (requirement === "token" && exemptToken)) return;
+      const match = matchOf(reach, { index, pattern, text: requirement === "corpus" ? reach.scope : codeOnly });
       if (match) recordHit({ requirement, file, text, codeOnly, match, chain: hereChain });
-    }
-    for (const { target, names: edgeNames } of closureEdges(file, referenced)) walk(target, hereChain, seen, edgeNames);
+    });
+    for (const { target, names: edgeNames } of closureEdges(file, reach.referenced, memo)) walk(target, hereChain, seen, edgeNames);
   };
-  walk(entry, [], new Map(), new Set());
+  const seen = new Map();
+  walk(entry, [], seen, new Set());
+  memo.visited.set(entry, new Set(seen.keys()));
   return [...found.values()];
 }
 
