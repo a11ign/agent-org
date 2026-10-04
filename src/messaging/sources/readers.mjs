@@ -13,9 +13,10 @@
 //   readFleetRoster who `fleet-watch` last saw answer, and who it did not                 -> {{fleet.workers-up}}, {{fleet.workers-down}}
 //   readLastTick    when the gate last COMPLETED a tick, from the same record as above     -> {{gate.last-tick.age}}
 //   readTicks       THIS WATCHER'S OWN SAMPLES, newest first                             -> stall:all-idle
-//   readFixRow      the open row that holds the fix for an event, from its label         -> the `Doing` line of every incident and stall
+//   readFixRow      the open row that holds the fix for an event, and the org's newest word on it -> the `Being done` line of every incident and stall
+//   readEpisodeStart when the chairman was told of the open episode, from the ledger     -> the `Lasted` line of every cleared incident and stall
 //
-// A LEAF: node's own modules only (and `lib/tick-completion.mjs`, which is the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
+// A LEAF: node's own modules only (and `lib/tick-completion.mjs` and `../ledger.mjs`, which are the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
 // `readSeats`), and the files it keeps are under a directory the caller names, so a test gives it a temporary one.
 //
 // **THE GATE'S LAST COMPLETED TICK IS A RECORD THE TICK WRITES (#3040), NOT THE UNIT'S TIMESTAMP.** `InactiveEnterTimestamp` answers "did the unit run" and a tick
@@ -36,6 +37,7 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFil
 import { dirname, join } from "node:path";
 
 import { readCompletion } from "../../lib/tick-completion.mjs";
+import { readLedgerLines } from "../ledger.mjs";
 
 /**
  * Kept: a week at the timer's five minutes. The streak the stall source needs is ten minutes, so the rest is for the READING: row 13 counts how many
@@ -59,8 +61,9 @@ const POLL_SLACK_MS = 2 * MS_PER_MINUTE;
 export const FLEET_READING_MAX_AGE_MS = 130 * MS_PER_MINUTE;
 /** The events a fix row can be named for: the keys `incidents.mjs` and `stall.mjs` emit, and the only ones whose message carries a `Doing` line. */
 const FIX_ROW_KEY = /^(incident|stall):[a-z][a-z-]*$/;
-const SESSION_LABEL = /^session:(.+)$/;
 const SAMPLES_FILE = "samples.jsonl";
+/** The delivery ledger beside the samples (`defaultLedgerPath`'s own file name, in the directory `watch.mjs` passes as `stateDir`). */
+const LEDGER_FILE = "ledger.jsonl";
 const ANNOTATIONS_FILE = "ci-annotations.json";
 export const SYSTEMD_PROPERTIES = "ActiveState,StateChangeTimestamp,InactiveEnterTimestamp";
 
@@ -281,26 +284,73 @@ export async function readWaitingRows({ github, repo }) {
 }
 
 /**
- * The open row that holds the fix for one incident or stall: **the row carries a label NAMED FOR THE EVENT KEY** (`incident:trunk-red`, `stall:no-merge`), so
- * whoever opens the fix adds that one label and this reads it back. A label rather than a `Fixes-incident:` body line because the issues listing filters on a
- * label exactly and cheaply (the call `readWaitingRows` already makes), where a body line needs the search API: a separate, smaller pool, matching words
- * rather than a line. It is also what the org's other waiting conditions are (`answer:<session>`, `session:<name>`): a field, not a sentence. The holder
- * is the row's `session:<name>` label, and absent while nobody holds it.
+ * The org's own GitHub accounts, whose comments on a fix row say what is being done. Restated from `hand-fix-ledger.mjs`'s `ORG_LOGINS` because this file is a
+ * leaf and that one imports the tool; a login added there must be added here.
+ */
+export const ORG_LOGINS = Object.freeze(["a11ign-ai-workers", "a11ign-ai-leads", "a11ign-bot"]);
+const INCIDENT_LABEL = "incident";
+const COMMENTS_PER_PAGE = 100;
+
+/** @param {string} key @returns {RegExp} the `Incident: <key>` line a fix row's body carries, on a line of its own */
+const incidentLine = (key) => new RegExp(`^Incident:[ \\t]*${key}[ \\t]*$`, "m");
+
+/**
+ * The newest comment an org account left on one row. Comments list oldest first, so the newest are on the LAST page, which the listing's own `comments` count
+ * names; a page with no org comment sends the walk one page back. `null` when the row has none.
  *
- * Returns `null` ONLY when GitHub answered and no open issue carries the label; a failed call, or a key that is not an incident or stall key, THROWS,
- * because "could not ask" and "no row is open" are different readings and the source tells the chairman which. Several open rows: the oldest, which is the
- * one first opened for it. Pull requests are skipped (the issues listing returns both).
+ * @param {Repo & { number: number, count: number }} deps @returns {Promise<NonNullable<import("./stall.mjs").FixRow["comment"]> | null>}
+ */
+async function newestOrgComment({ github, repo, number, count }) {
+  for (let page = Math.ceil(count / COMMENTS_PER_PAGE); page >= 1; page -= 1) {
+    const comments = asArray(await github.api(`repos/${repo}/issues/${number}/comments?per_page=${COMMENTS_PER_PAGE}&page=${page}`), "comments");
+    const ours = comments.filter((comment) => ORG_LOGINS.includes(String(comment?.user?.login)) && typeof comment?.body === "string");
+    if (ours.length > 0) {
+      const newest = ours.reduce((latest, comment) => (Date.parse(comment.created_at) > Date.parse(latest.created_at) ? comment : latest));
+      return { author: newest.user.login, at: Date.parse(newest.created_at), text: newest.body };
+    }
+  }
+  return null;
+}
+
+/**
+ * The open row that holds the fix for one incident or stall, and what the org last said on it: **a row labelled `incident` whose body carries an
+ * `Incident: <key>` line** (`Incident: incident:trunk-red`), the shape the chairman's row 3419 names. The listing filters on the label and returns bodies, so
+ * the key is matched here and no search call is made. What is being done is the newest comment from an ORG account (`ORG_LOGINS`) on that row: a comment from
+ * anyone else is not the org's word.
+ *
+ * Returns `null` ONLY when GitHub answered and no open row names the key; a failed call, or a key that is not an incident or stall key, THROWS, because "could
+ * not ask" and "nobody has picked it up" are different readings and the message tells the chairman which. Several open rows: the oldest, the one first
+ * opened for it. Pull requests are skipped (the issues listing returns both). A row with no org comment is `{ number }`.
  *
  * @param {Repo & { key: string }} deps @returns {Promise<import("./stall.mjs").FixRow | null>}
  */
 export async function readFixRow({ github, repo, key }) {
   if (!FIX_ROW_KEY.test(key)) throw new TypeError(`readFixRow: ${JSON.stringify(key)} is not an incident or stall key`);
-  const issues = asArray(await github.api(`repos/${repo}/issues?labels=${encodeURIComponent(key)}&state=open&per_page=100`), "issues");
-  const rows = issues.filter((issue) => issue?.pull_request === undefined && Number.isInteger(issue?.number));
+  const issues = asArray(await github.api(`repos/${repo}/issues?labels=${INCIDENT_LABEL}&state=open&per_page=100`), "issues");
+  const named = incidentLine(key);
+  const rows = issues.filter((issue) => issue?.pull_request === undefined && Number.isInteger(issue?.number) && named.test(String(issue.body ?? "")));
   if (rows.length === 0) return null;
   const oldest = rows.reduce((first, issue) => (issue.number < first.number ? issue : first));
-  const holder = asArray(oldest.labels, "labels").map((label) => SESSION_LABEL.exec(String(label?.name ?? label))?.[1]).find((name) => name !== undefined);
-  return holder === undefined ? { number: oldest.number } : { number: oldest.number, holder };
+  const count = Number.isInteger(oldest.comments) ? oldest.comments : 0;
+  const comment = count === 0 ? null : await newestOrgComment({ github, repo, number: oldest.number, count });
+  return comment === null ? { number: oldest.number } : { number: oldest.number, comment };
+}
+
+/**
+ * When the chairman was TOLD of the episode of `key` that is open now: the ledger's first delivered line since the last clear. The ledger is the only memory
+ * of an episode (the sources keep none), and what it holds is the send, not the start, so this is a floor on how long the thing stood. `null` when the ledger
+ * holds no open episode for the key; an unreadable ledger throws.
+ *
+ * @param {{ ledgerPath: string, key: string }} deps @returns {number | null}
+ */
+export function readEpisodeStart({ ledgerPath, key }) {
+  let told = /** @type {number | null} */ (null);
+  for (const line of readLedgerLines(ledgerPath)) {
+    if (line.direction === "in" || line.key !== key) continue;
+    if (line.status === "withdrawn" || (line.status === "sent" && line.kind === "cleared")) told = null;
+    else if (["sent", "digested"].includes(line.status) && ["first", "update", "reminder"].includes(line.kind)) told ??= Date.parse(line.ts);
+  }
+  return told;
 }
 
 /**
@@ -356,13 +406,13 @@ export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }) {
 }
 
 /**
- * The seven readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
+ * The eight readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
  *
  * @param {{ github: Github, repo: string, stateDir: string, fleetStatePath: string, unit: string | undefined, now: () => number,
  *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void,
- *   completionPath: string }} deps `completionPath` is where `work-tick.mjs` records a completed tick
+ *   completionPath: string, ledgerPath?: string }} deps `completionPath` is where `work-tick.mjs` records a completed tick
  */
-export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath }) {
+export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath, ledgerPath = join(stateDir, LEDGER_FILE) }) {
   return {
     readLastMerge: () => readLastMerge({ github, repo }),
     readTrunkRuns: () => readTrunkRuns({ github, repo }),
@@ -371,6 +421,7 @@ export function createReaders({ github, repo, stateDir, fleetStatePath, unit, no
     readFleetState: () => readFleetState({ path: fleetStatePath }),
     readTicks: () => readTicks({ stateDir, log }),
     readFixRow: (/** @type {string} */ key) => readFixRow({ github, repo, key }),
+    readEpisodeStart: (/** @type {string} */ key) => readEpisodeStart({ ledgerPath, key }),
     takeSample: () => takeSample({ github, repo, stateDir, now, readSeats }),
   };
 }

@@ -44,7 +44,7 @@ import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_F
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 // A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
-import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, orgHealthOrders } from "./org-health.mjs";
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders } from "./org-health.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
@@ -1841,11 +1841,65 @@ function reviewedPullRequestState(session, instance, deps) {
 }
 
 /**
+ * The standing pane whose name has the SHAPE of an instance (`reviewer-1` reads as pull request 1's) and is not one. `reviewer-2` is
+ * excluded by {@link reviewerInstance} itself (`RETIRED_REVIEWERS`); this one is not retired, so it is named HERE, where the sweep that
+ * would otherwise end it is, and not in the attribution module whose "retired" is a claim about history.
+ */
+const STANDING_REVIEWER_PANES = Object.freeze(["reviewer-1"]);
+
+/**
+ * THE REVIEWER WORKSPACES ON THE LISTING THAT THE REGISTRY DOES NOT HOLD (#3458): the label of an instance shape, once each, minus the
+ * standing panes. An ending deletes its registry key, so a workspace that comes back AFTER one -- herdr restarted in the same second and
+ * restored the closed workspaces (agent-org #35, #36, 2026-10-02) -- is invisible to a walk of the keys. It is not a pane nobody started:
+ * its label says which pull request it was for, and that pull request answers whether it may stay.
+ * @param {{label: string}[]} agents @param {Record<string, unknown>} registry @returns {string[]}
+ */
+export function restoredReviewers(agents, registry) {
+  const labels = new Set(agents.map((a) => a.label));
+  return [...labels].filter((label) => !Object.hasOwn(registry, label) && !STANDING_REVIEWER_PANES.includes(label) && reviewerInstance(label) !== null);
+}
+
+/**
+ * MAY THIS WORKSPACE BE CLOSED NOW. A registered instance is left until it is between turns (`WAKEABLE`). A RESTORED one is left only while it
+ * reads as WORKING: the pane herdr restores sits at a prompt and reports neither idle nor done, so asking it to be "between turns" would leave
+ * exactly the pane this exists for. Its pull request is closed, so there is no review for it to be in the middle of.
+ * @param {{status: string}} agent @param {boolean} restored
+ */
+const mayBeEnded = (agent, restored) => (restored ? agent.status !== "working" : WAKEABLE.includes(agent.status));
+
+/**
+ * END ONE FINISHED INSTANCE: its workspace, its checkout, then the ledger line -- in that order, and `false` with a warning at the first step that
+ * would not. The registry's key is the CALLER's to drop on `true`, so a restored workspace (no key) and a registered one end the same way.
+ * @param {{session: string, instance: {key: string, number: number} | null, state: string, restored: boolean}} finished
+ * @param {{label: string, status: string}[]} agents
+ * @param {{now: number, run: (args: string[]) => string, removeCheckout: (session: string, pr: number, key: string) => string | null,
+ *   record: (line: object) => void, warn: (line: string) => void}} deps
+ * @returns {boolean}
+ */
+function endFinishedReviewer({ session, instance, state, restored }, agents, deps) {
+  const pr = instance === null ? null : instance.number;
+  const agent = agents.find((a) => a.label === session);
+  if (agent !== undefined && !mayBeEnded(agent, restored)) return false;
+  if (agent !== undefined && !closeReviewer(session, deps)) return false;
+  const left = deps.removeCheckout(session, Number(pr), instance?.key ?? "");
+  if (left !== null) {
+    deps.warn(`reviewer teardown: "${session}" is finished but its checkout was not removed (${left}) -- retried next tick.`);
+    return false;
+  }
+  deps.record({ session, pr, state, at: new Date(deps.now).toISOString(),
+    workspace: agent === undefined ? "already gone" : "closed", checkout: "removed" });
+  if (restored) deps.warn(`reviewer teardown: "${session}" was not registered -- herdr brought it back after an ending -- and PR #${pr} is ${state}.`);
+  return true;
+}
+
+/**
  * END EVERY REVIEWER INSTANCE WHOSE PULL REQUEST HAS MERGED OR CLOSED, and write one ledger line for each ending.
  *
- * ONLY INSTANCES THIS PATH STARTED (the registry's keys), NEVER A WORKSPACE THAT MERELY LOOKS LIKE ONE: the two
- * standing panes stay running until `ceo` closes them (Done-when 6), and `reviewer-2` is a name the retired pane
- * carries. An instance survives head-changing pushes -- it is ended by the PULL REQUEST's state, not by a verdict.
+ * THE REGISTRY'S KEYS, AND THE WORKSPACES THAT CARRY AN INSTANCE'S NAME WITHOUT ONE ({@link restoredReviewers}, #3458): herdr restores closed
+ * workspaces after a restart, and the ending had already deleted the key. STILL NEVER A WORKSPACE THAT MERELY LOOKS LIKE ONE: the two
+ * standing panes stay running until `ceo` closes them (Done-when 6) -- `reviewer-2` is a name the retired pane carries, and `reviewer-1`
+ * is excluded by name -- and a restored workspace is asked of ITS pull request's own repository, as a registered one is. An
+ * instance survives head-changing pushes -- it is ended by the PULL REQUEST's state, not by a verdict.
  *
  * AN ENDING REMOVES THE INSTANCE'S CHECKOUT TOO (Done-when 7): a tree that outlives its pull request is #2163's
  * defect. The workspace closes first (nothing may be reading the tree), and a tree that will not go leaves the
@@ -1855,7 +1909,8 @@ function reviewedPullRequestState(session, instance, deps) {
  * will not close is left, said, and retried -- no line is written for an ending that did not happen.
  *
  * A registered instance whose pull request is still OPEN is not ended, but it is reconciled against the listing
- * ({@link reconcileOpenReviewer}): one that a COMPLETE listing keeps not showing is cleared, so a replacement can start.
+ * ({@link reconcileOpenReviewer}): one that a COMPLETE listing keeps not showing is cleared, so a replacement can start. A restored one
+ * under an OPEN pull request is left as it is: it has no key to reconcile.
  *
  * @param {{label: string, status: string}[]} agents
  * @param {{registry: Record<string, ReviewerInstance>, now: number, run: (args: string[]) => string,
@@ -1869,25 +1924,16 @@ export function endFinishedReviewers(agents, deps) {
   const ended = [];
   /** @type {string[]} */
   const cleared = [];
-  for (const session of Object.keys(registry)) {
+  const restored = restoredReviewers(agents, registry);
+  for (const session of [...Object.keys(registry), ...restored]) {
     const instance = reviewerInstance(session);
-    const pr = instance === null ? null : instance.number;
     const state = reviewedPullRequestState(session, instance, deps);
     if (state === null) continue;
     if (state === "open") {
-      if (reconcileOpenReviewer({ session, pr: Number(pr), agents, registry }, deps)) cleared.push(session);
+      if (!restored.includes(session) && reconcileOpenReviewer({ session, pr: Number(instance?.number), agents, registry }, deps)) cleared.push(session);
       continue;
     }
-    const agent = agents.find((a) => a.label === session);
-    if (agent !== undefined && !WAKEABLE.includes(agent.status)) continue;
-    if (agent !== undefined && !closeReviewer(session, deps)) continue;
-    const left = deps.removeCheckout(session, Number(pr), instance?.key ?? "");
-    if (left !== null) {
-      deps.warn(`reviewer teardown: "${session}" is finished but its checkout was not removed (${left}) -- retried next tick.`);
-      continue;
-    }
-    deps.record({ session, pr, state, at: new Date(deps.now).toISOString(),
-      workspace: agent === undefined ? "already gone" : "closed", checkout: "removed" });
+    if (!endFinishedReviewer({ session, instance, state, restored: restored.includes(session) }, agents, deps)) continue;
     delete registry[session];
     ended.push(session);
   }
@@ -1996,7 +2042,7 @@ export function tearDownReviewers(agents, ledgerPath, say = (line) => process.st
   try {
     const paths = reviewerPathsFrom(ledgerPath);
     const before = readReviewerRegistry(paths.registry);
-    if (Object.keys(before).length === 0) return;
+    if (Object.keys(before).length === 0 && restoredReviewers(agents, before).length === 0) return;
     /** @param {string} path */
     const appendTo = (path) => (/** @type {object} */ line) => writeFileSync(path, `${JSON.stringify(line)}\n`, { flag: "a" });
     const { ended, cleared, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(),
@@ -3351,9 +3397,12 @@ export const ENGINEER_BRIEF = roleBriefPath("engineer.md").relative;
  */
 function engineerBriefLine(label, engineers, families) {
   if (!engineers.includes(label) && familyNumber(label, families) === null) return "";
-  return `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
-    + "the habits every engineer is held to. Nothing else tells you them.\n\n";
+  return `${ENGINEER_BRIEF_SENTENCE}\n\n`;
 }
+
+/** The one sentence that sends an engineer to {@link ENGINEER_BRIEF}; a spawned order carries it WITHOUT the roster test (#3444). */
+const ENGINEER_BRIEF_SENTENCE = `Before you start, read \`${ENGINEER_BRIEF}\`: the resource ban, the acceptance standard and `
+  + "the habits every engineer is held to. Nothing else tells you them.";
 
 /**
  * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
@@ -3378,7 +3427,8 @@ function engineerBriefLine(label, engineers, families) {
  *
  * A SPAWNED ENGINEER'S ORDER IS DIFFERENT IN KIND (#2405): its row is already claimed and it is already in the
  * row's worktree, so `spawned` REPLACES the order's text with {@link spawnedPrompt} -- there is no claim command
- * to run and no other directory to name. A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
+ * to run and no other directory to name -- AND IT CARRIES NO AUTONOMY PARAGRAPHS (#3444): identity, that text, and the one sentence sending it to
+ * `engineer.md`, which says them once ({@link autonomyParagraphs}). A STANDING session keeps the order's own text, with `LAUNCH_PLACEHOLDER`
  * filled by {@link launchAdvice}. `engineers` and `families` are parameters so a test can hand `addressed` a roster.
  *
  * A FOLLOW-UP GETS ONE LINE, NOT THIS WHOLE WRAPPER (#2538). `followUp` is `deliver`'s and `clearThenPrompt`'s say-so that the
@@ -3403,19 +3453,29 @@ export function addressed(order, label,
     : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch))
       .replaceAll(CONTEXT_PLACEHOLDER, contextSentence(context));
   if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}${staleReadingsClause(label, context)}\n\n${prompt}`;
-  return `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
-    + `asks which session you are (\`--session=${label}\`).\n\n`
-    + `${prompt}\n\n`
-    + engineerBriefLine(label, engineers, families)
-    + "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
+  const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
+    + `asks which session you are (\`--session=${label}\`).\n\n`;
+  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}`;
+  return `${identity}${prompt}\n\n${engineerBriefLine(label, engineers, families)}${autonomyParagraphs(order, label)}`;
+}
+
+/**
+ * THE THREE PARAGRAPHS A STANDING SEAT AND A REVIEWER READ AFTER THE ORDER, EVERY FIRST ORDER (#3444): autonomy, the end-of-turn rule and
+ * what to do when the action is not yours. A spawned engineer is NOT given them: they live in `engineer.md` ({@link ENGINEER_BRIEF}) once
+ * and the one sentence above sends it there, so the order does not repeat what it tells the engineer to read.
+ *
+ * THE STORY BEHIND THE END-OF-TURN RULE, moved here from the order (#3444) where it was read on every delivery by an agent that cannot
+ * use it: on 2026-09-21 `product-manager` ended two consecutive turns asking permission to file a COMPLETE, EVIDENCED ROW DRAFT (two
+ * incidents, commit hashes, timestamps) -- filing being the first line of its own brief -- and the row did not get filed.
+ * @param {{session: string, cause?: string}} order @param {string} label
+ */
+function autonomyParagraphs(order, label) {
+  return "Work autonomously to the end: nobody is at this terminal to answer you. If something genuinely "
     + `blocks you, say so on the row and message \`${escalationFor(label)}\` -- never stop and wait on a `
-    + `human.${claimSentence(order, spawned)}\n\n`
+    + `human. ${isReviewerOrder(order) ? REVIEWER_CLAIMS_NO_ROW : REFUSED_CLAIM_IS_AN_ANSWER}\n\n`
     + "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING. Nobody reads this terminal, so "
     + "\"want me to file it?\" and not filing it are the same outcome -- except the first also looks "
-    + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID. Measured "
-    + "2026-09-21: `product-manager` ended two consecutive turns this way, the second holding a "
-    + "COMPLETE, EVIDENCED ROW DRAFT (two incidents, commit hashes, timestamps) and asking permission "
-    + "to file it -- when filing is the first line of its own brief. The row did not get filed.\n"
+    + "like progress. IF THE ACTION IS IN YOUR LANE, TAKE IT AND REPORT WHAT YOU DID.\n"
     + "IF IT IS GENUINELY NOT YOURS, that is not a question either: say what you would do, name who "
     + `owns it, and route it -- \`${ANSWER_PREFIX}<session>\` on the row for a ruling, or the row itself for work. `
     + "Then end your turn. The gate will bring you back when something changes; waiting is never your "
@@ -3433,7 +3493,7 @@ export function addressed(order, label,
  * exact phrase; a header that dropped them would leave a transcript that opens on a follow-up unattributed spend.
  * @param {string} label
  */
-const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session: your first order and its brief still stand.`;
+const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session.`;
 
 /** Where {@link addressed} writes what THIS delivery did to the window into an order whose text was composed before the delivery (#3440). */
 export const CONTEXT_PLACEHOLDER = "@@CONTEXT@@";
@@ -3469,16 +3529,6 @@ const REFUSED_CLAIM_IS_AN_ANSWER = "If you cannot claim the row (already taken, 
  * refused because the PR's own author still held the claim -- the normal state -- and ended its turn without a verdict.
  */
 const REVIEWER_CLAIMS_NO_ROW = "You claim no row, and the author's claim on it is not a blocker: review the pull request.";
-
-/**
- * The claim sentence an order carries: none for a spawned one (already claimed, #2405), the reviewer's own for a reviewer (#2590),
- * the refusal-is-an-answer rule for any other.
- * @param {{session: string, cause?: string}} order @param {unknown} spawned
- */
-function claimSentence(order, spawned) {
-  if (spawned) return "";
-  return ` ${isReviewerOrder(order) ? REVIEWER_CLAIMS_NO_ROW : REFUSED_CLAIM_IS_AN_ANSWER}`;
-}
 
 /**
  * Does this delivery begin a new run -- i.e. was nobody told for longer than `RUN_IDLE_RESET_MS`?
@@ -6032,12 +6082,13 @@ export function recoverableWork({ now, restartAt, actedRestart, agents, paneText
 /**
  * The prompt an interrupted session gets: PLAIN (queued with `resume: true`, so it is never behind a `/clear`), naming what happened and what to
  * do -- and that nothing was cleared, because that is the property that makes it a resume.
+ * WHY "killed mid-turn" IS THE FIRST GUESS (moved out of the order, #3444): the OOM killer / a `herdr.service` restart on 2026-09-25 took every session
+ * at once, and `idle` is what herdr reports for each of them.
  * @returns {string}
  */
 export function resumePrompt() {
   return `YOU WERE INTERRUPTED. Your pane's last line reads \`${INTERRUPTED_TEXT}\` and has read it for at least ${INTERRUPTED_SETTLE_MS / 60_000} minutes: `
-    + "the process under you was most likely killed mid-turn (a restart of `herdr.service`, or the kernel's OOM killer -- 2026-09-25 lost every "
-    + "session at once), and `idle` is what herdr reports for that, so nothing has told you until now. Claude Code prints the same line when a "
+    + "the process under you was most likely killed mid-turn (a restart of `herdr.service`, or the kernel's OOM killer), and `idle` is what herdr reports for that, so nothing has told you until now. Claude Code prints the same line when a "
     + "PERSON presses Esc: if you were stopped on purpose, say so on the row and stop.\n"
     + "OTHERWISE RESUME WHERE YOU LEFT OFF. This is a plain prompt and NOTHING WAS CLEARED: your context is intact. THE ROW IS THE STATE: re-read the "
     + "row you hold and its pull request, run `git status` and `git log origin/main..HEAD` in your worktree, then continue what you were "
@@ -6404,6 +6455,81 @@ export function relaneFacts(ledgerPath, log = (line) => process.stderr.write(lin
 }
 
 /**
+ * THE SCREENS THAT STOP A PANE UNTIL A PERSON ANSWERS (#3458), each as the words that must ALL be on the visible screen at once. One phrase alone is
+ * not enough -- `git status` prints "working directory clean" in a healthy pane -- so a prompt is its heading AND one of its choices. THESE ARE
+ * CODEX'S AND CLAUDE'S WORDS AS THE ROW QUOTES THEM, NOT A CAPTURE: both panes were closed before anyone read them, and a picker cannot be raised on
+ * demand here. A reword upstream makes this a silent miss, so each prompt is ONE ROW and the miss is a one-line fix with `PROMPT_SCREENS`' test beside it.
+ */
+export const PROMPT_SCREENS = Object.freeze([
+  { name: "Codex's working-directory picker", all: [/working directory/i, /(?:use|resume)[^\n]*(?:session|current) directory/i] },
+  { name: "a trust prompt", all: [/do you trust (?:the )?(?:files|contents)/i, /(?:yes,? (?:proceed|continue|trust))|(?:\b1\.\s*yes\b)/i] },
+]);
+
+/** The name of the prompt `screen` shows, or `null` for a screen that shows none (an idle pane with no prompt is not raised). @param {string} screen @returns {string | null} */
+export function promptOnScreen(screen) {
+  return PROMPT_SCREENS.find((p) => p.all.every((pattern) => pattern.test(screen)))?.name ?? null;
+}
+
+/**
+ * EVERY PANE THAT IS NOT WORKING AND SHOWS A PROMPT, read through herdr: `workspace list` for the labels, `pane list` for the panes, `pane read --source
+ * visible` for the screen of each pane that is not `working` (a working pane is a session at its task, and the read is the expensive call). `null` when the
+ * two listings could not be read -- never `[]`, which says "none stand at a prompt". A SCREEN THAT COULD NOT BE READ IS SKIPPED, not guessed: that pane is
+ * unproven, and one flaky read must not blank the signal for the other panes.
+ * @param {(args: string[]) => string} run @returns {{session: string, pane: string, prompt: string}[] | null}
+ */
+export function readPromptPanes(run) {
+  let labels;
+  let panes;
+  try {
+    labels = new Map(JSON.parse(run(["--session", "org", "workspace", "list"])).result.workspaces.map((/** @type {any} */ w) => [w.workspace_id, String(w.label ?? "")]));
+    panes = JSON.parse(run(["--session", "org", "pane", "list"])).result.panes;
+  } catch {
+    return null;
+  }
+  /** @type {{session: string, pane: string, prompt: string}[]} */
+  const found = [];
+  for (const pane of panes) {
+    if (pane.agent_status === "working" || !labels.has(pane.workspace_id)) continue;
+    try {
+      const prompt = promptOnScreen(run(["--session", "org", "pane", "read", pane.pane_id, "--source", "visible"]));
+      if (prompt !== null) found.push({ session: String(labels.get(pane.workspace_id)), pane: pane.pane_id, prompt });
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
+/**
+ * #3458: THE ONE `org-health` ORDER FOR A PANE STOPPED AT A PROMPT, or none. herdr stamps no time on a screen, so the FIRST tick that saw a prompt is kept in
+ * `pane-prompts` beside the ledger, `{ "<session>/<pane>": firstSeenMs }`, and rewritten from what THIS tick saw: a pane that answered or closed drops out, and a
+ * new prompt in the same pane starts its own clock. An unreadable file is no history (every prompt is first seen now), the safe side: it delays an order and never
+ * raises one early. A refused read is a stated unknown and never a clear, as {@link orderStallOrdersNow}'s.
+ * @param {{ ledgerPath: string, now?: number, run?: (args: string[]) => string, log?: (line: string) => void }} tick
+ */
+export function panePromptOrdersNow({ ledgerPath, now = Date.now(), run = defaultRun, log = (line) => process.stderr.write(line) }) {
+  try {
+    const found = readPromptPanes(run);
+    const path = `${dirname(ledgerPath)}/pane-prompts`;
+    /** @type {Record<string, number>} */
+    let prior = {};
+    try {
+      prior = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      prior = {};
+    }
+    const panes = found === null ? null : found.map((f) => ({ ...f, since: prior[`${f.session}/${f.pane}`] ?? now }));
+    if (panes !== null) writeFileSync(path, `${JSON.stringify(Object.fromEntries(panes.map((p) => [`${p.session}/${p.pane}`, p.since])))}\n`);
+    const reading = panePromptReading({ now, panes });
+    if (reading.status === "unknown") log(`org-health: ${SIGNALS.PANE_AT_PROMPT} UNKNOWN -- ${reading.detail}; it is not read as clear.\n`);
+    return orgHealthOrders([reading]);
+  } catch (err) {
+    log(`org-health: ${SIGNALS.PANE_AT_PROMPT} UNKNOWN -- ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 160)}; it is not read as clear.\n`);
+    return [];
+  }
+}
+
+/**
  * The tick's report and exit, after everything was delivered: the breaker's alarm for a cause offered `MAX_DELIVERIES` times and still true,
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
@@ -6486,7 +6612,7 @@ function main() {
   const backlog = handoffBacklog(waiting);
   for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
   // #3448: AN ORDER THAT HAS WAITED ON A BUSY SESSION PAST THE BOUND IS TOLD TO `ceo`, and it is told before this tick delivers: it rides `orders` like any gate order.
-  const withStalls = [...orders, ...orderStallOrdersNow({ ledgerPath, emitted: new Set(orders.map((o) => o.causeKey)), backlog })];
+  const withStalls = [...orders, ...orderStallOrdersNow({ ledgerPath, emitted: new Set(orders.map((o) => o.causeKey)), backlog }), ...panePromptOrdersNow({ ledgerPath })];
 
   // AUTHORED ORDERS FIRST. One has already been refused once and has been waiting since; a derived cause
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.

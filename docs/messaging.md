@@ -163,17 +163,21 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
 | `readGateUnit` | `systemctl --user show <prefix>work-tick.service`: `ActiveState` and `InactiveEnterTimestamp` (when the unit last RAN), and the tick's own completion record (when a tick last COMPLETED) | `incident:gate-crash` |
 | `readFleetState` | `runs/fleet-watch-state.json` in the project checkout, and its modification time; **only the worker's name is kept, never its address** | `incident:fleet-down` |
 | `readTicks` | this watcher's own samples, newest first | `stall:all-idle` |
-| `readFixRow(key)` | the open row that holds the fix for an incident or stall: `issues?labels=<key>&state=open`, the oldest, its `session:<name>` label as the holder. **`null` only when GitHub answered and none is open; a failed call throws** | the `Doing` line of every SENT incident and stall |
+| `readFixRow(key)` | the open row that holds the fix for an incident or stall, and the org's newest word on it: `issues?labels=incident&state=open` filtered to the row whose body carries an `Incident: <key>` line (the oldest), then the newest comment by an org account from `issues/<n>/comments` (the page the listing's `comments` count names). **`null` only when GitHub answered and no row names the key; a failed call throws** | the `Being done` line of every SENT incident and stall |
+| `readEpisodeStart(key)` | when the chairman was TOLD of the episode open now: the ledger's first delivered line since the last clear. No `gh` call. A floor on how long it stood, never the start itself | the `Lasted` line of every CLEARED incident and stall |
 
 **Decisions this row made that the design did not spell out:**
 
-- **A fix row says which incident it fixes by a LABEL NAMED FOR THE EVENT KEY (`incident:trunk-red`, `stall:no-merge`; a11ign/a11ign#3439).** Whoever opens the
-  fix adds that one label (the REST add-labels call creates it on first use), and `readFixRow` reads it back. Not a `Fixes-incident: <key>` body line: the issues
-  listing filters on a label exactly and on the pool `readWaitingRows` already spends, where a body line needs the search API, which matches words not lines and
-  has its own smaller pool. No incident row carried either marker when this was chosen (the existing ones, such as the `trunk-red` fixes, say it only in their
-  titles), so the choice follows the org's other conditions, which are fields: `answer:<session>`, `session:<name>`. The holder is the row's `session:` label, absent while nobody holds it,
-  and several open rows for one key name the oldest. **Opening the row is not this program's job**; until one carries the label a sent event reads "no row is open
-  for this yet", which is true of every incident filed before the label existed.
+- **A fix row says which incident it fixes by a body line, `Incident: <key>`, on a row labelled `incident` (a11ign/a11ign#3419, replacing the per-key label of #3439).**
+  The chairman's row names that shape, and one label for every kind is one listing call instead of one per key. The listing returns bodies, so the key is matched here
+  and the search API (a separate, smaller pool that matches words, not lines) is not touched. Several open rows for one key name the oldest. **Opening the row is not this
+  program's job**; until one carries the line a sent event reads `Being done: nobody has picked this up yet`, which is the useful fact.
+- **What is being done is the newest comment by an ORG account on that row, quoted with its age** (`readers.mjs`'s `ORG_LOGINS`, restated from `hand-fix-ledger.mjs` because
+  the sources are a leaf). A comment from anyone else is not the org's word. A row the org has not commented on says so, which is not `nobody has picked this up yet`; a read that
+  failed says `I could not read it`, and the event is still sent. The path `issues/<n>/comments` was added to `watch.mjs`'s `READ_API_PATH`: without it every live read
+  would be refused and every message would say `I could not read it`.
+- **A cleared message says how long it lasted, as `at least` the time since the chairman was told.** The sources keep no state and a resolved reading no longer holds when the
+  thing began, so the only memory of an episode is the ledger, and what it holds is the send. The floor is honest; a start it cannot know is `not known`, never a short one.
 
 - **The gate's last COMPLETED tick is a record the tick writes, not systemd's timestamp (#3040).** `InactiveEnterTimestamp` answers "did the unit run", and a tick
   that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.mjs` writes
@@ -202,7 +206,7 @@ GraphQL and are not counted here):
 | `pulls?state=closed&base=main` (`readLastMerge`) | 1 |
 | `actions/workflows/trunk.yml/runs` (`readTrunkRuns`) | 1 |
 | `actions/runs?status=completed` (`readCiRuns`) | 1 |
-| `issues?labels=<key>&state=open` (`readFixRow`) | one per event that is about to be SENT, none otherwise |
+| `issues?labels=incident&state=open`, then `issues/<n>/comments` (`readFixRow`) | one or two per event that is about to be SENT (the second only when the fix row has comments), none otherwise |
 | `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
 | `releases?per_page=100` (the `releases` source, a11ign/a11ign#3413) | one per declared code repository (four for this project) |
 

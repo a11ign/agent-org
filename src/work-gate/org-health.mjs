@@ -234,6 +234,10 @@ export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun }) 
  * THE SETTER'S ORDER, one per stale wait (capped like every row order): the item, the condition that is now true, and the exact fields to
  * remove. IT IS THE `org-health` CAUSE, addressed to the setter and not to `ceo`: a cause of its own would be declared in
  * `cause-declaration.mjs`, outside #2996's Region, and the profile (judgment, high) is the right one for an order to look and remove.
+ *
+ * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
+ * chairman, 2026-10-02: a freeze ended at 06:50Z and the waits it caused stood four hours.
+ *
  * @param {import("../wait-condition.mjs").StaleWait[]} stale
  */
 export function staleWaitOrders(stale) {
@@ -242,7 +246,7 @@ export function staleWaitOrders(stale) {
     return { session: setter, cause: "org-health", subject: `stale-wait-${subjectRef(item.repoKey, item.number)}`, discriminator,
       prompt: `A WAIT YOU SET HAS OUTLIVED ITS REASON. ${subjectMention(item)} declares \`Waiting-for: ${wait.text}\` and that condition is now TRUE, `
         + `so nothing is being waited for -- and the wait still stands. REMOVE: ${remove.join("; ")}. A wait whose reason is gone is a stall, not `
-        + "proof of health (the chairman, 2026-10-02: a freeze ended at 06:50Z and its waits stood four hours). If the wait should stand for "
+        + "proof of health. If the wait should stand for "
         + "a different reason, say so by writing the new `Waiting-for:` condition on it. Unanswered, `ceo` is told after 30 minutes.",
       causeKey: `${setter}/org-health/stale-wait-order@${discriminator}` };
   });
