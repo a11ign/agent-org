@@ -183,6 +183,115 @@ export function closedRowNumbers(prBody) {
 }
 
 /**
+ * #3544: THE ROWS A PR CLOSES AND THE REPOSITORY EACH LIVES IN. `Closes owner/repo#7` is how a layer repository's PR names
+ * a row in the project's tracker (#2617), so a blocker read against the PR's own repo would ask the wrong tracker about it.
+ * A bare `#N` lives where the PR does. Same parser as `closedRowNumbers` -- no second one.
+ * @param {string | null | undefined} prBody
+ * @param {string} prRepo
+ * @returns {{ repo: string, number: number }[]}
+ */
+function closedRowReferences(prBody, prRepo) {
+  const declaration = extractClosesDeclaration(prBody);
+  if (declaration.kind !== "closes") return [];
+  const named = declaration.references ?? declaration.numbers.map((number) => ({ repo: null, number }));
+  return named.map((reference) => ({ repo: reference.repo ?? prRepo, number: reference.number }));
+}
+
+/**
+ * PURE. The OPEN blockers of one row, or `null` when its edge list cannot be trusted.
+ *
+ * `blockedBy.nodes` keeps CLOSED blockers (`waitingOn`'s own note), so only `OPEN` counts: a closed one is a wait that has
+ * cleared. A node with no `state` is read as OPEN, the direction `waitingOn` takes. `null` is "the API did not say" -- no
+ * `nodes` array, or `totalCount` larger than the page of nodes that came back and none of those open, so an open blocker may
+ * be on the page that was not read. It is NEVER `[]`: silence about blockers is not "none".
+ *
+ * @param {{ blockedBy?: { nodes?: unknown, totalCount?: unknown } } | null} row
+ * @returns {number[] | null}
+ */
+export function openBlockersOf(row) {
+  const nodes = row?.blockedBy?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const open = nodes.filter((node) => String(node?.state ?? "OPEN").toUpperCase() === "OPEN").map((node) => Number(node?.number));
+  const total = row?.blockedBy?.totalCount;
+  if (open.length === 0 && typeof total === "number" && total > nodes.length) return null;
+  return open;
+}
+
+/**
+ * #3544: THE ONE PLACE THE ARMING PATHS ASK "DOES A ROW THIS PR CLOSES STILL HAVE AN OPEN BLOCKER?" -- `arm-pr` and the
+ * `auto-arm-sweep` both call it (`ejectionVerdict`'s shape, for its reason: neither door can queue what the other refuses).
+ *
+ * Measured 2026-10-04: #3507 (closing #3422) merged at 18:43:41Z although #3422 carried a native `blocked-by` edge on #3509,
+ * whose own body warned that merging #3507 first would break the chairman's reply path. Nothing stopped it: the gate reads
+ * `blockedBy` to shelve a CLAIM, and no arming path read it to hold a MERGE. Declared order is now enforced.
+ *
+ * EVERY closing row is read, so the message names each blocked row and each of its open blockers rather than the first.
+ * `Closes: none` has no closing row and is `clear`. `cannot-ask` IS A REFUSAL TO ARM, as for an unreadable label list: a row
+ * that cannot be read is not a row with no blocker. A definite block outranks an unreadable row, since it is the more useful
+ * thing to say and the PR is refused either way.
+ *
+ * @param {{ repo: string, prBody: string | null | undefined, run: (ghArgs: string[]) => string }} pr `run` is the caller's own `gh`
+ * @returns {{ kind: "clear" } | { kind: "open-blocker", why: string, blockers: number[] } | { kind: "cannot-ask", why: string }}
+ */
+export function blockerVerdict({ repo, prBody, run }) {
+  if (typeof prBody !== "string") return { kind: "cannot-ask", why: "the PR body was not read, so the rows it closes are unknown" };
+  const readings = closedRowReferences(prBody, repo).map((row) => ({ row, ...readOpenBlockers({ row, run }) }));
+  const blocked = readings.filter((reading) => reading.open !== null && reading.open.length > 0);
+  if (blocked.length > 0) {
+    const blockers = [...new Set(blocked.flatMap((reading) => reading.open ?? []))];
+    const sentences = blocked.map(({ row, open }) => `${rowName(row, repo)} is blocked by open ${(open ?? []).map((n) => `#${n}`).join(", ")}`);
+    return { kind: "open-blocker", blockers, why: `${sentences.join("; ")}. Declared order is enforced: it arms on the tick after `
+      + `${blockers.length === 1 ? "that blocker closes" : "those blockers close"}` };
+  }
+  const unread = readings.filter((reading) => reading.open === null);
+  if (unread.length === 0) return { kind: "clear" };
+  return { kind: "cannot-ask", why: unread.map(({ row, failure }) => `could not read ${rowName(row, repo)}'s blocked-by edges: ${failure}`).join("; ") };
+}
+
+/** `#7`, or `owner/repo#7` when the row is not in the PR's own repository. @param {{ repo: string, number: number }} row @param {string} prRepo */
+const rowName = (row, prRepo) => (row.repo === prRepo ? `closing row #${row.number}` : `closing row ${row.repo}#${row.number}`);
+
+/**
+ * One `gh issue view` per row. `open` is `null` with the `failure` when the read threw, was not JSON, or carried no usable edge list.
+ * @param {{ row: { repo: string, number: number }, run: (ghArgs: string[]) => string }} ask
+ * @returns {{ open: number[] | null, failure: string | null }}
+ */
+function readOpenBlockers({ row, run }) {
+  try {
+    const open = openBlockersOf(JSON.parse(run(["issue", "view", String(row.number), "--repo", row.repo, "--json", "blockedBy"])));
+    return open === null ? { open, failure: "the API returned no complete blocked-by list" } : { open, failure: null };
+  } catch (cause) {
+    return { open: null, failure: /** @type {Error} */ (cause).message };
+  }
+}
+
+/** The line that makes a once-only comment findable again; the blocker numbers are in it, so a CHANGED set is said afresh. */
+const blockedMarker = (/** @type {number[]} */ blockers) => `<!-- arm-refused: open-blocker ${[...blockers].sort((a, b) => a - b).join(",")} -->`;
+
+/**
+ * #3544: THE REFUSAL, WHERE A HUMAN LOOKS -- one comment on the PR, not one per tick. The sweep re-asks every tick, so the comment
+ * is found by its marker before it is posted; the wait is then read off the PR rather than guessed from a green, unarmed one.
+ * A failed read or post is SAID and never turns the refusal into anything else: the PR was not armed either way.
+ * @param {{ number: string | number, repo: string, verdict: { why: string, blockers: number[] },
+ *   run: (ghArgs: string[]) => string, error: (line: string) => void }} refusal
+ * @returns {{ posted: boolean }}
+ */
+export function announceBlocked({ number, repo, verdict, run, error }) {
+  const marker = blockedMarker(verdict.blockers);
+  try {
+    const existing = JSON.parse(run(["pr", "view", String(number), "--repo", repo, "--json", "comments"])).comments;
+    if (!Array.isArray(existing)) throw new Error("the API returned no comment list");
+    if (existing.some((comment) => String(comment?.body ?? "").includes(marker))) return { posted: false };
+    run(["pr", "comment", String(number), "--repo", repo, "--body",
+      `${marker}\n**Not armed: ${verdict.why}.** This comment is posted once; nothing needs doing here.`]);
+    return { posted: true };
+  } catch (cause) {
+    error(`arm-pr: could not tell #${number} why it is not armed: ${/** @type {Error} */ (cause).message}`);
+    return { posted: false };
+  }
+}
+
+/**
  * Pure: the `session:*` labels ONE row carries -- zero, one, or (rare, two rows in one PR) more.
  * @param {string[]} rowLabels
  * @returns {string[]}
@@ -924,6 +1033,14 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
   if (ejection.kind !== "clear") {
     const cannotAsk = ejection.kind === "cannot-ask";
     (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${ejection.why}`);
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  // #3544: AFTER the ejection exit and before any write. A block is a DONE, as a hold is: the PR waits on a row, it is not failing.
+  const blocker = blockerVerdict({ repo, prBody, run: (args) => gh(args, run) });
+  if (blocker.kind !== "clear") {
+    const cannotAsk = blocker.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${blocker.why}`);
+    if (blocker.kind === "open-blocker") announceBlocked({ number, repo, verdict: blocker, run: (args) => gh(args, run), error });
     return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });

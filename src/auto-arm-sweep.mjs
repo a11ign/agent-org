@@ -88,6 +88,8 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.mjs";
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
 // file is now one of its readers rather than its owner.
 import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.mjs";
+// #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
+import { announceBlocked, blockerVerdict } from "./arm-pr.mjs";
 
 // RE-EXPORTED, NOT REDEFINED. `work-gate.mjs` imports `armedFromApi` from this file and its own header
 // reasons about the shape of that import graph -- `pr-armed-state.mjs` is leaf-shaped, so the property
@@ -173,13 +175,16 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
 /**
  * #3487: THE ASKS THE SWEEP MAKES OF THE API AFTER `sweepDecision` SAID YES, as one verdict so a test drives the path
  * `main` takes. Authorship first (#3254), then the queue history: an ejected PR with an unmoved head is not armed,
- * because `arm-pr` refuses it and the sweep would arm on the same event what `arm-pr` just refused.
- * @param {{ number: string, repo: string, author: string, run: (ghArgs: string[]) => string }} pr
- * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string }}
+ * because `arm-pr` refuses it and the sweep would arm on the same event what `arm-pr` just refused. Last, #3544: a row the PR
+ * closes with an open `blocked-by` edge. `prBody` is the PR's body as read; a body that was not read is `cannot-ask`.
+ * @param {{ number: string, repo: string, author: string, prBody: string | null, run: (ghArgs: string[]) => string }} pr
+ * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string } | { kind: "open-blocker", why: string, blockers: number[] }}
  */
-export function refusalBeforeArming({ number, repo, author, run }) {
+export function refusalBeforeArming({ number, repo, author, prBody, run }) {
   const authorship = authorshipVerdict({ number, repo, author, run });
-  return authorship.kind === "clear" ? ejectionVerdict({ number, repo, run }) : authorship;
+  if (authorship.kind !== "clear") return authorship;
+  const ejection = ejectionVerdict({ number, repo, run });
+  return ejection.kind === "clear" ? blockerVerdict({ repo, prBody, run }) : ejection;
 }
 
 /**
@@ -432,10 +437,11 @@ function main() {
 
   const failed = [];
   for (const number of candidates) {
-    let labels, head, checkRunCount, author;
+    let labels, head, checkRunCount, author, prBody;
     try {
       labels = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels", "-q", "[.labels[].name]"]));
       author = gh(["pr", "view", number, "--repo", repo, "--json", "author", "-q", ".author.login"]);
+      prBody = gh(["pr", "view", number, "--repo", repo, "--json", "body", "-q", ".body"]);
       head = gh(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
       checkRunCount = Number(gh(["api", `repos/${repo}/commits/${head}/check-runs`, "--jq", ".total_count"]));
     } catch (cause) {
@@ -447,9 +453,10 @@ function main() {
 
     const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
     // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
-    const refusal = arm ? refusalBeforeArming({ number, repo, author, run: gh }) : /** @type {{ kind: "clear" }} */ ({ kind: "clear" });
+    const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: gh }) : /** @type {{ kind: "clear" }} */ ({ kind: "clear" });
     if (refusal.kind !== "clear") {
       console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
+      if (refusal.kind === "open-blocker") announceBlocked({ number, repo, verdict: refusal, run: gh, error: console.error });
       if (refusal.kind === "cannot-ask") failed.push(number);
       continue;
     }
