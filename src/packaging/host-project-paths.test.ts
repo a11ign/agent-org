@@ -115,7 +115,9 @@ const TODAYS_TEXT = {
   "a11ign-board-report.service": "3e7791d9f24ae9aa3519898259f1ea68c1f8b4cd721f97b62916c9f81835b0c1",
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",
 };
-const TODAYS_GH_WRAPPER = "9eba78303036eef62879b34b2a4df0727fdb5655f3ff4f4305de2329dd19ba5c";
+// #3466 MOVED THIS ONE, deliberately: the wrapper records every call in `gh-calls.tsv` and no longer `exec`s gh-real. The installed copy reads
+// DIVERGED until `host:install` runs, which is a host action and not this row's.
+const TODAYS_GH_WRAPPER = "8bc5cfc2dfbae7d3decaf67d0e10d98a84a90d3fc0a211111c65f1837ce3f32a";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

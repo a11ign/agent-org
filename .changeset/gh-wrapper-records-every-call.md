@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The `gh` routing wrapper (`host/gh`) now records every call in a size-bounded ledger, `gh-calls.tsv` in the account's own config directory, so the caller that drains a GraphQL pool can be named by measurement rather than guessed. Each line carries the time, the account, the pool (`graphql` and `core` where `gh` says so, `graphql?` where it is inferred from the command family), the `rateLimit.cost` a `gh api graphql` response reported, the exit status, `argv[1] argv[2]`, the herdr workspace and the calling command line. The call itself is unchanged: same arguments, stdin, output bytes and exit status, and a ledger that cannot be written never fails it. The wrapper no longer `exec`s `gh`, so it forwards `TERM`, `INT` and `HUP` to it. `A11Y_GH_LEDGER=off` skips the ledger. `node src/gh-ledger.mjs <gh-calls.tsv> [--account <login>] [--resource graphql] [--top <n>]` ranks callers by points. Re-run `host:install` to pick the wrapper up; `host:check` reports `DIVERGED` until then.
