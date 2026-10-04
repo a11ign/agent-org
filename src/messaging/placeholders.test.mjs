@@ -158,7 +158,7 @@ describe("(3) a placeholder outside the vocabulary is refused; (1)'s success is 
 });
 
 describe("(4) through the REAL readers: the worker's NAME and never its address, and a gate and a release read from where they live", () => {
-  const ADDRESS = "10.0.0.5:8765";
+  const ADDRESS = "host-z.example:8765";
 
   /** The two files `fleet-watch` writes, naming workers by `<name>  <address>` as the non-ready one really does, written 10 minutes ago. */
   function fleetFiles() {
@@ -186,10 +186,10 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
     const reply = createReply({ send: (message) => provider.send(message), ledger: createLedger({ path: ledgerPath, now: () => NOW }), readers, now: () => NOW });
     assert.equal((await reply.send(NAMED_FACTS)).outcome, "sent");
     assert.equal(provider.sent[0].text, `Up: worker-a, worker-c (fleet-watch poll 10m ago). Down: worker-b, worker-d (fleet-watch poll 10m ago). Gate: 4m. Newest: v1.4.0.\n\n${STAMP}`);
-    assert.doesNotMatch(provider.sent[0].text, /10\.0\.0\.5|8765/);
+    assert.doesNotMatch(provider.sent[0].text, /host-z|8765/);
     const ledger = readFileSync(ledgerPath, "utf8");
     assert.match(ledger, /worker-a/, "CONTROL: the ledger holds what was said, so its having no address is a finding");
-    assert.doesNotMatch(ledger, /10\.0\.0\.5|8765/);
+    assert.doesNotMatch(ledger, /host-z|8765/);
   });
 
   test("a watcher that stopped, and a gate that has completed nothing, REFUSE: the real readers throw, they do not say 'none'", async () => {
