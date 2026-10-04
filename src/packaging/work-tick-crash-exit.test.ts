@@ -147,6 +147,9 @@ test("#3038 (positive control): a quiet tick still exits 0 and wakes nobody", ()
   const { ran, wakeRan } = tickWith({ gate: "process.exit(0);", wake: "process.exit(0);" });
   assert.equal(ran.status, EXIT.QUIET, ran.stderr);
   assert.equal(wakeRan, false, ran.stderr);
+  // #3443: the FIRST line of a tick names the agent-org version that made its decisions, so a journal read says which. This child has no `git` on its PATH,
+  // so the line it can print is the "unreadable" one -- which is the proof that a version that cannot be read is SAID and does not stop the tick.
+  assert.match(ran.stdout.split("\n")[0], /^agent-org (v\d+\.\d+\.\d+|\(at no release tag: \w+\)|\(version unreadable: .+\))$/, ran.stdout);
 });
 
 test("#3038: a wake that crashes ends the tick with the crash code and says it was wake", () => {

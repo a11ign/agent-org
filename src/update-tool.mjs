@@ -15,6 +15,9 @@
 // A RELEASE TAG IS NOT AN ANCESTOR OF `main`: the release workflow commits the version bump on top of the merge and pushes that commit as the tag alone, so it is
 // reachable from no branch, and a plain `git fetch origin` does not bring it down. The fetch here NAMES TAGS (`--tags`), and the checkout is of the tag.
 //
+// A ROLLBACK TARGET MUST ITSELF FOLLOW TAGS: the checkout is a tag's tree, so the NEXT run is that tag's own `update-tool.mjs`. Pin a release cut after #3443; a
+// pin to an older one is held for exactly one run and then moved to `origin/main` by that release's own code (measured in a scratch clone, 2026-10-04).
+//
 // NO TAG, NO MOVE, AND NO FALLBACK TO `origin/main`. With no `vX.Y.Z` tag, or a pinned one that is absent, it refuses by name and leaves the checkout where it is.
 // The unit's `-` prefix means the tick then runs the last good version, and the refusal is in the journal. A fallback would put a second version back on the host.
 //
@@ -37,16 +40,13 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { LATEST, chooseReleaseTag, compareReleaseTags, isReleaseTag } from "./lib/release-tag.mjs";
+import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.mjs";
+import { gitIn } from "./lib/tool-version.mjs";
 import { isPrimaryWorktree } from "./prune-worktrees.mjs";
 
 /** The directory this file is in, real-pathed: the tool is reached through a symlink on some hosts, and git resolves the real one. */
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
-
-/** @param {string} cwd @returns {(args: string[]) => string} */
-const gitIn = (cwd) => (args) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
 /**
  * The tracked files a checkout has modified, staged or not: what makes it dirty. A list, so a refusal can name them.
@@ -98,31 +98,6 @@ export function updateTool(root = gitIn(HERE)(["rev-parse", "--show-toplevel"]).
 }
 
 /**
- * THE VERSION THE TOOL IS RUNNING, READ FROM THE CHECKOUT AND NEVER REMEMBERED: the newest release tag pointing at HEAD, or `null` when HEAD is no release.
- * This is the producer #928's readings and the liaison's "what's going on?" (a11ign/a11ign#3420) call; `git describe --tags --exact-match` names ONE tag when
- * several point at HEAD, and this names the newest release among them.
- * @param {(args: string[]) => string} [run] git, in the directory whose version is asked (this tool's own when left to default)
- * @returns {string | null} `vX.Y.Z`
- */
-export function liveToolVersion(run = gitIn(HERE)) {
-  return run(["tag", "--points-at", "HEAD"]).split("\n").filter(isReleaseTag).toSorted(compareReleaseTags).at(-1) ?? null;
-}
-
-/**
- * The line a tick prints FIRST, so a journal read says which version made each decision: `agent-org vX.Y.Z`. A checkout at no release says so and
- * names its commit, and one whose version cannot be read says that; it never throws, because a tick must not fail on the line that reports on it.
- * @param {(args: string[]) => string} [run] @returns {string}
- */
-export function toolVersionLine(run = gitIn(HERE)) {
-  try {
-    const tag = liveToolVersion(run);
-    return tag === null ? `agent-org (at no release tag: ${run(["rev-parse", "--short", "HEAD"]).trim()})` : `agent-org ${tag}`;
-  } catch (err) {
-    return `agent-org (version unreadable: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]})`;
-  }
-}
-
-/**
  * The long-running units' rendered names, read BEFORE the checkout moves: after it, `import()` would load the NEW tree's modules into this old process, and a
  * module that changed its exports would fail the restart this exists for. A host that cannot name them (no `units` declaration) is TOLD so and restarts none; the
  * move itself stands.
@@ -140,19 +115,25 @@ async function longRunningUnits() {
   }
 }
 
+/** `systemctl`'s exit status for a unit it has no file for. */
+const NOT_INSTALLED = 5;
+
 /**
  * `try-restart` EACH LONG-RUNNING UNIT, because a process holding the old modules is a second version. It does nothing to a unit that is not running (a host
  * with no `messaging` key has no listener). A restart that fails is SAID on stderr and does not undo the move: the checkout is the version, and the listener
  * keeps running the old one until somebody reads this line.
  * @param {string[]} units
+ * @param {{ exec?: (file: string, args: string[], options: object) => unknown, out?: Pick<Console, "log" | "error"> }} [deps] `systemctl` and where the lines go
  */
-function restartLongRunning(units) {
+export function restartLongRunning(units, { exec = execFileSync, out = console } = {}) {
   for (const unit of units) {
     try {
-      execFileSync("systemctl", ["--user", "try-restart", unit], { encoding: "utf8", stdio: ["ignore", "inherit", "inherit"] });
-      console.log(`restarted ${unit} (try-restart) so it runs the version above`);
+      exec("systemctl", ["--user", "try-restart", unit], { encoding: "utf8", stdio: ["ignore", "inherit", "pipe"] });
+      out.log(`restarted ${unit} (try-restart) so it runs the version above`);
     } catch (err) {
-      console.error(`COULD NOT RESTART ${unit}: ${String(/** @type {any} */ (err)?.message ?? err)}. It still runs the PREVIOUS agent-org version.`);
+      // systemctl's exit 5 is "unit not found": a host with no `messaging` key has no listener, and there is nothing running the old version to restart.
+      if (/** @type {any} */ (err)?.status === NOT_INSTALLED) { out.log(`${unit} is not installed; nothing to restart`); continue; }
+      out.error(`COULD NOT RESTART ${unit}: ${String(/** @type {any} */ (err)?.message ?? err)}. It still runs the PREVIOUS agent-org version.`);
     }
   }
 }

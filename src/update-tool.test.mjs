@@ -12,7 +12,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { liveToolVersion, toolVersionLine, updateTool } from "./update-tool.mjs";
+import { restartLongRunning, updateTool } from "./update-tool.mjs";
+import { liveToolVersion, toolVersionLine } from "./lib/tool-version.mjs";
 import { sandboxGitEnv, withGitSandbox } from "./lib/git-sandbox.ts";
 
 /** A primary checkout as `isPrimaryWorktree` reads one (a real `.git` directory), holding nothing else: git itself is the fake. */
@@ -101,6 +102,23 @@ test("#3443: the live version is READ off the checkout -- the newest release poi
   assert.equal(toolVersionLine(at("v0.8.3\n")), "agent-org v0.8.3");
   assert.equal(toolVersionLine(at("")), "agent-org (at no release tag: 9f8e7d6)");
   assert.match(toolVersionLine(() => { throw new Error("not a git repository"); }), /^agent-org \(version unreadable: not a git repository\)$/);
+});
+
+test("#3443: a move restarts each long-running unit with `try-restart`; an uninstalled one is a line, and a failure is SAID and does not stop the rest", () => {
+  const lines = { log: [], error: [] };
+  const out = { log: (line) => lines.log.push(line), error: (line) => lines.error.push(line) };
+  const asked = [];
+  const exec = (file, args) => {
+    asked.push([file, ...args]);
+    if (args.at(-1) === "gone.service") throw Object.assign(new Error("Unit gone.service not found."), { status: 5 });
+    if (args.at(-1) === "broken.service") throw Object.assign(new Error("Failed to connect to bus"), { status: 1 });
+  };
+  restartLongRunning(["listen.service", "gone.service", "broken.service", "after.service"], { exec, out });
+  assert.deepEqual(asked.map((call) => call.slice(0, 3)), Array(4).fill(["systemctl", "--user", "try-restart"]), "every unit is asked, the failure not ending the walk");
+  assert.deepEqual(asked.map((call) => call.at(-1)), ["listen.service", "gone.service", "broken.service", "after.service"]);
+  assert.deepEqual(lines.log.map((line) => line.split(" ")[0] + " " + line.split(" ")[1]), ["restarted listen.service", "gone.service is", "restarted after.service"]);
+  assert.equal(lines.error.length, 1, "exactly the unit that failed is reported as a failure");
+  assert.match(lines.error[0], /COULD NOT RESTART broken\.service.*PREVIOUS agent-org version/);
 });
 
 /** git in a directory with every `GIT_*` variable stripped. */
