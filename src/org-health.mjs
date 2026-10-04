@@ -24,15 +24,16 @@
 //                                            capture ran 4.9 days and were found by a human reading a terminal.
 //   copies-drifted               any         a declared copy (every file in `packages/agent-org/src/lib`, each headed `COPIED FROM <original>`) whose
 //                                            body no longer matches its original beyond the lines its own header names
-// THE SEVENTH, #2970 (the chairman, 2026-10-02: "an open PR is not progressing towards merge for N minutes, whatever the reason"):
-//   pr-not-progressing           180 min     an open PR the classifier (`stallReasonOf`, #2968) puts in NEITHER `progressing` NOR
-//                                            `held-on-purpose`, with no push, review or comment for that long. N IS THE p94.9 OF PR
-//                                            OPEN-TO-MERGE: 651 PRs merged 2026-09-18..10-01 (`gh pr list --state merged`, createdAt to
-//                                            mergedAt) had p50/p75/p90/p95 = 29 / 59 / 121 / 181 minutes and 618 of them merged within
-//                                            180, so a PR quiet for longer than 95% of PRs take to merge ENTIRELY is not on its way.
-//                                            A reading at a moment: the command is under `## Measured` on #3001.
-// THE SUBJECT IS TIME WITHOUT A STATE CHANGE, NOT A CHECK STATE: #2950 sat a conflicted DRAFT with no checks for 7.5 h and the red
-// signal could not see it, a green PR nobody reviews has no red either, and the detector for it was the PR that was stuck.
+// THE SEVENTH, #2970, REPLACED BY THE OUTCOME CLOCK (#3486, the chairman, 2026-10-04: "how do we make sure nothing happens again?"):
+//   overdue                      3 x median  an open PR, or a claimed row, that has not MERGED or CLOSED within three times the median it takes.
+//                                            THE CLOCK STARTS WHEN THE ITEM OPENS (a PR's `createdAt`, a row's newest claim record) AND ONLY
+//                                            A MERGE OR A CLOSE STOPS IT: a comment, a label, a hold, a draft and a push do not restart it, and
+//                                            no state excuses it. The state the gate can read (`stallReasonOf`: red, held-on-purpose,
+//                                            awaiting-review ...) rides on the alarm as a LABEL, and the gate understanding it is never a
+//                                            condition for raising it. The bounds and their measurement are beside `OVERDUE_PR_MINUTES`.
+// WHY THE 180-MINUTE "NOT PROGRESSING" SIGNAL WAS REPLACED, not tuned: it fired at about 13x the median open-to-merge, exempted held and
+// drafted PRs by construction (so a hold whose reason had gone, agent-org #149, and an approved draft with no stamp, #3406, were
+// invisible), and counted any comment as activity, so a PR the bots kept commenting on never aged (#2950 sat 7.5 h; #3460 was re-queued).
 // WHAT `host-units-stale` AND `primary-not-at-main` ALREADY COVER, so this does not repeat them: the first asks about the systemd UNIT
 // files against the installed ones, the second about the primary checkout the work-tick unit runs from (its code IS that working
 // tree) against `origin/main`. NEITHER READS A DECLARED COPY. The extracted `a11ign/agent-org` repo is a third thing and is NOT read
@@ -123,14 +124,20 @@ const COPY_HEADER_START = /^\/\/ COPIED FROM `([^`]+)` at /;
 const COPY_HEADER_END = "// ==== end of copy header ====";
 /** What a header says it changed: `NOTHING`, `ONE LINE`, or `N NAMED LINES`. */
 const COPY_HEADER_CHANGES = /CHANGED FROM THE ORIGINAL(?:,\s*(?:(\d+) NAMED LINES?|ONE LINE)|:\s*NOTHING)/;
-/** An open PR quiet this long, and neither progressing nor held on purpose, is not on its way to merge. See the table above. */
-export const PR_NOT_PROGRESSING_MINUTES = 180;
 /**
- * The two `stallReasonOf` answers that are NOT a stall (`STALL_REASON.PROGRESSING`, `STALL_REASON.HELD_ON_PURPOSE`), written as the
- * strings because this is a leaf and `pr-orders.mjs` is not one. `org-health.test.ts` pins them to the classifier's own values and
- * to its whole reason set, so a reason added there is either covered or named here, never silently dropped.
+ * THE OUTCOME CLOCK'S BOUNDS: THREE TIMES THE MEDIAN, each from a distribution MEASURED 2026-10-04 (a reading at a moment: re-derive before quoting).
+ *   PR   100 min  3 x 33.7. The median of 289 pull requests of the PROJECT'S OWN repository merged 2026-09-27..10-04 (`gh pr list --state merged --limit 1000
+ *                 --json createdAt,mergedAt`, createdAt to mergedAt, the last 7 days): p50/p75/p90/p95 = 33.7 / 65.8 / 150.8 / 198.3 min, and
+ *                 46 of the 289 (15.9 %) took longer than 100. THIS REPO'S median and not the agent-org repo's 14.8 (153 PRs, the row's "about 14 min",
+ *                 which would give about 45): the gate reads THIS repo's open PRs, so this is the distribution its PRs are judged against.
+ *   ROW  135 min  3 x 44.5. The median of 282 rows closed 2026-10-01..10-04, from the NEWEST claim record to `closedAt` (`gh issue list --state closed
+ *                 --limit 300 --json closedAt,comments`): p50/p75/p90 = 44.5 / 79 / 125 min. That window is three days and not seven because the 300
+ *                 newest closed rows reach back no further, so it is the thinner of the two readings.
+ * A bound is ONE constant per kind and not per state: that is the point of the clock. An item that "should" take longer is still overdue, and
+ * its reason label says why, which is the information the reader needs; an exemption would be a state the clock cannot see.
  */
-export const REASONS_THAT_ARE_NOT_A_STALL = Object.freeze(["progressing", "held-on-purpose"]);
+export const OVERDUE_PR_MINUTES = 100;
+export const OVERDUE_ROW_MINUTES = 135;
 /** The session every signal is offered to. */
 const OFFERED_TO = "ceo";
 /** How many merged PRs the last-merge read looks at: the newest-updated, which holds every merge of the last day or two. */
@@ -143,7 +150,7 @@ export const SIGNALS = Object.freeze({
   PRIMARY: "primary-not-at-main",
   FLEET_IDLE: "fleet-idle-while-work-waits",
   COPIES: "copies-drifted",
-  PR_NOT_PROGRESSING: "pr-not-progressing",
+  OVERDUE: "overdue",
   STALE_WAIT: "stale-wait",
   WAIT_WITHOUT_REASON: "wait-without-reason",
   ORDER_STALLED: "order-deferred-too-long",
@@ -338,44 +345,47 @@ export function fleetIdleReading({ now, fleet, waiting }) {
 }
 
 /**
- * @typedef {{ number: number | string, reason: string, owner: string | null, lastActivityAt: number | null }} QuietPr
- * One open PR the classifier gave a reason. `reason` is `stallReasonOf`'s answer, `owner` is `null` when NOBODY could be named, and
- * `lastActivityAt` is the newest of its push, review and comment times (epoch ms), `null` when a read it needed was refused.
+ * @typedef {{ kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null }} OverdueCandidate
+ * One open item the outcome clock runs on. `since` is when it OPENED (epoch ms): a PR's `createdAt`, a row's newest claim record. It is `null` when
+ * nothing dates it, which is an unknown and never an age. `reason` is the gate's own label for the state (`stallReasonOf` for a PR) and is DISPLAYED, never
+ * a condition; `owner` is `null` when NOBODY could be named.
  */
 
-/** @param {number} minutes @returns {string} how long a PR has been quiet: minutes under two hours, hours to one decimal after */
-const quietFor = (minutes) => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
+/** @param {number} minutes @returns {string} how long an item has been open: minutes under two hours, hours to one decimal after */
+const openFor = (minutes) => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
+
+/** @param {OverdueCandidate} item @returns {number} the minutes it may stay open before it is overdue */
+const boundOf = (item) => (item.kind === "pr" ? OVERDUE_PR_MINUTES : OVERDUE_ROW_MINUTES);
 
 /**
- * SIGNAL 7: AN OPEN PULL REQUEST IS NOT PROGRESSING TOWARDS MERGE, WHATEVER THE REASON (#2970). The reason is the CLASSIFIER'S
- * (`stallReasonOf`), asked of every open PR by the caller, and ANY reason but the two that are not a stall counts: that is what
- * keeps this and the owner's order from disagreeing about which PRs are stuck, and it is what a new reason falls into by default.
- * THE AGE IS TIME SINCE THE NEWEST PUSH, REVIEW OR COMMENT, so a PR somebody is working on is never offered and a held one never is
- * however old (a freeze is a decision, #2956). `stalledPrs` is `null` for a refused PR read; a PR whose activity could not be dated
- * makes the answer unknown unless another PR trips, and is never read as old.
+ * SIGNAL 7: THE OUTCOME CLOCK (#3486, replacing #2970's 180-minute "not progressing"). Every open PR and every claimed row has an age since it opened;
+ * ONLY A MERGE OR A CLOSE STOPS IT, so a comment, a label, a hold, a draft and a push do not, and NO STATE EXEMPTS an item. `reason` rides on the
+ * line as a label for whoever reads it. THE GATE UNDERSTANDING THE STATE IS NEVER A CONDITION FOR RAISING IT: that was the defect of the reasons
+ * list this deleted, which is why a hold whose reason had gone (agent-org #149) and an approved draft with no stamp (#3406) were invisible.
+ * `items` is `null` for a refused PR read. `unread` names the other reads the clock needed and was refused (the rows): an item with no
+ * `since`, or an unread list, makes the answer unknown unless another item trips, and is never read as young.
  *
- * KEYED ON THE SET OF `number:reason`, not an hour: a push or a comment takes a PR out of the set, a new stall adds to it, and
- * an unchanged set holds for the two hours the cause holds for.
- * @param {{ now: number, stalledPrs: QuietPr[] | null }} input
+ * KEYED ON THE SET OF `kind#number:reason`, not an hour: a merge or a close takes an item out of the set, a new overdue item adds to it, and a reason
+ * changing re-asks, because who owes the next move has changed.
+ * @param {{ now: number, items: OverdueCandidate[] | null, unread?: string[] }} input
  * @returns {Reading}
  */
-export function prNotProgressingReading({ now, stalledPrs }) {
-  if (stalledPrs === null) return unknown(SIGNALS.PR_NOT_PROGRESSING, "the open pull requests could not be read");
-  const stalled = stalledPrs.filter((pr) => !REASONS_THAT_ARE_NOT_A_STALL.includes(pr.reason));
-  const quiet = stalled.filter((pr) => pr.lastActivityAt !== null && now - pr.lastActivityAt >= PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE);
-  if (quiet.length === 0) {
-    const undated = stalled.filter((pr) => pr.lastActivityAt === null);
-    return undated.length === 0 ? clear(SIGNALS.PR_NOT_PROGRESSING)
-      : unknown(SIGNALS.PR_NOT_PROGRESSING, `${undated.length} stalled PR(s) carried no activity time, so how long they have been quiet is not known`);
+export function overdueReading({ now, items, unread = [] }) {
+  if (items === null) return unknown(SIGNALS.OVERDUE, "the open pull requests could not be read");
+  const crossedAt = (/** @type {OverdueCandidate} */ item) => /** @type {number} */ (item.since) + boundOf(item) * MS_PER_MINUTE;
+  const overdue = items.filter((item) => item.since !== null && now >= crossedAt(item)).sort((a, b) => crossedAt(a) - crossedAt(b));
+  if (overdue.length === 0) {
+    const undated = items.filter((item) => item.since === null).length;
+    const doubts = [...(undated > 0 ? [`${undated} open item(s) carried no opening time, so how long they have been open is not known`] : []),
+      ...unread.map((what) => `${what} could not be read, so how long those items have been open is not known`)];
+    return doubts.length === 0 ? clear(SIGNALS.OVERDUE) : unknown(SIGNALS.OVERDUE, doubts.join("; "));
   }
-  const oldestFirst = [...quiet].sort((a, b) => /** @type {number} */ (a.lastActivityAt) - /** @type {number} */ (b.lastActivityAt));
-  const first = /** @type {number} */ (oldestFirst[0].lastActivityAt) + PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE;
-  const named = oldestFirst.slice(0, MAX_NAMED).map((pr) => `#${pr.number} (${pr.reason}, quiet `
-    + `${quietFor(Math.round((now - /** @type {number} */ (pr.lastActivityAt)) / MS_PER_MINUTE))}, ${pr.owner === null ? "NO OWNER" : `owner ${pr.owner}`})`);
-  const more = oldestFirst.length > MAX_NAMED ? `, and ${oldestFirst.length - MAX_NAMED} more` : "";
-  const key = quiet.map((pr) => `${pr.number}:${pr.reason}`).sort().join(",");
-  return { signal: SIGNALS.PR_NOT_PROGRESSING, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.PR_NOT_PROGRESSING}@${key}`,
-    detail: `${oldestFirst.length} open PR(s) neither merged nor held, with no push, review or comment for over ${PR_NOT_PROGRESSING_MINUTES} min: ${named.join("; ")}${more}` };
+  const named = overdue.slice(0, MAX_NAMED).map((item) => `#${item.number} (${item.kind === "pr" ? "PR" : "row"}, ${item.reason}, open `
+    + `${openFor(Math.round((now - /** @type {number} */ (item.since)) / MS_PER_MINUTE))}, ${item.owner === null ? "NO OWNER" : `owner ${item.owner}`})`);
+  const more = overdue.length > MAX_NAMED ? `, and ${overdue.length - MAX_NAMED} more` : "";
+  const key = overdue.map((item) => `${item.kind}#${item.number}:${item.reason}`).sort().join(",");
+  return { signal: SIGNALS.OVERDUE, status: "tripped", firstTrippedAt: crossedAt(overdue[0]), discriminator: `${SIGNALS.OVERDUE}@${key}`,
+    detail: `${overdue.length} open item(s) not merged or closed within ${OVERDUE_PR_MINUTES} min (a PR) or ${OVERDUE_ROW_MINUTES} min (a claimed row): ${named.join("; ")}${more}` };
 }
 
 /**
@@ -406,7 +416,7 @@ export function staleWaitReading({ now, stale }) {
 
 /**
  * SIGNAL 9: A WAIT THAT NAMES NO REASON, QUIET FOR `MANUAL_WAIT_HOURS` (#2996). `hold:*`, `answer:*` and the blocked label do not clear themselves, so with
- * no readable `Waiting-for:` nothing can ever say they are over. THE AGE IS TIME SINCE THE ITEM'S LAST ACTIVITY, as `pr-not-progressing`'s is: an item somebody
+ * no readable `Waiting-for:` nothing can ever say they are over. THE AGE IS TIME SINCE THE ITEM'S LAST ACTIVITY (this signal's own; the outcome clock runs from the opening): an item somebody
  * is working on is not stalled, and the wait's own start is not on the list read. A wait on `manual` is not here -- it is COUNTED in the detail.
  * @param {{ now: number, bare: { item: { kind: string, number: number, repoKey?: string }, fields: string[], quietSince: number | null }[] | null, manual?: number }} input
  * @returns {Reading}
@@ -675,13 +685,13 @@ export function readLastMergedAt(run, repo) {
 }
 
 /**
- * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the one of #2970 WHEN THEIR FACT IS GIVEN. An OMITTED fact (`undefined`) is
+ * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
  * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
- *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, stalledPrs?: QuietPr[] | null,
+ *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
  *           pools?: PoolReading[] | null }} facts `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
@@ -691,7 +701,7 @@ export function orgHealthReadings(facts) {
     primaryReading({ now: facts.now, drift: facts.drift, since: facts.primarySince })];
   if (facts.fleet !== undefined) readings.push(fleetIdleReading({ now: facts.now, fleet: facts.fleet, waiting: facts.waiting ?? null }));
   if (facts.copies !== undefined) readings.push(copyDriftReading({ pairs: facts.copies }));
-  if (facts.stalledPrs !== undefined) readings.push(prNotProgressingReading({ now: facts.now, stalledPrs: facts.stalledPrs }));
+  if (facts.overdue !== undefined) readings.push(overdueReading({ now: facts.now, ...facts.overdue }));
   if (facts.waits !== undefined) {
     readings.push(staleWaitReading({ now: facts.now, stale: facts.waits?.stale ?? null }),
       waitWithoutReasonReading({ now: facts.now, bare: facts.waits?.bare ?? null, manual: facts.waits?.manual }));
@@ -716,10 +726,12 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.COPIES]: "A declared copy no longer matches its original. Neither is known to be the right one: read both (`git log -3 -- <path>` for each), "
     + "then carry the change to the other side and move the commit in the copy's header. `agent-org-outward-edges.test.ts` is the exact check "
     + "and will go red on `main`'s next PR until you do.",
-  [SIGNALS.PR_NOT_PROGRESSING]: "Each PR named has had no push, review or comment for hours and is not held. The reason says who owes the next move: "
-    + "`conflicted` and `red` are its owner's to fix, `awaiting-review` needs a verdict (`reviewer-<n>`, or `product-manager` when the PR has none), "
-    + "`awaiting-author-draft` is its author's to mark ready, `unarmed` is `product-manager`'s. The owner may already have been ordered and nothing came of it: "
-    + "READ WHY (`gh pr view <n>`), then unstick it, re-lane it by putting the label of a session that can on the PR, or close it if it is abandoned.",
+  [SIGNALS.OVERDUE]: "Each item named has been open longer than three times the median it takes to merge (a PR) or close (a claimed row), and nothing has merged "
+    + "or closed it: a comment, a hold or a push does not stop this clock. The reason in brackets is a LABEL for who owes the next move, never an excuse: "
+    + "`conflicted` and `red` are the owner's to fix, `awaiting-review` needs a verdict (`reviewer-<n>`, or `product-manager` when the PR has none), "
+    + "`awaiting-author-draft` is its author's to mark ready, `unarmed` is `product-manager`'s, `held-on-purpose` is a hold or a freeze that may have outlived its "
+    + "reason (read its `Waiting-for:`, and lift it if the condition is true). The owner may already have been ordered and nothing came of it: READ WHY "
+    + "(`gh pr view <n>`), then unstick it, re-lane it by putting the label of a session that can on it, or close it if it is abandoned.",
   [SIGNALS.STALE_WAIT]: "Each wait named still stands although the condition it declared is true: the reason is gone and the wait is a stall, not "
     + "health. The setter was ordered with the exact field to remove and did not. Remove it yourself (`pnpm run pr:hold -- <n> --session=<s> --release` "
     + "for a hold, `gh issue edit <n> --remove-label <label>` for a label, or the `Waiting-for:` line), or re-lane the item to a session that will.",

@@ -13,10 +13,11 @@
 // `redPrFacts` STAYED in `work-gate.mjs`: it is the one place the gate asks `red-pr.mjs`'s `isBrokenRed`, and
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
 // import and its one caller stay together. `work-gate.mjs` re-exports every name this file exports that it exported before.
-import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MS_PER_MINUTE, MAX_ROW_ORDERS_PER_TICK,
-  shouldBeMerging, labelsOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed } from "../work-gate.mjs";
-import { READY_LABEL } from "../claim-labels.mjs";
-import { FLEET_IDLE_HOURS, REASONS_THAT_ARE_NOT_A_STALL, PR_NOT_PROGRESSING_MINUTES, readLastMergedAt, orgHealthTick,
+import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
+  shouldBeMerging, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed } from "../work-gate.mjs";
+import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.mjs";
+import { claimRecordOf } from "../claim-stall.mjs";
+import { FLEET_IDLE_HOURS, readLastMergedAt, orgHealthTick,
   primaryStandingSince } from "../org-health.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
@@ -107,46 +108,51 @@ export function readHeadCommittedAt(oid, run = defaultRun) {
 }
 
 /**
- * THE NEWEST ACTIVITY ON A PR THAT `pr list` ALREADY CARRIES: its creation, its comments and its reviews. A push is not here (see
- * `readHeadCommittedAt`), so this is a FLOOR on the PR's last activity, and a PR it already calls recent needs no further read.
- * @param {any} pr @returns {number}
+ * #3486: EVERY OPEN PR AS A CANDIDATE FOR THE OUTCOME CLOCK, whatever state it is in -- held, drafted, armed, red, conflicted: NOTHING IS FILTERED OUT,
+ * which is the point (the classifier's two "not a stall" answers used to drop exactly the PRs whose reason had gone). THE REASON IS `stallReasonOf`'s,
+ * the same function that decides who is ordered, and it is only a LABEL on the alarm. The clock starts at the PR's `createdAt` and costs NO read:
+ * `pr list` already carries it, where the quiet-time version it replaced asked one `gh api` call per quiet PR for the head commit's date. A PR with
+ * no `createdAt` is `since: null`, an unknown and not an age.
+ * @param {any[]} prs @param {string[] | null} required @param {{ now: number }} io
+ * @returns {import("../org-health.mjs").OverdueCandidate[]}
  */
-function listedActivityAt(pr) {
-  const times = [pr.createdAt, ...(pr.comments ?? []).map((/** @type {any} */ c) => c?.createdAt), ...(pr.reviews ?? []).map((/** @type {any} */ r) => r?.submittedAt)]
-    .map((at) => Date.parse(at)).filter(Number.isFinite);
-  return times.length > 0 ? Math.max(...times) : NaN;
+export function stalledPrFacts(prs, required, { now }) {
+  return prs.map((pr) => {
+    const owner = ownerOfPr(pr);
+    return { kind: "pr", number: pr.number, reason: stallReasonOf(pr, required, now), owner: owner.source === "ceo" ? null : owner.session,
+      since: epochOrNull(pr.createdAt) };
+  });
 }
 
 /**
- * #2970: EVERY OPEN PR THE CLASSIFIER DOES NOT CALL `progressing` OR `held-on-purpose`, with the time of its last push, review or
- * comment, for `org-health.mjs`. THE REASON IS `stallReasonOf`'s -- the same function that decides who is ordered -- so the two cannot
- * disagree about which PRs are stuck. A PR whose listed activity is already recent pays NO read; only a quiet one is asked for its head
- * commit's date, which is the push. A PR with nothing dated at all is `lastActivityAt: null`, an unknown and not an age.
- * @param {any[]} prs @param {string[] | null} required @param {{ now: number, run?: (args: string[]) => string }} io
- * @returns {{ number: any, reason: string, owner: string | null, lastActivityAt: number | null }[]}
+ * #3486: EVERY CLAIMED ROW AS A CANDIDATE FOR THE OUTCOME CLOCK: the age runs from the NEWEST claim record (`claimRecordOf`, which is the claim and
+ * not a release) and nothing but the row closing stops it. `claimedComments` is `readClaimedRowComments`'s page; a claimed row it does not carry, or
+ * one with no claim record, is `since: null` -- an unknown, never young. The reason is `held` for a row carrying a `hold:` label and `claimed` otherwise.
+ * @param {any[]} openRows @param {any[]} claimedComments
+ * @returns {import("../org-health.mjs").OverdueCandidate[]}
  */
-export function stalledPrFacts(prs, required, { now, run = defaultRun }) {
-  return prs.map((pr) => ({ pr, reason: stallReasonOf(pr, required, now) }))
-    .filter(({ reason }) => !REASONS_THAT_ARE_NOT_A_STALL.includes(reason))
-    .map(({ pr, reason }) => {
-      const owner = ownerOfPr(pr);
-      return { number: pr.number, reason, owner: owner.source === "ceo" ? null : owner.session, lastActivityAt: lastActivityOf(pr, { now, run }) };
-    });
+export function claimedRowFacts(openRows, claimedComments) {
+  const commentsOf = new Map(claimedComments.map((row) => [Number(row.number), row.comments ?? []]));
+  return openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL)).map((row) => ({
+    kind: "row", number: row.number, reason: labelsOf(row).some((label) => label.startsWith("hold:")) ? "held" : "claimed",
+    owner: sessionOf(row), since: claimRecordOf(commentsOf.get(Number(row.number)) ?? [])?.at ?? null,
+  }));
 }
 
 /**
- * THE NEWEST ACTIVITY ON ONE PR, as epoch ms, or `null` when the answer is not known. A PR whose listed activity is already recent pays no
- * read. A quiet one is asked for its head commit's date, and IF THAT READ IS REFUSED THE ANSWER IS `null`, NOT THE LISTED TIME: the listed
- * time is a FLOOR (a push is not in it), so a PR pushed ten minutes ago whose creation was nine hours ago would otherwise read as nine hours
- * quiet and trip `pr-not-progressing` on a 403 -- the unknown `org-health.mjs` says a refused read must be.
- * @param {any} pr @param {{ now: number, run: (args: string[]) => string }} io @returns {number | null}
+ * #3486: THE OUTCOME CLOCK'S FACTS: the PRs and, when the tick holds the claimed rows' comments, the rows. `claimedComments` is `undefined` for a caller
+ * that does not ask (silent: the rows are not clocked), and `null` for a refused read (a stated unknown). An open list that was refused clocks
+ * nothing and says so; a refused PR list is `items: null`.
+ * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, required: string[] | null, now: number }} input
+ * @returns {{ items: import("../org-health.mjs").OverdueCandidate[] | null, unread: string[] }}
  */
-function lastActivityOf(pr, { now, run }) {
-  const listed = listedActivityAt(pr);
-  if (Number.isFinite(listed) && now - listed < PR_NOT_PROGRESSING_MINUTES * MS_PER_MINUTE) return listed;
-  const pushed = readHeadCommittedAt(String(pr.headRefOid ?? ""), run);
-  if (pushed === null) return null;
-  return Number.isFinite(listed) ? Math.max(listed, pushed) : pushed;
+export function overdueFacts({ prsRead, openRowsRead, claimedComments, required, now }) {
+  if (prsRead === null) return { items: null, unread: [] };
+  const prs = stalledPrFacts(prsRead, required, { now });
+  if (claimedComments === undefined) return { items: prs, unread: [] };
+  if (openRowsRead === null) return { items: prs, unread: ["the open rows"] };
+  if (claimedComments === null) return { items: prs, unread: ["the claimed rows' comments"] };
+  return { items: [...prs, ...claimedRowFacts(openRowsRead, claimedComments)], unread: [] };
 }
 
 /**
@@ -325,14 +331,15 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * #2980: THE FLEET FACTS ARE PASSED, because `orgHealthReadings` reads an OMITTED `fleet` as "this caller does not ask" -- silent -- so
  * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
+ * #3486: `claimedComments` IS THE CLAIMED ROWS' COMMENTS (`readClaimedRowComments`), `undefined` WHEN THE CALLER DOES NOT ASK, so the claimed rows are not clocked (see `overdueFacts`).
  * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
+ * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule }} [io] `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
-export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, decided, pools },
+export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release } = {}) {
   const { prs, required, primaryDrift, claimRefusals } = decideArgs;
@@ -345,7 +352,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, decideArgs, dec
     lastMergedAt: lastMergedAt(),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
     redPrs: prsRead === null ? null : redPrFacts(prs, decided, { holdStands }),
-    stalledPrs: prsRead === null ? null : stalledPrFacts(prs, required, { now }),
+    overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now }),
     refusals: claimRefusals ?? null,
     drift: primaryDrift ?? null,
     primarySince: primaryStandingSince(primaryDrift ?? null, { root: REPO_CHECKOUT }),
