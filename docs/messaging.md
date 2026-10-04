@@ -91,7 +91,7 @@ anything. The classifier in 2(d) is a heuristic.
 
 | Row | What it is | Where |
 |---|---|---|
-| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.mjs` |
+| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.ts` |
 | 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.mjs`, `check.mjs`, `host/chairman-watch.*.in` |
 | 3 | The Telegram provider | `providers/telegram/` |
 | 4 | The one-shot program the timer runs, and the request and summary sources | `watch.mjs`, `sources/requests.mjs`, `sources/summary.mjs` |
