@@ -484,18 +484,22 @@ export function b2Verdict(rows) {
  * INSTANCE never reaches this: {@link route} asks only for the pool, so a review refusal, a failing check or a
  * conflict on its own PR is delivered as before.
  *
+ * A PERSISTENT SEAT IS NEVER OFFERED A ROW (#3415), refused before any lookup like a drained role: it is a conversation, not
+ * an engineer, so nothing but a deliberate order reaches it. `persistent` is the roster's mark ({@link isPersistentRole}).
+ *
  * @param {{ lookup?: typeof lookupHeldRows, warn?: (line: string) => void, drained?: readonly string[],
- *   spare?: (label: string) => boolean, instances?: Record<string, SpareInstance> }} [deps]
+ *   spare?: (label: string) => boolean, persistent?: (label: string) => boolean, instances?: Record<string, SpareInstance> }} [deps]
  *   `drained` is the roles the drain holds back NOW ({@link activeDrain}) -- already empty once a cycle failed;
  *   `spare` is the roster's mark ({@link isSpareRole}) and `instances` the registry ({@link readSpareRegistry}).
  *   ABSENT MEANS NONE of either, so a caller that does not say is asked about B2 alone
  * @returns {(label: string) => string | null}
  */
-export function engineerEligibility({ lookup = lookupHeldRows, drained = [], spare = () => false, instances = {},
-  warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
+export function engineerEligibility({ lookup = lookupHeldRows, drained = [], spare = () => false, persistent = () => false,
+  instances = {}, warn = (line) => { process.stderr.write(`${line}\n`); } } = {}) {
   /** @type {Map<string, string | null>} */
   const memo = new Map();
   return (label) => {
+    if (persistent(label)) return PERSISTENT_SEEN;
     if (drained.includes(label)) return DRAINED_SEEN;
     if (memo.has(label)) return memo.get(label) ?? null;
     const recorded = spare(label) ? instances[label]?.rows ?? [] : [];
@@ -4160,24 +4164,31 @@ export function isPerRowInstance(label) {
 
 /**
  * THE CLEAR BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
- * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}).
- * Both callers go through it, because fixing one leaves the reviewer wiped by its own author.
+ * `prompt-session.mjs`): sent to a standing seat, skipped for a per-row instance ({@link isPerRowInstance}) and for
+ * a PERSISTENT seat ({@link isPersistentRole}). Both callers go through it, because fixing one leaves the reviewer
+ * wiped by its own author.
  *
- * A PER-ROW INSTANCE MAY STILL BE `/compact`ED (#2688), never `/clear`ed: its own transcript's last turn
+ * A SEAT THAT KEEPS ITS CONTEXT MAY STILL BE `/compact`ED (#2688), never `/clear`ed: its own transcript's last turn
  * is read for `cache_read_input_tokens` ({@link instanceCacheRead}) and, over
  * {@link COMPACT_THRESHOLD_TOKENS}, sent `/compact` first ({@link compactContext}). Below the threshold, or
  * when no transcript can be read for it ("cannot tell", never assumed small), nothing is sent -- exactly
- * the #2483 behaviour this extends. `sent` still means "cleared", so a compacted instance reads the same
+ * the #2483 behaviour this extends. `sent` still means "cleared", so a compacted seat reads the same
  * as an untouched one to every caller that only asks whether to send the first-contact preamble.
+ *
+ * A PERSISTENT SEAT IS THE SAME RULE FOR A DIFFERENT REASON (#3415, chairman point 1). A per-row instance keeps its
+ * window because its one row is its whole life; a persistent seat keeps it because a conversation IS its work, and
+ * a message answered by a session that has forgotten the last one is the defect. Its orders are not one topic, so
+ * `/compact` (which summarises the thread) is the only bound on its growth.
  *
  * @param {(args: string[]) => string} run @param {string} label
  * @param {(ms: number) => void} [sleep] `clearContext`'s settle, which is where the real default lives -- passed on as it came
  * @param {string} [contextRoot] {@link instanceCacheRead}'s transcript root, injectable for a test
+ * @param {string | URL} [sessions] the roster {@link isPersistentRole} reads, injectable for a test
  * @returns {{sent: boolean, refusal: string | null}} whether a clear was sent, and `clearContext`'s
- *   (or, for a compacted instance, `compactContext`'s) refusal
+ *   (or, for a compacted seat, `compactContext`'s) refusal
  */
-export function clearBeforeOrder(run, label, sleep, contextRoot) {
-  if (isPerRowInstance(label)) {
+export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESSIONS_FILE) {
+  if (isPerRowInstance(label) || isPersistentRole(label, sessions)) {
     const tokens = instanceCacheRead(label, contextRoot);
     if (tokens !== null && tokens > COMPACT_THRESHOLD_TOKENS) {
       return { sent: false, refusal: compactContext(run, label, sleep) };
@@ -4683,6 +4694,9 @@ const SESSIONS_FILE = roleBriefPath("sessions.json").absolute;
 /** What `route`'s refusal calls a drained engineer -- short enough to sit in a `seen` list beside a status. */
 export const DRAINED_SEEN = "drained (#2324)";
 
+/** What `route`'s refusal calls a persistent seat -- short enough to sit in a `seen` list beside a status. */
+export const PERSISTENT_SEEN = "persistent (#3415)";
+
 /** #1950's bar: consecutive clean spawn-and-teardown cycles before `ceo` files the retirement row. */
 export const CLEAN_CYCLES_TARGET = 20;
 
@@ -4697,6 +4711,41 @@ export function drainedRoles(path = SESSIONS_FILE) {
   const { live } = /** @type {{ live: { name: string, role: string, drain?: boolean }[] }} */ (
     JSON.parse(readFileSync(path, "utf8")));
   return live.filter((s) => s.role === "engineer" && s.drain === true).map((s) => s.name);
+}
+
+/**
+ * The roles `sessions.json` MARKS `persistent` (#3415), in file order: a seat that is never cleared, whatever its `role`.
+ * READ, NOT TYPED, and a ROLE fact like `drain` and `spare` (`_rolesNotProcesses`): it names no pane, pid or workspace.
+ * An unreadable roster throws, as {@link drainedRoles} does -- a caller that can fail open ({@link isPersistentRole}'s
+ * claim-time reader) says so itself.
+ *
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function persistentRoles(path = SESSIONS_FILE) {
+  const { live } = /** @type {{ live: { name: string, persistent?: boolean }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.persistent === true).map((s) => s.name);
+}
+
+/**
+ * Is this address a PERSISTENT seat -- one whose context is kept and compacted, never wiped before an order (#3415)?
+ * Answered from the FILE and not a process list, so it holds for a seat that has no process yet.
+ *
+ * @param {string} label
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {boolean}
+ */
+export function isPersistentRole(label, path = SESSIONS_FILE) {
+  return persistentRoles(path).includes(label);
+}
+
+/**
+ * Does this seat KEEP its context across orders -- a per-row instance (#2483) or a persistent seat (#3415)? The one
+ * question a caller that REPORTS the delivery asks, so its wording cannot disagree with {@link clearBeforeOrder}.
+ * @param {string} label @param {string | URL} [sessions] the roster, injectable for a test
+ */
+export function keepsContext(label, sessions = SESSIONS_FILE) {
+  return isPerRowInstance(label) || isPersistentRole(label, sessions);
 }
 
 /**
@@ -5993,7 +6042,8 @@ function drainNow(cyclesPath) {
  * teardown keeps and the roster's `spare` mark. @param {{ registry: string }} spares @param {readonly string[]} drained
  */
 function poolEligibility(spares, drained) {
-  return engineerEligibility({ drained, spare: (label) => isSpareRole(label), instances: instancesNow(spares.registry) });
+  return engineerEligibility({ drained, spare: (label) => isSpareRole(label), persistent: (label) => isPersistentRole(label),
+    instances: instancesNow(spares.registry) });
 }
 
 /**

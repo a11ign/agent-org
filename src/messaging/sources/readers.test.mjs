@@ -1,5 +1,5 @@
 // @ts-check
-// THE REAL READERS, AGAINST RECORDED OUTPUT (a11ign/a11ign#3008, row 5b of 13). Each of the six is handed what `gh api`, `systemctl show` or a file
+// THE REAL READERS, AGAINST RECORDED OUTPUT (a11ign/a11ign#3008, row 5b of 13). Each of the seven is handed what `gh api`, `systemctl show` or a file
 // held when it was recorded and must give the value its source expects; each is also handed a failing call and must THROW, which is what the source
 // turns into `cannot-ask`. The done-whens run through the real core and the in-memory provider on a clock the test owns.
 //
@@ -21,7 +21,7 @@ import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "
 import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
 import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
 import {
-  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
+  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
 } from "./readers.mjs";
 import { observeStalls } from "./stall.mjs";
 
@@ -284,7 +284,73 @@ describe("readGateUnit", () => {
   });
 });
 
-// ---- readFleetState ----------------------------------------------------------------------------------------------------------------------
+// ---- readFixRow --------------------------------------------------------------------------------------------------------------------------
+
+/** What `issues?labels=<key>&state=open` answers: the REST listing, which returns pull requests too. A route per label, as GitHub filters on it. */
+const fixRowIssue = (/** @type {number} */ number, /** @type {string[]} */ labels, /** @type {Record<string, unknown>} */ more = {}) => ({ number, labels: labels.map((name) => ({ name })), ...more });
+const listingFor = (/** @type {string} */ key, /** @type {unknown} */ answer) => /** @type {[RegExp, unknown]} */ ([new RegExp(`/issues\\?labels=${encodeURIComponent(key)}&state=open`), answer]);
+
+describe("readFixRow", () => {
+  const KEY = "incident:trunk-red";
+
+  test("an open row carrying the event's label gives its number and the holder from its session label", async () => {
+    const github = fakeGithub([listingFor(KEY, [fixRowIssue(3500, [KEY, "in-progress", "session:worker-3500", "lane:any"])])]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500, holder: "worker-3500" });
+    assert.deepEqual(github.calls, [`repos/${REPO}/issues?labels=incident%3Atrunk-red&state=open&per_page=100`]);
+  });
+
+  test("a row nobody holds yet has a number and no holder", async () => {
+    const github = fakeGithub([listingFor(KEY, [fixRowIssue(3501, [KEY, "ready"])])]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3501 });
+  });
+
+  test("GitHub answering an empty list is null: the one reading that says no row is open", async () => {
+    const github = fakeGithub([listingFor(KEY, [])]);
+    assert.equal(await readFixRow({ github, repo: REPO, key: KEY }), null);
+  });
+
+  test("GitHub failing THROWS, which is not null (the positive control for the empty list above)", async () => {
+    await assert.rejects(readFixRow({ github: fakeGithub([listingFor(KEY, DOWN)]), repo: REPO, key: KEY }), /HTTP 502/);
+    await assert.rejects(readFixRow({ github: fakeGithub([listingFor(KEY, { message: "Bad credentials" })]), repo: REPO, key: KEY }), /an array was expected/);
+  });
+
+  test("a row for another incident key is not returned: the label asked for is the key's own", async () => {
+    const github = fakeGithub([listingFor("incident:fleet-down", [fixRowIssue(3502, ["incident:fleet-down", "session:worker-3502"])]), listingFor(KEY, [])]);
+    assert.equal(await readFixRow({ github, repo: REPO, key: KEY }), null);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: "incident:fleet-down" }), { number: 3502, holder: "worker-3502" });
+  });
+
+  test("a closed row is not returned: the listing is asked for open rows only", async () => {
+    const github = fakeGithub([listingFor(KEY, [])]);
+    await readFixRow({ github, repo: REPO, key: KEY });
+    assert.match(github.calls[0], /[?&]state=open(&|$)/);
+  });
+
+  test("a pull request in the listing is not a row, and of several rows the oldest is named", async () => {
+    const github = fakeGithub([listingFor(KEY, [
+      fixRowIssue(3600, [KEY], { pull_request: { url: "x" } }), fixRowIssue(3510, [KEY, "session:worker-3510"]), fixRowIssue(3505, [KEY, "session:worker-3505"]),
+    ])]);
+    assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3505, holder: "worker-3505" });
+    assert.equal(await readFixRow({ github: fakeGithub([listingFor(KEY, [fixRowIssue(3600, [KEY], { pull_request: {} })])]), repo: REPO, key: KEY }), null);
+  });
+
+  test("a key that is not an incident or stall key is refused before GitHub is asked", async () => {
+    const github = fakeGithub([]);
+    for (const key of ["request:example/project#1", "summary:2026-10-02", "incident:", "incident:a&state=closed", ""]) {
+      await assert.rejects(readFixRow({ github, repo: REPO, key }), /not an incident or stall key/, key);
+    }
+    assert.deepEqual(github.calls, []);
+  });
+
+  test("createReaders wires it, bound to the repository, and the path it asks passes the read-only allowlist", async () => {
+    const github = fakeGithub([listingFor("stall:no-merge", [fixRowIssue(3503, ["stall:no-merge", "session:worker-3503"])])]);
+    const { readers } = readersFor({ github });
+    assert.deepEqual(await readers.readFixRow("stall:no-merge"), { number: 3503, holder: "worker-3503" });
+    assert.doesNotThrow(() => assertReadOnlyGh(["api", github.calls[0]]));
+  });
+});
+
+// ---- readFleetState
 
 describe("readFleetState", () => {
   const stateFile = (/** @type {unknown} */ content, /** @type {number} */ writtenAt = NOW) => {

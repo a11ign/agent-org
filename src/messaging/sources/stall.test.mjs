@@ -187,3 +187,56 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
     assert.ok(!lines.join("\n").includes(secret));
   });
 });
+
+describe("a sent stall says what it MEANS and what is being done (a11ign/a11ign#3424)", () => {
+  const stalled = { readTicks: () => history(IDLE_FOR_THIRTY_MINUTES, { seats: seats("idle"), orders: rows(2) }), readLastMerge: () => NOW - 7 * HOUR };
+  const IMPACTS = { "stall:all-idle": "Impact: Rows are waiting and no seat is working on them.", "stall:no-merge": "Impact: No change has reached main." };
+  const observeWith = (/** @type {Record<string, unknown>} */ more) => observeStalls({ now: () => NOW, log: () => {}, readers: { ...stalled, ...more } });
+  const lineOf = (/** @type {Record<string, unknown>} */ event, /** @type {string} */ name) => String(event.text).split("\n").find((line) => line.startsWith(`${name}:`));
+
+  test("(1) both kinds carry their Impact line from the table", async () => {
+    const { events } = await observeWith({ readFixRow: () => null });
+    assert.equal(events.length, 2);
+    for (const event of events) assert.equal(lineOf(event, "Impact"), IMPACTS[/** @type {keyof typeof IMPACTS} */ (String(event.key))], String(event.key));
+  });
+
+  test("(2) with a fix row open, Doing names that row and its holder", async () => {
+    const { events } = await observeWith({ readFixRow: () => ({ number: 3500, holder: "worker-3500" }) });
+    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: row #3500 is open for this, held by worker-3500.");
+  });
+
+  test("(3) with no row open, Doing says `no row is open for this yet`", async () => {
+    const { events } = await observeWith({ readFixRow: () => null });
+    for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: no row is open for this yet.");
+  });
+
+  test("(4) a failed, unwired or malformed fix-row read says `not known`, and the stall is still reported", async () => {
+    for (const readers of [{ readFixRow: () => { throw new Error("gh: HTTP 502"); } }, {}, { readFixRow: () => ({ number: 0 }) }]) {
+      const { events, cannotAsk } = await observeWith(readers);
+      assert.equal(events.length, 2);
+      for (const event of events) assert.equal(lineOf(event, "Doing"), "Doing: not known.");
+      assert.deepEqual(cannotAsk, []);
+    }
+  });
+
+  test("(5) the cleared event's text is byte-for-byte what it was", async () => {
+    let asked = 0;
+    const recovered = { readTicks: () => history(IDLE_FOR_THIRTY_MINUTES, { seats: seats("busy"), orders: rows(2) }), readLastMerge: () => NOW - HOUR };
+    const { events } = await observeWith({ ...recovered, readFixRow: () => { asked += 1; return null; } });
+    assert.deepEqual(events.map((event) => event.text).sort(), ["A merge landed on main.", "Seats are no longer all idle with rows waiting."]);
+    assert.ok(events.every((event) => event.resolved === true), "positive control: both are resolved events");
+    assert.equal(asked, 0);
+  });
+
+  test("(6) the key and firstSeenAt are the bare event's, and the core sends it once with both lines", async () => {
+    const bare = noMergeEvents(NOW - 7 * HOUR, NOW, DEFAULT_STALL_CONFIG)[0];
+    const [meant] = (await observeWith({ readFixRow: () => null })).events.filter((event) => event.key === "stall:no-merge");
+    assert.deepEqual([meant.key, meant.firstSeenAt, meant.kind, meant.severity, meant.resolved], [bare.key, bare.firstSeenAt, bare.kind, bare.severity, bare.resolved]);
+    assert.ok(String(meant.text).startsWith(String(bare.text)));
+    const run = messenger();
+    await run.tick([meant]);
+    await run.tick([meant]);
+    assert.equal(run.provider.sent.length, 1);
+    assert.match(run.provider.sent[0].text, /Impact: No change has reached main\.\nDoing: no row is open for this yet\./);
+  });
+});

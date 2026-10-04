@@ -9,14 +9,19 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 import { acceptUpdate, createInbound, DROP_REASON, isAccepted } from "./inbound.mjs";
+
+// The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
+// `listen.test.mjs` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.
+const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
+if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 const STRANGER_ID = 9001;
@@ -222,6 +227,29 @@ describe("secrets and refusals (done-whens 2 and 3), through `handle`", () => {
     assert.equal(line.reason, "secret");
     assert.equal(line.length, SECRET_TEXT.length);
     assert.equal(line.sha256, null, "no hash of a secret: a bare password would be a dictionary away");
+  });
+
+  test("#3442: the real miss and a withheld token are deleted, replied to by reason alone, and leave a line with no hash and no word of the value", () => {
+    const FAKE = "zq-fake-value-0";
+    const MIXED = "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6";
+    const run = harness();
+    const missed = run.handle(update(90, { text: `My password is: ${FAKE}`, message_id: 31 }));
+    const withheld = run.handle(update(91, { text: MIXED, message_id: 32 }));
+    assert.deepEqual([missed, withheld].map((each) => each.action === "reply" && each.reason), ["secret", "unsure"]);
+    assert.deepEqual([missed, withheld].map((each) => each.action === "reply" && each.deleteMessage), [{ chatId: CHAIRMAN.chatId, messageId: 31 }, { chatId: CHAIRMAN.chatId, messageId: 32 }]);
+    assert.match(withheld.action === "reply" ? withheld.text : "", /looks like a credential.*'not a secret'/);
+    for (const fragment of [FAKE, "zq-fake", "fake-value", MIXED, MIXED.slice(0, 8), MIXED.slice(8, 16)]) {
+      assert.ok(!run.raw().includes(fragment), `the ledger holds ${fragment}`);
+      assert.ok(!JSON.stringify([missed, withheld]).includes(fragment), `a result holds ${fragment}`);
+    }
+    assert.deepEqual(run.lines().map((line) => [line.verdict, line.reason, line.sha256]), [["drop", "secret", null], ["withhold", "unsure", null]]);
+  });
+
+  test("#3442: the withheld message resent with 'not a secret' is forwarded and recorded like any clean one: the positive control", () => {
+    const run = harness();
+    const handled = run.handle(update(92, { text: "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6 not a secret" }));
+    assert.equal(handled.action, "forward");
+    assert.deepEqual(run.lines().map((line) => [line.verdict, typeof line.sha256]), [["forward", "string"]]);
   });
 
   test("the three refusals of the done-when, and the question that is forwarded", () => {

@@ -1,6 +1,6 @@
 // @ts-check
 // THE REAL READS FOR THE STALL AND INCIDENT SOURCES (a11ign/a11ign#3008, row 5b of 13; design #2899). `stall.mjs` and `incidents.mjs` take every read
-// INJECTED and say so; this file is what the host injects. Six readers, each returning what its source's own typedef names, and each a
+// INJECTED and say so; this file is what the host injects. Seven readers, each returning what its source's own typedef names, and each a
 // read that THROWS on failure: the source turns the throw into `cannot-ask`, never into "all clear" and never into an event.
 //
 //   readLastMerge   the newest merge into `main`, from GitHub                           -> stall:no-merge
@@ -13,6 +13,7 @@
 //   readFleetRoster who `fleet-watch` last saw answer, and who it did not                 -> {{fleet.workers-up}}, {{fleet.workers-down}}
 //   readLastTick    when the gate last COMPLETED a tick, from the same record as above     -> {{gate.last-tick.age}}
 //   readTicks       THIS WATCHER'S OWN SAMPLES, newest first                             -> stall:all-idle
+//   readFixRow      the open row that holds the fix for an event, from its label         -> the `Doing` line of every incident and stall
 //
 // A LEAF: node's own modules only (and `lib/tick-completion.mjs`, which is the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
 // `readSeats`), and the files it keeps are under a directory the caller names, so a test gives it a temporary one.
@@ -56,6 +57,9 @@ const NOT_WAITING = /^(blocked|hold(:.*)?|answer:.*)$/;
 const POLL_SLACK_MS = 2 * MS_PER_MINUTE;
 /** `fleet-watch` runs hourly (`OnCalendar=*:47`): two missed firings and a margin is what a stopped watcher looks like (`watch.mjs`'s `FLEET_STATE_MAX_AGE_MS`, the same figure). */
 export const FLEET_READING_MAX_AGE_MS = 130 * MS_PER_MINUTE;
+/** The events a fix row can be named for: the keys `incidents.mjs` and `stall.mjs` emit, and the only ones whose message carries a `Doing` line. */
+const FIX_ROW_KEY = /^(incident|stall):[a-z][a-z-]*$/;
+const SESSION_LABEL = /^session:(.+)$/;
 const SAMPLES_FILE = "samples.jsonl";
 const ANNOTATIONS_FILE = "ci-annotations.json";
 export const SYSTEMD_PROPERTIES = "ActiveState,StateChangeTimestamp,InactiveEnterTimestamp";
@@ -277,6 +281,29 @@ export async function readWaitingRows({ github, repo }) {
 }
 
 /**
+ * The open row that holds the fix for one incident or stall: **the row carries a label NAMED FOR THE EVENT KEY** (`incident:trunk-red`, `stall:no-merge`), so
+ * whoever opens the fix adds that one label and this reads it back. A label rather than a `Fixes-incident:` body line because the issues listing filters on a
+ * label exactly and cheaply (the call `readWaitingRows` already makes), where a body line needs the search API: a separate, smaller pool, matching words
+ * rather than a line. It is also what the org's other waiting conditions are (`answer:<session>`, `session:<name>`): a field, not a sentence. The holder
+ * is the row's `session:<name>` label, and absent while nobody holds it.
+ *
+ * Returns `null` ONLY when GitHub answered and no open issue carries the label; a failed call, or a key that is not an incident or stall key, THROWS,
+ * because "could not ask" and "no row is open" are different readings and the source tells the chairman which. Several open rows: the oldest, which is the
+ * one first opened for it. Pull requests are skipped (the issues listing returns both).
+ *
+ * @param {Repo & { key: string }} deps @returns {Promise<import("./stall.mjs").FixRow | null>}
+ */
+export async function readFixRow({ github, repo, key }) {
+  if (!FIX_ROW_KEY.test(key)) throw new TypeError(`readFixRow: ${JSON.stringify(key)} is not an incident or stall key`);
+  const issues = asArray(await github.api(`repos/${repo}/issues?labels=${encodeURIComponent(key)}&state=open&per_page=100`), "issues");
+  const rows = issues.filter((issue) => issue?.pull_request === undefined && Number.isInteger(issue?.number));
+  if (rows.length === 0) return null;
+  const oldest = rows.reduce((first, issue) => (issue.number < first.number ? issue : first));
+  const holder = asArray(oldest.labels, "labels").map((label) => SESSION_LABEL.exec(String(label?.name ?? label))?.[1]).find((name) => name !== undefined);
+  return holder === undefined ? { number: oldest.number } : { number: oldest.number, holder };
+}
+
+/**
  * Append ONE sample: now, every seat's state, the rows waiting. Either read failing throws and NOTHING is appended: a sample with no seats would read as
  * "every seat idle" for an empty roster. A torn last line (a crash mid-append) costs one sample, and `readTicks` says so.
  *
@@ -329,7 +356,7 @@ export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }) {
 }
 
 /**
- * The six readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
+ * The seven readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
  *
  * @param {{ github: Github, repo: string, stateDir: string, fleetStatePath: string, unit: string | undefined, now: () => number,
  *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void,
@@ -343,6 +370,7 @@ export function createReaders({ github, repo, stateDir, fleetStatePath, unit, no
     readGateUnit: () => readGateUnit({ unit, systemctl, recordPath: completionPath }),
     readFleetState: () => readFleetState({ path: fleetStatePath }),
     readTicks: () => readTicks({ stateDir, log }),
+    readFixRow: (/** @type {string} */ key) => readFixRow({ github, repo, key }),
     takeSample: () => takeSample({ github, repo, stateDir, now, readSeats }),
   };
 }
