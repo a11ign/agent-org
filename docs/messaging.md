@@ -386,6 +386,22 @@ names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported
 `src/messaging/` by scanning for the queue's functions and `prompt-session.mjs`, and `ask-ceo.mjs` runs the command by name, so the scan does not see it. It is a second sender to a session
 other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.mjs` pins its own single target.
 
+### `chairman:queue`: "can you do it for me?" (a11ign/a11ign#3427, D1 of #3409)
+
+```
+pnpm run chairman:queue -- add --message=45 --what=... --why=... --result-wanted=...     (his OK, as he wrote it, on stdin)   the org's side
+pnpm run chairman:queue -- status                                                         never read / not read since <time> / last read <time>
+pnpm run chairman:queue -- list | take <id> | done <id> --result=<one line> [--hand-fix]  the chairman's session's side
+```
+
+**There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600, in a directory that must be 0700: `add` refuses a looser one and does not re-mode it), and `session-queue.test.mjs` fails if a module under
+`src/messaging/` that touches it also spawns a process. The org never holds the credential the act needs; the ask says what, why and what result is wanted, and the chairman's session does the rest.
+**An ask needs his OK, verified as `chairman:record` verifies one**: a message ref the ledger took in with his words hashing to the receipt's, or a "Do it for me" press line (`direction: "answer"`, `step: "forme"`,
+which `answers.mjs` does not yet write). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may
+pass on and not about what his own session may be asked.
+**What happened to an ask is in the delivery ledger** (`direction: "queue"`: `read`, `take`, `done`), so the file holds one kind of line and is never rewritten. `list` and `take` write `lastRead`, which is
+the only thing the liaison can say about his session: it cannot say it is running. `done --hand-fix` counts into `messaging:measure`.
+
 ### `chairman:watch`: keep the chairman posted on a thing until it ends (a11ign/a11ign#3418, #3502)
 
 ```

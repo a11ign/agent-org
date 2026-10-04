@@ -196,3 +196,23 @@ describe("(4) a window with no lines prints \"no messages in the window\", never
     assert.deepEqual({ code, out, err }, { code: EXIT.ok, out: ["no messages in the window"], err: [] });
   });
 });
+
+describe("(5) hand-fixes by the chairman's session (a11ign/a11ign#3427): a `done --hand-fix` line counts once, in the window its own line falls in", () => {
+  /** @param {string} ts @param {Record<string, unknown>} fields */
+  const done = (ts, fields) => line(ts, { direction: "queue", op: "done", id: "q-aa", result: "worker-6 is serving again", ...fields });
+
+  test("one hand-fix beside a plain done, a take, and a hand-fix before the window counts ONE (each of the three is a way to over-count)", () => {
+    const { out } = measureOver([
+      ...TWO_MESSAGES,
+      line("2026-10-04T10:30:00.000Z", { direction: "queue", op: "take", id: "q-aa" }),
+      done("2026-10-04T10:40:00.000Z", { handFix: true }),
+      done("2026-10-04T10:41:00.000Z", { id: "q-bb", handFix: false }),
+      done("2026-10-02T10:41:00.000Z", { id: "q-cc", handFix: true }),
+    ]);
+    assert.match(out, /^hand-fixes by the chairman's session: 1$/m);
+  });
+
+  test("positive control: the same window with no hand-fix prints 0, so the 1 above is the line counted and not a constant", () => {
+    assert.match(measureOver(TWO_MESSAGES).out, /^hand-fixes by the chairman's session: 0$/m);
+  });
+});
