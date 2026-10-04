@@ -308,7 +308,9 @@ function tick(transcript: string[], seed: Array<[number, string]> = []) {
     const ledger = join(dir, "wake-ledger");
     if (seed.length > 0) writeFileSync(ledger, seed.map(([t, k]) => `${t}\t${k}\n`).join(""));
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
-      input: `${JSON.stringify(orderTo("worker-capture"))}\n`, encoding: "utf8", env: { HOME: dir, PATH: dir } });
+      input: `${JSON.stringify(orderTo("worker-capture"))}\n`, encoding: "utf8",
+      // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
+      env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST } });
     const prompts = existsSync(join(dir, "prompts")) ? readFileSync(join(dir, "prompts"), "utf8") : "";
     return { ...ran, ledger: existsSync(ledger) ? readFileSync(ledger, "utf8") : "", prompts };
   });
