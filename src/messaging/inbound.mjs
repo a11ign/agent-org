@@ -21,7 +21,7 @@
 //     object that is NOT accepted, so a value that skipped the classifier cannot be mistaken for one that did not.
 //
 // **THE LEDGER LINE NEVER HOLDS THE TEXT** (decision 1): ids, a reason, a length and a sha256. A dropped message is attacker-chosen text,
-// and a refused one may have been a secret the classifier half-recognised. For a SECRET verdict the sha256 is also left out (null): a
+// and a refused one may have been a secret the classifier half-recognised. For a SECRET verdict (a drop, or a message withheld as one nobody is sure of) the sha256 is also left out (null): a
 // hash of a bare password is a dictionary away from the password, and the length and the update id already say everything a reader
 // needs about a message that was thrown away.
 
@@ -246,7 +246,8 @@ export function createInbound({ ledger, chairman }) {
       record(facts, { verdict: VERDICT.forward, reason: null });
       return { action: "forward", accepted: mint(accepted, chairman) };
     }
-    const secret = result.verdict === VERDICT.drop;
+    // A withheld message is a secret nobody is sure of, so it is handled as one: no hash in its line, and it is deleted from the chat.
+    const secret = result.verdict === VERDICT.drop || result.verdict === VERDICT.withhold;
     record(facts, { verdict: result.verdict, reason: result.reason, hashed: !secret });
     const deleteMessage = secret ? { chatId: accepted.chatId, messageId: accepted.messageId } : null;
     return { action: "reply", reason: result.reason, text: result.reply, chatId: accepted.chatId, deleteMessage };

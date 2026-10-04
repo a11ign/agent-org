@@ -221,7 +221,7 @@ return what the caller must do. Nothing here fetches, sends, deletes or forwards
 | File | What it is |
 |---|---|
 | `src/messaging/inbound.mjs` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
-| `src/messaging/classify.mjs` | `classifyText(text)` -> `forward`, `drop` (a secret) or `refuse` (a deletion, or spending), with a one-line `reply`. |
+| `src/messaging/classify.mjs` | `classifyText(text)` -> `forward`, `drop` (a definite secret), `withhold` (one token shaped like a pasted secret; the chairman may resend it with "not a secret") or `refuse` (a deletion, or spending), with a one-line `reply`. |
 
 ### The threat model of the inbound path
 
@@ -243,12 +243,20 @@ What the design defends, and against whom:
 
 **None of the three is a guarantee on its own, and the first is the weakest.**
 
-1. **The classifier (this row).** A pattern list: the ledger's token shapes (GitHub, Slack, AWS, JWT, Telegram bot token, `Bearer`,
-   `password=`, and any 32+ character run of token characters) plus a private-key header, "password is ...", a URL with credentials
-   and four more key shapes; deletion verbs near a repository, branch, row, data or file, and force-push; buying, subscribing, a paid
-   plan, a currency amount. It **has false negatives** (a secret split across words, a deletion phrased without the listed verbs, a
-   misspelling) and it is tuned to the other error on purpose: it refuses a message it should have forwarded rather than forward
-   one it should have refused.
+1. **The classifier (this row).** A pattern list in two tiers (#3442, after a password typed as `My password is: <value>` was forwarded,
+   queued and quoted back). **Definite, so dropped and never released:** a credential word (`password`, `passwd`, `passphrase`, `pw`,
+   `pwd`, `secret`, `api key`, `private key`, `credentials`, and the weaker `pass`, `pin`, `token`, `login`) with its value beside it
+   after `is`, `was`, `are`, `:`, `=`, `-`, `->` or whitespace and up to two filler words, or the value first (`<value> is my password`);
+   and the known shapes: the ledger's (GitHub, Slack, AWS, JWT, Telegram bot token, `Bearer`, `password=`, and any 32+ character run of
+   token characters, except a git object name or a hyphenated lowercase slug) plus a private-key header, a URL with credentials and
+   five more key shapes. **Unsure, so withheld:** one token of 16+ characters that mixes three of lower, upper, digit and symbol; it is
+   handled as a drop, and the chairman is told they may send it again with `not a secret`, a phrase that releases this tier and no
+   other. Both tiers write nothing: the message is deleted from the chat, its ledger line carries no hash, and the reply is sent
+   without `replyTo` so the chat does not render the original above it. Deletion verbs near a repository, branch, row, data or file,
+   and force-push; buying, subscribing, a paid plan, a currency amount. It **has false negatives** (a secret split across words, a
+   lowercase word after a strong credential word with no separator, a deletion phrased without the listed verbs, a misspelling) and
+   it is tuned to the other error on purpose: it refuses a message it should have forwarded rather than forward one it should have
+   refused.
 2. **`ceo`'s brief (row 12).** What reaches `ceo` is read by a model told never to act on a credential, a deletion or a spend
    from chat, whatever the classifier let through.
 3. **The outbound path carries only checked facts (row 11).** Even a `ceo` that was talked into something cannot say it in the chat:

@@ -27,6 +27,7 @@ const { createConverse } = await import("./converse.mjs");
 const { createInbound } = await import("./inbound.mjs");
 const { createLedger, readLedgerLines } = await import("./ledger.mjs");
 const { createFakeProvider } = await import("./fake-provider.mjs");
+const { createOffsetStore, runListener } = await import("./providers/telegram/poll.mjs");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
@@ -48,11 +49,12 @@ const pressUpdate = (id) => ({
   update_id: id, callback_query: { id: `cbq-${id}`, from: { id: CHAIRMAN.userId }, data: "ans:A", message: { message_id: REQUEST_MESSAGE, chat: { id: CHAIRMAN.chatId, type: "private" } } },
 });
 
-/** @returns {{ ledger: ReturnType<typeof createLedger>, inbound: ReturnType<typeof createInbound> }} a fresh ledger file and the real core over it */
+/** @returns {{ ledger: ReturnType<typeof createLedger>, inbound: ReturnType<typeof createInbound>, path: string }} a fresh ledger file and the real core over it */
 function core() {
   nextDir += 1;
-  const ledger = createLedger({ path: join(scratch, `ledger-${nextDir}.jsonl`), now: () => 1_700_000_000_000 });
-  return { ledger, inbound: createInbound({ ledger, chairman: CHAIRMAN }) };
+  const path = join(scratch, `ledger-${nextDir}.jsonl`);
+  const ledger = createLedger({ path, now: () => 1_700_000_000_000 });
+  return { ledger, inbound: createInbound({ ledger, chairman: CHAIRMAN }), path };
 }
 
 /** @param {ReturnType<typeof createInbound>} inbound @param {unknown} update @returns {Readonly<Record<string, any>>} the value the core minted for it */
@@ -231,6 +233,99 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
     assert.match(wire.said[0], /could not queue that for ceo.*AGENT_ORG_HOST.*NOT delivered/s);
     assert.match(wire.said[1], /not a request I can resolve/, "the press after the refused message was still handled");
     assert.ok(lines.some((line) => /forward failed: the queue could not be reached/.test(line)), lines.join("\n"));
+  });
+});
+
+describe("#3442: a credential reaches neither the queue, the answers path, the ledger nor a quote, read end to end over recording ports", () => {
+  const X = "zq-fake-value-0";
+  const MIXED = "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6";
+  const GITHUB = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
+  /** Each of these holds a credential of the row's classes 1 to 3, and each needs the real classifier to refuse it. */
+  const CREDENTIAL_MESSAGES = [
+    `My password is: ${X}`, `password is ${X}`, `password: ${X}`, `password = ${X}`, `pw: ${X}`, `pwd=${X}`, `here's my password ${X}`, `my password ${X}`,
+    `${X} is my password`, GITHUB, ["xox", "b-1234567890-abcdefghijkl"].join(""), ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), MIXED, `look: ${MIXED} thanks`,
+  ];
+  /** What of the value must appear nowhere afterwards: the whole, and a piece too long to be a coincidence. */
+  const FRAGMENTS = [X, "zq-fake", "fake-value", GITHUB.slice(0, 20), MIXED, MIXED.slice(4, 14), "abcdefghijkl", "ABCDEFGHIJKLMNOP"];
+
+  /** The queue port as a recorder: every call is kept, and it says QUEUED as the real one does. */
+  function recordingQueue() {
+    /** @type {Record<string, any>[]} */ const calls = [];
+    return {
+      calls,
+      port: {
+        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: { UNDECLARED: "undeclared" }, attributed: (/** @type {string} */ text) => text,
+        handoffId: () => "handoff/ceo/recorded", readHandoffs: () => [{ id: "handoff/ceo/recorded", session: "ceo", prompt: "" }],
+        queueOrLose(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
+      },
+    };
+  }
+
+  /** The running loop over real `createInbound`, the real forwarder and the real `converse`, with a recorder at every port that leaves the process. */
+  async function run(/** @type {string[]} */ texts) {
+    const { ledger, inbound, path } = core();
+    const queue = recordingQueue();
+    const toAnswers = /** @type {Record<string, any>[]} */ ([]);
+    const controller = new AbortController();
+    const wire = /** @type {{ sent: Record<string, any>[], deleted: Record<string, any>[] }} */ ({ sent: [], deleted: [] });
+    const provider = {
+      poll: async () => { controller.abort(); return { updates: texts.map((text, index) => messageUpdate(300 + index, text)), cursor: 400 }; },
+      send: async (/** @type {Record<string, any>} */ message) => { wire.sent.push(message); return { messageRef: `ref-${wire.sent.length}` }; },
+      deleteMessage: async (/** @type {Record<string, any>} */ target) => { wire.deleted.push(target); },
+      answerCallbackQuery: async () => {}, leaveChat: async () => {},
+    };
+    const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
+    const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "ceo", status: "idle" }] });
+    const answers = { answer: async (/** @type {Record<string, any>} */ accepted) => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
+    const offsets = /** @type {ReturnType<typeof createOffsetStore>} */ ({ read: () => undefined, write: () => {} });
+    await runListener({
+      provider: /** @type {any} */ (provider), inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, signal: controller.signal,
+      onForward: createForwarder({ answers, send, converse: conversation.forward, log: () => {} }),
+    });
+    return { queue: queue.calls, toAnswers, wire, ledgerText: readFileSync(path, "utf8") };
+  }
+
+  test("POSITIVE CONTROL: a benign message IS queued once and answered once, so the empty readings below are not an inert harness", async () => {
+    const result = await run(["why did the merge queue stall?"]);
+    assert.equal(result.queue.length, 1, "the queue port was called once for the clean message");
+    assert.equal(result.toAnswers.length, 1);
+    assert.equal(result.wire.deleted.length, 0);
+    assert.equal(result.wire.sent.length, 1, "converse's acknowledgement");
+  });
+
+  test("every credential message: the queue port is never called, `answers` never sees it, the one reply carries no replyTo, and nothing is written with any part of it", async () => {
+    assert.equal(CREDENTIAL_MESSAGES.length, 14, "the population is not empty");
+    for (const text of CREDENTIAL_MESSAGES) {
+      const result = await run([text]);
+      const label = text.replace(X, "<X>").slice(0, 30);
+      assert.deepEqual(result.queue, [], `the queue was called for ${label}`);
+      assert.deepEqual(result.toAnswers, [], `answers read ${label}`);
+      assert.equal(result.wire.deleted.length, 1, `${label} was not deleted from the chat`);
+      assert.equal(result.wire.sent.length, 1, `${label}: exactly one reply`);
+      assert.equal(Object.hasOwn(result.wire.sent[0], "replyTo") && result.wire.sent[0].replyTo !== undefined, false, `the reply to ${label} quotes the message`);
+      for (const fragment of FRAGMENTS) {
+        assert.ok(!result.ledgerText.includes(fragment), `the ledger holds ${fragment} after ${label}`);
+        assert.ok(!JSON.stringify(result.wire).includes(fragment), `the chat was sent ${fragment} after ${label}`);
+      }
+      const lines = result.ledgerText.trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(lines.length, 1, "one line: the verdict, and nothing from converse");
+      assert.ok(["drop", "withhold"].includes(lines[0].verdict) && lines[0].sha256 === null, `${label}: ${lines[0].verdict}, hash ${lines[0].sha256}`);
+    }
+  });
+
+  test("a withheld message is told once and the same message resent with 'not a secret' is queued", async () => {
+    const withheld = await run([MIXED]);
+    assert.match(withheld.wire.sent[0].text, /looks like a credential/);
+    const released = await run([`${MIXED} not a secret`]);
+    assert.equal(released.queue.length, 1);
+    assert.equal(released.wire.deleted.length, 0);
+  });
+
+  test("a credential and a benign message in one batch: only the benign one is queued", async () => {
+    const result = await run([`password: ${X}`, "how is the queue today?"]);
+    assert.equal(result.queue.length, 1);
+    assert.equal(result.toAnswers.length, 1);
+    assert.ok(!JSON.stringify(result.queue).includes(X));
   });
 });
 
