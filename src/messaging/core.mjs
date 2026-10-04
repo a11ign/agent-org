@@ -34,6 +34,8 @@ export const DEFAULT_CONFIG = Object.freeze({
     release: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
     // A milestone is told once and never reminded or cleared: it is a declared moment that happened, not a condition that stands. Not silent: it is news.
     milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
+    // A watched thing changing state is told once per change and never reminded or cleared: the chairman asked to be told when it moves, and the watch ends with the thing.
+    watch: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
   }),
   reminders: Object.freeze({ max: 3, everyMs: 24 * HOUR_MS }),
   rate: Object.freeze({ burst: DEFAULT_RATE.burst, hourlyCap: DEFAULT_RATE.hourlyCap, windowMs: HOUR_MS }),

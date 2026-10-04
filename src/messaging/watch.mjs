@@ -31,6 +31,10 @@
 // **THE MILESTONES SOURCE READS THE PROJECT'S OWN DECLARATION (a11ign/a11ign#3414)**: `messaging.milestones` names the file, the source is constructed only when it is
 // set, and the file is read and validated INSIDE the source, so a malformed one costs that source its tick (logged, exit 1) and not the requests beside it. Its
 // first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each. It reads one issue, one pull request or the releases of a repository, each admitted by `READ_API_PATH` or `MILESTONE_API_PATH`.
+//
+// **THE WATCHED SOURCE IS THE CHAIRMAN'S "KEEP ME POSTED" (a11ign/a11ign#3418)**: `chairman:watch add` records a thing in the ledger, and each tick reads every active watch through
+// the placeholder vocabulary's readers (`watchReaders`, built for a real host only) and offers `watch:<thing>` when its state is not the one last told. `watch-list.mjs` holds
+// the rules; a watch ends when its final state has been TOLD, which the ledger shows, so nothing here removes anything.
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -51,8 +55,10 @@ import { createReaders } from "./sources/readers.mjs";
 import { observeMilestones, readMilestonesFile, seenMilestoneKeys } from "./sources/milestones.mjs";
 import { observeReleases, seenKeys } from "./sources/releases.mjs";
 import { observeStalls } from "./sources/stall.mjs";
+import { observeWatched } from "./sources/watched.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
+import { createWatchReaders } from "./watch-list.mjs";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
 import { readAgents } from "../herdr-agents.mjs";
 import { completionPath } from "../lib/tick-completion.mjs";
@@ -159,7 +165,8 @@ export function createGhReader({ run = runGh } = {}) {
 /** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
 
 /** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } | null, readers: Record<string, any>,
- *           history: Record<string, any>[], releaseRepos: readonly string[], milestonesPath: string | null }} SourceContext */
+ *           history: Record<string, any>[], releaseRepos: readonly string[], milestonesPath: string | null,
+ *           watchReaders: import("./placeholders.mjs").Readers | undefined }} SourceContext */
 /** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
 
 /**
@@ -268,6 +275,19 @@ export const MILESTONES = {
   },
 };
 
+/**
+ * What the chairman asked to be kept posted on (`chairman:watch`, a11ign/a11ign#3418): each thing in the ledger's watch list is read through the placeholder vocabulary's
+ * readers, and a change of its state is told. A caller that hands over no `watchReaders` constructs none and reads nothing for it.
+ * @type {Source}
+ */
+export const WATCHED = {
+  name: "watched",
+  async observe({ repo, now, history, watchReaders }) {
+    if (watchReaders === undefined) return { events: [], notes: [] };
+    return observed(await observeWatched({ lines: history, readers: watchReaders, now: () => now, repo, log: () => {} }));
+  },
+};
+
 /** The sources this program asks, in order. `summary` is not among them: it is added only for a configuration that declares one (`sourcesFor`). */
 export const DEFAULT_SOURCES = Object.freeze([REQUESTS]);
 
@@ -282,13 +302,16 @@ const RELEASES_PER_PAGE = 100;
  * nothing is sent. The source also answers nothing on a `null` summary, so a caller that hands one over in `sources` cannot send one either.
  * THE RELEASES SOURCE EXISTS ONLY FOR A HOST THAT DECLARES REPOSITORIES TO READ (`releaseRepos`), and `main` hands none to a caller that injected its own `github`.
  * THE MILESTONES SOURCE EXISTS ONLY WHEN `messaging.milestones` NAMES A FILE, and a caller that names none constructs none and reads nothing for it.
- * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[], milestonesPath: string | null }} input @returns {readonly Source[]}
+ * THE WATCHED SOURCE EXISTS ONLY FOR A CALLER THAT HANDS OVER `watchReaders`, and `main` builds them for a real host only.
+ * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[], milestonesPath: string | null,
+ *   watchReaders: import("./placeholders.mjs").Readers | undefined }} input @returns {readonly Source[]}
  */
-function sourcesFor({ summary, readers, releaseRepos, milestonesPath }) {
+function sourcesFor({ summary, readers, releaseRepos, milestonesPath, watchReaders }) {
   const declared = summary === null ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, SUMMARY];
   const withReleases = releaseRepos.length === 0 ? declared : [...declared, RELEASES];
   const withMilestones = milestonesPath === null ? withReleases : [...withReleases, MILESTONES];
-  return readers === undefined ? withMilestones : [...withMilestones, ...HOST_SOURCES];
+  const withWatched = watchReaders === undefined ? withMilestones : [...withMilestones, WATCHED];
+  return readers === undefined ? withWatched : [...withWatched, ...HOST_SOURCES];
 }
 
 /** @param {Map<string, import("./ledger.mjs").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
@@ -360,17 +383,18 @@ async function gather(context, sources) {
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
  *
  * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
- *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], milestonesPath?: string | null, log?: (line: string) => void, sources?: readonly Source[],
+ *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], milestonesPath?: string | null,
+ *           watchReaders?: import("./placeholders.mjs").Readers, log?: (line: string) => void, sources?: readonly Source[],
  *           coreConfig?: object }} input
  * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
 export async function runWatch({
-  github, provider, ledger, now, repo, readers, summary, releaseRepos = [], milestonesPath = null, log = () => {},
-  sources = sourcesFor({ summary, readers, releaseRepos, milestonesPath }), coreConfig,
+  github, provider, ledger, now, repo, readers, summary, releaseRepos = [], milestonesPath = null, watchReaders, log = () => {},
+  sources = sourcesFor({ summary, readers, releaseRepos, milestonesPath, watchReaders }), coreConfig,
 }) {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
-  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos, milestonesPath }, sources);
+  const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos, milestonesPath, watchReaders }, sources);
   recordNotes({ notes, ledger, history, log });
   const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
   const decisions = await messenger.tick(withoutSnoozed(events, { history, nowMs: now() }));
@@ -479,18 +503,19 @@ async function buildProvider({ config, providers, fetch: fetchImpl, err }) {
 /** What a caller may leave out. A spread and not parameter defaults: each default is a branch, and `main` was past the complexity limit. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined),
+  watchReaders: /** @type {import("./placeholders.mjs").Readers | undefined} */ (undefined),
   providers: /** @type {Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>} */ ({ telegram: telegramProvider }), fetch: globalThis.fetch,
   out: (/** @type {string} */ line) => console.log(line), err: (/** @type {string} */ line) => console.error(line),
 });
 
 /**
- * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any, readers?: Record<string, any>,
+ * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any, readers?: Record<string, any>, watchReaders?: import("./placeholders.mjs").Readers,
  *           providers?: Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>, fetch?: typeof fetch,
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {Promise<number>} the exit code: 0 done (or off), 1 something failed this tick, 2 refused to start
  */
 export async function main(deps = {}) {
-  const { root, env, home, now, github, readers, providers, fetch: fetchImpl, out, err } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, env, home, now, github, readers, watchReaders, providers, fetch: fetchImpl, out, err } = { ...DEFAULT_DEPS(), ...deps };
   const config = loadConfig(root, home, err);
   if (config === null) return EXIT.refused;
   // OFF IS SILENT AND CONSTRUCTS NOTHING: no reader, no provider, no ledger directory.
@@ -506,6 +531,7 @@ export async function main(deps = {}) {
   const result = await runWatch({
     github: reader, provider, repo: trackerRepo(root), summary: config.summary, releaseRepos: github === undefined ? declaredCodeRepos(root) : [], milestonesPath: config.milestones,
     readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
+    watchReaders: watchReaders ?? (github === undefined ? createWatchReaders(trackerRepo(root), now) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });
   for (const { key, action } of result.decisions) if (!IDLE_ACTIONS.has(action)) out(`${key}: ${action}`);
