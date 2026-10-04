@@ -27,6 +27,7 @@ import {
   gh, git, issues, milestone, mergeState, misAuthored, reported, daysUntil, readSetIsNotMain, countable,
   conflictMetrics, readyRows} from "./board-data.mjs";
 import { editionDay } from "./board-discussion.mjs";
+import { liveToolVersion } from "./lib/tool-version.mjs";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.mjs";
 
 const argv = process.argv.slice(2);
@@ -570,8 +571,36 @@ function facts(since, sinceLabel) {
     fleetHours, closed, open, blockers, ready, awaiting, conflict, flow: readFlow(Date.now()) };
 }
 
-/** @param {any} d @param {Date} [now] the render instant: the title's day is London's, from editionDay (#1442) */
-export function render(d, now = new Date()) {
+/**
+ * The line a reader finds under the header to say which agent-org made this report (#3468, of #3443): the host runs ONE version and a reading says which.
+ * It calls `liveToolVersion` and does not re-spell "which tag is live", because a second spelling is the two-versions defect #3443 closes. A tool checkout at
+ * no release tag cannot name a version, and the report says so with the cause rather than print a guess or leave a blank a reader takes for "unversioned".
+ * @param {(args: string[]) => string} [run] git in the tool checkout (`liveToolVersion`'s own default when left out); injected by the test
+ * @returns {string} `agent-org vX.Y.Z`
+ */
+export function readToolVersionLine(run) {
+  const tag = liveToolVersion(run);
+  if (tag === null) throw new Error("no release tag points at the tool checkout's HEAD");
+  return `agent-org ${tag}`;
+}
+
+/** @param {() => string} readVersion answers the line, or throws (or answers nothing) when it cannot @returns {string} */
+function toolVersionParagraph(readVersion) {
+  try {
+    const line = readVersion()?.trim();
+    if (line) return line;
+    throw new Error("the version reader answered nothing");
+  } catch (err) {
+    return `agent-org version not read: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}`;
+  }
+}
+
+/**
+ * @param {any} d
+ * @param {Date} [now] the render instant: the title's day is London's, from editionDay (#1442)
+ * @param {() => string} [readVersion] the tool version line (#3468); injected so a test reads no git
+ */
+export function render(d, now = new Date(), readVersion = () => readToolVersionLine()) {
   const { sinceLabel } = d;
   const L = [];
   L.push(`# Board report — ${editionDay(now)}`);
@@ -580,6 +609,8 @@ export function render(d, now = new Date()) {
     + `agent said: issues and the milestone are read from the API, merges from \`git log main\`, and the `
     + `two figures neither can supply are quoted from \`docs/board/reported/\` with their measurer `
     + `named — or declared unreported. Window: ${sinceLabel}.`);
+  L.push("");
+  L.push(toolVersionParagraph(readVersion));
   L.push("");
   release(d, L);
   blockerTable(d, L);
