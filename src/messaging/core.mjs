@@ -201,7 +201,8 @@ export function createMessenger({ provider, ledger, now, config: overrides }) {
       silent: config.kinds[event.kind].silent,
       replyTo: plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef ? known.messageRef : undefined,
     };
-    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text: event.text };
+    // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
+    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text };
     const { status } = await attemptSend(event.key, message, extra);
     const spoken = { first: "sent", update: "updated", reminder: "reminded", cleared: "cleared" }[plan.kind];
     return { key: event.key, action: status === STATUS.sent ? spoken : status };

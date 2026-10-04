@@ -27,14 +27,26 @@ const scratch = mkdtempSync(join(tmpdir(), "messaging-requests-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let nextLedger = 0;
 
-/** The three lines a request alert must be built from (a11ign/a11ign#3335); every brief below carries them unless it says `lines: ""`. */
+/**
+ * The lines a request alert is built from (a11ign/a11ign#3335, #3412). A brief with no `chairman-options` block carries NO_OPTION_LINES, and
+ * one with a block carries OPTION_LINES instead of the last line: `brief()` picks by the body, so every fixture below is complete unless it
+ * says `lines: ""`.
+ */
+const WHAT = "What is happening: worker 4 is switched off and a capture is waiting on it";
 const ACT = "Ask: switch worker 4 on";
 const ONLY_YOU = "Only you because: the switch is behind your account";
 const CHECKED = "Checked: 20:03Z, gh api repos/x/y printed false";
-const THREE_LINES = [ACT, ONLY_YOU, CHECKED].join("\n");
+const HOW_LONG = "How long: two minutes";
+const UNBLOCKS = "Unblocks: the 20:30 capture";
+const NOT_HIS_CLAUDE = "Not the chairman's Claude session because: the switch is a button on a box in his house";
+const RECOMMEND = "Recommend: A, switch it on";
+const TRADE_OFF = "Trade-off: A costs a capture slot tonight";
+const COMMON = [WHAT, ACT, ONLY_YOU, CHECKED, HOW_LONG, UNBLOCKS];
+const LINES = [...COMMON, NOT_HIS_CLAUDE].join("\n");
+const OPTION_LINES = [...COMMON, RECOMMEND, TRADE_OFF].join("\n");
 
-/** @param {string} body @param {{ lines?: string } & Record<string, unknown>} [more] `lines` replaces the three required lines; `""` writes a brief with none */
-function brief(body, { lines = THREE_LINES, ...more } = {}) {
+/** @param {string} body @param {{ lines?: string } & Record<string, unknown>} [more] `lines` replaces the required lines; `""` writes a brief with none */
+function brief(body, { lines = /chairman-options/.test(body) ? OPTION_LINES : LINES, ...more } = {}) {
   return { body: lines === "" ? body : `${body}\n${lines}`, createdAt: "2026-10-01T18:00:00Z", authorAssociation: "MEMBER", ...more };
 }
 
@@ -55,6 +67,7 @@ function world() {
   let messenger = createMessenger({ provider, ledger: ledger(), now: () => at });
   return {
     provider,
+    path,
     advance: (/** @type {number} */ ms) => { at += ms; },
     restart() { messenger = createMessenger({ provider, ledger: ledger(), now: () => at }); },
     /** @param {any[]} rows @returns {Promise<{ decisions: any[], observed: ReturnType<typeof observeRequests> }>} */
@@ -77,7 +90,7 @@ describe("a row that gains needs:chairman yields ONE request however many ticks 
     const one = world();
     await one.tick([row(2885)]);
     assert.equal(one.provider.sent.length, 1);
-    assert.match(one.provider.sent[0].text, /^Needs you: a11ign\/a11ign#2885 Row 2885 needs a decision/);
+    assert.ok(one.provider.sent[0].text.startsWith("What is happening: "), "the message opens with what is happening");
     assert.match(one.provider.sent[0].text, /https:\/\/github\.com\/a11ign\/a11ign\/issues\/2885$/);
     assert.equal(one.provider.sent[0].silent, false, "a request is the one thing that must be heard");
   });
@@ -108,9 +121,9 @@ describe("a row that gains needs:chairman yields ONE request however many ticks 
 
   test("a re-briefed ask IS a change, and is sent once more with the new line", async () => {
     const w = world();
-    const first = brief("**ceo — BRIEF for the chairman: decide.**", { lines: THREE_LINES });
+    const first = brief("**ceo — BRIEF for the chairman: decide.**", { lines: LINES });
     await w.tick([row(2885, { comments: [first] })]);
-    const later = brief("**ceo — BRIEF for the chairman: decide.**", { createdAt: "2026-10-02T08:00:00Z", lines: THREE_LINES.replace(ACT, "Ask: switch worker 5 on instead") });
+    const later = brief("**ceo — BRIEF for the chairman: decide.**", { createdAt: "2026-10-02T08:00:00Z", lines: LINES.replace(ACT, "Ask: switch worker 5 on instead") });
     await w.tick([row(2885, { comments: [first, later] })]);
     assert.equal(w.provider.sent.length, 2);
     assert.match(w.provider.sent[1].text, /worker 5 on instead/);
@@ -159,7 +172,7 @@ describe("a row that loses the label yields ONE resolved event (done-when 1)", (
     w.advance(5 * MINUTE);
     await w.tick([row(2885)]);
     assert.equal(w.provider.sent.length, 3, "request, cleared, request again");
-    assert.match(w.provider.sent[2].text, /^Needs you: /);
+    assert.match(w.provider.sent[2].text, /^What is happening: /);
   });
 
   test("one open request among several resolves alone", async () => {
@@ -198,7 +211,7 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
   });
 
   describe("a row whose comment list is at the window of 100", () => {
-    const askedFor = (/** @type {string} */ ask) => THREE_LINES.replace(ACT, `Ask: ${ask}`);
+    const askedFor = (/** @type {string} */ ask) => LINES.replace(ACT, `Ask: ${ask}`);
     const old = brief("**ceo — BRIEF for the chairman:**", { createdAt: "2026-09-20T10:00:00Z", lines: askedFor("the OLD ask") });
     const fresh = brief("**ceo — BRIEF for the chairman:**", { createdAt: "2026-10-02T07:00:00Z", lines: askedFor("the NEW ask") });
     const filler = (/** @type {number} */ n) => Array.from({ length: n }, (_, i) => brief(`chatter ${i}`, { createdAt: "2026-09-21T10:00:00Z", lines: "" }));
@@ -295,12 +308,14 @@ describe("the options block (done-when 2)", () => {
 const observeOne = ({ comments, ...more }) => observeRequests({ repo: REPO, rows: [row(7, { comments, ...more })], openKeys: [], now: START });
 
 describe("what is quoted from the row", () => {
-  test("the text is the title and the three lines of the LATEST brief, without markup, and the link is beside it", () => {
+  test("the text is the lines of the LATEST brief, without markup, and the link is beside it", () => {
     const older = brief("**ceo — BRIEF for the chairman: the old ask.**", { createdAt: "2026-10-01T10:00:00Z" });
     const newer = brief("**ceo, 2026-10-02 — BRIEF for the chairman: the `new` ask.**", { createdAt: "2026-10-02T07:00:00Z",
-      lines: ["**Ask:** switch `worker 4` on", "- **Only you because**: the switch is behind your account", "> Checked: 20:03Z, printed false"].join("\n") });
+      lines: ["**What is happening:** worker `4` is off", "**Ask:** switch `worker 4` on", "- **Only you because**: the switch is behind your account", "> Checked: 20:03Z, printed false",
+        "How long: two minutes", "__Unblocks__: the capture", "Not the chairman’s Claude session because: it is a button"].join("\n") });
     const { events } = observeOne({ comments: [newer, older] });
-    assert.equal(events[0].text, ["Needs you: a11ign/a11ign#7 Row 7 needs a decision", "Ask: switch worker 4 on", "Only you because: the switch is behind your account", "Checked: 20:03Z, printed false"].join("\n"));
+    assert.equal(events[0].text, ["What is happening: worker 4 is off", "Ask: switch worker 4 on", "Only you because: the switch is behind your account", "Checked: 20:03Z, printed false",
+      "How long: two minutes", "Unblocks: the capture", "Not the chairman's Claude session because: it is a button"].join("\n"));
     assert.deepEqual(events[0].links, ["https://github.com/a11ign/a11ign/issues/7"]);
   });
 
@@ -311,39 +326,96 @@ describe("what is quoted from the row", () => {
       assert.deepEqual(observed.events, [], `association ${authorAssociation}: a spoofed brief is no brief, so nothing is sent`);
       assert.doesNotMatch(JSON.stringify(observed.problems), /evil\.example/, `association ${authorAssociation}`);
     }
-    const real = brief("**BRIEF for the chairman: the real one**", { authorAssociation: "COLLABORATOR", lines: THREE_LINES.replace(ACT, "Ask: the real one") });
+    const real = brief("**BRIEF for the chairman: the real one**", { authorAssociation: "COLLABORATOR", lines: LINES.replace(ACT, "Ask: the real one") });
     assert.match(String(observeOne({ comments: [real] }).events[0].text), /the real one/);
   });
 
   test("a spoofed brief that is NEWER does not displace the real one", () => {
-    const real = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-01T10:00:00Z", lines: THREE_LINES.replace(ACT, "Ask: the real one") });
-    const spoof = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-02T10:00:00Z", authorAssociation: "NONE", lines: THREE_LINES.replace(ACT, "Ask: the spoof") });
+    const real = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-01T10:00:00Z", lines: LINES.replace(ACT, "Ask: the real one") });
+    const spoof = brief("**BRIEF for the chairman: x**", { createdAt: "2026-10-02T10:00:00Z", authorAssociation: "NONE", lines: LINES.replace(ACT, "Ask: the spoof") });
     const text = String(observeOne({ comments: [real, spoof] }).events[0].text);
     assert.match(text, /the real one/);
     assert.doesNotMatch(text, /the spoof/);
   });
 
   test("a very long line and control characters are cut to short lines", () => {
-    const long = brief("**BRIEF for the chairman: x**", { lines: THREE_LINES.replace(ACT, `Ask: ${"x".repeat(1000)}`) });
-    const { events } = observeOne({ title: "bell\u0007 and‮ reversed", comments: [long] });
+    const lines = LINES.replace(ACT, `Ask: ${"x".repeat(1000)}`).replace(WHAT, "What is happening: bell\u0007 and‮ reversed");
+    const { events } = observeOne({ comments: [brief("**BRIEF for the chairman: x**", { lines })] });
     const [head, ask] = String(events[0].text).split("\n");
-    assert.equal(head, "Needs you: a11ign/a11ign#7 bell and reversed");
+    assert.equal(head, "What is happening: bell and reversed");
     assert.ok(ask.length <= 308, `the Ask line is ${ask.length} characters`);
     assert.ok(ask.endsWith("…"));
   });
 });
 
-describe("a request alert states the act, or it is not sent (a11ign/a11ign#3335)", () => {
-  const LABELS = ["Ask", "Only you because", "Checked"];
-  const without = (/** @type {string} */ label) => THREE_LINES.split("\n").filter((line) => !line.startsWith(`${label}:`)).join("\n");
+describe("a request alert is a brief: it opens with what is happening, carries every line, and ends with the link (a11ign/a11ign#3335, #3412)", () => {
+  const LABELS = ["What is happening", "Ask", "Only you because", "Checked", "How long", "Unblocks", "Not the chairman's Claude session because"];
+  const without = (/** @type {string} */ label, /** @type {string} */ lines = LINES) => lines.split("\n").filter((line) => !line.startsWith(`${label}:`)).join("\n");
+  const OPTIONS = "\n<!-- chairman-options: A=switch it on; B=leave it off -->";
 
-  test("POSITIVE CONTROL: a brief with all three lines sends ONE message holding the title and all three", async () => {
+  test("POSITIVE CONTROL (1): a complete brief sends ONE message that opens with what is happening, ends with the link, and holds neither the row's number nor its title", async () => {
     const w = world();
     const { observed } = await w.tick([row(3228)]);
     assert.equal(w.provider.sent.length, 1);
     const text = w.provider.sent[0].text;
-    for (const line of [ACT, ONLY_YOU, CHECKED, "Row 3228 needs a decision"]) assert.ok(text.includes(line), `the message lacks ${JSON.stringify(line)}`);
+    for (const line of LINES.split("\n")) assert.ok(text.includes(line), `the message lacks ${JSON.stringify(line)}`);
+    assert.ok(text.startsWith(`${WHAT}\n`), `the message opens with: ${text.split("\n")[0]}`);
+    assert.equal(text.split("\n").at(-1), `https://github.com/${REPO}/issues/3228`, "the link is the last line");
+    assert.ok(!text.includes("#3228"), "no row number");
+    assert.ok(!text.includes("Row 3228 needs a decision"), "no row title");
+    assert.ok(!text.includes("Needs you"), "no ticket header");
     assert.deepEqual(observed.problems, []);
+  });
+
+  test("the ledger's text field holds exactly what was sent: it opens with what is happening and ends with the link", async () => {
+    const w = world();
+    await w.tick([row(3228)]);
+    const [line] = readLedgerLines(w.path).filter((entry) => entry.status === "sent");
+    assert.equal(line.text, w.provider.sent[0].text);
+  });
+
+  test("(2) a brief with options but no Recommend or no Trade-off is refused, naming the missing label and only it", () => {
+    for (const label of ["Recommend", "Trade-off"]) {
+      const { events, problems } = observeOne({ comments: [brief(`**BRIEF for the chairman: x**${OPTIONS}`, { lines: without(label, OPTION_LINES) })] });
+      assert.deepEqual(events, []);
+      assert.equal(problems.length, 1);
+      assert.match(problems[0].reason, new RegExp(`^alert not sent: .* no "${label}:" line`));
+      for (const other of LABELS.filter((each) => each !== label)) assert.ok(!problems[0].reason.includes(`"${other}:"`), `${other} is not what is missing`);
+    }
+    const { events, problems } = observeOne({ comments: [brief(`**BRIEF for the chairman: x**${OPTIONS}`)] });
+    assert.equal(events.length, 1, "POSITIVE CONTROL: the same brief with both lines sends");
+    assert.deepEqual(problems, []);
+    assert.ok(String(events[0].text).includes(RECOMMEND) && String(events[0].text).includes(TRADE_OFF));
+    assert.ok(!String(events[0].text).includes("Not the chairman's Claude session because"), "an options brief is not asked why his Claude cannot do it");
+  });
+
+  test("a malformed options block still means a choice was meant, so Recommend and Trade-off are required of it", () => {
+    const { events, problems } = observeOne({ comments: [brief("**BRIEF for the chairman: x**\n<!-- chairman-options: A first -->", { lines: LINES })] });
+    assert.deepEqual(events, []);
+    assert.match(problems[0].reason, /"Recommend:", "Trade-off:"/);
+  });
+
+  test("(3) a brief with no options and no 'Not the chairman's Claude session because:' is refused, and the apostrophe may be curly", () => {
+    const refused = observeOne({ comments: [brief("**BRIEF for the chairman: x**", { lines: without("Not the chairman's Claude session because") })] });
+    assert.deepEqual(refused.events, []);
+    assert.match(refused.problems[0].reason, /^alert not sent: .* no "Not the chairman's Claude session because:" line/);
+    assert.match(refused.problems[0].reason, /his own Claude session/, "the refusal says what the line is for");
+    const curly = observeOne({ comments: [brief("**BRIEF for the chairman: x**", { lines: LINES.replace("chairman's", "chairman’s") })] });
+    assert.equal(curly.events.length, 1, "POSITIVE CONTROL: the line is accepted once it is there");
+  });
+
+  test("(4) every refusal, whichever line is missing, begins `alert not sent:`", () => {
+    const cases = [
+      ...LABELS.map((label) => brief("**BRIEF for the chairman: x**", { lines: without(label) })),
+      brief(`**BRIEF for the chairman: x**${OPTIONS}`, { lines: without("Recommend", OPTION_LINES) }),
+      brief("**BRIEF for the chairman: x**", { lines: "" }),
+    ];
+    for (const comment of cases) {
+      const { events, problems } = observeOne({ comments: [comment] });
+      assert.deepEqual(events, []);
+      assert.ok(problems[0].reason.startsWith("alert not sent:"), problems[0].reason);
+    }
+    assert.ok(observeOne({ comments: [] }).problems[0].reason.startsWith("alert not sent:"));
   });
 
   test("a labelled row with NO brief sends nothing, and the source says why", async () => {
@@ -375,7 +447,7 @@ describe("a request alert states the act, or it is not sent (a11ign/a11ign#3335)
   test("several missing lines are all named in the one reason", () => {
     const { problems } = observeOne({ comments: [brief("**BRIEF for the chairman: x**", { lines: ONLY_YOU })] });
     assert.equal(problems.length, 1);
-    assert.match(problems[0].reason, /"Ask:", "Checked:"/);
+    assert.match(problems[0].reason, /"What is happening:", "Ask:", "Checked:", "How long:", "Unblocks:", "Not the chairman's Claude session because:"/);
   });
 
   test("a refused row is STILL LABELLED: it never reads as the label going, and the ledger's open request for it does not resolve", async () => {
