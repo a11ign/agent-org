@@ -13,8 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.mjs` resolves one
-import { shippedScriptText } from "../host-units.mjs";
+import { fileURLToPath } from "node:url";
 import { callerScript, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.mjs";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
@@ -23,9 +22,15 @@ const WORKERS = "a11ign-ai-workers";
 const COST = 3;
 const GRAPHQL_BODY = `{"data":{"viewer":{"login":"x"}},"rateLimit":{"remaining":4990,"cost":${COST},"resetAt":"2026-10-04T15:00:00Z"}}`;
 
+/**
+ * The wrapper's own text, its `@@name@@` placeholders filled with paths nothing here uses: every one is overridden by an environment variable
+ * (`A11Y_GH_REAL`, `GH_CONFIG_DIR`) in every call below. It is NOT rendered through `host-units.mjs`, which needs the project's git history, and
+ * the acceptance job that runs this file has none.
+ */
 const WRAPPER = (() => {
+  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
   const rendered = join(mkdtempSync(join(tmpdir(), "gh-ledger-render-")), "gh");
-  writeFileSync(rendered, shippedScriptText("gh") as string, { mode: 0o755 });
+  writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;
 })();
 
