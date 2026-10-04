@@ -194,7 +194,7 @@ export function tellingWhenUndelivered({ ledger, send, converse }) {
     /** @type {{ ref: string | null, error: unknown }} */
     let ack = { ref: null, error: null };
     try {
-      ack = { ref: (await send({ text: notReached(describeError(cause)), replyTo: String(accepted.messageId) })).messageRef, error: null };
+      ack = { ref: (await send({ text: notReached(), replyTo: String(accepted.messageId) })).messageRef, error: null };
     } catch (error) {
       ack = { ref: null, error };
     }
