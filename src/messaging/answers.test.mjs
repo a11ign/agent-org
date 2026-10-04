@@ -1,3 +1,4 @@
+// no-token: prepareContext -- the orders port and the GitHub writer are injected fixtures and nothing here calls it; `answers.mjs` only carries it in through the `converse.mjs` import (#3581)
 // @ts-check
 // ANSWERS ON THE ROW (a11ign/a11ign#2908 done-whens 1 to 5), over a real ledger file, the real `createInbound` (so every accepted value is
 // minted, never built) and a fixture GitHub writer that records each call. Nothing here reaches a network.
