@@ -18,6 +18,7 @@ import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_OR
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.mjs";
 import { claimRecordOf } from "../claim-stall.mjs";
 import { idleClaimantReading } from "../idle-claimant.mjs";
+import { familyNumber } from "../arm-pr.mjs";
 import { readAgents } from "../herdr-agents.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
 import { NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
@@ -131,8 +132,12 @@ export function stalledPrFacts(prs, required, { now }) {
 export const OVERDUE_IDLE_CLAIM_MINUTES = 80;
 const IDLE_CLAIM_MS = OVERDUE_IDLE_CLAIM_MINUTES * 60_000;
 
-/** The reasons an idle claimed row is NAMED for, besides `claimed` and `held`. A LABEL on the alarm and never a condition for raising it. */
-export const IDLE_CLAIM_REASON = Object.freeze({ NEVER_STARTED: "never-started", WAIT_PREMISE_GONE: "wait-premise-gone" });
+/**
+ * The reasons an idle claimed row is NAMED for, besides `claimed` and `held`. A LABEL on the alarm and never a condition for raising it. `NO_WAIT` (#3569) is
+ * the general one: the holder is idle, nothing has moved for the bound, and it declares NO wait the gate can read (a row field, or a kind on a pull request
+ * it owns), whether or not it once moved -- the two named shapes are the cases where the CAUSE is known.
+ */
+export const IDLE_CLAIM_REASON = Object.freeze({ NEVER_STARTED: "never-started", WAIT_PREMISE_GONE: "wait-premise-gone", NO_WAIT: "idle-no-wait" });
 
 /**
  * @typedef {import("./claim-stall-tick.mjs").ClaimMoves} ClaimMoves
@@ -155,43 +160,55 @@ function waitKindsOf(row, holder, now) {
 }
 
 /**
- * The moves of a claimed row that is IN QUESTION for the idle shapes: read, owning no pull request (that clock is the PR's) and untouched for
- * `OVERDUE_IDLE_CLAIM_MINUTES`. `null` for any row outside that, so neither the herdr listing nor a reading is spent on it.
+ * The moves of a claimed row that is IN QUESTION for the idle shapes: read, not merged and untouched for `OVERDUE_IDLE_CLAIM_MINUTES`. A row owning a pull
+ * request IS in question since #3569 (it used to be `pr-owned` and so never read): the holder's wait on that pull request is a fact `idleClaimantReading`
+ * can read, and a holder idle on one with none is the stall. `null` for any row outside that, so neither the herdr listing nor a reading is spent on it.
  * @param {number} number @param {Holders} holders @returns {{ moves: ClaimMoves, lastMove: number } | null}
  */
 function untouchedMoves(number, holders) {
   const moves = holders.moves?.get(Number(number));
-  if (moves === undefined || moves.openPrs.length > 0 || moves.mergedAt !== null) return null;
+  if (moves === undefined || moves.mergedAt !== null) return null;
   const lastMove = Math.max(...[moves.claimedAt, moves.comment, moves.commit, moves.push].filter((at) => at !== null));
   return holders.now - lastMove >= IDLE_CLAIM_MS ? { moves, lastMove } : null;
 }
 
 /**
- * ONE CLAIMED ROW'S IDLE SHAPE: `{ reason }` when its holder is idle on a row nothing has moved, naming the shape; `{ unknown }` when the listing could not
- * say whether the holder is idle (a refused or partial one -- never a clear and never a trip); `null` when the row is not in question or its holder is
- * working, waiting on a declared field, or gone. `idleSince` is the row's last move, so `idleClaimantReading`'s stall is "idle NOW and nothing has moved
- * for the bound": herdr keeps no history, so the real idle run is at least as short, and a holder that is BUSY now is never named.
- * `never-started` is a claim with no commit, push or comment of the holder's; `wait-premise-gone` a `Not-before:` the row still carries although `waitingOn`
- * no longer holds it (the field is in the past), and it is asked first because it names the CAUSE.
+ * WHY AN IDLE HOLDER WITH NO READABLE WAIT IS NAMED: `wait-premise-gone` when the row still carries a `Not-before:` that `waitingOn` no longer holds (the
+ * field is in the past, and it names the CAUSE, so it is asked first), `never-started` for a claim with no commit, push, comment or pull request of the
+ * holder's, and `idle-no-wait` for every other holder that has moved before and then stopped with nothing declared.
+ * @param {any} row @param {ClaimMoves} moves @returns {string}
+ */
+function idleReasonOf(row, { commit, push, comment, openPrs }) {
+  if (notBeforeDate(row.body) !== null) return IDLE_CLAIM_REASON.WAIT_PREMISE_GONE;
+  return commit === null && push === null && comment === null && openPrs.length === 0 ? IDLE_CLAIM_REASON.NEVER_STARTED : IDLE_CLAIM_REASON.NO_WAIT;
+}
+
+/**
+ * ONE CLAIMED ROW'S IDLE SHAPE: `{ reason }` when its holder is idle on a row nothing has moved, with NO wait the gate can read, naming why; `{ unknown }` when
+ * the listing could not say whether the holder is idle (a refused or partial one -- never a clear and never a trip); `null` when the row is not in
+ * question or its holder is working, waiting on a declared field, gone, or A STANDING SEAT (`familyNumber` is `null` for it: a standing seat idle between
+ * orders is waiting for its next one, the normal state and not a stall, #3569). `idleSince` is the row's last move, so `idleClaimantReading`'s stall is "idle
+ * NOW and nothing has moved for the bound": herdr keeps no history, so the real idle run is at least as short, and a holder that is BUSY now is never named.
+ * THE HOLDER'S PULL REQUESTS ARE PASSED (#3569), so a review requested, checks pending, an approval the queue owns, `awaiting-evidence` and a `hold:` read as
+ * the wait they are rather than as `pr-owned` silence; the two clocks stay separate (the pull request is its own item at its own bound).
  * @param {any} row @param {Holders} holders @returns {{ reason: string } | { unknown: string } | null}
  */
 function idleShapeOf(row, holders) {
   const touched = untouchedMoves(row.number, holders);
-  if (touched === null) return null;
   const holder = sessionOf(row);
-  const reading = idleClaimantReading({ session: holder, waitKinds: waitKindsOf(row, holder, holders.now) }, { now: holders.now, agents: holders.agents, idleSince: touched.lastMove });
+  if (touched === null || holder === null || familyNumber(holder) === null) return null;
+  const reading = idleClaimantReading({ session: holder, waitKinds: waitKindsOf(row, holder, holders.now), prs: touched.moves.openPrs },
+    { now: holders.now, agents: holders.agents, idleSince: touched.lastMove });
   if (reading.kind === "unknown") return { unknown: reading.why };
-  if (reading.kind !== "stall") return null;
-  const { commit, push, comment } = touched.moves;
-  if (notBeforeDate(row.body) !== null) return { reason: IDLE_CLAIM_REASON.WAIT_PREMISE_GONE };
-  return commit === null && push === null && comment === null ? { reason: IDLE_CLAIM_REASON.NEVER_STARTED } : null;
+  return reading.kind === "stall" ? { reason: idleReasonOf(row, touched.moves) } : null;
 }
 
 /**
  * #3486: EVERY CLAIMED ROW AS A CANDIDATE FOR THE OUTCOME CLOCK: the age runs from the NEWEST claim record (`claimRecordOf`, which is the claim and
  * not a release) and nothing but the row closing stops it. `claimedComments` is `readClaimedRowComments`'s page; a claimed row it does not carry, or
  * one with no claim record, is `since: null` -- an unknown, never young. The reason is `held` for a row carrying a `hold:` label and `claimed` otherwise,
- * and, when `holders` is given (slice 2b), the idle shape the row is in (`idleShapeOf`). `unknown` is why a shape could not be told, for `unread`.
+ * and, when `holders` is given (slice 2b), the idle shape the row is in (`idleShapeOf`), which also gives the row ITS OWN bound, `OVERDUE_IDLE_CLAIM_MINUTES`
+ * (#3569). `unknown` is why a shape could not be told, for `unread`.
  * @param {any[]} openRows @param {any[]} claimedComments @param {Holders} [holders]
  * @returns {{ items: import("../org-health.mjs").OverdueCandidate[], unknown: string[] }}
  */
@@ -203,8 +220,8 @@ function claimedRowReadings(openRows, claimedComments, holders) {
     const shape = holders === undefined ? null : idleShapeOf(row, holders);
     if (shape !== null && "unknown" in shape) unknown.push(shape.unknown);
     const base = labelsOf(row).some((label) => label.startsWith("hold:")) ? "held" : "claimed";
-    return { kind: /** @type {const} */ ("row"), number: row.number, reason: shape !== null && "reason" in shape ? shape.reason : base,
-      owner: sessionOf(row), since: claimRecordOf(commentsOf.get(Number(row.number)) ?? [])?.at ?? null };
+    const item = { kind: /** @type {const} */ ("row"), number: row.number, reason: base, owner: sessionOf(row), since: claimRecordOf(commentsOf.get(Number(row.number)) ?? [])?.at ?? null };
+    return shape !== null && "reason" in shape ? { ...item, reason: shape.reason, boundMinutes: OVERDUE_IDLE_CLAIM_MINUTES } : item;
   });
   return { items, unknown };
 }

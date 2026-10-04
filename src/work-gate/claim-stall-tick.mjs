@@ -53,7 +53,8 @@ function declaredWaitOf(row, holder) {
 
 /**
  * @typedef {{ claimedAt: number, comment: number | null, commit: number | null, push: number | null,
- *   openPrs: { createdAt?: string, labels?: ({ name?: string } | string)[] }[], mergedAt: number | null }} ClaimMoves what a claim's holder has DONE, as plain data: the times
+ *   openPrs: { createdAt?: string, labels?: ({ name?: string } | string)[], number?: number, repoKey?: string, reviewDecision?: string | null,
+ *   checksPending?: boolean }[], mergedAt: number | null }} ClaimMoves what a claim's holder has DONE, as plain data: the times
  *   of the claim and of the holder's newest comment, commit and push, the pull requests that are the claim's own (`ownsPr`, in every tracked repository) and the
  *   merge of one since the claim. Data and not `ClaimFacts`, whose `file` and `work` are thunks that a Map in `decide`'s arguments could not carry through the shadow tap
  * @typedef {{ moves: Map<number, ClaimMoves>, skipped: Map<number, string> }} ClaimFactsOfTick every claimed row's moves, and for the rows whose facts could not be
@@ -64,7 +65,9 @@ function declaredWaitOf(row, holder) {
 /** @param {import("../claim-stall.mjs").ClaimFacts} facts @returns {ClaimMoves} */
 function movesOf(facts) {
   return { claimedAt: facts.claimedAt, comment: facts.comment, commit: facts.commit, push: facts.push,
-    openPrs: (facts.ownPrs ?? []).map((/** @type {any} */ pr) => ({ createdAt: pr.createdAt, labels: pr.labels })),
+    // #3569: the fields `idleClaimantReading` reads a holder's wait from (a review, a check, an approval, a hold), already on `ownPrs` -- no new read.
+    openPrs: (facts.ownPrs ?? []).map((/** @type {any} */ pr) => ({ createdAt: pr.createdAt, labels: pr.labels, number: pr.number, repoKey: pr.repoKey,
+      reviewDecision: pr.reviewDecision, checksPending: pr.checksPending })),
     mergedAt: facts.mergedPr?.mergedAt ?? null };
 }
 
