@@ -8,6 +8,10 @@
  *
  * POSITIVE CONTROL: test (1) is the non-empty case that the emptiness of (2), (4), (5) and (6) is read against -- each of those
  * differs from (1) in ONE fact and each also asserts that the changed fact is the only one, by running (1)'s inputs beside it.
+ *
+ * #3541 (the `(10)` tests): A CLAIMED ROW THAT HOLDS NO CODE STOPS RESERVING ITS REGION -- by a `no-code-left` label the holder sets, and
+ * because the prose around a fenced Region declares nothing. The control for both is (1)/(9): the same rows without the label, or with the
+ * file inside the fence, DO shelve, so the emptiness asserted below is read against a non-empty answer in the same test.
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -38,7 +42,7 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { claimedRegionOverlapReason, claimedRegionsOf, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.mjs");
+const { NO_CODE_LEFT_LABEL, claimedRegionOverlapReason, claimedRegionsOf, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.mjs");
 const { declaredRegionFiles } = await import("./region-paths.mjs");
 const { reportB4, sessionEligibilityReason } = await import("./row-claim.mjs");
 const { partitionUnclaimed } = await import("./work-gate.mjs");
@@ -279,4 +283,92 @@ test("(9) the gate counts a claimed row once: its open pull request's files deci
 test("the Regions in this file are read by the tree's own parser as the rules read them (the fixtures are not a second dialect)", () => {
   assert.deepEqual(declaredRegionFiles(rowBody(...REGION_3414), { rootFiles: new Set() }), REGION_3414);
   assert.deepEqual(declaredRegionFiles(rowBody(...REGION_3423), { rootFiles: new Set() }), REGION_3423);
+});
+
+// --- (10) #3541: A CLAIMED ROW THAT HOLDS NO CODE STOPS RESERVING ITS REGION ------------------------------------------------------------
+
+/** #3418's Region as it stood at 18:38Z (`userContentEdits`, measured 2026-10-04): one fenced entry, then the narrowing paragraph that NAMES `package.json`. */
+const NARROWING_3418 = "**Narrowed by `product-manager` 2026-10-04T18:45Z: done-when 1's code merged as agent-org#180 (`5617bff`), so the first Region "
+  + "(`watch-list.mjs`, its test, `sources/watched.mjs` and its test, `watch.mjs`, `package.json`, `event.mjs`, `core.mjs`) outlived its commit. "
+  + "What is left is a LIVE watch and three ledger readings, which edit nothing.**";
+const BODY_3418 = (fence: string[]) => `## Region\n\n\`\`\`\n${fence.join("\n")}\n\`\`\`\n\n${NARROWING_3418}\n\n`
+  + "The repository is **`a11ign/agent-org`**; paths are relative to its root.\n";
+const ROOT = { rootFiles: new Set(["package.json"]) };
+const WATCH_LIST = "agent-org:src/messaging/watch-list.mjs";
+const holder = (number: number, body: string, labels = ["in-progress"]) =>
+  ({ number, labels: labels.map((name) => ({ name })), body, blockedBy: { nodes: [] } });
+const shelvedBy = (ready: unknown, openRows: unknown[], prFiles: unknown[] = []) =>
+  partitionUnclaimed([ready], prFiles, { ...ROOT, openRows }).blocked;
+const offered = (ready: unknown, openRows: unknown[], prFiles: unknown[] = []) =>
+  partitionUnclaimed([ready], prFiles, { ...ROOT, openRows }).offerable.length;
+
+test("(10)(1) THE INCIDENT: a claimed row labelled `no-code-left` does not shelve a ready row on its Region; the same two rows without the label DO", () => {
+  const ready = readyRow(3509, REGION_3423);
+  const unlabelled = claimedRow(3418, REGION_3423);
+  const labelled = claimedRow(3418, REGION_3423, { labels: ["in-progress", NO_CODE_LEFT_LABEL] });
+  assert.equal(shelvedBy(ready, [unlabelled]).length, 1, "control: without the label the holder shelves the row (the non-empty case)");
+  assert.deepEqual(shelvedBy(ready, [labelled]), []);
+  assert.equal(offered(ready, [labelled]), 1);
+  assert.equal(claimFor(3509, "worker-3509", ghFor({ own: { number: 3509, region: REGION_3423 }, claimedRows: [unlabelled] }))?.includes("#3418"), true, "control, at the claim");
+  assert.equal(claimFor(3509, "worker-3509", ghFor({ own: { number: 3509, region: REGION_3423 }, claimedRows: [labelled] })), null, "at the claim too");
+  assert.deepEqual(claimedRegionsOf([labelled]), [], "and the holder is not in the list the rule reads");
+});
+
+test("(10)(2) the label drops ONLY the claimed-row reservation: an open pull request declaring `Closes #<row>` still decides, naming the pull request", () => {
+  const ready = readyRow(3509, REGION_3423);
+  const labelled = claimedRow(3418, REGION_3423, { labels: ["in-progress", NO_CODE_LEFT_LABEL] });
+  const touching = { number: 148, repoKey: "agent-org", repo: "a11ign/agent-org", files: ["docs/messaging.md"], changedFiles: 1, closes: [3418] };
+  const blocked = shelvedBy(ready, [labelled], [touching]);
+  assert.equal(blocked.length, 1, "the pull request touches a file the ready row declares");
+  assert.match(blocked[0].reason, /#148/);
+  assert.doesNotMatch(blocked[0].reason, /already claimed/, "named by its pull request, not as a claimed row");
+  const elsewhere = { ...touching, files: ["somewhere/else.mjs"] };
+  assert.equal(offered(ready, [labelled], [elsewhere]), 1, "control: the same pull request touching nothing shared leaves the row offered");
+  const run = ghFor({ own: { number: 3509, region: REGION_3423 }, claimedRows: [labelled],
+    prs: [{ number: 148, changedFiles: 1, headRefName: "agent/x-3418", body: "Closes a11ign/a11ign#3418", files: [{ path: "docs/messaging.md" }], labels: [] }] });
+  assert.match(claimFor(3509, "worker-3509", run) ?? "", /overlaps #148 in a11ign\/agent-org/, "at the claim as well");
+});
+
+test("(10)(3) PROSE DOES NOT RESERVE: #3418's body, with `package.json` in the narrowing paragraph, does not shelve a row whose Region is `package.json`; inside the fence it does", () => {
+  const ready = readyRow(3509, ["package.json"]);
+  const prose = holder(3418, BODY_3418([WATCH_LIST]));
+  const fenced = holder(3418, BODY_3418([WATCH_LIST, "package.json"]));
+  assert.equal(shelvedBy(ready, [fenced]).length, 1, "control: the file INSIDE the fence is a declaration");
+  assert.match(shelvedBy(ready, [fenced])[0].reason, /package\.json/);
+  assert.deepEqual(shelvedBy(ready, [prose]), []);
+  assert.deepEqual(claimedRegionsOf([prose], ROOT), [{ number: 3418, files: [WATCH_LIST], blockedBy: [] }], "the fenced entry still declares");
+  assert.deepEqual(declaredRegionFiles(prose.body, ROOT)?.includes("package.json"), true, "control: the asking-side reader still reads the prose (not in scope)");
+});
+
+test("(10)(4) NO FENCE READS AS TODAY: a Region section with no fenced block still declares the root-level file its prose names", () => {
+  const ready = readyRow(3509, ["package.json"]);
+  const noFence = holder(3418, "## Region\n\nThis row edits `package.json` and nothing else.\n");
+  assert.equal(shelvedBy(ready, [noFence]).length, 1);
+  assert.deepEqual(claimedRegionsOf([noFence], ROOT)?.[0]?.files, ["package.json"]);
+  const inline = holder(3418, "Region: package.json\n");
+  assert.equal(shelvedBy(ready, [inline]).length, 1, "the inline `Region:` form has no fence either");
+});
+
+test("(10)(5) THE SHELVING REASON NAMES THE LABEL, and the name is the constant the filter reads -- not a second copy", () => {
+  const reason = claimedRegionOverlapReason(REGION_3414, [claimed3423], { rowNumber: 3414 }) ?? "";
+  assert.ok(reason.includes(`\`${NO_CODE_LEFT_LABEL}\``), "the pure rule's refusal names the label");
+  assert.match(reason, /holds no code/);
+  const gated = shelvedBy(readyRow(3414, REGION_3414), [claimedRow(3423, REGION_3423)]);
+  assert.ok(gated[0].reason.includes(NO_CODE_LEFT_LABEL), "so does the gate's shelving line");
+  assert.equal(NO_CODE_LEFT_LABEL, "no-code-left", "the row's own spelling");
+  const filtered = claimedRegionsOf([claimedRow(3423, REGION_3423, { labels: ["in-progress", NO_CODE_LEFT_LABEL] })]);
+  assert.deepEqual(filtered, [], "the filter honours exactly the constant the message names");
+  assert.equal(claimedRegionsOf([claimedRow(3423, REGION_3423, { labels: ["in-progress", "no-code-left-yet"] })])?.length, 1,
+    "control: a label that merely starts with the name is not it");
+});
+
+test("(10)(6) A LABEL NOT ON THE CLAIMED ROW CHANGES NOTHING: on a ready row, or a row that is not `in-progress`, it is not read", () => {
+  const labelledReady = { ...readyRow(3509, REGION_3423), labels: [{ name: "ready" }, { name: NO_CODE_LEFT_LABEL }] };
+  assert.equal(shelvedBy(labelledReady, [claimedRow(3418, REGION_3423)]).length, 1, "the asking row's label excuses nothing");
+  const notClaimed = claimedRow(3418, REGION_3423, { labels: ["ready", NO_CODE_LEFT_LABEL] });
+  assert.deepEqual(claimedRegionsOf([notClaimed]), [], "a labelled row that is not claimed is not a claimed row, with or without the label");
+  assert.equal(offered(readyRow(3509, REGION_3423), [notClaimed]), 1);
+  assert.equal(lookupClaimedRegions({ run: () => { throw new Error("gh: 502"); }, repo: TRACKER }), null, "a failed read is still null, never []");
+  const body = JSON.stringify([claimedRow(3418, REGION_3423, { labels: ["in-progress", NO_CODE_LEFT_LABEL] })]);
+  assert.deepEqual(lookupClaimedRegions({ run: () => body, repo: TRACKER }), [], "control: a successful read of a labelled row is [] -- a different value from null");
 });

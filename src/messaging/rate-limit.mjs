@@ -25,6 +25,7 @@ export function createRateLimiter({ now, ...overrides }) {
   // spread would instead overwrite the default with `undefined`, turn the bucket's arithmetic into NaN and let everything through.
   const defined = Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
   const { ratePerSecond, burst, hourlyCap, windowMs } = { ...DEFAULT_RATE, ...defined };
+  /** @type {number} */
   let tokens = burst;
   let refilledAt = now();
   /** @type {number[]} */

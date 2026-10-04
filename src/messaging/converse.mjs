@@ -56,9 +56,9 @@ const WHY_MESSAGE = "the chairman wrote to the liaison";
 const WHY_BUTTON = "the chairman pressed a button for the liaison";
 
 /**
- * @typedef {{ queueOrLose: (order: Record<string, any>) => number, attributed: (text: string, sender: string | null) => string,
+ * @typedef {{ queueOrLose: typeof import("../prompt-session.mjs").queueOrLose, attributed: (text: string, sender: string | null) => string,
  *   handoffId: (session: string, prompt: string) => string, readHandoffs: (path: string) => {id: string, session: string, prompt: string}[],
- *   EXIT: {OK: number, REFUSED: number, QUEUED: number}, STANCE: Record<string, string>, defaultQueuePath?: () => string }} QueuePort
+ *   EXIT: {OK: number, REFUSED: number, QUEUED: number}, STANCE: typeof import("../prompt-session.mjs").STANCE, defaultQueuePath?: () => string }} QueuePort
  */
 
 /** @returns {Promise<QueuePort>} the real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */

@@ -77,7 +77,7 @@ import { homeProjectDeclaration } from "../project-config.mjs";
 import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.mjs";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { holdersOf } from "../pr-hold-state.mjs";
-import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
+import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
@@ -272,7 +272,8 @@ export function claimedRegionOverlapReason(myFiles, claimedRows, { rowNumber = n
     return `overlaps the Region of #${claimed.number}, a row already claimed (\`${CLAIM_LABEL}\`) that has no open pull request `
       + `declaring \`Closes #${claimed.number}\` yet, and which declares: ${shared.join(", ")}. B4: no two rows are worked on the same `
       + "file at once -- this row waits until that row closes or is released (the gate offers it again by itself), or stack it "
-      + "on that row's branch with its author.";
+      + `on that row's branch with its author. If that row holds no code, its holder labels it \`${NO_CODE_LEFT_LABEL}\` and the gate `
+      + "offers this row on the next tick.";
   }
   return null;
 }
@@ -313,9 +314,66 @@ function areBlockedOnEachOther(asker, claimed, blockersOf) {
 }
 
 /**
+ * THE LABEL THAT SAYS "I HOLD NO FILES" -- #3541. A holder sets it on its claimed row when no code is left to write (or `ceo` /
+ * `product-manager` set it on the holder's word), and removes it if code turns out to remain. {@link claimedRegionsOf} drops a row
+ * carrying it, and the shelving reason names it, from this one constant.
+ *
+ * THE INCIDENT, SO THE NEXT READER DOES NOT WIDEN THE RULE: `worker-3418` claimed #3418 at 18:57:29Z and said "No code is left to
+ * write" at 19:01:21Z; nothing the gate reads carried that, so the row went on reserving its Region -- `package.json`, named in the
+ * narrowing paragraph to say the row no longer edited it -- for another 63 minutes, until `ceo` rewrote the body at 20:00:34Z. #3509
+ * was shelved on it fifteen ticks running, and the rows chained behind #3509 waited behind that.
+ *
+ * WHAT THE LABEL TRADES AWAY: it is the holder's own word and nothing checks it. A holder that labels a row and then edits the file
+ * reproduces, for that window, the state before #3475 (two rows on one file), and the pull-request half of B4 catches it when the
+ * first push is made -- the same trade #3475 made in the other direction. It drops ONLY the claimed-row reservation: an open pull
+ * request declaring `Closes #<row>` is compared by its files as ever, labelled or not.
+ */
+export const NO_CODE_LEFT_LABEL = "no-code-left";
+
+const hasLabel = (/** @type {any} */ row, /** @type {string} */ name) => (row?.labels ?? []).some((/** @type {any} */ l) => String(l?.name ?? l) === name);
+
+const FENCE_LINE = /^\s*(?:```|~~~)/;
+
+/**
+ * #3541: A CLAIMED ROW'S REGION, WHERE THE FENCE IS THE DECLARATION. A Region section that holds a fenced block declares what is
+ * inside the fence and nothing around it: the prose beside a fence is where a row says what it does NOT edit, and the Region reader
+ * declares a root-level file named anywhere in the section, so that sentence reserved the file (#3418's `package.json`). A section
+ * with no fence is read as `declaredRegionFiles` reads it, prose included. Only the claimed-row reservation reads this way: a row's
+ * OWN Region (the asking side) is read as today, so a row that names a path in prose still asks for it.
+ *
+ * Reads the fence out of `extractRegionSection`'s text and hands the fenced lines back to `declaredRegionFiles` under a heading, so
+ * the path grammar is the one grammar and the two cannot disagree about what a fenced line declares.
+ *
+ * @param {string} body @param {{ rootFiles?: Set<string> }} [options]
+ * @returns {string[] | null} `null` for a body with no Region section, as `declaredRegionFiles`
+ */
+function claimedRegionFiles(body, options) {
+  const fenced = fencedLinesOf(extractRegionSection(body) ?? "");
+  return declaredRegionFiles(fenced === null ? body : `## Region\n${fenced.join("\n")}`, options);
+}
+
+/**
+ * The lines of every fenced block in `section`, fences included, or `null` when it holds none.
+ * @param {string} section @returns {string[] | null}
+ */
+function fencedLinesOf(section) {
+  let inFence = false;
+  const kept = [];
+  for (const line of section.split(/\r\n|\r|\n/)) {
+    const isFence = FENCE_LINE.test(line);
+    if (isFence) inFence = !inFence;
+    if (isFence || inFence) kept.push(line);
+  }
+  return kept.length === 0 ? null : kept;
+}
+
+/**
  * #3475: THE OTHER ROWS THAT ARE CLAIMED, in the shape {@link claimedRegionOverlapReason} reads, from open rows that carry `in-progress`
  * and a body -- the gate's `openRows` (which already carry `labels`, `body` and `blockedBy`), so the gate makes no call of its own for
  * this. A row whose body has no Region section declares no file and is dropped: it can collide with nothing.
+ *
+ * #3541: a row labelled {@link NO_CODE_LEFT_LABEL} holds no file and is dropped too, and a row's Region is read by its fence
+ * ({@link claimedRegionFiles}). The label is read from the same list, so it costs no call.
  *
  * @param {any[] | null | undefined} rows `null`/absent is "not read", and yields `null` -- NEVER `[]`, which would say nobody holds a file
  * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles`, so a test can name its own tree
@@ -324,9 +382,9 @@ function areBlockedOnEachOther(asker, claimed, blockersOf) {
 export function claimedRegionsOf(rows, options) {
   if (!Array.isArray(rows)) return null;
   return rows
-    .filter((row) => (row?.labels ?? []).some((/** @type {any} */ l) => String(l?.name ?? l) === CLAIM_LABEL))
+    .filter((row) => hasLabel(row, CLAIM_LABEL) && !hasLabel(row, NO_CODE_LEFT_LABEL))
     .flatMap((row) => {
-      const files = declaredRegionFiles(String(row?.body ?? ""), options) ?? [];
+      const files = claimedRegionFiles(String(row?.body ?? ""), options) ?? [];
       const blockedBy = (row?.blockedBy?.nodes ?? []).map((/** @type {any} */ n) => Number(n.number));
       return files.length === 0 ? [] : [{ number: Number(row.number), files, blockedBy }];
     });

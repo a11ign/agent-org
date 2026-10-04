@@ -74,7 +74,7 @@ const CLOSING_KEYWORDS = "close|closes|closed|fix|fixes|fixed|resolve|resolves|r
  * caller's message rather than treated as "not found, so nothing to report".
  * @param {string} body
  * @param {number} number
- * @param {string | null} [repo] #2995: set, looks for the FULL form (`owner/name#N`)
+ * @param {string | null} [repo] (#2995) set, looks for the FULL form (`owner/name#N`)
  * @returns {{ line: number, text: string } | null}
  */
 export function findClosingPhrase(body, number, repo = null) {
@@ -177,7 +177,7 @@ export function recentClosesSiblings(recentPrs, prNumber) {
  * one of exactly `REPO_WIDE_SIBLINGS` recent siblings resolves none. `siblings: null` (could not ask) and
  * fewer than three siblings are both "cannot say", which reads as NOT repo-wide: unread data is never
  * evidence of a fault. #2822: it is the ONE condition `mismatchVerdict` passes on (with a warning); it decides nothing else.
- * @param {{ declared: number[], resolved: number[] }} underTest
+ * @param {{ declared: number[], resolved: ResolvedIssue[] }} underTest
  * @param {ClosesSibling[] | null} siblings
  * @returns {boolean}
  */
@@ -217,7 +217,7 @@ export function refusal(report) {
  * while the condition is repo-wide, a lone mismatch, too few siblings, an unreadable sibling lookup, a partial
  * resolution -- is `refusal`, byte for byte. Absence of evidence never passes: `siblings: null` is refused.
  * @param {{ ok: false, reasons: string[] }} report
- * @param {{ declared: number[], resolved: number[] }} underTest
+ * @param {{ declared: number[], resolved: ResolvedIssue[] }} underTest
  * @param {ClosesSibling[] | null} siblings
  * @returns {{ exit: 0 | 1, lines: string[] }}
  */

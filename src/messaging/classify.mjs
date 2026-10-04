@@ -212,7 +212,7 @@ const SPENDING_SHAPES = [
 
 /** @param {string} reason @param {string} verdict */
 function withReply(verdict, reason) {
-  return { verdict, reason, reply: REPLIES[reason] };
+  return { verdict, reason, reply: /** @type {Record<string, string>} */ (REPLIES)[reason] };
 }
 
 /**

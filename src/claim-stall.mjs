@@ -594,8 +594,8 @@ function goneWithOpenPrReading(facts, ctx) {
   const gone = goneReading(facts, ctx);
   if (gone === null || gone.kind !== "release") return gone;
   const own = facts.ownPrs ?? [];
-  // The keys ride beside the numbers (which stay numbers) and only when a pull request is in another repository, so a home-only release is today's.
-  return { ...gone, openPrs: own.map((pr) => pr.number), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
+  // `gh pr list` always returns the number; IdlePr only marks it optional. The keys ride beside the numbers (which stay numbers) and only when a pull request is in another repository, so a home-only release is today's.
+  return { ...gone, openPrs: /** @type {number[]} */ (own.map((pr) => pr.number)), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
 }
 
 /** @param {{ trees?: string[] }} work @returns {string} the worktrees of the pull request's repository that were read, for a line naming where the work is */

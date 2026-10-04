@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
-import { appendEvents, costOf, eventsForRow, eventsOfTranscript, PRICES, readStore, subjectOf, tokensOf } from "./store.mjs";
+import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { NOT_HELD, parseArgs, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
@@ -124,12 +124,12 @@ test("STORE: append-only and idempotent; a second ingest adds nothing and rewrit
   const path = join(mkdtempSync(join(tmpdir(), "trace-")), "events.ndjson");
   const all = [...worker().events, ...orchestrator().events];
   const first = appendEvents(path, all);
-  assert.deepEqual(first, { added: all.length, skipped: 0 });
+  assert.deepEqual(first, { added: all.length, superseded: 0, skipped: 0 });
   assert.ok(first.added >= 10, "positive control: the fixtures yield events at all");
   const bytes = readFileSync(path, "utf8");
-  assert.deepEqual(appendEvents(path, all), { added: 0, skipped: all.length });
+  assert.deepEqual(appendEvents(path, all), { added: 0, superseded: 0, skipped: all.length });
   assert.equal(readFileSync(path, "utf8"), bytes);
-  assert.deepEqual(appendEvents(path, [all[0], all[0]]), { added: 0, skipped: 2 });
+  assert.deepEqual(appendEvents(path, [all[0], all[0]]), { added: 0, superseded: 0, skipped: 2 });
   assert.equal(readStore(path).length, all.length);
 });
 
@@ -171,7 +171,8 @@ test("REPORT: GitHub events print between the turns, the footer says how many ca
   assert.match(text, /3 from GitHub/);
   assert.equal(text.indexOf("REVIEW") > text.indexOf("WAKE"), true, "the review falls between the turns, in time order");
   assert.doesNotMatch(NOT_HELD, /GitHub/);
-  for (const still of ["gh call ledger", "deferral spans", "Codex reviewer turns"]) assert.ok(NOT_HELD.includes(still), still);
+  for (const still of ["gh call ledger", "deferral spans"]) assert.ok(NOT_HELD.includes(still), still);
+  assert.doesNotMatch(NOT_HELD, /Codex/);
   assert.match(text, /across 2 sessions/, "`github` is a source, not a session");
 });
 
@@ -204,4 +205,88 @@ test("SUBJECT OF A NUMBER: a pull request resolves to the rows it closes, a row 
 test("SUBJECT OF A NUMBER: only a 404 means 'this is a row'; any other failure throws rather than printing a trace without the leads' turns", () => {
   const broken = (args) => { if (/pulls\//.test(args[0])) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403 rate limit" }); return { items: [] }; };
   assert.throws(() => resolveSubject(9001, ROW_REPO, broken), /403/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// a11ign/a11ign#3519 (slice 2b of #3494): a standing seat's turns land on the rows they were about. The product-manager transcript below is in the shape of the one whose
+// turns #3406's trace lacked: a wake whose ledger key names SEVERAL rows (`row-call-count-signal/9001,9002`, which `subjectOf` leaves unattributed because the first of
+// the list is a guess), a wake with no ledger line at all (an order typed by `prompt:session`) in which the seat nonetheless acts on a row, and a read of a row.
+
+/** One block of an API message that calls a tool, whose command is `command`. */
+const toolBlock = (timestamp, id, command) => JSON.stringify({
+  type: "assistant", timestamp, requestId: `req_${id}`,
+  message: { id, model: "claude-opus-5-5", role: "assistant", content: [{ type: "tool_use", id: `tu_${id}`, name: "Bash", input: { command } }], usage: usage(5, 50, 1000, 0) },
+});
+
+const PM_LEDGER = parseLedger(`${at("2026-10-04T12:28:00Z") - 1000}\tproduct-manager/row-call-count-signal/9001,9002`);
+const PRODUCT_MANAGER = [
+  wake("2026-10-04T12:28:00.000Z", "product-manager"),
+  toolBlock("2026-10-04T12:28:10.000Z", "pm_1", "gh issue view 9002 --json labels; gh issue comment 9002 --body-file /tmp/ruling.md"),
+  block("2026-10-04T12:28:20.000Z", "pm_2", "claude-opus-5-5", usage(5, 70, 1000, 0)),
+  wake("2026-10-04T13:00:00.000Z", "product-manager", "orchestrator, #9003 STOPPED at done-when 3."), // no ledger line: typed by prompt:session
+  toolBlock("2026-10-04T13:00:10.000Z", "pm_3", "gh issue edit 9004 --add-label lane:orchestrator && gh issue edit 9003 --add-blocked-by 9004"),
+  toolBlock("2026-10-04T13:00:20.000Z", "pm_4", "gh issue view 9005 --json body"),
+  toolBlock("2026-10-04T13:00:30.000Z", "pm_5", "cd /home/agent/repos/agent-org-wt-1 && gh pr comment 9100 --body x"),
+  toolBlock("2026-10-04T13:00:35.000Z", "pm_7", "gh issue edit 9006 --repo a11ign/elsewhere --add-label x; gh issue edit 9007 -R a11ign/a11ign --add-label x; gh api -X POST repos/a11ign/a11ign/issues/9008/comments -f body=x"),
+  toolBlock("2026-10-04T13:00:40.000Z", "pm_6", "gh pr review 9100 --approve"),
+].join("\n");
+const readPm = () => eventsOfTranscript({ text: PRODUCT_MANAGER, file: "pm.jsonl", ledger: PM_LEDGER, rowRepo: ROW_REPO });
+const turnsAbout = (events, subject) => eventsForRow(events, subject).filter((event) => event.kind === "turn").map((event) => event.id);
+
+test("PRODUCT-MANAGER: a key that names several rows puts the wake and its turns on EACH of them, and keeps row null", () => {
+  assert.deepEqual(subjectsOf("product-manager/row-call-count-signal/9001,9002"), { rows: [9001, 9002] });
+  assert.deepEqual(subjectsOf("orchestrator/pr-green-unarmed/9100,9101"), { prs: [9100, 9101] }, "a pull-request cause lists pull requests");
+  for (const single of ["product-manager/row-call-count-signal/9001", "orchestrator/ready-row-unclaimed/9050", "ceo/org-health/order-deferred-too-long", "product-manager/answer-owed/row-9001"]) {
+    assert.deepEqual(subjectsOf(single), {}, `${single} names one subject or none`);
+  }
+  assert.equal(subjectOf("product-manager/row-call-count-signal/9001,9002").row, null, "subjectOf still does not guess");
+  const { events } = readPm();
+  const wakes = events.filter((event) => event.kind === "wake");
+  assert.deepEqual([wakes[0].row, wakes[0].rows], [null, [9001, 9002]]);
+  assert.deepEqual(turnsAbout(events, { rows: [9001], prs: [] }), ["turn:pm_1", "turn:pm_2"], "the turns of the wake are on row 9001, which they were not before");
+  assert.deepEqual(turnsAbout(events, { rows: [9002], prs: [] }).slice(0, 2), ["turn:pm_1", "turn:pm_2"]);
+  assert.equal(eventsForRow(events, { rows: [9001], prs: [] }).some((event) => event.kind === "wake"), true, "so is the wake itself");
+});
+
+test("PRODUCT-MANAGER: a turn that WROTE to a row is on that row, whatever its wake named; a read, another repository's number and a `gh api` write are not", () => {
+  const { events } = readPm();
+  assert.deepEqual(turnsAbout(events, { rows: [9004], prs: [] }), ["turn:pm_3"], "the edit of 9004 is on 9004 though the order was about 9003");
+  assert.deepEqual(turnsAbout(events, { rows: [9003], prs: [] }), ["turn:pm_3"], "and the edit of 9003 is on 9003");
+  assert.deepEqual(turnsAbout(events, { rows: [9005], prs: [] }), [], "a `gh issue view` is not what ruled on a row");
+  assert.deepEqual(turnsAbout(events, { rows: [9006], prs: [] }), [], "`--repo a11ign/elsewhere` is another repository's 9006");
+  assert.deepEqual(turnsAbout(events, { rows: [9008], prs: [] }), [], "a `gh api` write is not read");
+  assert.deepEqual(turnsAbout(events, { rows: [9007], prs: [] }), ["turn:pm_7"], "positive control: `-R` naming the primary repository is the primary's 9007");
+  assert.deepEqual(turnsAbout(events, { rows: [], prs: [9100] }), ["turn:pm_6"], "a pull request: the review in the primary checkout counts, the comment run from an agent-org clone does not");
+  const pm3 = events.find((event) => event.id === "turn:pm_3");
+  assert.deepEqual([pm3.row, pm3.touchedRows], [null, [9003, 9004]]);
+  assert.equal(touchesOf([], ROW_REPO) && Object.keys(touchesOf([], ROW_REPO)).length, 0, "a turn that wrote to nothing carries no field");
+});
+
+test("STORE: a corrected copy of an event supersedes the stored one by being APPENDED; an identical copy adds nothing; readStore takes the last copy of an id", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "trace-supersede-")), "events.ndjson");
+  const before = readPm().events.find((event) => event.id === "turn:pm_1");
+  const stale = { ...before, rows: undefined, touchedRows: undefined, row: null }; // the turn as stored before the attribution fix
+  const store = openStore(path);
+  assert.deepEqual(appendToStore(store, [stale]), { added: 1, superseded: 0, skipped: 0 });
+  assert.deepEqual(appendToStore(store, [stale]), { added: 0, superseded: 0, skipped: 1 });
+  assert.deepEqual(appendToStore(store, [before]), { added: 0, superseded: 1, skipped: 0 });
+  assert.deepEqual(appendToStore(store, [before]), { added: 0, superseded: 0, skipped: 1 }, "identical to the correction now: nothing more");
+  assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 2, "the log holds both copies: nothing on disk was rewritten");
+  const reopened = readStore(path);
+  assert.equal(reopened.length, 1);
+  assert.deepEqual(reopened[0].touchedRows, before.touchedRows);
+  assert.deepEqual(eventsForRow(reopened, { rows: [9002], prs: [] }).map((event) => event.id), ["turn:pm_1"]);
+});
+
+test("REPORT: the totals are per actor, a Codex reviewer is its own actor, and the footer says from when each KIND of actor is held", () => {
+  const codex = { id: "codex-turn:r1", kind: "turn", source: "transcript", at: at("2026-10-04T11:00:00Z"), session: "reviewer-9100", row: null, pr: 9100, repo: null, cause: null, causeKey: null,
+    wakeId: null, model: "gpt-5.6-luna", tokens: { input: 1, output: 40, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }, costUsd: null, wallClockMs: null, harness: "codex" };
+  const events = [...readPm().events, codex];
+  const text = render({ number: 9100, rows: [], prs: [9100], events: eventsForRow(events, { rows: [9002], prs: [9100] }), held: events });
+  assert.match(text, /per actor on this row:\n/);
+  assert.match(text, /\n {2}product-manager\s+3 turns\s+\$0\.0041 over 3 priced\s+out 170\n/, "3 turns: the two of the several-row wake and the review of 9100");
+  assert.match(text, /\n {2}reviewer-9100 \(codex\)\s+1 turns\s+\$0\.0000 over 0 priced\s+out 40\n/, "the Codex turn is unpriced and says so, and is not folded into a Claude reviewer");
+  assert.match(text, /reviewer \(codex\)\s+held from 2026-10-04T11:00Z/);
+  assert.match(text, /product-manager\s+held from 2026-10-04T12:28Z/);
+  assert.doesNotMatch(text, /NOT IN THIS STORE YET[^\n]*Codex/);
 });

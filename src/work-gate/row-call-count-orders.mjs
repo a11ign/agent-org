@@ -84,7 +84,10 @@ export function rowDeclaresWait(row, now) {
   return holderWaitingOn(row, todayIso(new Date(now)), now) || labels.includes(BLOCKED_LABEL) || holdersOf(labels).length > 0;
 }
 
-/** Whether `name` is a label that declares a wait -- the label half of `rowDeclaresWait`, for reading when one was lifted. */
+/**
+ * Whether `name` is a label that declares a wait -- the label half of `rowDeclaresWait`, for reading when one was lifted.
+ * @param {string} name @returns {boolean}
+ */
 function isWaitLabel(name) {
   return [NEEDS_CHAIRMAN_LABEL, PARKED_LABEL, BLOCKED_LABEL].includes(name) || name.startsWith(HOLD_PREFIX) || name.startsWith(ANSWER_PREFIX);
 }

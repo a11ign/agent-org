@@ -31,13 +31,29 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { parse as parseYaml } from "yaml";
-import { SECRET_NAME, SECRET_HOLDER, PERSONAL_ACCOUNTS, NOT_CI_ACCOUNTS } from "./auto-arm-identity.ts";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.mjs";
 import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
   from "../work-gate.mjs";
 
 const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");
 const WORKFLOW = join(WORKFLOWS, "auto-arm.yml");
+
+// WHO ACTS WITH THE SECRET, held here and not imported (#3559). These lived in a sibling `auto-arm-identity.ts` in
+// a11ign/a11ign, which the split never carried over, so this file died at import and none of its tests ran. They
+// are one project's account names, so they stay beside the only test in this repository that reads them; a11ign's
+// `auto-arm-token-live.test.ts` compares its own copy with who GitHub says acted. Moving either is a decision for a row.
+
+/** The secret every arming workflow step reads. */
+const SECRET_NAME = "A11IGN_BOT_TOKEN";
+
+/** The machine account expected to hold it, and that no session uses. */
+const SECRET_HOLDER = "a11ign-ci";
+
+/** Accounts that must never act with the secret: the chairman's personal one, whose token it used to be. */
+const PERSONAL_ACCOUNTS = ["DanBeckDev"];
+
+/** Somebody's identity rather than CI's: the reviewer and the two session accounts must never HOLD the secret. */
+const NOT_CI_ACCOUNTS = ["a11ign-bot", "a11ign-ai-workers", "a11ign-ai-leads"];
 
 /** @param {{ jobs: Record<string, { steps: Array<{ env?: Record<string,string>, run?: string }> }> }} doc */
 function jobRunText(doc: { jobs: Record<string, { steps: Array<{ run?: string }> }> }, jobName: string): string {
@@ -131,7 +147,7 @@ test("issues: write is NOT added for this -- #333 already measured that granting
 // ruling that no agent acts as the chairman (#1950/#2333). The chairman swapped it 2026-09-24T19:54:17Z.
 //
 // WHAT HOLDS IT NOW, and it is a fact about GitHub's settings that no file in this repository can read:
-//   - the account is `SECRET_HOLDER` (`auto-arm-identity.ts`), a machine account no session uses. NOT
+//   - the account is `SECRET_HOLDER` (above), a machine account no session uses. NOT
 //     `a11ign-bot` (the reviewer: the account that approves must not be the one that arms and completes the
 //     merge, or `main`'s review requirement is decorative -- `.claude/rules/main-review-requirement.md`), and
 //     not a session's identity (`a11ign-ai-workers`, `a11ign-ai-leads`), which would attribute CI's merges to
