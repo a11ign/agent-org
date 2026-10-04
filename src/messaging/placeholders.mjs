@@ -5,6 +5,9 @@
 //
 //   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.conclusion}}   {{ready.count}}   {{last-merge.age}}
 //   {{unit:NAME.state}}               {{comment:ID.quote}}           {{unchecked:<any of the above>}}
+//   {{fleet.workers-up}}  {{fleet.workers-down}}  {{gate.last-tick.age}}  {{release:OWNER/REPO.latest}}      (a11ign/a11ign#3420)
+//
+// `PLACEHOLDER_NAMES` is this table as a list. The liaison's brief restates it, so a test pins it: a name added here is a name the brief must learn.
 //
 // **THE VOCABULARY IS A TABLE, AND NOTHING OUTSIDE IT PARSES.** An unknown kind, an unknown field, an id of the wrong shape and a stray `{{`
 // are PROBLEMS, found before any read is made: a reply cannot ask for a fact this file does not know how to check.
@@ -22,7 +25,7 @@
 // below is what a test's fixture implements. Reads are made ONCE per thing named, however many fields of it the text uses.
 
 import { describeError } from "./ledger.mjs";
-import { readLastMerge, readWaitingRows } from "./sources/readers.mjs";
+import { readFleetRoster, readLastMerge, readLastTick, readWaitingRows } from "./sources/readers.mjs";
 
 /** Stands in for a placeholder while the free text around it is judged. NUL cannot be typed into a chat message and never matches a word or a digit. */
 export const MASK = "\u0000";
@@ -31,10 +34,13 @@ export const QUOTE_LIMIT = 1000;
 const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
 const HOURS_PER_DAY = 24;
-const GRAMMAR = /^([a-z]+(?:-[a-z]+)*)(?::(.+))?\.([a-z]+)$/;
+// A field may be hyphenated (`workers-up`) or dotted (`last-tick.age`). An id is greedy, so with one the field is still the last dotted segment.
+const GRAMMAR = /^([a-z]+(?:-[a-z]+)*)(?::(.+))?\.([a-z]+(?:[-.][a-z]+)*)$/;
 const NUMBER = /^[1-9]\d*$/;
 /** A systemd unit name. It starts with a letter or digit so it can never be read as a flag by `systemctl show`. */
 const UNIT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.@-]*$/;
+/** `owner/name`, each part starting with a letter or digit, so it can never be read as a flag and cannot climb out of `repos/<owner>/<name>/`. */
+const REPOSITORY = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 
 /**
  * What a reader returns, by kind. Each method rejects when it cannot answer.
@@ -47,6 +53,9 @@ const UNIT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.@-]*$/;
  *   lastMerge: () => Promise<{at: number}>,
  *   unit: (name: string) => Promise<{state: string}>,
  *   comment: (id: number) => Promise<{body: string, url: string}>,
+ *   fleet: () => Promise<{up: string[], down: string[], polledAt: number}>,
+ *   gate: () => Promise<{at: number}>,
+ *   release: (repo: string) => Promise<{tag: string}>,
  * }} Readers
  *
  * @typedef {{raw: string, kind: string, id: string | null, field: string, fixed?: string}} Placeholder
@@ -74,14 +83,20 @@ function quoteOf({ body, url }) {
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n${fieldValue(url, "the comment's link")}`;
 }
 
+/** @param {string[]} names @param {{polledAt: number}} value @param {number} at @returns {string} the names, and how old the poll is: the stamp is the send's, the reading is fleet-watch's */
+function namesOf(names, { polledAt }, at) {
+  return `${names.length === 0 ? "none" : names.join(", ")} (fleet-watch poll ${describeAge(at - polledAt)} ago)`;
+}
+
 /**
- * kind -> `id` (the shape its id must have, null when it takes none), `read` (what is fetched, once per thing), `fields` (how each field renders).
- * @type {Readonly<Record<string, {id: RegExp | null, read: (readers: Readers, id: string | null) => Promise<any>,
+ * kind -> `id` (the shape its id must have, null when it takes none), `idName` (what the id is called in `PLACEHOLDER_NAMES`), `read` (what is fetched,
+ * once per thing), `fields` (how each field renders).
+ * @type {Readonly<Record<string, {id: RegExp | null, idName?: string, read: (readers: Readers, id: string | null) => Promise<any>,
  *   fields: Record<string, (value: any, at: number) => string>}>>}
  */
 const VOCABULARY = Object.freeze({
   issue: {
-    id: NUMBER, read: (readers, id) => readers.issue(Number(id)),
+    id: NUMBER, idName: "number", read: (readers, id) => readers.issue(Number(id)),
     fields: {
       number: (value) => String(value.number),
       state: (value) => fieldValue(value.state, "the state"),
@@ -89,19 +104,30 @@ const VOCABULARY = Object.freeze({
     },
   },
   pr: {
-    id: NUMBER, read: (readers, id) => readers.pr(Number(id)),
+    id: NUMBER, idName: "number", read: (readers, id) => readers.pr(Number(id)),
     fields: {
       number: (value) => String(value.number),
       state: (value) => fieldValue(value.state, "the state"),
       review: (value) => fieldValue(value.review, "the review decision"),
     },
   },
-  run: { id: NUMBER, read: (readers, id) => readers.run(Number(id)), fields: { conclusion: (value) => fieldValue(value.conclusion, "the conclusion") } },
+  run: { id: NUMBER, idName: "id", read: (readers, id) => readers.run(Number(id)), fields: { conclusion: (value) => fieldValue(value.conclusion, "the conclusion") } },
   ready: { id: null, read: (readers) => readers.ready(), fields: { count: (value) => String(value.count) } },
   "last-merge": { id: null, read: (readers) => readers.lastMerge(), fields: { age: (value, at) => describeAge(at - value.at) } },
-  unit: { id: UNIT_NAME, read: (readers, id) => readers.unit(String(id)), fields: { state: (value) => fieldValue(value.state, "the state") } },
-  comment: { id: NUMBER, read: (readers, id) => readers.comment(Number(id)), fields: { quote: (value) => quoteOf(value) } },
+  unit: { id: UNIT_NAME, idName: "unit", read: (readers, id) => readers.unit(String(id)), fields: { state: (value) => fieldValue(value.state, "the state") } },
+  comment: { id: NUMBER, idName: "id", read: (readers, id) => readers.comment(Number(id)), fields: { quote: (value) => quoteOf(value) } },
+  fleet: {
+    id: null, read: (readers) => readers.fleet(),
+    fields: { "workers-up": (value, at) => namesOf(value.up, value, at), "workers-down": (value, at) => namesOf(value.down, value, at) },
+  },
+  gate: { id: null, read: (readers) => readers.gate(), fields: { "last-tick.age": (value, at) => describeAge(at - value.at) } },
+  release: { id: REPOSITORY, idName: "repo", read: (readers, id) => readers.release(String(id)), fields: { latest: (value) => fieldValue(value.tag, "the release's tag") } },
 });
+
+/** Every placeholder the vocabulary parses, as `kind[:<id>].field`: the list a brief may name, pinned by a test because the brief restates it. `unchecked:` wraps any of them. */
+export const PLACEHOLDER_NAMES = Object.freeze(
+  Object.entries(VOCABULARY).flatMap(([kind, entry]) => Object.keys(entry.fields).map((field) => `${kind}${entry.id === null ? "" : `:<${entry.idName}>`}.${field}`)),
+);
 
 /** @param {string} raw @param {string} spec `kind[:id].field` @returns {Placeholder} @throws {TypeError} when `spec` is not in the vocabulary */
 function parseSpec(raw, spec) {
@@ -215,9 +241,13 @@ function parseProperties(text) {
  * and so does the host (which decides which account `gh` is). `readLastMerge` and `readWaitingRows` are the watcher's own, so "the last merge" and "ready"
  * mean here exactly what they mean in a stall event.
  *
- * @param {{gh: (argv: string[]) => Promise<string>, systemctl: (argv: string[]) => Promise<string>, repo: string}} deps @returns {Readers}
+ * `fleet` and `gate` read FILES, not GitHub, so the host that has them names them (`fleet`: the two files `fleet-watch` writes; `gateRecordPath`: the record
+ * the tick writes at the end of `main()`). A host that names none gets a reader that refuses and says so, never a guess at a path.
+ *
+ * @param {{gh: (argv: string[]) => Promise<string>, systemctl: (argv: string[]) => Promise<string>, repo: string,
+ *   fleet?: {statePath: string, capturesPath: string}, gateRecordPath?: string, now?: () => number}} deps @returns {Readers}
  */
-export function createGhReaders({ gh, systemctl, repo }) {
+export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, now = Date.now }) {
   const github = { api: async (/** @type {string} */ path) => JSON.parse(await gh(["api", path])) };
   return {
     async issue(number) {
@@ -251,6 +281,19 @@ export function createGhReaders({ gh, systemctl, repo }) {
     async comment(id) {
       const comment = await github.api(`repos/${repo}/issues/comments/${id}`);
       return { body: comment.body, url: comment.html_url };
+    },
+    async fleet() {
+      if (fleet === undefined) throw new TypeError("this host named no fleet-watch state files, so the fleet cannot be read");
+      return readFleetRoster({ ...fleet, now: now() });
+    },
+    async gate() {
+      if (gateRecordPath === undefined) throw new TypeError("this host named no work-tick completion record, so the gate cannot be read");
+      return readLastTick({ recordPath: gateRecordPath });
+    },
+    async release(name) {
+      // `releases/latest` is the newest PUBLISHED release: a draft or a prerelease is not "the newest release" to the chairman either.
+      const release = await github.api(`repos/${name}/releases/latest`);
+      return { tag: release.tag_name };
     },
   };
 }

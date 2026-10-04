@@ -21,7 +21,7 @@ import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "
 import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
 import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
 import {
-  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFleetState, readGateUnit, readFixRow, readLastMerge, readTicks, readTrunkRuns, takeSample,
+  SYSTEMD_PROPERTIES, createReaders, readCiRuns, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
 } from "./readers.mjs";
 import { observeStalls } from "./stall.mjs";
 
@@ -576,5 +576,80 @@ describe("what one run costs and what `main` does with the readers", () => {
     const asked = /** @type {string[]} */ ([]);
     await main({ root, home: freshDirectory(), env: { GH_CONFIG_DIR: "/x/gh" }, github: reads, readers: {}, now: () => NOW, providers: { telegram: () => createFakeProvider() }, out: () => {}, err: (line) => asked.push(line) });
     assert.ok(asked.some((line) => /cannot-ask stall:no-merge/.test(line)), "POSITIVE CONTROL: with readers handed over the host sources ARE asked");
+  });
+});
+
+// ---- the liaison's checked facts (a11ign/a11ign#3420) ------------------------------------------------------------------------------------
+describe("readFleetRoster: who fleet-watch last saw answer, by name, from the two files it writes", () => {
+  /**
+   * Both files, written at `wroteAt`. `workers` is name -> how long before the write the worker last ANSWERED (0 = the last poll); `notReady` is the state file.
+   * @param {Record<string, number>} workers @param {Record<string, number>} [notReady] @param {{ wroteAt?: number, stateWroteAt?: number }} [times]
+   */
+  function fleetFiles(workers, notReady = {}, { wroteAt = NOW - 10 * MINUTE, stateWroteAt = wroteAt } = {}) {
+    const directory = freshDirectory();
+    const statePath = join(directory, "fleet-watch-state.json");
+    const capturesPath = join(directory, "fleet-captures-state.json");
+    writeFileSync(statePath, JSON.stringify(notReady));
+    utimesSync(statePath, stateWroteAt / 1000, stateWroteAt / 1000);
+    const seen = Object.fromEntries(Object.entries(workers).map(([name, behind]) => [name, { captures: 0, seenAt: wroteAt - behind, lastRoseAt: null, rises: [] }]));
+    writeFileSync(capturesPath, JSON.stringify({ since: wroteAt - 1000 * MINUTE, workers: seen }));
+    utimesSync(capturesPath, wroteAt / 1000, wroteAt / 1000);
+    return { statePath, capturesPath };
+  }
+  const ROSTER = { "worker-a": 0, "worker-b": 0, "worker-c": 0, "worker-d": 3 * 60 * MINUTE };
+
+  test("up is who answered the last poll and is not in the non-ready state; down is the rest of the roster, the box that stopped answering included", () => {
+    const files = fleetFiles(ROSTER, { "worker-b": NOW - 30 * MINUTE });
+    const reading = readFleetRoster({ ...files, now: NOW });
+    assert.deepEqual(reading.up, ["worker-a", "worker-c"]);
+    assert.deepEqual(reading.down, ["worker-b", "worker-d"]);
+    assert.equal(reading.polledAt, NOW - 10 * MINUTE);
+  });
+
+  test("POSITIVE CONTROL: a fleet that has ALL stopped answering is all down; 'the newest stamp' would have called the last to answer up", () => {
+    const files = fleetFiles({ "worker-a": 5 * 60 * MINUTE, "worker-b": 6 * 60 * MINUTE });
+    const reading = readFleetRoster({ ...files, now: NOW });
+    assert.deepEqual(reading.up, []);
+    assert.deepEqual(reading.down, ["worker-a", "worker-b"]);
+  });
+
+  test("a healthy fleet has an EMPTY non-ready file and is all up: the file that cannot say who is up is not what up is read from", () => {
+    const reading = readFleetRoster({ ...fleetFiles({ "worker-a": 0, "worker-b": 0 }), now: NOW });
+    assert.deepEqual([reading.up, reading.down], [["worker-a", "worker-b"], []]);
+  });
+
+  test("KEEPS ONLY THE NAME, whichever file names a worker by `<name>  <host>:<port>`", () => {
+    const files = fleetFiles({ "worker-a  host-a.example:8765": 0, "worker-b  host-b.example:8765": 0 }, { "worker-b  host-b.example:8765": NOW - MINUTE });
+    const reading = readFleetRoster({ ...files, now: NOW });
+    assert.deepEqual([reading.up, reading.down], [["worker-a"], ["worker-b"]]);
+    assert.doesNotMatch(JSON.stringify(reading), /example|8765/);
+  });
+
+  test("a watcher that stopped is not a reading: EITHER file older than the limit throws, and one file inside it does not rescue the other", () => {
+    const old = NOW - 3 * 60 * MINUTE;
+    for (const times of [{ wroteAt: old }, { wroteAt: NOW - MINUTE, stateWroteAt: old }]) {
+      assert.throws(() => readFleetRoster({ ...fleetFiles(ROSTER, {}, times), now: NOW }), /fleet-watch last wrote its state \d+ minutes ago/);
+    }
+    assert.doesNotThrow(() => readFleetRoster({ ...fleetFiles(ROSTER, {}, { wroteAt: NOW - 120 * MINUTE }), now: NOW }), "POSITIVE CONTROL: inside the limit it reads");
+  });
+
+  test("a missing file, a roster nobody is on and a worker with no stamp all THROW: none is 'nothing is down'", () => {
+    const files = fleetFiles(ROSTER);
+    assert.throws(() => readFleetRoster({ statePath: join(freshDirectory(), "absent.json"), capturesPath: files.capturesPath, now: NOW }), /ENOENT/);
+    assert.throws(() => readFleetRoster({ statePath: files.statePath, capturesPath: join(freshDirectory(), "absent.json"), now: NOW }), /ENOENT/);
+    assert.throws(() => readFleetRoster({ ...fleetFiles({}), now: NOW }), /names no worker/);
+    writeFileSync(files.capturesPath, JSON.stringify({ workers: { "worker-a": {} } }));
+    assert.throws(() => readFleetRoster({ ...files, now: NOW }), /worker-a has no numeric seenAt/);
+    writeFileSync(files.capturesPath, "[]");
+    assert.throws(() => readFleetRoster({ ...files, now: NOW }), /a `workers` object was expected/);
+  });
+});
+
+describe("readLastTick: when the gate last COMPLETED a tick", () => {
+  test("is the record's time, and no record is a throw naming that no tick is known to have completed", () => {
+    const path = join(freshDirectory(), COMPLETION_FILE);
+    writeCompletion(path, { at: NOW - 4 * MINUTE, exit: 0 });
+    assert.deepEqual(readLastTick({ recordPath: path }), { at: NOW - 4 * MINUTE });
+    assert.throws(() => readLastTick({ recordPath: join(freshDirectory(), COMPLETION_FILE) }), /no tick is known to have completed/);
   });
 });

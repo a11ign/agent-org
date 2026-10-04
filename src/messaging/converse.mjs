@@ -1,8 +1,9 @@
 // @ts-check
-// CONVERSATION IN (a11ign/a11ign#2909, decision 2(b)): a free message from the chairman, queued for `ceo` and for nobody else.
+// CONVERSATION IN (a11ign/a11ign#2909, decision 2(b) as amended by #3416): a free message from the chairman, queued for the `liaison` and for nobody else.
 // `createConverse({...}).forward` is what the listener's `onForward` calls with the value `createInbound(...).handle()` minted.
 //
-// **THERE IS NO CODE PATH FROM A CHAT MESSAGE TO ANY SESSION BUT `ceo`.** The recipient is the constant `RECIPIENT`, written once and
+// **THERE IS NO CODE PATH FROM A CHAT MESSAGE TO ANY SESSION BUT THE `liaison`.** (`ceo` is reached by the liaison, through `prompt:session` and the
+// liaison's own derived sender; never from here, and never as a fallback when the seat is absent: the chairman is told the truth instead.) The recipient is the constant `RECIPIENT`, written once and
 // passed as the queue's label at the one call below; no argument, no field of the message and no configuration names another. The test
 // scans every file under `src/messaging/` for a caller of the queue and fails on a second one, so a new path to a worker is a red test
 // here and not a review comment. The queue is `prompt:session`'s own (`queueOrLose`), so its refusals (an unknown session, a full inbox)
@@ -13,8 +14,10 @@
 // produce `CHAIRMAN_SENDER` by being a workspace; only this module passes it. (A workspace LABELLED with that exact text used to be
 // returned by `resolveSender`; a11ign/a11ign#3060 closed it in `prompt-session.mjs`, which now yields null for a label no session name looks like.)
 //
-// **THE ACKNOWLEDGEMENT IS A FACT THE CORE VERIFIED.** "queued for ceo, handoff <id>" is sent only after reading the entry back from the
-// queue file; a queue that said it wrote and did not is reported as that, never as success.
+// **THE ACKNOWLEDGEMENT IS THE LISTENER'S, AND IT COMES FIRST.** `ACKNOWLEDGEMENT` is sent BEFORE the queue is written, in the same words every time and with
+// no model in it, so the chairman hears "Got it" at the speed of a poll and not of the liaison's turn (#3416). What follows it is the liaison's own answer,
+// or, when the queue refused or the entry is not in the queue file, one more message in plain words saying so and saying nothing was done. The queue's verdict
+// is still read back from the queue file; a queue that said it wrote and did not is reported as that. The handoff id is the ledger's and never the chat's.
 //
 // **WHAT THIS DOES NOT TAKE:** a button press (the answers path, #2908, owns it), and anything `isAccepted` does not vouch for. A value
 // that was not minted by `createInbound` for THIS chairman is not a chairman's message, whatever its fields say.
@@ -29,8 +32,10 @@ import { isAccepted } from "./inbound.mjs";
 import { describeError } from "./ledger.mjs";
 
 /** The only session a chat message is ever queued for. Changing it is changing decision 2(b). */
-export const RECIPIENT = "ceo";
-/** The sender line `ceo` reads. Not derivable by `resolveSender`, which only ever yields a herdr workspace's label. */
+export const RECIPIENT = "liaison";
+/** What the chairman is told the moment a message is accepted: the same words each time, sent before the queue write, with no model in it. */
+export const ACKNOWLEDGEMENT = "Got it, looking.";
+/** The sender line the liaison reads. Not derivable by `resolveSender`, which only ever yields a herdr workspace's label. */
 export const CHAIRMAN_SENDER = "chairman via Telegram";
 /** Provenance the listener, and only the listener, can vouch for: `isAccepted` proved the ids match the paired chairman. */
 export const SOURCE_LINE = "Source: Telegram, verified (sender and chat matched the paired chairman)";
@@ -73,20 +78,26 @@ function capturingStderr(run) {
 }
 
 /**
- * The order `ceo` reads: who it is from, how it is known to be, which message, when, and then the chairman's words. The message ref and
+ * The order the liaison reads: who it is from, how it is known to be, which message, when, and then the chairman's words. The message ref and
  * the time are what make two identical messages two orders (the queue's id is a hash of the text, and one hash is one order).
  *
  * @param {Readonly<Record<string, any>>} accepted @param {number} receivedAt @returns {string}
  */
 export function provenanceText(accepted, receivedAt) {
   return [
-    "This is the chairman speaking, not a session: do not answer it with `prompt:session`.",
+    "This is the chairman speaking, not a session.",
     SOURCE_LINE,
     `Telegram message: ${accepted.messageId} (update ${accepted.updateId})`,
     `Received: ${new Date(receivedAt).toISOString()}`,
     "",
     accepted.text,
   ].join("\n");
+}
+
+/** @param {string} reason @returns {string} the chairman's message when the liaison could not be reached: the reason verbatim, then what became of the message */
+export function notReached(reason) {
+  // The reason is the queue's own and often ends a sentence already: it is not edited, only not given a second full stop.
+  return `I could not reach the liaison: ${reason}${/[.!?]$/.test(reason) ? "" : "."} Nothing has been done with your message.`;
 }
 
 /** @param {string} text @param {number} limit @returns {string} `text`, cut to what the provider will carry and SAYING so when it had to be */
@@ -118,7 +129,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
   /** @param {QueuePort} q @param {string} text @returns {{ code: number, stderr: string }} the queue's verdict, and what it said */
   function enqueue(q, text) {
     const { value, stderr } = capturingStderr(() => q.queueOrLose({
-      label: RECIPIENT, text, why: "the chairman wrote to ceo", agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
+      label: RECIPIENT, text, why: "the chairman wrote to the liaison", agents: agents(), path: pathOf(q), stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER,
     }));
     return { code: value, stderr };
   }
@@ -129,14 +140,17 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === RECIPIENT) ? id : null;
   }
 
-  /** @param {QueuePort} q @param {string} text @returns {{ verdict: string, say: string, handoff: string | null }} */
+  /**
+   * `say` is null when the message was queued: the acknowledgement was already sent, and the liaison's answer is what follows.
+   * @param {QueuePort} q @param {string} text @returns {{ verdict: string, say: string | null, handoff: string | null }}
+   */
   function submit(q, text) {
     const { code, stderr } = enqueue(q, text);
-    if (code !== q.EXIT.QUEUED) return { verdict: "refused", say: stderr.trim() || "the queue refused the message and said nothing", handoff: null };
+    if (code !== q.EXIT.QUEUED) return { verdict: "refused", say: notReached(stderr.trim() || "the queue refused the message and said nothing"), handoff: null };
     const handoff = verifiedEntry(q, text);
     return handoff === null
-      ? { verdict: "unverified", say: "the queue said it held the message, but its entry is not in the queue file: treat it as NOT delivered", handoff }
-      : { verdict: "queued", say: `queued for ${RECIPIENT}, handoff ${handoff}`, handoff };
+      ? { verdict: "unverified", say: notReached("the queue said it held the message, but its entry is not in the queue file"), handoff }
+      : { verdict: "queued", say: null, handoff };
   }
 
   /** @param {string} text @param {string} replyTo @returns {Promise<{ ref: string | null, error: unknown }>} */
@@ -156,14 +170,19 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     async forward(accepted) {
       if (!isAccepted(accepted, chairman)) return { outcome: "not-accepted" };
       if (accepted.kind !== "message") return { outcome: "not-conversation" };
+      // The acknowledgement goes first, before the queue is even loaded, so a slow or absent liaison cannot delay it and a queue that throws still leaves the chairman told.
+      const ack = await tell(ACKNOWLEDGEMENT, String(accepted.messageId));
+      const ackAt = new Date(now()).toISOString();
       const verdict = submit(await port(), provenanceText(accepted, now()));
-      const ack = await tell(verdict.say, String(accepted.messageId));
-      // The line holds refs and a verdict, never the words (as `inbound.mjs`'s do not): the chain is message -> handoff -> acknowledgement.
+      const failure = verdict.say === null ? { ref: null, error: null } : await tell(verdict.say, String(accepted.messageId));
+      const error = ack.error ?? failure.error;
+      // The line holds refs and a verdict, never the words (as `inbound.mjs`'s do not): the chain is message -> handoff -> acknowledgement. `ackAt` is when
+      // the acknowledgement was sent, so the time to acknowledge is `ackAt` less the inbound line's `ts`.
       ledger.append({
         direction: "in", origin: ORIGIN, updateId: accepted.updateId, messageRef: String(accepted.messageId), verdict: verdict.verdict,
-        handoff: verdict.handoff, ackRef: ack.ref, error: ack.error === null ? null : describeError(ack.error),
+        handoff: verdict.handoff, ackRef: ack.ref, ackAt, error: error === null ? null : describeError(error),
       });
-      if (ack.error !== null) throw new Error(`converse: the message was ${verdict.verdict} but the acknowledgement could not be sent`, { cause: ack.error });
+      if (error !== null) throw new Error(`converse: the message was ${verdict.verdict} but the acknowledgement could not be sent`, { cause: error });
       return { outcome: /** @type {any} */ (verdict.verdict), handoff: verdict.handoff };
     },
   };
