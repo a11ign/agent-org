@@ -430,14 +430,14 @@ describe("createGhReaders: the real reads, over a fake gh and a fake systemctl",
     assert.deepEqual(await readers.pr(2), { number: 2, state: "open", review: "none" });
   });
 
-  test("run: the conclusion; a run that has not concluded THROWS rather than reading as nothing", async () => {
+  test("run: the status and the conclusion; a run still going has a null conclusion, which `{{run:N.conclusion}}` refuses to render (placeholders.test.mjs)", async () => {
     const { gh } = ghFor({
       [API(`repos/${REPO}/actions/runs/5`)]: { conclusion: "success", status: "completed" },
       [API(`repos/${REPO}/actions/runs/6`)]: { conclusion: null, status: "in_progress" },
     });
     const readers = createGhReaders({ gh, systemctl: noSystemctl, repo: REPO });
-    assert.deepEqual(await readers.run(5), { conclusion: "success" });
-    await assert.rejects(() => readers.run(6), /has not concluded \(status in_progress\)/);
+    assert.deepEqual(await readers.run(5), { status: "completed", conclusion: "success" });
+    assert.deepEqual(await readers.run(6), { status: "in_progress", conclusion: null });
   });
 
   test("ready counts the rows the watcher counts as waiting, and the last merge is the newest merged_at", async () => {

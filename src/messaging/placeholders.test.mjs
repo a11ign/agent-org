@@ -41,7 +41,7 @@ function fixtureReaders(overrides) {
   return {
     issue: async (number) => ({ number, state: "open", labels: [] }),
     pr: async (number) => ({ number, state: "open", review: "none" }),
-    run: async () => ({ conclusion: "success" }),
+    run: async () => ({ status: "completed", conclusion: "success" }),
     ready: async () => ({ count: 0 }),
     lastMerge: async () => ({ at: NOW }),
     unit: async () => ({ state: "active" }),
@@ -220,7 +220,7 @@ describe("(5) the list of placeholder names is pinned, because the liaison's bri
     assert.deepEqual([...PLACEHOLDER_NAMES], [
       "issue:<number>.number", "issue:<number>.state", "issue:<number>.labels",
       "pr:<number>.number", "pr:<number>.state", "pr:<number>.review",
-      "run:<id>.conclusion",
+      "run:<id>.status", "run:<id>.conclusion",
       "ready.count",
       "last-merge.age",
       "unit:<unit>.state",
@@ -235,5 +235,47 @@ describe("(5) the list of placeholder names is pinned, because the liaison's bri
     const filled = [...PLACEHOLDER_NAMES].map((name) => `{{${name.replace("<number>", "7").replace("<id>", "7").replace("<unit>", "a.service").replace("<repo>", RELEASE_REPO)}}}`);
     assert.deepEqual(parsePlaceholders(filled.join(" ")).problems, []);
     for (const added of ["fleet.workers-up", "fleet.workers-down", "gate.last-tick.age", "release:<repo>.latest"]) assert.ok(PLACEHOLDER_NAMES.includes(added), added);
+  });
+});
+
+describe("(6) a run is read by `.status` while it runs and by its conclusion once it has one", () => {
+  /** @param {{status: string, conclusion: string | null}} run the REAL run reader over the one GET it makes, so what GitHub says is what is read */
+  function readerOver(run) {
+    const gh = async (/** @type {string[]} */ argv) => {
+      assert.deepEqual(argv, ["api", "repos/a11ign/a11ign/actions/runs/7"], "the one read a run makes: a GET of the run");
+      return JSON.stringify({ id: 7, ...run });
+    };
+    return replyOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+  }
+
+  test("`.status` of a run in progress says where it is; once concluded it says the conclusion, and the same field serves both", async () => {
+    for (const [run, said] of /** @type {const} */ ([
+      [{ status: "queued", conclusion: null }, "queued"],
+      [{ status: "in_progress", conclusion: null }, "in_progress"],
+      [{ status: "completed", conclusion: "failure" }, "failure"],
+      [{ status: "completed", conclusion: "success" }, "success"],
+    ])) {
+      const { reply, provider } = readerOver(run);
+      assert.equal((await reply.send("{{run:7.status}}")).outcome, "sent", said);
+      assert.match(provider.sent[0].text, new RegExp(`^${said}\\n`));
+    }
+  });
+
+  test("`.conclusion` still refuses a run that has not concluded, and says what its status is; `.status` of the same run does not refuse", async () => {
+    const running = readerOver({ status: "in_progress", conclusion: null });
+    const refused = /** @type {any} */ (await running.reply.send("{{run:7.conclusion}}"));
+    assert.equal(refused.outcome, "refused");
+    assert.match(refused.problems[0].reason, /has not concluded \(status in_progress\)/);
+    assert.deepEqual(running.provider.sent, []);
+    assert.equal((await readerOver({ status: "in_progress", conclusion: null }).reply.send("{{run:7.status}}")).outcome, "sent", "the control: the same run through the other field");
+    assert.equal((await readerOver({ status: "completed", conclusion: "success" }).reply.send("{{run:7.conclusion}}")).outcome, "sent", "the control: a concluded run through `.conclusion`");
+  });
+
+  test("a run GitHub calls `completed` with no conclusion refuses and does not say \"completed\", which is a status and never a final state", async () => {
+    const { reply, provider } = readerOver({ status: "completed", conclusion: null });
+    const refused = /** @type {any} */ (await reply.send("{{run:7.status}}"));
+    assert.equal(refused.outcome, "refused");
+    assert.match(refused.problems[0].reason, /the run's status came back empty/);
+    assert.deepEqual(provider.sent, []);
   });
 });

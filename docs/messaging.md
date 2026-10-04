@@ -62,7 +62,7 @@ decision 8).
   classifier has false negatives, so it is the first of three layers, not the guarantee:** the second is `ceo`'s brief, the third
   is that the outbound path can carry only checked facts (next).
 - **(e) Answers are facts, checked before they are sent.** `chairman:reply` takes text containing **placeholders from a closed
-  vocabulary** (`{{issue:2885.labels}}`, `{{pr:2881.state}}`, `{{run:36891064128.conclusion}}`, `{{ready.count}}`,
+  vocabulary** (`{{issue:2885.labels}}`, `{{pr:2881.state}}`, `{{run:36891064128.status}}` (and `.conclusion`, once the run has one), `{{ready.count}}`,
   `{{last-merge.age}}`, `{{unit:work-tick.state}}`, and a verbatim quote of a row comment with its link). **The core re-reads each at
   send time and stamps the message "as of HH:MMZ"**. A read that fails REFUSES the send and tells `ceo` which, and "I could not check
   X" is itself sendable. A `#<number>`, a state word (merged, green, red, passing, failed) or a count outside a placeholder is
@@ -358,11 +358,11 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   label from a row?` is refused); the content of a group or forwarded message is hashed before the identity check (at odds with "no
   hash of a secret"); and a stranger can grow the ledger by one line per update.
 
-## The liaison's commands: `chairman:record`, `chairman:correct`, `chairman:ask-ceo` (a11ign/a11ign#3417, #3490)
+## The liaison's commands: `chairman:record`, `chairman:correct`, `chairman:ask-ceo`, `chairman:watch` (a11ign/a11ign#3417, #3490, #3418, #3502)
 
-The liaison acts for the chairman through three commands and no others; each takes a `--message=<ref>` that must be an accepted inbound line in the ledger, and each says in its
-own text that the liaison wrote it. `record` and `correct` write to a row (their source headers hold the rules: a closed set of three verbs, `needs:chairman` the only label removed).
-`ask-ceo` writes to no row: it asks `ceo` for a ruling.
+The liaison acts for the chairman through four commands and no others; each (`watch` for `add`) takes a `--message=<ref>` that must be an accepted inbound line in the ledger, and the three
+that write or send say in their own text that the liaison wrote it. `record` and `correct` write to a row (their source headers hold the rules: a closed set of three verbs, `needs:chairman` the only label removed).
+`ask-ceo` writes to no row: it asks `ceo` for a ruling. `watch` writes to no row either: it keeps the chairman posted on a thing until the thing ends (below).
 
 ### `chairman:ask-ceo`: what "names something that clears it" is
 
@@ -385,3 +385,20 @@ the same refusals, the same `decision: true` entry and a sender derived from the
 names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported as queued and never retried.** One consequence to know: `converse.test.mjs` bounds the callers of the queue under
 `src/messaging/` by scanning for the queue's functions and `prompt-session.mjs`, and `ask-ceo.mjs` runs the command by name, so the scan does not see it. It is a second sender to a session
 other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.mjs` pins its own single target.
+
+### `chairman:watch`: keep the chairman posted on a thing until it ends (a11ign/a11ign#3418, #3502)
+
+```
+pnpm run chairman:watch -- add <row|pr|run|unit> <id> --message=45     start watching
+pnpm run chairman:watch -- list                                          what is being watched
+pnpm run chairman:watch -- remove <row|pr|run|unit> <id>                 stop, without a message
+```
+
+**The ledger is the list**: `add` and `remove` are `direction: "watch"` lines, `list` folds them, and the watcher tells the chairman each change of state and **ends the watch when its final state has
+been told**, not when it was seen. The state is read through the placeholder vocabulary, so a thing the vocabulary cannot read is refused at `add`, and so is a thing already in its final state (nothing
+would change). The states that end a watch: a row `closed`; a pull request `merged` or `closed`; **a run, any conclusion GitHub names** (`success`, `failure`, `cancelled`, `skipped`, `neutral`, `timed_out`,
+`action_required`, `stale`, `startup_failure`); a unit never ends and is removed by hand.
+
+**A run in progress can be watched** because its state is `{{run:<id>.status}}`: the run's status (`queued`, `in_progress`, `waiting`) while it runs and its conclusion once it has one, so one field follows
+a run from start to end, and each move is told. `{{run:<id>.conclusion}}` is unchanged and still refuses a run that has not concluded. Before this field, `add` could not succeed for a run: the one reader
+refused every run still going, and a run that has concluded is final.

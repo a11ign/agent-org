@@ -3,7 +3,7 @@
 // about the organisation is whatever one of these placeholders resolves to: each is RE-READ from its source at the moment of sending, so the
 // words are a reading and never a memory. `reply.mjs` is the sender; this file is the vocabulary, the parser and the reads.
 //
-//   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.conclusion}}   {{ready.count}}   {{last-merge.age}}
+//   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.status|conclusion}}   {{ready.count}}   {{last-merge.age}}
 //   {{unit:NAME.state}}               {{comment:ID.quote}}           {{unchecked:<any of the above>}}
 //   {{fleet.workers-up}}  {{fleet.workers-down}}  {{gate.last-tick.age}}  {{release:OWNER/REPO.latest}}      (a11ign/a11ign#3420)
 //
@@ -18,7 +18,7 @@
 // argument must itself be a placeholder, not words.
 //
 // **A READER THAT HAS NO ANSWER THROWS.** `undefined`, `null` and an empty string are failures too (`fieldValue`): a placeholder that rendered as
-// nothing would read, to the chairman, as "nothing to report". A run that has not concluded, a unit systemd does not know and a quote too long to
+// nothing would read, to the chairman, as "nothing to report". A run's `.conclusion` before it has concluded (its `.status` is the field a run in progress can be read by), a unit systemd does not know and a quote too long to
 // be given verbatim are all throws for that reason.
 //
 // THE READS ARE INJECTED. `createGhReaders` is the real set, over one `gh` and one `systemctl` the caller supplies, and the same one-line typedef
@@ -48,7 +48,7 @@ const REPOSITORY = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
  * @typedef {{
  *   issue: (number: number) => Promise<{number: number, state: string, labels: string[]}>,
  *   pr: (number: number) => Promise<{number: number, state: string, review: string}>,
- *   run: (id: number) => Promise<{conclusion: string}>,
+ *   run: (id: number) => Promise<{status: string, conclusion: string | null}>,
  *   ready: () => Promise<{count: number}>,
  *   lastMerge: () => Promise<{at: number}>,
  *   unit: (name: string) => Promise<{state: string}>,
@@ -65,6 +65,21 @@ const REPOSITORY = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 function fieldValue(value, what) {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${what} came back empty`);
   return value;
+}
+
+/**
+ * `{{run:ID.status}}`: where a run is while it runs (`queued`, `in_progress`), and its conclusion once it has one, so one field follows a run from start to end.
+ * A run GitHub calls `completed` that carries no conclusion is a throw and not "completed": that word is the status, never a final state.
+ * @param {{status: string, conclusion: string | null}} run @returns {string}
+ */
+function runStatus({ status, conclusion }) {
+  return fieldValue(conclusion ?? (status === "completed" ? null : status), "the run's status");
+}
+
+/** @param {{status: string, conclusion: string | null}} run @returns {string} the conclusion, which a run still in progress does not have */
+function runConclusion({ status, conclusion }) {
+  if (conclusion === null || conclusion === undefined) throw new RangeError(`the run has not concluded (status ${status})`);
+  return fieldValue(conclusion, "the conclusion");
 }
 
 /** @param {number} elapsedMs @returns {string} "3d 4h", "2h 15m" or "40m": the two most significant units, never a rounded-up one */
@@ -111,7 +126,7 @@ const VOCABULARY = Object.freeze({
       review: (value) => fieldValue(value.review, "the review decision"),
     },
   },
-  run: { id: NUMBER, idName: "id", read: (readers, id) => readers.run(Number(id)), fields: { conclusion: (value) => fieldValue(value.conclusion, "the conclusion") } },
+  run: { id: NUMBER, idName: "id", read: (readers, id) => readers.run(Number(id)), fields: { status: runStatus, conclusion: runConclusion } },
   ready: { id: null, read: (readers) => readers.ready(), fields: { count: (value) => String(value.count) } },
   "last-merge": { id: null, read: (readers) => readers.lastMerge(), fields: { age: (value, at) => describeAge(at - value.at) } },
   unit: { id: UNIT_NAME, idName: "unit", read: (readers, id) => readers.unit(String(id)), fields: { state: (value) => fieldValue(value.state, "the state") } },
@@ -263,8 +278,7 @@ export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, no
     },
     async run(id) {
       const run = await github.api(`repos/${repo}/actions/runs/${id}`);
-      if (run.conclusion === null || run.conclusion === undefined) throw new RangeError(`run ${id} has not concluded (status ${run.status})`);
-      return { conclusion: run.conclusion };
+      return { status: run.status, conclusion: run.conclusion ?? null };
     },
     async ready() {
       return { count: (await readWaitingRows({ github, repo })).length };

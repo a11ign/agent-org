@@ -15,8 +15,8 @@
 // time could not do that. The same fold gives the second tick nothing to tell, which is why removal-on-terminal needs no separate "ended" line.
 //
 // **THE STATE IS READ THROUGH THE PLACEHOLDER VOCABULARY (`placeholders.mjs`)**, so "the state of a pull request" means here exactly what it means in a reply to the chairman,
-// and a thing the vocabulary cannot read is refused at `add` and not at the first tick. **HONEST LIMIT:** the vocabulary's `run` reader refuses a run that has not
-// concluded, and a concluded run has nothing left to change, so a `run` watch cannot be added until the vocabulary can read a run's status; the refusal says so.
+// and a thing the vocabulary cannot read is refused at `add` and not at the first tick. A run is read by `{{run:ID.status}}`, which is the run's status while it
+// runs and its conclusion once it has one, so a run in progress can be watched and a run that has concluded is refused at `add` like any other thing already final.
 //
 // **KNOWN EDGE:** a thing removed and added again while the core still holds its old `watch:<thing>` delivery is compared by the core against that older state, so a first
 // change back to exactly the state last told is not told. A thing that has ended is refused at `add`, which is the common form of this.
@@ -49,15 +49,18 @@ const EXEC_TIMEOUT_MS = 60_000;
 const EXEC_MAX_BUFFER = 64_000_000;
 const execFileAsync = promisify(execFile);
 
+/** The values of a workflow run's `conclusion` (GitHub's REST schema): a run that has one has ended. */
+const RUN_CONCLUSIONS = Object.freeze(["success", "failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "stale", "startup_failure"]);
+
 /**
- * What can be watched, by the word the chairman's liaison types. `field` is the vocabulary placeholder whose value IS the state; `terminal` lists the states after
- * which nothing can change (`null`: any state the reader returns, which is a run's conclusion).
- * @type {Readonly<Record<string, {id: RegExp, placeholder: (id: string) => string, label: (id: string) => string, terminal: readonly string[] | null, link: ((repo: string, id: string) => string) | null}>>}
+ * What can be watched, by the word the chairman's liaison types. `placeholder` is the vocabulary placeholder whose value IS the state; `terminal` lists the states after
+ * which nothing can change (a run's are the conclusions GitHub names, so a status such as `in_progress` or a word it adds later is never taken for an end).
+ * @type {Readonly<Record<string, {id: RegExp, placeholder: (id: string) => string, label: (id: string) => string, terminal: readonly string[], link: ((repo: string, id: string) => string) | null}>>}
  */
 export const WATCHABLE = Object.freeze({
   row: { id: NUMBER, placeholder: (id) => `{{issue:${id}.state}}`, label: (id) => `Row #${id}`, terminal: ["closed"], link: (repo, id) => `https://github.com/${repo}/issues/${id}` },
   pr: { id: NUMBER, placeholder: (id) => `{{pr:${id}.state}}`, label: (id) => `PR #${id}`, terminal: ["merged", "closed"], link: (repo, id) => `https://github.com/${repo}/pull/${id}` },
-  run: { id: NUMBER, placeholder: (id) => `{{run:${id}.conclusion}}`, label: (id) => `Run ${id}`, terminal: null, link: (repo, id) => `https://github.com/${repo}/actions/runs/${id}` },
+  run: { id: NUMBER, placeholder: (id) => `{{run:${id}.status}}`, label: (id) => `Run ${id}`, terminal: RUN_CONCLUSIONS, link: (repo, id) => `https://github.com/${repo}/actions/runs/${id}` },
   unit: { id: UNIT_NAME, placeholder: (id) => `{{unit:${id}.state}}`, label: (id) => `Unit ${id}`, terminal: [], link: null },
 });
 
@@ -80,14 +83,12 @@ export function watchKey(thing) {
 
 /** @param {string} kind @param {string} state @returns {boolean} whether nothing can change after `state` */
 export function isTerminal(kind, state) {
-  const { terminal } = WATCHABLE[kind];
-  return terminal === null || terminal.includes(state);
+  return WATCHABLE[kind].terminal.includes(state);
 }
 
 /** @param {string} kind @param {string} hash @returns {boolean} whether `hash` is the fingerprint of a final state (a delivery line holds the hash, not the state) */
 function isTerminalHash(kind, hash) {
-  const { terminal } = WATCHABLE[kind];
-  return terminal === null || terminal.some((state) => stateFingerprint({ state }) === hash);
+  return WATCHABLE[kind].terminal.some((state) => stateFingerprint({ state }) === hash);
 }
 
 /** @param {Record<string, any>} line @returns {boolean} */
@@ -136,12 +137,6 @@ function whyNotWatchable(kind, id) {
   return WATCHABLE[kind].id.test(id) ? null : `"${id}" is not the id of a ${kind}`;
 }
 
-/** @param {string} kind @param {string} reason @returns {string} the refusal of a thing the readers cannot read; a run is the one whose reason is known */
-function unreadable(kind, reason) {
-  const advice = kind === "run" ? " (a run can be read only once it has concluded, and by then nothing is left to watch)" : "";
-  return `cannot be read, so it was not watched: ${reason}${advice}`;
-}
-
 /** @param {Ports} ports */
 export function createWatchList({ ledger, readers, now }) {
   return {
@@ -162,7 +157,7 @@ export function createWatchList({ ledger, readers, now }) {
       try {
         state = await readState({ kind, id }, { readers, now });
       } catch (error) {
-        return { outcome: "refused", say: `${label} ${unreadable(kind, describeError(error))}` };
+        return { outcome: "refused", say: `${label} cannot be read, so it was not watched: ${describeError(error)}` };
       }
       if (isTerminal(kind, state)) return { outcome: "refused", say: `${label} is already ${state}: nothing will change, so it was not watched` };
       ledger.append({ direction: WATCH_DIRECTION, op: "add", thing, messageRef: ref, state, stateHash: stateFingerprint({ state }) });
