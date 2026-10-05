@@ -596,6 +596,20 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has already named the bare label and when it was applied; the output is posting the "
       + "question or removing the label, by a session that already holds the row",
   }),
+  declareCause("answer-given", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND MEDIUM, `answer-label-unexplained`'s PROFILE (#3632): the recipient is the row's own holder, and
+    // the gate has already named who answered, when, and which comment carries it. The woken turn reads that one
+    // comment and resumes -- a short judgment over a stated fact, not diagnosis from an absence.
+    model: "sonnet",
+    effort: "medium",
+    // JUDGMENT, NOT ACTION, FOR `blocker-cleared`'S REASON (#2741): the clearing does not recur on its own, so
+    // the order must go ONCE. An ACTION cause redelivers its key every twenty minutes while the gate keeps
+    // emitting it; a judgment cause's two-hour TTL outlasts the gate's 90-minute window
+    // (`ANSWER_GIVEN_WINDOW_MS`), so the one removal is ordered once and then falls out of the window.
+    why: "the gate has already named the answer's author, time and comment; the claimant that asked "
+      + "reads one comment and resumes work it was stopped on",
+  }),
   declareCause("ready-row-unclaimed", GROUPS.ACTION_START, {
     kind: "claude",
     model: "sonnet",

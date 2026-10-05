@@ -43,7 +43,7 @@
 // reachable -- was answered as if the row were free.
 
 // #2619 (child 3d of #69): the `answer:` prefix, moved to the project's declared vocabulary.
-import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 
 /**
  * The label prefix that says which session owes an answer on a row.
@@ -163,6 +163,59 @@ export function bareAnswerLabel(timeline, session, nowMs = Date.now()) {
   if (answered) return null;
   // An unparseable time reads as NaN, which compares false, so the label stays bare: the old verdict.
   return nowMs - Date.parse(labelledAt) < ANSWER_LABEL_GRACE_MS ? null : { labelledAt };
+}
+
+/**
+ * How long after an `answer:<session>` label comes OFF the gate still tells the claimant (#3632).
+ *
+ * STRICTLY UNDER `JUDGMENT_TTL_MS` (two hours), AND THAT IS WHAT MAKES THE ORDER ONE ORDER: the ledger
+ * re-sends a key once its TTL has passed, so a reading that kept emitting the same removal for longer than
+ * the TTL would order the claimant about one answer twice. `answer-given` is a judgment cause for that
+ * reason, and `work-gate.test.ts` pins this window under that TTL so neither can move alone. 90 minutes is
+ * also what `claim-stalled`'s 120-minute nudge makes the upper end of useful: past it the claimant has
+ * been nudged anyway.
+ */
+export const ANSWER_GIVEN_WINDOW_MS = 90 * 60 * 1000;
+
+/**
+ * The `answer:<other>` labels taken OFF a claimed row inside {@link ANSWER_GIVEN_WINDOW_MS}, each with the
+ * comment that carries the answer -- what the claimant is told when somebody else answers its question
+ * (#3632). Removing the label IS the act of answering, and it wakes nobody on its own: an answered claimant
+ * that had gone idle waited for `claim-stalled`'s next nudge, up to 120 minutes.
+ *
+ * THE ANSWER IS THE NEWEST COMMENT BY THE REMOVING ACCOUNT AT OR BEFORE THE REMOVAL. Accounts are shared
+ * between sessions, so this can say which account wrote and never which session; the removal's own `actor`
+ * is the only anchor the timeline gives, and `commentId` is `null` when that account posted nothing first
+ * (a label removed without a word is still an answer the claimant should be told about).
+ *
+ * NOT A REMOVAL THAT IS NO LONGER ONE: a label put back after it came off is a question standing again, and
+ * a removal from before the claimant took the row answered somebody else's question. A label named for the
+ * claimant itself is skipped too: the claimant is not waiting on themselves. Returned oldest first, one
+ * entry per removal, so a label re-applied and removed again is a second answer and one answer is one.
+ *
+ * @param {{event?: string, label?: {name?: string}, actor?: string, id?: number, created_at?: string}[] | null | undefined} timeline
+ * @param {string} claimant the `session:` label's holder
+ * @param {number} [nowMs] the caller's clock
+ * @returns {{answered: string, removedAt: string, removedBy: string | null, commentId: number | null}[]}
+ */
+export function answersGiven(timeline, claimant, nowMs = Date.now()) {
+  const events = (timeline ?? []).filter((e) => e?.created_at);
+  const claimedAt = events.filter((e) => e.event === "labeled" && e.label?.name === `${SESSION_PREFIX}${claimant}`)
+    .map((e) => String(e.created_at)).pop() ?? "";
+  const given = [];
+  for (const removal of events) {
+    const name = String(removal.label?.name ?? "");
+    if (removal.event !== "unlabeled" || !name.startsWith(ANSWER_PREFIX)) continue;
+    const removedAt = String(removal.created_at);
+    const answered = name.slice(ANSWER_PREFIX.length).trim();
+    const reapplied = events.some((e) => e.event === "labeled" && e.label?.name === name && String(e.created_at) > removedAt);
+    // A window the clock cannot be read against is NaN, which compares false: refused, never ordered.
+    const inWindow = nowMs - Date.parse(removedAt) <= ANSWER_GIVEN_WINDOW_MS;
+    if (!answered || answered === claimant || reapplied || !inWindow || removedAt < claimedAt) continue;
+    const comment = events.filter((e) => e.event === "commented" && e.actor === removal.actor && String(e.created_at) <= removedAt).pop();
+    given.push({ answered, removedAt, removedBy: removal.actor ?? null, commentId: comment?.id ?? null });
+  }
+  return given;
 }
 
 /** The length of `YYYY-MM-DD` -- what tells a date-only `Not-before:` value from a timestamped one. */
