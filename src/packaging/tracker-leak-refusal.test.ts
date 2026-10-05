@@ -39,7 +39,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LEAK_PATTERNS, allLeaksIn, leakRefusalReason } from "./leak-patterns.mjs";
+import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.mjs";
+import { homeProjectDeclaration } from "../project-config.mjs";
 import { fileRefusalReason, createIssue } from "../row-file.mjs";
 import { checkBody } from "../pr-open.mjs";
 import { editRefusal, editComment, digest } from "../tracker-comment.mjs";
@@ -53,7 +54,7 @@ const COMPLETE_ROW_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
   + "## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
 
-/** A synthetic sample of each `LEAK_PATTERNS` shape, one leaking line each. */
+/** A synthetic sample of each `leakPatterns()` shape, one leaking line each. */
 const SAMPLE_LINE: Record<string, string> = {
   "private LAN IPv4 address": `reach the page server at ${ipv4(10, 20, 30, 40)}`,
   "a named SSH private key file": "load ~/.ssh/a11y-fixture_ed25519 first",
@@ -63,9 +64,12 @@ const SAMPLE_LINE: Record<string, string> = {
 
 // --- leakRefusalReason: every pattern, named line and value, documentation ranges silent ---
 
-test("#891 MUTATION: each of LEAK_PATTERNS fires through leakRefusalReason on a synthetic leak of its "
+test("#891 MUTATION: each of leakPatterns() fires through leakRefusalReason on a synthetic leak of its "
   + "own shape -- not just the address anybody's hand-rolled sweep greps for", () => {
-  for (const { name } of LEAK_PATTERNS) {
+  const patterns = leakPatterns();
+  assert.ok(patterns.length >= GENERIC_LEAK_PATTERNS.length,
+    "CONTROL: the tool's generic patterns are always held, so an empty list cannot pass this loop for a covered one");
+  for (const { name } of patterns) {
     const sample = SAMPLE_LINE[name];
     assert.ok(sample, `no synthetic sample defined for "${name}" -- add one so this stays proven`);
     const reason = leakRefusalReason(`some body text\n${sample}\nmore text`);
@@ -183,17 +187,30 @@ test("#891 ACCEPTANCE: no comment is ever PATCHed for a leaking replacement, eve
 
 // --- #891 MUTATION: the check is load-bearing -- with the shared predicate emptied, detection stops too ---
 
-test("#891 MUTATION TARGET: with LEAK_PATTERNS emptied, leakRefusalReason goes silent on a REAL leak -- "
+// The tool splits what the product kept as ONE array: the two generic patterns (frozen list, mutable entries) and the project's own, read from its
+// declaration (`leakPatterns()` builds a fresh list from both on every call). So "emptied" is done to each source in place, and put back.
+function withEveryPatternNeutered<T>(body: () => T): T {
+  const never = /(?!)/;
+  const generic = GENERIC_LEAK_PATTERNS.map((entry) => ({ entry, pattern: entry.pattern }));
+  const own = homeProjectDeclaration().leakPatterns;
+  const savedOwn = own.splice(0, own.length);
+  for (const { entry } of generic) (entry as { pattern: RegExp }).pattern = never;
+  try {
+    return body();
+  } finally {
+    for (const { entry, pattern } of generic) (entry as { pattern: RegExp }).pattern = pattern;
+    own.splice(0, own.length, ...savedOwn);
+  }
+}
+
+test("#891 MUTATION TARGET: with every pattern emptied, leakRefusalReason goes silent on a REAL leak -- "
   + "proving it has no second, independent check of its own", () => {
   const address = ipv4(10, 20, 30, 40);
-  const saved = LEAK_PATTERNS.splice(0, LEAK_PATTERNS.length);
-  try {
-    assert.equal(leakRefusalReason(`the page server is at ${address}, and ~/.ssh/a11y-fixture_ed25519 too`),
-      null, "with the shared predicate neutered, every leak must go undetected here as well");
-  } finally {
-    LEAK_PATTERNS.splice(0, LEAK_PATTERNS.length, ...saved);
-  }
-  // Restored -- the same real leak must be caught again, proving the splice above did not leave the
-  // shared array (and therefore the tree-wide guards) permanently narrowed.
+  const silent = withEveryPatternNeutered(() => leakRefusalReason(
+    `the page server is at ${address}, and ~/.ssh/a11y-fixture_ed25519 too`));
+  assert.equal(silent, null, "with the shared predicate neutered, every leak must go undetected here as well");
+  // Restored -- the same real leak must be caught again, proving the neutering above did not leave the
+  // shared patterns (and therefore the tree-wide guards) permanently narrowed.
   assert.ok(leakRefusalReason(`the page server is at ${address}`));
+  assert.ok(leakPatterns().length >= GENERIC_LEAK_PATTERNS.length);
 });

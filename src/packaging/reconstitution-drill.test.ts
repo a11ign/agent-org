@@ -7,7 +7,7 @@
 // is that script's own test, not a restatement of `roles-readme.test.ts`'s roster/completeness checks,
 // which stay exactly where they are and keep doing their own job.
 //
-// Runs the real script against THIS checkout (offline, fast, what CI can do) -- the `--clone` path is
+// Runs the real script against the checkout the tool serves (offline, fast, what CI can do) -- the `--clone` path is
 // exercised manually per the drill instructions in README.md, never automated here, because a real clone
 // over the network is exactly the kind of check this repo's own rules say does not belong in a unit test.
 import { test } from "node:test";
@@ -16,9 +16,14 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDrill } from "../reconstitution-drill.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
+
+// THE PROJECT THE TOOL SERVES, not the working directory: the roster, the first messages and the memory index live in the project's
+// `.agent-org/roles/`, and the tool's own checkout holds none. In the project's layout the two are the same directory.
+const REAL_CHECKOUT = HOME_CHECKOUT;
 
 test("the drill runs against this checkout and produces a message for every roster agent", () => {
-  const report = runDrill(process.cwd());
+  const report = runDrill(REAL_CHECKOUT);
   assert.ok(report.ok, "the drill refused against the real checkout -- .agent-org/roles/README.md must be unreadable");
   // A floor, not a target -- same reasoning as roles-readme.test.ts's own roster guard: the organisation
   // does not shrink to zero as a happy path.
@@ -30,7 +35,7 @@ test("the drill runs against this checkout and produces a message for every rost
 });
 
 test("every agent's composed message includes the memory section, when memory exists", () => {
-  const report = runDrill(process.cwd());
+  const report = runDrill(REAL_CHECKOUT);
   assert.ok(report.ok, "the drill refused against the real checkout");
   assert.ok((report.memoryEntryCount ?? 0) > 0,
     ".agent-org/roles/memory/MEMORY.md produced zero entries against the real checkout -- the migration itself may be missing");
@@ -42,7 +47,7 @@ test("every agent's composed message includes the memory section, when memory ex
 });
 
 test("a roster agent with no role file is reported as a gap, not silently dropped", () => {
-  const report = runDrill(process.cwd());
+  const report = runDrill(REAL_CHECKOUT);
   // Mirrors roles-readme.test.ts's live finding rather than assuming it: whichever roles are currently
   // unwritten must show up here too, by the SAME real signal (existsSync), read independently.
   const stillMissing = report.agents.filter((a) => a.gaps.some((g) => g.startsWith("role file missing")));

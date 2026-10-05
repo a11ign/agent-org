@@ -1,0 +1,49 @@
+{
+  "_what": "Recorded `gh pr list --state open --limit 400 --json number,headRefName,createdAt,isDraft,labels,mergeStateStatus` output, plus constructed rows for the cases a live queue does not happen to contain. Every row says which it is.",
+  "_recordedAt": "2026-09-08T07:27:58Z",
+  "_now": "2026-09-08T07:30:00Z",
+  "_why": "B1's evidence is the live queue, and an `Acceptance:` command may never use `gh` -- the acceptance job runs author-written commands under read-only, tracker-less credentials, always. So the decision proves itself against this fixture in CI, and the live run is pasted on the row as evidence with a clock. A fixture also holds the cases that MATTER: the live queue tonight held two PRs, neither four hours old, so a live run could not exercise a single closure.",
+  "prs": [
+    {
+      "_source": "recorded",
+      "number": 486, "headRefName": "agent/trunk-before-after-465",
+      "createdAt": "2026-09-08T07:22:30Z", "isDraft": false, "labels": [], "mergeStateStatus": "BEHIND"
+    },
+    {
+      "_source": "recorded",
+      "number": 485, "headRefName": "agent/pr-lifetime-b1",
+      "createdAt": "2026-09-08T07:20:40Z", "isDraft": false, "labels": [], "mergeStateStatus": "BLOCKED"
+    },
+    {
+      "_source": "constructed — 3h59m, the boundary the row names, one minute under",
+      "number": 901, "headRefName": "agent/just-under",
+      "createdAt": "2026-09-08T03:31:00Z", "isDraft": false, "labels": [], "mergeStateStatus": "BLOCKED"
+    },
+    {
+      "_source": "constructed — 4h01m, the boundary the row names, one minute over",
+      "number": 902, "headRefName": "agent/just-over",
+      "createdAt": "2026-09-08T03:29:00Z", "isDraft": false, "labels": [], "mergeStateStatus": "BLOCKED"
+    },
+    {
+      "_source": "constructed — a 30h DRAFT, never offered for merge",
+      "number": 903, "headRefName": "agent/long-draft",
+      "createdAt": "2026-09-07T01:30:00Z", "isDraft": true, "labels": [], "mergeStateStatus": "BLOCKED"
+    },
+    {
+      "_source": "constructed — a 30h PR a PERSON labelled `blocked`; #181's real shape",
+      "number": 904, "headRefName": "agent/person-refused",
+      "createdAt": "2026-09-07T01:30:00Z", "isDraft": false,
+      "labels": [{ "name": "blocked" }], "mergeStateStatus": "BLOCKED"
+    },
+    {
+      "_source": "constructed — 9h, GREEN AND BEHIND: the merge train's, waiting its turn under B3",
+      "number": 905, "headRefName": "agent/queued-behind",
+      "createdAt": "2026-09-07T22:30:00Z", "isDraft": false, "labels": [], "mergeStateStatus": "BEHIND"
+    },
+    {
+      "_source": "constructed — 25h and DIRTY: #172's real shape, nothing is coming for it",
+      "number": 906, "headRefName": "agent/genuinely-abandoned",
+      "createdAt": "2026-09-07T06:30:00Z", "isDraft": false, "labels": [], "mergeStateStatus": "DIRTY"
+    }
+  ]
+}
