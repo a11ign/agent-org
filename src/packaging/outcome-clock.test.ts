@@ -228,7 +228,7 @@ test("NOT NAMED `never-started`: a row that has MOVED (a commit, or a comment) o
 // --- #3569: an idle instance is read by what it WAITS on, whatever it owns ---------------------------------------------------------------------------
 
 /** A pull request the holder owns, as the tick's moves carry it: ready, checks done, a review required, nothing on it. */
-const QUIET_PR = { number: 77, createdAt: iso(NOW - 30 * MINUTE_MS), labels: [] as unknown[], reviewDecision: "REVIEW_REQUIRED", checksPending: false };
+const QUIET_PR = { number: 77, createdAt: iso(NOW - 30 * MINUTE_MS), labels: [] as { name?: string }[], reviewDecision: "REVIEW_REQUIRED", checksPending: false };
 const WAITS_ON_PR: Record<string, { pr: Record<string, unknown>; others?: { label: string; status: string }[] }> = {
   "review-requested": { pr: QUIET_PR, others: [{ label: "reviewer-77", status: "working" }] },
   "checks-pending": { pr: { ...QUIET_PR, checksPending: true } },
