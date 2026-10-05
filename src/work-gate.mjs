@@ -226,6 +226,90 @@ export const repoNow = () => activeRepo ?? REPO;
 export const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
   { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
 
+/** The most `gh` calls one batch has in flight: the other repositories number single digits, and GitHub answers a burst with a secondary limit. */
+export const BATCH_MAX_CALLS = 16;
+const BATCH_MAX_BUFFER = 256 * 1024 * 1024;
+
+/**
+ * The `node` one batch runs: each call through ASYNC `execFile` so they wait together, answers printed as one JSON list in the order asked. `GH_REPO`
+ * aims a call exactly as `defaultRun` does, so the census (preloaded through `NODE_OPTIONS`) still counts each `gh` by repository.
+ */
+const BATCH_WORKER = `
+const { execFile } = require("node:child_process");
+const one = ({ args, repo }) => new Promise((done) => execFile("gh", args,
+  { encoding: "utf8", maxBuffer: ${BATCH_MAX_BUFFER}, env: repo === undefined ? process.env : { ...process.env, GH_REPO: repo } },
+  (error, stdout, stderr) => done(error === null ? { stdout }
+    : { failed: true, stdout, stderr, status: typeof error.code === "number" ? error.code : null, code: typeof error.code === "string" ? error.code : undefined })));
+Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdout.write(JSON.stringify(answers)));
+`;
+
+/**
+ * (#3566, slice 2) `gh` CALLS ASKED TOGETHER WAIT TOGETHER. The gate is synchronous, so each of the eight repositories' reads waited for the one before it:
+ * 17 `pr list` calls were 10.5 s of a 40.6 s gate, measured 2026-10-05 with a timing shim on PATH. ONE synchronous spawn of a `node` that starts the
+ * calls at once costs the slowest of them instead of their sum, and the tick keeps its shape: no reader becomes asynchronous.
+ * @param {{ args: string[], repo: string | undefined }[]} calls
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {({ stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string })[]} one answer per call, in order
+ */
+export function runBatch(calls, env = process.env) {
+  const answers = [];
+  for (let from = 0; from < calls.length; from += BATCH_MAX_CALLS) {
+    const chunk = calls.slice(from, from + BATCH_MAX_CALLS);
+    answers.push(...JSON.parse(execFileSync(process.execPath, ["-e", BATCH_WORKER, JSON.stringify(chunk)],
+      { encoding: "utf8", maxBuffer: BATCH_MAX_BUFFER, env })));
+  }
+  return answers;
+}
+
+/** @param {string[]} args @param {string | undefined} repo */
+const callKey = (args, repo) => JSON.stringify([repo ?? "", args]);
+
+/**
+ * `read`, with the `gh` calls it makes FIRST asked together. A rehearsal runs `read` against a `run` that answers every call `[]` and notes it; those
+ * calls go out as one batch; then `read` runs for real against the answers. So the commands, their parsing and every verdict are the reader's own, and
+ * only WHEN the waiting happens moves. A call the rehearsal did not foresee (the widened page after a full first one) runs on its own as it always did,
+ * and an answer is handed out ONCE: asking again is a new read, as it was. A refusal replays as the throw `execFileSync` made.
+ *
+ * Only for `defaultRun` unless a `batch` is handed in: a test's `run` stands for `gh` and must see its calls one at a time, and `batch` is the seam
+ * that shows them arriving together.
+ * @template T
+ * @param {(run: (args: string[], repo?: string) => string) => T} read
+ * @param {(args: string[], repo?: string) => string} [run]
+ * @param {typeof runBatch | undefined} [batch]
+ * @param {(line: string) => void} [log]
+ * @returns {T}
+ */
+export function readWithFirstWaveTogether(read, run = defaultRun, batch = run === defaultRun ? runBatch : undefined, log = (line) => process.stderr.write(line)) {
+  if (batch === undefined) return read(run);
+  /** @type {Map<string, { args: string[], repo: string | undefined }>} */
+  const asked = new Map();
+  try {
+    read((args, repo = activeRepo) => { asked.set(callKey(args, repo), { args, repo }); return "[]"; });
+  } catch (err) {
+    log(`NOTE: a reader threw on the rehearsal's empty answers, so its calls run one by one: ${err instanceof Error ? err.message : String(err)}\n`);
+    return read(run);
+  }
+  const calls = [...asked.values()];
+  if (calls.length < 2) return read(run);
+  let answers;
+  try {
+    answers = batch(calls);
+  } catch (err) {
+    log(`NOTE: ${calls.length} gh calls could not be batched, so they run one by one: ${err instanceof Error ? err.message : String(err)}\n`);
+    return read(run);
+  }
+  const waiting = new Map(calls.map((call, at) => [callKey(call.args, call.repo), answers[at]]));
+  return read((args, repo = activeRepo) => {
+    const key = callKey(args, repo);
+    const answer = waiting.get(key);
+    if (answer === undefined) return run(args, repo);
+    waiting.delete(key);
+    if (!("failed" in answer)) return answer.stdout;
+    throw Object.assign(new Error(`Command failed: gh ${args.join(" ")}\n${answer.stderr}`),
+      { status: answer.status, stdout: answer.stdout, stderr: answer.stderr, ...(answer.code === undefined ? {} : { code: answer.code }) });
+  });
+}
+
 /**
  * #3674: THE OPEN LIST IS ASKED AT THE SMALLEST PAGE THAT CAN BE COMPLETE, AND AT `OPEN_PRS_LIMIT` ONLY WHEN IT WAS NOT. The request's price is
  * the size of the page it asks for times the nested connections each pull request carries (comments, labels, files, reviews, closing issues,
@@ -3233,16 +3317,18 @@ export function withChecksPending(prs) {
  * same way, so asking again was one repeated `gh pr list` per other repository per tick (5 of 53 calls, about 4.6 s, measured by the census's `GH_REPO`
  * field). A scope present in `known` has its open list taken from there, `null` (refused) included: a refusal is not retried, since a retry is a new read.
  * @param {readonly Scope[]} [scopes] @param {(args: string[], repo?: string) => string} [run]
- * @param {readonly { scope: Scope, read: { prs: any[] | null } }[]} [known]
+ * (#3566, slice 2) Its merged lists, one per repository, go out together (`readWithFirstWaveTogether`).
+ * @param {readonly { scope: Scope, read: { prs: any[] | null } }[]} [known] @param {typeof runBatch} [batch]
  * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
  */
-export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun, known = []) {
-  const lanes = scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
+export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun, known = [], batch = run === defaultRun ? runBatch : undefined) {
+  /** @type {{ open: any[] | null, merged: any[] | null }[]} */
+  const lanes = readWithFirstWaveTogether((through) => scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
     const repo = /** @type {ScopeRepository} */ (scope.code).repo;
-    const aimed = (/** @type {string[]} */ args) => run(args, repo);
+    const aimed = (/** @type {string[]} */ args) => through(args, repo);
     const already = known.find((entry) => entry.scope.key === scope.key);
     return { open: already === undefined ? tagged(readPrs(aimed), scope.key, repo) : already.read.prs, merged: tagged(readMergedPrs(aimed), scope.key, repo) };
-  });
+  }), run, batch);
   if (lanes.length === 0) return undefined;
   return { open: lanes.some((lane) => lane.open === null) ? null : lanes.flatMap((lane) => lane.open ?? []),
     merged: lanes.every((lane) => lane.merged === null) ? null : lanes.flatMap((lane) => lane.merged ?? []) };
@@ -6339,14 +6425,14 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
 /**
  * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself, and about its `main` (#3079). Run inside `inRepo` for the code repository.
  * `trunkRed` is `undefined` for a scope with no code repository, and `null` for a green or an unreadable `main`: neither emits an order.
- * @param {any[]} openPrs @param {Scope} scope
+ * @param {any[]} openPrs @param {Scope} scope @param {ReturnType<typeof readScopeTrunkRed>} [trunkRed] the scope's `main`, when the caller has already asked
  */
-function codeReadings(openPrs, scope) {
+function codeReadings(openPrs, scope, trunkRed = readScopeTrunkRed(scope)) {
   const required = requiredWhenNeeded(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
   return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
-    trunkRed: readScopeTrunkRed(scope) };
+    trunkRed };
 }
 
 /**
@@ -6387,11 +6473,13 @@ function trackerReadings({ rows, allOpen }) {
  * Every NON-PRIMARY scope the declaration lists, with its lanes read ONCE. Empty for one project, which is what keeps one project's orders
  * identical to what they were. #3095: read BEFORE the primary's own B4 comparison, because that comparison needs these pull requests too,
  * and handed on to `otherScopeTicks` so it is not a second read.
- * @param {(args: string[], repo?: string) => string} [run]
+ * (#3566) THEIR FIRST READS GO OUT TOGETHER (`readWithFirstWaveTogether`), one wait for the repositories instead of one per repository.
+ * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch} [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
  * @returns {{ scope: Scope, read: ReturnType<typeof readLanes> }[]}
  */
-export function readOtherScopes(run = defaultRun) {
-  return scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "").map((scope) => ({ scope, read: readLanes(scope, run) }));
+export function readOtherScopes(run = defaultRun, batch = run === defaultRun ? runBatch : undefined) {
+  const scopes = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
+  return readWithFirstWaveTogether((aimed) => scopes.map((scope) => ({ scope, read: readLanes(scope, aimed) })), run, batch);
 }
 
 /**
@@ -6412,7 +6500,10 @@ export function pullRequestsOfOthers(others, skip) {
  * @param {boolean} drain @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {any[]} primaryPrs
  */
 function otherScopeTicks(drain, others, primaryPrs) {
-  return others.map(({ scope, read }) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)] }));
+  // (#3566, slice 2) Each repository's `main` is asked ONCE here, together, and handed to its tick: seven `ci.yml` reads were 3.5 s of waiting in a row.
+  const trunkReds = readWithFirstWaveTogether((through) => others.map(({ scope }) => readScopeTrunkRed(scope, through)));
+  return others.map(({ scope, read }, at) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)] },
+    { code: (openPrs, ticked) => codeReadings(openPrs, ticked, trunkReds[at]), tracker: trackerReadings }));
 }
 
 /**
