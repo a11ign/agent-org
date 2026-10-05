@@ -319,7 +319,7 @@ function causesOf(repeats, turnsOfWake, claimed) {
       cause, deferred: deferred === "true", count: members.length, keys: new Set(members.map(({ key }) => key)).size, medianGapMs: nearestRank(members.map(({ gapMs }) => gapMs), FIRST_RANK_PERCENT),
       dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced }) };
   });
-  const worth = (row) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
+  const worth = (/** @type {RedeliveredCause} */ row) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
   entries.sort((a, b) => worth(b.row) - worth(a.row) || b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
   return { causes: entries.map(({ row }) => row), priced: entries.map(({ priced }) => priced) };
 }
