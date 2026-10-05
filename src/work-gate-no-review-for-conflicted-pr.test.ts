@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, stallReasonOf } from "./work-gate/pr-orders.mjs";
+import { reviewableHead, reviewWait, withPatchIds } from "./work-gate.mjs";
 
 type Order = { session: string, cause: string, causeKey: string, discriminator: string, prompt: string };
 
@@ -78,4 +79,63 @@ test("(6) a KEYED repository's conflicted pull request is withheld the same way,
   assert.ok(order, "the keyed clean twin must be ordered");
   assert.equal(rest.length, 0);
   assert.equal(order.session, "reviewer-agent-org-148");
+});
+
+/**
+ * a11ign/a11ign#3597: A PULL REQUEST RED ONLY ON A CHECK THAT IS NOT REQUIRED IS ASKED FOR A REVIEW. agent-org#211, #212 and #213 were green
+ * on `gate` (the one required context) and red on `typecheck`: `failingChecksOrder` read the required set and ordered nothing,
+ * `reviewableHead` read every check and answered `null`, so `draftOrder` returned nothing and no `reviewer-agent-org-<n>` was ever started.
+ *
+ * THE CONTROLS: (7) is the case itself and goes RED if `reviewableHead` reads the whole rollup again; (8) is the case that stops the fix
+ * over-reaching, and differs from (7) in ONE fact (which check is red); (9) pins the unread list, which must keep the answer given before
+ * #3597; (10) and (11) pin the two other callers of the same question.
+ */
+const REQUIRED = ["gate"];
+const check = (name: string, over: Record<string, unknown>) => ({ name, status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-04T13:00:00Z", ...over });
+const GATE_OK = check("gate", {});
+const TYPECHECK_RED = check("typecheck", { conclusion: "FAILURE" });
+const TYPECHECK_RUNNING = check("typecheck", { status: "IN_PROGRESS", conclusion: "" });
+const keyedPr = (rollup: unknown[]) => prOf({ repoKey: "agent-org", repo: "a11ign/agent-org", statusCheckRollup: rollup });
+const withRequired = (pr: unknown, required: string[] | null): Order[] => perPullRequestOrders([pr as object], required, null, NOW) as Order[];
+const causesWith = (pr: unknown, required: string[] | null) => withRequired(pr, required).map((o) => o.cause);
+
+test("(7) green on the REQUIRED check, red on one that is not: the review IS asked, to reviewer-agent-org-<n>", () => {
+  const pr = keyedPr([GATE_OK, TYPECHECK_RED]);
+  assert.deepEqual(causesWith(pr, REQUIRED), ["draft-awaiting-verdict"]);
+  assert.equal(withRequired(pr, REQUIRED)[0].session, "reviewer-agent-org-148");
+  assert.deepEqual(causesWith(keyedPr([GATE_OK]), REQUIRED), ["draft-awaiting-verdict"], "the positive control: the same pull request without the red check");
+});
+
+test("(8) the same pull request with the REQUIRED check red is `pr-checks-failing` and is NOT asked for a review", () => {
+  const causesOf = causesWith(keyedPr([check("gate", { conclusion: "FAILURE" }), TYPECHECK_RED]), REQUIRED);
+  assert.deepEqual(causesOf, ["pr-checks-failing"]);
+});
+
+test("(9) an UNREAD required list keeps the answer given before #3597: every check counts, so a red `typecheck` is the author's, never a review's", () => {
+  assert.deepEqual(causesWith(keyedPr([GATE_OK, TYPECHECK_RED]), null), ["pr-checks-failing"]);
+  assert.deepEqual(causesWith(keyedPr([GATE_OK]), null), ["draft-awaiting-verdict"], "the positive control");
+});
+
+test("(10) a non-required check still RUNNING beside a settled-green required one is asked now ('settled'); a REQUIRED one running is 'running'", () => {
+  const nonRequiredRunning = keyedPr([GATE_OK, TYPECHECK_RUNNING]);
+  assert.equal(reviewWait(nonRequiredRunning, REQUIRED), "settled");
+  assert.deepEqual(causesWith(nonRequiredRunning, REQUIRED), ["draft-awaiting-verdict"]);
+  assert.equal(reviewWait(keyedPr([check("gate", { status: "IN_PROGRESS", conclusion: "" }), TYPECHECK_RED]), REQUIRED), "running");
+  assert.equal(reviewWait(nonRequiredRunning, null), "running", "an unread list is the answer before #3597");
+  assert.equal(reviewWait(keyedPr([check("gate", { conclusion: "FAILURE" }), TYPECHECK_RUNNING]), REQUIRED), null, "red required: not this question's");
+});
+
+test("(11) withPatchIds reads the patch for the pull request the question is open for, on the same list draftOrder reads", () => {
+  const compares: string[] = [];
+  const run = (args: string[]) => { compares.push(args[args.length - 1]); return "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n"; };
+  const pr = keyedPr([GATE_OK, TYPECHECK_RED]);
+  const [read] = withPatchIds([pr], run, REQUIRED) as { patchIds?: Record<string, string> }[];
+  assert.deepEqual(Object.keys(read.patchIds ?? {}), [OLD_HEAD], "enriched at its head");
+  assert.equal(compares.some((c) => c.includes(`compare/main...${OLD_HEAD}`)), true);
+  compares.length = 0;
+  const [unread] = withPatchIds([pr], run, null) as { patchIds?: unknown }[];
+  assert.equal(unread.patchIds, undefined, "an unread list: red on any check, as before");
+  assert.deepEqual(compares, [], "and no call is paid for it");
+  assert.equal(reviewableHead(pr, REQUIRED), OLD_HEAD);
+  assert.equal(reviewableHead(pr, null), null);
 });

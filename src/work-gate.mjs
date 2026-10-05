@@ -4021,11 +4021,17 @@ function redOnlyFromAnyHold(pr, onHead) {
  * The head this pull request's review question is asked at, or `null` when it is not asked: red, still
  * running, or headless. Shared by `draftOrder` and the enrichment that decides which pull requests are
  * worth a commit read, so the two can never disagree about who is being asked.
- * @param {any} pr @returns {string | null}
+ *
+ * RED AND RUNNING MEAN THE REQUIRED CHECKS' (a11ign#3597), the set `failingChecksOrder` reads. This read took EVERY check, so a head
+ * green on `gate` and red on a check `main` does not require (agent-org#211, #212, #213: `typecheck`) was no pull request's work to
+ * `failingChecksOrder` and no review's question to this: it earned no order at all, and waited for a reviewer nobody was sent for.
+ * `required` is `null` when the list could not be read, and `blockingChecks` then counts every check -- the answer before #3597.
+ * `redOnlyFromAnyHold` still reads the whole head: a hold's manufactured jobs are named, not required, and it asks about its own red.
+ * @param {any} pr @param {string[] | null} [required] @returns {string | null}
  */
-export function reviewableHead(pr) {
+export function reviewableHead(pr, required = null) {
   const onHead = newestPerName(pr?.statusCheckRollup);
-  if (checksSettledGreen(onHead) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
+  if (checksSettledGreen(blockingChecks(onHead, required)) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
   return String(pr.headRefOid ?? "") || null;
 }
 
@@ -4073,12 +4079,16 @@ export function readCommitShas(number, run = defaultRun) {
  * the two readers of it, `withPatchIds` and `draftOrder`, can agree. The `awaiting-evidence` label is NOT read here: `draftOrder` still
  * reads a verdict somebody posted on a labelled pull request, and only `withPatchIds` declines to spend calls on one.
  *
- * @param {any} pr @returns {"settled" | "running" | null}
+ * A REQUIRED check still running is `"running"`; a check outside the required set is not read at all (a11ign#3597), so one still running
+ * beside a settled-green required set asks the review now, as it does for a red one -- `required` is `null` for an unread list, which
+ * counts every check as before.
+ *
+ * @param {any} pr @param {string[] | null} [required] @returns {"settled" | "running" | null}
  */
-export function reviewWait(pr) {
+export function reviewWait(pr, required = null) {
   if (!pr?.headRefOid) return null;
-  if (reviewableHead(pr)) return "settled";
-  return checksSettledGreen(newestPerName(pr?.statusCheckRollup)) === null ? "running" : null;
+  if (reviewableHead(pr, required)) return "settled";
+  return checksSettledGreen(blockingChecks(newestPerName(pr?.statusCheckRollup), required)) === null ? "running" : null;
 }
 
 /**
@@ -4091,11 +4101,14 @@ export function reviewWait(pr) {
  * (an update-branch), and if so `draftOrder` keeps the order it already had instead of dropping it for the minutes CI takes -- which
  * is what wrote a `RESET` and re-armed the order after each of #3033's four merges. A refused read leaves a pull request unenriched.
  *
- * @param {any[]} prs @param {(args: string[]) => string} [run]
+ * `required` is the list `draftOrder` reads the question against (a11ign#3597): the patch is read for the pull request the question is
+ * open for, so the two must not disagree about whether a non-required red check closes it.
+ *
+ * @param {any[]} prs @param {(args: string[]) => string} [run] @param {string[] | null} [required]
  */
-export function withPatchIds(prs, run = defaultRun) {
+export function withPatchIds(prs, run = defaultRun, required = null) {
   return prs.map((pr) => {
-    const wait = awaitingEvidence(pr) ? null : reviewWait(pr);
+    const wait = awaitingEvidence(pr) ? null : reviewWait(pr, required);
     if (wait === null) return pr;
     const base = String(pr.baseRefName ?? "main");
     const head = String(pr.headRefOid);
@@ -6227,7 +6240,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
 function codeReadings(openPrs, scope) {
   const required = requiredWhenNeeded(openPrs);
   const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
-  return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
+  return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
     trunkRed: readScopeTrunkRed(scope) };
 }
@@ -6486,7 +6499,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenNeeded(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),

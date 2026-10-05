@@ -1245,8 +1245,8 @@ function draftOrder(pr, required = null, baseTip = null) {
   // never reach the reviewer lane below, which requires green.
   const red = failingChecksOrder(pr, required, baseTip);
   if (red) return red;
-  const wait = reviewWait(pr);
-  const head = wait === "settled" ? reviewableHead(pr) : unchangedRunningHead(pr, wait);
+  const wait = reviewWait(pr, required);
+  const head = wait === "settled" ? reviewableHead(pr, required) : unchangedRunningHead(pr, wait);
   if (!head || !wait) return null;
   const heads = reviewHeadsOf(pr, head, wait);
   const found = verdictAmong(pr, heads.all);

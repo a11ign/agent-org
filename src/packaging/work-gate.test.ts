@@ -1231,8 +1231,13 @@ test("a red check that cannot block the merge wakes nobody", () => {
   const pr = { number: 1750, isDraft: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
     labels: [{ name: "session:worker-capture" }], comments: [],
     statusCheckRollup: rollupOf([["gate", "SUCCESS"], ["ts / run", "SUCCESS"], ["sweep", "FAILURE"]]) };
-  assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), [],
+  // THE WAKE THIS TEST IS ABOUT is the author's `pr-checks-failing`. It used to assert `[]`, which also said "no reviewer is asked" -- the
+  // gap a11ign#3597 closed: a head green on every REQUIRED check is the review question's, and the red `sweep` is not its business.
+  const orders = decide({ prs: [pr], readyRows: [], required: ["gate"] }) as { cause: string, session: string }[];
+  assert.deepEqual(orders.filter((o) => o.session === "worker-capture" || o.cause === "pr-checks-failing"), [],
     "sweep is in nobody's needs -- #1750 merged four minutes after this exact wake was sent");
+  assert.deepEqual(orders.map((o) => [o.cause, o.session]), [["draft-awaiting-verdict", "reviewer-1750"]],
+    "a11ign#3597: and the reviewer IS asked, which an unrequired red check no longer prevents");
 });
 
 test("a red check that CAN block the merge still wakes its session", () => {
