@@ -99,6 +99,52 @@ export function mergedStats(merged, { since, until }) {
 }
 
 /**
+ * The most merged PRs one repository's read may return. `gh` pages through them to reach it; the old read stopped at 200, which a multi-repository count
+ * reaches in a day. A read that returns this many may have stopped short, so it is `unknown` and never a count that is quietly too low.
+ */
+export const MERGED_READ_LIMIT = 1000;
+
+/** @param {string} repo @param {number} since @returns {string[]} the `gh` arguments: `-R` NAMES the repository, since a read with none answers for the working directory's alone */
+export function mergedPrsArgs(repo, since) {
+  return ["pr", "list", "-R", repo, "--state", "merged", "--search", `merged:>=${new Date(since).toISOString()}`, "--limit", String(MERGED_READ_LIMIT), "--json", "number,createdAt,mergedAt"];
+}
+
+/**
+ * THE REPOSITORIES WHOSE MERGES ARE COUNTED: the project's primary plus every `dora` entry, the primary first and once (#3593). The primary leads because the
+ * count before this change was its alone, and its entry is that old figure.
+ * @param {{ repo: string, dora: { repo: string }[] }} declaration @returns {string[]}
+ */
+export function mergedPopulation({ repo, dora }) {
+  return [...new Set([repo, ...dora.map((entry) => entry.repo)])];
+}
+
+/**
+ * Every population repository's merged list since `since`. `prs` is `null` for one that could not be read, and `limitHit` says why when it was the limit.
+ * @param {{ declaration: Parameters<typeof mergedPopulation>[0], since: number, readPrs?: (repo: string, since: number) => any[] | null }} input
+ * @returns {{ repo: string, prs: any[] | null, limitHit: boolean }[]}
+ */
+export function readMerged({ declaration, since, readPrs = (repo, from) => ghJson(mergedPrsArgs(repo, from)) }) {
+  return mergedPopulation(declaration).map((repo) => {
+    const prs = readPrs(repo, since);
+    const limitHit = prs !== null && prs.length >= MERGED_READ_LIMIT;
+    return { repo, prs: limitHit ? null : prs, limitHit };
+  });
+}
+
+/**
+ * The merged count over every repository read, and each one's own. THE TOTAL IS `null` WHEN ANY REPOSITORY'S LIST WAS NOT READ: nine merges and an unreadable
+ * repository are not nine, and an empty population is not a total of 0.
+ * @param {ReturnType<typeof readMerged>} repositories @param {{ since: number, until: number }} window
+ */
+export function mergedAcross(repositories, window) {
+  const readAll = repositories.length > 0 && repositories.every((r) => r.prs !== null);
+  return {
+    total: readAll ? mergedStats(repositories.flatMap((r) => r.prs ?? []), window) : null,
+    byRepository: repositories.map(({ repo, prs, limitHit }) => ({ repo, count: mergedStats(prs, window)?.count ?? null, limitHit })),
+  };
+}
+
+/**
  * The tick journal's lines inside the window, as `{at, message}`. A line that is not in `-o short-iso` shape is dropped, and
  * so is one that falls outside the window.
  * @param {string} text @param {{ since: number, until: number }} window
@@ -239,18 +285,23 @@ export function tokenStats(turns, { since, until }) {
 /**
  * Every number, each `unknown` when its source was refused. `reads` holds the RAW reads (`null` for a refused one), so what is
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
- * @param {{ merged: any[] | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
+ * @param {{ merged: any[] | null, mergedRepositories?: ReturnType<typeof readMerged> | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
  *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null }} reads
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
+ * `merged` is the PRIMARY repository's list alone, the count's definition before #3593, and `mergedRepositories` is every declared one: absent is a project read
+ * the old way (the total IS `merged`), `null` is a declaration that could not be read.
  * @param {number} now
  */
 export function buildReport(reads, now) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
+  const across = reads.mergedRepositories === undefined ? undefined : mergedAcross(reads.mergedRepositories ?? [], window);
   const report = {
     date: utcDate(now),
     window,
-    merged: mergedStats(reads.merged, window),
+    merged: across === undefined ? mergedStats(reads.merged, window) : across.total,
+    mergedRepositories: across?.byRepository,
+    mergedPrimaryOnly: mergedStats(reads.merged, window),
     idle: lines === null ? null : idleStats(lines),
     releases: lines === null ? null : releaseStats(lines),
     stalls: reads.ledger === null ? null : ledgerStats(ledgerEntries(reads.ledger, window)),
@@ -302,7 +353,7 @@ export function undeclaredDirections(numbers) {
   return Object.keys(numbers).filter((id) => !NUMBERS.some((n) => n.id === id));
 }
 
-/** @typedef {{ date: string, numbers: Record<string, number | null> }} Reading */
+/** @typedef {{ date: string, numbers: Record<string, number | null>, mergedRepositories?: string[] }} Reading `mergedRepositories` is the population PRs-merged counted (#3593); a reading without it counted the primary alone */
 /**
  * What the readings file said: `none` is a file that is absent or empty (a first day), `unreadable` is one that could not be read or holds no line
  * that parses, and the two NEVER share a verdict. `ioError` marks the unreadable that is the disk's, where appending could write a second line for a date.
@@ -343,13 +394,13 @@ export function readReadings(path) {
  * The reading to compare against: the latest line from BEFORE `date`. A line for `date` itself is today's own (the offer repeating until it is
  * delivered) and is never its own baseline.
  * @param {Readings | undefined} readings @param {string} date
- * @returns {{ status: "none" | "unreadable" } | { status: "read", date: string, numbers: Record<string, number | null> }}
+ * @returns {{ status: "none" | "unreadable" } | { status: "read", date: string, numbers: Record<string, number | null>, mergedRepositories?: string[] }}
  */
 export function previousReading(readings, date) {
   if (readings === undefined || readings.status === "unreadable") return { status: "unreadable" };
   const earlier = readings.entries.filter((e) => e.date < date).sort((a, b) => (a.date < b.date ? -1 : 1));
   const latest = earlier[earlier.length - 1];
-  return latest === undefined ? { status: "none" } : { status: "read", date: latest.date, numbers: latest.numbers };
+  return latest === undefined ? { status: "none" } : { status: "read", date: latest.date, numbers: latest.numbers, ...(latest.mergedRepositories && { mergedRepositories: latest.mergedRepositories }) };
 }
 
 /** @typedef {"better" | "worse" | "same" | "no baseline" | "unknown" | "undefined"} Verdict `undefined` is a metric with nothing to measure today (no regression opened), which is neither a failure to read nor a 0 */
@@ -412,11 +463,36 @@ function grouped(n) {
   return n.toLocaleString("en-US");
 }
 
-/** @param {ReturnType<typeof buildReport>["merged"]} merged @returns {string[]} */
-function mergedLines(merged) {
-  if (merged === null) return [`- PRs merged: ${UNKNOWN} (the merged-PR list could not be read)`];
+/** @param {ReturnType<typeof buildReport>["mergedRepositories"]} repositories @returns {string} why each repository that was not read was not */
+function unreadReasons(repositories) {
+  return (repositories ?? []).filter((r) => r.count === null)
+    .map((r) => (r.limitHit ? `${r.repo} hit the ${grouped(MERGED_READ_LIMIT)}-PR read limit` : `${r.repo} could not be read`)).join("; ");
+}
+
+/**
+ * THE COUNT'S DEFINITION CHANGED (#3593): through 2026-10-04 it was the primary repository alone. The first reading after the change prints the old and the new
+ * figure, so that a day's "worse" is not read across a change of definition. It ends itself: today's reading records the repositories it counted, and a previous
+ * reading that holds them is one taken the new way.
+ * @param {ReturnType<typeof buildReport>} report @returns {string[]}
+ */
+function definitionLines({ mergedRepositories, merged, mergedPrimaryOnly, previous }) {
+  if (previous.status !== "read" || previous.mergedRepositories !== undefined || (mergedRepositories?.length ?? 0) < 2) return [];
+  return [`- PRs merged CHANGED DEFINITION: through ${previous.date} it counted ${mergedRepositories?.[0].repo} only (previous reading ${shown(previous.numbers.prsMerged ?? null)}); `
+    + `this reading counts every declared repository (${shown(merged?.count ?? null)}); read the old way this window is ${shown(mergedPrimaryOnly?.count ?? null)}. `
+    + "The \"PRs merged\" and \"Tokens per merged PR\" verdicts below compare across the change and are not a trend."];
+}
+
+/** @param {ReturnType<typeof buildReport>} report @returns {string[]} */
+function mergedLines({ merged, mergedRepositories, ...rest }) {
+  const several = (mergedRepositories?.length ?? 0) > 1;
+  const perRepository = several ? [`  per repository: ${mergedRepositories?.map((r) => `${r.repo} ${r.count === null ? UNKNOWN : r.count}`).join(", ")}`] : [];
+  if (merged === null) {
+    const why = several ? unreadReasons(mergedRepositories) : "the merged-PR list could not be read";
+    return [`- PRs merged: ${UNKNOWN} (${why})`, ...perRepository, ...definitionLines({ merged, mergedRepositories, ...rest })];
+  }
   const median = merged.medianMinutes === null ? "no merge to take a median of" : `median open-to-merge ${duration(merged.medianMinutes)}`;
-  return [`- PRs merged: ${merged.count}; ${median}`];
+  const across = several ? ` across ${mergedRepositories?.length} repositories` : "";
+  return [`- PRs merged: ${merged.count}${across}; ${median}`, ...perRepository, ...definitionLines({ merged, mergedRepositories, ...rest })];
 }
 
 /**
@@ -490,7 +566,7 @@ export function renderReport(report) {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report.merged), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -630,14 +706,18 @@ function readJournal(unit) {
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
  * THE DORA READ IS THE DECLARATION'S (`dora.mjs`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
- *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null }} where
+ *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
+ * MERGED PRS ARE READ FROM EVERY DECLARED REPOSITORY (`readMerged`, #3593), each named with `-R`; `merged` stays the PRIMARY's list, the definition the count had before.
  */
 export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
+  readMergedRepositories = (at) => readMerged({ declaration: homeProjectDeclaration(), since: at - WINDOW_MS }),
   readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
   readDoraReport = readDeclaredDora }) {
   const since = now - WINDOW_MS;
+  const mergedRepositories = attemptDora(() => readMergedRepositories(now));
   return {
-    merged: ghJson(["pr", "list", "--state", "merged", "--search", `merged:>=${new Date(since).toISOString()}`, "--limit", "200", "--json", "number,createdAt,mergedAt"]),
+    merged: mergedRepositories?.[0]?.prs ?? null,
+    mergedRepositories,
     openPrs: ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup"]),
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
@@ -652,16 +732,16 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
  * APPENDS TODAY'S READING, ONCE PER UTC DATE: the offer repeats every tick until the wake delivers it, and the first reading of the date is the one
  * kept. A readings file that is `unreadable` (the disk would not let us read it, or nothing in it parses) is left alone rather than appended to blind: a valid line added to
  * corrupt content would make the file read as a baseline and mask the corruption (reviewer, #2985).
- * @param {{ stateDir: string, date: string, numbers: Record<string, number | null> }} reading
+ * @param {{ stateDir: string, date: string, numbers: Record<string, number | null>, mergedRepositories?: string[] }} reading
  * @returns {"recorded" | "already recorded" | "not recorded"}
  */
-export function recordReading({ stateDir, date, numbers }) {
+export function recordReading({ stateDir, date, numbers, mergedRepositories }) {
   const path = join(stateDir, READINGS_FILE);
   const existing = readReadings(path);
   if (existing.status === "unreadable") return "not recorded"; // an I/O error or a file where no line reads: appending would turn corruption into a baseline
   if (existing.entries.some((e) => e.date === date)) return "already recorded";
   const lead = existing.text === "" || existing.text.endsWith("\n") ? "" : "\n";
-  appendFileSync(path, `${lead}${JSON.stringify({ date, numbers })}\n`);
+  appendFileSync(path, `${lead}${JSON.stringify({ date, numbers, mergedRepositories })}\n`);
   return "recorded";
 }
 
@@ -682,7 +762,7 @@ export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(
     if (date === null) return [];
     const report = buildReport(read({ now, stateDir }), now);
     const text = renderReport(report);
-    keepReading(record, { stateDir, date, numbers: report.numbers }, log);
+    keepReading(record, { stateDir, date, numbers: report.numbers, mergedRepositories: report.mergedRepositories?.map((r) => r.repo) }, log);
     return [retrospectiveOrder(date, text)];
   } catch (/** @type {any} */ err) {
     log(`org-retro: could not build today's retrospective (${String(err?.message ?? err).split("\n")[0]}) -- no org-retrospective order this tick.\n`);
