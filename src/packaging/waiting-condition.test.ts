@@ -6,8 +6,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn,
-  bareAnswerLabel }
+  bareAnswerLabel, ANSWER_LABEL_GRACE_MS }
   from "../waiting-condition.mjs";
+import { bareAnswerLabelOrders } from "../work-gate.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
   // THE WHOLE POINT. `orchestrator` wrote "blocked by #1772" in a comment at 16:39; #1772 closed at
@@ -371,6 +372,44 @@ test("#2711: never applied, or a different session's label, is not bare -- there
   assert.equal(bareAnswerLabel(undefined, "ceo"), null);
   const forSomeoneElse = [{ event: "labeled", label: { name: "answer:orchestrator" }, created_at: "2026-09-26T12:42:47Z" }];
   assert.equal(bareAnswerLabel(forSomeoneElse, "ceo"), null);
+});
+
+// --- the grace window: a session that labels first and comments second is not yet unexplained ---
+
+/** #3566's own timeline: labelled 06:32:28Z, and the order to the labeller went out at 06:34:23Z, 7 s before the question. */
+const LABELLED_AT = "2026-10-05T06:32:28Z";
+const LABEL_EVENT = { event: "labeled", label: { name: "answer:product-manager" }, created_at: LABELLED_AT };
+const at = (offsetMs: number) => Date.parse(LABELLED_AT) + offsetMs;
+
+test("a label one minute old with no comment yet is NOT bare -- the labeller is still typing the question", () => {
+  assert.equal(bareAnswerLabel([LABEL_EVENT], "product-manager", at(60_000)), null);
+  assert.equal(bareAnswerLabel([LABEL_EVENT], "product-manager", at(0)), null, "nor is one the instant it is applied");
+});
+
+test("POSITIVE CONTROL: the same label past the window with no comment IS bare, and the boundary is the constant", () => {
+  assert.deepEqual(bareAnswerLabel([LABEL_EVENT], "product-manager", at(ANSWER_LABEL_GRACE_MS)), { labelledAt: LABELLED_AT },
+    "a label exactly one window old has had its whole window");
+  assert.equal(bareAnswerLabel([LABEL_EVENT], "product-manager", at(ANSWER_LABEL_GRACE_MS - 1)), null);
+  assert.deepEqual(bareAnswerLabel([LABEL_EVENT], "product-manager", at(ANSWER_LABEL_GRACE_MS * 12)), { labelledAt: LABELLED_AT });
+});
+
+test("a comment after the label inside the window is not bare either, and neither is one after the window", () => {
+  const commented = [LABEL_EVENT, { event: "commented", created_at: "2026-10-05T06:34:30Z" }];
+  assert.equal(bareAnswerLabel(commented, "product-manager", at(60_000)), null);
+  assert.equal(bareAnswerLabel(commented, "product-manager", at(ANSWER_LABEL_GRACE_MS * 12)), null);
+});
+
+test("an unparseable label time stays bare rather than being excused by the window", () => {
+  const broken = [{ ...LABEL_EVENT, created_at: "not-a-time" }];
+  assert.deepEqual(bareAnswerLabel(broken, "product-manager", at(0)), { labelledAt: "not-a-time" });
+});
+
+test("the gate hands its own clock through: the same row is silent inside the window and ordered after it", () => {
+  const row = { number: 3566, labels: [{ name: "session:worker-3566" }, { name: "answer:product-manager" }] };
+  const timeline = () => JSON.stringify(LABEL_EVENT);
+  assert.deepEqual(bareAnswerLabelOrders([row], timeline as never, at(60_000)), []);
+  const [order] = bareAnswerLabelOrders([row], timeline as never, at(ANSWER_LABEL_GRACE_MS)) as { session: string }[];
+  assert.equal(order.session, "worker-3566", "past the window it is the labeller who is ordered, as before");
 });
 
 test("#2202: answersOwedBy lists EVERY owing session and answerOwedBy is its first -- one decision about a name", () => {

@@ -117,6 +117,13 @@ export function answersOwedBy(row) {
 }
 
 /**
+ * How long an `answer:<session>` label may stand with nothing posted before it is called unexplained.
+ * Five minutes, where the one measured case needed under two: label 06:32:28Z, question 06:34:30Z on #3566 (2m02s),
+ * read from its timeline. The window is cheap to be generous with -- a genuinely bare label is still called, a few minutes later.
+ */
+export const ANSWER_LABEL_GRACE_MS = 5 * 60 * 1000;
+
+/**
  * Whether an `answer:<session>` label was applied to this row with NOTHING that looks like an attempt to
  * satisfy it -- no comment posted at or after the label's own timeline event. `null` when the label was
  * never applied at all (#2711): the row's own evidence is `answer:ceo` labelled and removed from PR #2649
@@ -135,11 +142,17 @@ export function answersOwedBy(row) {
  * comment "plausibly names a question" is exactly the reasoning #2711 exists to save a human from doing
  * by hand on every bare label, so it is left to the reader the resulting wake reaches, not guessed at here.
  *
+ * A LABEL YOUNGER THAN {@link ANSWER_LABEL_GRACE_MS} IS NOT YET BARE: a session that labels first and
+ * comments second is in the bare state for the seconds it takes to type the question, and ordering it to
+ * "post the question" then is noise. Measured on #3566 (2026-10-05): label 06:32:28Z, the order to the
+ * labeller 06:34:23Z, the question itself 06:34:30Z -- seven seconds after the order.
+ *
  * @param {{event?: string, label?: {name?: string}, created_at?: string}[] | null | undefined} timeline
  * @param {string} session
+ * @param {number} [nowMs] the caller's clock; injected so a test moves time without a global stub
  * @returns {{labelledAt: string} | null}
  */
-export function bareAnswerLabel(timeline, session) {
+export function bareAnswerLabel(timeline, session, nowMs = Date.now()) {
   const name = `${ANSWER_PREFIX}${session}`;
   const events = timeline ?? [];
   const labelEvents = events.filter((e) => e?.event === "labeled" && e?.label?.name === name);
@@ -147,7 +160,9 @@ export function bareAnswerLabel(timeline, session) {
   const labelledAt = String(labelEvents[labelEvents.length - 1]?.created_at ?? "");
   if (!labelledAt) return null;
   const answered = events.some((e) => e?.event === "commented" && String(e?.created_at ?? "") >= labelledAt);
-  return answered ? null : { labelledAt };
+  if (answered) return null;
+  // An unparseable time reads as NaN, which compares false, so the label stays bare: the old verdict.
+  return nowMs - Date.parse(labelledAt) < ANSWER_LABEL_GRACE_MS ? null : { labelledAt };
 }
 
 /** The length of `YYYY-MM-DD` -- what tells a date-only `Not-before:` value from a timestamped one. */

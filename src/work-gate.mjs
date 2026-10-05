@@ -2290,16 +2290,16 @@ function bareAnswerLabelOrder(row, holder, owed, labelledAt) {
 /**
  * Every unexplained `answer:` label on ONE row/PR, turned into orders. PAID ONLY BY A ROW THAT ALREADY
  * CARRIES THE LABEL AT ALL: the timeline read happens after both cheap checks below have already refused.
- * @param {any} row @param {(args: string[]) => string} run
+ * @param {any} row @param {(args: string[]) => string} run @param {number} nowMs
  */
-function bareAnswerLabelOrdersForRow(row, run) {
+function bareAnswerLabelOrdersForRow(row, run, nowMs) {
   const holder = sessionOf(row);
   const owedSessions = answersOwedBy(row);
   if (!holder || owedSessions.length === 0) return [];
   const timeline = readRowTimeline(Number(row.number), run);
   const orders = [];
   for (const owed of owedSessions) {
-    const bare = bareAnswerLabel(timeline, owed);
+    const bare = bareAnswerLabel(timeline, owed, nowMs);
     if (bare) orders.push(bareAnswerLabelOrder(row, holder, owed, bare.labelledAt));
   }
   return orders;
@@ -2320,11 +2320,12 @@ function bareAnswerLabelOrdersForRow(row, run) {
  *
  * @param {any[]} rowsOwingAnswers `withAnswerLabel`'s output -- open rows and open pull requests together
  * @param {(args: string[]) => string} [run]
+ * @param {number} [nowMs] the gate's clock, for the label's grace window (`ANSWER_LABEL_GRACE_MS`)
  */
-export function bareAnswerLabelOrders(rowsOwingAnswers, run = defaultRun) {
+export function bareAnswerLabelOrders(rowsOwingAnswers, run = defaultRun, nowMs = Date.now()) {
   const orders = [];
   for (const row of rowsOwingAnswers ?? []) {
-    orders.push(...bareAnswerLabelOrdersForRow(row, run));
+    orders.push(...bareAnswerLabelOrdersForRow(row, run, nowMs));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) return orders.slice(0, MAX_ROW_ORDERS_PER_TICK);
   }
   return orders;
@@ -6525,7 +6526,7 @@ function main() {
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs])), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729; `main` is at its 90-line limit
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729; `main` is at its 90-line limit
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
