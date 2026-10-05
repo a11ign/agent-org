@@ -13,7 +13,8 @@
 //
 // EVERY MOMENT OF A RUN IS ONE OF THREE THINGS, and never two:
 //   WORKING      a model turn was running (the union of the turns' spans: two sessions at once are one stretch of wall-clock). A span is the turn's `wallClockMs` before its end, which the store
-//                INFERS (it includes the harness's tool time), and a turn with no `wallClockMs` has a span of nothing: its tokens and dollars count, its time does not.
+//                INFERS. MEASURED on worker-3641 (a11ign/a11ign#3641): five gaps of 365-524 s between consecutive turns carry spans of 0-4 s, so a long tool call is NOT in the next
+//                turn's span (`store.mjs` says it is) and prints as `unexplained`. A turn with no `wallClockMs` has a span of nothing: its tokens and dollars count, its time does not.
 //   WAITING      something RECORDED was in progress: a deferral span, a hold label, an order not yet delivered, a queue entry, an ejection, CI running, a review not yet posted. Each is named.
 //                One wait is INFERRED and marked so, for the stretch between an approval and the ready mark of a draft (`approvedDraftSource`), with the records it was read from.
 //   unexplained  nothing was recorded. It is printed as such and is NEVER folded into WORKING (the acceptance's positive control).
