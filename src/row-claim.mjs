@@ -278,6 +278,32 @@ const defaultRun = (cmd, args) => {
   return execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 };
 
+/**
+ * `run` that asks GitHub for a given ROW READ once (a11ign/a11ign#3566, slice 5). One claim's checks each read the row they are about -- the template
+ * check and B4's Region lookup both read its `body`; the claim's own `blockedBy` check and B2/B4's both read its edge -- so the same `gh issue
+ * view`/`list` went out twice, about 0.45 s each, inside a tick that waits for it. A repeated read of the same arguments returns the first answer.
+ *
+ * ONLY THE PRE-WRITE CHECKS ARE GIVEN THIS: it is a snapshot of the row from the start of the claim, which is what those checks already compare
+ * against, and nothing after the first write may be answered from it (the labels are read again, fresh, right before and right after the write that
+ * claims). A read that THROWS is not remembered, so a failed read is retried exactly as before; a write is never passed through the cache.
+ * @param {typeof defaultRun} run
+ * @returns {typeof defaultRun}
+ */
+function readsOnce(run) {
+  /** @type {Map<string, string>} */
+  const answers = new Map();
+  return (cmd, args) => {
+    const isRowRead = cmd === "gh" && args[0] === "issue" && (args[1] === "view" || args[1] === "list");
+    if (!isRowRead) return run(cmd, args);
+    const key = JSON.stringify(args);
+    const known = answers.get(key);
+    if (known !== undefined) return known;
+    const answer = run(cmd, args);
+    answers.set(key, answer);
+    return answer;
+  };
+}
+
 // #749: `gh issue edit --add-label <name>` REFUSES a label that does not exist -- and #677's own
 // reproduction (13:23:15Z) showed the failure is NOT atomic: the SAME command's `--remove-label ready`
 // still applied while every `--add-label` (including `branch:agent/activation-budget-677`) did not,
@@ -932,7 +958,8 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   // is not skipped on a resumed (`alreadyMine`) claim: a row dispatched before this check shipped, or by
   // a hand-claim (#673) that bypassed row-claim entirely, must still be caught the first time row-claim
   // itself acts on it, which may well be a "resume".
-  const ghRunForBody = (/** @type {string[]} */ args) => run("gh", args);
+  const preWrite = readsOnce(run);
+  const ghRunForBody = (/** @type {string[]} */ args) => preWrite("gh", args);
   const body = lookupIssueBody(issueNumber, { run: ghRunForBody });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
@@ -969,7 +996,7 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
     // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
     const oneRow = oneRowReason(mySession, issueNumber, instance);
     if (oneRow) return { claimed: false, reason: oneRow };
-    const ineligible = sessionEligibilityReason(issueNumber, mySession, { run, adoptedBranch });
+    const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
         { ghRun: ghRunForBody });
