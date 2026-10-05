@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { aggregate } from "./aggregate.mjs";
 import { buildMap, LOOPS, MAP_DEFINITIONS, PHASES, processMap, renderMap } from "./map.mjs";
 import type { MapFilter } from "./map.mjs";
+import { repriceEvents } from "./store.mjs";
 import type { TraceEvent } from "./store.mjs";
 import type { PullRequest } from "../wakes-per-row.mjs";
 
@@ -305,7 +306,8 @@ test("THE SAME MODEL PRINTS THE SAME PAGE: no clock is read inside, and a row's 
   const theirs = new Map(report.weeks.flatMap((week) => week.rows).map((row) => [row.row, row.dollars] as const));
   /** Dollars to the micro-dollar, `null` kept as `null`: float noise is not a difference. */
   const micro = (dollars: number | null | undefined): number | null => (dollars == null ? null : Number(dollars.toFixed(6)));
-  for (const row of model().rows) {
+  // `trace --map` hands the map the events REPRICED (#3638), as aggregate reprices its own: both read PRICES now, and the fixture's stored figures are not what either prints.
+  for (const row of model({}, repriceEvents(EVENTS)).rows) {
     assert.equal(micro(row.totalDollars), micro(theirs.get(row.row)), `row ${row.row}: the map's placement of turns is aggregate's`);
   }
   assert.equal(theirs.size, 5, "the same five rows");

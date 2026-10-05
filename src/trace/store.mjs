@@ -9,7 +9,7 @@
 //
 // WHAT IS MEASURED AND WHAT IS INFERRED, because the two wear the same clothes in a report:
 //   tokens        MEASURED: the API's own `usage` for the message.
-//   costUsd       COMPUTED from `PRICES`. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1,
+//   costUsd       COMPUTED from `PRICES` when the turn is INGESTED, and again when a report READS it (`repriceEvents`): the stored value is a first reading, never the one printed. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1,
 //                 Opus 5.5, Opus 5 and Sonnet 5 rows are the published rates, not checked. A model with no row costs `null`, never 0 (a Codex model has none: no rate
 //                 for it is sourced, a11ign/a11ign#3582).
 //   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. It includes the time the harness spent on the tool call that
@@ -88,6 +88,20 @@ export function costOf(model, tokens) {
   const dollars = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead
     + tokens.cacheWrite5m * price.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * price.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
   return Math.round(dollars * COST_PRECISION) / COST_PRECISION;
+}
+
+/**
+ * The events with every turn's `costUsd` REPRICED from `PRICES` as it stands now, never read off the line it was stored on: the store is append-only and a transcript that has not
+ * changed is not read again, so a price added after ingest (a11ign/a11ign#3582) would otherwise never reach the turns stored before it (#3638: 147,675 turns kept `null`).
+ * A model with no price stays `null`. A turn with no `tokens` has nothing to price from and is left as stored, and any event that is not a turn is returned as it came.
+ * @param {TraceEvent[]} events @returns {TraceEvent[]}
+ */
+export function repriceEvents(events) {
+  return events.map((event) => {
+    if (event.kind !== "turn" || !event.tokens) return event;
+    const costUsd = costOf(event.model, event.tokens);
+    return costUsd === event.costUsd ? event : { ...event, costUsd };
+  });
 }
 
 /** @param {any} usage @returns {Tokens} */

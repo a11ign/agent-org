@@ -1,3 +1,12 @@
+// no-token: gh
+//
+// The `pr:open` test below imports `pr-open.mjs`, whose `defaultGh` spawns `gh` -- a path none of these tests take: `checkBody` is handed
+// the body and an injected `run`, and nothing here calls `gh(` or spawns it.
+//
+// DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file must not call `gh(`). Run with `GH_TOKEN`/`GITHUB_TOKEN`
+// unset and a fake `gh` first on `PATH` that logs and exits 97: 23 pass / 0 fail / 0 skipped, and the log was never written. Without the
+// declaration the capability gate refuses any Acceptance that runs this file, the row's own included.
+
 /**
  * #438: A GUARD CAN ONLY BE SHOWN TO BITE BY A COMMAND WHOSE SUCCESS IS A NON-ZERO EXIT, and
  * `acceptanceReport` hardcoded `passed = code === 0` -- so #418's own `Acceptance:` line, demonstrating
@@ -19,6 +28,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
@@ -222,9 +234,30 @@ test("acceptanceReport: MUTATION TARGET -- a Refutation: line naming `npm run mu
  *
  * This test exists because "by construction" is exactly the kind of claim that stops being true silently.
  */
+/**
+ * Run `body` in a project whose `test` script names a glob that holds one test needing a token. `npm test` is read from
+ * the working directory's `package.json` and expanded against its files, and the tool's own checkout has no `test` script
+ * (the project it serves does), so the premise is built here rather than assumed from wherever this file happens to run.
+ * An EMPTY population would pass the capability gate, which is the opposite of what the test below proves.
+ */
+function inProjectWithTestScript<T>(body: () => T): T {
+  const project = mkdtempSync(join(tmpdir(), "whole-suite-project-"));
+  const before = process.cwd();
+  try {
+    writeFileSync(join(project, "package.json"), JSON.stringify({ scripts: { test: 'tsx --test "src/**/*.test.ts"' } }));
+    mkdirSync(join(project, "src"));
+    writeFileSync(join(project, "src", "needs-token.test.ts"), "// requires: token\nexport {};\n");
+    process.chdir(project);
+    return body();
+  } finally {
+    process.chdir(before);
+    rmSync(project, { recursive: true, force: true });
+  }
+}
+
 test("pr:open refuses a whole-suite acceptance line at open time, through the SAME report CI runs", async () => {
   const { checkBody } = await import("../pr-open.mjs");
-  const refused = checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 });
+  const refused = inProjectWithTestScript(() => checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 }));
   assert.equal(refused.ok, false);
   assert.match(refused.lines.join("\n"), /Name the files this change is verified by/);
 

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { aggregate, compareWeeks, DEFINITIONS, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
+import { PRICES } from "./store.mjs";
 import { waterfall } from "./waterfall.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
@@ -18,11 +19,21 @@ const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9,
 
 const SONNET = "claude-sonnet-5-5";
 let serial = 0;
-/** A turn event in the store's shape. `tokens` is [input, output, cacheRead, cacheWrite1h]; `cost` null is an unpriced turn. */
-const turn = ({ when, session, row = null, cost, tokens = [1, 1, 1, 0], model = SONNET, ...rest }) => ({
-  id: `turn:${(serial += 1)}`, kind: "turn", source: "transcript", at: at(when), session, row, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, model,
-  tokens: { input: tokens[0], output: tokens[1], cacheRead: tokens[2], cacheWrite5m: 0, cacheWrite1h: tokens[3] }, costUsd: cost, wallClockMs: 1000, sidechain: false, ...rest,
-});
+const WRITE_1H_FACTOR = 2; // store.mjs's own: a 1-hour cache write costs twice the input rate
+/**
+ * A turn event in the store's shape. `tokens` is [input, output, cacheRead, cacheWrite1h]; `cost` null is an unpriced turn.
+ * A report prices a turn from `PRICES` and ignores the cost on its line (#3638), so a fixture that wants a turn to cost `cost` dollars gives it a model of its own with a flat rate
+ * per token, and the line carries the SAME figure (the stored cost agrees with `PRICES`, as one stored at the current price does).
+ */
+const turn = ({ when, session, row = null, cost, tokens = [1, 1, 1, 0], model, ...rest }) => {
+  const weight = tokens[0] + tokens[1] + tokens[2] + tokens[3] * WRITE_1H_FACTOR;
+  const own = `fixture-${(serial += 1)}:`;
+  if (cost !== null && model === undefined) PRICES.push({ prefix: own, input: cost * 1e6 / weight, output: cost * 1e6 / weight, cacheRead: cost * 1e6 / weight, verified: false });
+  return {
+    id: `turn:${serial}`, kind: "turn", source: "transcript", at: at(when), session, row, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, model: model ?? (cost === null ? "<synthetic>" : own),
+    tokens: { input: tokens[0], output: tokens[1], cacheRead: tokens[2], cacheWrite5m: 0, cacheWrite1h: tokens[3] }, costUsd: cost, wallClockMs: 1000, sidechain: false, ...rest,
+  };
+};
 const wake = (id, when, session, causeKey, extra = {}) => ({
   id, kind: "wake", source: "wake-ledger", at: at(when), session, row: null, pr: null, repo: null, cause: "x", causeKey, wakeId: id, ...extra,
 });
@@ -57,8 +68,8 @@ const WEEK_B_TURNS = [
   // The standing lead: a wake delivered twice (same key), then a different one, a compaction and the turn that re-reads after it.
   turn({ when: "2026-09-29T08:05:00Z", session: "product-manager", cost: 0.2, wakeId: "wake:pm:1" }),
   turn({ when: "2026-09-29T09:05:00Z", session: "product-manager", cost: 0.5, wakeId: "wake:pm:2" }),
-  turn({ when: "2026-09-29T10:05:00Z", session: "product-manager", cost: 0.7, tokens: [1000, 500, 100000, 0], wakeId: "wake:pm:3" }),
-  turn({ when: "2026-09-30T12:05:00Z", session: "ceo", cost: 0.2, tokens: [500, 100, 50000, 0] }),
+  turn({ when: "2026-09-29T10:05:00Z", session: "product-manager", cost: 0.027, model: SONNET, tokens: [1000, 500, 100000, 0], wakeId: "wake:pm:3" }), // (1000 x 2 + 500 x 10 + 100000 x 0.2) / 1e6, at the real Sonnet rates: its re-read part is priced by `costOf` too
+  turn({ when: "2026-09-30T12:05:00Z", session: "ceo", cost: 0.012, model: SONNET, tokens: [500, 100, 50000, 0] }),
 ];
 
 const EVENTS = [
@@ -211,7 +222,7 @@ test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and
 });
 
 test("REPEAT CLASSES: a class whose turns are all unpriced is not derivable (never 0), and the week before has none of week B's repeats", () => {
-  const unpriced = EVENTS.map((event) => (event.id === EVENTS.find((candidate) => candidate.kind === "turn" && candidate.wakeId === "wake:pm:2").id ? { ...event, costUsd: null } : event));
+  const unpriced = EVENTS.map((event) => (event.id === EVENTS.find((candidate) => candidate.kind === "turn" && candidate.wakeId === "wake:pm:2").id ? { ...event, model: "<synthetic>", costUsd: null } : event));
   const { classes, total } = weekOf(report({ events: unpriced }), WEEK_B).repeats;
   // The class's only turn is unpriced: its dollars are NOT 0, they are not derivable, and the class says how many turns it could not price.
   assert.deepEqual([classes[0].dollars, classes[0].floor, classes[0].unpriced, classes[0].count], [NOT_DERIVABLE, true, 1, 1]);
@@ -418,4 +429,49 @@ test("PHASE SHARE RENDER: the table, the dearest phase beside each dear row, and
   assert.match(text, /#602 .*\n +dearest phase: build >= \$6\.0000 \(100\.0% of its turns' dollars\); most wall-clock to itself: build 0\.7h \(44\.4%\)/);
   assert.match(text, /#603 .*\n +phases: none \(no phase record of this row in the store\)/);
   assert.ok(DEFINITIONS.some((line) => line.startsWith("PHASE SHARE (#3511)")) && DEFINITIONS.some((line) => line.startsWith("DEAREST PHASE (#3511)")));
+});
+
+// STORED BEFORE ITS PRICE (#3638). The store keeps the cost a turn had when it was INGESTED, and an unchanged transcript is not read again, so a price added later reached none of the
+// turns stored before it. A report prices from `PRICES` as it stands and ignores the stored figure.
+const storedAt = (when, model, costUsd, extra = {}) => turn({ when, session: "worker-9", row: 9, cost: costUsd, model, tokens: [1000, 500, 0, 0], ...extra });
+const oneRow = (events) => aggregate({
+  events, pulls: [pull(1, 9, "2026-09-21T10:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "t" },
+});
+
+test("REPRICED: a stored turn of a model priced SINCE (claude-sonnet-5, stored null) prints priced, its dollars from PRICES and not from the line", () => {
+  const week = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null)]), WEEK_A);
+  const row9 = week.rows[0];
+  near(row9.dollars, (1000 * 2 + 500 * 10) / 1e6);
+  assert.deepEqual([row9.floor, row9.unpriced], [false, 0]);
+  assert.deepEqual(week.spend.unpricedModels, []);
+  assert.equal(week.perRow.noPrice, 0);
+});
+
+test("REPRICED: the stored figure is not trusted over PRICES (a line that says 99 for a turn PRICES puts at 0.007)", () => {
+  const row9 = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", 99)]), WEEK_A).rows[0];
+  near(row9.dollars, 0.007);
+});
+
+test("REPRICED, positive control: a Codex turn stored null stays UNPRICED (null, never 0) and its row stays a FLOOR of the Claude turn beside it", () => {
+  const week = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), storedAt("2026-09-22T11:00:00Z", "gpt-5.6-luna", null)]), WEEK_A);
+  const row9 = week.rows[0];
+  near(row9.dollars, 0.007);
+  assert.deepEqual([row9.floor, row9.unpriced], [true, 1]);
+  assert.deepEqual(week.spend.unpricedModels, [["gpt-5.6-luna", 1]]);
+  const only = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "gpt-5.6-luna", null)]), WEEK_A);
+  assert.equal(only.rows[0].dollars, null, "a row of only unpriced turns has no dollar figure");
+});
+
+test("REPRICED: a changed price in PRICES moves a turn that was stored at the old one", () => {
+  const events = [storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", 0.007)];
+  const row = PRICES.find((price) => price.prefix === "claude-sonnet-5");
+  const was = row.input;
+  try {
+    near(weekOf(oneRow(events), WEEK_A).rows[0].dollars, 0.007);
+    row.input = was * 2;
+    near(weekOf(oneRow(events), WEEK_A).rows[0].dollars, (1000 * 4 + 500 * 10) / 1e6);
+  } finally {
+    row.input = was;
+  }
+  near(weekOf(oneRow(events), WEEK_A).rows[0].dollars, 0.007);
 });
