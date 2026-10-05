@@ -1,3 +1,4 @@
+// no-token: GRACE_HOURS -- every `gh` call in this file is an injected fake or a thrown error; the live reads are run by hand and pasted on the pull request
 // a11ign/a11ign#3659: did ci-health.yml's Monday comment arrive? Pure cases over injected run and comment lists, no network, and one
 // read-only look at the project's own script.
 //
