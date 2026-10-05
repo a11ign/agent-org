@@ -1,3 +1,4 @@
+// no-token: prepareContext -- the provider, the ledger and the readers are injected fixtures and nothing here calls it; `watch.mjs` only carries it in through `WATCHED`'s `requestActions` import (#3581)
 // @ts-check
 // `chairman:watch`: THE LIST (a11ign/a11ign#3418, acceptance 4 to 6). The ledger is real and the readers are a world the test moves.
 //
