@@ -60,6 +60,9 @@ const MAX_ISO_WEEK = 53;
 const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool is the whole org's, and a second run continues where this one stopped
 const REST_POOL = "core"; // `X-Ratelimit-Resource` of every endpoint this reads; a reply from any other pool (`search`) is a read that must not be here
 const PACE_GAP_MS = 250; // between two calls: at most 240 a minute, whatever the budget, and far under the 900 points a minute GitHub allows a REST client
+const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]); // a server that failed this call and may answer the next; a 4xx (404, 403, 422) is an answer and is never asked again
+const GH_ATTEMPTS = 3; // tries of one call, the first included, before the run stops saying so: the 500 of #3700 answered 200 seconds later
+const RETRY_PAUSE_MS = 2000; // before the second try; before the third, twice this
 const RATE_FLOOR = 500; // `X-Ratelimit-Remaining` this run leaves alone: a tenth of the 5,000 an hour that the org's own sessions draw on too
 const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
@@ -615,39 +618,63 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
 /** @param {number} ms */
 const pauseMs = (ms) => void Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, ms);
 
-/** @param {string} message @param {"budget" | "floor"} reason */
+/** @param {string} message @param {"budget" | "floor" | "failure"} reason */
 const spent = (message, reason) => Object.assign(new Error(message), { code: BUDGET_SPENT, reason });
+
+/**
+ * The HTTP status a failed `gh api` call reports, or `null` when its error names none (a missing binary, a malformed reply). `gh` says it on stderr as `(HTTP 500)`, and with `-i` the reply
+ * on stdout opens with `HTTP/2.0 500`.
+ * @param {any} error @returns {number | null}
+ */
+export function httpStatusOf(error) {
+  const named = /\bHTTP(?:\/[\d.]+)? (\d{3})\b/.exec(`${error?.stderr ?? ""}\n${error?.message ?? ""}\n${String(error?.stdout ?? "").split("\n", 1)[0]}`);
+  return named === null ? null : Number(named[1]);
+}
 
 /**
  * `gh` that makes at most `budget` calls and counts every one (a failed call is still a call). The (budget+1)th THROWS, before it is made, with `code: GH_CALLS_SPENT`: the budget is
  * checked per CALL, because one pull request costs several (the issue, each page of its timeline, a check-runs list per head), so a check per pull request can be overshot by all of them.
  * It PACES: a call waits until `gapMs` have passed since the last one ended. It stops at a FLOOR: when the reply last read carried an `X-Ratelimit-Remaining` under `floor`, the next call
  * throws the same code with `reason: "floor"`, before it is made. And it refuses a reply whose pool is not `core`, one that names no pool included (the search API's 30 a minute is the limit this exists to keep off).
- * `.stopped` says which of the two stops ended the run, or `null`.
+ * A 5xx reply (RETRYABLE_STATUSES) is tried again after a pause, up to GH_ATTEMPTS in all, and EVERY try is a counted, paced and floor-checked call; the last failure throws the same code with
+ * `reason: "failure"` and the url and status in its message, so a reader stops there as it stops at the budget and what was read before it is kept. Any other failure is thrown as it came.
+ * `.stopped` says which of the three stops ended the run, or `null`.
  * @param {{ gh: ((args: string[]) => any) & { rate?: { remaining: number, resource: string | null } | null }, budget: number, floor?: number, gapMs?: number, pause?: (ms: number) => void, clock?: () => number }} input
- * @returns {((args: string[]) => any) & { calls: number, stopped: { reason: "budget" | "floor", message: string } | null }}
+ * @returns {((args: string[]) => any) & { calls: number, stopped: { reason: "budget" | "floor" | "failure", message: string } | null }}
  */
 export function budgetedGh({ gh, budget, floor = 0, gapMs = 0, pause = pauseMs, clock = Date.now }) {
   const counted = countingGh(gh);
   /** @type {number | null} */
   let lastEnd = null;
-  /** @type {{ reason: "budget" | "floor", message: string } | null} */
+  /** @type {{ reason: "budget" | "floor" | "failure", message: string } | null} */
   let stopped = null;
-  const stop = (/** @type {string} */ message, /** @type {"budget" | "floor"} */ reason) => {
+  const stop = (/** @type {string} */ message, /** @type {"budget" | "floor" | "failure"} */ reason) => {
     stopped = { reason, message };
     return spent(message, reason);
   };
-  const bounded = (/** @type {string[]} */ args) => {
+  const attempt = (/** @type {string[]} */ args) => {
     if (counted.calls >= budget) throw stop(`--calls ${budget} is spent`, "budget");
     const left = gh.rate?.remaining;
     if (left !== undefined && left < floor) throw stop(`X-Ratelimit-Remaining is ${left}, under the floor of ${floor}`, "floor");
     if (lastEnd !== null && clock() - lastEnd < gapMs) pause(gapMs - (clock() - lastEnd));
-    /** @type {any} */
-    let reply;
     try {
-      reply = counted(args);
+      return counted(args);
     } finally {
       lastEnd = clock();
+    }
+  };
+  const bounded = (/** @type {string[]} */ args) => {
+    /** @type {any} */
+    let reply;
+    for (let tried = 1; reply === undefined; tried += 1) {
+      try {
+        reply = attempt(args);
+      } catch (error) {
+        const status = httpStatusOf(error);
+        if (status === null || !RETRYABLE_STATUSES.has(status)) throw error;
+        if (tried >= GH_ATTEMPTS) throw stop(`stopped at gh api ${args.join(" ")}: HTTP ${status} after ${tried} attempts`, "failure");
+        pause(RETRY_PAUSE_MS * tried);
+      }
     }
     const pool = gh.rate?.resource ?? null;
     if (pool !== REST_POOL) throw new Error(`a reply came from ${pool === null ? "no named pool (X-Ratelimit-Resource is absent)" : `the "${pool}" pool`}, not "${REST_POOL}": ${args.join(" ")} must not be read by this report, because a pool that is not named cannot be known not to be the search API (30 calls a minute per user)`);
@@ -712,9 +739,16 @@ export function readListings({ repos, rowRepo, window, gh, budget }) {
     return { pulls, openRows: openRowsWithin({ rowRepo, gh }) };
   } catch (cause) {
     if (!isSpent(cause)) throw cause;
-    const why = gh.stopped?.reason === "floor" ? `stopped at the floor: ${gh.stopped.message}` : `--calls ${budget} is too small`;
-    throw new Error(`${why} to list the merged pull requests (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; ${gh.stopped?.reason === "floor" ? "wait for the pool to refill" : "raise --calls"}`, { cause });
+    throw listingStopped({ gh, budget, cause });
   }
+}
+
+/** The error of a run that a stop kept from listing the merged pull requests: what stopped it, and what to do. It carries the stop's code, so the entry point prints it without a stack. @param {{ gh: ReturnType<typeof budgetedGh>, budget: number, cause: unknown }} input */
+function listingStopped({ gh, budget, cause }) {
+  const reason = gh.stopped?.reason;
+  const why = reason === "floor" ? `stopped at the floor: ${gh.stopped?.message} to list the merged pull requests` : reason === "failure" ? `${gh.stopped?.message}, listing the merged pull requests` : `--calls ${budget} is too small to list the merged pull requests`;
+  const remedy = reason === "floor" ? "wait for the pool to refill" : reason === "failure" ? "run it again" : "raise --calls";
+  return Object.assign(new Error(`${why} (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; ${remedy}`, { cause }), { code: BUDGET_SPENT });
 }
 
 /** @param {{ rowRepo: string, gh: ReturnType<typeof budgetedGh> }} input @returns {number[] | null} */
@@ -865,6 +899,9 @@ function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
   return { readings, unreadable: transcripts.flatMap((transcript) => (transcript.ok ? [] : [transcript.file])) };
 }
 
+/** @type {Record<string, string>} */
+const STOP_LABEL = { floor: "FLOOR", budget: "BUDGET", failure: "GITHUB ERROR" };
+
 /**
  * What a run says BEFORE its first call: the most it may spend, the pool it spends, how it paces itself and where it stops. Said first so that a person who started it knows what it will cost
  * without waiting for the end, which is where this used to be said.
@@ -882,7 +919,7 @@ export function budgetLine({ budget, floor = RATE_FLOOR, gapMs = PACE_GAP_MS }) 
  */
 export function githubSummary({ github, budget, unread }) {
   const { first, last } = github.remaining;
-  const stop = github.stopped ? `; STOPPED AT THE ${github.stopped.reason === "floor" ? "FLOOR" : "BUDGET"}: ${github.stopped.message}` : "";
+  const stop = github.stopped ? `; STOPPED AT THE ${STOP_LABEL[github.stopped.reason] ?? github.stopped.reason.toUpperCase()}: ${github.stopped.message}` : "";
   const { named } = github;
   const wakes = named ? `; subjects the wakes name, not yet read: ${named.unread}${named.failed.map(({ subject, message }) => `; could not read ${subject}: ${message}`).join("")}` : "";
   return `GitHub: ${github.calls} REST calls (gh api, pool ${REST_POOL}, budget ${budget}); X-Ratelimit-Remaining ${first ?? "unread"} at the first reply, ${last ?? "unread"} at the last; ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unread}${wakes}${stop}`;
@@ -974,4 +1011,15 @@ async function main() {
   console.log(json ? JSON.stringify({ number, rows, prs, github, waterfalls: waterfallsOf({ rows, prs, number, events, now }), events: repriceEvents(events) }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events, now }));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
+/** A stop of the run (the budget, the floor, a GitHub error that outlasted its tries) is a report: its message, exit 1, no stack. */
+async function mainOrReportStop() {
+  try {
+    await main();
+  } catch (error) {
+    if (!isSpent(error)) throw error;
+    console.error(/** @type {Error} */ (error).message);
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await mainOrReportStop();
