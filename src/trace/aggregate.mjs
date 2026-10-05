@@ -11,7 +11,8 @@
 //   prints `not held`. A row with no turn in the store has no figure and is counted apart.
 //   NEVER MIXED. A week is its own population: nothing is pooled across weeks, and a week the store holds only part of is marked PARTIAL and left out of the comparison.
 //   NEVER AVERAGED OPEN. A row with no merge is listed apart and is in no percentile.
-import { costOf } from "./store.mjs";
+import { costOf, eventsForRow, repriceEvents } from "./store.mjs";
+import { BETWEEN, PHASES, waterfall } from "./waterfall.mjs";
 import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.mjs";
 
 export const DEFINITIONS = [
@@ -33,6 +34,8 @@ export const DEFINITIONS = [
   "  preamble reload: a wake that is not its session's first. Dollars: the INPUT side of its first turn, the re-read of the window every wake pays; the turn's own output is the work and is not waste.",
   "  CI re-run: a check run of a name already run on the same pull request. Counted with its runner time; CI minutes are not tokens, so its dollars are `not derivable`.",
   "  deferred wait: how long a busy seat held an order before it was typed. The deferral log is not in the store (#3510), so it is `not held`, never 0.",
+  "PHASE SHARE (#3511): from each merged row's waterfall (`waterfall.mjs`, its own definitions): the wall-clock each phase has to ITSELF (each moment in the latest-started phase running at it; time no phase covers is `between`) and the dollars of the turns that ENDED in it, as a share of the week's merged rows' whole wall-clock (the first phase's start to the last one's end) and whole dollars. The shares add up to the whole, and a report whose do not THROWS instead of printing. A row with no phase record in the store (its GitHub events not read) has no waterfall, is counted apart and is in no share. Dollars are the priced turns only, so a row with an unpriced turn makes them a floor (marked).",
+  "DEAREST PHASE (#3511): for each of the ten dearest rows, the phase whose turns cost most (priced dollars, a floor when a turn is unpriced) and the phase with the most wall-clock to itself, each with its share of that row's. The row's dollars here are the waterfall's own (the turns on the row and on the pull requests that close it), so they can differ from the per-row figure above, which also places a standing lead's `touched` write.",
   "WAKES, against wakes-per-row: for the rows of the week, the store's count of the wakes of the row's own worker and reviewer sessions (a reviewer's only inside its pull request's open-to-merge window, as wakes-per-row places them) is compared with wakes-per-row's `wakes` for the same row. The week prints how many rows agree and the reason for each that does not.",
 ];
 
@@ -241,6 +244,56 @@ function perRowSpread(rows) {
     rows: rows.length, noTurns: rows.length - held.length, noPrice: held.length - priced.length, floors: priced.filter((row) => row.floor).length,
     dollars: spread(priced.map((row) => /** @type {number} */ (row.dollars))), tokens: spread(held.map((row) => /** @type {number} */ (row.tokens))),
     wallClock: spread(rows.flatMap((row) => (row.wallClockMs === null ? [] : [row.wallClockMs]))), noClaim: rows.filter((row) => row.wallClockMs === null).length,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Where a row's time and dollars went, by phase (#3511)
+
+const SUM_TOLERANCE = 1e-9;
+/** @typedef {ReturnType<typeof waterfall>} Waterfall */
+
+/** The eight phases and `between`, in the order the report counts them. @param {Waterfall} wf */
+const countedPhases = (wf) => [...wf.phases, wf.between];
+
+/** @param {number[]} values */
+const total = (values) => values.reduce((sum, value) => sum + value, 0);
+
+/**
+ * Each phase's share of the rows' whole wall-clock and whole dollars. The denominators are the rows' OWN totals (their wall-clock from the first phase's start to the last one's end, and
+ * the dollars of all their turns), not the sum of the phases, so the shares add up to the whole only if every moment and every turn is in exactly one phase, and a share that does not
+ * sum to the whole THROWS: a printed table that leaves a part out would look complete.
+ * @param {Waterfall[]} waterfalls only those with a phase record (`start` not null): a row with none has turns and no phases, and its turns would sit in `between`
+ */
+export function phaseShares(waterfalls) {
+  const wallClockMs = total(waterfalls.map((wf) => wf.whole.wallClockMs));
+  const dollars = total(waterfalls.map((wf) => wf.spend.dollars));
+  const shares = [...PHASES, BETWEEN].map((phase) => {
+    const own = waterfalls.flatMap((wf) => countedPhases(wf).filter((one) => one.phase === phase));
+    const exclusiveMs = total(own.map((one) => one.exclusiveMs));
+    const spent = total(own.map((one) => one.spend.dollars));
+    return { phase, exclusiveMs, wallShare: wallClockMs > 0 ? exclusiveMs / wallClockMs : null, dollars: spent, dollarShare: dollars > 0 ? spent / dollars : null, unpriced: total(own.map((one) => one.spend.unpriced)) };
+  });
+  for (const [name, key, whole] of /** @type {const} */ ([["wall-clock", "wallShare", wallClockMs], ["dollars", "dollarShare", dollars]])) {
+    const added = total(shares.map((share) => share[key] ?? 0));
+    if (whole > 0 && Math.abs(added - 1) > SUM_TOLERANCE) throw new Error(`the phase shares of ${name} add up to ${added}, not the whole: refusing to print a table that leaves a part out`);
+  }
+  return { rows: waterfalls.length, wallClockMs, dollars, unpriced: total(waterfalls.map((wf) => wf.spend.unpriced)), shares };
+}
+
+/**
+ * The phase whose turns cost most of the row, and the phase with the most wall-clock to itself. A waterfall with no phase record has none: its turns would all fall in `between`,
+ * which would read as a finding about the row when it is only the absence of the row's GitHub history.
+ * @param {Waterfall} wf
+ */
+export function dearestPhase(wf) {
+  if (wf.start === null) return { costliest: null, longest: null };
+  const parts = countedPhases(wf);
+  const costly = [...parts].sort((a, b) => b.spend.dollars - a.spend.dollars)[0];
+  const long = [...parts].sort((a, b) => b.exclusiveMs - a.exclusiveMs)[0];
+  return {
+    costliest: wf.spend.priced > 0 && costly ? { phase: costly.phase, dollars: costly.spend.dollars, share: costly.spend.dollars / wf.spend.dollars, floor: wf.spend.unpriced > 0 } : null,
+    longest: wf.whole.wallClockMs > 0 && long ? { phase: long.phase, ms: long.exclusiveMs, share: long.exclusiveMs / wf.whole.wallClockMs } : null,
   };
 }
 
@@ -522,21 +575,27 @@ function partialReason({ start, now, held, unread }) {
  * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
  *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null }} input
  */
-export function aggregate({ events, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
+export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
+  const events = repriceEvents(stored); // every dollar below, the waterfalls' included, is at PRICES now and not at the price the turn was stored with (#3638)
   const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
   const { turns, placed, byRow, turnsOf } = indexes({ events, keys });
   const everyMerge = mergedRows(pulls, { from: -Infinity, to: Infinity }, rowRepo);
   const claims = claimsOf(events);
   const unreadSet = new Set(unreadRows);
   const wakeCounts = storeWakeCounts({ events, keys, pulls });
+  const traceEvents = events.filter((event) => event.kind !== "gh_call");
   const weeks = [];
   for (let start = weekStart(since); start <= weekStart(now); start += WEEK_MS) {
     const merged = everyMerge.filter((entry) => entry.mergedAt >= start && entry.mergedAt < start + WEEK_MS);
     const rows = merged.map((entry) => rowFigures(entry, { byRow, claims }));
     const githubUnread = merged.filter((entry) => unreadSet.has(entry.row)).length;
     const classes = repeatClasses({ events, turns, keys, at: start, claimed: new Set(), turnsOf });
+    const waterfalls = new Map(merged.map((entry) => [entry.row, waterfall({ events: eventsForRow(traceEvents, { rows: [entry.row], prs: entry.pulls }), now })]));
+    const drawn = [...waterfalls.values()].filter((wf) => wf.start !== null);
     weeks.push({
-      start, end: start + WEEK_MS, githubUnread, partial: partialReason({ start, now, held, unread: githubUnread }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows), dearest: dearest(rows),
+      start, end: start + WEEK_MS, githubUnread, partial: partialReason({ start, now, held, unread: githubUnread }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows),
+      dearest: dearest(rows).map((row) => ({ ...row, phase: dearestPhase(/** @type {Waterfall} */ (waterfalls.get(row.row))) })),
+      phases: { ...phaseShares(drawn), noRecord: merged.length - drawn.length },
       spend: spendFigures(spendOf(placed.filter((entry) => inWeek(entry.turn, start))), unreadable), repeats: { classes, total: repeatTotal(classes) },
       wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
     });
@@ -627,13 +686,29 @@ function weekLines(week) {
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
     `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.flatMap((entry) => [classLine(entry, week.githubUnread), ...causeLines(entry)]));
-  return [...lines, ...dearestLines(week), ...wakeLines(week)];
+  return [...lines, ...phaseLines(week), ...dearestLines(week), ...wakeLines(week)];
 }
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function dearestLines(week) {
   if (week.dearest.length === 0) return [`  the ${DEAREST} dearest merged rows: none, because no merged row has a priced turn`];
-  return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.map((row) => `    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`)];
+  return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.flatMap((row) => [`    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`,
+    `      ${dearestPhaseText(row.phase)}`])];
+}
+
+/** @param {ReturnType<typeof dearestPhase>} phase */
+function dearestPhaseText(phase) {
+  if (phase.costliest === null && phase.longest === null) return "phases: none (no phase record of this row in the store)";
+  const cost = phase.costliest ? `${phase.costliest.phase} ${dollars(phase.costliest.dollars, phase.costliest.floor)} (${percent(phase.costliest.share)} of its turns' dollars)` : "no priced turn";
+  return `dearest phase: ${cost}; most wall-clock to itself: ${phase.longest ? `${phase.longest.phase} ${hours(phase.longest.ms)} (${percent(phase.longest.share)})` : "n/a"}`;
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
+function phaseLines(week) {
+  const { phases } = week;
+  if (phases.rows === 0) return [`  PHASE SHARE: none of the ${phases.noRecord} merged rows has a phase record in the store (their GitHub events are not read), so no share is given`];
+  return [`  PHASE SHARE over ${phases.rows} merged rows (${phases.noRecord} with no phase record are in no share): ${hours(phases.wallClockMs)} of wall-clock, ${dollars(phases.dollars, phases.unpriced > 0)} in the turns of their waterfalls`,
+    ...phases.shares.map((share) => `    ${share.phase.padEnd(8)} ${percent(share.wallShare).padStart(6)} of wall-clock (${hours(share.exclusiveMs)} to itself)  ${percent(share.dollarShare).padStart(6)} of dollars (${dollars(share.dollars, share.unpriced > 0)})`)];
 }
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */

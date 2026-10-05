@@ -92,8 +92,12 @@ describe("done-when 4: the third contender waits for a slot (2 slots, the contro
   test("the lock is the KERNEL's: two plain `flock -n` holders on the slot files hold the limit with no record of their own", async () => {
     const dir = fresh("kernel");
     // Not the module's holder: a shell that takes `flock -n 9` the way any other tool would, then becomes `sleep` (so killing it frees the lock).
-    const holders = [0, 1].map((index) => spawn("sh", ["-c", 'exec 9>>"$0"; flock -n 9 && exec sleep 30', join(dir, `slot-${index}.lock`)], { stdio: "ignore" }));
-    await until("both plain holders to hold", () => [0, 1].every((index) => spawnSync("flock", ["--nonblock", join(dir, `slot-${index}.lock`), "true"]).status !== 0));
+    // It touches `slot-N.held` only AFTER the lock is its own: the wait must not PROBE the lock to learn that, because a probe (`flock -n` on a free file) takes it for an instant and a holder that tries in that instant loses and exits (a11ign/a11ign#3668, measured 6 of 400 replays).
+    const held = (index: number) => join(dir, `slot-${index}.held`);
+    const holders = [0, 1].map((index) => spawn("sh", ["-c", 'exec 9>>"$0"; flock -n 9 && { touch "$1"; exec sleep 30; }', join(dir, `slot-${index}.lock`), held(index)], { stdio: "ignore" }));
+    await until("both plain holders to hold", () => [0, 1].every((index) => existsSync(held(index))));
+    // Both hold now, so this probe cannot make one lose: it only confirms the kernel agrees the files are locked.
+    for (const index of [0, 1]) assert.notEqual(spawnSync("flock", ["--nonblock", join(dir, `slot-${index}.lock`), "true"]).status, 0, `slot ${index} is held by the plain holder`);
     const messages: string[] = [];
     const third = runUnderSlot({ command: "true", dir, env: env(), ...quick, write: (text) => messages.push(text) });
     await until("the waiting message", () => messages.length > 0);

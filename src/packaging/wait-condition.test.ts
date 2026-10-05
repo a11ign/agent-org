@@ -292,7 +292,9 @@ function tick(prsRead: unknown[], run: (args: string[]) => string) {
       readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never,
       // #3364: the gate would LIFT these holds itself; a release that fails is the fallback, so the order and the signal below are still the ones tested here
       // (`gate-lifts-resolved-holds.test.ts` owns the lift).
-      release: (() => false) as never });
+      release: (() => false) as never,
+      // #3672: no remote: a project that declares `teamAccess` would otherwise make the live `gh api` read here, and this file asserts nothing about it
+      teamAccess: () => undefined });
   return { orders: orders as { session: string; cause: string; subject: string; prompt: string }[], said };
 }
 

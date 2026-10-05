@@ -22,14 +22,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { bareKeyedRegionReason, regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.mjs";
 import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
 import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
 import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
 import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
@@ -39,6 +39,7 @@ import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarni
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { filedByLine } from "../row-claim.mjs";
 import { REPO } from "../project-identity.mjs";
+import { withGitSandbox } from "../lib/git-sandbox.ts";
 
 const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
 /**
@@ -46,6 +47,47 @@ const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
  * tests below launch it with the printed override, so each still reaches the check it was written to test.
  */
 const CLI_ENV = { ...process.env, A11Y_POLICY_LAUNCH_REASON: "a test driving the real CLI from CI's plain clone" };
+
+/**
+ * A PROJECT TO RUN IN, built here. These tests read the working directory the way the tool does (`git ls-files`, `statSync`, the closure
+ * walk), and the files they name are the PROJECT'S (`packages/lab/...`, `docs/adr/`), which sit in its checkout and not in the tool's own.
+ * Run from the tool's checkout they named nothing and failed; run from the project they passed on the project's contents, so a rename
+ * there broke a test of this file. The population each one needs is written below, tracked in a throwaway repository, and the process
+ * is moved into it for the one test.
+ */
+function inScratchProject<T>(files: Record<string, string>, body: () => T): T {
+  return withGitSandbox((box) => {
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(box.dir, file)), { recursive: true });
+      writeFileSync(join(box.dir, file), text);
+    }
+    box.run(["add", "."]);
+    const before = process.cwd();
+    process.chdir(box.dir);
+    try { return body(); } finally { process.chdir(before); }
+  });
+}
+
+/** `test`, run inside `inScratchProject(files, ...)`. */
+function testInProject(name: string, files: Record<string, string>, body: () => void): void {
+  test(name, () => inScratchProject(files, body));
+}
+
+/** The corpus resolver's name, never contiguous in this file's own text: this file is itself a test the closure walk reads. */
+const CORPUS_RESOLVER = "runsRo" + "ot";
+
+/** The Region and Acceptance paths the #2035 tests name: a corpus-reading entry script, a corpus-free module, and the tests an Acceptance runs. */
+const CLOSURE_PROJECT: Record<string, string> = {
+  "packages/lab/src/dataset-paths.mjs":
+    `export function ${CORPUS_RESOLVER}() { return "runs"; }\nexport function realCorpusRoot() { return ${CORPUS_RESOLVER}(); }\n`,
+  "packages/lab/src/training/capture-real-pages.mjs": `import { realCorpusRoot } from "../dataset-paths.mjs";\nexport const OUT = realCorpusRoot();\n`,
+  "packages/lab/src/training/capture-fleet-guard.test.ts": "export {};\n",
+  "packages/agent-org/src/claim-labels.mjs": "export {};\n",
+  "packages/agent-org/src/packaging/row-file.test.ts": "export {};\n",
+};
+
+/** A tracked directory one level under a top-level name: `docs/` is one in the project, and the tool's own checkout has no `docs/adr`. */
+const DIRECTORY_PROJECT: Record<string, string> = { "docs/adr/0001-record.md": "x\n" };
 
 const COMPLETE_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
@@ -1081,7 +1123,7 @@ const DIRECTORY_SPELLINGS = {
   "in a prose sentence": (p: string) => `## Region\n\nOnly \`${p}\` is touched.\n`,
 };
 
-test("#1193 clause 4: every spelling of a directory Region gets EXACTLY ONE witness", () => {
+testInProject("#1193 clause 4: every spelling of a directory Region gets EXACTLY ONE witness", DIRECTORY_PROJECT, () => {
   const cells: string[] = [];
   for (const [shape, write] of Object.entries(DIRECTORY_SPELLINGS)) {
     for (const slash of ["/", ""]) {
@@ -2206,7 +2248,7 @@ const CORPUS_ENTRY = "packages/lab/src/training/capture-real-pages.mjs";
 /** A leaf module: it imports nothing that needs a capability the acceptance job lacks. */
 const CORPUS_FREE = "packages/agent-org/src/claim-labels.mjs";
 
-test("#2035 warning 1: a Region naming a corpus-reading ENTRY SCRIPT warns, in the wording pr-open uses", () => {
+testInProject("#2035 warning 1: a Region naming a corpus-reading ENTRY SCRIPT warns, in the wording pr-open uses", CLOSURE_PROJECT, () => {
   const warned = String(regionClosureWarning(acceptanceBody(CORPUS_ENTRY, FENCED_TEST)));
   assert.match(warned, /^WARNING/);
   // The requirement, the file and the chain -- the same sentence `classifyCommand` prints, which is what
@@ -2218,7 +2260,7 @@ test("#2035 warning 1: a Region naming a corpus-reading ENTRY SCRIPT warns, in t
     fileRefusalReason(acceptanceBody(CORPUS_FREE, FENCED_TEST)), "the closure must not change the refusal");
 });
 
-test("#2035 warning 1, the other direction: a Region naming a corpus-free module does NOT warn", () => {
+testInProject("#2035 warning 1, the other direction: a Region naming a corpus-free module does NOT warn", CLOSURE_PROJECT, () => {
   assert.equal(regionClosureWarning(acceptanceBody(CORPUS_FREE, FENCED_TEST)), null);
   // Not a source file at all: a `.md` Region entry has no import closure to read, and is not "unread".
   assert.equal(regionClosureWarning(acceptanceBody("docs/row-filing.md", FENCED_TEST)), null);
@@ -2238,7 +2280,7 @@ test("#2035 warning 1, POSITIVE CONTROL: a Region file that does not exist does 
   assert.match(stubbed, /NOT read/, "a walk that reports nothing must not turn an unread file into a clean one");
 });
 
-test("#2035 warning 1: only a TEST Acceptance is charged -- pr-open's closure walk reads nothing else", () => {
+testInProject("#2035 warning 1: only a TEST Acceptance is charged -- pr-open's closure walk reads nothing else", CLOSURE_PROJECT, () => {
   assert.equal(regionClosureWarning(acceptanceBody(CORPUS_ENTRY, "```\nnode scripts/repo-identity.mjs\n```")), null);
   assert.match(String(regionClosureWarning(acceptanceBody(CORPUS_ENTRY,
     "```\nnpx rstest run --include packages/lab/src/packaging/row-file.test.ts\n```"))), /corpus/, "rstest counts");
@@ -2359,7 +2401,7 @@ test("#2035 warning 3: it ASKS `classifyCommand` -- a stubbed decider moves the 
   assert.equal(malformedAcceptanceCommandWarning(prose, { classify: () => ({ verdict: "runnable" }) }), null);
 });
 
-test("#2035: the three reach the author through createIssue, and the row is still FILED", () => {
+testInProject("#2035: the three reach the author through createIssue, and the row is still FILED", CLOSURE_PROJECT, () => {
   // An exported function nobody calls is not surfaced (#1085): drive the real caller and read stderr.
   const trips = acceptanceBody(CORPUS_ENTRY,
     `\`\`\`\nnpx tsx --test packages/agent-org/src/packaging/row-file.test.ts\n\`\`\`\nThe command above passes, 153 tests, 0 failed.`);
