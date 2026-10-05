@@ -21,6 +21,12 @@
 // re-brief, so its `state` would never change and the core would never send the update: silent, the failure this file exists to prevent. A
 // row whose list is AT the window has its comments read in full (`issueComments`, `gh issue view`); if that read fails, the source throws.
 
+// **A BRIEF WITH A `Steps:` LIST IS A PROCEDURE, AND IS WALKED (a11ign/a11ign#3425, chairman point 3).** Its numbered items are sent one at a time (`walk.mjs`), each optionally followed by
+// `Verify: {{placeholder}} is|contains <value>`, the read that decides whether the step happened. This file only READS the list: the first message carries the brief and the step the ledger says
+// is current (`position`, which the watcher reads from the ledger and this leaf is handed), and the position is NOT in the event's `state`, so a step advancing is never an "update" of the ask.
+
+import { parsePlaceholders } from "../placeholders.mjs";
+
 export const NEEDS_CHAIRMAN = "needs:chairman";
 /** More rows than this waiting on one person is itself the finding; and a list this long may have been cut, so it is refused (see above). */
 export const REQUEST_LIST_LIMIT = 200;
@@ -57,6 +63,12 @@ const MISSING_HINTS = new Map([
   [NOT_HIS_CLAUDE, "a brief that offers no choice is a request for him alone, so it must say why his own Claude session cannot do it"],
 ]);
 
+const STEPS_HEADER = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Steps(?:\*\*|__)?[ \t]*:(?:\*\*|__)?[ \t]*$/im;
+const STEP_ITEM = /^[ \t]*(?:\d+[.)]|[-*])[ \t]+(\S.*)$/;
+const VERIFY_LINE = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Verify(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*|__)?[ \t]*(\S.*)$/i;
+const VERIFY_BODY = /^(\{\{[^{}]+\}\})[ \t]+(is|contains)[ \t]+(\S.*)$/i;
+const MAX_STEPS = 12;
+
 /** @param {string} label @returns {RegExp} */
 function briefLinePattern(label) {
   // A line of the brief, optionally a list item or quoted, the label optionally bold: `**Ask:** x`, `**Ask**: x`, `- Ask: x`.
@@ -73,6 +85,9 @@ function requiredLabels(offersOptions) {
 /** @typedef {{ body: string, createdAt: string, authorAssociation?: string }} RowComment */
 /** @typedef {{ number: number, title: string, url: string, comments?: RowComment[] }} RequestRow */
 /** @typedef {{ id: string, label: string }} ChairmanOption */
+/** @typedef {{ read: string, compare: "is" | "contains", expected: string }} Verify  `read` is one placeholder as written, `{{unit:x.state}}`; the step happened when what it reads is, or contains, `expected` */
+/** @typedef {{ text: string, verify: Verify | null }} Step */
+/** @typedef {{ steps: Step[], unblocks: string }} Walk */
 
 /** @param {string} repo @param {number} number @returns {string} the stable identity of the thing, as the design spells it */
 export function requestKey(repo, number) {
@@ -114,6 +129,69 @@ export function parseChairmanOptions(body) {
   return { options, problem: null };
 }
 
+/** @param {string} text @returns {{ verify: Verify | null, problem: string | null }} the `Verify:` line's text read as a check, or why it is not one */
+function parseVerify(text) {
+  // Markup an author wraps a value in (`**`, backticks) is not part of it, as in every other line of a brief.
+  const found = VERIFY_BODY.exec(text.replace(/\*\*|__|`/g, "").trim());
+  if (found === null) return { verify: null, problem: `"Verify: ${text}" is not "{{placeholder}} is|contains <value>"` };
+  const [, read, compare, expected] = found;
+  const { placeholders, problems } = parsePlaceholders(read);
+  if (problems.length > 0 || placeholders.length !== 1) return { verify: null, problem: `Verify ${read} is not a placeholder of the checked-facts vocabulary` };
+  return { verify: { read, compare: /** @type {"is" | "contains"} */ (compare.toLowerCase()), expected: expected.trim() }, problem: null };
+}
+
+/**
+ * The `Steps:` list of a brief: numbered (or bulleted) items under the header, each optionally followed by a `Verify:` line, and indented lines continuing an item. The list ends at the
+ * first line that is none of these (`Unblocks:`). **ALL OR NOTHING, as the options block is:** one step that cannot be read yields no steps and a reason, because a walk missing the step the
+ * chairman needed is a quieter wrong than none. Absent is not malformed.
+ *
+ * @param {string} body the whole comment @returns {{ steps: Step[], problem: string | null }}
+ */
+export function parseSteps(body) {
+  const header = STEPS_HEADER.exec(body);
+  if (header === null) return { steps: [], problem: null };
+  /** @type {{ text: string, verify: Verify | null }[]} */
+  const steps = [];
+  for (const line of body.slice(header.index + header[0].length).split(/\r?\n/)) {
+    const verifyText = VERIFY_LINE.exec(line)?.[1];
+    const item = STEP_ITEM.exec(line)?.[1];
+    if (line.trim() === "") continue;
+    if (verifyText !== undefined && steps.length > 0) {
+      const last = /** @type {Step} */ (steps.at(-1));
+      const { verify, problem } = parseVerify(verifyText);
+      if (verify === null || last.verify !== null) return { steps: [], problem: problem ?? `step ${steps.length} has two Verify lines` };
+      last.verify = verify;
+    } else if (item !== undefined) {
+      steps.push({ text: plainLine(item), verify: null });
+    } else if (/^[ \t]/.test(line) && steps.length > 0) {
+      const last = /** @type {Step} */ (steps.at(-1));
+      last.text = plainLine(`${last.text} ${line}`);
+    } else {
+      break;
+    }
+  }
+  if (steps.length === 0) return { steps: [], problem: "the Steps: line has no step under it" };
+  if (steps.length > MAX_STEPS) return { steps: [], problem: `${steps.length} steps; a walk-through has at most ${MAX_STEPS}` };
+  return { steps, problem: null };
+}
+
+/**
+ * @param {string} text the brief's whole comment
+ * @returns {{ walk: Walk | null, problem: string | null }} `walk` is null for a brief that is not a procedure; `problem` says why a procedure could not be read, and begins `steps:` so it names itself
+ */
+export function readWalk(text) {
+  const { steps, problem } = parseSteps(text);
+  if (problem !== null) return { walk: null, problem: `steps: ${problem}` };
+  if (steps.length === 0) return { walk: null, problem: null };
+  const unblocks = briefLinePattern("Unblocks").exec(text)?.[1];
+  return { walk: { steps, unblocks: unblocks === undefined ? "" : plainLine(unblocks) }, problem: null };
+}
+
+/** @param {{ position: number, total: number, text: string }} step @returns {string} the line the chairman reads for the step he is on */
+export function stepLine({ position, total, text }) {
+  return `Step ${position} of ${total}: ${text}`;
+}
+
 /** @param {RowComment[] | undefined} comments @returns {RowComment | null} the newest brief an org account wrote, or null */
 export function latestBrief(comments) {
   const briefs = (comments ?? []).filter((comment) =>
@@ -150,10 +228,13 @@ function readBriefLines(body, labels) {
  * chairman an update each time a session adds `in-progress` or `was-ready` to a row that is waiting on them, which is the defect the
  * reminder rule exists to end. A re-briefed ask (a new first line or new options) IS a change worth telling them; a label is not.
  *
- * @param {string[]} briefLines @param {ChairmanOption[]} options @returns {string}
+ * The steps are part of the ask and their POSITION is not: the walk moving on is the ask being worked, not changed.
+ *
+ * @param {string[]} briefLines @param {ChairmanOption[]} options @param {Walk | null} walk @returns {string}
  */
-function requestState(briefLines, options) {
-  return [...briefLines, ...options.map((option) => `${option.id}=${option.label}`)].join("\n");
+function requestState(briefLines, options, walk) {
+  const steps = walk === null ? [] : walk.steps.map((step, at) => `step ${at + 1}=${step.text}|${step.verify?.read ?? ""}`);
+  return [...briefLines, ...options.map((option) => `${option.id}=${option.label}`), ...steps].join("\n");
 }
 
 /** @param {RowComment | null} brief @param {string[]} missing @returns {string} why no alert is sent, in words the log can show on its own */
@@ -170,16 +251,21 @@ function refusalReason(brief, missing) {
  * must not read the missing event as the label going. **A problem NAMES ITSELF**: a refusal begins `alert not sent:` and an options-block problem
  * begins `chairman-options:`, because the watcher adds no prefix and a grep for either finds only its own kind (#3344).
  *
- * @param {{ repo: string, row: RequestRow, now: number }} input
- * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], problem: string | null }}
+ * **A PROCEDURE BRIEF IS A PROCEDURE, NOT A CHOICE**: a brief with both a `Steps:` list and an options block is refused, and so is a `Steps:` list that cannot be read (`steps:` names it).
+ *
+ * @param {{ repo: string, row: RequestRow, now: number, position?: number }} input `position` is the step the walk is on (1-based), which only a procedure brief uses
+ * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], walk: Walk | null, problem: string | null }}
  */
-export function requestEvent({ repo, row, now }) {
+export function requestEvent({ repo, row, now, position = 1 }) {
   const brief = latestBrief(row.comments);
-  if (brief === null) return { event: null, options: [], problem: refusalReason(null, []) };
+  if (brief === null) return { event: null, options: [], walk: null, problem: refusalReason(null, []) };
   const { options, problem } = parseChairmanOptions(brief.body);
+  const { walk, problem: stepsProblem } = readWalk(brief.body);
   // A malformed block still means the author meant to offer a choice, so it is held to the options lines, and its own problem is still reported.
   const { lines, missing } = readBriefLines(brief.body, requiredLabels(options.length > 0 || problem !== null));
-  if (missing.length > 0) return { event: null, options: [], problem: refusalReason(brief, missing) };
+  if (missing.length > 0) return { event: null, options: [], walk: null, problem: refusalReason(brief, missing) };
+  const refused = stepsProblem ?? (walk !== null && options.length > 0 ? "steps: a brief is a procedure or a choice, not both" : null);
+  if (refused !== null) return { event: null, options: [], walk: null, problem: `alert not sent: ${refused}` };
   return {
     event: {
       key: requestKey(repo, row.number),
@@ -189,14 +275,23 @@ export function requestEvent({ repo, row, now }) {
       // guard, and for that a later time is the right one: a row that regains the label is a NEW episode.
       firstSeenAt: now,
       // The row's number and title are NOT here and not in the link's label: the brief opens the message, and the link is its last line.
-      text: lines.join("\n"),
+      text: [...lines, ...walkLine(walk, position)].join("\n"),
       links: [row.url],
       resolved: false,
-      state: requestState(lines, options),
+      state: requestState(lines, options, walk),
     },
     options,
+    walk,
     problem: problem === null ? null : `chairman-options: ${problem}`,
   };
+}
+
+/** @param {Walk | null} walk @param {number} position @returns {string[]} the step the chairman is on, or nothing for a brief that is not a procedure; a finished walk shows its last step */
+function walkLine(walk, position) {
+  if (walk === null) return [];
+  const total = walk.steps.length;
+  const at = Math.min(Math.max(position, 1), total);
+  return [stepLine({ position: at, total, text: walk.steps[at - 1].text })];
 }
 
 /** @param {{ repo: string, number: number, now: number }} input @returns {Record<string, unknown>} */
@@ -215,24 +310,27 @@ export function resolvedEvent({ repo, number, now }) {
 /**
  * PURE: what this tick observes. `openKeys` are the request keys the ledger says the chairman has been told about and not told cleared.
  *
- * @param {{ repo: string, rows: RequestRow[], openKeys: Iterable<string>, now: number }} input
- * @returns {{ events: Record<string, unknown>[], options: Record<string, ChairmanOption[]>, problems: { key: string, reason: string }[] }}
- *   `options` is keyed by event key, for stage 2's buttons (row 9); the core's `normalizeEvent` has no field for it and stage 1 ignores it.
+ * @param {{ repo: string, rows: RequestRow[], openKeys: Iterable<string>, now: number, positionOf?: (key: string) => number }} input `positionOf` is the step the ledger says a walk is on
+ * @returns {{ events: Record<string, unknown>[], options: Record<string, ChairmanOption[]>, walks: Record<string, true>, problems: { key: string, reason: string }[] }}
+ *   `options` is keyed by event key, for stage 2's buttons (row 9); the core's `normalizeEvent` has no field for it and stage 1 ignores it. `walks` holds the keys of the procedure briefs.
  */
-export function observeRequests({ repo, rows, openKeys, now }) {
+export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 1 }) {
   /** @type {Record<string, unknown>[]} */
   const events = [];
   /** @type {Record<string, ChairmanOption[]>} */
   const options = {};
+  /** @type {Record<string, true>} */
+  const walks = {};
   /** @type {{ key: string, reason: string }[]} */
   const problems = [];
   const labelled = new Set();
   for (const row of rows) {
-    const observed = requestEvent({ repo, row, now });
     const key = requestKey(repo, row.number);
+    const observed = requestEvent({ repo, row, now, position: positionOf(key) });
     labelled.add(key);
     if (observed.event !== null) events.push(observed.event);
     options[key] = observed.options;
+    if (observed.walk !== null) walks[key] = true;
     if (observed.problem !== null) problems.push({ key, reason: observed.problem });
   }
   for (const key of openKeys) {
@@ -241,7 +339,7 @@ export function observeRequests({ repo, rows, openKeys, now }) {
     if (parsed === null || parsed.repo !== repo || labelled.has(key)) continue;
     events.push(resolvedEvent({ repo, number: parsed.number, now }));
   }
-  return { events, options, problems };
+  return { events, options, walks, problems };
 }
 
 /**
@@ -262,14 +360,14 @@ async function withAllComments(github, repo, row) {
  *
  * @param {{ github: { issuesLabelled: (query: { repo: string, label: string, comments?: boolean, limit?: number }) => Promise<RequestRow[]>,
  *                     issueComments: (query: { repo: string, number: number }) => Promise<RowComment[]> },
- *           repo: string, openKeys: Iterable<string>, now: number }} input
+ *           repo: string, openKeys: Iterable<string>, now: number, positionOf?: (key: string) => number }} input
  */
-export async function readRequests({ github, repo, openKeys, now }) {
+export async function readRequests({ github, repo, openKeys, now, positionOf }) {
   const rows = await github.issuesLabelled({ repo, label: NEEDS_CHAIRMAN, comments: true, limit: REQUEST_LIST_LIMIT });
   if (!Array.isArray(rows)) throw new TypeError("the reader did not return a list of rows");
   if (rows.length >= REQUEST_LIST_LIMIT) {
     throw new RangeError(`${rows.length} rows carry ${NEEDS_CHAIRMAN}, the limit of the read: the list may be cut, and a cut list would resolve the rows past it`);
   }
   const whole = await Promise.all(rows.map((row) => withAllComments(github, repo, row)));
-  return observeRequests({ repo, rows: whole, openKeys, now });
+  return observeRequests({ repo, rows: whole, openKeys, now, positionOf });
 }

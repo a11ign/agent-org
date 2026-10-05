@@ -42,9 +42,11 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 211 to 212 (a11ign/a11ign#3514): `src/trace/map.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `--map`), so it cannot be `.ts` (node on the host has no TypeScript). Its test is `map.test.ts`, so TEST_MJS_PIN stays 44.
 // 212 to 213 (a11ign/a11ign#3563): `src/trace/wake-cache.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `--wake-cache`), so it cannot be `.ts` (node on the host has no TypeScript). Its test is `wake-cache.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 44 to 45 below.
 // 213 to 214 (a11ign/a11ign#3567): `src/work-tick-health.mjs` is a NEW source file that a shipped command imports (`work-tick.mjs`, which the timer's unit runs with plain `node`), so it cannot be `.ts`. Its test is `work-tick-health.test.ts`, so TEST_MJS_PIN stays 45.
-const SOURCE_MJS_PIN = 214;
+// 214 to 215 (a11ign/a11ign#3425): `src/messaging/walk.mjs` is a NEW source file that a shipped command imports (`answers.mjs` and `watch.mjs`, which `messaging:listen` and `messaging:watch` run under plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 215;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
-const TEST_MJS_PIN = 45;
+// 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 46;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
