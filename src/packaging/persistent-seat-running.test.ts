@@ -15,8 +15,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { absentSeats, persistentRoles } from "../persistent-seats.mjs";
-import { roleBriefPath } from "../project-roles.mjs";
+import { absentSeats } from "../herdr-agents.mjs";
+import { persistentRoles, roleBriefPath } from "../project-roles.mjs";
 import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.mjs";
 import { persistentSeatDrift, persistentSeatNotes, driftReport, systemdUserAvailable } from "../host-units.mjs";
 import { RECIPIENT } from "../messaging/converse.mjs";
@@ -200,6 +200,23 @@ test("3: a non-persistent role absent from the listing is never started", () => 
   const herdr = fakeHerdr([...STANDING, ["liaison", "idle"]]);
   start(herdr.run);
   assert.deepEqual(herdr.writes(), [], "worker-capture and reviewer-3539 are absent from this listing and are no seat's business");
+});
+
+test("3: a seat that appears between the two readings is present, and nothing is written", () => {
+  const herdr = fakeHerdr(STANDING);
+  let lists = 0;
+  const appears = (args: string[]): string => {
+    if (args[2] === "workspace" && args[3] === "list" && ++lists === 2) herdr.run(["--session", "org", "workspace", "create", "--label", "liaison"]);
+    return herdr.run(args);
+  };
+  const lines = start(appears);
+  assert.match(lines.join("\n"), /SEAT NOT STARTED liaison: herdr lists it on a second reading/);
+  assert.equal(herdr.of("agent", "start").length, 0, "the seat that appeared is not given a second agent");
+  const unconfirmed = fakeHerdr(STANDING);
+  let reads = 0;
+  const failsSecond = (args: string[]): string => { if (args[2] === "workspace" && args[3] === "list" && ++reads === 2) throw new Error("herdr down"); return unconfirmed.run(args); };
+  assert.match(start(failsSecond).join("\n"), /could not be confirmed at the moment of the start/);
+  assert.deepEqual(unconfirmed.writes(), [], "the control: with no second reading there is no write");
 });
 
 // --- done-when 4: one named constant, ceo's values ------------------------------------------------------------------------------------------

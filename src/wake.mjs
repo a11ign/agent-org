@@ -83,8 +83,8 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.mjs` can read it
 // too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.mjs" is unchanged.
-import { readAgents, listingIsComplete } from "./herdr-agents.mjs";
-import { persistentRoles, persistentEntries, absentSeats } from "./persistent-seats.mjs";
+import { readAgents, listingIsComplete, absentSeats } from "./herdr-agents.mjs";
+import { persistentRoles, persistentEntries } from "./project-roles.mjs";
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.mjs";
 export { readAgents, listingIsComplete };
 
@@ -585,9 +585,19 @@ export function spawnInvocation(order, name, pane, override = {}) {
     // `--` separates herdr's own flags from the agent's, so everything after it reaches `claude`.
     // THE KIND COMES FROM THE PROFILE. The reviewers are codex and the engineers are claude; a
     // hardcoded "claude" here would start the wrong product for half the org's causes.
-    args: ["--session", "org", "agent", "start", name, "--kind", profile.kind, "--pane", pane,
-      "--", ...agentArgs(profile)],
+    args: agentStartArgs(name, profile.kind, pane, agentArgs(profile)),
   };
+}
+
+/**
+ * THE ONE `agent start` the tick has: an agent of `kind` named `name` in an existing pane, everything after herdr's `--` reaching the agent.
+ * A persistent seat's start ({@link startSeat}) and a spawned engineer's ({@link spawnInvocation}) both go through it, so there is one spelling to
+ * keep right and `wake-reviewer-instance.test.ts` (2b) still counts one.
+ * @param {string} name @param {string} kind @param {string} pane @param {string[]} agentTail
+ * @returns {string[]}
+ */
+function agentStartArgs(name, kind, pane, agentTail) {
+  return ["--session", "org", "agent", "start", name, "--kind", kind, "--pane", pane, "--", ...agentTail];
 }
 
 /**
@@ -5478,7 +5488,7 @@ export function drainedRoles(path = SESSIONS_FILE) {
   return live.filter((s) => s.role === "engineer" && s.drain === true).map((s) => s.name);
 }
 
-/** `persistentRoles` moved to `./persistent-seats.mjs` (#3539), which `host-units.mjs` needs too and cannot reach through this file; imported above and re-exported. */
+/** `persistentRoles` moved to `./project-roles.mjs` (#3539), the roster's reader, which `host-units.mjs` needs too and cannot reach through this file; imported above and re-exported. */
 export { persistentRoles };
 
 /**
@@ -5527,11 +5537,15 @@ export function seatFirstPrompt(name, brief) {
  */
 function startSeat(run, { name, brief }, { env, checkout }) {
   if (brief === undefined) return `SEAT NOT STARTED ${name}: its roster entry names no brief, and a seat is started from its brief.`;
+  // A SECOND READING AT THE WRITE: one complete-looking listing finding a label absent is never enough ({@link listingIsComplete}), and a
+  // second seat under one name is the failure. It narrows the window to the instant between this read and the create; it does not close it.
+  const again = readAgents(run);
+  if (again === null || !listingIsComplete(again)) return `SEAT NOT STARTED ${name}: herdr's listing could not be confirmed at the moment of the start, so it was left for the next tick.`;
+  if (again.some((a) => a.label === name)) return `SEAT NOT STARTED ${name}: herdr lists it on a second reading, so it is present and nothing was written.`;
   const pane = openPane(run, name, env, checkout);
   if ("refusal" in pane) return `SEAT NOT STARTED ${name}: ${pane.refusal}`;
   try {
-    run(["--session", "org", "agent", "start", name, "--kind", "claude", "--pane", pane.pane, "--",
-      seatFirstPrompt(name, brief), ...SEAT_START_FLAGS]);
+    run(agentStartArgs(name, "claude", pane.pane, [seatFirstPrompt(name, brief), ...SEAT_START_FLAGS]));
   } catch (err) {
     return `SEAT NOT STARTED ${name}: herdr refused to start it (${herdrReason(err)})${closedNote(run, pane.workspace)}`;
   }

@@ -45,8 +45,8 @@ import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
-import { readAgents } from "./herdr-agents.mjs";
-import { persistentRoles, absentSeats } from "./persistent-seats.mjs";
+import { readAgents, absentSeats } from "./herdr-agents.mjs";
+import { persistentRoles } from "./project-roles.mjs";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
