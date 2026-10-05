@@ -56,14 +56,15 @@ const DIFFS: Record<string, string> = {
   [NEW_WORK_EQUAL]: diffOf({ hunkStart: 77, index: "ccccccc..ddddddd", added: ["two"] }),
 };
 
-const OPENER = "**Review of #7 at `c7764afb`, by reviewer-7: convinced (CI run 41)**";
+/** The verdict line, naming the commit it was written at (a11ign/agent-org#3640: the door compares that sha with the head, so a fixture must name one). */
+const openerAt = (commit: string): string => `**Review of #7 at \`${commit.slice(0, 8)}\`, by reviewer-7: convinced (CI run 41)**`;
 
 /** A code owner's hand-written approval of one path (agent-org#66): a review, but not one that opens as a verdict. */
 const SCOPED_APPROVAL = "ceo, as code owner of `.github/`: **approved for the workflow change only**. I did not review `src/`.";
 
 interface Review { when: string; state: string; commit: string; body: string | null }
 /** A review the door could have posted, unless `body` says otherwise: its body opens with the verdict line. */
-const reviewAt = (commit: string, state: string, when: string, body: string | null = `${OPENER}\n\nbody`): Review =>
+const reviewAt = (commit: string, state: string, when: string, body: string | null = `${openerAt(commit)}\n\nbody`): Review =>
   ({ commit, state, when, body });
 
 interface Run { status: number | null; calls: string[]; stderr: string }
@@ -84,7 +85,7 @@ const posted = (calls: string[]): string[] => calls.filter((c) => c.startsWith("
 function runDoor(scenario: Scenario): Run {
   const dir = mkdtempSync(join(tmpdir(), "door-second-"));
   try {
-    const opener = scenario.opener ?? OPENER;
+    const opener = scenario.opener ?? openerAt(scenario.head);
     writeFileSync(join(dir, "verdict.md"), `${opener}\n\nbody\n`);
     writeFileSync(join(dir, "pr.json"), JSON.stringify({ head: { sha: scenario.head }, base: { ref: "main" } }));
     writeFileSync(join(dir, "reviews.json"), JSON.stringify((scenario.reviews ?? []).map((r) => ({
@@ -109,9 +110,9 @@ for x in "$@"; do [[ "$prev" == --jq ]] && jq_arg="$x"; prev="$x"; done
 case "$a" in
   "pr review"*|*"--method POST"*) exit 0 ;;
   *"/check-runs"*) [[ ! -f "$D/fail-checks" ]] || exit 1
-    sha="\${a#*commits/}"; sha="\${sha%%/*}"; jq -r "$jq_arg" "$D/checks-$sha" ;;
+    sha="\${a#*commits/}"; sha="\${sha%%/*}"; f=("$D"/checks-"$sha"*); jq -r "$jq_arg" "\${f[0]}" ;;
   *"/compare/"*) [[ ! -f "$D/fail-compare" ]] || exit 1
-    sha="\${a##*...}"; sha="\${sha%% *}"; cat "$D/diff-$sha" ;;
+    sha="\${a##*...}"; sha="\${sha%% *}"; f=("$D"/diff-"$sha"*); cat "\${f[0]}" ;;
   *"/pulls/7/reviews?"*"select("*) [[ ! -f "$D/fail-reviews" ]] || exit 1; jq -r "$jq_arg" "$D/reviews.json" ;;
   *"/pulls/7/reviews?"*) jq --rawfile b "$D/verdict.md" '. + [{html_url: "https://example/review/1", commit_id: "deadbeef", body: ($b | rtrimstr("\\n"))}]' \\
     "$D/reviews.json" | jq -r "$jq_arg" ;;
@@ -128,6 +129,7 @@ esac
   }
 }
 
+// An abbreviated sha resolves in the stub as it does in `gh`, since the door now reads the commit a body names (a11ign/agent-org#3640).
 // --- done-when 1 and 2: a second review at an equal patch -----------------------------------------------------------------------
 
 test("2(a) the #3033 shape: reviews at f3879426 and c7764afb, whose commits differ only by a merge of main, refuse the next review", () => {
@@ -283,7 +285,8 @@ test("3199 (4) cost: the common path adds no call, and the equal-patch path read
     "a refusal AT the head itself: same commit, same checks, nothing to compare");
   const lifted = READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST }).calls);
   assert.equal(lifted.length, 2, "the refused commit, then the head");
-  assert.ok(lifted[0].includes(FIRST) && lifted[1].includes(AFTER_MERGE_OF_MAIN), lifted.join("\n"));
+  // The refused commit is read at the sha its body names (8 characters, #3640); the head at the full sha the pull request reports.
+  assert.ok(lifted[0].includes(FIRST.slice(0, 8)) && lifted[1].includes(AFTER_MERGE_OF_MAIN), lifted.join("\n"));
   assert.equal(READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: {} }).calls).length, 1,
     "an all-green refused commit is the #3033 shape: the head is not read");
   const twice = READ_CHECKS(runDoor({ head: AFTER_MERGE_OF_MAIN, failedChecks: RED_AT_FIRST,
