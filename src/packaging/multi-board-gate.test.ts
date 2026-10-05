@@ -219,7 +219,7 @@ function fixtures() {
       pr(101),
       pr(102, { statusCheckRollup: RED, labels: [{ name: "session:worker-x" }] }),
       pr(103, { isDraft: false, mergeStateStatus: "DIRTY", mergeable: "CONFLICTING", labels: [{ name: "session:worker-y" }], reviewDecision: "APPROVED" }),
-      pr(104, { isDraft: false, reviewDecision: "REVIEW_REQUIRED", reviews: [], labels: [] }),
+      pr(104, { isDraft: false, reviewDecision: "CHANGES_REQUESTED", reviews: [], labels: [] }),
       pr(105, { isDraft: false, reviewDecision: "APPROVED", labels: [] }),
     ],
     readyRows: [row(201), row(202, { labels: [{ name: "ready" }, { name: "priority" }] }), row(203, { labels: [{ name: "ready" }, { name: "lane:ceo" }] })],
@@ -253,6 +253,8 @@ function fixtures() {
  * #3476 REMOVED the `draft-awaiting-verdict` entry for pr-103, the fixture's DIRTY / CONFLICTING pull request: it recorded the defect (a
  * reviewer asked to read a head that cannot merge). Its `pr-merge-conflict` entry stays, and the other three review entries are unchanged.
  *
+ * #3592 MOVED the one `pr-review-blocked` entry (104) from AWAITING_REVIEW to REFUSED: an AWAITING_REVIEW pull request starts its reviewer and earns no
+ * order for `product-manager`, so the fixture's 104 is now a refusal (`CHANGES_REQUESTED`) and the entry's key, length and sha were re-read from the new code.
  * #2896 RE-DERIVED the one `pr-review-blocked` entry (104): its prompt names `pnpm run prompt:session` where it named
  * `npm run prompt:session --`, 2 bytes shorter, which is the entire diff in that prompt -- re-run against the new code, not restated by hand.
  */
@@ -268,7 +270,7 @@ const RECORDED_BUSY = [
   { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "0e18f3a9822097dcbc9d00096a326fbb9acfb7adae15a304f871bdcf96e256b6", promptLength: 339 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
   { session: "product-manager", cause: "pr-green-unarmed", subject: "pr-green-unarmed", discriminator: "105", causeKey: "product-manager/pr-green-unarmed/105", promptSha256: "00b76232fa3df5a877ad5b40b8ce530e366010a6baeaf253de4ae315f24096dc", promptLength: 1446 },
-  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:AWAITING_REVIEW", causeKey: "product-manager/pr-review-blocked/104:AWAITING_REVIEW", promptSha256: "647c913d72eb7e964bd8d779e7186e9e324ae0b783ee6f573e786d82e7f942ea", promptLength: 1442 },
+  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:REFUSED", causeKey: "product-manager/pr-review-blocked/104:REFUSED", promptSha256: "b6c8f6931368552f81a29bae4c48449f5fd5a4cee60e32e592650069e914dcc5", promptLength: 1509 },
   { session: "worker-y", cause: "pr-merge-conflict", subject: "pr-103", discriminator: "abc12345", causeKey: "worker-y/pr-merge-conflict/pr-103/abc12345", promptSha256: "4da17865611827c0c35f07130e2deb7961a324de3efdf325673ba95bbf75282d", promptLength: 554 },
 ];
 const RECORDED_EMPTY_SHELF = [

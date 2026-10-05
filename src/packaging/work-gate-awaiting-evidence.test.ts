@@ -101,7 +101,9 @@ function readyAwaitingReview(n: number, labelNames: string[], decision = "REVIEW
 
 test("#2416: `pr-review-blocked` does not send product-manager to prompt a reviewer for a labelled PR", () => {
   const codes = (prs: unknown[]) => reviewBlocked(prs, ["gate"]).map((b: { number: number; code: string }) => `${b.number}:${b.code}`);
-  assert.deepEqual(codes([readyAwaitingReview(20, [])]), ["20:AWAITING_REVIEW"], "the control: unlabelled is reported");
+  // #3592: AWAITING_REVIEW is no longer reported for ANY pull request, so the control that used to be "unlabelled is reported" is the refusal below.
+  assert.deepEqual(codes([readyAwaitingReview(20, [])]), [], "unlabelled is no longer reported either: its reviewer is started by `draft-awaiting-verdict`");
+  assert.deepEqual(codes([readyAwaitingReview(23, [], "CHANGES_REQUESTED")]), ["23:REFUSED"], "the control: an unlabelled refusal is reported");
   assert.deepEqual(codes([readyAwaitingReview(21, [AWAITING_EVIDENCE_LABEL])]), []);
   // A REFUSAL is real whatever the pull request is waiting on, so the label does not hide it.
   assert.deepEqual(codes([readyAwaitingReview(22, [AWAITING_EVIDENCE_LABEL], "CHANGES_REQUESTED")]), ["22:REFUSED"]);

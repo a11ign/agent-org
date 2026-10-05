@@ -3836,7 +3836,8 @@ function patchUnchangedSince(pr, oid) {
 
 /**
  * PURE. #2084: the pull requests that LOOK like they should be merging and that GitHub's review
- * requirement is holding -- plus any whose decision could not be read at all.
+ * requirement is holding -- plus any whose decision could not be read at all. #3592: A refusal, or a value this gate cannot name; never
+ * AWAITING_REVIEW, which is `draftOrder`'s question and starts the reviewer instead.
  *
  * `UNREADABLE` IS EXCLUDED, and `reviewStateOf`'s own note says where its control lives instead.
  *
@@ -3861,16 +3862,16 @@ function patchUnchangedSince(pr, oid) {
  *            refusedAt: string | null, patchUnchanged: boolean | null, refusalLifted: boolean}[]} ascending by PR number
  */
 export function reviewBlocked(prs, required = null) {
-  const byNumber = new Map(prs.map((pr) => [Number(pr.number), pr]));
   return mergeCandidates(prs, required)
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
       head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)),
       refusalLifted: refusalLiftedAt(pr, refusalCommitOf(pr)) }))
-    .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code))
-    // #2416: `pr-review-blocked` is the third route into a review -- it tells `product-manager` to prompt the
-    // reviewer for an AWAITING_REVIEW pull request. A labelled one is waiting for evidence, not a reviewer; a
-    // REFUSED one stays, because a refusal is real whatever the PR is waiting on.
-    .filter((r) => r.code !== REVIEW_STATE.AWAITING_REVIEW || !awaitingEvidence(byNumber.get(r.number)))
+    // #3592: AWAITING_REVIEW IS NOT HERE. `draftOrder` asks `reviewer-<n>` for every one of this population that has no verdict yet (#2176), and
+    // `wake.mjs` starts the instance, so an order to `product-manager` for the same pull request was sent in the SAME TICK as a start and
+    // deferred behind a busy seat (63 of 67 `DEFERRED` lines in 2026-10-04's journal). What stays is what only READING can settle: a refusal,
+    // and a decision this gate cannot name. A PULL REQUEST HOLDING AN UNRECOGNISED OR UNATTRIBUTED VERDICT, still REVIEW_REQUIRED, is no
+    // longer reported here either (`settledVerdictOrder` leaves it alone on purpose); it is recorded on #3592.
+    .filter((r) => BLOCKING_REVIEW_STATES.includes(r.code) && r.code !== REVIEW_STATE.AWAITING_REVIEW)
     .sort((a, b) => a.number - b.number);
 }
 
