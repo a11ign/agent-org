@@ -7,15 +7,11 @@
 // file incrementally through `ingest-state.mjs` (#3526), and a trim reads as a shrink, which is read again from byte 0 and SAID: safe, because a record's id is made of the line and not of
 // where it sits, so a line already held is the same record.
 //
-// THE KEY IS THE HARD PART, AND IT IS INFERRED. A line names an account, a workspace and the calling process's command line: NOT a session, and so not a row. Measured 2026-10-05 against the
-// leads' workspaces (the only calls whose session is known), over 2,731 calls: the turn's own span names ONE session 900 times and is wrong for 763 of them; the tool window below names one
-// session for under 1% of calls, because a handful of sessions are always waiting on a tool. So a call is keyed to a session only when
-//   1. it came from a session's SHELL (the Claude Code Bash tool, `HARNESS_SHELL`). 70% of calls come from units and scripts, and joining those by time would put a unit's calls on whichever
-//      session happened to be waiting; they are named by their script and listed apart, and
-//   2. exactly ONE session's tool window covers its second. The tool window is the gap between a turn and the next turn of the SAME wake, up to the tool_result that began the next turn's wall-clock
-//      (`at - wallClockMs`): the time a tool call, and so a `gh` call, can have been running. The ledger's time is to the second, so a window is widened to whole seconds.
-// Two or more sessions covering it is `ambiguous` and no one of them is named; a call no window covers is `no-turn`. THE EXACT KEY is the session id in the line (`CLAUDE_CODE_SESSION_ID`, which
-// names the transcript), which `host/gh` does not write yet; this rule is deleted when it does.
+// THE KEY IS THE SESSION ID ON THE LINE (#3589). `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) as the last field of each line, and that is the file name of the session's transcript, which
+// every turn carries (`transcript`). So a call is on the session whose transcript has that name and, through that session's NEXT turn, on a row: exact, however many sessions were waiting on a tool at its second.
+// Before it the key was INFERRED from time (a call from a session's shell that exactly one session's tool window covered), which named 27 of 11,751 calls on this host (measured 2026-10-05, a11ign/agent-org#209): that rule,
+// `toolWindows`, `keyCalls` and `viaShell`, is deleted. A line with no id is a unit or script outside any session, or was written before the wrapper named its session (the ledgers keep 2 MiB, so those age out); it is
+// `unkeyed: "script"` and is never joined by time: a unit's calls on whichever session happened to be waiting would be a guess, and a call must be a measurement or it is unkeyed.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { callerScript, parseLine } from "../gh-ledger.mjs";
 import { fingerprint, HEAD_BYTES, planRead } from "./ingest-state.mjs";
@@ -25,14 +21,12 @@ import { appendToStore } from "./store.mjs";
  * @typedef {import("./ingest-state.mjs").IngestState} IngestState
  * @typedef {import("./store.mjs").TraceEvent} TraceEvent */
 
-/** The shell Claude Code runs a Bash tool call in: `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh ...`. The only caller whose calls are a session's. */
 /** A unit's node is started with a preload (`--import file:///.../crash-exit.mjs /.../work-gate.mjs`, or `--import=./src/lib/crash-exit.mjs src/work-tick.mjs`), and `callerScript` names the first script in the line: 2,756 of one ledger's 7,510 calls read `crash-exit.mjs`. */
 const PRELOAD = /--import(?:=|\s+)\S+/g;
-/** What a session's shell is called: `callerScript` would name its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, which is one per session process and says nothing of what ran. */
+/** The shell Claude Code runs a Bash tool call in: `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh ...`. What a session's shell is called: `callerScript` would name its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, which is one per session process and says nothing of what ran. */
 const SHELL_NAME = "(a session's shell)";
 const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;
 const MS_PER_SECOND = 1000;
-const WHOLE_SECOND = MS_PER_SECOND - 1;
 /** A second's lines are read together or not at all: a line is written when its call finishes, and identical lines of one second are told apart by their order, which a read that ended between them would break. */
 const SETTLE_MS = 2 * MS_PER_SECOND;
 const ID_HASH_CHARS = 16;
@@ -40,68 +34,53 @@ const NEWLINE = 0x0a;
 const NO_CARRY = { session: null, owner: null, lastAt: null, used: [] };
 const TOP_UNKEYED = 5;
 /** What `keyed` decides, so a record that is keyed again starts from none of it. */
-const PLACEMENT = ["session", "row", "pr", "repo", "rows", "prs", "keyedBy", "unkeyed", "candidates"];
-
-/** @param {number} at the ledger's resolution: a call at 10:00:20 may have happened at 10:00:20.9 */
-const secondOf = (at) => Math.floor(at / MS_PER_SECOND) * MS_PER_SECOND;
+const PLACEMENT = ["session", "row", "pr", "repo", "rows", "prs", "keyedBy", "unkeyed", "candidates", "viaShell"]; // the last two are the time rule's, which a record of before #3589 still holds
 
 /**
- * The tool windows of every session, sorted by `from`: between a turn and the next of the same wake, from the second the first ended to the second the tool_result that began the next one
- * arrived. `turn` is the turn that FOLLOWS the window, and its row is the call's.
+ * Each transcript's turns, by its id, oldest first: what a call's session id is looked up in.
  * @param {TraceEvent[]} events
- * @returns {{ session: string, from: number, to: number, turn: TraceEvent }[]}
+ * @returns {Map<string, TraceEvent[]>}
  */
-export function toolWindows(events) {
+export function turnsByTranscript(events) {
   /** @type {Map<string, TraceEvent[]>} */
-  const bySession = new Map();
-  for (const event of events) if (event.kind === "turn") bySession.set(event.session, [...(bySession.get(event.session) ?? []), event]);
-  const windows = [];
-  for (const [session, turns] of bySession) {
-    turns.sort((a, b) => a.at - b.at);
-    for (let i = 1; i < turns.length; i += 1) {
-      if (turns[i].wakeId !== turns[i - 1].wakeId) continue;
-      windows.push({ session, from: secondOf(turns[i - 1].at), to: turns[i].at - (turns[i].wallClockMs ?? 0) + WHOLE_SECOND, turn: turns[i] });
-    }
-  }
-  return windows.sort((a, b) => a.from - b.from);
+  const byTranscript = new Map();
+  for (const event of events) if (event.kind === "turn" && event.transcript) byTranscript.set(event.transcript, [...(byTranscript.get(event.transcript) ?? []), event]);
+  for (const turns of byTranscript.values()) turns.sort((a, b) => a.at - b.at);
+  return byTranscript;
 }
 
 /**
- * What names each call's session: `{ turn }` when exactly one session's tool window covers it, else why not. A sweep over the calls in time order, so the cost is the calls plus the windows.
- * @param {{ at: number, viaShell: boolean }[]} calls @param {ReturnType<typeof toolWindows>} windows
- * @returns {({ turn: TraceEvent } | { unkeyed: "script" | "ambiguous" | "no-turn", candidates: number })[]} in the order of `calls`
+ * The turn that FOLLOWS a call: the first of `turns` (oldest first) that ended in a later second than the call's. The ledger's time is to the second, so a call logged at 10:00:20 finished at some point in 10:00:20.xxx, and
+ * the turn that ISSUED it ended before it began, so it is in that second or earlier: starting from the next second can never pick it. The cost is a following turn that ended inside the same second, which is skipped for
+ * the one after it, in the same wake and so on the same row.
+ * @param {TraceEvent[]} turns @param {number} at
  */
-export function keyCalls(calls, windows) {
-  const order = calls.map((call, index) => ({ call, index })).sort((a, b) => a.call.at - b.call.at);
-  let open = /** @type {typeof windows} */ ([]);
-  let next = 0;
-  const answers = new Array(calls.length);
-  for (const { call, index } of order) {
-    while (next < windows.length && windows[next].from <= call.at) open.push(windows[next++]);
-    open = open.filter((window) => window.to >= call.at);
-    const sessions = new Map(open.map((window) => [window.session, window]));
-    if (!call.viaShell) answers[index] = { unkeyed: "script", candidates: 0 };
-    else if (sessions.size === 1) answers[index] = { turn: [...sessions.values()][0].turn };
-    else answers[index] = { unkeyed: sessions.size === 0 ? "no-turn" : "ambiguous", candidates: sessions.size };
+function turnAfter(turns, at) {
+  const from = at + MS_PER_SECOND;
+  let low = 0;
+  let high = turns.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (turns[middle].at < from) low = middle + 1;
+    else high = middle;
   }
-  return answers;
+  return turns[low];
 }
 
 /**
- * Put the keys on records, from the turns among `events`. A call keyed to a session takes the ROW of the turn that follows its tool window, so `eventsForRow` finds it; every other call is
- * `session: "gh-ledger"` with no row, and says why (`unkeyed`) and how many sessions covered it (`candidates`).
+ * Put the keys on records, from the turns among `events`. A call whose line names a session is keyed to that session's next turn and so to its ROW, which `eventsForRow` finds; every other call is `session: "gh-ledger"`
+ * with no row and says why (`unkeyed`): `script` for a line with no id, `no-turn` for one whose session has no later turn in `events` (yet).
  * @param {TraceEvent[]} calls @param {TraceEvent[]} events
  * @returns {TraceEvent[]}
  */
 export function keyed(calls, events) {
-  const answers = keyCalls(calls.map((call) => ({ at: call.at, viaShell: call.viaShell === true })), toolWindows(events));
-  return calls.map((call, index) => {
+  const turns = turnsByTranscript(events);
+  return calls.map((call) => {
     const bare = { ...call };
     for (const field of PLACEMENT) delete bare[/** @type {keyof TraceEvent} */ (field)];
-    const answer = answers[index];
-    if (!("turn" in answer)) return { ...bare, session: "gh-ledger", row: null, pr: null, repo: null, keyedBy: null, unkeyed: answer.unkeyed, candidates: answer.candidates };
-    const { turn } = answer;
-    return { ...bare, session: turn.session, row: turn.row, pr: turn.pr, repo: turn.repo, ...(turn.rows ? { rows: turn.rows } : {}), ...(turn.prs ? { prs: turn.prs } : {}), keyedBy: /** @type {"time"} */ ("time"), candidates: 1 };
+    const turn = call.sessionId ? turnAfter(turns.get(call.sessionId) ?? [], call.at) : undefined;
+    if (!turn) return { ...bare, session: "gh-ledger", row: null, pr: null, repo: null, keyedBy: null, unkeyed: call.sessionId ? "no-turn" : "script" };
+    return { ...bare, session: turn.session, row: turn.row, pr: turn.pr, repo: turn.repo, ...(turn.rows ? { rows: turn.rows } : {}), ...(turn.prs ? { prs: turn.prs } : {}), keyedBy: /** @type {"session"} */ ("session") };
   });
 }
 
@@ -128,7 +107,7 @@ export function callsOfLedgerText(text) {
     calls.push({
       id: `gh-call:${fingerprint(Buffer.from(line)).slice(0, ID_HASH_CHARS)}:${nth}`, kind: "gh_call", source: "gh-ledger", at: Date.parse(entry.time), session: "gh-ledger", row: null, pr: null, repo: null,
       cause: null, causeKey: null, wakeId: null, account: entry.account, resource: entry.resource, cost: entry.cost, exit: entry.status, command: entry.command, workspace: entry.workspace,
-      script: HARNESS_SHELL.test(entry.caller) ? SHELL_NAME : callerScript(entry.caller.replace(PRELOAD, "")), viaShell: HARNESS_SHELL.test(entry.caller), keyedBy: null,
+      script: HARNESS_SHELL.test(entry.caller) ? SHELL_NAME : callerScript(entry.caller.replace(PRELOAD, "")), ...(entry.sessionId ? { sessionId: entry.sessionId } : {}), keyedBy: null,
     });
   }
   return { calls, skipped };
@@ -169,8 +148,8 @@ function readLedger({ file, entry, now }) {
  */
 
 /**
- * Ingest the ledgers, and key. The new calls are appended to the open store as ONE batch together with the calls already in it that came from a session's shell and are still unkeyed: their turn
- * may have been ingested since (a message is held back for five minutes), and a call keyed once is not asked again. The state returned is to be saved AFTER the append. A ledger that cannot be
+ * Ingest the ledgers, and key. The new calls are appended to the open store as ONE batch together with the calls already in it that are still unkeyed and could be: one that names a session (its next turn
+ * may have been ingested since: a message is held back for five minutes), and one the time rule left as `ambiguous` or `no-turn` before #3589, which is now `script`. A call keyed once is not asked again. The state returned is to be saved AFTER the append. A ledger that cannot be
  * read is listed, never skipped quietly; one that is absent (an account that never called) is listed apart.
  * @param {{ ledgers: string[], store: ReturnType<typeof import("./store.mjs").openStore>, state: IngestState, now: number }} input
  * @returns {{ report: GhCallsReport, state: IngestState }}
@@ -180,7 +159,7 @@ export function ingestGhCalls({ ledgers, store, state, now }) {
   /** @type {GhCallsReport} */
   const report = { read: 0, unchanged: 0, absent: [], failed: [], calls: 0, skippedLines: 0, heldBack: 0, bytes: 0, reread: [], added: 0, rekeyed: 0 };
   /** @type {Map<string, TraceEvent>} */
-  const batch = new Map(store.events.filter((event) => event.kind === "gh_call" && event.viaShell && event.keyedBy === null).map((event) => [event.id, event]));
+  const batch = new Map(store.events.filter((event) => event.kind === "gh_call" && event.keyedBy === null && (event.sessionId || event.unkeyed !== "script")).map((event) => [event.id, event]));
   for (const file of ledgers) {
     if (!existsSync(file)) {
       report.absent.push(file);
@@ -251,13 +230,13 @@ function topCallers(unkeyed) {
  */
 export function ghCallLines({ events, held }) {
   const rowCalls = events.filter((event) => event.kind === "gh_call");
-  const out = [`GH CALLS keyed to this row (INFERRED and a LOWER BOUND: only a call from a session's shell that exactly one session's tool window covers is keyed): ${rowCalls.length === 0 ? "none" : summaryText(summarize(rowCalls))}`];
+  const out = [`GH CALLS keyed to this row (by the session id on the line; a LOWER BOUND, because a call with no id, from a unit or from before the wrapper wrote one, is keyed to no row): ${rowCalls.length === 0 ? "none" : summaryText(summarize(rowCalls))}`];
   if (!held) return out;
   const everyCall = held.filter((event) => event.kind === "gh_call");
   const unkeyed = everyCall.filter((call) => call.keyedBy === null);
   const why = (/** @type {string} */ reason) => unkeyed.filter((call) => call.unkeyed === reason).length;
   out.push(`GH CALLS KEYED TO NO ROW, listed apart (${everyCall.length - unkeyed.length} of the store's ${everyCall.length} are keyed): ${unkeyed.length === 0 ? "none" : summaryText(summarize(unkeyed))}`,
-    `  because: ${why("script")} came from a script or unit and not a session's shell; ${why("ambiguous")} had two or more sessions' tool windows covering them; ${why("no-turn")} had none`);
+    `  because: ${why("script")} carry no session id (a unit or script, or written before the wrapper named its session); ${why("no-turn")} name a session the store holds no later turn of yet`);
   if (unkeyed.length > 0) out.push("  the callers spending most of them, by account and script:", ...topCallers(unkeyed));
   out.push("GH CALLS HELD, per account (the earliest call the store holds; a ledger keeps 2 MiB, the newest half past it, so a call older than that is GONE):", ...heldFromLines(held));
   return out;

@@ -30,6 +30,9 @@ function isModelInput(record) {
   return payload?.type === "custom_tool_call_output" || payload?.type === "function_call_output";
 }
 
+/** A rollout's id: the uuid ending its file name (`rollout-<time>-<uuid>.jsonl`), which is what `CODEX_THREAD_ID` holds in a shell that session started (measured 2026-10-05 in `~/.codex/sessions`), so `host/gh`'s id on a call names it (#3589). @param {string} file */
+const rolloutId = (file) => basename(file).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
+
 /** The session's name from the directory it ran in. @param {string | undefined} cwd @param {string} file @param {string} rowRepo */
 function sessionNamed(cwd, file, rowRepo) {
   const name = cwd ? basename(cwd) : "";
@@ -64,7 +67,7 @@ export function eventsOfCodexSession({ text, file, rowRepo, carry = null }) {
     const cached = usage.cached_input_tokens ?? 0;
     const tokens = { input: Math.max(0, (usage.input_tokens ?? 0) - cached), output: usage.output_tokens ?? 0, cacheRead: cached, cacheWrite5m: 0, cacheWrite1h: 0 };
     return {
-      id: `codex-turn:${response}`, kind: /** @type {"turn"} */ ("turn"), source: /** @type {"transcript"} */ ("transcript"), at, session: named, ...subject, cause: null, causeKey: null,
+      id: `codex-turn:${response}`, kind: /** @type {"turn"} */ ("turn"), source: /** @type {"transcript"} */ ("transcript"), at, session: named, ...(rolloutId(file) ? { transcript: rolloutId(file) } : {}), ...subject, cause: null, causeKey: null,
       wakeId: null, model: used ?? undefined, tokens, costUsd: costOf(used ?? undefined, tokens), wallClockMs: since === null ? null : Math.max(0, at - since), sidechain: false,
       harness: /** @type {"codex"} */ ("codex"),
     };

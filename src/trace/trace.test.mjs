@@ -76,6 +76,13 @@ test("COST: a model with no price is null, never 0; and a missing split is price
   assert.deepEqual([unsplit.cacheWrite5m, unsplit.cacheWrite1h], [0, 1000]);
 });
 
+test("TRANSCRIPT ID (#3589): a turn carries the file name of its transcript without `.jsonl`, which is what `CLAUDE_CODE_SESSION_ID` holds in the session that wrote it", () => {
+  const { events } = read(WORKER, "/home/agent/.claude/projects/p/0b5e7f10-9001-4a00-8000-000000000001.jsonl");
+  const turns = events.filter((event) => event.kind === "turn");
+  assert.ok(turns.length > 0, "POSITIVE CONTROL: there are turns to check");
+  assert.ok(turns.every((turn) => turn.transcript === "0b5e7f10-9001-4a00-8000-000000000001"));
+});
+
 test("TURNS: one per message id, from its LAST block (a transcript writes a message once per block)", () => {
   const found = turns(worker().events);
   assert.equal(found.length, 3, "3 message ids, not 6 assistant records"); // positive control for the emptiness checks below
@@ -403,20 +410,21 @@ test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, key
   mkdirSync(join(dir, "projects", "p"), { recursive: true });
   writeFileSync(join(dir, "projects", "p", "worker-9001.jsonl"), WORKER);
   const shell = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true";
-  const call = (time, resource, cost) => ["2026-10-04T" + time + "Z", "a11ign-ai-workers", resource, cost, 0, "issue view", "w1AX", shell].join("\t");
+  // The id on a line is the transcript's file name (`CLAUDE_CODE_SESSION_ID`), here `worker-9001`; a line with no id is a unit's or one of before the wrapper wrote it.
+  const call = (time, resource, cost, id = "worker-9001") => ["2026-10-04T" + time + "Z", "a11ign-ai-workers", resource, cost, 0, "issue view", "w1AX", shell, ...(id ? [id] : [])].join("\t");
   const ledgerFile = join(dir, "gh-calls.tsv");
-  // msg_1 ended 10:00:08 and the tool_result of msg_2's turn came at 10:00:20: a tool ran between them. The second call is after both turns.
-  writeFileSync(ledgerFile, `${[call("10:00:15", "graphql", 3), call("10:00:15", "graphql?", ""), call("10:30:00", "core", "")].join("\n")}\n`);
+  // msg_1 ended 10:00:08 and msg_2 at 10:00:30: both calls after the first and before the second name the session. The third is after every turn (the last, msg_3, is at 11:00:09), and the id-less one is never joined by time.
+  writeFileSync(ledgerFile, `${[call("10:00:15", "graphql", 3), call("10:00:15", "graphql?", ""), call("11:30:00", "core", ""), call("10:00:15", "graphql", "", null)].join("\n")}\n`);
   const input = { root: join(dir, "projects"), since: 0, ledger: LEDGER, rowRepo: ROW_REPO, storePath: join(dir, "events.ndjson"), ghLedgers: [ledgerFile], now: at("2026-10-04T12:00:00Z") };
   const first = ingestTranscripts(input);
-  assert.deepEqual([first.report.ghCalls.added, first.report.ghCalls.calls], [3, 3]);
+  assert.deepEqual([first.report.ghCalls.added, first.report.ghCalls.calls], [4, 4]);
   const calls = first.store.events.filter((event) => event.kind === "gh_call");
-  assert.deepEqual(calls.map((event) => [event.row, event.keyedBy]), [[9001, "time"], [9001, "time"], [null, null]], "keyed to the turn the transcript pass JUST read: the order of the two passes is the join");
+  assert.deepEqual(calls.map((event) => [event.row, event.keyedBy, event.unkeyed]), [[9001, "session", undefined], [9001, "session", undefined], [null, null, "no-turn"], [null, null, "script"]], "keyed to the turn the transcript pass JUST read: the order of the two passes is the join");
   const second = ingestTranscripts({ ...input, storePath: input.storePath });
   assert.deepEqual([second.report.ghCalls.added, second.report.ghCalls.read, second.report.ghCalls.unchanged, second.report.read], [0, 0, 1, 0], "one state holds both: nothing is read twice");
   const text = render({ number: 9001, rows: [9001], prs: [], events: eventsForRow(second.store.events, { rows: [9001], prs: [] }), ingest: second.report, held: second.store.events });
   assert.match(text, /GH CALLS keyed to this row.*: 2 calls: 2 on the GraphQL pool = 4 points \(3 read from responses, 1 calls FLOOR/);
-  assert.match(text, /GH CALLS KEYED TO NO ROW.*\(2 of the store's 3 are keyed\): 1 calls/);
+  assert.match(text, /GH CALLS KEYED TO NO ROW.*\(2 of the store's 4 are keyed\): 2 calls/);
   assert.match(text, /gh ledgers: 0 read .*1 unchanged/);
   assert.doesNotMatch(text, /gh-ledger {2,}/, "a call is summarised, never one line of the trace");
   assert.match(text, /6 events \(0 from GitHub\), 3 turns across 1 sessions \(worker-9001\)/, "and a call is not an event of the row's listing, a turn, or a session: `gh-ledger` is a source");
