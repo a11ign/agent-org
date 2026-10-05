@@ -1070,6 +1070,62 @@ export function humanLoginOnHost(deps = {}) {
 }
 
 /**
+ * THE PATHS A CODEX CONFIG TRUSTS, read from `[projects."<path>"]` tables whose `trust_level` is `"trusted"` (#3702). A line scan and not
+ * a TOML parser: the tool has none, and the only shape Codex writes for a project is that table header. A path in another spelling
+ * (an inline table, a dotted key) is simply not found, which reads as untrusted and is the safe way to be wrong.
+ * @param {string} text @returns {Set<string>}
+ */
+export function codexTrustedProjects(text) {
+  const trusted = new Set();
+  let current = null;
+  for (const line of text.split("\n")) {
+    const header = /^\s*\[(.*)\]\s*(?:#.*)?$/.exec(line);
+    if (header !== null) {
+      const project = /^projects\.(?:"([^"]*)"|'([^']*)')$/.exec(header[1].trim());
+      current = project === null ? null : (project[1] ?? project[2]);
+    } else if (current !== null && /^\s*trust_level\s*=\s*(?:"trusted"|'trusted')\s*(?:#.*)?$/.test(line)) {
+      trusted.add(current);
+    }
+  }
+  return trusted;
+}
+
+/**
+ * DOES THE REVIEWER'S CODEX TRUST EVERY CLONE `host.json` DECLARES (#3702)? A keyed reviewer starts in `clones.<key>`, and a Codex that
+ * does not trust that directory blocks at startup (`agent_not_ready`), so the pull request behind it has no reviewer and the tick repeats
+ * the line. `~/.codex/config.toml` is outside every repository and each entry was added by hand: `toolchain`'s clone was declared by
+ * #3578 and sat untrusted for over an hour.
+ *
+ * READS AND NEVER WRITES, and says so in its remedy: a `trust_level = "trusted"` entry lets Codex load that repository's project
+ * configuration for a reviewer running with `approval_policy = "never"`, so it is a grant a ruling makes per repository, not a tool's
+ * act (`product-manager`, #3702). A host with no `clones` has nothing to check; an absent or unreadable config is a finding that
+ * says which, because absent is not "trusts everything" and unreadable is not "trusts nothing".
+ * @param {{ host?: HostConfig, readCodexConfig?: (path: string) => string }} [deps] @returns {Finding[]}
+ */
+export function codexTrustDrift(deps = {}) {
+  const host = deps.host ?? homeHostConfig();
+  const { readCodexConfig = (/** @type {string} */ path) => readFileSync(path, "utf8") } = deps;
+  const clones = Object.entries(host.clones ?? {});
+  if (clones.length === 0) return [];
+  const config = join(host.home, ".codex", "config.toml");
+  /** @type {Set<string>} */
+  let trusted;
+  /** @type {string | null} */
+  let unknown = null;
+  try {
+    trusted = codexTrustedProjects(readCodexConfig(config));
+  } catch (cause) {
+    trusted = new Set();
+    unknown = /** @type {NodeJS.ErrnoException} */ (cause).code === "ENOENT" ? "it does not exist" : `it could not be read (${/** @type {Error} */ (cause).message})`;
+  }
+  return clones.filter(([, clone]) => !trusted.has(clone)).map(([key, clone]) => ({ unit: clone, problem: "CLONE NOT TRUSTED BY CODEX", manualFix: true,
+    detail: `\`clones.${key}\` is declared in host.json and \`${config}\` ${unknown === null ? "has no `trust_level = \"trusted\"` table for it"
+      : `could not vouch for it: ${unknown}`}, so a Codex reviewer for \`${key}\` is blocked at startup and its pull request has no reviewer (#3702). `
+      + `This check edits nothing: trusting a repository is a ruling per repository. Once ruled, add \`[projects."${clone}"]\` with `
+      + "`trust_level = \"trusted\"` for that exact path and nothing wider." }));
+}
+
+/**
  * EVERY SHIPPED `.service`, not only the ones that reach `gh`: a unit that declares the person's config and
  * spawns nothing today is one `pnpm run` away from spending it. The chairman's rule (#1950) is that no agent
  * acts as them unless something explicitly asks, and a unit is an agent.
@@ -2336,7 +2392,7 @@ function unclassifiedInLiveTree(deps) {
  * `ExecStart` names -- resolved against the unit's OWN `WorkingDirectory`, a different tree again -- is
  * absent. "Installed and current" was never the same claim as "the program it names exists".
  * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]
- *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & Parameters<typeof humanLoginOnHost>[0]
+ *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & Parameters<typeof humanLoginOnHost>[0] & Parameters<typeof codexTrustDrift>[0]
  *   & { pnpm?: Parameters<typeof pnpmDrift>[0] }} [deps]
  */
 export function hostUnitDrift(deps = {}) {
@@ -2346,7 +2402,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
-    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
