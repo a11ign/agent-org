@@ -12,8 +12,11 @@
 //   costUsd       COMPUTED from `PRICES` when the turn is INGESTED, and again when a report READS it (`repriceEvents`): the stored value is a first reading, never the one printed. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1,
 //                 Opus 5.5, Opus 5 and Sonnet 5 rows are the published rates, not checked. A model with no row costs `null`, never 0 (a Codex model has none: no rate
 //                 for it is sourced, a11ign/a11ign#3582).
-//   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. It includes the time the harness spent on the tool call that
-//                 preceded the message, so a turn that follows a slow tool reads long. Named in `DEFINITIONS`.
+//   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. That record is the harness's (the tool's result, or an attachment stamped a
+//                 few seconds after it), stamped AFTER the tool finished, so it is the model's own time and NOT the tool's: MEASURED on worker-3641 (a11ign/a11ign#3669), five
+//                 tool calls of 365-524 s were followed by messages whose `wallClockMs` was 3-7 s. A turn that follows a slow tool does NOT read long. Named in `DEFINITIONS`.
+//   toolMs        MEASURED when the message follows a tool call: from the last block of the message before it to the tool's result record. `null` when it does not follow one
+//                 (an order, a prompt, the first record of a read with nothing carried), never 0. It is the stretch no turn's span holds, which is why it is a field of its own.
 //   deliveryLagMs MEASURED when the ledger line pairs with the delivery: delivered - typed. `null` when it does not pair (never 0). It is the harness's lag, NOT the
 //                 gate's deferral: how long a busy seat held an order before `wake` typed it was in no durable record (`wake-deferred` is rewritten every tick and holds
 //                 only what is deferred NOW) until `wake-deferral-log` (#3510), which keeps each ENDED deferral and is read as `kind: deferral`.
@@ -31,7 +34,8 @@ export const DEFINITIONS = [
   "EVENT: one record in the store, `kind` turn | wake | compaction | gh_call | deferral, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
   "TURN: one API message of a Claude session (de-duplicated by message id), with its tokens, cost and wall-clock. It belongs to the wake that precedes it in its transcript.",
   "WAKE: a delivery that started a model turn (wakes-per-row's definition). `deliveryLagMs` is delivery minus the time `wake` typed the order, when the ledger line pairs (not the gate's deferral, which no record keeps).",
-  "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. A turn after a slow tool call includes that call.",
+  "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. That record is stamped after a tool call ends, so the call is NOT in it: it is the model's own time.",
+  "TOOL TIME OF A TURN (`toolMs`, measured): when the message follows a tool call, from the last block of the message before it to the tool's result record; `null` when it follows no tool call, never 0. A turn that follows an order or a prompt has none, and so does the first turn of a read when nothing was carried to say when the call began.",
   "COST: tokens x the rate in PRICES, cache writes at the 1-hour rate when the split is absent (every transcript seen writes 1-hour). `null` for a model with no price.",
   "GITHUB EVENT: what GitHub's REST API holds of a row or pull request (`source: github`, session `github`): filed/opened, claimed/released (the claim-record comments), labeled/unlabeled for an order to a session or a hold, ready_for_review, reviewed (state, and the head it was posted on), head_moved, ci_run, added_to_merge_queue, removed_from_merge_queue, merged, closed.",
   "HEAD_MOVED (inferred): `at` is the commit's own date, not the push's; the timeline carries no push event. CI RUN: each head the timeline names is asked for its check-runs; the merge queue's own runs, on its temporary branch, and legacy commit statuses are not read.",
@@ -71,7 +75,7 @@ export const PRICES = [
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
  * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, transcript?: string, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
+ *   costUsd?: number | null, transcript?: string, wallClockMs?: number | null, toolMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
  *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
  *   completedAt?: number | null, how?: "delivered" | "gone", outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
  *   script?: string, sessionId?: string, keyedBy?: "session" | "time" | null, unkeyed?: "script" | "no-turn" }} TraceEvent
@@ -381,6 +385,7 @@ const listedBy = ({ rows, prs }) => ({ ...(rows ? { rows } : {}), ...(prs ? { pr
  */
 function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo }) {
   const before = recordBefore(records, priorAt);
+  const assistantAt = assistantBefore(records, priorAt);
   return groups.map(({ id: messageId, first, last, record }) => {
     const endedAt = records[last].at;
     const previous = before[first];
@@ -389,7 +394,8 @@ function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo
     return {
       id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, transcript, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
       causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens),
-      wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, sidechain: record.isSidechain === true,
+      wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, toolMs: toolMsBefore(records, first, assistantAt[first]),
+      sidechain: record.isSidechain === true,
       ...touchesOf(records.slice(first, last + 1).filter(({ record: block }) => block?.message?.id === messageId), rowRepo),
     };
   });
@@ -403,6 +409,35 @@ function recordBefore(records, priorAt) {
     if (!Number.isNaN(at)) latest = at;
     return before;
   });
+}
+
+/** For each position, the time of the last ASSISTANT record before it (`priorAt` before the first one of this read), in one pass: where a tool call's run begins. @param {Rec[]} records @param {number | null} priorAt */
+function assistantBefore(records, priorAt) {
+  let latest = priorAt;
+  return records.map(({ at, record }) => {
+    const before = latest;
+    if (record?.type === "assistant" && !Number.isNaN(at)) latest = at;
+    return before;
+  });
+}
+
+/**
+ * How long the tool call that precedes the message at `first` ran: from `startedAt`, the last block of the message that made the call, to the latest tool result before this
+ * message (parallel calls answer one by one). `null` when the records before the message are not tool results: a user record that is anything else (an order, a prompt) means
+ * no tool ran, and nothing known about `startedAt` means nobody can say when it began. Records of other kinds (attachments, titles) are the harness's and are stepped over.
+ * @param {Rec[]} records @param {number} first position of the message's first block @param {number | null} startedAt
+ * @returns {number | null}
+ */
+function toolMsBefore(records, first, startedAt) {
+  let resultAt = Number.NaN;
+  for (let position = first - 1; position >= 0 && records[position].record?.type !== "assistant"; position--) {
+    const { at, record } = records[position];
+    if (record?.type !== "user") continue;
+    const answered = Array.isArray(record.message?.content) && record.message.content.some((/** @type {{ type?: string }} */ block) => block?.type === "tool_result");
+    if (!answered) return null;
+    if (!Number.isNaN(at)) resultAt = Number.isNaN(resultAt) ? at : Math.max(resultAt, at);
+  }
+  return startedAt === null || Number.isNaN(resultAt) ? null : Math.max(0, resultAt - startedAt);
 }
 
 /** @param {{ index: number, at: number, record: any }[]} records @param {string} session @param {Owner} owner @returns {TraceEvent[]} */
