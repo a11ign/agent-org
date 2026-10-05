@@ -1,0 +1,20 @@
+[Unit]
+# THE CLOCK BEHIND THE WEEKLY TOKEN-EFFICIENCY REPORT -- a11ign/a11ign#3627 (chairman, via ceo, 2026-10-05). See
+# @@prefix@@trace-weekly.service for what it runs, and why a timer rather than a session reading a clock.
+Description=Monday 07:30 London post of the weekly token-efficiency report (#3627)
+
+[Timer]
+# LONDON, NOT UTC, in the expression, for the reason board-report.timer gives: the report is read against a London working
+# morning and must not drift an hour at each BST boundary.
+#
+# 07:30, AFTER THE 07:10 BOARD EDITION, so the two do not share the work tick's API minute: both spend the one account's REST pool
+# (`a11ign-ai-workers`, which the report's GitHub reads and the tick's reads draw from together).
+OnCalendar=Mon *-*-* 07:30:00 Europe/London
+
+# A HOST THAT WAS ASLEEP OR REBOOTING AT 07:30 STILL POSTS, when it is next up. Without this a missed Monday is simply lost, and a
+# missing report looks like a week with nothing to say. The post names its week from the report's own weeks (the one before the
+# current), so a Tuesday catch-up still reports the Monday-to-Sunday week that ended, not a different one.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

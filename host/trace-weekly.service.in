@@ -1,0 +1,42 @@
+[Unit]
+# THE WEEKLY TOKEN-EFFICIENCY REPORT, POSTED -- a11ign/a11ign#3627 (chairman, via ceo, 2026-10-05), the report being #3513.
+#
+# `trace -- --aggregate` prints dollars, tokens and wall-clock per merged row, the overhead and the repeat waste, week by week. The chairman
+# wants it every Monday with the week over week, and a wall-clock event is the one legitimate reason for a timer here: a session that
+# read a clock to remember it is what the gate exists to remove. `trace-weekly-post.sh` runs it, says PARTIAL or COMPLETE, posts it on
+# the project's record issue, and EXITS NON-ZERO when the report or the post fails, so a failure shows as a failed unit and is never a
+# green one with nothing posted.
+Description=Run and post the weekly token-efficiency report (#3627)
+
+[Service]
+Type=oneshot
+
+# The checkout the repository-relative ExecStart resolves against, as the other units that run a script from this repository do.
+WorkingDirectory=@@checkout@@
+
+# PATH IS DECLARED because a systemd unit does not get a login shell's. The script calls a bare `gh` and a bare `agent-org`, and both
+# are in @@binDir@@: `gh` is the routing wrapper (board-report.service has the measurement of what the bare name resolved to without it).
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` needs a home to find credentials under, and `trace` reads the transcripts and the cache under it. Stated rather than assumed.
+Environment=HOME=@@home@@
+
+# V8's compile cache goes under the home, not /tmp (#2458); a unit reads no shell startup file, and `host-units.test.ts` pins this on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# WHICH ACCOUNT THE REPORT SPENDS, DECLARED: the org's own (`a11ign-ai-workers`, the one the work tick runs as), never the person's.
+# The chairman's own first run hit the human account's SEARCH limit, and `trace` calls `search/issues` as well as `gh api` REST, so both pools are
+# the workers account's here. MEASURED 2026-10-05T08:36Z as that account: core `X-Ratelimit-Limit: 5000`, `Remaining: 3886`,
+# `X-Ratelimit-Resource: core`; search `Limit: 30`, `Resource: search` (`gh api <path> -i`; `gh api rate_limit` is not used, it is a
+# broken gauge, a11ign/a11ign#1967). The core pool is SHARED with the work tick, which is why the script checks it before each pass.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# THE REPORT'S GITHUB READS CAN TAKE SEVERAL PASSES (the first reading took three of 1,500), so a unit that hangs must fail rather than
+# hold the next Monday's slot: three hours is far above the longest measured pass and still ends.
+TimeoutStartSec=10800
+
+# `/usr/bin/bash <repository-relative path>`, the shape board-report.service explains: the tree copy IS the program, not copied anywhere.
+ExecStart=/usr/bin/bash packages/agent-org/host/trace-weekly-post.sh
+
+# NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot, and post a report, at every boot.
+# The timer is the only thing that may start it.
