@@ -17,6 +17,10 @@
 // **OFF IS A REFUSAL HERE, NOT A SILENT SUCCESS.** `messaging:listen` exits 0 when messaging is off because nothing was expected of it; a caller of THIS
 // command believes it is speaking to the chairman, so exit 0 would be a lie. It sends nothing, says so, and exits 2.
 //
+// **A REFUSAL FOR A `#N` PRINTS THE FIX, WITH THE ROW'S OWN VALUES IN IT (#3565).** `reply.mjs` reads the row, so a text that says `#3542 is closed` is refused with
+// `#{{issue:3542.number}}` and `{{issue:3542.state}}` named and, when only those stood in the way, the corrected text on a `corrected, send this instead:` line.
+// Pasting it is the second and last attempt. `--dry-run` prints the same lines, so a probe shows the road too.
+//
 // EXIT CODES, the outcome of `createReply(...).send`: 0 `sent`, 2 `refused` (every problem as written, and the `sendable` "could not check" text, on stderr;
 // NOTHING is written to the ledger), 1 `failed` (the provider threw; the ledger holds the failed line). 2 also covers a command that could not start
 // (usage, config, secrets, no declared GitHub account): none of those mends itself by retrying.
@@ -134,9 +138,10 @@ async function dryRun(text, deps, { out, err }) {
   return EXIT.ok;
 }
 
-/** @param {Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, {outcome: "refused"}>} refusal @returns {string[]} one line per problem, then the sendable text */
-function refusalLines({ problems, sendable }) {
+/** @param {Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, {outcome: "refused"}>} refusal @returns {string[]} one line per problem, then the corrected text when the readers' values make it pass, then the sendable text */
+function refusalLines({ problems, sendable, corrected }) {
   const lines = problems.map(({ placeholder, reason }) => `chairman:reply: REFUSED ${placeholder ?? "(free text)"}: ${reason}`);
+  if (corrected !== undefined) lines.push(`chairman:reply: corrected, send this instead (every fact in it is re-read when it goes): ${corrected}`);
   if (sendable !== undefined) lines.push(`chairman:reply: sendable instead: ${sendable}`);
   return lines;
 }

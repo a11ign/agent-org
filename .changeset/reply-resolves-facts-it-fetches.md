@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`chairman:reply` makes the road to a fact easy without loosening what it will say. A refusal for a `#3542` in free text now READS the row itself (`issue`, then `pr`, because the issues endpoint refuses a pull request) and names the fix with the real kind, number and value in it: `write #{{issue:3542.number}}; it is a row and reads "closed" now`, and for a state word the exact `{{issue:3542.state}}`, in place of a template with `N`. When those placeholders are the only thing in the way, the refusal prints the writer's own text with them in, on a `corrected, send this instead:` line, and that text sends (`--dry-run` prints the same line). Nothing a reader did not return is stated: `#3542 is merged` over a row that reads `closed` is still refused, and the reason says what the reader returned; a number neither reader can return is refused with why; a state word in a text about two rows is not guessed for either, and a text with any other number or secret-shaped string in it gets the per-row fixes but no corrected text. A text with no `#N` in it causes no extra read, and at most five rows are read for one refusal (a11ign/a11ign#3565).
