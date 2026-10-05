@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const RESOLVER = fileURLToPath(new URL("./resolve-typescript.mjs", import.meta.url));
-const WITH_API = "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 }, createSourceFile() {} };";
+const WITH_API = "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 }, createSourceFile() {}, forEachChild() {} };";
 const NATIVE_COMPILER = "module.exports = { version: VERSION };";
 
 const scratchDirs: string[] = [];
@@ -53,11 +53,18 @@ test("positive control: the same call against a project WITH the API returns the
   assert.equal(resolve({ from: directoryHolding("5.9.0-project", WITH_API) }).version, "5.9.0-project");
 });
 
-test("a module with `ScriptTarget` but no `createSourceFile` is rejected too: both halves of the API are required", async () => {
-  const resolve = await resolverIn(directoryHolding("6.0.3-tool", WITH_API));
-  const half = "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 } };";
-  assert.equal(resolve({ from: directoryHolding("7.0.2-project", half) }).version, "6.0.3-tool");
-});
+/** Each member the tool calls is required by the type it is used as, so each stub below breaks exactly one. */
+const INCOMPLETE = {
+  "ScriptTarget as a bare object, so `ScriptTarget.Latest` is undefined": "module.exports = { version: VERSION, ScriptTarget: {}, createSourceFile() {}, forEachChild() {} };",
+  "no `createSourceFile`": "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 }, forEachChild() {} };",
+  "no `forEachChild`": "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 }, createSourceFile() {} };",
+};
+for (const [broken, entry] of Object.entries(INCOMPLETE)) {
+  test(`a project whose typescript has ${broken} is rejected: every member the tool uses is required`, async () => {
+    const resolve = await resolverIn(directoryHolding("6.0.3-tool", WITH_API));
+    assert.equal(resolve({ from: directoryHolding("7.0.2-project", entry) }).version, "6.0.3-tool");
+  });
+}
 
 test("when no place has the API, it refuses naming each candidate rejected and why", async () => {
   const resolve = await resolverIn(directoryHolding("7.0.2-tool", NATIVE_COMPILER));

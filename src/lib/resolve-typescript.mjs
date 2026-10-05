@@ -16,13 +16,15 @@ import { join } from "node:path";
 
 /**
  * TypeScript 7 is the native compiler: its `typescript` entry point resolves and loads, and has no JS compiler API (`ts.ScriptTarget` is `undefined`).
- * A module is accepted only if it exposes what the tool calls, so a project on 7.x falls through to the tool's own copy rather than crashing at the first use.
+ * A module is accepted only if it exposes the members `acceptance-commands.mjs` calls (`ScriptTarget.Latest`, `createSourceFile`, `forEachChild`), each by
+ * the TYPE it is used as: a bare object for `ScriptTarget` would pass while `ScriptTarget.Latest` was still `undefined` (#280's review). So a project on 7.x
+ * falls through to the tool's own copy rather than crashing at the first use.
  * @param {unknown} candidate
  * @returns {candidate is TypeScript}
  */
 function exposesCompilerApi(candidate) {
   const api = /** @type {Partial<TypeScript> | null | undefined} */ (candidate);
-  return typeof api?.createSourceFile === "function" && typeof api?.ScriptTarget === "object" && api.ScriptTarget !== null;
+  return typeof api?.createSourceFile === "function" && typeof api?.forEachChild === "function" && typeof api?.ScriptTarget?.Latest === "number";
 }
 
 /**
