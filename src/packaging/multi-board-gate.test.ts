@@ -270,7 +270,7 @@ const RECORDED_BUSY = [
   { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "0e18f3a9822097dcbc9d00096a326fbb9acfb7adae15a304f871bdcf96e256b6", promptLength: 339 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
   { session: "product-manager", cause: "pr-green-unarmed", subject: "pr-green-unarmed", discriminator: "105", causeKey: "product-manager/pr-green-unarmed/105", promptSha256: "00b76232fa3df5a877ad5b40b8ce530e366010a6baeaf253de4ae315f24096dc", promptLength: 1446 },
-  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:REFUSED", causeKey: "product-manager/pr-review-blocked/104:REFUSED", promptSha256: "b6c8f6931368552f81a29bae4c48449f5fd5a4cee60e32e592650069e914dcc5", promptLength: 1509 },
+  { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:REFUSED", causeKey: "product-manager/pr-review-blocked/104:REFUSED", promptSha256: "fcc31282ac6a2d11b9f2f9edefd564b8bb53be5c7e6e1ef5bc6fada92f64a50e", promptLength: 1120 },
   { session: "worker-y", cause: "pr-merge-conflict", subject: "pr-103", discriminator: "abc12345", causeKey: "worker-y/pr-merge-conflict/pr-103/abc12345", promptSha256: "4da17865611827c0c35f07130e2deb7961a324de3efdf325673ba95bbf75282d", promptLength: 554 },
 ];
 const RECORDED_EMPTY_SHELF = [
