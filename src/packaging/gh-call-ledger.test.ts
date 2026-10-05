@@ -14,7 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callerScript, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.mjs";
+import { callerScript, SESSION_SHELL, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.mjs";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
 const NOW = "2026-10-04T14:00:00Z";
@@ -225,4 +225,17 @@ test("#3466: the report ranks callers by points, floors an unread graphql call a
     "`graphql?` is the graphql pool for the report; core is not");
   assert.match(renderReport(entries, { account: "leads" }), /3 pts \(\s*0 read\)\s+3 calls\s+1 failed\s+work-gate\.mjs/);
   assert.equal(renderReport([]), "gh ledger: no calls recorded\n", "an empty ledger says so rather than printing an empty table");
+});
+
+test("#3590: callerScript names the UNIT behind a preload, and a session's shell for what it is, on lines copied from the ledger", () => {
+  const cases: Array<[string, string, string]> = [
+    ["--import file:// form", "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs", "work-gate.mjs"],
+    ["--import= form", "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs", "work-tick.mjs"],
+    ["a shell snapshot", "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791159858645-879xil.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL", SESSION_SHELL],
+    ["two preloads, the second named like a script", "/usr/bin/node --import x.mjs --import=y.mjs z.mjs", "z.mjs"],
+    ["no preload, the unchanged case", "node /x/src/work-gate.mjs --json", "work-gate.mjs"],
+    ["no script at all", "herdr agent prompt", "herdr"],
+  ];
+  assert.deepEqual(cases.map(([, caller]) => callerScript(caller)), cases.map(([, , want]) => want), cases.map(([name]) => name).join(" / "));
+  assert.equal(new Set(["snapshot-zsh-1-a.sh", "snapshot-zsh-2-b.sh"].map((f) => callerScript(`/usr/bin/zsh -c source /h/.claude/shell-snapshots/${f}`))).size, 1, "two session processes are ONE caller, not a name each");
 });

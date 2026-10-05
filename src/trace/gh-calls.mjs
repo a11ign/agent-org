@@ -21,11 +21,6 @@ import { appendToStore } from "./store.mjs";
  * @typedef {import("./ingest-state.mjs").IngestState} IngestState
  * @typedef {import("./store.mjs").TraceEvent} TraceEvent */
 
-/** A unit's node is started with a preload (`--import file:///.../crash-exit.mjs /.../work-gate.mjs`, or `--import=./src/lib/crash-exit.mjs src/work-tick.mjs`), and `callerScript` names the first script in the line: 2,756 of one ledger's 7,510 calls read `crash-exit.mjs`. */
-const PRELOAD = /--import(?:=|\s+)\S+/g;
-/** The shell Claude Code runs a Bash tool call in: `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh ...`. What a session's shell is called: `callerScript` would name its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, which is one per session process and says nothing of what ran. */
-const SHELL_NAME = "(a session's shell)";
-const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;
 const MS_PER_SECOND = 1000;
 /** A second's lines are read together or not at all: a line is written when its call finishes, and identical lines of one second are told apart by their order, which a read that ended between them would break. */
 const SETTLE_MS = 2 * MS_PER_SECOND;
@@ -107,7 +102,7 @@ export function callsOfLedgerText(text) {
     calls.push({
       id: `gh-call:${fingerprint(Buffer.from(line)).slice(0, ID_HASH_CHARS)}:${nth}`, kind: "gh_call", source: "gh-ledger", at: Date.parse(entry.time), session: "gh-ledger", row: null, pr: null, repo: null,
       cause: null, causeKey: null, wakeId: null, account: entry.account, resource: entry.resource, cost: entry.cost, exit: entry.status, command: entry.command, workspace: entry.workspace,
-      script: HARNESS_SHELL.test(entry.caller) ? SHELL_NAME : callerScript(entry.caller.replace(PRELOAD, "")), ...(entry.sessionId ? { sessionId: entry.sessionId } : {}), keyedBy: null,
+      script: callerScript(entry.caller), ...(entry.sessionId ? { sessionId: entry.sessionId } : {}), keyedBy: null,
     });
   }
   return { calls, skipped };

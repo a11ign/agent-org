@@ -18,6 +18,12 @@ const FIELDS = 8;
 const NO_SESSION = "-";
 const DEFAULT_TOP = 15;
 const SCRIPT_NAME = /([^/\s]+\.(?:mjs|cjs|js|ts|sh|py))\b/;
+/** A unit's node is started with a preload (`--import file:///.../crash-exit.mjs /.../work-gate.mjs`, or `--import=./src/lib/crash-exit.mjs src/work-tick.mjs`): its argument is a module, never the unit, and was 2,756 of one ledger's 7,510 calls (#3590). */
+const PRELOAD = /--import(?:=|\s+)\S+/g;
+/** The shell Claude Code runs a Bash tool call in: `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh ...`. */
+const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;
+/** What a session's shell is called: its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, is one per session process and says nothing of what ran (#3590). */
+export const SESSION_SHELL = "(a session's shell)";
 
 /**
  * One ledger line, or null for a line that is not one (a half line left by a trim or a crash is skipped, never guessed at).
@@ -40,11 +46,14 @@ export function parseLedger(text) {
 
 /**
  * The script a call came from, read off the calling process's command line (`node /x/src/work-gate.mjs --json` ->
- * `work-gate.mjs`); a caller that is no script (a shell, `herdr`) is named by its first word.
+ * `work-gate.mjs`), past any `--import` preload; a session's shell is `SESSION_SHELL`, and any other caller that is no script
+ * (`herdr`) is named by its first word.
  * @param {string} caller
  */
 export function callerScript(caller) {
-  return caller.match(SCRIPT_NAME)?.[1] ?? (caller.trim().split(/\s+/)[0] || "unknown");
+  if (HARNESS_SHELL.test(caller)) return SESSION_SHELL;
+  const unit = caller.replace(PRELOAD, "");
+  return unit.match(SCRIPT_NAME)?.[1] ?? (unit.trim().split(/\s+/)[0] || "unknown");
 }
 
 /**
