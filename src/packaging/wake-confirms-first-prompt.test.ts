@@ -23,7 +23,7 @@ const ORDER = {
 };
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];
 const BUSY = ROSTER.map((label) => ({ label, status: "working" }));
-const CLAIMED = { row: 3546, worktree: "/tmp/wt-3546", launchDir: "/tmp", adopted: false };
+const CLAIMED = { row: 3546, branch: "agent/first-prompt-3546", worktree: "/tmp/wt-3546", launchDir: "/tmp" };
 
 /** What the pane does after the prompt, as the live one did. */
 type Pane = {

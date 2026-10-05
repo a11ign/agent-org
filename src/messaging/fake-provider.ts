@@ -1,40 +1,38 @@
-// @ts-check
 // THE IN-MEMORY PROVIDER: the reference that passes `runProviderConformance`, and what every core test sends through. It records what
 // it was given in `sent`, so a test asserts what the CHAIRMAN would have received rather than what the core believes it did.
 //
 // It can fail on demand (`failNext`) because the core's handling of a provider that throws, with a token in the message, is the
 // behaviour most worth testing and the one a real provider makes hard to provoke.
+//
+// TypeScript since a11ign/a11ign#3556: only tests import it, so it runs under `tsx`. A file a shipped command imports cannot be `.ts` yet (README, "Source is TypeScript").
 
 const DEFAULT_MAX_TEXT = 4096;
 
 export const FULL_CAPABILITIES = Object.freeze({ silent: true, buttons: true, replies: true, conversation: true, maxText: DEFAULT_MAX_TEXT });
 
-/**
- * @param {{id?: string, capabilities?: {silent?: boolean, buttons?: boolean, replies?: boolean, conversation?: boolean, maxText?: number, ratePerSecond?: number}}} [options]
- */
-export function createFakeProvider({ id = "fake", capabilities = {} } = {}) {
+/** Widened to `boolean` and `number` on purpose: `Partial<typeof FULL_CAPABILITIES>` would pin each to the literal it is frozen with, so a test could not declare `silent: false` (#3571). */
+type Capabilities = { silent?: boolean; buttons?: boolean; replies?: boolean; conversation?: boolean; maxText?: number; ratePerSecond?: number };
+type Record_ = Record<string, any>;
+
+export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: string; capabilities?: Capabilities } = {}) {
   const declared = { ...FULL_CAPABILITIES, ...capabilities };
-  /** @type {Record<string, any>[]} */
-  const sent = [];
-  /** @type {Record<string, any>[]} */
-  const inbox = [];
-  /** @type {unknown[]} */
-  const failures = [];
+  const sent: Record_[] = [];
+  const inbox: Record_[] = [];
+  const failures: unknown[] = [];
 
   return {
     id,
     capabilities: declared,
     sent,
-    /** @param {unknown} error the next `send` rejects with it, once */
-    failNext(error) {
+    /** the next `send` rejects with `error`, once */
+    failNext(error: unknown) {
       failures.push(error);
     },
-    /** @param {Record<string, any>} update an inbound update, with an increasing `updateId` */
-    receive(update) {
+    /** an inbound update, with an increasing `updateId` */
+    receive(update: Record_) {
       inbox.push(update);
     },
-    /** @param {{text: string, silent?: boolean, actions?: unknown[], replyTo?: string}} message */
-    async send(message) {
+    async send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string }) {
       if (failures.length > 0) throw failures.shift();
       if (typeof message?.text !== "string" || message.text === "") throw new RangeError("fake provider: text is empty");
       if (message.text.length > declared.maxText) {
@@ -45,8 +43,7 @@ export function createFakeProvider({ id = "fake", capabilities = {} } = {}) {
       sent.push({ messageRef, text: message.text, silent, actions: message.actions, replyTo: message.replyTo });
       return { messageRef, silent };
     },
-    /** @param {number | undefined} cursor @param {AbortSignal} [signal] */
-    async poll(cursor, signal) {
+    async poll(cursor: number | undefined, signal?: AbortSignal) {
       const after = typeof cursor === "number" ? cursor : 0;
       const updates = signal?.aborted ? [] : inbox.filter((update) => update.updateId > after);
       return { updates, cursor: updates.reduce((highest, update) => Math.max(highest, update.updateId), after) };

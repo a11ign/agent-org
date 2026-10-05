@@ -17,7 +17,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { completionPath, writeCompletion } from "../lib/tick-completion.mjs";
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { readLedgerLines } from "./ledger.mjs";
 import { EXIT, assertReadOnlyGh, assertReadOnlySystemctl, main } from "./reply-cli.mjs";
 import { defaultLedgerPath } from "./state.mjs";
@@ -437,7 +437,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
     const real = readFileSync(SOURCE, "utf8");
     /** @type {[string, string, RegExp][]} */
     const mutations = [
-      ["another provider", `import { createFakeProvider } from "./fake-provider.mjs";\n${real}`, /imports \.\/fake-provider\.mjs/],
+      ["another provider", `import { createFakeProvider } from "./fake-provider.ts";\n${real}`, /imports \.\/fake-provider\.ts/],
       ["another reader", `import { createGhReader } from "./watch.mjs";\n${real}`, /imports \.\/watch\.mjs/],
       ["the watcher's reader", real.replace("createGhReaders({ gh,", "createGhReader({ gh,"), /does not build its readers with createGhReaders/],
       ["a local copy of a shared helper", `${real}\nfunction trackerRepo(root) { return root; }\n`, /defines trackerRepo itself/],

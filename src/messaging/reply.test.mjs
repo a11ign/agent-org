@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, deliveredTimestamps, foldLedger, readLedgerLines } from "./ledger.mjs";
 import { MASK, QUOTE_LIMIT, createGhReaders, describeAge, parsePlaceholders } from "./placeholders.mjs";
 import { createReply, prepareReply } from "./reply.mjs";

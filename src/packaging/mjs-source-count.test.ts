@@ -1,0 +1,228 @@
+/**
+ * (a11ign/a11ign#3556, toolchain row 4d of #3550) THE NUMBER OF `.mjs` FILES THE TOOL HAS CAN ONLY GO DOWN.
+ *
+ * The standard is TypeScript source in every repository, converted when a file is touched or moved and never in a big-bang rewrite (ADR 0043,
+ * Decision 1). "As touched" is only measured if the count of what is left is pinned, so a new source file is `.ts`, and a pull request that
+ * converts a `.mjs` lowers the pin in the same diff: **the pin is the progress report.**
+ *
+ * THE PIN IS A READING AT A COMMIT, not a fact about every tree: 210 source and 44 test files at agent-org `21eb99c`, counted by this test's own walk, less the one source file this pull request converts (`src/messaging/fake-provider.ts`). The row's own figures (204 and 244) were read at `b404507` over every tracked `.mjs`; this test counts a population
+ * that reads the same in a checkout and in the copy `ci.yml`'s `gate` lays under a project, and the difference is named below.
+ *
+ *   - SOURCE: every non-test `.mjs` under `src/`, `host/` and `.github/`, `src/packaging/` INCLUDED where the file is the tool's. In the copy `ci.yml`'s `gate`
+ *     lays under a project, `src/packaging/` also holds the project's own helpers (an `rsync --ignore-existing` of them, `tool-source.ts`), and those are not the
+ *     tool's. The rule that tells them apart is mechanical: a `src/packaging/` file counts when the tool's own repository lists it (`git ls-files`, tracked or
+ *     not yet added), and that repository is `AGENT_ORG_TOOL_REPO` where the gate names it, else the tool's directory. Where neither is a repository of its
+ *     own the test FAILS and says so; it never falls back to leaving the directory out, which was the blind spot the first review of #204 found
+ *     (`update-primary-argv.mjs` was never counted, and a new production `.mjs` there was invisible).
+ *   - TEST: every `*.test.mjs` under the same roots, `src/packaging/` included (its tests are the tool's own). Stated apart because a new test is
+ *     `.ts` already: 226 of them are.
+ *
+ * A `.ts` THAT A SHIPPED COMMAND IMPORTS CANNOT RUN YET (measured, not assumed): `/usr/bin/node` 22.22.1 on the host is built without TypeScript support
+ * (`ERR_NO_TYPESCRIPT`, `process.features.typescript === false`), and node refuses to strip types under `node_modules` whatever the build. Converting
+ * `src/messaging/sources/watched.mjs` (the ADR's worked example) passes `tsc` and its tests under `tsx`, and `agent-org messaging:watch`, which
+ * `chairman-watch.service` runs, then dies on `ERR_UNKNOWN_FILE_EXTENSION`. That file is therefore still `.mjs` and counted here (#3556). So a file to convert is one
+ * only `tsx` runs, and a new source file a shipped command imports is the one exception to "new is `.ts`": raise the pin in that diff and say why.
+ *
+ * IT FAILS ON A RISE ONLY. A drop passes and says the pin can be lowered, because a pin that also failed on a shrink would turn two honest
+ * conversions merged together red (`lib/pin-ratchet.mjs`, #3232). A rise names the files the change added against its base, where the base
+ * can be read (the gate's laid-out copy has no `.git`; `AGENT_ORG_TOOL_REPO` names where it came from), and says so where it cannot.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { TOOL_REPO_ENV, resolveBase, scanAtBase, undeclaredGrowth } from "../lib/pin-ratchet.mjs";
+import { withGitSandbox } from "../lib/git-sandbox.ts";
+import { TOOL_ROOT } from "./copied-tool-fixture.ts";
+
+const SOURCE_MJS_PIN = 209;
+const TEST_MJS_PIN = 44;
+
+const ROOTS = ["src", "host", ".github"];
+const isTest = (path: string): boolean => path.endsWith(".test.mjs");
+const isSource = (path: string): boolean => path.endsWith(".mjs") && !isTest(path);
+const PACKAGING = "src/packaging/";
+
+/** The tool's `.mjs` files under `root` that `keep` accepts, as `src/...` paths, sorted. */
+function mjsFiles(root: string, keep: (path: string) => boolean): string[] {
+  return ROOTS.filter((dir) => existsSync(join(root, dir))).flatMap((dir) => readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
+    .map((entry) => `${dir}/${entry.split("\\").join("/")}`))
+    .filter((path) => !path.includes("node_modules/") && keep(path)).sort();
+}
+
+/**
+ * The `src/packaging/` files the tool's own repository lists, tracked or not yet added, or why that cannot be read. The gate's copy of the tool also holds the project's
+ * helpers there, so the walk of the live tree is filtered by this set; a base archive holds only the tool's files and needs no filter.
+ */
+function ownedPackaging(repository: string): Set<string> | string {
+  try {
+    const run = (args: string[]): string => execFileSync("git", ["-C", repository, ...args], { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const top = realpathSync(run(["rev-parse", "--show-toplevel"]).trim());
+    if (top !== realpathSync(repository)) return `\`${repository}\` is inside the repository at \`${top}\`, not a repository of its own`;
+    return new Set(run(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", PACKAGING]).split("\0").filter(Boolean));
+  } catch (error) {
+    return `\`${repository}\` is not a repository (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+  }
+}
+
+/** The tool's non-test `.mjs` source under `root`: `src/packaging/` files only where `owned` lists them, so a project's copied helpers are not the tool's. */
+const sourceFiles = (root: string, owned: Set<string>): string[] => mjsFiles(root, (path) => isSource(path) && (!path.startsWith(PACKAGING) || owned.has(path)));
+
+type Judgement = { ok: boolean; message: string };
+
+/** What a claimant is told to do about a rise. A shipped command cannot import a `.ts` yet, so that one case raises the pin and says why (product-manager, #3556). */
+const RISE_RULE: Record<string, string> = {
+  source: "a new source file is `.ts`, unless a shipped command imports it; then raise the pin in this diff and say why",
+  test: "a new test is `.ts`",
+};
+
+/** A rise is refused, naming `added` where it is known; a drop passes and says the pin can come down. */
+function judgeCount({ kind, current, pin, added }: { kind: string; current: string[]; pin: number; added: string[] | string }): Judgement {
+  if (current.length > pin) {
+    const named = typeof added === "string" ? `which of them is new could not be read (${added})` : added.length === 0 ? "none is new against the base, so the pin itself sits below the tree" : `added since the base: ${added.join(", ")}`;
+    return { ok: false, message: `${current.length} ${kind} \`.mjs\` files, pinned at ${pin}: ${RISE_RULE[kind] ?? RISE_RULE.source}, or this pull request converts another \`.mjs\` and lowers the pin with it; ${named}` };
+  }
+  if (current.length < pin) return { ok: true, message: `${kind}: ${current.length} \`.mjs\` files against a pin of ${pin}: the pin can be lowered to ${current.length}` };
+  return { ok: true, message: `${kind}: ${current.length} \`.mjs\` files, equal to the pin` };
+}
+
+/** The files `current` holds that the base did not, or why the base could not be read. The gate's laid-out copy has no `.git` of its own. */
+function addedSinceBase(current: string[], keep: (path: string) => boolean, { repository, env }: { repository: string; env: NodeJS.ProcessEnv }): string[] | string {
+  const base = resolveBase(repository, env);
+  if ("unreadable" in base) return base.unreadable;
+  const atBase = scanAtBase({ repo: repository, ref: base.ref, paths: ROOTS, scan: (root) => mjsFiles(root, keep) });
+  return undeclaredGrowth({ current, base: atBase, declared: [] });
+}
+
+/** The repository the tool's own files are listed from: where the gate laid the tool out FROM, else the tool's directory. */
+const TOOL_REPOSITORY = process.env[TOOL_REPO_ENV] || TOOL_ROOT;
+
+const KINDS = [
+  { kind: "source", pin: SOURCE_MJS_PIN, keep: isSource },
+  { kind: "test", pin: TEST_MJS_PIN, keep: isTest },
+];
+
+for (const { kind, pin, keep } of KINDS) {
+  test(`the tool's ${kind} \`.mjs\` count has not risen above its pin`, (t) => {
+    const owned = ownedPackaging(TOOL_REPOSITORY);
+    assert.ok(typeof owned !== "string", `which \`src/packaging/\` files are the tool's and which the project's cannot be told, so the count would be wrong: ${owned}`);
+    const current = kind === "source" ? sourceFiles(TOOL_ROOT, owned) : mjsFiles(TOOL_ROOT, keep);
+    const verdict = judgeCount({ kind, current, pin, added: current.length > pin ? addedSinceBase(current, keep, { repository: TOOL_REPOSITORY, env: process.env }) : [] });
+    if (verdict.ok) t.diagnostic(verdict.message);
+    assert.ok(verdict.ok, verdict.message);
+  });
+}
+
+test("the ratchet RUNS: the walk finds files in both populations", () => {
+  // POSITIVE CONTROL for the emptiness a count of zero would hide: `assert.ok(count <= pin)` is also true of a walk that finds nothing.
+  const owned = ownedPackaging(TOOL_REPOSITORY);
+  assert.ok(typeof owned !== "string", `${owned}`);
+  const source = sourceFiles(TOOL_ROOT, owned);
+  assert.ok(source.includes("src/work-gate.mjs"), "the walk no longer finds a source file that is known to be there");
+  assert.ok(source.includes("src/packaging/update-primary-argv.mjs"), "the walk no longer counts the tool's own `.mjs` under src/packaging/, the blind spot the first review found");
+  assert.ok(mjsFiles(TOOL_ROOT, isTest).length > 0, "the walk finds no `.mjs` test at all");
+});
+
+const FIXTURE = ["src/a.mjs", "src/b.mjs", "src/c.mjs"];
+
+test("a list with one extra `.mjs` is REFUSED, naming the file", () => {
+  const verdict = judgeCount({ kind: "source", current: [...FIXTURE, "src/new-thing.mjs"], pin: FIXTURE.length, added: ["src/new-thing.mjs"] });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /src\/new-thing\.mjs/);
+  assert.match(verdict.message, /is `\.ts`/);
+});
+
+test("the refusal tells a claimant the one case where the pin is raised, and the README says the same", () => {
+  const { message } = judgeCount({ kind: "source", current: [...FIXTURE, "src/new-thing.mjs"], pin: FIXTURE.length, added: ["src/new-thing.mjs"] });
+  assert.match(message, /a new source file is `\.ts`, unless a shipped command imports it; then raise the pin in this diff and say why/);
+  assert.doesNotMatch(judgeCount({ kind: "test", current: [...FIXTURE, "src/x.test.mjs"], pin: FIXTURE.length, added: [] }).message, /shipped command/, "a test is never imported by a command");
+  assert.match(readFileSync(join(TOOL_ROOT, "README.md"), "utf8"), /unless a shipped command imports it; then raise the pin in this diff and say why/);
+});
+
+test("a rise whose base cannot be read is still refused, and says why it names no file", () => {
+  const verdict = judgeCount({ kind: "source", current: [...FIXTURE, "src/new-thing.mjs"], pin: FIXTURE.length, added: "no .git here" });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.message, /could not be read \(no \.git here\)/);
+});
+
+test("a list with one fewer passes and says the pin can be lowered", () => {
+  const verdict = judgeCount({ kind: "source", current: FIXTURE.slice(1), pin: FIXTURE.length, added: [] });
+  assert.equal(verdict.ok, true);
+  assert.match(verdict.message, /the pin can be lowered to 2/);
+});
+
+test("a list equal to the pin passes and does not claim the pin can be lowered", () => {
+  const verdict = judgeCount({ kind: "source", current: FIXTURE, pin: FIXTURE.length, added: [] });
+  assert.equal(verdict.ok, true);
+  assert.doesNotMatch(verdict.message, /can be lowered/);
+});
+
+test("against a real base the file a commit added is named, and an unchanged tree names nothing", () => {
+  withGitSandbox((box) => {
+    const QUEUE = { GITHUB_EVENT_NAME: "merge_group" }; // the merge commit's first parent is the base, so no `origin/main` is needed
+    // `git archive` refuses a path the base lacks, so the sandbox holds all three roots the way the tool does.
+    for (const dir of ROOTS) mkdirSync(join(box.dir, dir), { recursive: true });
+    for (const dir of ROOTS) writeFileSync(join(box.dir, dir, ".keep"), "");
+    writeFileSync(join(box.dir, "src/a.mjs"), "");
+    box.run(["add", "-A"]);
+    box.commit("base");
+    writeFileSync(join(box.dir, "src/new-thing.mjs"), "");
+    box.run(["add", "-A"]);
+    box.commit("adds one");
+    const current = mjsFiles(box.dir, isSource);
+    assert.deepEqual(addedSinceBase(current, isSource, { repository: box.dir, env: QUEUE }), ["src/new-thing.mjs"]);
+    box.run(["checkout", "-q", "HEAD^1"]);
+    box.run(["checkout", "-q", "-b", "same"]);
+    writeFileSync(join(box.dir, "src/a.mjs"), "// edited\n");
+    box.run(["add", "-A"]);
+    box.commit("edits only");
+    assert.deepEqual(addedSinceBase(mjsFiles(box.dir, isSource), isSource, { repository: box.dir, env: QUEUE }), []);
+  });
+});
+
+test("a new `.mjs` under src/packaging/ is counted, and a helper the gate copied in from the project is not", () => {
+  // THE REVIEWER'S MUTATION on #204 (`src/packaging/zzz-review-blind-spot.mjs`, 0 red) as a standing case. `laid` is the gate's copy: the tool's tree, plus a project helper beside it.
+  withGitSandbox((box) => {
+    mkdirSync(join(box.dir, "src/packaging"), { recursive: true });
+    writeFileSync(join(box.dir, "src/packaging/tool.mjs"), "");
+    box.run(["add", "-A"]);
+    box.commit("base");
+    const laid = join(box.dir, "laid");
+    cpSync(join(box.dir, "src"), join(laid, "src"), { recursive: true });
+    writeFileSync(join(laid, "src/packaging/project-helper.mjs"), "");
+    const before = ownedPackaging(box.dir);
+    assert.ok(typeof before !== "string", String(before));
+    assert.deepEqual(sourceFiles(laid, before), ["src/packaging/tool.mjs"], "the tool's file counts and the project's copy does not");
+    for (const root of [box.dir, laid]) writeFileSync(join(root, "src/packaging/zzz-new.mjs"), "");
+    const after = ownedPackaging(box.dir);
+    assert.ok(typeof after !== "string", String(after));
+    assert.deepEqual(sourceFiles(laid, after), ["src/packaging/tool.mjs", "src/packaging/zzz-new.mjs"], "a new tool file under src/packaging/ is counted, added to git or not");
+  });
+});
+
+test("which packaging files are the tool's cannot be told outside a repository of its own, and the test says so instead of leaving the directory out", () => {
+  withGitSandbox((box) => {
+    const inner = join(box.dir, "inner");
+    mkdirSync(inner);
+    assert.equal(typeof ownedPackaging(inner), "string");
+    assert.match(String(ownedPackaging(inner)), /not a repository of its own/);
+  });
+});
+
+test("a directory that is not a repository of its own names no file and says so", () => {
+  withGitSandbox((box) => {
+    const inner = join(box.dir, "inner");
+    mkdirSync(inner);
+    const reason = addedSinceBase(["src/a.mjs"], isSource, { repository: inner, env: {} });
+    assert.equal(typeof reason, "string");
+  });
+});
+
+test("each pin is a number written in this file, never one read from the tree", () => {
+  // POSITIVE CONTROL for the ratchet that compares with a count read at run time and so can never fail: it would be spelled `= mjsFiles(...).length`, and this
+  // test goes red on it. The mutation check is `const SOURCE_MJS_PIN = mjsFiles(TOOL_ROOT, isSource).length;`.
+  const text = readFileSync(new URL(import.meta.url), "utf8");
+  for (const name of ["SOURCE_MJS_PIN", "TEST_MJS_PIN"]) assert.match(text, new RegExp(`^const ${name} = \\d+;$`, "m"), `${name} is not a literal number`);
+});
