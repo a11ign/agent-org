@@ -12,7 +12,7 @@ import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, waterfallsOf } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, waterfallsOf, writeSwimlanes } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -278,6 +278,35 @@ test("ARGS: the row is required and `--` is tolerated", () => {
   assert.equal(parseArgs(["3406", "--json", "1"]).json, true);
   assert.throws(() => parseArgs(["--", "abc"]), /usage: trace/);
   assert.throws(() => parseArgs([]), /usage: trace/);
+});
+
+test("ARGS --html: the flag takes no value, needs --out, and leaves the other flags where they were (#3512)", () => {
+  const given = parseArgs(["--", "3406", "--html", "--out", "/tmp/x.html", "--since", "2026-10-01T00:00:00Z"]);
+  assert.deepEqual([given.number, given.html, given.out, given.since, given.json], [3406, true, "/tmp/x.html", Date.parse("2026-10-01T00:00:00Z"), false]);
+  assert.equal(parseArgs(["--", "3406", "--out", "/tmp/x.html"]).html, false, "--out alone is not --html");
+  assert.equal(parseArgs(["--", "3406", "--json", "1"]).html, false);
+  assert.throws(() => parseArgs(["--", "3406", "--html"]), /--html needs --out <path>/);
+  assert.deepEqual([parseArgs(["--", "3406", "--out", "/tmp/x.html", "--html"]).html, parseArgs(["--", "3406", "--out", "/tmp/x.html", "--html"]).out], [true, "/tmp/x.html"], "--html in either position is read the same");
+});
+
+test("--html writes the swimlane to the path, one file per row when a number names several, and prints where (#3512)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-swimlane-"));
+  const subject = (title) => ({ title, found: [{ id: "gh:a:filed", kind: "filed", source: "github", session: "github", at: at("2026-10-04T10:00:00Z"), row: 9001, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, actor: "product-manager" }] });
+  const now = at("2026-10-04T12:00:00Z");
+  const lines = [];
+  const log = console.log;
+  console.log = (line) => lines.push(line);
+  try {
+    writeSwimlanes({ out: join(dir, "one.html"), subjects: [subject("row #9001")], now, github: { calls: 2, read: 1, added: 1 } });
+    writeSwimlanes({ out: join(dir, "many.html"), subjects: [subject("row #9001"), subject("row #9002")], now, github: { calls: 2, read: 1, added: 1 } });
+  } finally {
+    console.log = log;
+  }
+  assert.match(readFileSync(join(dir, "one.html"), "utf8"), /^<!doctype html>[\s\S]*<title>Swimlane row #9001<\/title>/);
+  assert.match(readFileSync(join(dir, "many-row-9001.html"), "utf8"), /<h1>Swimlane: row #9001<\/h1>/);
+  assert.match(readFileSync(join(dir, "many-row-9002.html"), "utf8"), /<h1>Swimlane: row #9002<\/h1>/);
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], new RegExp(`^wrote ${join(dir, "one.html").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: the swimlane of row #9001, 1 events; GitHub: 2 REST calls`));
 });
 
 test("ARGS --aggregate: the flag takes no value, --since is rounded down to its Monday, and a bad time is refused", () => {

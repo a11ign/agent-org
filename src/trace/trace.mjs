@@ -2,7 +2,7 @@
 // @ts-check
 // command: trace -- every model turn, wake and GitHub event of one row, in order (a11ign/a11ign#3494, first and second slices).
 //
-// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.mjs`, #3514)
+// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- <row-or-pr> --html --out <path>` (the swimlane, `swimlane.mjs`, #3512), and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.mjs`, #3514)
 //
 // THE WATERFALL (`waterfall.mjs`, #3511) is printed first, above the events: the row's eight phases, WORKING versus WAITING with what it waited on, tokens and dollars per phase, every repeat flagged.
 //
@@ -22,6 +22,7 @@ import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.mjs";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
+import { swimlane } from "./swimlane.mjs";
 import { renderWakeCache, wakeCache } from "./wake-cache.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
@@ -50,6 +51,8 @@ const NEWLINE = 0x0a;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
 const AGGREGATE_FLAG = "--aggregate";
 const MAP_FLAG = "--map";
+const HTML_FLAG = "--html";
+const USAGE = "usage: trace -- <row-or-pr number> [--since <ISO>] [--store <path>] [--json 1] [--html --out <path>]";
 const WAKE_CACHE_FLAG = "--wake-cache";
 const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing seat has a hundred or more first turns, and the store holds little older
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
@@ -62,15 +65,18 @@ export const NOT_HELD = "NOT IN THIS STORE YET: the gate's deferral spans from b
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
-  const [first, ...rest] = argv[0] === "--" ? argv.slice(1) : argv;
+  const [first, ...given] = argv[0] === "--" ? argv.slice(1) : argv;
   const number = Number(first);
-  if (!Number.isInteger(number) || number <= 0) throw new Error("usage: trace -- <row-or-pr number> [--since <ISO>] [--store <path>] [--json 1]");
+  if (!Number.isInteger(number) || number <= 0) throw new Error(USAGE);
+  const rest = given.filter((word) => word !== HTML_FLAG); // `--html` takes no value, so it is taken out before the rest are read as flag/value pairs
   /** @type {Record<string, string>} */
   const flags = {};
   for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
   const since = flags.since ? Date.parse(flags.since) : Date.now() - DEFAULT_SINCE_DAYS * MS_PER_DAY;
   if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
-  return { number, since, store: flags.store ?? defaultStore(), json: flags.json === "1" };
+  const html = given.includes(HTML_FLAG);
+  if (html && !flags.out) throw new Error(`--html needs --out <path>: the page is written to a file, never to the terminal. ${USAGE}`);
+  return { number, since, store: flags.store ?? defaultStore(), json: flags.json === "1", html, out: flags.out };
 }
 
 /**
@@ -524,9 +530,16 @@ function ingestLines(ingested) {
  * @param {{ rows: number[], prs: number[], number: number, events: import("./store.mjs").TraceEvent[], now: number }} input
  */
 export function waterfallsOf({ rows, prs, number, events: stored, now }) {
+  return subjectsOf({ rows, prs, number, events: stored }).map(({ title, found }) => ({ title, waterfall: waterfall({ events: found, now }) }));
+}
+
+/**
+ * The events of each subject of a number: one per row it names (that row's events and its pull requests'), or the pull request alone when it closes none.
+ * @param {{ rows: number[], prs: number[], number: number, events: import("./store.mjs").TraceEvent[] }} input
+ */
+function subjectsOf({ rows, prs, number, events: stored }) {
   const events = repriceEvents(stored);
-  const subjects = rows.length > 0 ? rows.map((row) => ({ title: `row #${row}`, found: eventsForRow(events, { rows: [row], prs }) })) : [{ title: `pull request #${number}`, found: events }];
-  return subjects.map(({ title, found }) => ({ title, waterfall: waterfall({ events: found, now }) }));
+  return rows.length > 0 ? rows.map((row) => ({ title: `row #${row}`, found: eventsForRow(events, { rows: [row], prs }) })) : [{ title: `pull request #${number}`, found: events }];
 }
 
 /**
@@ -741,6 +754,19 @@ async function mainMap() {
 }
 
 /** The first turn after each wake needs the transcripts and the wake ledger and nothing from GitHub, so it makes no `gh` call. */
+/**
+ * `--html --out <path>`: one page, the swimlane of the row. A number that names several rows (a pull request closing two) writes one page per row, the row's number before the extension, so none overwrites another.
+ * @param {{ out: string, subjects: { title: string, found: import("./store.mjs").TraceEvent[] }[], now: number, github: { calls: number, read: number, added: number } }} input
+ */
+export function writeSwimlanes({ out, subjects, now, github }) {
+  const several = subjects.length > 1;
+  for (const { title, found } of subjects) {
+    const path = several ? out.replace(/(\.html?)?$/, `-${title.replace(/\W+/g, "-")}$1`) : out;
+    writeFileSync(path, swimlane({ events: found, now, title }));
+    console.log(`wrote ${path}: the swimlane of ${title}, ${found.length} events; GitHub: ${github.calls} REST calls (gh api), ${github.added} events new to the store`);
+  }
+}
+
 async function mainWakeCache() {
   const { since, until, store: storePath, json } = parseWakeCacheArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
@@ -756,7 +782,7 @@ async function main() {
   if (isAggregate(process.argv.slice(2))) return mainAggregate();
   if (isWakeCache(process.argv.slice(2))) return mainWakeCache();
   if (isMap(process.argv.slice(2))) return mainMap();
-  const { number, since, store: storePath, json } = parseArgs(process.argv.slice(2));
+  const { number, since, store: storePath, json, html, out } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
@@ -767,6 +793,7 @@ async function main() {
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
   const events = eventsForRow(store.events, { rows, prs });
   const now = Date.now();
+  if (html) return writeSwimlanes({ out: /** @type {string} */ (out), subjects: subjectsOf({ rows, prs, number, events }), now, github });
   console.log(json ? JSON.stringify({ number, rows, prs, github, waterfalls: waterfallsOf({ rows, prs, number, events, now }), events: repriceEvents(events) }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events, now }));
 }
 
