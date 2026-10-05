@@ -132,7 +132,9 @@ const DEFAULT_REPO = "a11ign/a11ign";
 const OTHER_REPO = "a11ign/agent-org";
 /** Pull request read, reviews read, the review, the read-back, the attribution status. */
 const DOOR_CALLS = 5;
-const VERDICT_LINE = "**Review of #7 at abc123: convinced**";
+/** Names the head the stub reports, in the spelling the gate reads (a backticked sha of 7 or more): the door refuses a verdict that names no commit (a11ign/agent-org#3640). */
+const HEAD = "abc1234";
+const VERDICT_LINE = `**Review of #7 at \`${HEAD}\`: convinced**`;
 
 /**
  * Runs the door with a `gh` stub first on PATH that appends one line of argv per call to a log. The stub answers the
@@ -151,7 +153,7 @@ function runDoor(ghRepo: string | undefined): { status: number | null; calls: st
       // The review body is the WHOLE verdict file since #3030: one call stays one log line (newlines logged as spaces), and the
       // read-back answers as `gh --jq @tsv` does, with the body's newlines spelled `\n`.
       `#!/usr/bin/env bash\na="$*"; printf '%s\\n' "\${a//$'\\n'/ }" >> "${log}"\n` +
-        `[[ "$*" == *"/pulls/7 "* ]] && printf 'abc123\\tmain\\n'\n` +
+        `[[ "$*" == *"/pulls/7 "* ]] && printf '${HEAD}\\tmain\\n'\n` +
         `[[ "$*" == *"select("* ]] && exit 0\n` +
         `[[ "$*" == *"/reviews?"* ]] && printf 'https://example/review/1\\tdeadbeef\\t%s\\n' '${VERDICT_LINE}\\n\\nbody'\nexit 0\n`,
       { mode: 0o755 },

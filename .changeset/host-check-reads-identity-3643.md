@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`host:check` now fails on two more ways the agents host can act as a person. (a) A shipped `.service` that declares no `Environment=GH_CONFIG_DIR=...` is a `NO IDENTITY DECLARED` finding whether or not a `gh` spawn is reachable from it: reach analysis says what a unit spends today, not what it is one `pnpm run` away from spending, and the `gh` wrapper sends a unit with no declaration to `~/.config/gh`. (b) A login in `~/.config/gh/hosts.yml` that is not one of the two org accounts' (read from `<workers>/gh` and `<leads>/gh`, never a literal name) is a `HUMAN LOGIN ON THE HOST` finding; a missing file passes and an unreadable one is a `HOST GH LOGIN UNREADABLE` finding, never "clean". Both remedies name the two account directories; (a)'s says `pnpm run host:install`, (b)'s is a manual `gh auth logout` because `host:install` writes no line of a person's config. A project whose units are fixtures passes `readGhHosts` to pin the second check. a11ign/a11ign#3643.

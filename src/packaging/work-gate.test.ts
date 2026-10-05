@@ -1084,7 +1084,9 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // is when nobody is looking at the tick, so a window must not withhold the one signal that says the tick is the thing that stopped.
   // #2936: `org-health` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that nothing is landing, a red PR is unattended, a row
   // is refused or the primary is stale -- and a drain is exactly when an org that is not landing anything should be told.
-  assert.deepEqual(finish, ["answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-answered", "chairman-blocked",
+  // #3632: `answer-given` is FINISH, and a JUDGMENT cause. Its subject is a row the asking session already holds, and it starts no work: it tells the claimant
+  // its question was answered, once, which a drain exists to land -- and a drain is when the answerer's reply most needs to reach the asker.
+  assert.deepEqual(finish, ["answer-given", "answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-answered", "chairman-blocked",
     "claim-stalled", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale",
     "lab-job-finished", "org-health", "org-retrospective", "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale", "ready-row-incomplete", "ready-row-unclaimable", "repeating-log-line", "reviewer-auth-failed",
     "row-branch-unshipped", "row-call-count-signal", "row-off-board", "tick-overran", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);

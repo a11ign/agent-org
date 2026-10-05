@@ -159,6 +159,7 @@ export const SIGNALS = Object.freeze({
   POOL_LOW: "api-pool-low",
   PANE_AT_PROMPT: "pane-stopped-at-a-prompt",
   TOOL_VERSION: "runner-behind-newest-release",
+  TEAM_ACCESS: "team-access-drifted",
 });
 
 /**
@@ -573,6 +574,132 @@ export function readToolAgreement(run = (args) => execFileSync(process.execPath,
   }
 }
 
+/** GitHub's `permissions` booleans on a team's repository, highest first: the team's level there is the first one that is true. */
+const TEAM_LEVELS = Object.freeze(["admin", "maintain", "push", "triage", "pull"]);
+/** One `full_name<TAB>admin<TAB>maintain<TAB>push<TAB>triage<TAB>pull` line per repository the team reaches. */
+const TEAM_LISTING_JQ = ".[]|[.full_name,.permissions.admin,.permissions.maintain,.permissions.push,.permissions.triage,.permissions.pull]|@tsv";
+const TEAM_PAGE_SIZE = 100;
+
+/**
+ * @typedef {{ repo: string, level: string }} TeamRepository
+ * @typedef {{ team: string, layer: string, declared: string[], reached: TeamRepository[] | null, why: string }} TeamAccess `reached` is `null` for a read that could not run, and `why` then says what GitHub answered
+ * @typedef {{ teams: TeamAccess[] } | { unreadable: string }} TeamAccessFact
+ */
+
+/**
+ * SIGNAL 14: AN ORG TEAM HOLDS A LEVEL THE PROJECT'S DECLARATION DOES NOT GIVE (a11ign/a11ign#3634, a class gap of #3587: `bots` held `admin` on
+ * `screenreader-worker` and `auth-capture-check` and nothing read it). Two things trip it: `admin` on ANY repository the team reaches (an agent with
+ * admin edits the protection whose review requirement nobody may walk past), and a level other than the declared one on a DECLARED repository,
+ * where a declared repository the team does not reach is `none`. A repository the team reaches that the declaration does not name is NOT a trip
+ * unless it is `admin`: the declaration says what each layer repository gives, not what else the team may see.
+ *
+ * A READ THAT CANNOT RUN IS UNKNOWN, NEVER CLEAR. `GET orgs/<org>/teams/<slug>/repos` answers 404 to a token that cannot see the team, and an EMPTY
+ * listing is the same blindness wearing a 200 (a declared team that reaches nothing has not been read), so each is `unknown` with its reason, as is a
+ * declaration that could not be read or declares no team. A trip stands over an unread team: what WAS read is not unread.
+ * @param {{ access: TeamAccessFact }} input `access` is `readTeamAccess`'s answer; `undefined` (not asked) never reaches here
+ * @returns {Reading}
+ */
+export function teamAccessReading({ access }) {
+  if ("unreadable" in access) return unknown(SIGNALS.TEAM_ACCESS, access.unreadable);
+  if (access.teams.length === 0) return unknown(SIGNALS.TEAM_ACCESS, "the declaration names no team, so no team's level was compared");
+  const unread = access.teams.flatMap((t) => (t.reached === null ? [`${t.team} (${t.why})`]
+    : t.reached.length === 0 ? [`${t.team} (it reaches no repository, which is a read that saw nothing: CANNOT_TELL)`] : []));
+  const found = access.teams.flatMap(teamDifferences);
+  if (found.length === 0) {
+    return unread.length === 0 ? clear(SIGNALS.TEAM_ACCESS)
+      : unknown(SIGNALS.TEAM_ACCESS, `CANNOT_TELL: the team's repositories could not be read: ${unread.join("; ")}`);
+  }
+  const named = found.slice(0, MAX_NAMED).map((f) => f.text).join("; ");
+  const more = found.length > MAX_NAMED ? `, and ${found.length - MAX_NAMED} more` : "";
+  return { signal: SIGNALS.TEAM_ACCESS, status: "tripped", firstTrippedAt: null,
+    discriminator: `${SIGNALS.TEAM_ACCESS}@${found.map((f) => f.key).sort().join(",")}`,
+    detail: `${found.length} team level(s) differ from the declaration: ${named}${more}` };
+}
+
+/** @param {TeamAccess} access @returns {{ key: string, text: string }[]} one entry per repository, `team:repo` keyed so a second repository is a new trip */
+function teamDifferences({ team, layer, declared, reached }) {
+  if (reached === null || reached.length === 0) return [];
+  const held = new Map(reached.map(({ repo, level }) => [repo, level]));
+  const found = new Map();
+  for (const repo of declared) {
+    const level = held.get(repo) ?? "none";
+    if (level !== layer) found.set(repo, `${repo}: the ${team} team holds ${level}, declared ${layer}`);
+  }
+  for (const [repo, level] of held) {
+    if (level === "admin" && !found.has(repo)) found.set(repo, `${repo}: the ${team} team holds admin${declared.includes(repo) ? "" : " and is not declared"}`);
+  }
+  return [...found].map(([repo, text]) => ({ key: `${team}:${repo}`, text }));
+}
+
+/** @param {string} text @returns {TeamRepository[] | null} `null` for a line that is not six fields: a partial listing is not a reading */
+export function parseTeamListing(text) {
+  const rows = [];
+  for (const line of text.split("\n").filter((l) => l.trim() !== "")) {
+    const [repo, ...flags] = line.split("\t");
+    if (!repo || flags.length !== TEAM_LEVELS.length) return null;
+    rows.push({ repo, level: TEAM_LEVELS.find((_, i) => flags[i] === "true") ?? "none" });
+  }
+  return rows;
+}
+
+/**
+ * THE DECLARATION THE PROJECT NAMES, as `{ org, declared, teams }`, or `{ unreadable }`. The route is `teamAccess.declaration` in `.agent-org/project.json`
+ * (a path relative to the project root, which may not climb out of it): `agent-org` names no project's file. The file's own shape is the contract: `teams`
+ * maps a team's slug to `{ layer }`, and `repositories` is keyed by the `owner/name` of each declared repository, whose common owner is the org. A
+ * malformed key is a named reason and never a silent off, so a project that mistyped it is told on the next tick rather than believing it is watched.
+ * @param {string} root @param {(path: string) => string} read
+ * @returns {{ declaration: undefined } | { unreadable: string } | { org: string, declared: string[], teams: { team: string, layer: string }[] }}
+ */
+function readTeamDeclaration(root, read) {
+  const project = `${root}/.agent-org/project.json`;
+  try {
+    const key = JSON.parse(read(project)).teamAccess;
+    if (key === undefined) return { declaration: undefined };
+    if (typeof key?.declaration !== "string" || key.declaration === "" || resolve(root, key.declaration).startsWith(`${resolve(root)}/`) === false) {
+      return { unreadable: `${project}: teamAccess.declaration must be a path inside the project (CANNOT_TELL)` };
+    }
+    return teamDeclarationOf(JSON.parse(read(resolve(root, key.declaration))), key.declaration);
+  } catch (err) {
+    return { unreadable: `the team declaration could not be read: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)} (CANNOT_TELL)` };
+  }
+}
+
+/** @param {any} file @param {string} where @returns {ReturnType<typeof readTeamDeclaration>} */
+function teamDeclarationOf(file, where) {
+  const declared = Object.keys(file?.repositories ?? {}).filter((k) => !k.startsWith("_"));
+  const orgs = new Set(declared.map((repo) => repo.split("/")[0]));
+  const teams = Object.entries(file?.teams ?? {}).filter(([k]) => !k.startsWith("_"))
+    .map(([team, level]) => ({ team, layer: /** @type {any} */ (level)?.layer }));
+  if (orgs.size !== 1 || teams.some((t) => typeof t.layer !== "string")) {
+    return { unreadable: `${where}: it must declare \`repositories\` of one org and each \`teams.<slug>.layer\` as a string (CANNOT_TELL)` };
+  }
+  return { org: [...orgs][0], declared, teams };
+}
+
+/**
+ * THE FACT FOR `teamAccessReading`: the declaration, then ONE paginated REST call per declared team on the core pool (`gh api` spends core, never GraphQL, `gh-api-budget.md`).
+ * `undefined` is "not asked" (the project declares no `teamAccess`), `{ unreadable }` a read that failed, and a team GitHub refused is `reached: null` with its own reason.
+ * NEVER THROWS.
+ * @param {(args: string[]) => string} run @param {{ root?: string, read?: (path: string) => string }} [io]
+ * @returns {TeamAccessFact | undefined}
+ */
+export function readTeamAccess(run, { root = HOME_CHECKOUT, read = (path) => readFileSync(path, "utf8") } = {}) {
+  const found = readTeamDeclaration(root, read);
+  if ("declaration" in found) return undefined;
+  if ("unreadable" in found) return found;
+  return { teams: found.teams.map(({ team, layer }) => ({ team, layer, declared: found.declared, ...readTeamRepositories(run, found.org, team) })) };
+}
+
+/** @param {(args: string[]) => string} run @param {string} org @param {string} team @returns {{ reached: TeamRepository[] | null, why: string }} */
+function readTeamRepositories(run, org, team) {
+  try {
+    const reached = parseTeamListing(run(["api", `orgs/${org}/teams/${team}/repos?per_page=${TEAM_PAGE_SIZE}`, "--paginate", "--jq", TEAM_LISTING_JQ]));
+    return reached === null ? { reached, why: "GitHub answered a line that is not a repository's permissions" } : { reached, why: "" };
+  } catch (err) {
+    return { reached: null, why: String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS) };
+  }
+}
+
 /** @param {string} text @returns {{ body: string, complete: boolean }} the text with the copy header block removed, wherever it sits */
 function withoutCopyHeader(text) {
   const lines = text.split("\n");
@@ -738,7 +865,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null }} facts `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact }} facts `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -753,6 +880,7 @@ export function orgHealthReadings(facts) {
   }
   if (facts.pools !== undefined) readings.push(poolLowReading({ pools: facts.pools }));
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
+  if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   return readings;
 }
 
@@ -797,6 +925,9 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "is not true of it. READ `node src/lib/tool-version-agreement.mjs` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
     + "the newest tag: read the tick's first journal line and why it did not. A `worktree` runner resolves a COPY of the dependency through its `node_modules`: until the removal row (#3534) merges it is the pin, "
     + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
+  [SIGNALS.TEAM_ACCESS]: "An org team holds a level on a repository that the project's declaration (`teamAccess.declaration` in `.agent-org/project.json`) does not give: `admin` anywhere it reaches, "
+    + "or a level other than the declared one on a declared repository. DO NOT CHANGE THE TEAM'S LEVEL YOURSELF: it is an org-admin act, the chairman's. Read the declaration's own prose "
+    + "for what the level should be, then put the repositories named on #928 and `" + ANSWER_PREFIX + "ceo` on the row that carries them, or open the pull request that declares the level if the declaration is the one that is wrong.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",

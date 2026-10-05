@@ -118,7 +118,8 @@ const TODAYS_TEXT = {
 // #3466 MOVED THIS ONE, deliberately: the wrapper records every call in `gh-calls.tsv` and no longer `exec`s gh-real. The installed copy reads
 // DIVERGED until `host:install` runs, which is a host action and not this row's.
 // a11ign/a11ign#3589 MOVED IT AGAIN, deliberately: each ledger line gains a ninth field, the session id (`CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`). Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "528c3298f3e0cc4a10f206a462c0ccbc2c25744860727fff135e87b20f1de724";
+// #3642 MOVED IT AGAIN, deliberately: a call with no workspace id and no GH_CONFIG_DIR refuses instead of acting as the human account. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "297e45210c096634e50b96739add43526f722971ea010aa39784fc2260a335c8";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

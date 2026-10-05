@@ -44,13 +44,15 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 213 to 214 (a11ign/a11ign#3567): `src/work-tick-health.mjs` is a NEW source file that a shipped command imports (`work-tick.mjs`, which the timer's unit runs with plain `node`), so it cannot be `.ts`. Its test is `work-tick-health.test.ts`, so TEST_MJS_PIN stays 45.
 // 214 to 215 (a11ign/a11ign#3425): `src/messaging/walk.mjs` is a NEW source file that a shipped command imports (`answers.mjs` and `watch.mjs`, which `messaging:listen` and `messaging:watch` run under plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 215 to 216 (a11ign/a11ign#3510): `src/deferral-log.mjs` is a NEW source file that a shipped command imports (`wake.mjs`, the gate's tick), so it cannot be `.ts` (node on the host has no TypeScript).
-// 216 to 217 (a11ign/a11ign#3511): `src/trace/waterfall.mjs` is a NEW source file that a shipped command imports (`trace.mjs` and `aggregate.mjs`, `trace -- <row>` and `--aggregate`), so it cannot be `.ts` (node on the host has no TypeScript).
-const SOURCE_MJS_PIN = 217;
+// 216 to 217 (a11ign/a11ign#3659): `src/ci-health-liveness.mjs` is the file the row's Region names, and the gate (`work-gate.mjs`, run by the tick under plain `node`) will import it, so it cannot be `.ts` (node on the host has no TypeScript).
+// 217 to 218 (a11ign/a11ign#3511): `src/trace/waterfall.mjs` is a NEW source file that a shipped command imports (`trace.mjs` and `aggregate.mjs`, `trace -- <row>` and `--aggregate`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 218;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
-// 47 to 48 (a11ign/a11ign#3511): `waterfall.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
-const TEST_MJS_PIN = 48;
+// 47 to 48 (a11ign/a11ign#3659): `ci-health-liveness.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
+// 48 to 49 (a11ign/a11ign#3511): `waterfall.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
+const TEST_MJS_PIN = 49;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");

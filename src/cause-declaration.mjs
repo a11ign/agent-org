@@ -260,7 +260,14 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "deciding whether a fully-closed epic is finished or merely unfiled is the same supply "
       + "judgment as splitting one, and the cheap answer is wrong half the time",
   }),
-  declareCause("answer-owed", GROUPS.JUDGMENT, {
+  // ACTION, NOT JUDGMENT (#3652). A delivery is not an answer: the label stands until the addressee removes it, so
+  // the order names something to DO and takes the twenty-minute cadence. As a judgment cause a delivery held the key
+  // for two hours even when the label had come off and gone back on, so a question labelled inside that window never
+  // woke the session it named (`product-manager/answer-owed/row-3566`, 2026-10-05: four deliveries two hours apart,
+  // none at a label time). A label re-applied inside twenty minutes of a delivery still waits at most that long.
+  // THE COST IS THE BREAKER: a label that stands unanswered is now offered every twenty minutes, and trips
+  // `MAX_DELIVERIES` (and `escalateStuck`) about two hours in -- an unanswered question someone is stopped on.
+  declareCause("answer-owed", GROUPS.ACTION, {
     kind: "claude",
     model: "sonnet",
     // HIGH, because the question is by definition one the asker could not resolve themselves -- it
@@ -595,6 +602,20 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     effort: "medium",
     why: "the gate has already named the bare label and when it was applied; the output is posting the "
       + "question or removing the label, by a session that already holds the row",
+  }),
+  declareCause("answer-given", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND MEDIUM, `answer-label-unexplained`'s PROFILE (#3632): the recipient is the row's own holder, and
+    // the gate has already named who answered, when, and which comment carries it. The woken turn reads that one
+    // comment and resumes -- a short judgment over a stated fact, not diagnosis from an absence.
+    model: "sonnet",
+    effort: "medium",
+    // JUDGMENT, NOT ACTION, FOR `blocker-cleared`'S REASON (#2741): the clearing does not recur on its own, so
+    // the order must go ONCE. An ACTION cause redelivers its key every twenty minutes while the gate keeps
+    // emitting it; a judgment cause's two-hour TTL outlasts the gate's 90-minute window
+    // (`ANSWER_GIVEN_WINDOW_MS`), so the one removal is ordered once and then falls out of the window.
+    why: "the gate has already named the answer's author, time and comment; the claimant that asked "
+      + "reads one comment and resumes work it was stopped on",
   }),
   declareCause("ready-row-unclaimed", GROUPS.ACTION_START, {
     kind: "claude",
