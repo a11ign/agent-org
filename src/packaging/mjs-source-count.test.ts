@@ -5,7 +5,7 @@
  * Decision 1). "As touched" is only measured if the count of what is left is pinned, so a new source file is `.ts`, and a pull request that
  * converts a `.mjs` lowers the pin in the same diff: **the pin is the progress report.**
  *
- * THE PIN IS A READING AT A COMMIT, not a fact about every tree: 209 source and 44 test files at agent-org `f9422fc`, counted by this test's own walk, less the one source file this pull request converts (`src/messaging/fake-provider.ts`). The row's own figures (204 and 244) were read at `b404507` over every tracked `.mjs`; this test counts a population
+ * THE PIN IS A READING AT A COMMIT, not a fact about every tree: 210 source and 44 test files at agent-org `21eb99c`, counted by this test's own walk, less the one source file this pull request converts (`src/messaging/fake-provider.ts`). The row's own figures (204 and 244) were read at `b404507` over every tracked `.mjs`; this test counts a population
  * that reads the same in a checkout and in the copy `ci.yml`'s `gate` lays under a project, and the difference is named below.
  *
  *   - SOURCE: every non-test `.mjs` under `src/`, `host/` and `.github/`, `src/packaging/` INCLUDED where the file is the tool's. In the copy `ci.yml`'s `gate`
@@ -37,7 +37,7 @@ import { TOOL_REPO_ENV, resolveBase, scanAtBase, undeclaredGrowth } from "../lib
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
-const SOURCE_MJS_PIN = 208;
+const SOURCE_MJS_PIN = 209;
 const TEST_MJS_PIN = 44;
 
 const ROOTS = ["src", "host", ".github"];
