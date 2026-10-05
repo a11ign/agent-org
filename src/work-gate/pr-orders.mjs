@@ -517,8 +517,8 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
  * SESSION'S ORDER, and only an unlabelled one stays in the set order below. `ceo`'s rule is that an order whose
  * subject carries a machine-readable owner goes to that owner, and `failingChecksOrder` and `notConvincedOrder`
  * already do it. It holds here because the reader has the label (`reviewBlocked` reads it off the same list) and
- * the two states it routes are the author's to act on: an AWAITING_REVIEW pull request the author opened ready
- * and that never entered the reviewer lane, and a REFUSED one whose rework the author owes.
+ * the one state it routes to a session is the author's to act on: a REFUSED pull request, whose rework the author owes.
+ * (#3592: AWAITING_REVIEW is not routed here at all -- `draftOrder` starts its reviewer.)
  *
  * `UNRECOGNISED` STAYS AT `product-manager` WHOEVER OWNS THE PR (`ownedBy`). It is a value of GitHub's this gate
  * has never seen -- a fact about the gate's vocabulary, which the author can neither read nor fix.
@@ -538,9 +538,9 @@ export function reviewBlockedOrders(blocked) {
   return [...reviewBlockedSetOrder(unowned), ...owned.map(ownedReviewBlockedOrder)];
 }
 
-/** A pull request whose blocked state is its own session's to act on: labelled, and AWAITING_REVIEW or REFUSED. */
+/** A pull request whose blocked state is its own session's to act on: labelled and REFUSED (#3592: AWAITING_REVIEW is its reviewer's, never reported here). */
 function ownedBy(/** @type {{code: string, session?: string | null}} */ b) {
-  return Boolean(b.session) && (b.code === REVIEW_STATE.AWAITING_REVIEW || b.code === REVIEW_STATE.REFUSED);
+  return Boolean(b.session) && b.code === REVIEW_STATE.REFUSED;
 }
 
 /**
@@ -572,11 +572,6 @@ function reviewBlockedSetOrder(blocked) {
       + "NO QUEUE READ IN THIS REPOSITORY TOUCHED THIS FIELD BEFORE #2084 -- only `row-claim`'s own "
       + "claim refusal -- which is why a pull request in this state read as healthy everywhere: #2049 "
       + "was green and armed and unmergeable for over seven hours, and no org read could say why.\n"
-      + "AWAITING_REVIEW is a PR nobody has reviewed. Since #2176 `draft-awaiting-verdict` covers a READY "
-      + "pull request as well as a draft, so its reviewer, `reviewer-<n>` for pull request n, has normally "
-      + "been ordered already (and started, if none was live) -- read the wake ledger before prompting: "
-      + "`pnpm run prompt:session reviewer-<n> \"#<n> ...\"`. A `QUEUED` exit 2 is delivery; do not "
-      + "retry it.\n"
       + "REFUSED is a reviewer's `CHANGES_REQUESTED`, and it does NOT clear by being pushed past. Decide "
       + `whether it stands: rework belongs to the session on the PR's \`${SESSION_PREFIX}\` label, and a newer `
       + "review is the only thing that lifts it.\n"
@@ -595,28 +590,14 @@ function reviewBlockedSetOrder(blocked) {
  */
 function ownedReviewBlockedOrder(b) {
   const session = String(b.session);
-  const refused = b.code === REVIEW_STATE.REFUSED;
   return {
     session,
     cause: "pr-review-blocked",
     subject: `pr-${subjectRef(b.repoKey, b.number)}`,
     discriminator: b.code,
-    prompt: refused ? refusedPrompt(b) : awaitingReviewPrompt(b),
+    prompt: refusedPrompt(b),
     causeKey: `${session}/pr-review-blocked/pr-${subjectRef(b.repoKey, b.number)}/${b.code}`,
   };
-}
-
-/** @param {{number: number}} b */
-function awaitingReviewPrompt(b) {
-  return `${subjectMention(b)} is green on every required check and NOT held, and GitHub's own \`reviewDecision\` `
-    + "is REVIEW_REQUIRED: nobody has reviewed it, so it cannot merge.\n"
-    + "It carries your session label, so chasing it is yours. You opened it ready and it never entered the "
-    + `reviewer lane. Its reviewer is \`${reviewerSeat(b)}\`; since #2176 \`draft-awaiting-verdict\` has `
-    + "normally ordered it already (and started one, if none was live), so read the wake ledger before "
-    + `prompting: \`pnpm run prompt:session ${reviewerSeat(b)} "${subjectMention(b)} ..."\`. A \`QUEUED\` exit 2 `
-    + "is delivery; do not retry it.\n"
-    + "IF THIS PR SHOULD NOT MERGE YET, a `hold:` label removes it from this cause at once. One you merely "
-    + "skip stays and this order returns unchanged.";
 }
 
 /**
