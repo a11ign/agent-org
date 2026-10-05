@@ -5,7 +5,8 @@
 // dear, so an average that lets it in moves a figure the test names. The hand-computed numbers are in the comments beside the assertion that uses them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregate, compareWeeks, DEFINITIONS, nearestRank, NOT_DERIVABLE, NOT_HELD, renderAggregate, weekStart } from "./aggregate.mjs";
+import { aggregate, compareWeeks, DEFINITIONS, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
+import { waterfall } from "./waterfall.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -339,3 +340,82 @@ test("BY GATE CAUSE: a fixture whose repeats are all one cause prints that cause
   assert.deepEqual(only.causes.map(({ cause, count }) => [cause, count]), [["answer-owed", 1]]);
 });
 
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// #3511: the phase share and each dear row's dearest phase, from the rows' waterfalls
+
+const MIN = 60 * 1000;
+/**
+ * Two merged rows in week B with timelines worked out by hand, and a third (603) with a turn and no GitHub record. Row 601: filed 08:00, claimed 08:10, built 08:20-09:00 (a turn of $4),
+ * a pull request opened 09:00, ready 09:10, a reviewer's turn of $1, reviewed 09:30, queued 09:40, merged and closed 10:00 = 120 min. Row 602: filed 11:00, claimed 11:05, built 11:10-11:50
+ * ($6), opened 11:50, ready 12:00, an UNPRICED turn at 12:05, reviewed 12:10, queued 12:20, merged and closed 12:30 = 90 min. A review round holds the phase to itself while it is open, so
+ * `verify` has nothing exclusive here; the 10 minutes between the review and the queue entry are in no phase.
+ */
+const phased = (row, pr, day, times, turns) => [
+  github("filed", `${day}T${times.filed}:00Z`, { row }), github("claimed", `${day}T${times.claimed}:00Z`, { row, claimant: `worker-${row}` }),
+  github("opened", `${day}T${times.opened}:00Z`, { pr }), github("ready_for_review", `${day}T${times.ready}:00Z`, { pr }), github("reviewed", `${day}T${times.reviewed}:00Z`, { pr, state: "APPROVED", headSha: "aaaaaaa" }),
+  github("added_to_merge_queue", `${day}T${times.queued}:00Z`, { pr }), github("merged", `${day}T${times.closed}:00Z`, { pr }), github("closed", `${day}T${times.closed}:00Z`, { pr }), github("closed", `${day}T${times.closed}:00Z`, { row }),
+  ...turns,
+];
+const PHASED_EVENTS = [
+  ...phased(601, 1601, "2026-09-29", { filed: "08:00", claimed: "08:10", opened: "09:00", ready: "09:10", reviewed: "09:30", queued: "09:40", closed: "10:00" }, [
+    turn({ when: "2026-09-29T08:59:30Z", session: "worker-601", row: 601, cost: 4, wallClockMs: 39.5 * MIN }),
+    turn({ when: "2026-09-29T09:25:00Z", session: "reviewer-1601", pr: 1601, cost: 1, wallClockMs: 15 * MIN })]),
+  ...phased(602, 1602, "2026-09-29", { filed: "11:00", claimed: "11:05", opened: "11:50", ready: "12:00", reviewed: "12:10", queued: "12:20", closed: "12:30" }, [
+    turn({ when: "2026-09-29T11:49:30Z", session: "worker-602", row: 602, cost: 6, wallClockMs: 39.5 * MIN }),
+    turn({ when: "2026-09-29T12:05:00Z", session: "worker-602", row: 602, cost: null, model: "<synthetic>", wallClockMs: 5 * MIN })]),
+  turn({ when: "2026-09-29T13:00:00Z", session: "worker-603", row: 603, cost: 2 }),
+];
+const PHASED_PULLS = [pull(1601, 601, "2026-09-29T09:00:00Z", "2026-09-29T10:00:00Z"), pull(1602, 602, "2026-09-29T11:50:00Z", "2026-09-29T12:30:00Z"), pull(1603, 603, "2026-09-29T13:00:00Z", "2026-09-29T14:00:00Z")];
+const phasedWeek = () => weekOf(aggregate({ events: PHASED_EVENTS, pulls: PHASED_PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_B, held: { from: HELD_FROM, basis: "t" } }), WEEK_B);
+
+test("PHASE SHARE: each phase's share of the week's wall-clock and dollars, from the rows' waterfalls, against hand-computed values", () => {
+  const { phases } = phasedWeek();
+  assert.deepEqual([phases.rows, phases.noRecord], [2, 1], "row 603 has a turn and no GitHub record: counted apart, in no share");
+  assert.equal(phases.wallClockMs, 210 * MIN, "120 + 90");
+  near(phases.dollars, 11);
+  const share = (name) => phases.shares.find((one) => one.phase === name);
+  const minutes = { spec: 15, claim: 15, build: 80, verify: 0, review: 50, CI: 0, queue: 30, merge: 0, between: 20 };
+  for (const [name, expected] of Object.entries(minutes)) {
+    assert.equal(share(name).exclusiveMs, expected * MIN, `${name}: exclusive minutes`);
+    near(share(name).wallShare, expected / 210);
+  }
+  near(share("build").dollarShare, 10 / 11);
+  near(share("review").dollarShare, 1 / 11);
+  assert.equal(share("review").unpriced, 1, "the unpriced turn is counted apart in its phase, and is not zero dollars");
+  near(phases.shares.reduce((sum, one) => sum + one.wallShare, 0), 1);
+  near(phases.shares.reduce((sum, one) => sum + one.dollarShare, 0), 1);
+});
+
+test("PHASE SHARE POSITIVE CONTROL: a share that does not sum to the whole is RED, and a table that leaves a part out is never printed", () => {
+  const rowEvents = (row) => PHASED_EVENTS.filter((event) => event.row === row || event.pr === row + 1000 || (event.pr === null && event.row === row));
+  const real = [601, 602].map((row) => waterfall({ events: rowEvents(row), now: NOW }));
+  near(phaseShares(real).shares.reduce((sum, one) => sum + one.wallShare, 0), 1);
+  const dropped = structuredClone(real);
+  dropped[0].phases.find((phase) => phase.phase === "build").exclusiveMs = 0; // a phase whose wall-clock is lost: the table would show 33% of this row missing
+  assert.throws(() => phaseShares(dropped), /phase shares of wall-clock add up to 0\.\d+, not the whole/);
+  const lostTurns = structuredClone(real);
+  lostTurns[1].phases.find((phase) => phase.phase === "build").spend.dollars = 0; // a phase whose dollars are lost
+  assert.throws(() => phaseShares(lostTurns), /phase shares of dollars add up to .*not the whole/);
+  assert.deepEqual(phaseShares([]).shares.map((one) => one.wallShare), Array(9).fill(null), "with nothing held there is no share, which is not 0% and not an error");
+});
+
+test("DEAREST PHASE: each of the dearest rows names the phase that cost most and the phase with the most wall-clock to itself", () => {
+  const dearest = phasedWeek().dearest;
+  assert.deepEqual(dearest.map((row) => row.row), [602, 601, 603]);
+  assert.deepEqual([dearest[0].phase.costliest.phase, dearest[0].phase.costliest.share, dearest[0].phase.costliest.floor], ["build", 1, true], "row 602: all $6 are build, and its unpriced turn makes that a floor");
+  assert.deepEqual([dearest[1].phase.costliest.phase, dearest[1].phase.costliest.share, dearest[1].phase.costliest.floor], ["build", 0.8, false], "row 601: $4 of $5");
+  assert.deepEqual([dearest[1].phase.longest.phase, dearest[1].phase.longest.ms], ["build", 40 * MIN]);
+  assert.deepEqual(dearest[2].phase, { costliest: null, longest: null }, "row 603 has no phase record: none is invented, and its $2 are not called `between`");
+  assert.deepEqual(dearestPhase(waterfall({ events: PHASED_EVENTS.filter((event) => event.row === 603), now: NOW })), { costliest: null, longest: null }, "no waterfall, no figure");
+});
+
+test("PHASE SHARE RENDER: the table, the dearest phase beside each dear row, and the two definitions", () => {
+  const text = renderAggregate(aggregate({ events: PHASED_EVENTS, pulls: PHASED_PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_B, held: { from: HELD_FROM, basis: "t" } }));
+  assert.match(text, /PHASE SHARE over 2 merged rows \(1 with no phase record are in no share\): 3\.5h of wall-clock/);
+  assert.match(text, /build +38\.1% of wall-clock \(1\.3h to itself\) +90\.9% of dollars \(\$10\.0000\)/);
+  assert.match(text, /verify +0\.0% of wall-clock/);
+  assert.match(text, /#602 .*\n +dearest phase: build >= \$6\.0000 \(100\.0% of its turns' dollars\); most wall-clock to itself: build 0\.7h \(44\.4%\)/);
+  assert.match(text, /#603 .*\n +phases: none \(no phase record of this row in the store\)/);
+  assert.ok(DEFINITIONS.some((line) => line.startsWith("PHASE SHARE (#3511)")) && DEFINITIONS.some((line) => line.startsWith("DEAREST PHASE (#3511)")));
+});
