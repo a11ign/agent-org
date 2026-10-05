@@ -81,7 +81,6 @@ export const COMMANDS = {
   "queue-stalled": "queue-stalled.mjs",
   "reconstitution-drill": "reconstitution-drill.mjs",
   "row-reachability": "row-reachability.mjs",
-  "select-changed-tests": "lib/select-changed-tests.mjs",
   "shadow-window": "shadow-window.mjs",
   "test-memory-cap": "lib/test-memory-cap.mjs",
   "token-audit": "token-audit.mjs",
