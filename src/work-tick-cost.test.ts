@@ -88,6 +88,11 @@ test("#3566 CONTROL: a tick that does NOTHING still writes the line, with ZERO w
   assert.deepEqual(Object.keys(line.phases).filter((name) => ["startup", "gate", "roster"].includes(name)).sort(), ["gate", "roster", "startup"]);
   assert.equal(line.phases.wake, undefined, "a quiet tick never runs wake, so it has no wake phase");
   assert.equal(line.spawns.node.n, 1, "the gate is the one process this tick started");
+  const named = (command: string) => Object.entries(line.subcommands).filter(([key]) => key.startsWith(`${command} `)).reduce((sum, [, entry]) => sum + (entry as { n: number }).n, 0);
+  for (const command of ["gh", "git", "herdr"]) {
+    assert.equal(named(command), line.spawns[command]?.n ?? 0, `every ${command} the tick started is named by a subcommand, none twice or lost: ${JSON.stringify(line.subcommands)}`);
+  }
+  assert.equal(Object.keys(line.subcommands).some((key) => key.startsWith("node ")), false, "a node is not named by a subcommand");
 });
 
 test("#3566: a second tick APPENDS a second line rather than replacing the first", () => {
@@ -149,7 +154,7 @@ test("#3566: children's CPU is read from /proc/self/stat past a command name wit
 });
 
 test("#3566: the census names a command by its basename, cuts an argument to its tail, and keeps the slowest 5 by wall", () => {
-  assert.deepEqual(describeSpawn("/home/agent/.local/bin/gh", ["pr", "list"]), { cmd: "gh", line: "gh pr list" });
+  assert.deepEqual(describeSpawn("/home/agent/.local/bin/gh", ["pr", "list"]), { cmd: "gh", line: "gh pr list", sub: "pr list" });
   assert.equal(describeSpawn("git status --short", undefined).line, "git status --short", "an execSync string is split, not taken as one name");
   const long = describeSpawn("node", [`/very/long/${"d/".repeat(40)}work-gate.mjs`]);
   assert.match(long.line, /work-gate\.mjs$/);
@@ -205,6 +210,54 @@ test("#3566: a `gh` aimed by GH_REPO carries its repository, a `gh` with no aim 
   ]);
   assert.deepEqual(ghRepos, { "a11ign/agent-org": { n: 2, wallMs: 1000 }, "a11ign/a11ign": { n: 1, wallMs: 100 } });
   assert.deepEqual(commands.gh, { n: 4, wallMs: 1150 }, "an unaimed gh still counts under its command");
+});
+
+test("#3566: a gh, git or herdr call is named by its SUBCOMMAND, with the numbers and flags that would make every call its own key left out", () => {
+  const sub = (file: string, argv: string[]) => describeSpawn(file, argv).sub;
+  assert.equal(sub("gh", ["issue", "list", "--state", "open", "--limit", "500"]), "issue list");
+  assert.equal(sub("gh", ["issue", "view", "3680", "--json", "labels"]), "issue view", "an issue number is not part of the name");
+  assert.equal(sub("gh", ["api", "repos/a11ign/a11ign/issues/3578/timeline", "--paginate"]), "api repos/a11ign/a11ign/issues/#/timeline", "a path keeps its shape and loses its numbers");
+  assert.equal(sub("gh", ["-R", "a11ign/agent-org", "pr", "list"]), "pr list", "the value of a flag that takes one is not a subcommand");
+  assert.equal(sub("git", ["-C", "/home/agent/repos/x", "-c", "core.quotepath=off", "rev-parse", "HEAD"]), "rev-parse", "git's -C and -c take a value");
+  assert.equal(sub("herdr", ["agent", "list", "--json"]), "agent list");
+  assert.equal(describeSpawn("git rev-list --count HEAD", undefined).sub, "rev-list", "an execSync string is split like an argv");
+  assert.equal("sub" in describeSpawn("node", ["work-gate.mjs"]), false, "the control: a node is named by its script in `slowest`, and has no subcommand");
+  assert.equal("sub" in describeSpawn("gh", ["--version"]), false, "a call with only flags names no subcommand, rather than an empty one");
+});
+
+test("#3566: the summary counts and times each subcommand, keeps the 10 slowest, and folds the rest into `other` so the total still adds up", () => {
+  const records = [
+    { cmd: "gh", sub: "pr list", line: "", ms: 900 }, { cmd: "gh", sub: "pr list", line: "", ms: 700 }, { cmd: "gh", sub: "issue list", line: "", ms: 1700 },
+    { cmd: "git", sub: "rev-parse", line: "", ms: 20 }, { cmd: "gh", sub: "issue view", line: "", ms: null }, { cmd: "node", line: "", ms: 5000 },
+  ];
+  const { subcommands } = summariseCensus(records);
+  assert.deepEqual(subcommands, {
+    "gh issue list": { n: 1, wallMs: 1700 }, "gh pr list": { n: 2, wallMs: 1600 }, "git rev-parse": { n: 1, wallMs: 20 }, "gh issue view": { n: 1, wallMs: 0 },
+  }, "an asynchronous call counts and adds no wall, a node has no subcommand, and the slowest comes first");
+  assert.deepEqual(Object.keys(subcommands), ["gh issue list", "gh pr list", "git rev-parse", "gh issue view"]);
+
+  const many = Array.from({ length: 13 }, (_, i) => ({ cmd: "gh", sub: `api route-${i}`, line: "", ms: 100 * (i + 1) }));
+  const folded = summariseCensus(many).subcommands;
+  assert.equal(Object.keys(folded).length, 11, "10 kept and one `other`");
+  assert.deepEqual(folded.other, { n: 3, wallMs: 100 + 200 + 300 }, "the three cheapest are the ones folded");
+  assert.equal(Object.values(folded).reduce((sum, e) => sum + e.n, 0), 13, "no call is lost by folding");
+});
+
+test("#3566: a REAL git spawn through the preload leaves a record with its subcommand", () => {
+  const dir = mkdtempSync(join(tmpdir(), "census-sub-"));
+  try {
+    const census = join(dir, "census.jsonl");
+    const driver = join(dir, "driver.mjs");
+    writeFileSync(driver, `import { spawnSync } from "node:child_process";\nspawnSync("git", ["-C", ${JSON.stringify(dir)}, "rev-parse", "HEAD"]);\n`);
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+      { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(records.find((record: { cmd: string }) => record.cmd === "git")?.sub, "rev-parse");
+    assert.equal(summariseCensus(records).subcommands["git rev-parse"].n, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("#3566: an open list the tick already read is not read again by `readElsewherePrs`, a refusal is kept as a refusal, and a repository not yet read still is", () => {
