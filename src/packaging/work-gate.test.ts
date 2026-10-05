@@ -1080,12 +1080,14 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   // that is most worth doing, so a window must not withhold it.
   // #2845: `ready-row-unclaimable` is FINISH too. It starts no work -- it asks `product-manager` to unstick a row the claim keeps
   // refusing -- and a drain is when a stuck row most needs to be seen, since the pool's engineers are withheld anyway.
+  // #3567: `tick-overran` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that a tick ran slow or was killed -- and a drain
+  // is when nobody is looking at the tick, so a window must not withhold the one signal that says the tick is the thing that stopped.
   // #2936: `org-health` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that nothing is landing, a red PR is unattended, a row
   // is refused or the primary is stale -- and a drain is exactly when an org that is not landing anything should be told.
   assert.deepEqual(finish, ["answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-answered", "chairman-blocked",
     "claim-stalled", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "host-units-stale",
     "lab-job-finished", "org-health", "org-retrospective", "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale", "ready-row-incomplete", "ready-row-unclaimable", "repeating-log-line", "reviewer-auth-failed",
-    "row-branch-unshipped", "row-call-count-signal", "row-off-board", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
+    "row-branch-unshipped", "row-call-count-signal", "row-off-board", "tick-overran", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }

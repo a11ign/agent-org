@@ -94,11 +94,11 @@ test("declaredCauses combines lists and REFUSES a cause declared twice", () => {
 
 test("the tool's own causes name NO project cause: `fleet-batch-due` is not among them", () => {
   const tool = causesOf(TOOL_CAUSE_DECLARATIONS);
-  assert.equal(tool.length, 40,
-    "40 tool causes today -- ADR 0040 measured 28 at `46b59abf0`; `pr-codeowner-review-missing` (#1959), "
+  assert.equal(tool.length, 41,
+    "41 tool causes today -- ADR 0040 measured 28 at `46b59abf0`; `pr-codeowner-review-missing` (#1959), "
     + "`row-call-count-signal` (#2691), `answer-label-unexplained` (#2711) and `ready-row-incomplete` (#2791) "
     + "and `closes-unresolved-repo-wide` (#2823) and `primary-stale` (#2781), then `repeating-log-line` and `backlog-aged-unpromoted` (#2848) "
-    + "and `ready-row-unclaimable` (#2845), then `org-retrospective` (#2938), then `org-health` (#2936), then `chairman-answered` (#3390), are the twelve that landed after that snapshot");
+    + "and `ready-row-unclaimable` (#2845), then `org-retrospective` (#2938), then `org-health` (#2936), then `chairman-answered` (#3390), then `tick-overran` (#3567), are the thirteen that landed after that snapshot");
   assert.ok(!tool.includes("fleet-batch-due"), "the ONE project cause must not be tool code");
 });
 
@@ -116,22 +116,22 @@ const EXPECTED_CAUSES = ["answer-label-unexplained", "answer-owed", "awaiting-ev
   "fleet-batch-due", "host-units-stale", "lab-job-finished", "lane-backlog-unpromoted", "org-health", "org-retrospective", "org-stalled", "pr-checks-failing",
   "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale",
   "ready-queue-empty", "ready-row-incomplete", "ready-row-unclaimable", "ready-row-unclaimed", "repeating-log-line", "reviewer-auth-failed", "row-branch-unshipped",
-  "row-call-count-signal", "row-off-board", "trunk-red", "unclaimed-blocker-cleared",
+  "row-call-count-signal", "row-off-board", "tick-overran", "trunk-red", "unclaimed-blocker-cleared",
   "verdict-comment-unreviewed", "verdict-not-convinced"];
 
 const EXPECTED_JUDGMENT = ["answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocked-unexaminable", "blocker-cleared",
   "chairman-answered", "chairman-blocked", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lab-job-finished", "lane-backlog-unpromoted", "org-health", "org-retrospective", "org-stalled", "ready-queue-empty", "ready-row-incomplete", "ready-row-unclaimable", "repeating-log-line", "reviewer-auth-failed",
-  "row-branch-unshipped", "row-call-count-signal", "row-off-board", "unclaimed-blocker-cleared"];
+  "row-branch-unshipped", "row-call-count-signal", "row-off-board", "tick-overran", "unclaimed-blocker-cleared"];
 
 const EXPECTED_START = ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed", "unclaimed-blocker-cleared"];
 
-test("CAUSES (re-exported by work-gate.mjs) equals today's 38, by value", () => {
+test("CAUSES (re-exported by work-gate.mjs) equals the recorded list, by value", () => {
   assert.deepEqual([...CAUSES].sort(), [...EXPECTED_CAUSES].sort());
 });
 
-test("JUDGMENT_CAUSES (re-exported by work-gate.mjs) equals today's 24, by value", () => {
+test("JUDGMENT_CAUSES (re-exported by work-gate.mjs) equals the recorded list, by value", () => {
   assert.deepEqual([...JUDGMENT_CAUSES].sort(), [...EXPECTED_JUDGMENT].sort());
 });
 
