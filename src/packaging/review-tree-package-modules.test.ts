@@ -129,3 +129,58 @@ test("#3558 (e): running it twice changes nothing, and a `node_modules` that is 
       "nothing was written into the tick's checkout");
   });
 });
+
+// --- THE LINKS AN EARLIER HEAD MADE (reviewer-agent-org-255, CHANGES_REQUESTED at 382e0bbf) -----------------------------------------------
+//
+// The tree is re-pointed on every head-changing push and its `node_modules` is not part of the checkout, so what the first head linked is still
+// there for the second. A link the second head no longer declares is a dependency its code can import and its manifest does not name.
+
+/** `linked`, then `change` what the NEXT head would differ in, then link the SAME tree again, then `body`. */
+function repointed(change: (w: ReturnType<typeof world>) => void, body: (w: ReturnType<typeof world>) => void) {
+  linked((w) => {
+    change(w);
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    body(w);
+  });
+}
+const gone = (path: string) => lstatSync(path, { throwIfNoEntry: false }) === undefined;
+
+test("#3558 (f): a dependency the tick's package no longer holds is unlinked from the re-pointed tree, workspace or not", () => {
+  const cliModules = (w: ReturnType<typeof world>) => join(w.primary, "packages", "cli", "node_modules");
+  repointed((w) => {
+    rmSync(join(cliModules(w), "@a11ign", "evidence"));
+    rmSync(join(cliModules(w), "yaml"));
+    rmSync(join(cliModules(w), "@axe-core"), { recursive: true });
+  }, (w) => {
+    assert.deepEqual([gone(join(w.cli, "@a11ign", "evidence")), gone(join(w.cli, "yaml")), gone(join(w.cli, "@axe-core"))], [true, true, true]);
+    assert.deepEqual(readdirSync(join(w.cli, "@a11ign")), ["documents"], "CONTROL: the one it still holds is still linked");
+    assert.equal(realpathSync(join(w.lab, "@a11ign", "evidence")), realpathSync(join(w.tree, "packages", "evidence")), "and another package's own link is not touched");
+  });
+});
+
+test("#3558 (g): a workspace package the pull request RENAMED is unlinked, and a package renamed away loses its `node_modules`", () => {
+  repointed((w) => {
+    writePackage(w.tree, "evidence", "@a11ign/evidence-core");
+    writePackage(w.tree, "lab", "@a11ign/lab-renamed");
+  }, (w) => {
+    assert.equal(gone(join(w.cli, "@a11ign", "evidence")), true, "the tick's entry still names `@a11ign/evidence`; the tree has no package of that name");
+    assert.equal(gone(join(w.lab, "..")), false, "CONTROL: the package directory is the PR's and stays");
+    assert.equal(existsSync(w.lab), false, "`lab` has no same-named package in the tick's checkout any more, so it has no dependencies to be given");
+    assert.equal(realpathSync(join(w.cli, "@a11ign", "documents")).includes("/.pnpm/"), true, "CONTROL: the registry entry survives the same re-point");
+  });
+});
+
+test("#3558 (h): a stale scope that is a LINK into the primary is unlinked, never emptied through", () => {
+  const w = world();
+  try {
+    const store = join(w.primary, "node_modules", ".pnpm", "@axe-core+playwright@4", "node_modules", "@axe-core");
+    rmSync(join(w.primary, "packages", "cli", "node_modules", "@axe-core"), { recursive: true });
+    mkdirSync(join(w.tree, "packages", "cli", "node_modules"), { recursive: true });
+    symlinkSync(store, join(w.cli, "@axe-core"));
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    assert.equal(gone(join(w.cli, "@axe-core")), true);
+    assert.equal(existsSync(join(store, "playwright")), true, "the store's package is still there: the scope was unlinked and not swept through");
+  } finally {
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
