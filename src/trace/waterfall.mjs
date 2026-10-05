@@ -20,8 +20,8 @@
 //   unexplained  nothing was recorded. It is printed as such and is NEVER folded into WORKING (the acceptance's positive control).
 // A moment is given to the first of these that claims it, in that order, so the three add up to the wall-clock exactly.
 //
-// WHAT THE STORE DOES NOT SAY, and the waterfall does not guess: whether a pull request was opened as a draft (`opened` carries no `draft`, so a pull request with no
-// `ready_for_review` and no queue entry reads as a verify phase still open, with that said); and the push time of a head (`head_moved.at` is the COMMIT's date).
+// WHAT THE STORE DOES NOT SAY, and the waterfall does not guess: whether a pull request was opened as a draft when its `opened` record has `draft: null` or no `draft` (written before
+// the field, or the pull object was not read: a pull request with no `ready_for_review` then reads as a verify phase that says it does not know); and the push time of a head (`head_moved.at` is the COMMIT's date).
 import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
 
 /** @typedef {import("./store.mjs").TraceEvent} TraceEvent
@@ -46,7 +46,7 @@ const DEFERRED_MARK = "@deferred";
 const WAVE_GAP_MS = 60 * MS_PER_SECOND; // a check-run starting within a minute of the last one finishing is a job that needed it, not a retrigger
 
 export const DEFINITIONS = [
-  "WATERFALL (#3511): the eight phases of a row, from its events. spec: filed -> claimed. claim: claimed -> the claimant's first turn on it. build: that turn -> the pull request opened. verify: opened -> ready_for_review (a pull request opened ready, which has no such event, has a verify of nothing, and only when it was queued or merged: the store does not say whether a pull request began as a draft). review: each push or ready -> the review that follows it (a ready mark on a head already reviewed starts none). CI: each head -> its last check-run completing, once per WAVE of checks (a check-run starting more than a minute after all the earlier ones finished starts a new wave, as the ready mark does; two overlapping runs of one name are two triggers of one wave). A head's time is its commit's date. queue: the first queue entry -> merged (an ejection is a repeat, not an end). merge: merged -> the row closed.",
+  "WATERFALL (#3511): the eight phases of a row, from its events. spec: filed -> claimed. claim: claimed -> the claimant's first turn on it. build: that turn -> the pull request opened. verify: opened -> ready_for_review (a pull request opened ready, which has no such event, has a verify of nothing, said so only when `opened.draft` is false; with `draft` null or absent the store does not say whether it began as a draft). review: each push or ready -> the review that follows it (a ready mark on a head already reviewed starts none). CI: each head -> its last check-run completing, once per WAVE of checks (a check-run starting more than a minute after all the earlier ones finished starts a new wave, as the ready mark does; two overlapping runs of one name are two triggers of one wave). A head's time is its commit's date. queue: the first queue entry -> merged (an ejection is a repeat, not an end). merge: merged -> the row closed.",
   "A phase with a start and no end is OPEN and prints so, to the time of the reading, and is never printed as ended. One that started and was never ended before the pull request or row CLOSED is CUT at the close. A phase with no start record is `not held`, and one never reached is `not reached`, each with its reason.",
   "WORKING + WAITING + unexplained = the wall-clock of a run, exactly. WORKING is the union of the turns' spans (a turn's span is its `wallClockMs` before its end, inferred by the store; a turn with none adds tokens and dollars and no time). WAITING is a RECORD: a deferral span, a hold label, an order delivered after it was typed, a merge-queue entry, an ejection, CI running, a review not yet posted, a tool call running (the stretch before a turn that its own `toolMs` measures), each named. unexplained is a gap with no record, and is never WORKING.",
   "INFERRED (marked): a draft APPROVED and not yet marked ready is waiting on whoever the ledger's orders about it were delivered to; the review, those orders and that session's turns in the gap are named as the evidence.",
@@ -223,14 +223,29 @@ function buildRuns(ctx) {
 /** Whether the pull request got as far as a queue entry or a merge, which a draft cannot. @param {Pull} pull */
 const wasReady = (pull) => pull.adds.length > 0 || pull.merged !== undefined;
 
+/**
+ * The verify run of a pull request that has no `ready_for_review` event, read from what `opened.draft` says (`null`, or absent from a record written before the field, is
+ * "the store does not say"; only `false` is "opened ready").
+ * @param {Context} ctx @param {Pull} pull @param {string} label
+ */
+function unmarkedVerify(ctx, pull, label) {
+  const opened = /** @type {TraceEvent} */ (pull.opened);
+  const draft = /** @type {boolean | null | undefined} */ (/** @type {any} */ (opened).draft);
+  const instant = (/** @type {string} */ note) => [cut(ctx, { phase: "verify", label, from: opened.at, to: opened.at, note })];
+  if (draft === false) return instant("opened ready (draft: false), so no ready_for_review event and no draft stage");
+  if (draft === true && wasReady(pull)) return instant("opened as a draft and then queued or merged, but the store holds no ready_for_review event: the end of the draft stage is not held");
+  if (draft === true) return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "opened as a draft, no ready_for_review yet: still a draft" })];
+  if (wasReady(pull)) return instant("no ready_for_review event, and it was queued or merged: the store's `opened` does not say whether it began as a draft");
+  return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "no ready_for_review yet: still a draft, or opened ready (the store's `opened` does not say which)" })];
+}
+
 /** @param {Context} ctx @param {Pull} pull @param {boolean} several */
 function verifyRun(ctx, pull, several) {
   const { opened, ready } = pull;
   if (!opened) return [];
   const label = `${several ? `#${pull.number} ` : ""}opened -> ready_for_review`;
   if (ready) return [cut(ctx, { phase: "verify", label, from: opened.at, to: ready.at })];
-  if (wasReady(pull)) return [cut(ctx, { phase: "verify", label, from: opened.at, to: opened.at, note: "no ready_for_review event, and it was queued or merged: opened ready, with no draft stage" })];
-  return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "no ready_for_review yet: still a draft, or opened ready (the store's `opened` does not say which)" })];
+  return unmarkedVerify(ctx, pull, label);
 }
 
 /** @param {Context} ctx @returns {Built} */
