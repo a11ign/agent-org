@@ -1,3 +1,12 @@
+// no-token: gh
+//
+// The `pr:open` test below imports `pr-open.mjs`, whose `defaultGh` spawns `gh` -- a path none of these tests take: `checkBody` is handed
+// the body and an injected `run`, and nothing here calls `gh(` or spawns it.
+//
+// DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file must not call `gh(`). Run with `GH_TOKEN`/`GITHUB_TOKEN`
+// unset and a fake `gh` first on `PATH` that logs and exits 97: 23 pass / 0 fail / 0 skipped, and the log was never written. Without the
+// declaration the capability gate refuses any Acceptance that runs this file, the row's own included.
+
 /**
  * #438: A GUARD CAN ONLY BE SHOWN TO BITE BY A COMMAND WHOSE SUCCESS IS A NON-ZERO EXIT, and
  * `acceptanceReport` hardcoded `passed = code === 0` -- so #418's own `Acceptance:` line, demonstrating
