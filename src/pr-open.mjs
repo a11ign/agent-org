@@ -527,11 +527,11 @@ function branchName(fact) {
  * @param {string} mode
  * @param {string[]} rest
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
- *           err?: (line: string) => void, owner?: () => string | null }} [deps]
+ *           err?: (line: string) => void, owner?: () => string | null, labelExists?: (name: string) => boolean }} [deps]
  * @returns {number} the header's exit code: 0, EXIT_NOTHING_SENT, or EXIT_LANDED_THEN_FAILED
  */
 export function sendToGitHub(mode, rest,
-  { run = defaultGh, git = defaultGit, err = writeErr, owner = ownerOfTree } = {}) {
+  { run = defaultGh, git = defaultGit, err = writeErr, owner = ownerOfTree, labelExists } = {}) {
   // AN ERROR HANDLER THAT CAN ITSELF ERROR IS THE ONE PLACE A THROW COSTS THE MOST (worker-capture,
   // #1283). Both reads sat here unguarded, so a failing `git` -- a GIT_DIR pointing elsewhere, a stale
   // gitdir file, the CLI run from outside the checkout -- replaced this message with a raw throw that
@@ -560,13 +560,30 @@ export function sendToGitHub(mode, rest,
       return EXIT_LANDED_THEN_FAILED;
     }
   }
-  // WARNED, NEVER EXIT 3, AND THAT ASYMMETRY IS THE POINT. An arm that fails leaves a PR that will not
-  // merge -- a caller must know. A label that fails leaves a PR that is merely unroutable, which is the
-  // state every PR was in before this existed; turning that into EXIT_LANDED_THEN_FAILED would make an
-  // author retry, or worse hand-fix, a create that entirely succeeded. The line still prints, because a
-  // silently unlabelled PR is how this defect survived 20 merges unnoticed.
-  for (const args of labelAfterCreate(mode, rest, owner())) {
+  labelCreatedPr(mode, rest, { run, err, owner: owner(), labelExists });
+  // #2929: only a create that LANDED and was armed -- the failed create and the failed arm returned above with their
+  // own line, and this one never stands in for either. Last, so it is the line still on screen when the turn ends.
+  if (mode === "create") err(ciPendingLine({ head: head8() }));
+  return 0;
+}
+
+/**
+ * The owner label after a create, moved out of `sendToGitHub` unchanged but for `ensureLabel`.
+ *
+ * WARNED, NEVER EXIT 3, AND THAT ASYMMETRY IS THE POINT. An arm that fails leaves a PR that will not
+ * merge -- a caller must know. A label that fails leaves a PR that is merely unroutable, which is the
+ * state every PR was in before this existed; turning that into EXIT_LANDED_THEN_FAILED would make an
+ * author retry, or worse hand-fix, a create that entirely succeeded. The line still prints, because a
+ * silently unlabelled PR is how this defect survived 20 merges unnoticed.
+ * @param {string} mode
+ * @param {string[]} rest
+ * @param {{ run: (args: string[]) => void, err: (line: string) => void, owner: string | null,
+ *           labelExists?: (name: string) => boolean }} deps
+ */
+function labelCreatedPr(mode, rest, { run, err, owner, labelExists }) {
+  for (const args of labelAfterCreate(mode, rest, owner)) {
     try {
+      ensureLabel(args[args.length - 1], { run, labelExists });
       run(args);
     } catch (error) {
       err(`pr-open: the PR was created but labelling it failed -- ${messageOf(error)}\n`
@@ -574,10 +591,83 @@ export function sendToGitHub(mode, rest,
         + `author. Apply it by hand: \`gh pr edit <n> --add-label ${args[args.length - 1]}\`.\n`);
     }
   }
-  // #2929: only a create that LANDED and was armed -- the failed create and the failed arm returned above with their
-  // own line, and this one never stands in for either. Last, so it is the line still on screen when the turn ends.
-  if (mode === "create") err(ciPendingLine({ head: head8() }));
-  return 0;
+}
+
+/**
+ * #3639: `gh pr edit --add-label X` of a label the repository does not have is "not found" (read on
+ * `session:worker-3510` in agent-org, 2026-10-05), and agent-org has none of the product repository's labels until
+ * somebody makes them. So the label is MADE here when GitHub says it is absent. A failure to ask, or to create,
+ * propagates to `labelCreatedPr`'s warning rather than being swallowed: the same outage as the missing label.
+ * OFF when `labelExists` is not wired, like `rowBody`: the tests call `main` directly and must not reach `gh`.
+ * @param {string} name
+ * @param {{ run: (args: string[]) => void, labelExists?: (name: string) => boolean }} deps
+ */
+function ensureLabel(name, { run, labelExists }) {
+  if (labelExists === undefined || labelExists(name)) return;
+  run(["label", "create", name, "--description", "The session that owns the pull request (pr:open)"]);
+}
+
+/**
+ * #3639: THE ROW A PULL REQUEST NAMES CARRIES ITS OWNER, for a tree nobody stamped.
+ *
+ * `.a11y-owner` is written by `row-claim` into the product repository's trees (260 of 278 stamped, measured
+ * 2026-10-05) and by nobody into agent-org's, which are made by hand with `git worktree add` (5 of 207). The
+ * fact is written down elsewhere, though: the PR's `Closes` line (or its title) names the row, and the row
+ * carries `session:<owner>`. This reads it.
+ *
+ * NOTHING IS INVENTED, the same ruling as `labelAfterCreate`'s. The result is one owner or null: no row named, a row
+ * with no `session:` label, or the rows between them naming two different sessions all yield null, because the wrong
+ * session woken for a red check is worse than the unlabelled PR that already costs `product-manager` a turn.
+ *
+ * @param {string} body
+ * @param {string[]} rest the args handed to `gh pr create`; `--title` is read
+ * @param {(number: number, repo: string) => string[]} rowLabels the labels of one row; a throw is the caller's
+ * @returns {string | null}
+ */
+export function rowOwnerLabel(body, rest, rowLabels) {
+  const owners = new Set();
+  for (const { repo, number } of rowsNamed(body, rest)) {
+    for (const label of rowLabels(number, repo)) {
+      if (label.startsWith(SESSION_PREFIX)) owners.add(label.slice(SESSION_PREFIX.length));
+    }
+  }
+  return owners.size === 1 ? [...owners][0] : null;
+}
+
+/**
+ * Every row the body's `Closes` line or the title's `owner/repo#N` names, once each. A bare `#N` is the default tracker's,
+ * as in `readRegions`: a pull request in agent-org closes a row in the tracker, never an agent-org issue.
+ * @param {string} body @param {string[]} rest
+ * @returns {{ repo: string, number: number }[]}
+ */
+function rowsNamed(body, rest) {
+  const declaration = extractClosesDeclaration(body);
+  const closed = declaration.kind === "closes" ? closesReferences(declaration) : [];
+  const title = flagAfter(rest, "--title") ?? flagAfter(rest, "-t") ?? "";
+  const titled = [...title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)].map((m) => ({ repo: m[1], number: Number(m[2]) }));
+  const all = [...closed.map((r) => ({ repo: r.repo ?? REPO, number: r.number })), ...titled];
+  return all.filter((row, i) => all.findIndex((o) => o.repo === row.repo && o.number === row.number) === i);
+}
+
+/**
+ * The owner `sendToGitHub` labels with: the tree's stamp when there is one (unchanged), else the named row's. Reading the
+ * row costs an API call, so it is asked only of a tree with no stamp and only for a create, and a failure to read it is
+ * PRINTED and leaves the PR unlabelled -- as it was before this -- rather than guessing from the rows that did answer.
+ * @param {{ owner?: () => string | null, rowLabels?: (number: number, repo: string) => string[] }} deps
+ * @param {{ mode: string, body: string, rest: string[], err: (line: string) => void }} pr
+ * @returns {() => string | null}
+ */
+export function ownerOfPr({ owner = ownerOfTree, rowLabels }, { mode, body, rest, err }) {
+  return () => {
+    const stamped = owner();
+    if (stamped !== null || mode !== "create" || rowLabels === undefined) return stamped;
+    try {
+      return rowOwnerLabel(body, rest, rowLabels);
+    } catch (error) {
+      err(`pr-open: the tree has no ${SESSION_PREFIX}* stamp and the row it names could not be read -- ${messageOf(error)}\n`);
+      return null;
+    }
+  };
 }
 
 /**
@@ -619,6 +709,28 @@ const defaultPrHead = (repo, number) => JSON.parse(execFileSync("gh",
  */
 const defaultRowBody = (number, repo = REPO) =>
   execFileSync("gh", ["api", `repos/${repo}/issues/${number}`, "--jq", ".body"], { encoding: "utf8" });
+/**
+ * #3639: a row's labels over REST like `defaultRowBody`. `repo` is always qualified by `rowOwnerLabel`'s caller.
+ * @param {number} number @param {string} repo
+ * @returns {string[]}
+ */
+const defaultRowLabels = (number, repo) => JSON.parse(execFileSync("gh",
+  ["api", `repos/${repo}/issues/${number}`, "--jq", "[.labels[].name]"], { encoding: "utf8" }));
+/**
+ * #3639: whether THIS repository has the label, over REST. A 404 is "no"; anything else THROWS, because "could not ask" and
+ * "absent" are different states and creating a label on the strength of the second would hide an auth or network fault.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function defaultLabelExists(name) {
+  try {
+    execFileSync("gh", ["api", `repos/{owner}/{repo}/labels/${encodeURIComponent(name)}`, "--silent"], { stdio: "pipe" });
+    return true;
+  } catch (error) {
+    if (/HTTP 404|Not Found/i.test(`${/** @type {{stderr?: unknown}} */ (error).stderr ?? ""}`)) return false;
+    throw error;
+  }
+}
 /** #3215: the stamp of the tree `pr-open` runs from, read against the body being sent. @param {string} body */
 const defaultVerifyStamp = (body) => readVerifyStamp({ dir: defaultGit(["rev-parse", "--show-toplevel"]), body });
 /** `sandboxGitEnv()` CALLED: git exports GIT_DIR into every hook environment. @param {string[]} args */
@@ -684,14 +796,15 @@ function verifyStampStep(mode, rest, body, { verifyStamp, out, err }) {
  *           prHead?: (repo: string, number: string) => { ref: string, oid: string } | null,
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
  *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
+ *           rowLabels?: (number: number, repo: string) => string[], labelExists?: (name: string) => boolean,
  *           code?: readonly { key: string, repo: string }[], login?: () => string, lanes?: {lanes: import("./lane-ownership.mjs").Lane[]} | null,
  *           verifyStamp?: (body: string) => import("./verify-stamp.mjs").VerifyReading,
  *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv = process.argv.slice(2),
-  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rootFiles, code, login, lanes, verifyStamp, out = writeOut,
-    err = writeErr } = {}) {
+  { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rowLabels, labelExists, rootFiles, code, login, lanes,
+    verifyStamp, out = writeOut, err = writeErr } = {}) {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
     err(usage());
@@ -727,7 +840,7 @@ export function main(argv = process.argv.slice(2),
   if (unverified !== null) return unverified;
   // #2307: only for a body that will be SENT, and never a reason not to send it.
   printMutationReport(body, runMutation, out);
-  return sendToGitHub(mode, rest, { run, git, err, owner });
+  return sendToGitHub(mode, rest, { run, git, err, labelExists, owner: ownerOfPr({ owner, rowLabels }, { mode, body, rest, err }) });
 }
 
 /**
@@ -952,6 +1065,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   if (launchGate(`pr-open ${process.argv[2] ?? ""}`.trim())) {
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
-    process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp });
+    process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
+      rowLabels: defaultRowLabels, labelExists: defaultLabelExists });
   }
 }
