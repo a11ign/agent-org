@@ -44,7 +44,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.mjs";
-import { requestActions, snoozedUntil } from "./answers.mjs";
+import { requestActions, snoozedUntil, walkActions } from "./answers.mjs";
 import { createMessenger } from "./core.mjs";
 import { createLedger, describeError, foldLedger } from "./ledger.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
@@ -59,6 +59,7 @@ import { observeWatched } from "./sources/watched.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
 import { createWatchReaders } from "./watch-list.mjs";
+import { walkPosition } from "./walk.mjs";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { readAgents } from "../herdr-agents.mjs";
@@ -174,13 +175,16 @@ export function createGhReader({ run = runGh } = {}) {
  * A request that still asks carries the buttons the chairman may press under it (a11ign/a11ign#3423): its options, or Approve, then Explain more and Later.
  * A request that no longer asks (`resolved`) carries none: it becomes a cleared notice, and a button under one would answer a request that is gone.
  *
- * @param {Record<string, unknown>[]} events @param {Record<string, { id: string, label: string }[]>} options keyed by event key
+ * A procedure brief (`walks`, a11ign/a11ign#3425) carries a walk's own: Done, Stuck and Explain more.
+ *
+ * @param {Record<string, unknown>[]} events @param {{ options: Record<string, { id: string, label: string }[]>, walks: Record<string, true> }} offered keyed by event key
  * @returns {Record<string, unknown>[]}
  */
-function withButtons(events, options) {
+function withButtons(events, { options, walks }) {
   return events.map((event) => {
     if (event.kind !== "request" || event.resolved === true) return event;
-    const actions = requestActions(options[/** @type {string} */ (event.key)] ?? []);
+    const key = /** @type {string} */ (event.key);
+    const actions = walks[key] === true ? walkActions() : requestActions(options[key] ?? []);
     return actions.length === 0 ? event : { ...event, actions };
   });
 }
@@ -188,10 +192,11 @@ function withButtons(events, options) {
 /** @type {Source} */
 const REQUESTS = {
   name: "requests",
-  async observe({ github, repo, now, openKeys }) {
-    const { events, options, problems } = await readRequests({ github, repo, openKeys, now });
+  async observe({ github, repo, now, openKeys, history }) {
+    // A walk's first message and its reminders show the step the LEDGER says it is on (`walk.mjs`), so the watcher hands the source that one question.
+    const { events, options, walks, problems } = await readRequests({ github, repo, openKeys, now, positionOf: (key) => walkPosition(history, key) });
     // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
-    return { events: withButtons(events, options), notes: problems };
+    return { events: withButtons(events, { options, walks }), notes: problems };
   },
 };
 
