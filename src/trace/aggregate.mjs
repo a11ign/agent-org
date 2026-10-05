@@ -26,7 +26,7 @@ export const DEFINITIONS = [
   "CACHE-READ SHARE OF INPUT: cacheRead / (input + cacheRead + cacheWrite5m + cacheWrite1h), summed over every turn of the week. Output tokens are not in the denominator.",
   "REPEAT WASTE, priced from the store, each turn priced ONCE in the first class that claims it, in this order, so the classes add up: re-delivered order, re-review, re-queue, compaction, preamble reload. A class never counts a turn another class already counted; its COUNT is every occurrence.",
   "  re-delivered order: a wake whose session and ledger key (without the `@deferred` suffix) were delivered before. Dollars: every turn that wake started.",
-  "    BY GATE CAUSE (the wake's own `cause`, in the same week as the class, most repeats first): repeats, distinct keys, the MEDIAN GAP between a repeat and the previous delivery of its key (whenever that was), and dollars (a floor, as every dollar here). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row (`<cause> @deferred`).",
+  "    BY GATE CAUSE (the wake's own `cause`, in the same week as the class, dearest first: a cause with no derivable dollars sorts last): repeats, distinct keys, the MEDIAN GAP between a repeat and the previous delivery of its key (whenever that was), and dollars (a floor, as every dollar here). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row (`<cause> @deferred`).",
   "  re-review: a `reviewed` event on a pull request after an earlier one. Dollars: the turns of that pull request's reviewer session between its first review and the later one.",
   "  re-queue: an `added_to_merge_queue` after an earlier one on the same pull request. Dollars: the turns on the pull request's rows between its last unmerged exit from the queue and the re-entry.",
   "  compaction: a compaction of a session. Dollars: the INPUT side (input, cacheRead, cacheWrite; not output) of the first turn the session took after it, which re-reads the window.",
@@ -300,7 +300,7 @@ function repeatsOf(events, at) {
 
 /**
  * The repeats by gate cause (the wake's own `cause`). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row: a deferral retry and a wake that was
- * delivered anyway are different defects. Dollars are priced once per turn through the shared `claimed`, so the rows add up to the class.
+ * delivered anyway are different defects. Dollars are priced once per turn through the shared `claimed`, so the rows add up to the class; the dearest cause is first (the chairman's order is in dollars), repeats beside it.
  * @param {ReturnType<typeof repeatsOf>} repeats @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed
  * @returns {{ causes: RedeliveredCause[], priced: ReturnType<typeof priceOnce>[] }}
  */
@@ -319,7 +319,8 @@ function causesOf(repeats, turnsOfWake, claimed) {
       cause, deferred: deferred === "true", count: members.length, keys: new Set(members.map(({ key }) => key)).size, medianGapMs: nearestRank(members.map(({ gapMs }) => gapMs), FIRST_RANK_PERCENT),
       dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced }) };
   });
-  entries.sort((a, b) => b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
+  const worth = (row) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
+  entries.sort((a, b) => worth(b.row) - worth(a.row) || b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
   return { causes: entries.map(({ row }) => row), priced: entries.map(({ priced }) => priced) };
 }
 
