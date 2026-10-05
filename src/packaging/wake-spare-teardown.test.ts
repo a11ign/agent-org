@@ -302,7 +302,7 @@ test("#2323 THE TICK: a QUIET gate still ends a finished spare -- work-tick call
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeFileSync(sparePathsFrom(ledger).registry, JSON.stringify({ "worker-4": { spawnedAt: T0, rows: [4242424] } }));
     const ran = spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0" } });
 
     assert.match(readFileSync(log, "utf8"), /workspace close wD/, `the tick closed the finished spare; got ${ran.stderr}`);
     assert.match(ran.stderr, /ENDED worker-4 \(#4242424, clean\)/);
@@ -337,7 +337,7 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4",
       `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0" } });
     assert.match(ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/, ran.stderr);
     // #2405: the claim's `git fetch` runs in the primary the flag moved, not the host's -- which a CI runner has not got
     // (`spawnSync git ENOENT`, 2026-09-24), and which this run would otherwise pass on by finding on a host that has.

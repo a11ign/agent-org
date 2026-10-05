@@ -256,7 +256,7 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
     if (registry !== null) writeFileSync(sparePathsFrom(ledger).registry, `${JSON.stringify(registry)}\n`);
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0" } });
     const read = (path: string) => { try { return readFileSync(path, "utf8"); } catch { return ""; } };
     return { ran, atClaim: read(seen), cycles: readSpareCycles(sparePathsFrom(ledger).cycles),
       registry: JSON.parse(read(sparePathsFrom(ledger).registry) || "{}") as Record<string, { rows: number[] }> };
