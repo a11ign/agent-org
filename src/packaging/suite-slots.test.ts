@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { IONICE_CLASS, NICE_LEVEL, SLOT_COUNT, SLOT_DIR_ENV, SLOT_ENV, SuiteSlotRefusal, WAIT_REPORT_MS, findOnPath, insideSlot, runUnderSlot, slotDirectory } from "../suite-slots.mjs";
+import { IONICE_CLASS, NICE_LEVEL, SLOT_COUNT, SLOT_DIR_ENV, SLOT_ENV, SuiteSlotRefusal, WAITS_LOG, WAIT_REPORT_MS, findOnPath, insideSlot, runUnderSlot, slotDirectory } from "../suite-slots.mjs";
 
 const SELF = fileURLToPath(new URL("../suite-slots.mjs", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "suite-slots-"));
@@ -126,6 +126,79 @@ describe("done-when 3: a queued run says it is queued, now and every minute", ()
     assert.match(messages[2], /waited 2m00s/);
     b.release();
     await Promise.all([a.done, b.done]);
+  });
+});
+
+describe("a11ign/a11ign#3664: a run that had to wait leaves a record that outlives it (read AFTER the waiter has exited)", () => {
+  /** The wait records of `dir`, one array of fields per line; none when nothing was ever recorded. */
+  const waits = (dir: string): string[][] => existsSync(join(dir, WAITS_LOG))
+    ? readFileSync(join(dir, WAITS_LOG), "utf8").split("\n").filter(Boolean).map((line) => line.split("\t"))
+    : [];
+
+  test("three contenders against two slots find exactly ONE wait record, naming the third: when, who, where, how long, which slot", async () => {
+    const dir = fresh("waits-three");
+    const [a, b] = [await hold(dir, "a"), await hold(dir, "b")];
+    assert.deepEqual(waits(dir), [], "the two that took a free slot waited for nothing and recorded nothing");
+    let clock = 1_000_000;
+    const messages: string[] = [];
+    const third = runUnderSlot({ command: "true", dir, cwd: scratch, label: "third", env: env(), ...quick, now: () => clock, write: (text) => messages.push(text),
+      sleep: async () => { clock += 5000; if (clock >= 1_015_000) { a.release(); await a.done; } } });
+    assert.equal(await third, 0);
+    const [record, ...others] = waits(dir);
+    assert.deepEqual(others, [], "ONE record: the third waited, the other two did not");
+    const [at, pid, cwd, waited, slot, label] = record;
+    assert.equal(at, new Date(clock).toISOString());
+    assert.equal(pid, String(process.pid));
+    assert.equal(cwd, scratch);
+    assert.equal(waited, "15000", "milliseconds from its first try to the slot it got");
+    assert.match(slot, /^[01]$/);
+    assert.equal(label, "third");
+    assert.match(messages[0], /all 2 slots/, "the same wait the message told the waiter about");
+    b.release();
+    await Promise.all([a.done, b.done]);
+  });
+
+  test("CONTROL: ONE contender, and TWO contenders against two slots, wait for nothing and find no record", async () => {
+    const one = fresh("waits-one");
+    assert.equal(await runUnderSlot({ command: "true", dir: one, env: env(), ...quick }), 0);
+    assert.deepEqual(waits(one), []);
+    const two = fresh("waits-two");
+    const first = await hold(two, "first");
+    assert.equal(await runUnderSlot({ command: "true", dir: two, env: env(), ...quick, label: "second" }), 0);
+    first.release();
+    await first.done;
+    assert.deepEqual(waits(two), []);
+  });
+
+  test("a second wait appends: the first is still there, and a record that cannot be written is said, and the suite still runs", async () => {
+    const dir = fresh("waits-append");
+    const holders = [await hold(dir, "a"), await hold(dir, "b")];
+    const waiter = (label: string) => runUnderSlot({ command: "true", dir, label, env: env(), ...quick, write: () => {} });
+    const firstWaiter = waiter("first-waiter");
+    await new Promise((done) => setTimeout(done, 100));
+    holders[0].release();
+    await holders[0].done;
+    assert.equal(await firstWaiter, 0);
+    const refilled = await hold(dir, "c"); // the freed slot is taken again, so the next contender has to wait too
+    const secondWaiter = waiter("second-waiter");
+    await new Promise((done) => setTimeout(done, 100));
+    holders[1].release();
+    assert.equal(await secondWaiter, 0);
+    refilled.release();
+    await Promise.all([refilled.done, holders[1].done]);
+    assert.deepEqual(waits(dir).map((fields) => fields[5]), ["first-waiter", "second-waiter"]);
+
+    const blocked = fresh("waits-unwritable");
+    const held = [await hold(blocked, "a"), await hold(blocked, "b")];
+    mkdirSync(join(blocked, WAITS_LOG)); // a directory where the file should be: appending to it fails
+    const messages: string[] = [];
+    const third = runUnderSlot({ command: "true", dir: blocked, env: env(), ...quick, write: (text) => messages.push(text) });
+    await until("the waiting message", () => messages.length > 0);
+    held[0].release();
+    assert.equal(await third, 0, "the suite ran although its wait could not be recorded");
+    assert.ok(messages.some((text) => text.includes("could not record this wait")), JSON.stringify(messages));
+    held[1].release();
+    await Promise.all(held.map((one) => one.done));
   });
 });
 

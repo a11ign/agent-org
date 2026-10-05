@@ -17,6 +17,12 @@
 // held, by what and for how long, and then every `WAIT_REPORT_MS`. It is not FIFO: whoever polls first after a release takes the slot, which is fair enough at two slots and a
 // minute-scale suite, and a queue would need a second piece of state a killed waiter could leave behind.
 //
+// **A WAIT IS RECORDED, BECAUSE THE MESSAGE ABOVE DIES WITH THE WAITER (a11ign/a11ign#3664, found reading #3608).** It goes to the waiting suite's own stderr, so afterwards nobody could read whether a
+// third contender ever queued, which is the only way to tell whether the slot count was the limit. A run that had to wait appends ONE line to `waits.log` in the slot directory when it gets
+// its slot: when, the waiter's pid and cwd, how long it waited, the slot, the label. A file and not the journal: `systemd-cat` exists, but the record has to be isolated per slot
+// directory (a test, `SLOT_DIR_ENV`), readable by whoever reads the locks beside it, and not rotated away. A run that never waited writes nothing, and a waiter that is killed while waiting writes
+// nothing either (the line is written on acquire), which is a gap and not a claim that nobody waited.
+//
 // **EVERY SUITE RUNS AT `nice -n 15 ionice -c 3` (chairman, 2026-10-04T21:40Z)**, so the gate, the listener and the seats always win the CPU and the disk. Both values are named below and
 // nothing else in either repository spells them.
 //
@@ -29,7 +35,7 @@
 // other), and the full agent-org suite, `node src/suite-slots.mjs suite`, which did not exist as one command. `node src/suite-slots.mjs run -- <command>` is the same for any other full run.
 
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, appendFileSync, constants, mkdirSync, readFileSync } from "node:fs";
 import { constants as osConstants, homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,6 +50,8 @@ export const IONICE_CLASS = 3;
 export const WAIT_POLL_MS = 1000;
 /** How often a waiting suite says it is still waiting. */
 export const WAIT_REPORT_MS = 60_000;
+/** The record of runs that had to wait, inside the slot directory: one tab-separated line per wait, appended when the waiter gets its slot. */
+export const WAITS_LOG = "waits.log";
 /** Set in the environment of a command that is running in a slot, to the slot's number: how a script that re-runs itself under a slot knows it already is. */
 export const SLOT_ENV = "AGENT_ORG_SUITE_SLOT";
 /** Names the directory holding the slots, for a test or an operator; by default the host's cache directory. */
@@ -152,17 +160,20 @@ export function describeSlot(dir, index, now) {
 /**
  * One try at slot `index`: start the command under `flock` and, if the slot was free, run it to its end.
  * @param {{ index: number, tools: { flock: string, nice: string, ionice: string }, dir: string, command: string, args: string[], label: string, since: number,
- *   env: Record<string, string | undefined>, cwd?: string, output: "inherit" | "ignore" }} attempt
+ *   env: Record<string, string | undefined>, cwd?: string, output: "inherit" | "ignore", onStart: () => void }} attempt `onStart` is called once, when the command has started in the slot
  * @returns {Promise<{ held: false } | { held: true, status: number }>}
  */
-function tryOnce({ index, tools, dir, command, args, label, since, env, cwd, output }) {
+function tryOnce({ index, tools, dir, command, args, label, since, env, cwd, output, onStart }) {
   const lockFile = join(dir, `slot-${index}.lock`);
   return new Promise((settle, fail) => {
     let started = false;
     const child = spawn("/bin/sh", ["-c", HOLDER_SCRIPT, "suite-slot",
       lockFile, String(since), label, tools.flock, tools.nice, String(NICE_LEVEL), tools.ionice, String(IONICE_CLASS), command, ...args],
     { cwd, env: { ...env, [SLOT_ENV]: String(index) }, stdio: [output, output, output, "pipe"] });
-    child.stdio[3]?.on("data", () => { started = true; });
+    child.stdio[3]?.on("data", () => {
+      if (!started) onStart();
+      started = true;
+    });
     const forward = (/** @type {NodeJS.Signals} */ signal) => child.kill(signal);
     for (const signal of SIGNALS) process.on(signal, forward);
     const stopForwarding = () => { for (const signal of SIGNALS) process.off(signal, forward); };
@@ -196,10 +207,12 @@ export async function runUnderSlot({ command, args = [], env = process.env, cwd,
   mkdirSync(slotDir, { recursive: true });
   const named = oneLine(label ?? [command, ...args].join(" "));
   const began = now();
+  /** @type {number | null} */
   let reportedAt = null;
   for (;;) {
     for (let index = 0; index < slots; index += 1) {
-      const outcome = await tryOnce({ index, tools, dir: slotDir, command, args, label: named, since: now(), env, cwd, output });
+      const onStart = () => { if (reportedAt !== null) recordWait({ slotDir, index, waited: now() - began, label: named, cwd, at: now(), write }); };
+      const outcome = await tryOnce({ index, tools, dir: slotDir, command, args, label: named, since: now(), env, cwd, output, onStart });
       if (outcome.held) return outcome.status;
     }
     if (reportedAt === null || now() - reportedAt >= reportMs) {
@@ -207,6 +220,21 @@ export async function runUnderSlot({ command, args = [], env = process.env, cwd,
       reportedAt = now();
     }
     await sleep(pollMs);
+  }
+}
+
+/**
+ * Append the line that says a run waited: ISO time, pid, cwd, milliseconds waited, slot, label. A record that cannot be written is said on `write` and the suite still runs: the limit
+ * is the point, and the record is how it is read afterwards.
+ * @param {{ slotDir: string, index: number, waited: number, label: string, cwd?: string, at: number, write: (text: string) => void }} wait
+ */
+function recordWait({ slotDir, index, waited, label, cwd, at, write }) {
+  const where = (cwd ?? process.cwd()).replace(/\s/g, " ");
+  const line = `${[new Date(at).toISOString(), process.pid, where, waited, index, label].join("\t")}\n`;
+  try {
+    appendFileSync(join(slotDir, WAITS_LOG), line);
+  } catch (cause) {
+    write(`suite-slots: could not record this wait in ${join(slotDir, WAITS_LOG)}: ${/** @type {Error} */ (cause).message}\n`);
   }
 }
 
