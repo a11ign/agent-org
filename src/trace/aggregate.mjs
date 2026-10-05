@@ -11,7 +11,7 @@
 //   prints `not held`. A row with no turn in the store has no figure and is counted apart.
 //   NEVER MIXED. A week is its own population: nothing is pooled across weeks, and a week the store holds only part of is marked PARTIAL and left out of the comparison.
 //   NEVER AVERAGED OPEN. A row with no merge is listed apart and is in no percentile.
-import { costOf, eventsForRow } from "./store.mjs";
+import { costOf, eventsForRow, repriceEvents } from "./store.mjs";
 import { BETWEEN, PHASES, waterfall } from "./waterfall.mjs";
 import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.mjs";
 
@@ -575,7 +575,8 @@ function partialReason({ start, now, held, unread }) {
  * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
  *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null }} input
  */
-export function aggregate({ events, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
+export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
+  const events = repriceEvents(stored); // every dollar below, the waterfalls' included, is at PRICES now and not at the price the turn was stored with (#3638)
   const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
   const { turns, placed, byRow, turnsOf } = indexes({ events, keys });
   const everyMerge = mergedRows(pulls, { from: -Infinity, to: Infinity }, rowRepo);
