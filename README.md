@@ -32,6 +32,16 @@ The tool reads `.agent-org/project.json` of the project it serves, and never ans
 `typescript` is a peer dependency, resolved from the project's directory first and the tool's own tree second, so the tool parses the project's code
 with the project's compiler. Tested on Node 22.22.1.
 
+## Source is TypeScript
+
+**A new source file is `.ts`, and a `.mjs` you touch may convert in the same pull request** (ADR 0043, a11ign/a11ign#3550). `src/packaging/mjs-source-count.test.ts` pins how
+many `.mjs` source files there are and fails when the count RISES; a pull request that converts one lowers the pin in the same diff, so the pin is the progress report.
+The mapping from `@ts-check` JSDoc to types is in the ADR's table.
+
+**One limit, until the tool is built rather than run from source:** a `.ts` that a shipped command imports does not load under the host's `node` (22.22.1 is built without
+TypeScript support, and node does not strip types under `node_modules`). So a new source file is `.ts`, unless a shipped command imports it; then raise the pin in this diff and say why.
+Convert only files that run under `tsx` (tests, test support, CI and dev tools): `src/messaging/fake-provider.ts` is the first, and a file a command reaches stays `.mjs`.
+
 ## Releases
 
 **A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is

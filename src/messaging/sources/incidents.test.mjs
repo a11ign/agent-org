@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createMessenger } from "../core.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { DEFAULT_INCIDENT_CONFIG, ciPermissionEvents, fleetDownEvents, gateCrashEvents, observeIncidents, trunkRedEvents } from "./incidents.mjs";
 import { TICK_INTERVAL_MS } from "./stall.mjs";

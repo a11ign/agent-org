@@ -29,7 +29,9 @@
 //   * `explain` and `stuck` each send the LIAISON one order, through a port (`orders`): this module queues nothing itself, and the one file that may queue is `converse.mjs`.
 //     When the liaison's queue refuses, `converse.mjs` queues it for `ceo` (the chairman's order, a11ign/a11ign#3538) and the press is told so in plain words (`told`); when neither
 //     takes it the press is told nothing was sent. **The chairman never reads a queue's refusal or an error's text here:** they go to the ledger (`error`), which is where they are kept.
-//   * `forme` is D1's request and is not wired: the chairman is told so, and nothing is written.
+//   * `forme` ("Do it for me") writes ONE ledger line, `{direction: "answer", step: FORME_STEP, via: "button", messageRef}`, which is the chairman's OK as `chairman:queue add` verifies it
+//     (`verifyApproval`, ./session-queue.mjs). It is NOT an answer: the label stays and `ceo` is not woken, because a press asks for a thing to be done and the request is still asking. The ASK itself is
+//     still the liaison's `chairman:queue add`. The press is told, in plain words, that it is queued for his session, and never what the queue holds. A second press on the same message writes nothing.
 // A press on a message whose request is answered (or no longer asking) is told so, and its keyboard is taken off (`clearKeyboard`): a second press cannot happen.
 //
 // WHAT THIS DOES NOT DO: send anything. It returns what the caller (the listener) must send, as `inbound.handle` does, and it is handed
@@ -43,12 +45,16 @@
 import { FALLBACK_RECIPIENT, RECIPIENT } from "./converse.mjs";
 import { actionData, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
 import { describeError, STATUS } from "./ledger.mjs";
+import { FORME_STEP } from "./session-queue.mjs";
 import { latestBrief, NEEDS_CHAIRMAN, parseChairmanOptions, parseRequestKey } from "./sources/requests.mjs";
 
 /** The three writes, in the order they are made. Pinned by the test: the label steps are last. */
 export const STEPS = Object.freeze(["comment", "remove-label", "set-answer"]);
 
 const ANSWER_DIRECTION = "answer";
+/** What a "Do it for me" press is told: plain words, and nothing of what the queue holds. */
+const FORME_QUEUED = "I've asked your session to do this. Nothing happens until it reads the queue.";
+const FORME_ALREADY = "Your session was already asked about this. Nothing was written again.";
 /** What a press is told when neither the liaison nor the fallback took its order: plain words, nothing of the queue's refusal in them. */
 const ORDER_LOST = `I couldn't pass that to the ${RECIPIENT} or to ${FALLBACK_RECIPIENT}, so nothing was sent. Press again to retry.`;
 /** How long `later` holds a request's reminders back. */
@@ -260,10 +266,21 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     return reply(accepted, "asked", request, step === "explain" ? `Asked the liaison for more on ${name}.` : `Told the liaison you are stuck at ${name}.`);
   }
 
+  /**
+   * `forme`: one ledger line that `chairman:queue add` accepts as his OK for the message the press sat under; the row is untouched, because a press is a request and not an answer.
+   * @param {Press} press @returns {Answered}
+   */
+  function doItForMe({ accepted, request, ref, lines }) {
+    const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.step === FORME_STEP && line.messageRef === ref);
+    if (again) return reply(accepted, "already-queued", request, FORME_ALREADY);
+    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: FORME_STEP, via: "button" });
+    return reply(accepted, "queued-for-session", request, FORME_QUEUED);
+  }
+
   /** A press that leaves the request asking. @param {Press} press @param {string} action one of SIDE_ACTIONS @returns {Promise<Answered>} */
   async function sideAction(press, action) {
     if (action === "later") return snooze(press);
-    if (action === "forme") return reply(press.accepted, "not-available", press.request, "Do it for me is not available yet. Nothing was done.");
+    if (action === "forme") return doItForMe(press);
     return orderLiaison({ ...press, step: /** @type {"explain" | "stuck"} */ (action) });
   }
 

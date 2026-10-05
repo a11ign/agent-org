@@ -14,7 +14,7 @@ import { after, describe, test } from "node:test";
 
 import { createMessenger } from "../core.mjs";
 import { normalizeEvent } from "../event.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { MILESTONES, assertReadOnlyGh, runWatch } from "../watch.mjs";
 import { BASELINE_KEY, MilestonesRefusal, milestoneKey, observeMilestones, parseMilestones, readMilestonesFile, seenMilestoneKeys } from "./milestones.mjs";

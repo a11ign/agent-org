@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createMessenger } from "../core.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { SUMMARY_LIST_LIMIT, localClock, observeSummary, summaryDue, summaryKey } from "./summary.mjs";
 

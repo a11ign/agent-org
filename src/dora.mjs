@@ -19,6 +19,10 @@
 // is an answer, and only on a package the declaration names). `undefined` is a third state, not a failure: a metric with nothing to measure (no regression
 // ever opened) is undefined, and is never printed as 0 either.
 //
+// A RELEASE'S COMMIT comes from the registry's `gitHead`, else the version's tag, else (#3591) its PROVENANCE ATTESTATION: a package published through CI
+// provenance carries no `gitHead` and its repository has no tag, but the attestation names the commit it was built from. A release none of the three can place
+// stays `unknown`, never `false`. A version `0.0.0-...` held a package NAME and was never a deployment, so it is not a release (#3591).
+//
 // ONE npm PACKAGE PER REPOSITORY IS READ (`release.package`), and `renderDora` says which: a release of another package in the same repository is not a
 // deployment in this reading. a11ign publishes four together in one version pull request, so it declares the command.
 //
@@ -54,6 +58,8 @@ const MAX_BUFFER = 256 * 1024 * 1024;
 const READ_TIMEOUT_SECONDS = 60;
 const HTTP_OK = "200";
 const HTTP_NOT_FOUND = "404";
+/** The attestation predicate that names the build's source; the registry also serves a `publish` attestation beside it, which names no commit. */
+const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 
 /**
  * @typedef {{ repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] }} Repository
@@ -504,12 +510,57 @@ function commitOf(repo, ref) {
 
 /**
  * A release's commit, resolved only for a release inside the window: one older cannot contain a change merged in it, and asking for every tag of a
- * long-lived package is hundreds of calls for nothing. `null` for an older one, and for one GitHub does not know.
- * @param {{ publishedAt: string | undefined, since: string, known: string | undefined, repo: string, ref: string }} release @returns {string | null}
+ * long-lived package is hundreds of calls for nothing. `null` for an older one, and for one no lookup can place. `lookups` run in order and stop at the
+ * first answer, so a costlier read is only made for a release the cheaper ones could not place.
+ * @param {{ publishedAt: string | undefined, since: string, known: string | undefined, lookups: (() => string | null)[] }} release @returns {string | null}
  */
-function resolveCommit({ publishedAt, since, known, repo, ref }) {
+function resolveCommit({ publishedAt, since, known, lookups }) {
   if (known) return known;
-  return publishedAt !== undefined && Date.parse(publishedAt) >= Date.parse(since) ? commitOf(repo, ref) : null;
+  if (publishedAt === undefined || Date.parse(publishedAt) < Date.parse(since)) return null;
+  for (const lookup of lookups) {
+    const commit = lookup();
+    if (commit !== null) return commit;
+  }
+  return null;
+}
+
+/** A version that held a package NAME (`0.0.0-reserved.0`, `0.0.0-stage`): published to reserve it, never a deployment of anything. @param {string} version */
+export const isNameReservation = (version) => version.startsWith("0.0.0-");
+
+/**
+ * The commit a version's provenance attestation says it was built from. Reads only the `slsa.dev/provenance/v1` statement and only a 40-character
+ * `gitCommit`, so a malformed or absent one is `null` (unplaced, i.e. `unknown`), never a guess.
+ * @param {any} document the registry's `attestations` document for one version @returns {string | null}
+ */
+export function commitFromAttestations(document) {
+  const payload = document?.attestations?.find((/** @type {any} */ a) => a?.predicateType === PROVENANCE_PREDICATE)?.bundle?.dsseEnvelope?.payload;
+  if (typeof payload !== "string") return null;
+  const statement = attempt(() => JSON.parse(Buffer.from(payload, "base64").toString("utf8")));
+  const source = statement?.predicate?.buildDefinition?.resolvedDependencies?.find((/** @type {any} */ dependency) => dependency?.digest?.gitCommit);
+  const commit = source?.digest?.gitCommit;
+  return typeof commit === "string" && commit.length === SHA_LENGTH && /^[0-9a-f]+$/.test(commit) ? commit : null;
+}
+
+/** @typedef {{ commitOf: (repo: string, ref: string) => string | null, attestedCommit: (npmPackage: string, version: string) => string | null }} CommitReaders */
+
+/**
+ * The releases of an npm package from its registry document: name reservations dropped, and each version in the window placed by its `gitHead`, then its
+ * tag, then its attestation. The attestation read costs ONE request per release in the window that has neither of the first two.
+ * @param {{ document: any, repository: Repository & { release: { kind: "npm", package: string } }, since: string, commits: CommitReaders }} input @returns {Release[]}
+ */
+export function npmReleasesFrom({ document, repository, since, commits }) {
+  const npmPackage = repository.release.package;
+  return Object.entries(document.versions ?? {}).filter(([version]) => !isNameReservation(version)).map(([version, meta]) => ({
+    id: version, publishedAt: document.time?.[version], deprecated: Boolean(/** @type {any} */ (meta).deprecated),
+    commit: resolveCommit({ publishedAt: document.time?.[version], since, known: /** @type {any} */ (meta).gitHead,
+      lookups: [() => commits.commitOf(repository.repo, `v${version}`), () => commits.attestedCommit(npmPackage, version)] }),
+  }));
+}
+
+/** @param {string} npmPackage @param {string} version @returns {string | null} `null` when the attestation cannot be read or names no commit */
+function attestedCommit(npmPackage, version) {
+  const url = `https://registry.npmjs.org/-/npm/v1/attestations/${npmPackage.replace("/", "%2f")}@${version}`;
+  return attempt(() => commitFromAttestations(JSON.parse(run("curl", ["-sSf", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", url]))));
 }
 
 /** @param {Repository & { release: { kind: "npm", package: string } }} repository @param {{ since: string }} window @returns {Release[]} */
@@ -521,11 +572,7 @@ function npmReleases(repository, { since }) {
   const status = answer.slice(split + 1);
   if (status === HTTP_NOT_FOUND) throw neverPublished(repository.release.package);
   if (status !== HTTP_OK) throw new Error(`the registry answered HTTP ${status} for ${repository.release.package}`);
-  const document = JSON.parse(answer.slice(0, split));
-  return Object.entries(document.versions ?? {}).map(([version, meta]) => ({
-    id: version, publishedAt: document.time?.[version], deprecated: Boolean(/** @type {any} */ (meta).deprecated),
-    commit: resolveCommit({ publishedAt: document.time?.[version], since, known: /** @type {any} */ (meta).gitHead, repo: repository.repo, ref: `v${version}` }),
-  }));
+  return npmReleasesFrom({ document: JSON.parse(answer.slice(0, split)), repository, since, commits: { commitOf, attestedCommit } });
 }
 
 /** @param {Repository} repository @param {{ since: string }} window @returns {Release[]} the `v*` tags that have a published GitHub Release */
@@ -533,7 +580,7 @@ function tagReleases(repository, { since }) {
   const rows = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
   return rows.filter((/** @type {any} */ r) => !r.draft && typeof r.tag_name === "string" && r.tag_name.startsWith("v")).map((/** @type {any} */ r) => ({
     id: r.tag_name, publishedAt: r.published_at, deprecated: false,
-    commit: resolveCommit({ publishedAt: r.published_at, since, known: undefined, repo: repository.repo, ref: r.tag_name }),
+    commit: resolveCommit({ publishedAt: r.published_at, since, known: undefined, lookups: [() => commitOf(repository.repo, r.tag_name)] }),
   }));
 }
 
