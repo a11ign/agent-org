@@ -47,7 +47,7 @@ import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders } from "./org-health.mjs";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
-import { claudeTurns, transcriptFiles } from "./token-audit.mjs";
+import { claudeTurns, sessionOf, transcriptFiles } from "./token-audit.mjs";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { stateEntryPath, hostConfigPath, readHostConfig } from "./host-config.mjs"; // #2799; the other two for #2969's `clones`, read by host-config since #2991
 import { REPO } from "./project-identity.mjs";
@@ -4323,20 +4323,61 @@ export function compactContext(run, label, sleep = sleepSync) {
  *
  * @param {string} label @param {string} [root] the instance's own transcripts; real `~/.claude/projects`
  *   by default, injectable for a test
+ * @param {{ readText: (file: string) => string, readHead: (file: string) => string }} [reader] the file reads, a seam so a test can count them
  * @returns {number | null}
  */
-export function instanceCacheRead(label, root = join(process.env.HOME ?? "", ".claude", "projects")) {
-  let tokens = null;
-  let newest = -Infinity;
-  for (const file of transcriptFiles(root)) {
+export function instanceCacheRead(label, root = join(process.env.HOME ?? "", ".claude", "projects"), reader = TRANSCRIPT_READER) {
+  // NEWEST FIRST, STOPPING AT THE FIRST FILE THAT NAMES THE SESSION, is "the most recently written transcript naming it wins" without reading
+  // the rest (a11ign/a11ign#3566, slice 6): this read every transcript on the host, 3.3 GB, parsed whole, once per order delivered -- 22 s of
+  // CPU measured for ONE call, and the largest part of a waking tick's `wake` phase. A tie in mtime keeps the first in directory order, as `>` did.
+  for (const { file } of newestFirst(transcriptFiles(root))) {
+    if (namesAnotherSession(file, label, reader)) continue;
     let text;
-    try { text = readFileSync(file, "utf8"); } catch { continue; }
-    const last = claudeTurns(text).filter((t) => t.session === label).at(-1);
-    if (!last) continue;
-    const mtime = statMtime(file) ?? 0;
-    if (mtime > newest) { newest = mtime; tokens = last.cacheRead; }
+    try { text = reader.readText(file); } catch { continue; }
+    // `claudeTurns` stamps every turn with this one session, so a file that is another's has none to find: skip its parse (a head that said nothing).
+    if ((sessionOf(text) ?? UNATTRIBUTED) !== label) continue;
+    const last = claudeTurns(text, UNATTRIBUTED).filter((t) => t.session === label).at(-1);
+    if (last) return last.cacheRead;
   }
-  return tokens;
+  return null;
+}
+
+/** `claudeTurns`'s own name for a transcript that names no session; passed explicitly so the skip above and the parse cannot disagree about it. */
+const UNATTRIBUTED = "unattributed";
+
+/** How much of a transcript's start is read to learn whose it is: the wake prompt is its first message. A file whose head says nothing is read whole. */
+const TRANSCRIPT_HEAD_BYTES = 64 * 1024;
+
+/** @type {{ readText: (file: string) => string, readHead: (file: string) => string }} */
+const TRANSCRIPT_READER = {
+  readText: (file) => readFileSync(file, "utf8"),
+  readHead(file) {
+    const fd = openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(TRANSCRIPT_HEAD_BYTES);
+      return buffer.toString("utf8", 0, readSync(fd, buffer, 0, TRANSCRIPT_HEAD_BYTES, 0));
+    } finally {
+      closeSync(fd);
+    }
+  },
+};
+
+/** @param {string[]} files @returns {{ file: string, mtime: number }[]} newest first; equal mtimes keep their given order (the sort is stable) */
+function newestFirst(files) {
+  return files.map((file) => ({ file, mtime: statMtime(file) ?? 0 })).sort((a, b) => b.mtime - a.mtime);
+}
+
+/**
+ * Whether the head of this transcript already says it is ANOTHER session's. `claudeTurns` takes a file's session from the FIRST `You are \`x\``
+ * anywhere in it, so a match in the head is that very match, and a file whose first match is not `label` has no turn for `label`: skipping it
+ * changes no answer. A head with no match says nothing, and a head that cannot be read says nothing -- both fall through to the whole-file read.
+ * @param {string} file @param {string} label @param {{ readHead: (file: string) => string }} reader
+ */
+function namesAnotherSession(file, label, reader) {
+  let head;
+  try { head = reader.readHead(file); } catch { return false; }
+  const named = sessionOf(head);
+  return named !== null && named !== label;
 }
 
 /**
