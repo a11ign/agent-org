@@ -14,11 +14,11 @@ const NOW = at("13:30:00");
 
 const base = { repo: null, cause: null, causeKey: null, wakeId: null };
 /** A GitHub record, as `github-events.mjs` makes it: `session: "github"`, a stable id, the row or the pull request. */
-const gh = (kind, time, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
+const ghRecord = (kind, time, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
   row: subject.pr ? null : REPO_ROW, pr: subject.pr ?? null, ...base, actor: "worker-9001", ...extra });
-const rowEvent = (kind, time, extra = {}) => gh(kind, time, extra, { pr: null });
-const review = (id, time, headSha, state = "APPROVED") => gh("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
-const run = (id, name, started, completed, headSha, conclusion = "success") => gh("ci_run", completed ?? started, {
+const rowEvent = (kind, time, extra = {}) => ghRecord(kind, time, extra, { pr: null });
+const review = (id, time, headSha, state = "APPROVED") => ghRecord("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
+const run = (id, name, started, completed, headSha, conclusion = "success") => ghRecord("ci_run", completed ?? started, {
   id: `gh:a11ign/a11ign#${PR}:ci_run:${id}:${completed ? "completed" : "in_progress"}`, name, status: completed ? "completed" : "in_progress", state: completed ? conclusion : null,
   startedAt: at(started), completedAt: completed ? at(completed) : null, headSha });
 const tokens = { input: 10, output: 20, cacheRead: 1000, cacheWrite5m: 0, cacheWrite1h: 0 };
@@ -40,26 +40,26 @@ const ROW = [
   turn("worker-9001", "10:40:00", "10:40:30", 0.1),
   turn("worker-9001", "10:50:00", "11:10:00", 0.5),
   turn("worker-9001", "11:15:00", "11:19:30", null),
-  gh("head_moved", "11:19:00", { headSha: H1, actor: null }),
-  gh("opened", "11:20:00"),
-  gh("labeled", "11:22:00", { name: "pr:hold" }), gh("unlabeled", "11:24:00", { name: "pr:hold" }),
+  ghRecord("head_moved", "11:19:00", { headSha: H1, actor: null }),
+  ghRecord("opened", "11:20:00"),
+  ghRecord("labeled", "11:22:00", { name: "pr:hold" }), ghRecord("unlabeled", "11:24:00", { name: "pr:hold" }),
   run(1, "lint", "11:20:30", "11:28:00", H1), run(2, "test", "11:20:30", "11:27:00", H1),
   review(5001, "11:30:00", H1),
   wake("11:31:00", "orchestrator", "orchestrator/draft-convinced-not-ready/pr-9100/caf5b440", { pr: PR }),
   turn("orchestrator", "11:31:00", "11:32:00", 0.2, { row: null, pr: PR }),
   wake("11:41:00", "orchestrator", "orchestrator/draft-convinced-not-ready/pr-9100/caf5b440", { pr: PR }),
   turn("orchestrator", "11:41:00", "11:42:00", 0.2, { row: null, pr: PR }),
-  gh("ready_for_review", "11:50:00"),
-  gh("head_moved", "12:00:00", { headSha: H2, actor: null }),
+  ghRecord("ready_for_review", "11:50:00"),
+  ghRecord("head_moved", "12:00:00", { headSha: H2, actor: null }),
   turn("worker-9001", "12:00:00", "12:01:00", 0.05),
   { id: "compaction:worker-9001:1", kind: "compaction", source: "transcript", at: at("12:02:00"), session: "worker-9001", row: REPO_ROW, pr: null, ...base },
   run(3, "lint", "12:00:30", "12:10:00", H2), run(4, "test", "12:00:30", "12:15:00", H2), run(6, "test", "12:00:33", "12:14:00", H2), run(5, "lint", "12:16:30", "12:17:30", H2),
   review(5002, "12:20:00", H2), review(5003, "12:25:00", H2),
-  gh("added_to_merge_queue", "12:30:00", { id: "gh:a11ign/a11ign#9100:added_to_merge_queue:q1" }),
-  gh("removed_from_merge_queue", "12:35:00", { outcome: "unmerged" }),
-  gh("added_to_merge_queue", "12:40:00", { id: "gh:a11ign/a11ign#9100:added_to_merge_queue:q2" }),
-  gh("removed_from_merge_queue", "12:50:00", { outcome: "merged", id: "gh:a11ign/a11ign#9100:removed_from_merge_queue:end" }),
-  gh("merged", "12:50:00", { actor: "merge-queue" }), gh("closed", "12:50:00"),
+  ghRecord("added_to_merge_queue", "12:30:00", { id: "gh:a11ign/a11ign#9100:added_to_merge_queue:q1" }),
+  ghRecord("removed_from_merge_queue", "12:35:00", { outcome: "unmerged" }),
+  ghRecord("added_to_merge_queue", "12:40:00", { id: "gh:a11ign/a11ign#9100:added_to_merge_queue:q2" }),
+  ghRecord("removed_from_merge_queue", "12:50:00", { outcome: "merged", id: "gh:a11ign/a11ign#9100:removed_from_merge_queue:end" }),
+  ghRecord("merged", "12:50:00", { actor: "merge-queue" }), ghRecord("closed", "12:50:00"),
   rowEvent("closed", "12:50:05"),
 ];
 
@@ -170,7 +170,7 @@ test("REPEATS: each of the chairman's five is flagged in the phase it happened i
 
 test("CI WAVES: two triggers of one check are one wave, and a later wave of checks no earlier wave ran is not a re-run (measured on #3406)", () => {
   const duplicate = [run(1, "arm", "11:00:00", "11:00:10", H1), run(2, "arm", "11:00:03", "11:00:12", H1)];
-  const only = (events) => waterfall({ events: [gh("opened", "10:59:00"), ...events], now: NOW });
+  const only = (events) => waterfall({ events: [ghRecord("opened", "10:59:00"), ...events], now: NOW });
   assert.deepEqual(only(duplicate).repeats, [], "arm twice within one wave, overlapping");
   const fresh = only([...duplicate, run(3, "mutate", "12:00:00", "12:00:20", H1)]);
   assert.deepEqual(bounds(phaseOf(fresh, "CI")), ["10:59:00-11:00:12", "12:00:00-12:00:20"], "two waves, each its own CI run");
@@ -186,7 +186,7 @@ test("REPEATS are not invented: a second review at ANOTHER head, a re-queue afte
     .map((event) => (event.id.endsWith(":q2") ? { ...event, at: at("12:40:00") } : event));
   const repeats = waterfall({ events: fresh, now: NOW }).repeats.map((repeat) => repeat.kind);
   assert.deepEqual(repeats.sort(), ["CI re-run at the same head", "compaction", "re-queue at the same head"], "the review and the wake went; the others, which this fixture still has, stay");
-  const pushed = [...fresh, gh("head_moved", "12:36:00", { headSha: "3333333ccccccccccccccccccccccccccccccc" }), run(9, "lint", "12:36:30", "12:38:00", "3333333ccccccccccccccccccccccccccccccc")];
+  const pushed = [...fresh, ghRecord("head_moved", "12:36:00", { headSha: "3333333ccccccccccccccccccccccccccccccc" }), run(9, "lint", "12:36:30", "12:38:00", "3333333ccccccccccccccccccccccccccccccc")];
   assert.ok(!waterfall({ events: pushed, now: NOW }).repeats.some((repeat) => repeat.kind === "re-queue at the same head"), "a push between the two entries makes it a different head");
 });
 
