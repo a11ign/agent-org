@@ -1,4 +1,4 @@
-// no-token: deliver -- every herdr call is the injected `run`; nothing here reaches gh or a real herdr
+// no-token: gh -- every herdr call is the injected `run`; nothing here reaches gh or a real herdr
 /**
  * #3568: AN ORDER IS NEVER SENT TO AN INSTANCE THE SAME TICK RELEASED (chairman, via `ceo`, 2026-10-04).
  *
