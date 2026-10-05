@@ -1416,6 +1416,57 @@ function removeStaleLinks(fs, { modules, scope, packagesDirs }, wanted) {
   }
 }
 
+/** A real directory at `dir`, never a link to somebody else's: a write into a symlinked `node_modules` lands in the PRIMARY (#2181). @param {LinkFs} fs @param {string} dir */
+function ensureRealDir(fs, dir) {
+  if (fs.lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) fs.rmSync(dir, { force: true });
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * ONE entry of a package's `node_modules`, `name` being `x` or `@scope/x`. Where the tick's entry leads into its `packages/` it is a WORKSPACE
+ * dependency, and the tree's own package of that name is linked instead (nothing, when the tree has none: the PR removed it); anything else,
+ * the registry's `@a11ign/documents` included, is the store's and is linked to the tick's entry. {@link pointsIntoPackages} is the same test the root uses.
+ * @param {LinkFs} fs @param {{from: string, to: string, path: string, packagesDirs: string[], treePackages: Map<string, string>}} where @param {string} name
+ */
+function linkPackageEntry(fs, { from, to, path, packagesDirs, treePackages }, name) {
+  if (!pointsIntoPackages(fs, `${from}/${name}`, packagesDirs)) return relink(fs, `${from}/${name}`, `${to}/${name}`);
+  const dir = treePackages.get(name);
+  if (dir !== undefined) relink(fs, `${path}/packages/${dir}`, `${to}/${name}`);
+}
+
+/**
+ * GIVE one tree package the `node_modules` the tick's same-named package has (#3558): pnpm puts a package's own dependencies under
+ * `packages/<dir>/node_modules`, not at the root, so a build from inside the package (`tsc -p packages/cli`) found none and died at TS2307.
+ * A scope directory is made real and linked child by child, as the root's `@a11ign` is, so a workspace child can point at THIS tree. `.bin` and
+ * other dot-entries are skipped: a package's `.bin` holds the shims of its own workspace bins, which run the PRIMARY's source, and the root's
+ * `.bin` (on the PATH of every package script) already has the third-party ones.
+ * @param {LinkFs} fs @param {{from: string, to: string, path: string, packagesDirs: string[], treePackages: Map<string, string>}} where
+ */
+function linkOnePackageModules(fs, where) {
+  ensureRealDir(fs, where.to);
+  for (const entry of fs.readdirSync(where.from).filter((name) => !name.startsWith("."))) {
+    if (!entry.startsWith("@")) { linkPackageEntry(fs, where, entry); continue; }
+    ensureRealDir(fs, `${where.to}/${entry}`);
+    for (const child of fs.readdirSync(`${where.from}/${entry}`)) linkPackageEntry(fs, where, `${entry}/${child}`);
+  }
+}
+
+/**
+ * EVERY package of the tick's checkout that has a `node_modules` gives its same-named package of the tree one, FOUND BY THE NAME THE MANIFEST
+ * DECLARES like the root links ({@link declaredLinks}): a package the PR renamed away has no counterpart and gets none, and one the tick's checkout
+ * has no `node_modules` for gets none. A tick checkout with no `packages/` has nothing to give.
+ * @param {LinkFs} fs @param {{path: string, repoRoot: string, packagesDirs: string[]}} where
+ */
+function linkPackageModules(fs, { path, repoRoot, packagesDirs }) {
+  if (!fs.existsSync(`${repoRoot}/packages`)) return;
+  const treePackages = declaredLinks(fs, path);
+  for (const dir of fs.readdirSync(`${repoRoot}/packages`)) {
+    const from = `${repoRoot}/packages/${dir}/node_modules`;
+    const treeDir = treePackages.get(manifestName(fs, `${repoRoot}/packages/${dir}/package.json`) ?? "");
+    if (treeDir !== undefined && fs.existsSync(from)) linkOnePackageModules(fs, { from, to: `${path}/packages/${treeDir}/node_modules`, path, packagesDirs, treePackages });
+  }
+}
+
 /**
  * GIVE `path`'s tree its dependencies, and answer `null` when it has them or WHY not (#2498). DONE BY THE TICK, NEVER BY THE
  * REVIEWER, for the reason {@link prepareReviewCheckout} is: measured 2026-09-25 under the reviewer's own sandbox, a tree with no
@@ -1433,6 +1484,8 @@ function removeStaleLinks(fs, { modules, scope, packagesDirs }, wanted) {
  * `node_modules/`, and an entry with no readable manifest is skipped ({@link declaredLinks}). The unscoped one is the reason the third-party loop
  * leaves the primary's workspace links alone: it would otherwise point `node_modules/a11ign` at the PRIMARY's `packages/cli`, the wrong-source tree again.
  *
+ * AND EACH PACKAGE'S OWN `node_modules` (#3558, {@link linkPackageModules}): the root links alone left `tsc -p packages/cli` in a review tree at TS2307.
+ *
  * @param {{path: string, repoRoot: string, fs?: LinkFs}} args @returns {string | null}
  */
 export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
@@ -1446,6 +1499,7 @@ export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
     const wanted = declaredLinks(fs, path);
     for (const [name, dir] of wanted) relink(fs, `${path}/packages/${dir}`, `${modules}/${name}`);
     removeStaleLinks(fs, where, wanted);
+    linkPackageModules(fs, { path, repoRoot, packagesDirs: where.packagesDirs });
     if (fs.existsSync(`${repoRoot}/.venv`)) relink(fs, `${repoRoot}/.venv`, `${path}/.venv`);
     return null;
   } catch (err) {
