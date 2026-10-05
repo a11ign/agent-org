@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, parseArgs, publish, readStamp, recentClosedRows, STAMP_FILE, whyRun } from "./publish.mjs";
+import { CLOSED_ROWS_MAX_PAGES, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, parseArgs, publish, readStamp, recentClosedRows, STAMP_FILE, whyRun } from "./publish.mjs";
 
 const MINUTE = 60 * 1000;
 const T0 = Date.parse("2026-10-05T12:00:00Z");
@@ -115,15 +115,35 @@ test("an unreadable stamp regenerates, and an index escapes what it prints (#351
   assert.ok(page.includes("&lt;b&gt;x&lt;/b&gt;") && page.includes("a &amp; b") && page.includes("<code>abcdefghi</code>"));
 });
 
-test("recentClosedRows asks for rows CLOSED in the window, newest closing first, and drops pull requests; --recent 0 asks nothing (#3515)", () => {
+test("recentClosedRows reads the issues LIST for rows closed in the window, newest closing first, drops pull requests and a row only commented on; --recent 0 asks nothing (#3515, #3695)", () => {
   const asked = [];
   const since = Date.parse("2026-09-28T12:00:00Z");
   const item = (number, closed_at, extra = {}) => ({ number, closed_at, ...extra });
-  const gh = (args) => (asked.push(args), { items: [item(7, "2026-10-02T00:00:00Z"), item(9, "2026-10-04T00:00:00Z", { pull_request: {} }), item(8, "2026-10-03T00:00:00Z"), item(6, "2026-09-12T04:42:49Z"), item(5, "2026-10-01T00:00:00Z")] });
-  assert.deepEqual(recentClosedRows("a11ign/a11ign", 4, since, gh), [8, 7, 5], "newest closing first, #9 is a pull request and #6, the record issue closed a month ago and commented on all day, is not in the window");
-  assert.ok(asked[0].includes("q=repo:a11ign/a11ign is:issue is:closed closed:>=2026-09-28"), "the query is by closing date");
+  // #6 is the record issue: closed a month ago, commented on all day, so the list `since` (by update) returns it and only `closed_at` keeps it out.
+  const gh = (args) => (asked.push(args), [item(7, "2026-10-02T00:00:00Z"), item(9, "2026-10-04T00:00:00Z", { pull_request: {} }), item(8, "2026-10-03T00:00:00Z"), item(6, "2026-09-12T04:42:49Z", { updated_at: "2026-10-05T11:59:00Z" }), item(5, "2026-10-01T00:00:00Z")]);
+  assert.deepEqual(recentClosedRows("a11ign/a11ign", 4, since, gh), [8, 7, 5], "newest closing first, #9 is a pull request and #6, closed long before `since` and commented on all day, is not returned");
+  assert.deepEqual(recentClosedRows("a11ign/a11ign", 2, since, gh), [8, 7], "at most `count`");
+  assert.equal(asked[0][2], "repos/a11ign/a11ign/issues", "the issues list, on the core pool");
+  assert.ok(asked[0].includes("since=2026-09-28T12:00:00.000Z") && asked[0].includes("state=closed"), "closed since the window's start");
+  assert.ok(!asked.flat().some((arg) => /search/.test(arg)), "no search call");
+  const before = asked.length;
   assert.deepEqual(recentClosedRows("a11ign/a11ign", 0, since, gh), []);
-  assert.equal(asked.length, 1, "POSITIVE CONTROL: the first call asked, so the zero case asking nothing is the count and not an unwired seam");
+  assert.equal(asked.length, before, "--recent 0 asks nothing");
+  assert.ok(before > 0, "POSITIVE CONTROL: the earlier calls asked, so the zero case asking nothing is the count and not an unwired seam");
+});
+
+test("recentClosedRows pages the list until a short page, and REFUSES a list it cannot finish rather than cutting it short (#3695)", () => {
+  const since = Date.parse("2026-09-28T12:00:00Z");
+  const full = (from) => Array.from({ length: 100 }, (_, index) => ({ number: from + index, closed_at: "2026-10-01T00:00:00Z" }));
+  const pages = [];
+  const twoPages = (args) => (pages.push(args.find((arg) => arg.startsWith("page="))), pages.length === 1 ? full(1000) : [{ number: 2000, closed_at: "2026-10-04T00:00:00Z" }]);
+  assert.deepEqual(recentClosedRows("a11ign/a11ign", 2, since, twoPages), [2000, 1000], "a row on the second page is found, and ties keep list order");
+  assert.deepEqual(pages, ["page=1", "page=2"]);
+  let asked = 0;
+  const endless = () => (asked += 1, full(1));
+  assert.throws(() => recentClosedRows("a11ign/a11ign", 3, since, endless), /more than \d+ issues closed and updated since 2026-09-28T12:00:00.000Z/);
+  assert.equal(asked, CLOSED_ROWS_MAX_PAGES, "the bound is the page limit, and every page up to it was read");
+  assert.throws(() => recentClosedRows("a11ign/a11ign", 3, since, () => ({ items: [] })), /no list where one was expected/);
 });
 
 test("parseArgs: defaults, repeated --row, and an unknown flag refused (#3515)", () => {
