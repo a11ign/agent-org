@@ -9,15 +9,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { testFileArgumentsResolve } from "./acceptance-commands.mjs";
 
+// This file by absolute path: CI runs the suite from the project root, where a cwd-relative `src/...` is no file.
+const THIS_FILE = fileURLToPath(import.meta.url);
 const dir = mkdtempSync(join(tmpdir(), "cd-and-and-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 writeFileSync(join(dir, "a.test.ts"), "");
 
 test("CONTROL: a bare `tsx --test` line with no cd is unchanged", () => {
-  assert.deepEqual(testFileArgumentsResolve("tsx --test src/acceptance-cd-and-and.test.ts"), { ok: true });
+  assert.deepEqual(testFileArgumentsResolve(`tsx --test ${THIS_FILE}`), { ok: true });
   assert.deepEqual(testFileArgumentsResolve("tsx --test nothing-here.test.ts"), { ok: false, missing: ["nothing-here.test.ts"] });
   assert.deepEqual(testFileArgumentsResolve("a && tsx --test a.test.ts"), { ok: false, unparseable: "an `&&`" });
 });
@@ -33,8 +36,8 @@ test("a glob after the cd resolves against <dir> too", () => {
 
 test("a file missing from <dir> is reported missing, even if it exists relative to this process", () => {
   assert.deepEqual(
-    testFileArgumentsResolve(`cd ${dir} && tsx --test src/acceptance-cd-and-and.test.ts`),
-    { ok: false, missing: ["src/acceptance-cd-and-and.test.ts"] },
+    testFileArgumentsResolve(`cd ${dir} && tsx --test ${THIS_FILE.slice(1)}`),
+    { ok: false, missing: [THIS_FILE.slice(1)] },
   );
 });
 
