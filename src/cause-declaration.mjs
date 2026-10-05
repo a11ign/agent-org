@@ -507,6 +507,16 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has already read the filesystem and named the low resource; the output is a decision about "
       + "what to remove, and a full disk is the one fault that stops every session at once",
   }),
+  declareCause("tick-overran", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM, and the recipient is `ceo`, a standing decision-holder that is never spawned (#3567), so this is the profile a spawned worker would
+    // take if one ever were. `work-tick-health.mjs` has already read the tick's own cost line and named the phase that took longest, or found the
+    // marker a killed tick left; the work is deciding which row owns that phase, a short judgment over stated figures.
+    effort: "medium",
+    why: "the tick has already measured itself, or found what a killed one left; the output is a decision about which phase to chase "
+      + "and who owns it, over figures the order states",
+  }),
   declareCause("repeating-log-line", GROUPS.JUDGMENT, {
     kind: "claude",
     model: "sonnet",

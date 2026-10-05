@@ -41,7 +41,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 210 to 211 (a11ign/a11ign#3536): `suite-slots.mjs` is a shipped command (`node src/suite-slots.mjs suite|run`) AND is imported by path by a11y-witness's `verify`, which runs under plain `node` with no `tsx`.
 // 211 to 212 (a11ign/a11ign#3514): `src/trace/map.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `--map`), so it cannot be `.ts` (node on the host has no TypeScript). Its test is `map.test.ts`, so TEST_MJS_PIN stays 44.
 // 212 to 213 (a11ign/a11ign#3563): `src/trace/wake-cache.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `--wake-cache`), so it cannot be `.ts` (node on the host has no TypeScript). Its test is `wake-cache.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 44 to 45 below.
-const SOURCE_MJS_PIN = 213;
+// 213 to 214 (a11ign/a11ign#3567): `src/work-tick-health.mjs` is a NEW source file that a shipped command imports (`work-tick.mjs`, which the timer's unit runs with plain `node`), so it cannot be `.ts`. Its test is `work-tick-health.test.ts`, so TEST_MJS_PIN stays 45.
+const SOURCE_MJS_PIN = 214;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 const TEST_MJS_PIN = 45;
 
