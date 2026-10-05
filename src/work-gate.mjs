@@ -3126,14 +3126,20 @@ export function withChecksPending(prs) {
  * is read by the readers the scope enumeration already uses (`readPrs`, `readMergedPrs`), aimed at the repository, and its members are tagged with the key.
  * `undefined` for a project with one code repository, so its reads are exactly what they were. An OPEN list is `null` when ANY repository's was refused (the
  * claim is then skipped); a merged one only when EVERY repository's was.
+ *
+ * (#3566) `known` IS WHAT `readOtherScopes` ALREADY ASKED THIS TICK. Its `prs` lane is the same `readPrs`, aimed at the same repository and tagged the
+ * same way, so asking again was one repeated `gh pr list` per other repository per tick (5 of 53 calls, about 4.6 s, measured by the census's `GH_REPO`
+ * field). A scope present in `known` has its open list taken from there, `null` (refused) included: a refusal is not retried, since a retry is a new read.
  * @param {readonly Scope[]} [scopes] @param {(args: string[], repo?: string) => string} [run]
+ * @param {readonly { scope: Scope, read: { prs: any[] | null } }[]} [known]
  * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
  */
-export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun) {
+export function readElsewherePrs(scopes = scopesOf([homeProjectDeclaration()]), run = defaultRun, known = []) {
   const lanes = scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
     const repo = /** @type {ScopeRepository} */ (scope.code).repo;
     const aimed = (/** @type {string[]} */ args) => run(args, repo);
-    return { open: tagged(readPrs(aimed), scope.key, repo), merged: tagged(readMergedPrs(aimed), scope.key, repo) };
+    const already = known.find((entry) => entry.scope.key === scope.key);
+    return { open: already === undefined ? tagged(readPrs(aimed), scope.key, repo) : already.read.prs, merged: tagged(readMergedPrs(aimed), scope.key, repo) };
   });
   if (lanes.length === 0) return undefined;
   return { open: lanes.some((lane) => lane.open === null) ? null : lanes.flatMap((lane) => lane.open ?? []),
@@ -6397,12 +6403,14 @@ function reportClearingDrops({ openRows, prs, closings, claimFacts }) {
  * `claimStallsNow`'s orders beside the facts it built them from, as the two arguments `decide` takes: the facts reach `blockerClearedOrders` and the orders reach
  * `claim-stalled`. `claimFacts` stays `undefined` when the tick never reported one, which `blockerClearedReading` reads as "not asked".
  * @param {Parameters<typeof claimStallsNow>[0]} rows @param {Parameters<typeof claimStallsNow>[1]} claimedComments @param {Parameters<typeof claimStallsNow>[2]} prs
+ * @param {ReturnType<typeof readOtherScopes>} otherScopes the other repositories' lanes, already read this tick (#3566): their open lists are not asked again
  * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined }}
  */
-function claimStallsWithFacts(rows, claimedComments, prs) {
+function claimStallsWithFacts(rows, claimedComments, prs, otherScopes) {
   /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined} */
   let claimFacts;
-  const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; } });
+  const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; },
+    elsewhere: () => readElsewherePrs(undefined, undefined, otherScopes) });
   return { claimStalls, claimFacts };
 }
 
@@ -6488,7 +6496,7 @@ function main() {
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
     claimedComments: claimedComments ?? [],
     // #2470: the SAME comments, read once, and the raw `null` kept for the reader that must tell "refused" from "none".
-    ...claimStallsWithFacts(openRowsRead, claimedComments, prs), // #3451: the orders AND the facts they were built from
+    ...claimStallsWithFacts(openRowsRead, claimedComments, prs, otherScopes), // #3451: the orders AND the facts they were built from
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
