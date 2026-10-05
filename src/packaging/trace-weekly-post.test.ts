@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,6 +46,9 @@ function run({ declaration = DECLARED, reports, remaining = ["4000"], ghFails = 
   const dir = mkdtempSync(join(tmpdir(), "trace-weekly-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
+  // The script calls a bare `node`, and the PATH below names only system directories: a runner whose node is in a toolcache directory (CI's is) would
+  // find none (`node: command not found`, 9 of these tests failed on agent-org#234). The node running this file is the one the script gets.
+  symlinkSync(process.execPath, join(bin, "node"));
   mkdirSync(join(dir, "comments"));
   reports.forEach((text, index) => writeFileSync(join(dir, `report-${index + 1}`), text));
   writeFileSync(join(dir, "report-last"), reports[reports.length - 1]);
