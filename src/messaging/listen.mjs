@@ -42,7 +42,8 @@ import { createInbound } from "./inbound.mjs";
 import { createLedger, describeError } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
 import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
-import { accountIsDeclared, defaultLedgerPath, readChairman } from "./state.mjs";
+import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
+import { createWatchReaders } from "./watch-list.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const LOCK_FILE = "listener.lock";
@@ -165,6 +166,7 @@ const DEFAULT_DEPS = () => ({
   onForward: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
   converse: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
   github: /** @type {import("./answers.mjs").GithubWriter | undefined} */ (undefined),
+  readers: /** @type {import("./placeholders.mjs").Readers | undefined} */ (undefined),
   env: /** @type {Record<string, string | undefined>} */ (process.env),
 });
 
@@ -224,7 +226,9 @@ export function tellingWhenUndelivered({ ledger, send, converse }) {
  * A message the answers path says can no longer be answered has its keyboard taken off FIRST (a11ign/a11ign#3423), so a second press cannot happen while the
  * reply is on its way; a failure to do it is logged and does not stop the reply, which is what the chairman is owed.
  *
- * @param {{ answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<import("./answers.mjs").Answered> }, send: (message: { text: string }) => Promise<unknown>,
+ * A reply that carries `actions` is sent with them, and `recordSent` is told the sent message's ref (a11ign/a11ign#3425: the walk's next step is a message the ledger must know to understand a press under it).
+ *
+ * @param {{ answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<import("./answers.mjs").Answered> }, send: (message: { text: string, actions?: { label: string, data: string }[] }) => Promise<any>,
  *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void,
  *   clearKeyboard?: (messageRef: string) => Promise<void> }} parts `clearKeyboard` is the provider's; a caller with none draws no keyboards
  * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
@@ -245,15 +249,32 @@ export function createForwarder({ answers, send, converse, log, clearKeyboard })
     if (result.clearKeyboard !== null && clearKeyboard !== undefined) {
       await clearKeyboard(result.clearKeyboard).catch((error) => log(`messaging:listen: could not take the keyboard off message ${result.clearKeyboard}: ${error instanceof Error ? error.message : String(error)}`));
     }
-    await send({ text: result.text });
+    const sent = await send({ text: result.text, ...(result.actions === undefined ? {} : { actions: result.actions }) });
+    result.recordSent?.(String(sent?.messageRef));
   };
+}
+
+/**
+ * The walk-through's `Verify:` reads: the watcher's own, over read-only `gh` and `systemctl`, for the project's tracker. A caller that injected its own `github` is a test's and has none unless it brings them.
+ * **A WALK IS AN OPTIONAL CAPABILITY OF A LISTENER THAT ANSWERS REQUESTS, SO IT DOES NOT TAKE THE LISTENER DOWN:** a project with no readable tracker is told on the journal, and a procedure is then refused
+ * on its first press (`answers.mjs`: no readers, nothing written) while every other request is answered as it was.
+ *
+ * @param {{ root: string, now: () => number, err: (line: string) => void }} input @returns {import("./placeholders.mjs").Readers | undefined}
+ */
+function verifyingReaders({ root, now, err }) {
+  try {
+    return createWatchReaders(trackerRepo(root), now);
+  } catch (error) {
+    err(`messaging:listen: walk-throughs are off, so a procedure brief is refused: ${describeError(error)}`);
+    return undefined;
+  }
 }
 
 /**
  * @param {Parameters<typeof main>[0]} deps @param {{ tokenFile: string, chairmanFile: string }} config @returns {Promise<void>}
  */
 async function listen(deps, config) {
-  const { home, now, fetch: fetchImpl, sleep, err, signal, onForward, converse, github } = { ...DEFAULT_DEPS(), ...deps };
+  const { root, home, now, fetch: fetchImpl, sleep, err, signal, onForward, converse, github, readers } = { ...DEFAULT_DEPS(), ...deps };
   const chairman = readChairman(config.chairmanFile);
   const token = readSecretFile(config.tokenFile);
   const state = stateDirectory(/** @type {string} */ (home));
@@ -266,7 +287,8 @@ async function listen(deps, config) {
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
     // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
-    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, orders: { liaison: (order) => conversation.orderLiaison(order) } });
+    const verifying = readers ?? (github === undefined ? verifyingReaders({ root: /** @type {string} */ (root), now, err }) : undefined);
+    const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, readers: verifying, orders: { liaison: (order) => conversation.orderLiaison(order) } });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
       onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: (ref) => provider.clearKeyboard(ref) }),
@@ -285,7 +307,7 @@ function exitCodeFor(error) {
 /**
  * @param {{ root?: string, home?: string, now?: () => number, fetch?: typeof fetch, signal?: AbortSignal, sleep?: (ms: number) => Promise<void>,
  *   out?: (line: string) => void, err?: (line: string) => void, onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void,
- *   converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, github?: import("./answers.mjs").GithubWriter,
+ *   converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, github?: import("./answers.mjs").GithubWriter, readers?: import("./placeholders.mjs").Readers,
  *   env?: Record<string, string | undefined> }} [deps]
  * @returns {Promise<number>} the exit code
  */

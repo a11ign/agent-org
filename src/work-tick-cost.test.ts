@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
 import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
 import { readElsewherePrs } from "./work-gate.mjs";
+import { claimRow } from "./row-claim.mjs";
+import { instanceCacheRead } from "./wake.mjs";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
@@ -176,7 +178,7 @@ test("#3566: the census records each synchronous spawn's CPU, so a busy child an
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     const [busy, asleep] = records.filter((record: { cmd: string }) => record.cmd === "node");
     assert.ok(busy.cpuMs >= 300, `a 400 ms busy child read ${busy.cpuMs} ms of CPU`);
-    assert.ok(asleep.ms >= 350 && asleep.cpuMs < 200, `the control: a sleeping child waited ${asleep.ms} ms and used ${asleep.cpuMs} ms of CPU`);
+    assert.ok(asleep.ms >= 350 && asleep.cpuMs < asleep.ms / 2, `the control: a sleeping child waited ${asleep.ms} ms and used ${asleep.cpuMs} ms of CPU`);
     assert.deepEqual(summariseCensus(records).hottest.map((entry) => entry.cpuMs), [busy.cpuMs, asleep.cpuMs].sort((a, b) => b - a));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -283,6 +285,96 @@ test("#3566: liveClaudeTurns does not read a transcript no write has touched wit
     transcript(join(root, "project"), "stale", { session: "worker-2", ageMs: LIVE_TRANSCRIPT_HORIZON_MS * 2, now });
     assert.deepEqual(liveClaudeTurns(root, { now }).map((turn) => turn.session), ["worker-1"], "the control: the recent one IS read, so the empty side is not an empty root");
     assert.deepEqual(liveClaudeTurns(root, { now, horizonMs: LIVE_TRANSCRIPT_HORIZON_MS * 3 }).map((turn) => turn.session).sort(), ["worker-1", "worker-2"], "a wider horizon reads both");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A `gh` for one `ready` row whose body states its template fields and whose `blockedBy` is empty; every call it is asked is kept, in order. */
+function claimReads({ failBody = false } = {}) {
+  const calls: string[][] = [];
+  let labelReads = 0;
+  const run = (_cmd: string, args: string[]): string => {
+    calls.push(args);
+    const json = args[args.indexOf("--json") + 1];
+    if (args[1] === "view" && json === "number,title,labels,state") {
+      labelReads += 1;
+      const labels = labelReads === 1 ? ["ready"] : ["in-progress", "session:worker-9", "started", "was-ready"];
+      return JSON.stringify({ number: 77, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) });
+    }
+    if (args[1] === "view" && json === "body") {
+      if (failBody) throw new Error("simulated: the body read failed");
+      return JSON.stringify({ body: "Region: none\nAcceptance: x\nOpen-check: y\n" });
+    }
+    if (args[1] === "view" && json === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
+    return "[]";
+  };
+  return { calls, run };
+}
+const rowReads = (calls: string[][], json: string) => calls.filter((args) => args[0] === "issue" && args[1] === "view" && args.includes(json)).length;
+
+test("#3566: one claim reads the row's body and its blockedBy edge ONCE each, and still reads its labels fresh before and after the write", () => {
+  const { calls, run } = claimReads();
+  const got = claimRow(77, "worker-9", { run, moveStatus: () => ({ moved: true }) });
+  assert.equal(got.claimed, true, JSON.stringify(got));
+  assert.equal(rowReads(calls, "body"), 1, "the template check and B4's Region lookup both ask for the body");
+  assert.equal(rowReads(calls, "blockedBy"), 1, "the claim's own check and B2/B4's both ask for the edge");
+  assert.equal(rowReads(calls, "number,title,labels,state"), 3, "the labels are NOT remembered: before the checks, before the write, after it");
+});
+
+test("#3566 CONTROL: a read that FAILED is retried, not remembered, so a failed body read still reaches the second check", () => {
+  const { calls, run } = claimReads({ failBody: true });
+  claimRow(77, "worker-9", { run, moveStatus: () => ({ moved: true }) });
+  assert.equal(rowReads(calls, "body"), 2, "the template check's read failed (the claim fails open) and B4's Region lookup asked again");
+});
+
+/** One transcript line: the wake prompt, or a billed assistant turn with this cache-read figure. */
+const wakePrompt = (session: string) => JSON.stringify({ type: "user", message: { role: "user", content: `You are \`${session}\`. Do the row.` } });
+const billedTurn = (id: string, cacheRead: number) => JSON.stringify({ type: "assistant", timestamp: "2026-10-05T08:00:00Z",
+  message: { id, model: "m", usage: { input_tokens: 1, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: 0, output_tokens: 1 } } });
+
+/** A transcript root whose files are written with the given mtimes (seconds), plus a reader that counts every file it is asked to open. */
+function transcriptRoot(files: { name: string; lines: string[]; mtime: number }[]) {
+  const root = mkdtempSync(join(tmpdir(), "transcripts-"));
+  mkdirSync(join(root, "-project"));
+  for (const { name, lines, mtime } of files) {
+    writeFileSync(join(root, "-project", name), `${lines.join("\n")}\n`);
+    utimesSync(join(root, "-project", name), mtime, mtime);
+  }
+  const whole: string[] = [];
+  const heads: string[] = [];
+  const reader = {
+    readText: (file: string) => { whole.push(file.split("/").pop()!); return readFileSync(file, "utf8"); },
+    readHead: (file: string) => { heads.push(file.split("/").pop()!); return readFileSync(file, "utf8").slice(0, 64 * 1024); },
+  };
+  return { root, reader, whole, heads };
+}
+
+test("#3566: the newest transcript naming a session answers, and the older ones are never read whole", () => {
+  const { root, reader, whole } = transcriptRoot([
+    { name: "old.jsonl", lines: [wakePrompt("worker-7"), billedTurn("a", 111)], mtime: 1000 },
+    { name: "new.jsonl", lines: [wakePrompt("worker-7"), billedTurn("b", 222)], mtime: 3000 },
+    { name: "other.jsonl", lines: [wakePrompt("worker-8"), billedTurn("c", 333)], mtime: 4000 },
+    { name: "older.jsonl", lines: [wakePrompt("worker-7"), billedTurn("d", 444)], mtime: 500 },
+  ]);
+  try {
+    assert.equal(instanceCacheRead("worker-7", root, reader), 222, "the newest file naming worker-7, not the newest file");
+    assert.deepEqual(whole, ["new.jsonl"], "worker-8's file is skipped on its head, and nothing older than the answer is opened");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("#3566 CONTROL: a file whose head names nothing is still read whole, and a session with no transcript is `null`, never zero", () => {
+  const { root, reader, whole } = transcriptRoot([
+    { name: "resumed.jsonl", lines: [JSON.stringify({ type: "summary" }), billedTurn("a", 555), wakePrompt("worker-7"), billedTurn("b", 666)], mtime: 2000 },
+  ]);
+  // The wake prompt sits past the head the reader is shown: the first match is found only by reading the whole file, as before this change.
+  const far = { ...reader, readHead: () => JSON.stringify({ type: "summary" }) };
+  try {
+    assert.equal(instanceCacheRead("worker-7", root, far), 666);
+    assert.deepEqual(whole, ["resumed.jsonl"]);
+    assert.equal(instanceCacheRead("worker-nobody", root, reader), null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

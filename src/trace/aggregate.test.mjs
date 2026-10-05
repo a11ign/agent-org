@@ -292,3 +292,50 @@ test("RENDER: the definitions are printed once at the top, and a class with no d
   assert.match(text, /1 rows -- the store starts at its ingest window.*: #102 \(2 v 3\)/);
   assert.match(text, /PARTIAL|complete/);
 });
+
+// BY GATE CAUSE (#3626). A fixture of its own, in week B: a key delivered once in week A and again in B, `pr-checks-failing` re-sent three times at 20-minute gaps, a deferral retry and a one-off.
+const causeEvents = (extra) => [
+  turn({ when: "2026-09-29T08:05:00Z", session: "worker-9", cost: 1, wakeId: "wake:c:2" }), turn({ when: "2026-09-29T08:25:00Z", session: "worker-9", cost: 2, wakeId: "wake:c:3" }),
+  turn({ when: "2026-09-29T08:45:00Z", session: "worker-9", cost: 4, wakeId: "wake:c:4" }), turn({ when: "2026-09-29T09:05:00Z", session: "worker-9", cost: null, wakeId: "wake:c:5", model: "<synthetic>" }),
+  wake("wake:c:0", "2026-09-22T08:00:00Z", "worker-9", "worker-9/answer-owed/row-9", { cause: "answer-owed" }), // week A: the earlier delivery
+  wake("wake:c:1", "2026-09-29T08:00:00Z", "worker-9", "worker-9/pr-checks-failing/pr-9/abc", { cause: "pr-checks-failing" }),
+  wake("wake:c:2", "2026-09-29T08:20:00Z", "worker-9", "worker-9/pr-checks-failing/pr-9/abc", { cause: "pr-checks-failing" }),
+  wake("wake:c:3", "2026-09-29T08:40:00Z", "worker-9", "worker-9/pr-checks-failing/pr-9/abc", { cause: "pr-checks-failing" }),
+  wake("wake:c:4", "2026-09-29T09:00:00Z", "worker-9", "worker-9/pr-checks-failing/pr-9/abc@deferred:2", { cause: "pr-checks-failing" }),
+  wake("wake:c:5", "2026-09-29T10:00:00Z", "worker-9", "worker-9/answer-owed/row-9", { cause: "answer-owed" }),
+  ...extra,
+];
+const causesOf = (events) => weekOf(report({ events }), WEEK_B).repeats.classes.find((entry) => entry.id === "redelivered");
+
+test("BY GATE CAUSE: repeats, distinct keys, median gap and dollars per cause, the DEAREST first (not the most repeats), and a deferral retry its own row", () => {
+  const redelivered = causesOf(causeEvents([]));
+  // 4 repeats of pr-checks-failing: wakes 2 and 3 (gaps 20 and 20 minutes) and wake 4, the `@deferred` retry (a gap of 20 minutes from wake 3), which is NOT the same row as them.
+  // answer-owed: wake 5 repeats the week-A delivery, so its gap is 7 days + 2 hours (the previous delivery counts whenever it was).
+  // The two rankings DISAGREE here (the chairman's order is in dollars): by repeats pr-checks-failing leads (2 against 1), by dollars its `@deferred` retry does ($4 against $3), and the cause with no derivable dollars is last.
+  assert.deepEqual(redelivered.causes.map(({ cause, deferred, count, keys }) => [cause, deferred, count, keys]), [["pr-checks-failing", true, 1, 1], ["pr-checks-failing", false, 2, 1], ["answer-owed", false, 1, 1]]);
+  assert.deepEqual(redelivered.causes.map((own) => own.medianGapMs), [20 * 60 * 1000, 20 * 60 * 1000, (7 * 24 + 2) * 60 * 60 * 1000]);
+  // Wake 2's turn costs 1 and wake 3's costs 2; wake 4's costs 4 (the retry); wake 5's turn is unpriced, so answer-owed is not derivable (never 0) and a floor.
+  assert.deepEqual(redelivered.causes.map((own) => [own.dollars, own.floor]), [[4, false], [3, false], [NOT_DERIVABLE, true]]);
+  assert.equal(redelivered.count, redelivered.causes.reduce((sum, own) => sum + own.count, 0), "the rows add up to the class");
+  near(/** @type {number} */ (redelivered.dollars), 7);
+});
+
+test("BY GATE CAUSE: the report prints the table under the re-delivered line, the dearest cause first; a week with no repeats prints none (positive control: week B does)", () => {
+  const printed = renderAggregate(report({ events: causeEvents([]) }));
+  const lines = printed.split("\n");
+  const head = lines.findIndex((line) => line.includes("by gate cause"));
+  assert.ok(lines[head - 1].includes("re-delivered orders"), "the table sits directly under the class line");
+  assert.match(lines[head + 1], /pr-checks-failing @deferred\s+1\s+1\s+20 min\s+\$4\.0/);
+  assert.match(lines[head + 2], /pr-checks-failing\s+2\s+1\s+20 min\s+\$3\.0/);
+  assert.match(lines[head + 3], /answer-owed\s+1\s+1\s+170\.0h\s+dollars: not derivable/);
+  const quiet = renderAggregate(report({ events: EVENTS.filter((event) => event.kind !== "wake") }));
+  assert.equal(quiet.includes("by gate cause"), false, "no repeats, no table");
+  assert.equal(weekOf(report({ events: EVENTS.filter((event) => event.kind !== "wake") }), WEEK_B).repeats.classes[0].causes.length, 0);
+});
+
+test("BY GATE CAUSE: a fixture whose repeats are all one cause prints that cause first and alone", () => {
+  const only = weekOf(report({ events: [...WEEK_B_TURNS, wake("a", "2026-09-29T08:00:00Z", "ceo", "ceo/answer-owed/row-1", { cause: "answer-owed" }), wake("b", "2026-09-29T09:00:00Z", "ceo", "ceo/answer-owed/row-1", { cause: "answer-owed" })] }), WEEK_B)
+    .repeats.classes[0];
+  assert.deepEqual(only.causes.map(({ cause, count }) => [cause, count]), [["answer-owed", 1]]);
+});
+

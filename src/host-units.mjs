@@ -91,6 +91,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "chairman-listen.service.in",
   // #3532: the `agent-org` launcher, COPIED to `binDir` like `gh` (`agentOrgLauncher`) and not a unit.
   "agent-org",
+  // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
+  "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
 ]);
 
 /**
@@ -343,6 +345,11 @@ const OTHER_TOOL_FORMS = Object.freeze({
   "board-report.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/board-report-dispatch.sh"],
+  ],
+  // THE WEEKLY TOKEN-EFFICIENCY POST (a11ign/a11ign#3627): the same two lines as the board dispatcher, for the same reason (the script reads `$AGENT_ORG_PROJECT`).
+  "trace-weekly.service.in": [
+    [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m,
+      "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/trace-weekly-post.sh"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own

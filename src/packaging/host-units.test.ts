@@ -38,7 +38,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
@@ -853,7 +853,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1288,10 +1288,13 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
+    // a11ign/a11ign#3627: the weekly token-efficiency post, on the board edition's side for the board edition's reason: it POSTS A REPORT.
+    "a11ign-trace-weekly.timer",
   ], "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
     + "four above each started their service in that second and board-report did not, though the same run "
     + "reinstalled it. It activates its service by name alone, ON PURPOSE: it dispatches a board edition, "
-    + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock");
+    + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock. "
+    + "The weekly report's timer is the second member: its service comments on the record issue");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
@@ -2725,4 +2728,14 @@ test("#3464: a tool command is the same command however its words are separated 
   assert.deepEqual(pre("agent-org  primary:update   --drift"), [`${viaTool[0]} --drift`], "arguments are split the same way, and joined by one space");
   assert.throws(() => pre("agent-org\tno:such-command"), HostConfigRefusal, "an unknown tool command refuses however it is spelt");
   assert.deepEqual(pre("npm\trun widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm\trun widgets:update`], "a project's own command is still run as written");
+});
+
+// a11ign/a11ign#3627: here and not in trace-weekly-post.test.ts, which must not import this module (that would charge it `History: full`, work-gate.test.ts #2174).
+test("#3627: installed as the tool, the weekly report's service runs the script from the tool and is told where the project's declaration is", () => {
+  const rendered = readFileSync(join(SHIPPED_DIR, "trace-weekly.service.in"), "utf8")
+    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  const installed = toolForm("trace-weekly.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
 });
