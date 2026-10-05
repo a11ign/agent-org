@@ -1762,13 +1762,26 @@ export function rowOffBoardOrders(facts, nowMs = Date.now()) {
  * stick, nothing happens and nobody notices, which is the defect the expiry exists for (#1433, #1435 sat
  * Ready overnight behind a spent causeKey).
  *
+ * A SET OF ONLY `manualFix` FINDINGS EMITS NOTHING, AND IS NOT DELIVERED TO ANYONE ELSE INSTEAD (#3703). The order's whole
+ * remedy is `host:install`, and a `manualFix` finding is one `host:install` writes no line of (a person's `gh` login, #3643; a
+ * dotfile; a Codex trust grant). Offered anyway, it is declined by `orchestrator` on every tick -- correctly -- and the same
+ * `unit:problem` key is re-offered (the row measured 6 deliveries), then 30 consecutive ticks of a STUCK line
+ * that cannot be escalated, because its subject is `host-units` and not a row. THREE WAYS OUT WERE WEIGHED. A wait on the file
+ * it reads needs a new cause and a new ledger rule for one population. Routing it to `ceo` re-offers it to a session that also
+ * cannot run anything, under the same expiry. Dropping it from THIS order deletes code and loses nothing the detector holds:
+ * `host:check` still reports every `manualFix` finding, which is the detector this row does not touch. WHAT IS LOST, STATED
+ * RATHER THAN HIDDEN: a NEW manual-only finding no longer wakes anybody on its own; org-health does not read host drift, so
+ * `host:check` is its only reader. A set holding even ONE finding `host:install` can clear is unchanged -- same key, same
+ * prompt, the manual findings still listed with their "NOT fixed by the remedy" line -- and once the remedy has run and only the
+ * manual ones remain, the order ends by itself.
+ *
  * `[]` AND `null` BOTH EMIT NOTHING, AND THEY ARE NOT THE SAME CLAIM. `hostUnitDrift` returns `[]` for a
  * clean host AND for a machine with no user systemd manager -- CI, a reviewer's laptop, a container --
  * and `null` here is a read that THREW. All three are silence, because none of them is a stale host; but
  * reading "not asked" as "all correct" is this repository's most-repeated defect, so `driftReport` keeps
  * the two apart in the CLI's output and the tests below assert the three separately rather than once.
  *
- * @param {{unit: string, problem: string, detail: string}[] | null | undefined} drift
+ * @param {{unit: string, problem: string, detail: string, manualFix?: boolean}[] | null | undefined} drift
  *        `host:check --json`'s findings.
  *        `null`/omitted is "not asked or refused" and emits nothing -- a caller that cannot read the
  *        host must never produce a false all-clear and must never invent a false alarm either.
@@ -1778,6 +1791,7 @@ export function rowOffBoardOrders(facts, nowMs = Date.now()) {
 export function hostDriftOrders(drift) {
   const findings = Array.isArray(drift) ? drift : [];
   if (findings.length === 0) return [];
+  if (findings.every((f) => f.manualFix)) return []; // #3703: nothing the order's remedy can clear; see the header
   const key = findings.map((f) => `${f.unit}:${f.problem}`).sort().join(".");
   return [{
     session: HOST_DRIFT_SESSION,
