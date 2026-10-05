@@ -6,8 +6,8 @@
 //
 // It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
-// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the `gh` call ledger and deferral spans,
-// and from when each kind of actor's transcripts are held.
+// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": deferral spans,
+// and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.mjs`, #3516).
 //
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
 // themselves. The calls are counted and the report says how many were made.
@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
+import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
 import { appendToStore, DEFINITIONS, eventsForRow, eventsOfTranscript, openStore, readStore } from "./store.mjs";
@@ -45,7 +46,7 @@ const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool
 const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
 /** What this slice does not hold. Printed under every report. */
-export const NOT_HELD = "NOT IN THIS STORE YET: the gh call ledger, the gate's deferral spans, the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
+export const NOT_HELD = "NOT IN THIS STORE YET: the gate's deferral spans, the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
@@ -80,11 +81,14 @@ export function parseAggregateArgs(argv) {
 /** @param {string[]} argv */
 export const isAggregate = (argv) => argv.includes(AGGREGATE_FLAG);
 
+/** The `gh` call ledgers `host/gh` writes (#3466): one per account, in the config directory the wrapper routes that account to. An account that never called has none, and the ingest says so. */
+const ghLedgerFiles = () => [join(homedir(), "workers", "gh"), join(homedir(), "leads", "gh"), join(homedir(), ".config", "gh")].map((dir) => join(dir, "gh-calls.tsv"));
+
 const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.ndjson");
 
 /**
  * @typedef {{ read: number, codexRead: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
- *   coldStart: string | null, firstRunAt: number, firstRunSince: number }} IngestReport
+ *   coldStart: string | null, firstRunAt: number, firstRunSince: number, ghCalls?: import("./gh-calls.mjs").GhCallsReport }} IngestReport
  */
 
 /** Read `[start, end)` of a file, counting what was read: the report says how many bytes a run touched, so "only what changed" is a measurement. @param {string} file @param {number} start @param {number} end @param {{ bytes: number }} meter */
@@ -209,18 +213,19 @@ export function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, 
 }
 
 /**
- * One run's transcript half: open the store (the one read of it), load the state, ingest, and save the state once the events are in. The state is saved even when a
- * file failed, because the files that did not fail were read.
- * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, now?: number }} input
+ * One run's ingest half: open the store (the one read of it), load the state, ingest the transcripts and then the `gh` call ledgers (whose calls are keyed to the turns just read), and save the
+ * state once the events are in. The state is saved even when a file failed, because the files that did not fail were read.
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, ghLedgers?: string[], now?: number }} input
  * @param {(path: string) => import("./store.mjs").TraceEvent[]} [readEvents] a parameter so a test can count the reads of the store
  */
-export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, now = Date.now() }, readEvents = readStore) {
+export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, ghLedgers = [], now = Date.now() }, readEvents = readStore) {
   const store = openStore(storePath, readEvents);
   const statePath = stateFileFor(storePath);
   const { state, coldStart } = loadState({ statePath, storePath, now, since });
-  const { state: next, ...report } = ingest({ root, codexRoot, since, ledger, rowRepo, store, state, coldStart, now });
-  saveState(statePath, { ...next, storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
-  return { store, report };
+  const { state: afterTranscripts, ...report } = ingest({ root, codexRoot, since, ledger, rowRepo, store, state, coldStart, now });
+  const calls = ghLedgers.length > 0 ? ingestGhCalls({ ledgers: ghLedgers, store, state: afterTranscripts, now }) : null;
+  saveState(statePath, { ...(calls?.state ?? afterTranscripts), storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
+  return { store, report: calls ? { ...report, ghCalls: calls.report } : report };
 }
 
 /**
@@ -336,7 +341,7 @@ function heldFrom(everything) {
   /** @type {Map<string, number>} */
   const first = new Map();
   for (const event of everything) {
-    if (event.source === "github") continue;
+    if (event.source === "github" || event.source === "gh-ledger") continue;
     const kind = kindOfActor(event);
     first.set(kind, Math.min(first.get(kind) ?? Number.POSITIVE_INFINITY, event.at));
   }
@@ -353,6 +358,7 @@ function ingestLines(ingested) {
   if (ingested.coldStart) lines.push(`COLD START (every transcript in the window read from its first byte): ${ingested.coldStart}`);
   for (const reason of ingested.reread) lines.push(`read again from byte 0: ${reason}`);
   if (ingested.heldBack > 0) lines.push(`${ingested.heldBack} messages written in the last 5 minutes are held back to the next run (a message may still be gaining blocks, and its turn is built from the last)`);
+  if (ingested.ghCalls) lines.push(...ghIngestLines(ingested.ghCalls));
   lines.push(`TRANSCRIPT STATE: holds each transcript from the run that first read it, the first run being ${iso(ingested.firstRunAt)}Z over transcripts modified after ${iso(ingested.firstRunSince)}Z. `
     + "A transcript is read from its first byte then, but one last modified before that window is not in the store: absence before it is not \"nothing happened\".");
   return lines;
@@ -363,7 +369,8 @@ function ingestLines(ingested) {
  * @param {{ number: number, rows: number[], prs: number[], events: import("./store.mjs").TraceEvent[], ingest?: IngestReport,
  *   github?: { calls: number, read: number, added: number }, held?: import("./store.mjs").TraceEvent[] }} input `held` is every event of the store, for the footer's "held from"
  */
-export function render({ number, rows, prs, events, ingest: ingested, github, held }) {
+export function render({ number, rows, prs, events: found, ingest: ingested, github, held }) {
+  const events = found.filter((event) => event.source !== "gh-ledger"); // a row can hold thousands of calls: they are summarised below, never one line each
   const turns = events.filter((event) => event.kind === "turn");
   const priced = turns.filter((event) => typeof event.costUsd === "number");
   const total = priced.reduce((sum, event) => sum + (event.costUsd ?? 0), 0);
@@ -378,6 +385,7 @@ export function render({ number, rows, prs, events, ingest: ingested, github, he
   if (turns.length > 0) out.push("per actor on this row:", ...actorTotals(turns));
   if (ingested) out.push(...ingestLines(ingested));
   if (held) out.push("TRANSCRIPTS HELD, per actor (the earliest turn or wake in the store; Claude Code sessions and Codex reviewer sessions):", ...heldFrom(held));
+  out.push(...ghCallLines({ events: found, held }));
   if (github) out.push(`GitHub: ${github.calls} REST calls (gh api); ${github.read} events read, ${github.added} new to the store`);
   out.push(NOT_HELD, "", ...DEFINITIONS);
   return out.join("\n");
@@ -535,7 +543,7 @@ async function mainAggregate() {
   const cache = join(homedir(), ".cache", "a11ign");
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
-  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, now });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, ghLedgers: ghLedgerFiles(), now });
   const gh = budgetedGh({ gh: ghApi, budget });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
@@ -553,7 +561,7 @@ async function main() {
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
-  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath, ghLedgers: ghLedgerFiles() });
   const gh = countingGh(ghApi);
   const { rows, prs } = resolveSubject(number, rowRepo, gh);
   const seen = readGithubEvents({ rows, prs, repo: rowRepo, gh });
