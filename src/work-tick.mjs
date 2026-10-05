@@ -29,7 +29,10 @@ import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
-import { CENSUS_ENV, installSpawnCensus, readCensus, summariseCensus } from "./lib/spawn-census.mjs";
+import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, summariseCensus } from "./lib/spawn-census.mjs";
+
+// Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
+export { childrenCpuMs };
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
 // stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
@@ -126,8 +129,6 @@ export const TICK_COST_FILE = "tick-cost.jsonl";
  */
 export const TICK_COST_BYTES = 2 * 1024 * 1024;
 
-/** Linux's `USER_HZ`: `/proc/<pid>/stat` counts CPU in these, and it is 100 on every kernel configuration this host runs. */
-const CLOCK_TICKS_PER_SECOND = 100;
 const MS_PER_SECOND = 1000;
 const KB = 1024;
 const MICROSECONDS_PER_MS = 1000;
@@ -135,26 +136,6 @@ const MICROSECONDS_PER_MS = 1000;
 /** @param {string} ledgerPath @returns {string} */
 export function tickCostPath(ledgerPath) {
   return join(dirname(ledgerPath), TICK_COST_FILE);
-}
-
-/**
- * CPU the tick's CHILDREN used, in ms, from the `cutime` and `cstime` fields of `/proc/self/stat` -- which count every child this process has waited
- * for, and each of those counts the ones it waited for. `process.cpuUsage()` cannot say it: it is this process alone, and systemd's `CPU:` figure,
- * which the row's table quotes, is the whole tree. Reading the two against each other is how "starved" is told from "waiting".
- *
- * The command name is field 2 and may hold spaces and brackets, so the fields are counted from the LAST `)`. `NaN` (`null` in the line) when the
- * file is unreadable: an unknown CPU is not zero CPU.
- * @param {() => string} [readStat] @returns {number}
- */
-export function childrenCpuMs(readStat = () => readFileSync("/proc/self/stat", "utf8")) {
-  try {
-    const stat = readStat();
-    const afterName = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const [cutimeAt, cstimeAt] = [13, 14]; // fields 16 and 17 of proc(5); `afterName` starts at field 3
-    return (Number(afterName[cutimeAt]) + Number(afterName[cstimeAt])) * (MS_PER_SECOND / CLOCK_TICKS_PER_SECOND);
-  } catch {
-    return Number.NaN;
-  }
 }
 
 /** @returns {{ selfMs: number, childrenMs: number }} */
@@ -262,8 +243,8 @@ function startRun(ledgerPath) {
  */
 function tickCostLine(exit, run) {
   const reading = run.meter.reading();
-  const { commands, ghRepos, slowest } = summariseCensus(readCensus(run.censusPath));
-  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, ghRepos, slowest };
+  const { commands, ghRepos, slowest, hottest } = summariseCensus(readCensus(run.censusPath));
+  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, ghRepos, slowest, hottest };
 }
 
 /**

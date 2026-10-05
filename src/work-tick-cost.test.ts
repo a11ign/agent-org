@@ -111,6 +111,7 @@ test("#3566: a command the GATE starts is counted by command, with its wall -- t
   assert.ok(line.spawns.node.wallMs >= 300, `two 150 ms children are at least 300 ms of wall: ${JSON.stringify(line.spawns)}`);
   assert.ok(line.slowest.length >= 1 && line.slowest.length <= 5);
   assert.ok(line.slowest[0].ms >= line.slowest[line.slowest.length - 1].ms, "slowest first");
+  assert.ok(line.hottest.length >= 1 && line.hottest.length <= 5 && line.hottest[0].cpuMs >= line.hottest[line.hottest.length - 1].cpuMs, "hottest first");
 });
 
 test("#3566: a cost line that cannot be WRITTEN is said on stderr and does not change the tick's exit", () => {
@@ -157,6 +158,38 @@ test("#3566: the census names a command by its basename, cuts an argument to its
   const { commands, slowest } = summariseCensus(records);
   assert.deepEqual(commands.gh, { n: 5, wallMs: 1525 }, "an asynchronous spawn counts and adds no wall");
   assert.deepEqual(slowest.map((entry) => entry.line), ["gh b", "gh f", "herdr d", "git c", "gh e"]);
+});
+
+test("#3566: the census records each synchronous spawn's CPU, so a busy child and a sleeping one are told apart, and `hottest` ranks by CPU", () => {
+  const dir = mkdtempSync(join(tmpdir(), "census-cpu-"));
+  try {
+    const census = join(dir, "census.jsonl");
+    const driver = join(dir, "driver.mjs");
+    writeFileSync(driver, [
+      `import { spawnSync } from "node:child_process";`,
+      `spawnSync(process.execPath, ["-e", "const end = Date.now() + 400; while (Date.now() < end);"]);`,
+      `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 400);"]);`,
+    ].join("\n"));
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+      { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const [busy, asleep] = records.filter((record: { cmd: string }) => record.cmd === "node");
+    assert.ok(busy.cpuMs >= 300, `a 400 ms busy child read ${busy.cpuMs} ms of CPU`);
+    assert.ok(asleep.ms >= 350 && asleep.cpuMs < 200, `the control: a sleeping child waited ${asleep.ms} ms and used ${asleep.cpuMs} ms of CPU`);
+    assert.deepEqual(summariseCensus(records).hottest.map((entry) => entry.cpuMs), [busy.cpuMs, asleep.cpuMs].sort((a, b) => b - a));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3566: `hottest` keeps 5 by CPU and leaves out a spawn with no CPU reading (asynchronous, or `/proc` unreadable), which is not zero CPU", () => {
+  const records = [
+    { cmd: "gh", line: "gh a", ms: 900, cpuMs: 10 }, { cmd: "node", line: "node b", ms: 400, cpuMs: 800 }, { cmd: "git", line: "git c", ms: 70, cpuMs: 60 },
+    { cmd: "herdr", line: "herdr d", ms: 300, cpuMs: 300 }, { cmd: "gh", line: "gh e", ms: 20, cpuMs: 20 }, { cmd: "gh", line: "gh f", ms: 600, cpuMs: 5 },
+    { cmd: "gh", line: "gh unread", ms: 50, cpuMs: null }, { cmd: "gh", line: "gh async", ms: null },
+  ];
+  assert.deepEqual(summariseCensus(records).hottest.map((entry) => entry.line), ["node b", "herdr d", "git c", "gh e", "gh a"]);
 });
 
 test("#3566: a `gh` aimed by GH_REPO carries its repository, a `gh` with no aim and a non-`gh` carry none, and the summary counts reads per repository", () => {
