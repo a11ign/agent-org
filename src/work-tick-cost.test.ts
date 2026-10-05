@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
 import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { readElsewherePrs } from "./work-gate.mjs";
 import { claimRow } from "./row-claim.mjs";
 import { instanceCacheRead } from "./wake.mjs";
@@ -250,7 +251,7 @@ test("#3566: a REAL git spawn through the preload leaves a record with its subco
     const driver = join(dir, "driver.mjs");
     writeFileSync(driver, `import { spawnSync } from "node:child_process";\nspawnSync("git", ["-C", ${JSON.stringify(dir)}, "rev-parse", "HEAD"]);\n`);
     const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
-      { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });
+      { env: sandboxGitEnv({ [CENSUS_ENV]: census }), encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.equal(records.find((record: { cmd: string }) => record.cmd === "git")?.sub, "rev-parse");

@@ -84,7 +84,7 @@ function aimedRepo(args) {
 }
 
 /**
- * What a `gh`, `git` or `herdr` call DID, by its first words that are not options (two for `gh` and `herdr`, one for `git`): `pr list`, `issue view`, `api repos/a11ign/a11ign/issues/#/timeline`.
+ * What a `gh`, `git` or `herdr` call DID, by its first words that are not options (two for `gh` and `herdr`, one for `git`): `pr list`, `issue view`, `api repos/<owner>/<repo>/issues/#/timeline`.
  * A path segment that is only digits is `#` and a query string is dropped, so an issue number does not make every call its own name -- that is
  * what a count by subcommand is for, and the line's per-command total cannot say which of 66 `gh` calls took the 50 s (a11ign/a11ign#3566).
  * `undefined` for any other program, and for a call with only options.
