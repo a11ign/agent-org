@@ -238,6 +238,30 @@ test("(6) a missing, unparseable, foreign-version or store-replaced state is a f
   assert.match(render({ number: 9001, rows: [], prs: [], events: [], ingest: replaced }), /COLD START .*store is smaller/);
 });
 
+/** A worker whose second message follows a 6-minute tool call: it carries `toolMs` once read by a build that has the field (a11ign/a11ign#3669). */
+const TOOL_USE = JSON.stringify({
+  type: "assistant", timestamp: "2026-10-04T10:00:05.000Z", requestId: "req_tu", message: { id: "msg_tu", model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "pnpm test" } }], usage: usage(30) },
+});
+const AFTER_TOOL = [WORKER[0], TOOL_USE, toolResult("2026-10-04T10:06:05.000Z"), block("2026-10-04T10:06:12.000Z", "msg_after", 40)];
+const afterTool = (events) => events.find((event) => event.id === "turn:msg_after");
+
+test("(6b) a state written at the PREVIOUS version is a cold start naming the version, and the turn stored without `toolMs` is superseded by the re-read copy that has it (#3680)", () => {
+  const PREVIOUS = 2;
+  const w = world();
+  w.write("worker", AFTER_TOOL);
+  w.run();
+  const state = JSON.parse(readFileSync(w.statePath, "utf8"));
+  assert.equal(afterTool(w.stored())?.toolMs, 6 * 60 * 1000, "POSITIVE CONTROL: a read by this build measures the tool, so the stripped copy below is the only reason it is absent");
+  writeFileSync(w.storePath, readFileSync(w.storePath, "utf8").split("\n").filter(Boolean).map((line) => { const { toolMs, ...old } = JSON.parse(line); return JSON.stringify(old); }).join("\n") + "\n");
+  writeFileSync(w.statePath, JSON.stringify({ ...state, version: PREVIOUS, storeBytes: statSync(w.storePath).size }));
+  assert.equal("toolMs" in afterTool(w.stored()), false, "POSITIVE CONTROL: the store now holds the turn as it was stored before the field existed");
+  const rerun = w.run();
+  assert.match(rerun.coldStart, new RegExp(`not version ${STATE_VERSION}`), "the old state is distrusted, and says which version it is not");
+  assert.equal(rerun.read, 1, "the transcript is read again from byte 0 although its size and mtime are unchanged");
+  assert.equal(afterTool(w.stored())?.toolMs, 6 * 60 * 1000, "the stored turn is superseded by the copy that carries it");
+  assert.equal(w.run().coldStart, null, "and the next run trusts the state again: a version moves ONCE");
+});
+
 test("(7) the store is read ONCE per run, not once per file", () => {
   const w = world();
   for (const name of ["a", "b", "c", "d", "e"]) w.write(name, [wake("2026-10-04T10:00:00.000Z", `worker-900${name.charCodeAt(0) - 96}`), block("2026-10-04T10:00:04.000Z", `msg_${name}`)]);

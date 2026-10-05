@@ -1,0 +1,38 @@
+[Unit]
+# THE TRACE PAGES, REGENERATED -- a11ign/a11ign#3515 (the last slice of #3494; chairman, 2026-10-04: "regenerates both pages after each merge into a directory ... served privately over Tailscale").
+#
+# `src/trace/publish.mjs` reads the head of `main` in every code repository the project declares and regenerates the process map and the swimlanes of the rows closed most recently
+# ONLY WHEN a head has moved since its last stamped publication or the stamp is an hour old. A tick that finds neither does nothing and exits 0, so a ten-minute clock is not a
+# regeneration loop. A failure to render or to write exits non-zero, so the unit shows FAILED and is never a green one over an empty directory. The directory it writes is
+# `~/.cache/a11ign/trace-pages`; PUBLISHING it is `tailscale serve` (a host act, `ceo`'s, named on the row and not performed by this unit): nothing here opens a port.
+Description=Regenerate the trace pages when main has moved, or hourly (#3515)
+
+[Service]
+Type=oneshot
+
+# The checkout the repository-relative ExecStart resolves against, as the other units that run a script from this repository do.
+WorkingDirectory=@@checkout@@
+
+# PATH IS DECLARED because a systemd unit does not get a login shell's. `publish.mjs` and the `trace` it runs call a bare `gh`, and it is in @@binDir@@: the routing wrapper
+# (board-report.service has the measurement of what the bare name resolved to without it).
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` needs a home to find credentials under, and `trace` reads the transcripts and its store under it. Stated rather than assumed.
+Environment=HOME=@@home@@
+
+# V8's compile cache goes under the home, not /tmp (#2458); a unit reads no shell startup file, and `host-units.test.ts` pins this on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# WHICH ACCOUNT IT SPENDS, DECLARED: the org's own (`a11ign-ai-workers`, the one the work tick runs as), never the person's. Per tick it makes one REST call per code repository
+# (`branches/main`), and only when a run is decided the closed-rows listing and `trace`'s own reads, which `--calls` caps and which the store makes small after the first run.
+# The core pool is SHARED with the work tick.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# A FIRST RUN READS GITHUB IN SEVERAL PASSES (the weekly report's first reading took three of 1,500), so a unit that hangs must fail rather than hold the next slot: two hours is
+# far above a measured pass, and each page has its own thirty-minute limit inside it.
+TimeoutStartSec=7200
+
+# `/usr/bin/node <repository-relative path>`, the shape shadow-window.service explains: the tree copy IS the program, not copied anywhere.
+ExecStart=/usr/bin/node packages/agent-org/src/trace/publish.mjs
+
+# NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot at every boot. The timer is the only thing that may start it.

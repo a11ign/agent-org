@@ -45,6 +45,8 @@ import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
 import { pnpmDrift } from "./host-pnpm.mjs";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
+import { readAgents, absentSeats } from "./herdr-agents.mjs";
+import { persistentRoles } from "./project-roles.mjs";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
@@ -93,6 +95,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "agent-org",
   // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
+  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.mjs`, which decides whether a head has moved; the timer is only a clock.
+  "trace-publish.service.in", "trace-publish.timer.in",
 ]);
 
 /**
@@ -350,6 +354,10 @@ const OTHER_TOOL_FORMS = Object.freeze({
   "trace-weekly.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/trace-weekly-post.sh"],
+  ],
+  // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
+  "trace-publish.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node src/trace/publish.mjs"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
@@ -1130,7 +1138,7 @@ export function compileCacheDrift(deps = {}) {
 
 /**
  * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean,
- *            manualFix?: boolean, hostProgram?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
+ *            manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
  *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
  */
 
@@ -1739,7 +1747,7 @@ export function toolVersionNotes(reading) {
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
 function hostNotes() {
-  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...windowEndNotes()];
+  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...persistentSeatNotes(), ...windowEndNotes()];
 }
 
 /**
@@ -2632,6 +2640,41 @@ export function sessionModelNotes(deps = {}) {
 }
 
 /**
+ * A PERSISTENT SEAT THE ROSTER NAMES AND HERDR DOES NOT LIST (#3539). A roster entry is not a process: the routing sends the chairman's
+ * messages to `liaison` the moment its entry exists, and on 2026-10-04 the seat was absent and his message was refused. The work tick
+ * starts an absent seat ({@link startAbsentSeats}); this is the reading that says one is not running, and the gate offers a finding.
+ *
+ * `roster` and `agents` are what was read, or `null` for what could not be: THEY ARE NOTHING HERE, never `[]`, so a roster or a herdr that
+ * could not be asked reads as unknown ({@link persistentSeatNotes}) and never as every seat present.
+ * @typedef {{ seats?: string[] | null, agents?: ReturnType<typeof readAgents> }} SeatDeps
+ * @param {SeatDeps} [deps]
+ * @returns {{ seats: string[] | null, agents: ReturnType<typeof readAgents> }}
+ */
+function readSeats({ seats, agents } = {}) {
+  /** @returns {string[] | null} */
+  const rosterSeats = () => { try { return persistentRoles(); } catch { return null; } };
+  return { seats: seats === undefined ? rosterSeats() : seats, agents: agents === undefined ? readAgents() : agents };
+}
+
+/** @param {SeatDeps} [deps] @returns {Finding[]} */
+export function persistentSeatDrift(deps = {}) {
+  const { seats, agents } = readSeats(deps);
+  if (seats === null || agents === null) return [];
+  return absentSeats(seats, agents).map((seat) => ({
+    unit: `seat ${seat}`, problem: "PERSISTENT SEAT NOT RUNNING", seatAbsent: true,
+    detail: `the roster marks \`${seat}\` persistent and herdr lists no workspace labelled \`${seat}\`, so whatever is routed to it is refused. `
+      + "The work tick starts it on its next run; if it is still absent after one, that tick's `SEAT NOT STARTED` line says why." }));
+}
+
+/** What could not be read, named: an unknown is a note and never a clean reading. @param {SeatDeps} [deps] @returns {Finding[]} */
+export function persistentSeatNotes(deps = {}) {
+  const { seats, agents } = readSeats(deps);
+  const unread = [...seats === null ? ["the roster (sessions.json)"] : [], ...agents === null ? ["herdr's workspace listing"] : []];
+  return unread.length === 0 ? [] : [{ unit: "persistent seats", problem: "UNKNOWN",
+    detail: `${unread.join(" and ")} could not be read, so whether every persistent seat is running is unknown rather than yes.` }];
+}
+
+/**
  * NOT ASKED and ALL CORRECT read identically as an empty list, so the report must not say the second
  * when it means the first -- that substitution is this repository's most-repeated defect.
  * @param {Finding[]} drift
@@ -2686,6 +2729,10 @@ function uncovered(drift) {
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a person's dotfile and\n`
         + "     `host:install` writes no line of it. Change it by hand, as the finding says.\n").join("")
     // #2896: A PROGRAM, NOT A FILE THIS REPOSITORY OWNS. `host:install` writes units and the identity files and installs no program.
+    // #3539: A SEAT IS STARTED BY THE WORK TICK, NOT BY A UNIT FILE, so `host:install` has nothing to copy for it.
+    + drift.filter((d) => d.seatAbsent)
+      .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a process, and \`host:install\` starts none.\n`
+        + "     The work tick starts it; read that tick's `SEAT NOT STARTED` line if it stays absent.\n").join("")
     + drift.filter((d) => d.hostProgram)
       .map((d) => `  !! ${d.unit} is NOT fixed by the remedy below -- it is a program the host must have, and\n`
         + "     `host:install` installs none. Install it as the finding says.\n").join("")
@@ -2770,7 +2817,7 @@ function jsonReport() {
  * that function is pure of the running org -- twenty tests hand it a fixture host -- while this one reads whoever is running.
  */
 function hostFindings() {
-  return [...hostUnitDrift(), ...sessionModelDrift()];
+  return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift()];
 }
 
 function main() {
