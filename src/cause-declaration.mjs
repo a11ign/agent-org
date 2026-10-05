@@ -260,7 +260,14 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "deciding whether a fully-closed epic is finished or merely unfiled is the same supply "
       + "judgment as splitting one, and the cheap answer is wrong half the time",
   }),
-  declareCause("answer-owed", GROUPS.JUDGMENT, {
+  // ACTION, NOT JUDGMENT (#3652). A delivery is not an answer: the label stands until the addressee removes it, so
+  // the order names something to DO and takes the twenty-minute cadence. As a judgment cause a delivery held the key
+  // for two hours even when the label had come off and gone back on, so a question labelled inside that window never
+  // woke the session it named (`product-manager/answer-owed/row-3566`, 2026-10-05: four deliveries two hours apart,
+  // none at a label time). A label re-applied inside twenty minutes of a delivery still waits at most that long.
+  // THE COST IS THE BREAKER: a label that stands unanswered is now offered every twenty minutes, and trips
+  // `MAX_DELIVERIES` (and `escalateStuck`) about two hours in -- an unanswered question someone is stopped on.
+  declareCause("answer-owed", GROUPS.ACTION, {
     kind: "claude",
     model: "sonnet",
     // HIGH, because the question is by definition one the asker could not resolve themselves -- it
