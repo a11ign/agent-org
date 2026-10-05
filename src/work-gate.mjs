@@ -575,7 +575,7 @@ export const GH_READS = Object.freeze({
   // #2286, WIDENED BY #2741: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row OR some
   // claimed one has a cleared blocker to ask about. `gh`'s `blockedBy` nodes carry no closing time, and a
   // per-blocker read would make the tick's cost a function of how many rows are waiting.
-  conditionalOnClearedRows: "issue list --state closed --limit 100 --json number,closedAt"
+  conditionalOnClearedRows: "issue list --state closed --limit 100 --search sort:updated-desc --json number,closedAt,updatedAt"
     + " (readRecentlyClosed -- unclaimed-blocker-cleared's and blocker-cleared's backoff)",
   // #2356: FOUR MORE REST CALLS, paid ONLY by a tick that found `main` red -- the run's jobs, the recheck
   // job's annotations, `run view --log-failed` for the failing test names, and the merged PR's session.
@@ -2716,21 +2716,39 @@ function whyNotNeeded(moves, clearedAtMs, nowMs) {
 /**
  * The read that was REFUSED, as a phrase, or `null` when every read the drop needs was made. FAILING TOWARD TELLING THE HOLDER: a refusal drops nothing, because
  * an order that should not have gone costs a wake and a drop that should not have happened strands a row (this function's own header).
- * @param {{ row: any, cleared: number[], closings: Map<number, number> | null, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} reads
+ * A blocker ABSENT from a map that was read is a refusal only when the map carries no `closedNoLaterThan` (#3706): with one, the absent blocker is bounded, not unread.
+ * @param {{ row: any, cleared: number[], closings: Closings | null, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} reads
  * @returns {string | null}
  */
 function refusedRead({ row, cleared, closings, claimFacts }) {
   if (claimFacts === null) return "the claim-stall tick read no claim";
   if (closings === null) return "the closing times were not read";
+  if (closings.size === 0) return "the closing list was empty, so no bound exists for any blocker";
   const unclosed = cleared.find((n) => !closings.has(n));
-  if (unclosed !== undefined) return `the closing time of #${unclosed} was not read`;
+  if (unclosed !== undefined && closings.closedNoLaterThan === undefined) return `the closing time of #${unclosed} was not read`;
   if (claimFacts.moves.has(Number(row.number))) return null;
   return `the claim read was refused (${claimFacts.skipped.get(Number(row.number)) ?? "the claim-stall tick did not evaluate this row"})`;
 }
 
 /**
+ * The time the drop compares the claim against: the newest of the listed closings and, when a cleared blocker is ABSENT from the list, `closedNoLaterThan` (#3706).
+ * `boundedBy` is that bound only when it decided the answer, so the log names it exactly when it was relied on. SOUND IN BOTH DIRECTIONS: the result is `>=` every blocker's
+ * real closing, so a claim at or after it came after all of them, and a bound smaller than a listed closing changes nothing.
+ * @param {number[]} cleared @param {Closings} closings
+ * @returns {{ at: number, boundedBy: { blocker: number, at: number } | null }}
+ */
+function newestClosing(cleared, closings) {
+  const listed = cleared.filter((n) => closings.has(n)).map((n) => /** @type {number} */ (closings.get(n)));
+  const absent = cleared.find((n) => !closings.has(n));
+  const bound = closings.closedNoLaterThan;
+  const newestListed = listed.length === 0 ? -Infinity : Math.max(...listed);
+  if (absent === undefined || bound === undefined || bound <= newestListed) return { at: newestListed, boundedBy: null };
+  return { at: bound, boundedBy: { blocker: absent, at: bound } };
+}
+
+/**
  * `blockerClearedReading`'s drop for ONE row about to be ordered, with the lines to print. `claimFacts` undefined is a caller that did not ask: no drop, no line.
- * @param {{ row: any, cleared: number[], causeKey: string, closings: Map<number, number> | null, nowMs: number,
+ * @param {{ row: any, cleared: number[], causeKey: string, closings: Closings | null, nowMs: number,
  *   claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} args
  * @returns {{ drop: BlockerClearedDrop | null, log: string[] }}
  */
@@ -2741,11 +2759,15 @@ function staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs }) 
     return { drop: null, log: [`blocker-cleared ${subjectMention(row)}: order KEPT -- ${refused}, so nothing was checked against it\n`] };
   }
   const moves = /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimMoves} */ (claimFacts.moves.get(Number(row.number)));
-  const clearedAtMs = Math.max(...cleared.map((n) => /** @type {number} */ (closings.get(n))));
+  const { at: clearedAtMs, boundedBy } = newestClosing(cleared, closings);
+  const closed = boundedBy === null ? `blockers closed ${isoOf(clearedAtMs)}`
+    : `#${boundedBy.blocker} is absent from the closing list and closed no later than ${isoOf(boundedBy.at)}, the oldest listed updatedAt`;
   const why = whyNotNeeded(moves, clearedAtMs, nowMs);
-  if (why === null) return { drop: null, log: [] };
+  if (why === null) {
+    return { drop: null, log: boundedBy === null ? [] : [`blocker-cleared ${subjectMention(row)}: order KEPT -- ${closed}, and the claim (${isoOf(moves.claimedAt)}) is not after it\n`] };
+  }
   return { drop: { causeKey, ...why },
-    log: [`SHELVED row ${subjectMention(row)}: blocker-cleared order dropped, ${why.reason} (claimed ${isoOf(moves.claimedAt)}, blockers closed ${isoOf(clearedAtMs)}, decided ${isoOf(why.at)})\n`] };
+    log: [`SHELVED row ${subjectMention(row)}: blocker-cleared order dropped, ${why.reason} (claimed ${isoOf(moves.claimedAt)}, ${closed}, decided ${isoOf(why.at)})\n`] };
 }
 
 export const HOUR_MS = 60 * 60 * 1000;
@@ -2833,16 +2855,40 @@ function clearingAskWindow(cleared, nowMs, closings) {
   return closings ? promotionAskWindow(nowMs - clearedAt(cleared, closings)) : { suffix: "" };
 }
 
-/** How many of the most recently closed rows `readRecentlyClosed` asks for: about two days of merges. */
+/** How many rows `readRecentlyClosed` asks for. */
 const RECENTLY_CLOSED_LIMIT = 100;
 
 /**
- * When each of the most recently closed rows closed, or `null` when the read is refused.
+ * @typedef {Map<number, number> & { closedNoLaterThan?: number }} Closings
+ *   When each listed row closed. `closedNoLaterThan` is set only by `readRecentlyClosed` and only when its list is PROVEN ordered by `updatedAt`: every row ABSENT from the map
+ *   then closed no later than it (#3706). A plain `Map` -- a test's, an old caller's -- carries none, and an absent blocker is then a read that was not made.
+ */
+
+/**
+ * `closedNoLaterThan` of a listing, or `undefined` when the listing cannot prove one: a row without a readable `updatedAt`, or an order that is not `updatedAt` descending.
+ * THE ORDER IS CHECKED, NOT TRUSTED: `gh` silently ignores a sort key it does not know (`sort:closed-desc` returns the creation order, measured 2026-10-06), and the oldest
+ * `updatedAt` of a list sorted by anything else bounds nothing.
+ * @param {any[]} listed
+ * @returns {number | undefined}
+ */
+function oldestUpdatedWhenOrdered(listed) {
+  const updated = listed.map((r) => Date.parse(r?.updatedAt));
+  const ordered = updated.length > 0 && updated.every((at, i) => Number.isFinite(at) && (i === 0 || updated[i - 1] >= at));
+  return ordered ? updated[updated.length - 1] : undefined;
+}
+
+/**
+ * When each row of the listing closed, or `null` when the read is refused.
+ *
+ * THE LISTING IS THE 100 MOST RECENTLY UPDATED CLOSED ROWS, NOT THE 100 MOST RECENTLY CLOSED (#3706). `gh issue list` orders by CREATION, so a plain
+ * `--state closed --limit 100` leaves out an old row that closed today (measured 2026-10-06: 15 rows closed after the oldest listed closing were absent, #3534 among them), and
+ * the older text of this header, "about two days of merges", described a list that was never read. `--search sort:updated-desc` is the order that bounds an absent row: `closedAt <= updatedAt`,
+ * so a row absent from a list sorted by `updatedAt` has an `updatedAt` no later than the oldest listed one and CLOSED no later than it -- `closedNoLaterThan`, see `Closings`.
  *
  * ONE CALL FOR EVERY BLOCKER, NOT ONE PER ROW: `gh`'s `blockedBy` nodes carry `number` and `state` and no
  * closing time, and a per-blocker `issue view` would make the tick's cost a function of how many rows are
  * waiting -- the property `GH_READS` exists to protect. A blocker older than this list is treated as old
- * (`clearedAt`), which is what it is.
+ * (`clearedAt`) by the backoff, and as closed no later than `closedNoLaterThan` by `staleClearing`.
  *
  * `null` IS "COULD NOT READ" AND `unclaimedBlockerClearedOrders` FAILS OPEN ON IT: with no closing time the
  * gate asks at the unstaged key, which is the pre-#2286 behaviour. The alternative -- reading a refused
@@ -2850,19 +2896,21 @@ const RECENTLY_CLOSED_LIMIT = 100;
  * exact stranding #2139 was written to end.
  *
  * @param {(args: string[]) => string} [run]
- * @returns {Map<number, number> | null}
+ * @returns {Closings | null}
  */
 export function readRecentlyClosed(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit",
-      String(RECENTLY_CLOSED_LIMIT), "--json", "number,closedAt"]));
+      String(RECENTLY_CLOSED_LIMIT), "--search", "sort:updated-desc", "--json", "number,closedAt,updatedAt"]));
     if (!Array.isArray(parsed)) return null;
-    /** @type {Map<number, number>} */
+    /** @type {Closings} */
     const closings = new Map();
     for (const r of parsed) {
       const at = Date.parse(r?.closedAt);
       if (Number.isFinite(at)) closings.set(Number(r.number), at);
     }
+    const bound = oldestUpdatedWhenOrdered(parsed);
+    if (bound !== undefined) closings.closedNoLaterThan = bound;
     return closings;
   } catch {
     return null;

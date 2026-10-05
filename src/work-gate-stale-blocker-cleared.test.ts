@@ -12,7 +12,7 @@
  */
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { blockerClearedOrders, blockerClearedReading, claimStallTick, decide, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate.mjs";
+import { blockerClearedOrders, blockerClearedReading, claimStallTick, decide, readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate.mjs";
 import { claimRecordComment } from "./row-claim.mjs";
 
 const T = (hms: string) => Date.parse(`2026-10-04T${hms}Z`);
@@ -166,4 +166,118 @@ test("#3451 `decide` carries it: the order is absent with the facts and present 
   } finally {
     mock.timers.reset();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// #3706: A BLOCKER ABSENT FROM THE CLOSING LIST IS BOUNDED, NOT UNREAD.
+//
+// `gh issue list --state closed --limit 100` is the 100 most recently CREATED closed rows, so #3534's blocker #3509 (closed 2026-10-04T20:56:24Z, created long before) was absent and the
+// order was KEPT for six hours for a worker that had claimed at 18:37:10Z. The list is now read with `--search sort:updated-desc`, and `closedAt <= updatedAt` makes the OLDEST LISTED
+// `updatedAt` an upper bound on every absent row's closing. THE FIXTURE PINS BOTH SORTS: its oldest listed closing (3538, 2026-10-04T20:31:42Z) is NOT its oldest listed `updatedAt`
+// (3532, 2026-10-05T02:02:42Z), so a bound taken from the oldest closing -- the refuted one -- fails (3).
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+const D = (iso: string) => Date.parse(`2026-10-05T${iso}Z`);
+const BOUND = D("02:02:42");
+const NUMBER = 3534;
+const HOLDER = "worker-3534";
+
+/** The listing the live call returned, trimmed: sorted by `updatedAt` descending, with 3538's closing OLDER than anything's `updatedAt`. */
+const listing = [
+  { number: 3723, closedAt: "2026-10-05T22:56:16Z", updatedAt: "2026-10-05T22:56:16Z" },
+  { number: 3667, closedAt: "2026-10-05T12:11:59Z", updatedAt: "2026-10-05T12:11:59Z" },
+  { number: 3538, closedAt: "2026-10-04T20:31:42Z", updatedAt: "2026-10-05T03:00:00Z" },
+  { number: 3532, closedAt: "2026-10-05T00:38:59Z", updatedAt: "2026-10-05T02:02:42Z" },
+];
+const closingsOf = (rows: object[] = listing) => readRecentlyClosed(() => JSON.stringify(rows));
+
+const rowOf = (blockers: number[]) => ({ number: NUMBER, title: "a row", body: "", labels: [{ name: "in-progress" }, { name: `session:${HOLDER}` }],
+  blockedBy: { nodes: blockers.map((number) => ({ number, state: "CLOSED" })) } });
+
+/** The real claim-stall tick over the #3534 row, then `blockerClearedReading` over its facts, at `now`. */
+function readBounded({ blockers, claimed, closings, now }: { blockers: number[]; claimed: number; closings: ReturnType<typeof closingsOf>; now: number }) {
+  let claimFacts: Facts = undefined as never;
+  const comment = { body: claimRecordComment({ session: HOLDER, branch: "agent/a-blocker-3534", worktree: "../wt-3534" }), createdAt: new Date(claimed).toISOString(), author: { login: WORKER } };
+  claimStallTick({ rows: [rowOf(blockers)], claimedComments: [{ number: NUMBER, comments: [comment] }], openPrs: [], mergedPrs: [], elsewhere: { open: [], merged: [] } as never, io,
+    repo: "/home/agent/repos/a11y-witness", now, restartAt: null, agents: null, stateDir: "/state", ledger: () => "", log: () => {}, read: () => ({}), write: () => {},
+    onFacts: (f: unknown) => { claimFacts = f as Facts; } });
+  return blockerClearedReading([rowOf(blockers)], "2026-10-05", now, { openPrs: [], closings, claimFacts });
+}
+
+const T3534 = { blockers: [3509, 3532, 3667], now: D("18:38:49") };
+
+test("#3706 (a) the reader asks ONE call, sorted by updatedAt, and bounds an absent row by the OLDEST LISTED updatedAt (not the oldest closing)", () => {
+  const calls: string[][] = [];
+  const closings = readRecentlyClosed((args) => { calls.push(args); return JSON.stringify(listing); });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].slice(calls[0].indexOf("--search")), ["--search", "sort:updated-desc", "--json", "number,closedAt,updatedAt"]);
+  assert.equal(closings?.closedNoLaterThan, BOUND);
+  assert.ok(Math.min(...(closings as Map<number, number>).values()) < BOUND, "CONTROL: the oldest listed closing is NOT the bound, so the two sorts are told apart");
+  assert.equal(closings?.get(3667), D("12:11:59"), "the map is still a Map of closings");
+});
+
+test("#3706 (b) THE BOUND IS CHECKED, NOT TRUSTED: a listing not sorted by updatedAt, or one with an unreadable updatedAt, carries none", () => {
+  const sortedByCreation = [...listing].reverse(); // what `gh` returns when it silently ignores a sort key: updatedAt ascending here
+  const noUpdated = listing.map(({ updatedAt: _dropped, ...rest }) => rest); // an old fake, or a field `gh` stopped returning
+  const garbled = listing.map((r, i) => (i === 2 ? { ...r, updatedAt: "not a date" } : r));
+  for (const [name, rows] of [["unsorted", sortedByCreation], ["no updatedAt", noUpdated], ["unreadable updatedAt", garbled], ["empty", []]] as const) {
+    assert.equal(closingsOf([...rows])?.closedNoLaterThan, undefined, name);
+  }
+  assert.equal(closingsOf()?.closedNoLaterThan, BOUND, "CONTROL: the sorted listing does carry one");
+  assert.equal(readRecentlyClosed(() => { throw new Error("gh refused"); }), null);
+});
+
+test("#3706 (1) the #3534 timeline: #3509 absent, claim 2026-10-05T18:37:10Z -- no order, one drop, `claimed-after-clearing` (and it was KEPT before)", () => {
+  const reading = readBounded({ ...T3534, claimed: D("18:37:10"), closings: closingsOf() });
+  assert.deepEqual(reading.orders, []);
+  assert.deepEqual(reading.drops.map((d) => d.reason), ["claimed-after-clearing"]);
+  assert.match(only(reading.log), /^SHELVED row .*3534.*blocker-cleared order dropped, claimed-after-clearing \(claimed 2026-10-05T18:37:10.000Z, blockers closed 2026-10-05T12:11:59.000Z/);
+});
+
+test("#3706 (1b) CONTROL for (1): the same row claimed BEFORE the newest listed closing (#3667, 12:11:59Z) gets ONE order", () => {
+  const reading = readBounded({ ...T3534, claimed: D("10:00:00"), closings: closingsOf() });
+  assert.equal(only(reading.orders).causeKey.startsWith(`${HOLDER}/blocker-cleared/row-3534/3509.3532.3667`), true);
+  assert.deepEqual(reading.drops, []);
+});
+
+const BOUNDED = { blockers: [3509, 3532], now: D("02:20:00") }; // 3532 closed 00:38:59; #3509 is absent, so its closing is bounded by 02:02:42
+
+test("#3706 (2) the same row claimed BEFORE the bound: ONE order, and the log line names the bound used", () => {
+  const reading = readBounded({ ...BOUNDED, claimed: D("01:00:00"), closings: closingsOf() });
+  only(reading.orders);
+  assert.deepEqual(reading.drops, []);
+  assert.match(only(reading.log), /order KEPT -- #3509 is absent from the closing list and closed no later than 2026-10-05T02:02:42.000Z, the oldest listed updatedAt, and the claim \(2026-10-05T01:00:00.000Z\) is not after it/);
+});
+
+test("#3706 (2b) CONTROL for (2): claimed AFTER the bound, the bound is what drops it, and the line names it", () => {
+  const reading = readBounded({ ...BOUNDED, claimed: D("02:10:00"), closings: closingsOf() });
+  assert.deepEqual(reading.orders, []);
+  assert.match(only(reading.log), /SHELVED .*claimed-after-clearing \(claimed 2026-10-05T02:10:00.000Z, #3509 is absent from the closing list and closed no later than 2026-10-05T02:02:42.000Z/);
+});
+
+test("#3706 (3) THE POSITIVE CONTROL: an absent blocker, claim after the oldest listed CLOSING and before the oldest listed updatedAt -- ONE order, because the bound cannot prove it", () => {
+  const claimed = D("01:30:00"); // after 3538's closing (2026-10-04T20:31:42Z), the refuted bound; before 02:02:42Z, the sound one
+  const oldestListedClosing = Math.min(...(closingsOf() as Map<number, number>).values());
+  assert.ok(oldestListedClosing < claimed && claimed < BOUND, "the fixture sits between the two bounds");
+  const reading = readBounded({ ...BOUNDED, claimed, closings: closingsOf() });
+  only(reading.orders);
+  assert.deepEqual(reading.drops, []);
+});
+
+test("#3706 (4) an EMPTY listing, a refused read and a list that bounds nothing each KEEP the order and say which read was missing", () => {
+  const claimed = D("18:37:10"); // every case WOULD drop if its read had been made: the CONTROL below is (1)
+  const onTheGrid = 20_000 * 72 * 60 * 60_000 + 60_000; // an empty map reads every blocker as the epoch, so its order is due only on the 72-hour grid
+  const cases: [string, ReturnType<typeof closingsOf>, number, RegExp][] = [
+    ["null", null, T3534.now, /order KEPT -- the closing times were not read/],
+    ["empty", closingsOf([]), onTheGrid, /order KEPT -- the closing list was empty, so no bound exists/],
+    ["a map with no bound", new Map([[3532, D("00:38:59")], [3667, D("12:11:59")]]), T3534.now, /order KEPT -- the closing time of #3509 was not read/],
+    ["a listing not sorted by updatedAt", closingsOf([...listing].reverse()), T3534.now, /order KEPT -- the closing time of #3509 was not read/],
+  ];
+  for (const [name, closings, now, line] of cases) {
+    const reading = readBounded({ ...T3534, now, claimed, closings });
+    assert.equal(reading.orders.length, 1, `${name}: the order is kept`);
+    assert.deepEqual(reading.drops, [], `${name}: nothing dropped`);
+    assert.match(only(reading.log), line, name);
+  }
+  assert.equal(readBounded({ ...T3534, claimed, closings: closingsOf() }).drops.length, 1, "CONTROL: with the sorted listing the same row drops");
 });
