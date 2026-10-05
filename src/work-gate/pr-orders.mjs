@@ -730,8 +730,7 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  *   5. `stamp`        the live session that stamped the worktree the branch is checked out in (`.a11y-owner`).
  *   6. `ceo`          nobody could be named. Never `product-manager`.
  * "Live" in rungs 2-5 is the same test #2912 made: the session still HOLDS A CLAIM on an open row. `isLiveSession`
- * is not asked, because `arm-pr.mjs` reads `sessions.json` at load and the gate must load without
- * `.agent-org/roles` (#2174) -- so a live session holding NO claim is answered by `ceo`, which can act.
+ * is not asked, so a live session holding NO claim is answered by `ceo`, which can act.
  *
  * @param {any} pr
  * @returns {{ session: string, source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "ceo" }}
