@@ -1,18 +1,19 @@
 // a11ign/a11ign#3494: the trace store, first slice. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub.
-// no-token: gh -- every source is an injected fixture; the only `gh` calls in the slice are in `resolveSubject`, which no test here calls
+// no-token: gh -- every source is an injected fixture; the only `gh` calls in the slice are in `resolveSubject`, which no test here calls with a real `gh`
 // The records are in the shapes measured on 2026-10-04: an `assistant` record per content block sharing one `message.id`, `usage.cache_creation` split by TTL, and a
 // `user` record wrapped in `<pasted_content` for a delivered order.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.mjs";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { budgetedGh, budgetLine, githubEventsOfMerged, githubSummary, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -378,27 +379,39 @@ test("ARGS --week: an ISO week, a bare week number of this year, or any day in t
   assert.throws(() => parseWeek("last week", now), /--week must be an ISO week/);
 });
 
-/** A `gh api` that answers from a table and fails like gh does for anything else. */
-const fakeGh = ({ pulls, search }) => (args) => {
-  const path = args[0];
+/** A `gh api` that answers from a table and fails like gh does for anything else: a pull request, or the timeline of a row (the cross-references a pull request naming it leaves there). */
+const fakeGh = ({ pulls, timelines }) => (args) => {
+  const path = args[0] === "-X" ? args[2] : args[0];
   const pull = /pulls\/(\d+)$/.exec(path);
   if (pull) {
     if (pulls[pull[1]]) return pulls[pull[1]];
     throw Object.assign(new Error("gh: Not Found (HTTP 404)"), { stderr: "gh: Not Found (HTTP 404)" });
   }
-  if (path === "-X" && args[2] === "search/issues") return { items: search };
+  const timeline = /issues\/(\d+)\/timeline$/.exec(path);
+  if (timeline) return timelines[timeline[1]] ?? [];
   throw new Error(`unexpected gh call ${args.join(" ")}`);
 };
+const mention = (number, body, { repo = ROW_REPO, pull = true } = {}) => ({ event: "cross-referenced", source: { type: "issue", issue: { number, body, repository_url: `https://api.github.com/repos/${repo}`, ...(pull ? { pull_request: {} } : {}) } } });
 
 test("SUBJECT OF A NUMBER: a pull request resolves to the rows it closes, a row to the pull requests that close it", () => {
-  const search = [{ number: 9100, body: "Closes #9001\n" }, { number: 9200, body: "Closes: none -- 9001 mentioned" }, { number: 9300, body: "Closes a11ign/other#9001" }];
-  const gh = fakeGh({ pulls: { 9100: { body: "Closes #9001\n" } }, search });
+  const timelines = { 9001: [mention(9100, "Closes #9001\n"), mention(9200, "Closes: none -- 9001 mentioned"), mention(9300, "Closes a11ign/other#9001"), mention(9400, "Closes #9001", { repo: "a11ign/agent-org" }), mention(9500, "Closes #9001", { pull: false }), { event: "labeled" }] };
+  const gh = fakeGh({ pulls: { 9100: { body: "Closes #9001\n" } }, timelines });
   assert.deepEqual(resolveSubject(9100, ROW_REPO, gh), { rows: [9001], prs: [9100] }, "asked as a pull request");
-  assert.deepEqual(resolveSubject(9001, ROW_REPO, gh), { rows: [9001], prs: [9100] }, "asked as a row: a mention that closes nothing, or closes another repository's row, is not a link");
+  assert.deepEqual(resolveSubject(9001, ROW_REPO, gh), { rows: [9001], prs: [9100] }, "asked as a row: a mention that closes nothing, closes another repository's row, is another repository's pull request, or is an issue, is not a link");
+});
+
+test("SUBJECT OF A NUMBER (#3644): a row's pull requests are read from its timeline, page by page, and no call is a search", () => {
+  const seen = [];
+  const full = Array.from({ length: 100 }, () => ({ event: "labeled" }));
+  const gh = (args) => { seen.push(args.join(" ")); return /page=1$/.test(args.join(" ")) ? full : [mention(9100, "Closes #9001")]; };
+  const found = resolveSubject(9001, ROW_REPO, (args) => (/pulls\//.test(args[0]) ? (() => { throw Object.assign(new Error("Not Found"), { stderr: "HTTP 404" }); })() : gh(args)));
+  assert.deepEqual(found, { rows: [9001], prs: [9100] }, "the pull request is on page 2 of the timeline");
+  assert.equal(seen.length, 2);
+  assert.ok(seen.every((call) => !/search/.test(call)), seen.join("\n"));
 });
 
 test("SUBJECT OF A NUMBER: only a 404 means 'this is a row'; any other failure throws rather than printing a trace without the leads' turns", () => {
-  const broken = (args) => { if (/pulls\//.test(args[0])) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403 rate limit" }); return { items: [] }; };
+  const broken = (args) => { if (/pulls\//.test(args[0])) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403 rate limit" }); return []; };
   assert.throws(() => resolveSubject(9001, ROW_REPO, broken), /403/);
 });
 
@@ -536,22 +549,23 @@ test("REPRICED: the waterfall's dollars are at PRICES too (a turn stored null of
   assert.deepEqual([drawn.spend.priced, drawn.spend.unpriced], [1, 1]);
 });
 
-/** A `gh api` that counts what reaches it, and answers a search, the open-issue list, an issue and an empty timeline the way GitHub does. */
+/** A `gh api` that counts what reaches it, and answers the closed-pull-requests list (newest update first), the open-issue list, an issue and an empty timeline the way GitHub does. A search is refused outright. */
 function listingGh({ merged = [], open = [] } = {}) {
   const seen = [];
   const gh = (args) => {
     seen.push(args.join(" "));
+    assert.ok(!args.some((arg) => /search/.test(arg)), `the search API is not read: ${args.join(" ")}`);
     const field = (name) => args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
     const page = Number(field("page") ?? 1);
     const slice = (list) => list.slice((page - 1) * 100, page * 100);
-    if (args.includes("search/issues")) return { total_count: merged.length, items: slice(merged) };
+    if (args.some((arg) => /\/pulls$/.test(arg))) return slice([...merged].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)));
     if (args.some((arg) => /\/issues$/.test(arg))) return slice(open);
     if (/\/timeline\?/.test(args[0])) return [];
     return { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } };
   };
-  return Object.assign(gh, { seen });
+  return Object.assign(gh, { seen, rate: { remaining: 4000, resource: "core" } }); // a real reply names its pool; a fake that does not is refused (see POOL)
 }
-const mergedItem = (number, body = "") => ({ number, created_at: "2026-09-29T09:00:00Z", body, pull_request: { merged_at: "2026-09-29T11:00:00Z" } });
+const mergedItem = (number, body = "", { mergedAt = "2026-09-29T11:00:00Z", updatedAt = mergedAt } = {}) => ({ number, created_at: "2026-09-29T09:00:00Z", updated_at: updatedAt, merged_at: mergedAt, body });
 
 test("BUDGET: the (budget+1)th call is refused BEFORE it is made, every call is counted, and the refusal says why", () => {
   const underlying = listingGh();
@@ -571,20 +585,20 @@ test("BUDGET: --calls 0 makes NO gh call at all, and says the list of merged pul
   const gh = budgetedGh({ gh: underlying, budget: 0 });
   assert.throws(() => readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window: { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") }, gh, budget: 0 }),
     (error) => /--calls 0 is too small to list the merged pull requests \(0 made\)/.test(error.message) && error.cause.code === "GH_CALLS_SPENT");
-  assert.deepEqual(underlying.seen, [], "not the merged-PR search, not the open-row list");
+  assert.deepEqual(underlying.seen, [], "not the merged-PR list, not the open-row list");
 });
 
-test("BUDGET: the merged-PR search and the open-row list are COUNTED, page by page; a budget spent before the open rows leaves them unknown, not empty", () => {
+test("BUDGET: the merged-PR list and the open-row list are COUNTED, page by page; a budget spent before the open rows leaves them unknown, not empty", () => {
   const merged = Array.from({ length: 150 }, (_, index) => mergedItem(index + 1, `Closes a11ign/a11ign#${1000 + index}`));
   const open = [{ number: 7 }, { number: 8, pull_request: {} }, { number: 9 }];
   const window = { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
   const whole = listingGh({ merged, open });
   const gh = budgetedGh({ gh: whole, budget: 10 });
   const listings = readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh, budget: 10 });
-  assert.equal(listings.pulls.length, 150, "both pages of the search");
+  assert.equal(listings.pulls.length, 150, "both pages of the list");
   assert.deepEqual(listings.pulls[0], { repo: "a11ign/a11ign", number: 1, createdAt: "2026-09-29T09:00:00Z", mergedAt: "2026-09-29T11:00:00Z", body: "Closes a11ign/a11ign#1000" });
   assert.deepEqual(listings.openRows, [7, 9], "a pull request the issues endpoint lists is not an open row");
-  assert.equal(gh.calls, 3, "two search pages and one issues page, each a counted call");
+  assert.equal(gh.calls, 3, "two pull-request pages and one issues page, each a counted call");
   const tight = listingGh({ merged, open });
   const short = readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh: budgetedGh({ gh: tight, budget: 2 }), budget: 2 });
   assert.equal(short.pulls.length, 150);
@@ -592,16 +606,24 @@ test("BUDGET: the merged-PR search and the open-row list are COUNTED, page by pa
   assert.equal(tight.seen.length, 2);
 });
 
-test("BUDGET: a search that holds more than GitHub returns is REFUSED, not cut short; and a list on one page is read in one call", () => {
+test("BUDGET (#3644): the merged list reads newest update first and STOPS at the window; an unmerged or out-of-window pull request is not a merge; a list too long to finish is REFUSED, not cut short", () => {
   const window = { from: at("2026-09-14T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
-  const cap = Array.from({ length: 1000 }, (_, index) => mergedItem(index + 1));
-  const fits = listingGh({ merged: cap });
-  assert.equal(listMergedPulls({ repo: "a11ign/a11ign", window, gh: fits }).length, 1000, "exactly the cap is all of it");
-  const over = (args) => ({ total_count: 1001, items: listingGh({ merged: cap })(args).items });
-  assert.throws(() => listMergedPulls({ repo: "a11ign/a11ign", window, gh: over }), /more merged pull requests since 2026-09-14T00:00:00.000Z than GitHub's search returns \(1000\).*narrow --since/);
+  const inside = Array.from({ length: 120 }, (_, index) => mergedItem(index + 1, "", { mergedAt: "2026-09-29T11:00:00Z" }));
+  const closedUnmerged = { ...mergedItem(500), merged_at: null };
+  const touchedLater = mergedItem(501, "", { mergedAt: "2026-09-01T11:00:00Z", updatedAt: "2026-09-30T00:00:00Z" });
+  const old = Array.from({ length: 300 }, (_, index) => mergedItem(1000 + index, "", { mergedAt: "2026-08-01T00:00:00Z" }));
+  const world = listingGh({ merged: [...inside, closedUnmerged, touchedLater, ...old] });
+  const pulls = listMergedPulls({ repo: "a11ign/a11ign", window, gh: world });
+  assert.deepEqual(pulls.map((pull) => pull.number).sort((a, b) => a - b), inside.map((pull) => pull.number), "the merges in the window, and neither the unmerged one nor the one merged before it");
+  assert.deepEqual(pulls[0], { repo: "a11ign/a11ign", number: pulls[0].number, createdAt: "2026-09-29T09:00:00Z", mergedAt: "2026-09-29T11:00:00Z", body: "" });
+  const shuffled = [mergedItem(7, "", { mergedAt: "2026-09-30T00:00:00Z" }), mergedItem(9, "", { mergedAt: "2026-09-29T00:00:00Z" }), mergedItem(8, "", { mergedAt: "2026-09-29T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" })];
+  assert.deepEqual(listMergedPulls({ repo: "a11ign/a11ign", window, gh: listingGh({ merged: shuffled }) }).map((pull) => pull.number), [8, 9, 7], "in order of merge, then number, whatever order of update the list came in");
+  assert.equal(world.seen.length, 2, "the second page reaches the first pull request updated before the window and the list stops there: 422 closed pull requests, three pages never read");
+  const endless = (args) => (args.some((arg) => /per_page/.test(arg)) ? Array.from({ length: 100 }, (_, index) => mergedItem(index + 1)) : []);
+  assert.throws(() => listMergedPulls({ repo: "a11ign/a11ign", window, gh: endless }), /more than 3000 closed pull requests updated since 2026-09-14T00:00:00.000Z.*narrow --since/);
   const one = listingGh({ open: [{ number: 3 }] });
   assert.deepEqual(listOpenRows({ rowRepo: "a11ign/a11ign", gh: one }), [3]);
-  assert.equal(one.seen.length, 1);
+  assert.equal(one.seen.length, 1, "a list on one page is read in one call");
 });
 
 test("BUDGET: a pull request costs several calls, and the budget is checked per CALL: it is never overshot, and what it cut off is named unread", () => {
@@ -626,6 +648,105 @@ test("BUDGET: a failure that is not the budget is not swallowed, and a pull requ
   const held = [{ kind: "merged", pr: 20, repo: null }, { kind: "closed", row: 2 }];
   const idle = budgetedGh({ gh: listingGh(), budget: 0 });
   assert.deepEqual(githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held, gh: idle }), { events: [], unreadRows: [] }, "nothing to read, so even a budget of 0 reads and marks nothing");
+});
+
+/** A `gh` that answers `{}` and reports the rate limit a reply would carry: `remaining` counts down from `start` by one per call, from the pool `resource`. */
+function meteredFake({ start, resource = "core" }) {
+  const gh = () => { gh.rate = { remaining: start - (gh.made += 1), resource }; return {}; };
+  return Object.assign(gh, { rate: null, made: 0 });
+}
+
+test("PACE (#3644): a call waits until the gap since the last one ended, the first and a late one wait for nothing, and the budget refusal comes before any wait", () => {
+  let now = 1000;
+  const waits = [];
+  const gh = budgetedGh({ gh: Object.assign(() => ({}), { rate: { remaining: 4000, resource: "core" } }), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
+  gh(["a"]);
+  gh(["b"]);
+  now += 400;
+  gh(["c"]);
+  assert.deepEqual(waits, [250], "the second call waited the whole gap; the third came 400 ms after the second and waited for nothing; the first had nothing before it");
+  assert.throws(() => gh(["d"]), /--calls 3 is spent/);
+  assert.deepEqual(waits, [250], "a refused call does not pace");
+});
+
+test("FLOOR (#3644): the call after a reply that left X-Ratelimit-Remaining under the floor is refused BEFORE it is made, and says it was the floor and not the budget", () => {
+  const underlying = meteredFake({ start: 12 });
+  const gh = budgetedGh({ gh: underlying, budget: 100, floor: 10 });
+  gh(["a"]);
+  gh(["b"]);
+  gh(["c"]);
+  assert.equal(underlying.rate.remaining, 9);
+  assert.throws(() => gh(["d"]), { code: "GH_CALLS_SPENT", reason: "floor", message: /X-Ratelimit-Remaining is 9, under the floor of 10/ });
+  assert.equal(underlying.made, 3, "the fourth call never reached gh");
+  assert.deepEqual(gh.stopped, { reason: "floor", message: "X-Ratelimit-Remaining is 9, under the floor of 10" });
+  const roomy = budgetedGh({ gh: meteredFake({ start: 1000 }), budget: 2, floor: 10 });
+  roomy(["a"]);
+  roomy(["b"]);
+  assert.throws(() => roomy(["c"]), { reason: "budget" });
+  assert.equal(roomy.stopped.reason, "budget", "POSITIVE CONTROL: with the pool full, it is the budget that stops it, and the floor is not reported");
+});
+
+test("FLOOR (#3644): at the floor the listings are an ERROR that says so, and a pull request's reading stops and names its rows unread, never a smaller complete week", () => {
+  const window = { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
+  const empty = budgetedGh({ gh: Object.assign(() => [], { rate: { remaining: 3, resource: "core" } }), budget: 50, floor: 10 });
+  assert.throws(() => readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh: empty, budget: 50 }), /stopped at the floor: X-Ratelimit-Remaining is 3, under the floor of 10 to list the merged pull requests \(0 made\).*wait for the pool to refill/);
+  const pulls = ["2026-09-29T11:00:00Z", "2026-09-29T12:00:00Z"].map((mergedAt, index) => ({ repo: "a11ign/a11ign", number: 20 + index, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${2 + index}` }));
+  const reads = listingGh();
+  const falling = Object.assign((args) => { const reply = reads(args); falling.rate = { remaining: 12 - reads.seen.length, resource: "core" }; return reply; }, { rate: null });
+  const gh = budgetedGh({ gh: falling, budget: 100, floor: 10 });
+  const { unreadRows } = githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh });
+  assert.equal(gh.calls, 3, "the reply that left 10 (AT the floor) is allowed its next call; the one that left 9 (under it) is not");
+  assert.equal(gh.stopped.reason, "floor");
+  assert.deepEqual(unreadRows, [2, 3], "the pull request it was reading, and the one after it, are unread: their weeks are PARTIAL");
+});
+
+test("POOL (#3644): a reply from any pool but core is refused, so a search that slipped in is loud and not a quiet 30-a-minute wall", () => {
+  const gh = budgetedGh({ gh: meteredFake({ start: 1000, resource: "search" }), budget: 5 });
+  assert.throws(() => gh(["-X", "GET", "search/issues"]), /came from the "search" pool, not "core".*30 calls a minute/);
+  assert.equal(budgetedGh({ gh: meteredFake({ start: 1000 }), budget: 5 })(["x"]) !== undefined, true, "a core reply passes");
+});
+
+test("POOL (#3644): a reply that names NO pool is refused too: a pool that is not named cannot be known not to be the search API", () => {
+  const unnamed = (rate) => budgetedGh({ gh: Object.assign(() => ({}), { rate }), budget: 5 });
+  assert.throws(() => unnamed({ remaining: 4000, resource: null })(["x"]), /no named pool \(X-Ratelimit-Resource is absent\), not "core"/, "the remaining header came back and the resource header did not");
+  assert.throws(() => unnamed(null)(["x"]), /no named pool/, "no rate-limit header at all");
+  assert.throws(() => budgetedGh({ gh: () => ({}), budget: 5 })(["x"]), /no named pool/, "a gh that reports no rate at all");
+  for (const head of ["x-ratelimit-remaining: 4000\n", ""]) {
+    const { rate } = splitHttp(`HTTP/2.0 200 OK\n${head}\n{}`);
+    assert.throws(() => unnamed(rate)(["x"]), /no named pool/, `what splitHttp makes of a reply with ${head ? "no resource header" : "no rate headers"} is refused`);
+  }
+  assert.equal(unnamed({ remaining: 4000, resource: "core" })(["x"]) !== undefined, true, "POSITIVE CONTROL: the same wrapper passes a reply that names core");
+});
+
+test("RATE HEADERS (#3644): `gh api -i` is split into its rate limit and its body; an absent header is NO reading, never a reading of zero", () => {
+  const text = "HTTP/2.0 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 1749\r\nX-Ratelimit-Resource: core\r\n\r\n[{\"a\":1}]";
+  assert.deepEqual(splitHttp(text), { rate: { remaining: 1749, resource: "core" }, body: '[{"a":1}]' });
+  assert.deepEqual(splitHttp("HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n{}"), { rate: null, body: "{}" });
+  assert.deepEqual(splitHttp("HTTP/2.0 200 OK\nx-ratelimit-remaining: 0\nx-ratelimit-resource: search\n\n{\"x\":\"a\\n\\nb\"}").rate, { remaining: 0, resource: "search" }, "lower case, bare newlines, and a zero that is a zero");
+});
+
+test("BUDGET LINE (#3644): what a run may spend, on which pool, how paced and where it stops is one line, said before any call; and the footer names a stop", () => {
+  const line = budgetLine({ budget: 1500, floor: 500, gapMs: 250 });
+  assert.match(line, /^GitHub budget: at most 1500 gh api calls, all on the REST "core" pool \(X-Ratelimit-Resource.*never called\), at least 250 ms apart \(375 s if all are spent\).*falls under 500$/);
+  const github = { calls: 12, read: 30, added: 4, remaining: { first: 1749, last: 1737 }, stopped: null };
+  assert.equal(githubSummary({ github, budget: 1500, unread: 0 }), "GitHub: 12 REST calls (gh api, pool core, budget 1500); X-Ratelimit-Remaining 1749 at the first reply, 1737 at the last; 30 events read, 4 new to the store; rows whose GitHub events are not yet read: 0");
+  const stopped = githubSummary({ github: { ...github, remaining: { first: null, last: null }, stopped: { reason: "floor", message: "X-Ratelimit-Remaining is 9, under the floor of 10" } }, budget: 1500, unread: 7 });
+  assert.match(stopped, /rows whose GitHub events are not yet read: 7; STOPPED AT THE FLOOR: X-Ratelimit-Remaining is 9, under the floor of 10$/);
+  assert.match(stopped, /X-Ratelimit-Remaining unread at the first reply, unread at the last/);
+});
+
+// SELF: this file names `search/issues` in order to look for it, so the scan below is of the sources only and never of a test.
+const TRACE_DIR = dirname(fileURLToPath(import.meta.url));
+const callsSearchApi = (text) => /search\/issues/.test(text);
+// `publish.mjs` reached `main` (#3515) after #3644 was filed and still reads the closed rows through the search API; it is outside this row's Region and is a11ign/a11ign#3695. It is
+// named here so that nothing ELSE is excused, and the test below fails when it stops searching, so the exception is deleted with the fix and is never left standing.
+const SEARCH_UNTIL_3695 = ["publish.mjs"];
+
+test("NO SEARCH (#3644): no source of src/trace/ reads the search API but the one named for #3695; the scan finds one where there is one", () => {
+  const sources = readdirSync(TRACE_DIR).filter((name) => /\.mjs$/.test(name) && !/\.test\./.test(name));
+  assert.ok(sources.includes("trace.mjs"), "the scan reads the file the row is about");
+  assert.deepEqual(sources.filter((name) => callsSearchApi(readFileSync(join(TRACE_DIR, name), "utf8"))), SEARCH_UNTIL_3695);
+  assert.equal(callsSearchApi('gh(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, and the list above holds the one file that has it");
 });
 
 test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, keys the calls to the turns it just read, and a second run reads nothing; the report summarises the calls and prints none", () => {
