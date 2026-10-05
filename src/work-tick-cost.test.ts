@@ -10,12 +10,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
-import { describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
+import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
+import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
@@ -160,4 +161,48 @@ test("#3566: the census names a command by its basename, cuts an argument to its
 test("#3566: the tick still has ONE exit, so no path out of main() skips the cost line", () => {
   const source = readFileSync(join(SRC, "work-tick.mjs"), "utf8");
   assert.equal((source.match(/process\.exit\(/g) ?? []).length, 1);
+});
+
+test("#3566: the census preload keeps `promisify(execFile)` and `promisify(exec)` resolving `{ stdout, stderr }`, and counts each spawn ONCE", () => {
+  const dir = mkdtempSync(join(tmpdir(), "census-promisify-"));
+  try {
+    const census = join(dir, "census.jsonl");
+    const script = [
+      'const { promisify } = require("node:util"); const cp = require("node:child_process");',
+      'Promise.all([promisify(cp.execFile)("echo", ["file"]), promisify(cp.exec)("echo shell")])',
+      '  .then(([a, b]) => console.log(JSON.stringify([a, b]))).catch((e) => { console.error(e); process.exit(1); });',
+    ].join("\n");
+    const run = spawnSync(process.execPath, ["--import", join(SRC, "lib", "spawn-census.mjs"), "-e", script], {
+      encoding: "utf8", env: { ...process.env, [CENSUS_ENV]: census },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), [{ stdout: "file\n", stderr: "" }, { stdout: "shell\n", stderr: "" }]);
+    const lines = readFileSync(census, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(lines.filter((l) => l.cmd === "echo").length, 2, "each promisified spawn is counted once");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** One transcript under `root` whose newest write was `ageMs` ago, holding one billed turn for `session`. */
+function transcript(root: string, name: string, { session, ageMs, now }: { session: string; ageMs: number; now: number }) {
+  const file = join(root, `${name}.jsonl`);
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  writeFileSync(file, line({ type: "user", message: { content: `You are \`${session}\`.` } })
+    + line({ timestamp: new Date(now - ageMs).toISOString(), message: { id: `m-${name}`, usage: { input_tokens: 1, output_tokens: 1 } } }));
+  utimesSync(file, new Date(now - ageMs), new Date(now - ageMs));
+}
+
+test("#3566: liveClaudeTurns does not read a transcript no write has touched within the horizon, and reads one that has", () => {
+  const root = mkdtempSync(join(tmpdir(), "live-turns-"));
+  try {
+    const now = Date.now();
+    mkdirSync(join(root, "project"));
+    transcript(join(root, "project"), "recent", { session: "worker-1", ageMs: LIVE_TRANSCRIPT_HORIZON_MS / 2, now });
+    transcript(join(root, "project"), "stale", { session: "worker-2", ageMs: LIVE_TRANSCRIPT_HORIZON_MS * 2, now });
+    assert.deepEqual(liveClaudeTurns(root, { now }).map((turn) => turn.session), ["worker-1"], "the control: the recent one IS read, so the empty side is not an empty root");
+    assert.deepEqual(liveClaudeTurns(root, { now, horizonMs: LIVE_TRANSCRIPT_HORIZON_MS * 3 }).map((turn) => turn.session).sort(), ["worker-1", "worker-2"], "a wider horizon reads both");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
