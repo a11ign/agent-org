@@ -19,6 +19,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { listMergedPulls } from "./trace/trace.mjs"; // trace imports this module back: both use each other only inside functions, never while loading
 
 export const DEFINITIONS = [
   "WAKE: a delivery that starts a model turn in a session -- a transcript `user` record wrapped in `<pasted_content`. /compact, /clear, local-command echoes, the continuation summary and tool results are not wakes.",
@@ -481,16 +482,20 @@ function gh(args) {
 }
 
 /**
- * Merged pull requests of one repository in the window, through the search API (REST, its own pool).
+ * Merged pull requests of one repository in the window, from the pull-requests LIST (`core` pool), through the one reader `trace` uses. Not the search API (30 calls a minute per user,
+ * 1,000 results at most, cut short without saying so): a window the list cannot finish in its page limit is REFUSED rather than read part way. The list is newest-update first and the
+ * limit counts every pull request updated since `from`, not only those merged before `to`, so the remedy is a LATER `--from`, which the reader's own message calls `--since`.
  * @param {string} repo
  * @param {{ from: number, to: number }} window
+ * @param {(args: string[]) => any} [ghJson] one `gh api` call, parsed; injected so a test reads no GitHub
  * @returns {PullRequest[]}
  */
-export function readMergedPulls(repo, window) {
-  const range = `${new Date(window.from).toISOString()}..${new Date(window.to).toISOString()}`;
-  const query = encodeURIComponent(`repo:${repo} is:pr is:merged merged:${range}`);
-  const out = gh(["api", "--paginate", `search/issues?q=${query}&per_page=${SEARCH_PAGE}`, "--jq", ".items[] | {number, createdAt: .created_at, mergedAt: .pull_request.merged_at, body: (.body // \"\")}"]);
-  return out.split("\n").filter(Boolean).map((line) => ({ repo, ...JSON.parse(line) }));
+export function readMergedPulls(repo, window, ghJson = (args) => JSON.parse(gh(["api", ...args]))) {
+  try {
+    return listMergedPulls({ repo, window, gh: ghJson });
+  } catch (cause) {
+    throw cause instanceof Error ? new Error(cause.message.replace("narrow --since", "start --from later"), { cause }) : cause;
+  }
 }
 
 /**
