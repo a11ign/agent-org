@@ -37,7 +37,8 @@ import { TOOL_REPO_ENV, resolveBase, scanAtBase, undeclaredGrowth } from "../lib
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
-const SOURCE_MJS_PIN = 209;
+// 210: `suite-slots.mjs` (a11ign/a11ign#3536) is a shipped command (`node src/suite-slots.mjs suite|run`) AND is imported by path by a11y-witness's `verify`, which runs under plain `node` with no `tsx`.
+const SOURCE_MJS_PIN = 210;
 const TEST_MJS_PIN = 44;
 
 const ROOTS = ["src", "host", ".github"];

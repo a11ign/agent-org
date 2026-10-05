@@ -142,12 +142,12 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
     assert.ok(!JSON.stringify(line).includes("are you there"), "the chairman's words are never in the ledger");
   });
 
-  test("the REAL converse, whose queue throws, leaves no line of its own, so the listener tells the chairman", async () => {
+  test("the REAL converse, whose roster read throws, leaves no line of its own, so the listener tells the chairman", async () => {
     const { ledger, inbound } = core();
     const provider = createFakeProvider();
     const send = (/** @type {{ text: string, replyTo?: string }} */ message) => provider.send(message);
-    const queue = /** @type {any} */ ({ queueOrLose: () => { throw refusal; }, STANCE: { UNDECLARED: "undeclared" }, EXIT: { QUEUED: 2 }, attributed: (/** @type {string} */ text) => text, handoffId: () => "h", readHandoffs: () => [] });
-    const converse = createConverse({ chairman: CHAIRMAN, queuePath: join(scratch, "queue"), ledger, send, now: () => 1, agents: () => [], queue });
+    const queue = /** @type {any} */ ({ promptOrQueue: () => 2, run: () => "", NOT_QUEUED_PREFIX: "NOT PROMPTED, AND NOT QUEUED: ", STANCE: { UNDECLARED: "undeclared" }, EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, attributed: (/** @type {string} */ text) => text, handoffId: () => "h", readHandoffs: () => [] });
+    const converse = createConverse({ chairman: CHAIRMAN, queuePath: join(scratch, "queue"), ledger, send, now: () => 1, agents: () => { throw refusal; }, queue });
     await assert.rejects(tellingWhenUndelivered({ ledger, send, converse: converse.forward })(mint(inbound, messageUpdate(7, "hello"))), /queue could not be reached/);
     assert.equal(provider.sent[0].text, "Got it, looking.", "the acknowledgement went first, before the queue threw");
     assert.equal(provider.sent[1].text, notReached());
@@ -260,7 +260,8 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
       port: {
         EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }), attributed: (/** @type {string} */ text) => text,
         handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
-        queueOrLose(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
+        run: () => "", NOT_QUEUED_PREFIX: "NOT PROMPTED, AND NOT QUEUED: ",
+        promptOrQueue(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
       },
     };
   }

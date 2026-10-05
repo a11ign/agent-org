@@ -1,4 +1,4 @@
-// no-token: clearBeforeOrder -- the real queue is driven only through queueOrLose (an append to a temp file); nothing here clears or prompts a session
+// no-token: clearBeforeOrder -- the real `promptOrQueue` is driven over a RECORDING herdr and a temp queue file; nothing here clears or prompts a session
 // @ts-check
 // CONVERSATION IN (a11ign/a11ign#2909 done-whens 1-4): an accepted chairman message is acknowledged AT ONCE, then becomes ONE queue entry for the `liaison`;
 // nothing in `src/messaging/` queues for anyone else; `resolveSender` never yields the chairman.
@@ -11,7 +11,7 @@
 // **TWO QUEUES, SAID OUT LOUD.** `prompt-session.mjs` reads the project's declaration when it is imported, so it cannot load in a bare checkout of
 // this repository. The module under test loads the REAL queue on first use; this file therefore runs every behavioural case against
 //   * `fake`: a port that writes the same entry shape and prints the same kind of refusal, always available, and
-//   * `real`: `prompt-session.mjs`'s own `queueOrLose` over a real queue file, run when the host's declaration can be found (`AGENT_ORG_HOST`, else
+//   * `real`: `prompt-session.mjs`'s own `promptOrQueue` (and its `queueOrLose`) over a real queue file and a recording herdr, run when the host's declaration can be found (`AGENT_ORG_HOST`, else
 //     the primary checkout's `host.json` where this host keeps it). When it cannot load, the `real` cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 //     and the "real queue loaded" test below says which of the two this run was: a skip that fires always would be a check that never runs.
 // The fixtures that look like secrets are not needed here: the classifier is `inbound.mjs`'s and `inbound.test.mjs`'s.
@@ -35,7 +35,10 @@ if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 const OTHER_CHAIRMAN = Object.freeze({ userId: 4243, chatId: 4243 });
-const ROSTER = [{ label: "liaison", status: "idle" }, { label: "ceo", status: "idle" }, { label: "worker-7", status: "idle" }, { label: "reviewer-3", status: "idle" }];
+// THE LIAISON AND ceo ARE WORKING BY DEFAULT (a11ign/a11ign#3536, done-when 7): `promptOrQueue` types into a seat that is between tasks and queues for one that is not, so every case written
+// for the queue keeps a busy seat, and `IDLE_ROSTER` is the one the direct-delivery cases name.
+const ROSTER = [{ label: "liaison", status: "working" }, { label: "ceo", status: "working" }, { label: "worker-7", status: "idle" }, { label: "reviewer-3", status: "idle" }];
+const IDLE_ROSTER = ROSTER.map((agent) => ({ ...agent, status: "idle" }));
 const DEEP = 10;
 const START = Date.parse("2026-10-02T10:00:00Z");
 
@@ -53,6 +56,14 @@ async function loadReal() {
   }
 }
 const real = await loadReal();
+
+/** The real `promptOrQueue`'s herdr, recording what it is told to type (`herdr --session org agent prompt <label> <text>`) and answering nothing else. A standing seat is cleared first, by a `/clear` typed the same way: that is the window being prepared, not the order, so it is not recorded. */
+const recordingHerdr = (/** @type {string[]} */ args) => {
+  if (args[2] === "agent" && args[3] === "prompt" && !args[5].startsWith("/")) delivered.push({ label: args[4], text: args[5] });
+  return "";
+};
+/** A delivery to a `reviewer-<n>` re-points its tree first; the liaison and ceo are not reviewers, and the seam is still given so no git call is ever made here. */
+const FAKE_CHECKOUT = { git: () => `${"d".repeat(40)}\n`, exists: () => true, link: () => null, root: "/fake-reviews", repoRoot: "/fake-primary" };
 
 /** @param {string} path @param {number} count a queue already holding `count` orders for `session` (the liaison unless said) @param {string} [session] */
 function fillQueue(path, count, session = RECIPIENT) {
@@ -73,20 +84,34 @@ function entries(path) {
  * a message on stderr and an exit code; anything else is appended and reported QUEUED.
  */
 const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
+const NOT_QUEUED_PREFIX = "NOT PROMPTED, AND NOT QUEUED: ";
+/** What either port TYPED into a seat (an idle one), in order: the real port's herdr is `recordingHerdr`, the fake's `promptOrQueue` writes here. `harness` empties it. */
+const delivered = /** @type {{ label: string, text: string }[]} */ ([]);
 const fakeQueue = {
   EXIT,
+  NOT_QUEUED_PREFIX,
+  run: () => "",
+  /** `prompt:session`'s `promptOrQueue`, reduced to its two branches: an idle (or done) seat is typed into, anything else goes to `queueOrLose`. */
+  promptOrQueue(/** @type {Record<string, any>} */ order) {
+    const seat = order.agents?.find((/** @type {{label: string}} */ agent) => agent.label === order.label);
+    if (seat && ["idle", "done"].includes(seat.status)) {
+      delivered.push({ label: order.label, text: fakeQueue.attributed(order.text, order.sender) });
+      return EXIT.OK;
+    }
+    return fakeQueue.queueOrLose({ ...order, why: seat ? `"${order.label}" is ${seat.status}` : `no session named "${order.label}"` });
+  },
   STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }),
   attributed: (/** @type {string} */ text, /** @type {string | null} */ sender) => `Sent to you by \`${sender}\`:\n\n${text}`,
   handoffId: (/** @type {string} */ session, /** @type {string} */ prompt) => `handoff/${session}/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`,
   readHandoffs: /** @type {(path: string) => any[]} */ (entries),
   queueOrLose(/** @type {Record<string, any>} */ { label, text, path, agents, sender }) {
     if (!agents?.some((/** @type {{label: string}} */ agent) => agent.label === label)) {
-      process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: no session named "${label}". Fix the name and run it again.\n`);
+      process.stderr.write(`${NOT_QUEUED_PREFIX}no session named "${label}". Fix the name and run it again.\n`);
       return EXIT.REFUSED;
     }
     const waiting = entries(path).filter((entry) => entry.session === label).length;
     if (waiting >= DEEP) {
-      process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: "${label}" already has ${waiting} order(s) waiting.\nYOUR REPORT, UNCHANGED:\n${text}\n`);
+      process.stderr.write(`${NOT_QUEUED_PREFIX}"${label}" already has ${waiting} order(s) waiting.\nYOUR REPORT, UNCHANGED:\n${text}\n`);
       return EXIT.REFUSED;
     }
     const prompt = fakeQueue.attributed(text, sender);
@@ -111,13 +136,13 @@ function recordingQueue(queue, events = /** @type {string[]} */ ([])) {
   if (!queue) return { port: undefined, words: () => words };
   const port = /** @type {import("./converse.mjs").QueuePort} */ ({
     ...queue,
-    queueOrLose(/** @type {Record<string, any>} */ order) {
-      events.push("queue");
+    promptOrQueue(/** @type {Record<string, any>} */ order) {
+      events.push("dispatch");
       const original = process.stderr.write;
       words = "";
       process.stderr.write = /** @type {any} */ ((/** @type {any} */ chunk) => { words += String(chunk); return true; });
       try {
-        return queue.queueOrLose(order);
+        return queue.promptOrQueue(order);
       } finally {
         process.stderr.write = original;
         process.stderr.write(words);
@@ -131,13 +156,14 @@ function recordingQueue(queue, events = /** @type {string[]} */ ([])) {
 function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, any>} */ ({})) {
   nextDir += 1;
   const dir = join(scratch, `run-${nextDir}`);
+  delivered.length = 0;
   const ledgerPath = join(dir, "ledger.jsonl");
   const queuePath = join(dir, "queue");
   const provider = createFakeProvider();
   const clock = { at: START };
   const ledger = createLedger({ path: ledgerPath, now: () => (clock.at += 1000) });
   const inbound = createInbound({ ledger, chairman: CHAIRMAN });
-  /** What happened, in order: `send` for each message to the chairman, `queue` for each write attempt. The ack-before-write assertions read it. */
+  /** What happened, in order: `send` for each message to the chairman, `dispatch` for each call to `promptOrQueue`. The ack-before-write assertions read it. */
   const events = /** @type {string[]} */ ([]);
   const said = recordingQueue(queue, events);
   const tellChairman = send ?? ((/** @type {any} */ message) => provider.send(message));
@@ -148,7 +174,7 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
     assert.equal(action.action, "forward", `the fixture update must be forwarded by the inbound core (it said ${action.action})`);
     return /** @type {any} */ (action).accepted;
   };
-  return { queuePath, provider, clock, converse, accept, events, said: said.words, ledgerLines: () => readLedgerLines(ledgerPath), queued: () => entries(queuePath) };
+  return { queuePath, provider, clock, converse, accept, events, said: said.words, ledgerLines: () => readLedgerLines(ledgerPath), queued: () => entries(queuePath), delivered: () => [...delivered] };
 }
 
 /** @param {Record<string, any>} queue @param {string} label */
@@ -172,11 +198,11 @@ function cases(queue, label) {
     assert.equal(run.provider.sent[0].replyTo, "101", "the acknowledgement answers the chairman's own message");
   });
 
-  test("done-when 2, THE ORDER: the acknowledgement is sent BEFORE the queue is written (it fails if the ack is moved after the write)", async () => {
+  test("done-when 2, THE ORDER: the acknowledgement is sent BEFORE the order is delivered or queued (it fails if the ack is moved after it)", async () => {
     const run = ready();
     await run.converse.forward(run.accept(chairmanUpdate(20)));
-    assert.deepEqual(run.events, ["send: Got it, looking.", "queue"]);
-    assert.ok(run.events.indexOf("send: Got it, looking.") < run.events.indexOf("queue"));
+    assert.deepEqual(run.events, ["send: Got it, looking.", "dispatch"]);
+    assert.ok(run.events.indexOf("send: Got it, looking.") < run.events.indexOf("dispatch"));
   });
 
   test("done-when 4: the chairman's text reaches nobody's queue but the liaison's -- not ceo's, with ceo on the roster", async () => {
@@ -260,7 +286,7 @@ function cases(queue, label) {
   });
 
   test("done-when 1: a liaison queue that says QUEUED and holds nothing (or cannot be written) is a refusal too, and goes to ceo", async () => {
-    const forgetful = { ...queue, queueOrLose: (/** @type {Record<string, any>} */ order) => (order.label === RECIPIENT ? queue.EXIT.QUEUED : queue.queueOrLose(order)) };
+    const forgetful = { ...queue, promptOrQueue: (/** @type {Record<string, any>} */ order) => (order.label === RECIPIENT ? queue.EXIT.QUEUED : queue.promptOrQueue(order)) };
     const run = harness({ queue: forgetful });
     const result = await run.converse.forward(run.accept(chairmanUpdate(7)));
     assert.equal(result.outcome, "rerouted-to-ceo");
@@ -396,29 +422,100 @@ function cases(queue, label) {
     assert.equal(neither.queued().length, 0);
   });
 
-  test("the queue is told WHY: a button's order says a button, and a message says a message (it is what the queue repeats when it refuses)", async () => {
-    /** @type {unknown[]} */
-    const whys = [];
-    const spy = { ...queue, queueOrLose: (/** @type {Record<string, any>} */ order) => { whys.push(order.why); return queue.queueOrLose(order); } };
-    const run = harness({ queue: spy });
-    await run.converse.orderLiaison({ text: "x", messageRef: "501" });
-    await run.converse.forward(run.accept(chairmanUpdate(7)));
-    assert.deepEqual(whys, ["the chairman pressed a button for the liaison", "the chairman wrote to the liaison"]);
-  });
-
   test("a queue that says QUEUED and holds nothing is not an order anybody has: both unverified is not delivered", async () => {
-    const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED }, roster: ROSTER });
+    const run = harness({ queue: { ...queue, promptOrQueue: () => queue.EXIT.QUEUED }, roster: ROSTER });
     const result = await run.converse.orderLiaison({ text: "x", messageRef: "501" });
     assert.equal(result.queued, false);
     assert.match(result.say, /^not delivered: .*not in the queue file/);
   });
 
   test("a message neither queue holds (both say QUEUED, neither entry is there) is told as not delivered, and the outcome is `unverified`", async () => {
-    const run = harness({ queue: { ...queue, queueOrLose: () => queue.EXIT.QUEUED } });
+    const run = harness({ queue: { ...queue, promptOrQueue: () => queue.EXIT.QUEUED } });
     const result = await run.converse.forward(run.accept(chairmanUpdate(7)));
     assert.equal(result.outcome, "unverified");
     assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, notReached()]);
     assert.equal(run.ledgerLines().find((line) => line.origin === "converse")?.handoff, null);
+  });
+
+  // ---- DONE-WHEN 7 (a11ign/a11ign#3536): an idle seat is prompted at once; only a busy one waits for the tick ----------------------------------------------------------------
+
+  test("done-when 7, the CONTROL: a BUSY liaison is queued for the tick, nothing is typed into it, and the ledger says `queued`", async () => {
+    const run = ready();
+    const result = await run.converse.forward(run.accept(chairmanUpdate(30)));
+    assert.equal(result.outcome, "queued");
+    assert.deepEqual(run.delivered(), [], "nothing was typed into a seat that is mid-turn");
+    assert.deepEqual(run.queued().map((entry) => entry.session), [RECIPIENT]);
+    const line = /** @type {Record<string, any>} */ (run.ledgerLines().find((candidate) => candidate.origin === "converse"));
+    assert.deepEqual([line.verdict, line.delivery, line.taker], ["queued", "queued", RECIPIENT]);
+  });
+
+  test("done-when 7: an IDLE liaison is prompted AT ONCE, with no tick: one prompt typed with its provenance, nothing queued, and the ledger says `delivered` with no handoff", async () => {
+    const run = ready({ roster: IDLE_ROSTER });
+    const result = await run.converse.forward(run.accept(chairmanUpdate(31)));
+    assert.equal(result.outcome, "delivered");
+    assert.equal(result.handoff, null, "a direct delivery leaves no queue entry");
+    assert.deepEqual(run.queued(), [], "nothing waits for a tick");
+    const [sent, ...others] = run.delivered();
+    assert.deepEqual(others, [], "one prompt");
+    assert.equal(sent.label, RECIPIENT);
+    for (const line of [SOURCE_LINE, "Telegram message: 131 (update 31)", "why did the merge queue stall?", CHAIRMAN_SENDER]) assert.ok(sent.text.includes(line), `the prompt carries ${JSON.stringify(line)}`);
+    assert.deepEqual(run.events.filter((event) => !event.startsWith("send")), ["dispatch"]);
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT], "the chairman is told nothing more: the liaison took it");
+    const line = /** @type {Record<string, any>} */ (run.ledgerLines().find((candidate) => candidate.origin === "converse"));
+    assert.deepEqual([line.verdict, line.delivery, line.taker, line.handoff, line.refusals], ["delivered", "delivered", RECIPIENT, null, []]);
+    assert.ok(!JSON.stringify(line).includes("merge queue stall"), "the ledger holds refs and a verdict, never the words");
+  });
+
+  test("done-when 7: a seat the roster does not list still falls back to ceo, and an IDLE ceo is prompted at once, with the line saying why", async () => {
+    const run = ready({ roster: IDLE_ROSTER.filter((agent) => agent.label !== RECIPIENT) });
+    const result = await run.converse.forward(run.accept(chairmanUpdate(32)));
+    assert.equal(result.outcome, "rerouted-to-ceo");
+    assert.deepEqual(run.queued(), []);
+    const [sent] = run.delivered();
+    assert.equal(sent.label, FALLBACK_RECIPIENT);
+    assert.ok(sent.text.includes(`It came to you, ${FALLBACK_RECIPIENT}, and not to the ${RECIPIENT}, because the ${RECIPIENT}'s queue refused it: ${NOT_QUEUED_PREFIX}`));
+    const line = /** @type {Record<string, any>} */ (run.ledgerLines().find((candidate) => candidate.origin === "converse"));
+    assert.deepEqual([line.verdict, line.delivery, line.taker, line.handoff], ["rerouted-to-ceo", "delivered", FALLBACK_RECIPIENT, null]);
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, PASSED_SEAT_ABSENT]);
+  });
+
+  test("done-when 7: a busy liaison with a FULL inbox and an idle ceo: ceo is prompted at once and the liaison's queue is no deeper", async () => {
+    const run = ready({ roster: [{ label: RECIPIENT, status: "working" }, { label: FALLBACK_RECIPIENT, status: "idle" }] });
+    fillQueue(run.queuePath, DEEP);
+    const result = await run.converse.forward(run.accept(chairmanUpdate(33)));
+    assert.equal(result.outcome, "rerouted-to-ceo");
+    assert.equal(run.queued().length, DEEP);
+    assert.deepEqual(run.delivered().map((sent) => sent.label), [FALLBACK_RECIPIENT]);
+  });
+
+  test("done-when 7: an order that WENT and came back with a caution (a refused /clear: REFUSED, and no queue prefix) is delivered, and is NOT sent again to ceo", async () => {
+    const cautious = { ...queue, promptOrQueue: (/** @type {Record<string, any>} */ order) => { delivered.push({ label: order.label, text: order.text }); process.stderr.write("`/clear` was refused; the order went on a full context\n"); return queue.EXIT.REFUSED; } };
+    const run = harness({ queue: cautious, roster: IDLE_ROSTER });
+    const result = await run.converse.forward(run.accept(chairmanUpdate(34)));
+    assert.equal(result.outcome, "delivered");
+    assert.deepEqual(run.delivered().map((sent) => sent.label), [RECIPIENT], "once, to the liaison: a second send to ceo would be the duplicate");
+  });
+
+  test("done-when 7: a dispatch that THROWS (herdr missing or hung) is a refusal, never a crash: ceo is tried, and when both fail he is told so and the ledger says refused", async () => {
+    const broken = { ...queue, promptOrQueue: () => { throw new Error("spawn herdr ENOENT"); } };
+    const run = harness({ queue: broken, roster: IDLE_ROSTER });
+    const result = await run.converse.forward(run.accept(chairmanUpdate(35)));
+    assert.equal(result.outcome, "refused");
+    assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, notReached()]);
+    const line = /** @type {Record<string, any>} */ (run.ledgerLines().find((candidate) => candidate.origin === "converse"));
+    assert.deepEqual([line.verdict, line.delivery, line.refusals.length], ["refused", null, 2]);
+    assert.match(line.refusals[0], /spawn herdr ENOENT/);
+  });
+
+  test("done-when 7: a button's order to an idle liaison is delivered at once (`say` says so, `queued` means somebody took it), and to a busy one is queued", async () => {
+    const idle = harness({ queue, roster: IDLE_ROSTER });
+    const sent = await idle.converse.orderLiaison({ text: "explain", messageRef: "601" });
+    assert.deepEqual([sent.queued, sent.say, sent.handoff, sent.taker], [true, "delivered to liaison", null, RECIPIENT]);
+    assert.deepEqual([idle.delivered().length, idle.queued().length], [1, 0]);
+    const busy = harness({ queue });
+    const held = await busy.converse.orderLiaison({ text: "explain", messageRef: "602" });
+    assert.deepEqual([held.queued, held.taker, busy.delivered().length, busy.queued().length], [true, RECIPIENT, 0, 1]);
+    assert.match(held.say, /^queued for liaison, handoff /);
   });
 
   test(`${label}: provenanceText no longer tells the reader to avoid prompt:session (that is the liaison's brief, B3, and ceo is reached through it)`, () => {
@@ -436,7 +533,9 @@ describe("fake queue port", () => cases(fakeQueue, "fake"));
 
 describe("real queue (prompt-session.mjs)", { skip: "reason" in real ? /** @type {{reason: string}} */ (real).reason : false }, () => {
   const { session, wake } = "port" in real ? real.port : { session: null, wake: null };
-  const port = session && wake ? { queueOrLose: session.queueOrLose, attributed: session.attributed, EXIT: session.EXIT, STANCE: session.STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, realPort: true } : null;
+  // The real `promptOrQueue` over a herdr that RECORDS (`recordingHerdr`) and no settle or checkout of its own: nothing here prompts a session.
+  const port = session && wake ? { promptOrQueue: session.promptOrQueue, run: recordingHerdr, NOT_QUEUED_PREFIX: session.NOT_QUEUED_PREFIX, attributed: session.attributed, EXIT: session.EXIT, STANCE: session.STANCE,
+    handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, delivery: { sleep: () => {}, checkout: FAKE_CHECKOUT, contextRoot: scratch }, realPort: true } : null;
   cases(/** @type {any} */ (port ?? fakeQueue), "real");
 });
 
@@ -516,9 +615,9 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
     assert.equal(FALLBACK_RECIPIENT, "ceo");
     assert.match(code, /export const RECIPIENT = "liaison";/);
     assert.match(code, /export const FALLBACK_RECIPIENT = "ceo";/);
-    assert.equal((code.match(/\.queueOrLose\(/g) ?? []).length, 1, "one call to the queue");
+    assert.equal((code.match(/\.promptOrQueue\(/g) ?? []).length, 1, "one call to the queue: `promptOrQueue`, which delivers to an idle seat and queues for a busy one");
     assert.deepEqual(code.match(/\blabel: [^,]+,/g), ["label: recipient,"], "the call's label is a parameter; no other `label:` is passed anywhere");
-    assert.equal([...code.matchAll(/(?<!function )\benqueue\(q, recipient, /g)].length, 1, "enqueue is reached only through attempt");
+    assert.equal([...code.matchAll(/(?<!function )\bdispatch\(q, recipient, /g)].length, 1, "dispatch is reached only through attempt");
     const attempts = [...code.matchAll(/(?<!function )\battempt\(q, (\w+), /g)].map((match) => match[1]);
     assert.deepEqual(attempts, ["RECIPIENT", "FALLBACK_RECIPIENT"], "attempt is reached twice, the liaison first and the fallback second, by the constants");
     assert.equal([...code.matchAll(/(?<!function )\bsubmit\(await port\(\), /g)].length, 2, "submit is reached twice: once for a message, once for a button, and neither names a recipient");
@@ -558,5 +657,5 @@ test("which queue this run exercised: a skipped `real` suite names its reason, a
     assert.match(real.reason, /cannot load here/, "the skip carries the refusal");
     return;
   }
-  assert.equal(typeof real.port.session.queueOrLose, "function", "the real queueOrLose was the one driven");
+  assert.equal(typeof real.port.session.promptOrQueue, "function", "the real promptOrQueue was the one driven");
 });
