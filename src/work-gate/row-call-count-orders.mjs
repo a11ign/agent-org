@@ -15,7 +15,7 @@ import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } 
 import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
 import { subjectMention } from "../review-attribution.mjs";
 import { transcriptFiles, claudeTurns } from "../token-audit.mjs";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -252,18 +252,31 @@ export function rowCallCountOrders(signals = []) {
 }
 
 /**
+ * How long a transcript may go unwritten and still be read as a LIVE session's (a11ign/a11ign#3566). The gate read all of `~/.claude/projects`
+ * on every tick -- 3.2 GB, 29 s of CPU and most of the tick's 2.7 GB peak, measured -- and 91% of those bytes were in files nothing had written to
+ * for a day. A file's newest turn cannot be later than its mtime, so a file older than the horizon holds no turn the horizon could count, and a
+ * file touched within it is still read WHOLE. What the horizon can drop is a row whose session has been silent for more than a day: the gate
+ * releases a claim that stops moving after about four hours (#2470), so that row is not live, and its count would only have been a stale one.
+ */
+export const LIVE_TRANSCRIPT_HORIZON_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Every turn across every live `claude` transcript under `root` -- the SAME read `token-audit.mjs`'s own
  * CLI and `split-baseline.mjs` make, reused rather than duplicated. `[]` for a missing root or an
  * unreadable file: a session whose transcript cannot be read contributes no call to any row's count, which
  * under-reports rather than guesses -- `claudeTurns`'s own rule (a partial line is skipped, not fatal)
- * applied one level up.
+ * applied one level up. A file not written within `horizonMs` of `now` is not read at all (`LIVE_TRANSCRIPT_HORIZON_MS`).
  * @param {string} [root]
+ * @param {{ now?: number, horizonMs?: number }} [options]
  */
-export function liveClaudeTurns(root = join(process.env.HOME ?? "", ".claude", "projects")) {
+export function liveClaudeTurns(root = join(process.env.HOME ?? "", ".claude", "projects"), options = {}) {
+  const { now = Date.now(), horizonMs = LIVE_TRANSCRIPT_HORIZON_MS } = options;
   const turns = [];
   for (const file of transcriptFiles(root)) {
-    try { turns.push(...claudeTurns(readFileSync(file, "utf8"))); }
-    catch { /* unreadable: this row's count under-reports, never guessed at */ }
+    try {
+      if (statSync(file).mtimeMs < now - horizonMs) continue;
+      turns.push(...claudeTurns(readFileSync(file, "utf8")));
+    } catch { /* unreadable: this row's count under-reports, never guessed at */ }
   }
   return turns;
 }

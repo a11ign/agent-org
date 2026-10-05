@@ -14,6 +14,7 @@ import childProcess from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
 
 /** Where each process of the tick appends its lines. Set by the tick, inherited by every child it starts. */
 export const CENSUS_ENV = "AGENT_ORG_TICK_CENSUS";
@@ -57,6 +58,31 @@ function appendRecord(path, entry) {
 }
 
 /**
+ * `original` wrapped so each call leaves one untimed line first. Untimed: the call returns before the child does.
+ * @param {string} path @param {Function} original
+ */
+function countedBefore(path, original) {
+  return function (/** @type {any[]} */ ...args) {
+    appendRecord(path, { ...describeSpawn(args[0], args[1]), ms: null, pid: process.pid });
+    // @ts-ignore -- `this` is whatever the caller bound, passed through untouched
+    return original.apply(this, args);
+  };
+}
+
+/**
+ * `execFile` carries its own `util.promisify.custom`, which is what makes `promisify(execFile)` resolve `{ stdout, stderr }`. A wrapper
+ * without it falls back to the generic promisify and resolves a bare string, so callers destructuring the result silently get `undefined`
+ * (ceo's review of agent-org#208). Node's custom function starts the child through its own internal `execFile`, not the patched one, so it is
+ * counted here rather than relied on to reach the wrapper. (`exec` needs none of this: it is not wrapped, and reaches the patched `execFile`.)
+ * @param {any} original @param {any} wrapper @param {string} path
+ */
+function carryPromisified(original, wrapper, path) {
+  const custom = original[promisify.custom];
+  if (typeof custom !== "function") return;
+  wrapper[promisify.custom] = countedBefore(path, custom);
+}
+
+/**
  * Patch the synchronous spawns (timed: the caller is blocked for exactly that long) and the asynchronous ones (counted, with no wall: the call
  * returns before the child does). Idempotent, so the tick can install in-process and its preload can install again.
  * @param {string} path
@@ -79,12 +105,12 @@ export function installSpawnCensus(path) {
       }
     };
   }
-  for (const name of ["spawn", "execFile", "exec"]) {
+  // NOT `exec`: Node's `exec` starts its child through `module.exports.execFile`, which is patched here, so wrapping it too records every `exec` twice.
+  for (const name of ["spawn", "execFile"]) {
     const original = target[name];
-    target[name] = function (/** @type {any[]} */ ...args) {
-      appendRecord(path, { ...describeSpawn(args[0], args[1]), ms: null, pid: process.pid });
-      return original.apply(this, args);
-    };
+    const counted = countedBefore(path, original);
+    target[name] = counted;
+    carryPromisified(original, counted, path);
   }
   syncBuiltinESMExports();
 }
