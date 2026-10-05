@@ -6,9 +6,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn,
-  bareAnswerLabel, ANSWER_LABEL_GRACE_MS }
+  bareAnswerLabel, ANSWER_LABEL_GRACE_MS, answersGiven, ANSWER_GIVEN_WINDOW_MS }
   from "../waiting-condition.mjs";
-import { bareAnswerLabelOrders } from "../work-gate.mjs";
+import { bareAnswerLabelOrders, answerGivenOrders, decide, JUDGMENT_CAUSES, CAUSES, START_CAUSES } from "../work-gate.mjs";
+import { readLedger, JUDGMENT_TTL_MS } from "../wake.mjs";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
   // THE WHOLE POINT. `orchestrator` wrote "blocked by #1772" in a comment at 16:39; #1772 closed at
@@ -418,4 +419,108 @@ test("#2202: answersOwedBy lists EVERY owing session and answerOwedBy is its fir
   assert.equal(answerOwedBy(row), answersOwedBy(row)[0]);
   assert.deepEqual(answersOwedBy({ labels: [{ name: "backlog" }] }), [], "a row owing nobody is the control");
   assert.equal(answerOwedBy({}), null);
+});
+
+// #3632: AN ANSWERED QUESTION WAKES ITS CLAIMANT. `answer-owed` wakes the ANSWERER while the label stands; removing it
+// woke nobody, and `claim-stalled`'s 120-minute nudge was the only thing that reached an idle answered claimant.
+const T0 = Date.parse("2026-10-05T07:14:32Z");
+const ANSWERER = "a11ign-ai-leads";
+const claimedRow = (n: number, claimant: string) => ({ number: n, updatedAt: "2026-10-05T07:14:32Z",
+  labels: [{ name: `session:${claimant}` }, { name: "in-progress" }] });
+/** #3566's shape: claimed 06:00, asked 06:32, answered by a comment at 07:14:20 and the label off at 07:14:32. */
+const answeredTimeline = [
+  { event: "labeled", label: { name: "session:worker-3566" }, actor: "a11ign-ai-workers", created_at: "2026-10-05T06:00:00Z" },
+  { event: "labeled", label: { name: "answer:product-manager" }, actor: "a11ign-ai-workers", created_at: "2026-10-05T06:32:28Z" },
+  { event: "commented", actor: ANSWERER, id: 111, created_at: "2026-10-05T07:10:00Z" },
+  { event: "commented", actor: "a11ign-ai-workers", id: 222, created_at: "2026-10-05T07:12:00Z" },
+  { event: "commented", actor: ANSWERER, id: 333, created_at: "2026-10-05T07:14:20Z" },
+  { event: "unlabeled", label: { name: "answer:product-manager" }, actor: ANSWERER, created_at: "2026-10-05T07:14:32Z" },
+];
+const ndjson = (events: unknown[]) => () => events.map((e) => JSON.stringify(e)).join("\n");
+const live = (...names: string[]) => () => names;
+
+test("answered-and-claimed orders the claimant, with who removed the label and the comment that carries the answer", () => {
+  // THE POSITIVE CONTROL for every emptiness assertion below: this one produces an order from the same timeline they alter.
+  const orders = answerGivenOrders([claimedRow(3566, "worker-3566")], ndjson(answeredTimeline) as never, T0 + 60_000,
+    live("worker-3566")) as { session: string, cause: string, subject: string, causeKey: string, prompt: string }[];
+  assert.equal(orders.length, 1);
+  const [order] = orders;
+  assert.equal(order.session, "worker-3566", "the claimant, never the answerer");
+  assert.equal(order.cause, "answer-given");
+  assert.equal(order.subject, "row-3566");
+  assert.equal(order.causeKey, "worker-3566/answer-given/row-3566/product-manager/2026-10-05T07:14:32Z", "keyed on the removal's time");
+  assert.match(order.prompt, /answer:product-manager.*2026-10-05T07:14:32Z.*a11ign-ai-leads/s);
+  assert.match(order.prompt, /comment 333\b/, "the newest comment by the REMOVING account at or before the removal -- not 111, not the claimant's 222");
+});
+
+test("a removal with no earlier comment by the remover still orders, and says there is no comment to quote", () => {
+  const silent = answeredTimeline.filter((e) => e.id !== 111 && e.id !== 333);
+  const [order] = answerGivenOrders([claimedRow(3566, "worker-3566")], ndjson(silent) as never, T0, live("worker-3566")) as { prompt: string }[];
+  assert.match(order.prompt, /posted no comment before removing it/);
+});
+
+test("one answer is one order: the next tick re-builds the same key, and the ledger already holds it", () => {
+  const read = (at: number) => answerGivenOrders([claimedRow(3566, "worker-3566")], ndjson(answeredTimeline) as never, at,
+    live("worker-3566")) as { causeKey: string }[];
+  const first = read(T0 + 60_000), next = read(T0 + 25 * 60_000);
+  assert.deepEqual(next.map((o) => o.causeKey), first.map((o) => o.causeKey), "byte-identical, which is what lets the ledger dedupe");
+  const delivered = readLedger("/ledger", (() => `${T0 + 61_000}\t${first[0].causeKey}\n`) as never, T0 + 25 * 60_000, new Set(JUDGMENT_CAUSES));
+  assert.ok(delivered.has(first[0].causeKey), "25 minutes on, past a plain action cause's TTL: only the judgment TTL keeps it quiet");
+  assert.ok(!readLedger("/ledger", (() => `${T0 + 61_000}\t${first[0].causeKey}\n`) as never, T0 + 25 * 60_000, new Set()).has(first[0].causeKey),
+    "as an ACTION cause it would be re-sent: the group is what makes this ONE order");
+});
+
+test("the window closes before the ledger's TTL does, so a removal can never be re-sent", () => {
+  assert.ok(JUDGMENT_CAUSES.includes("answer-given") && CAUSES.includes("answer-given"));
+  assert.ok(!START_CAUSES.includes("answer-given"), "its subject is a row the claimant already holds, which a drain exists to land");
+  assert.ok(ANSWER_GIVEN_WINDOW_MS < JUDGMENT_TTL_MS);
+  const past = T0 + ANSWER_GIVEN_WINDOW_MS + 1;
+  const row = { ...claimedRow(3566, "worker-3566"), updatedAt: "2026-10-05T07:14:32Z" };
+  assert.deepEqual(answerGivenOrders([row], ndjson(answeredTimeline) as never, past, live("worker-3566")), []);
+  assert.deepEqual(answersGiven(answeredTimeline, "worker-3566", past), [], "and the pure reader agrees");
+  assert.equal(answersGiven(answeredTimeline, "worker-3566", T0 + ANSWER_GIVEN_WINDOW_MS).length, 1, "the last instant inside it still counts");
+});
+
+test("a label re-applied and removed again is a SECOND order; a label re-applied and still on is none", () => {
+  const second = [...answeredTimeline,
+    { event: "labeled", label: { name: "answer:product-manager" }, actor: "a11ign-ai-workers", created_at: "2026-10-05T07:30:00Z" },
+    { event: "commented", actor: ANSWERER, id: 444, created_at: "2026-10-05T07:40:00Z" },
+    { event: "unlabeled", label: { name: "answer:product-manager" }, actor: ANSWERER, created_at: "2026-10-05T07:40:05Z" }];
+  const now = Date.parse("2026-10-05T07:41:00Z");
+  const [again] = answersGiven(second, "worker-3566", now);
+  assert.equal(again.removedAt, "2026-10-05T07:40:05Z");
+  assert.equal(again.commentId, 444);
+  assert.notEqual(again.removedAt, answersGiven(answeredTimeline, "worker-3566", T0)[0].removedAt, "a different key, so the ledger orders it afresh");
+  assert.deepEqual(answersGiven(second.slice(0, -1), "worker-3566", now), [], "put back and not yet answered: the first removal is no answer to THIS question");
+});
+
+test("no claimant, a claimant that is not live, or an answer that is not the claimant's: nobody is woken", () => {
+  const read = ndjson(answeredTimeline) as never;
+  const unclaimed = { number: 3566, updatedAt: "2026-10-05T07:14:32Z", labels: [{ name: "in-progress" }] };
+  assert.deepEqual(answerGivenOrders([unclaimed], read, T0, live("worker-3566")), [], "no claimant");
+  assert.deepEqual(answerGivenOrders([claimedRow(3566, "worker-3566")], read, T0, live("worker-1")), [], "not live");
+  assert.equal(answerGivenOrders([claimedRow(3566, "worker-3566")], read, T0, (() => null)).length, 1,
+    "herdr silent is not 'nobody is live': the order is made, as `withoutEndedAnswerSessions` does");
+  const own = answeredTimeline.map((e) => e.label?.name === "answer:product-manager" ? { ...e, label: { name: "answer:worker-3566" } } : e);
+  assert.deepEqual(answerGivenOrders([claimedRow(3566, "worker-3566")], ndjson(own) as never, T0, live("worker-3566")), [], "the claimant is not waiting on itself");
+  const before = answeredTimeline.map((e) => e.label?.name === "session:worker-3566" ? { ...e, created_at: "2026-10-05T07:20:00Z" } : e);
+  assert.deepEqual(answersGiven(before, "worker-3566", T0), [], "taken after the removal: the question was somebody else's");
+});
+
+test("a claimed row not touched inside the window is never read, and a refused read is no order", () => {
+  let calls = 0;
+  const counting = (() => { calls += 1; return ndjson(answeredTimeline)(); }) as never;
+  const stale = { ...claimedRow(3566, "worker-3566"), updatedAt: "2026-10-05T01:00:00Z" };
+  assert.deepEqual(answerGivenOrders([stale], counting, T0, live("worker-3566")), []);
+  assert.equal(calls, 0, "removing a label writes `updatedAt`, so a quiet row costs no call");
+  assert.deepEqual(answerGivenOrders([claimedRow(3566, "worker-3566")], (() => { throw new Error("HTTP 502"); }) as never, T0, live("worker-3566")), []);
+  assert.equal(answerGivenOrders([claimedRow(3566, "worker-3566")], counting, T0, live("worker-3566")).length, 1);
+  assert.equal(calls, 1, "and the touched row pays exactly one");
+});
+
+test("`decide` delivers the order ahead of any offer of new work, and with none given it adds nothing", () => {
+  const [order] = answerGivenOrders([claimedRow(3566, "worker-3566")], ndjson(answeredTimeline) as never, T0, live("worker-3566"));
+  const base = { prs: [], readyRows: [] };
+  assert.ok((decide({ ...base, answerGiven: [order] } as never) as { cause: string }[]).some((o) => o.cause === "answer-given"));
+  assert.ok(!(decide(base as never) as { cause: string }[]).some((o) => o.cause === "answer-given"));
 });
