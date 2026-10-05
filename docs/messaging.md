@@ -317,8 +317,9 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   its ledger line, and is never forwarded. The press is then routed by the ledger-known message it sits under, never by the data
   (`answers.mjs`): an option, `approve` or `done` resolves the request; `later` snoozes its reminders for 24 hours (one ledger line, the label
   stays, so it is not an answer, and the watcher does not observe the request until the snooze ends, or the request is answered or cleared);
-  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.mjs`, the only module that queues); `forme` is D1's and is
-  told "not available". A press on a message whose request is answered or no longer asking is told so and its keyboard is taken off
+  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.mjs`, the only module that queues); `forme` ("Do it for me") writes ONE ledger line,
+  `{direction: "answer", step: "forme", via: "button", messageRef}` (`answers.mjs`), leaves the label alone because a press is not an answer, and tells him
+  his session was asked. A press on a message whose request is answered or no longer asking is told so and its keyboard is taken off
   (`editMessageReplyMarkup`). The Telegram provider draws `actions` as `reply_markup.inline_keyboard`, one button per row, on the first part of
   a split message only; a request with more options than fit (6) carries no keyboard, since a partial one is a quieter wrong than none.
 - **A secret's ledger line has no sha256.** The design says every verdict carries one; for this verdict a hash of a short password is
@@ -397,7 +398,7 @@ pnpm run chairman:queue -- list | take <id> | done <id> --result=<one line> [--h
 **There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600, in a directory that must be 0700: `add` refuses a looser one and does not re-mode it), and `session-queue.test.mjs` fails if a module under
 `src/messaging/` that touches it also spawns a process. The org never holds the credential the act needs; the ask says what, why and what result is wanted, and the chairman's session does the rest.
 **An ask needs his OK, verified as `chairman:record` verifies one**: a message ref the ledger took in with his words hashing to the receipt's, or a "Do it for me" press line (`direction: "answer"`, `step: "forme"`,
-which `answers.mjs` does not yet write). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may
+`via: "button"`, written by `answers.mjs`, one per message). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may
 pass on and not about what his own session may be asked.
 **What happened to an ask is in the delivery ledger** (`direction: "queue"`: `read`, `take`, `done`), so the file holds one kind of line and is never rewritten. `list` and `take` write `lastRead`, which is
 the only thing the liaison can say about his session: it cannot say it is running. `done --hand-fix` counts into `messaging:measure`.
