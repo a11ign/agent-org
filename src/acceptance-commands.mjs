@@ -969,34 +969,35 @@ function referencedNames(ts, source, kept) {
  * its fixpoint, for every set of names an importer reaches, and re-walking the whole tree each time was the largest cost left in the scan. Keyed on
  * the parsed source itself, so a changed file (a new parse) can never read an old answer. Import and export declarations are not statements here:
  * they bind or list a name and run nothing.
- * @type {WeakMap<import("typescript").SourceFile, { identifiers: string[], isGuard: boolean, functionName: string | null, isFunction: boolean }[]>}
+ * @typedef {{ identifiers: string[], isGuard: boolean, functionName: string | null, isFunction: boolean }} StatementFacts
+ * @type {WeakMap<import("typescript").SourceFile, StatementFacts[]>}
  */
 const statementFacts = new WeakMap();
 
 /** @param {typeof import("typescript")} ts @param {import("typescript").SourceFile} source */
 function topLevelStatements(ts, source) {
-  let facts = statementFacts.get(source);
-  if (facts === undefined) {
-    facts = [];
-    ts.forEachChild(source, (statement) => {
-      if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) return;
-      /** @type {string[]} */
-      const identifiers = [];
-      /** @param {import("typescript").Node} node */
-      const collect = (node) => {
-        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
-        if (ts.isIdentifier(node)) identifiers.push(node.text);
-        ts.forEachChild(node, collect);
-      };
-      collect(statement);
-      const isFunction = ts.isFunctionDeclaration(statement);
-      facts.push({
-        identifiers, isGuard: isEntryGuard(ts, statement, source), isFunction,
-        functionName: isFunction && statement.name ? statement.name.text : null,
-      });
+  const held = statementFacts.get(source);
+  if (held !== undefined) return held;
+  /** @type {StatementFacts[]} */
+  const facts = [];
+  ts.forEachChild(source, (statement) => {
+    if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) return;
+    /** @type {string[]} */
+    const identifiers = [];
+    /** @param {import("typescript").Node} node */
+    const collect = (node) => {
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
+      if (ts.isIdentifier(node)) identifiers.push(node.text);
+      ts.forEachChild(node, collect);
+    };
+    collect(statement);
+    const isFunction = ts.isFunctionDeclaration(statement);
+    facts.push({
+      identifiers, isGuard: isEntryGuard(ts, statement, source), isFunction,
+      functionName: isFunction && statement.name ? statement.name.text : null,
     });
-    statementFacts.set(source, facts);
-  }
+  });
+  statementFacts.set(source, facts);
   return facts;
 }
 
@@ -1228,7 +1229,11 @@ function scopeFor(memo, { file, codeOnly, names, isEntry }) {
   return held;
 }
 
-/** `pattern` over `text`, answered once per scope: the patterns carry no `g` flag, so a match is a pure function of the text. */
+/**
+ * `pattern` over `text`, answered once per scope: the patterns carry no `g` flag, so a match is a pure function of the text.
+ * @param {{ matches: Map<number, RegExpExecArray | null> }} scope
+ * @param {{ index: number, pattern: RegExp, text: string }} probe
+ */
 function matchOf({ matches }, { index, pattern, text }) {
   if (!matches.has(index)) matches.set(index, pattern.exec(text));
   return matches.get(index);
