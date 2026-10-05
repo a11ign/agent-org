@@ -49,7 +49,8 @@ import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
  */
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 
-const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+/** herdr, one call, as `prompt:session` runs it. Exported so `converse.mjs` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
+export const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
 /**
  * PURE. Whether this session may be prompted at all, and why not when it may not.
