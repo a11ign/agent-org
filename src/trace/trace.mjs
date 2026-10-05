@@ -6,8 +6,8 @@
 //
 // It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
-// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": deferral spans,
-// and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.mjs`, #3516).
+// not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the deferral spans from before the gate's log began,
+// and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.mjs`, #3516), and so is the gate's log of ended deferrals (`wake-deferral-log`, #3510).
 //
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
 // themselves. The calls are counted and the report says how many were made.
@@ -16,6 +16,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.mjs";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
@@ -24,7 +25,7 @@ import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
-import { appendToStore, DEFINITIONS, eventsForRow, eventsOfTranscript, openStore, readStore } from "./store.mjs";
+import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore } from "./store.mjs";
 
 /** @typedef {import("./ingest-state.mjs").FileState} FileState
  * @typedef {import("./ingest-state.mjs").IngestState} IngestState
@@ -42,6 +43,7 @@ const LIST_MAX_PAGES = 30;
 const BUDGET_SPENT = "GH_CALLS_SPENT";
 const COST_DECIMALS = 4;
 const SHORT_SHA = 7;
+const NEWLINE = 0x0a;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
 const AGGREGATE_FLAG = "--aggregate";
 const MAP_FLAG = "--map";
@@ -53,7 +55,7 @@ const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool
 const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
 /** What this slice does not hold. Printed under every report. */
-export const NOT_HELD = "NOT IN THIS STORE YET: the gate's deferral spans, the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
+export const NOT_HELD = "NOT IN THIS STORE YET: the gate's deferral spans from before the first tick that wrote `wake-deferral-log` (#3510; a wait still OPEN is not in it either), the transcripts of Claude Code subagents (`<session>/subagents/`, one level below the sessions read).";
 
 /** @param {string[]} argv */
 export function parseArgs(argv) {
@@ -154,7 +156,7 @@ const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.
 
 /**
  * @typedef {{ read: number, codexRead: number, unchanged: number, bytesRead: number, unreadableLines: number, failed: string[], reread: string[], heldBack: number, added: number,
- *   coldStart: string | null, firstRunAt: number, firstRunSince: number, ghCalls?: import("./gh-calls.mjs").GhCallsReport }} IngestReport
+ *   coldStart: string | null, firstRunAt: number, firstRunSince: number, ghCalls?: import("./gh-calls.mjs").GhCallsReport, deferrals?: DeferralsReport }} IngestReport
  */
 
 /** Read `[start, end)` of a file, counting what was read: the report says how many bytes a run touched, so "only what changed" is a measurement. @param {string} file @param {number} start @param {number} end @param {{ bytes: number }} meter */
@@ -281,17 +283,88 @@ export function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, 
 /**
  * One run's ingest half: open the store (the one read of it), load the state, ingest the transcripts and then the `gh` call ledgers (whose calls are keyed to the turns just read), and save the
  * state once the events are in. The state is saved even when a file failed, because the files that did not fail were read.
- * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, ghLedgers?: string[], now?: number }} input
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, ghLedgers?: string[], deferralLogs?: string[], now?: number }} input
  * @param {(path: string) => import("./store.mjs").TraceEvent[]} [readEvents] a parameter so a test can count the reads of the store
  */
-export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, ghLedgers = [], now = Date.now() }, readEvents = readStore) {
+export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, ghLedgers = [], deferralLogs = [], now = Date.now() }, readEvents = readStore) {
   const store = openStore(storePath, readEvents);
   const statePath = stateFileFor(storePath);
   const { state, coldStart } = loadState({ statePath, storePath, now, since });
   const { state: afterTranscripts, ...report } = ingest({ root, codexRoot, since, ledger, rowRepo, store, state, coldStart, now });
   const calls = ghLedgers.length > 0 ? ingestGhCalls({ ledgers: ghLedgers, store, state: afterTranscripts, now }) : null;
-  saveState(statePath, { ...(calls?.state ?? afterTranscripts), storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
-  return { store, report: calls ? { ...report, ghCalls: calls.report } : report };
+  const deferrals = deferralLogs.length > 0 ? ingestDeferrals({ logs: deferralLogs, rowRepo, store, state: calls?.state ?? afterTranscripts, now }) : null;
+  saveState(statePath, { ...(deferrals?.state ?? calls?.state ?? afterTranscripts), storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
+  return { store, report: { ...report, ...(calls ? { ghCalls: calls.report } : {}), ...(deferrals ? { deferrals: deferrals.report } : {}) } };
+}
+
+/**
+ * @typedef {{ read: number, unchanged: number, absent: string[], failed: string[], spans: number, reread: string[], added: number }} DeferralsReport
+ */
+
+/**
+ * The whole lines of a deferral log from where the state says to, or `null` when the file has not changed. The gate appends whole lines in one write, so a half line (a write caught
+ * mid-way) is left for the next run by reading only up to the last newline; a line that does not parse THROWS, which fails the file (listed, state unmoved) and never skips it.
+ * @param {{ file: string, entry: FileState | undefined, now: number }} input
+ */
+function readDeferralLog({ file, entry, now }) {
+  const stat = statSync(file);
+  const bytes = readFileSync(file);
+  const plan = planRead({ entry, stat: { size: bytes.length, mtimeMs: stat.mtimeMs }, now, headMatches: () => !entry || fingerprint(bytes.subarray(0, entry.headBytes)) === entry.headHash });
+  if (plan.action === "skip") return null;
+  const start = plan.action === "resume" && entry ? entry.offset : 0;
+  const text = bytes.subarray(start, bytes.lastIndexOf(NEWLINE) + 1).toString("utf8");
+  const consumed = Buffer.byteLength(text);
+  const head = start === 0 ? bytes.subarray(0, Math.min(HEAD_BYTES, consumed)) : null;
+  const next = /** @type {FileState} */ ({
+    offset: start + consumed, size: bytes.length, mtimeMs: stat.mtimeMs, firstReadAt: entry?.firstReadAt ?? now, settleAt: null, carry: { session: null, owner: null, lastAt: null, used: [] },
+    headBytes: head ? head.length : (entry?.headBytes ?? 0), headHash: head ? fingerprint(head) : (entry?.headHash ?? fingerprint(Buffer.alloc(0))),
+  });
+  return { spans: parseDeferralLog(text, file), next, reread: plan.reason };
+}
+
+/**
+ * Ingest the gate's deferral logs (`deferral-log.mjs`) INCREMENTALLY, through the same state as the transcripts (#3526): only the bytes a log gained are read, and a log that shrank or whose first
+ * bytes changed is read again from byte 0 and SAID. One event per span, appended to the open store as ONE batch; the state is the caller's to save AFTER that append. A log that does not exist
+ * (a host whose gate has not ticked since #3510) is listed as absent, never as empty.
+ * @param {{ logs: string[], rowRepo: string, store: ReturnType<typeof openStore>, state: IngestState, now: number }} input
+ * @returns {{ report: DeferralsReport, state: IngestState }}
+ */
+export function ingestDeferrals({ logs, rowRepo, store, state, now }) {
+  const files = { ...state.files };
+  /** @type {DeferralsReport} */
+  const report = { read: 0, unchanged: 0, absent: [], failed: [], spans: 0, reread: [], added: 0 };
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const batch = [];
+  for (const file of logs) {
+    if (!existsSync(file)) {
+      report.absent.push(file);
+      continue;
+    }
+    try {
+      const done = readDeferralLog({ file, entry: state.files[file], now });
+      if (!done) {
+        report.unchanged += 1;
+        continue;
+      }
+      batch.push(...eventsOfDeferrals(done.spans, rowRepo));
+      Object.assign(report, { read: report.read + 1, spans: report.spans + done.spans.length });
+      if (done.reread) report.reread.push(`${file}: ${done.reread}`);
+      files[file] = done.next;
+    } catch (cause) {
+      report.failed.push(`${file}: ${/** @type {Error} */ (cause).message}`);
+    }
+  }
+  report.added = appendToStore(store, batch).added;
+  return { report, state: { ...state, files } };
+}
+
+/** The deferral half of the ingest footer. @param {DeferralsReport} report */
+function deferralIngestLines(report) {
+  const lines = [`deferral logs: ${report.read} read, ${report.unchanged} unchanged since the last run, ${report.spans} spans, ${report.added} new to the store`];
+  for (const file of report.absent) lines.push(`  no log at ${file}: the gate has not ticked since it began writing one, so NO deferral span is held`);
+  for (const file of report.failed) lines.push(`  failed: ${file}`);
+  for (const reason of report.reread) lines.push(`  read again from byte 0: ${reason}`);
+  return lines;
 }
 
 /**
@@ -356,14 +429,18 @@ const GITHUB_DETAIL = {
 /** @param {import("./store.mjs").TraceEvent} event */
 const githubDetail = (event) => (GITHUB_DETAIL[event.kind] ?? (() => event.kind))(event);
 
+/** @param {number} ms */
+const isoSeconds = (ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM:SS".length).replace("T", " ");
+
 /**
  * @param {import("./store.mjs").TraceEvent} event
  * @returns {string}
  */
 function line(event) {
-  const when = new Date(event.at).toISOString().slice(0, "YYYY-MM-DDTHH:MM:SS".length).replace("T", " ");
+  const when = isoSeconds(event.at);
   const who = event.session.padEnd(18);
   if (event.source === "github") return `${when}  ${who} ${githubDetail(event)}`;
+  if (event.kind === "deferral") return `${when}  ${who} DEFERRED ${event.causeKey}  waited ${clock((event.completedAt ?? event.at) - (event.startedAt ?? event.at))} (from ${isoSeconds(event.startedAt ?? event.at)}Z), ${event.how}`;
   if (event.kind === "turn" && event.tokens) {
     const cost = event.costUsd === null || event.costUsd === undefined ? "$?" : `$${event.costUsd.toFixed(COST_DECIMALS)}`;
     const wall = event.wallClockMs === null || event.wallClockMs === undefined ? "?" : clock(event.wallClockMs);
@@ -407,12 +484,20 @@ function heldFrom(everything) {
   /** @type {Map<string, number>} */
   const first = new Map();
   for (const event of everything) {
-    if (event.source === "github" || event.source === "gh-ledger") continue;
+    if (event.source === "github" || event.source === "gh-ledger" || event.source === "deferral-log") continue;
     const kind = kindOfActor(event);
     first.set(kind, Math.min(first.get(kind) ?? Number.POSITIVE_INFINITY, event.at));
   }
   const iso = (/** @type {number} */ ms) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
   return [...first].sort(([, a], [, b]) => a - b).map(([kind, at]) => `  ${kind.padEnd(28)} held from ${iso(at)}Z`);
+}
+
+/** From when the store holds deferral spans: the log is kept from the first tick that wrote it, so a wait before that is in no record. @param {import("./store.mjs").TraceEvent[]} everything */
+function deferralHeldLine(everything) {
+  const spans = everything.filter((event) => event.kind === "deferral");
+  if (spans.length === 0) return "DEFERRAL SPANS HELD: none in the store yet; a wait of this row's is NOT shown as absent, it is unrecorded (name it from the review event, the ledger's delivery and the seat's turns, and mark it inferred)";
+  const first = Math.min(...spans.map((event) => event.startedAt ?? event.at));
+  return `DEFERRAL SPANS HELD: ${spans.length} ended waits, the earliest started ${isoSeconds(first).slice(0, "YYYY-MM-DD HH:MM".length)}Z; a wait before the first tick that wrote the log is unrecorded, and one still open is not in it`;
 }
 
 /** The transcript half of the footer: what this run read, and from when the state holds the transcripts, so an absence before that is not read as "nothing happened". @param {IngestReport} ingested */
@@ -425,6 +510,7 @@ function ingestLines(ingested) {
   for (const reason of ingested.reread) lines.push(`read again from byte 0: ${reason}`);
   if (ingested.heldBack > 0) lines.push(`${ingested.heldBack} messages written in the last 5 minutes are held back to the next run (a message may still be gaining blocks, and its turn is built from the last)`);
   if (ingested.ghCalls) lines.push(...ghIngestLines(ingested.ghCalls));
+  if (ingested.deferrals) lines.push(...deferralIngestLines(ingested.deferrals));
   lines.push(`TRANSCRIPT STATE: holds each transcript from the run that first read it, the first run being ${iso(ingested.firstRunAt)}Z over transcripts modified after ${iso(ingested.firstRunSince)}Z. `
     + "A transcript is read from its first byte then, but one last modified before that window is not in the store: absence before it is not \"nothing happened\".");
   return lines;
@@ -440,7 +526,7 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
   const turns = events.filter((event) => event.kind === "turn");
   const priced = turns.filter((event) => typeof event.costUsd === "number");
   const total = priced.reduce((sum, event) => sum + (event.costUsd ?? 0), 0);
-  const sessions = [...new Set(events.filter((event) => event.source !== "github").map((event) => event.session))];
+  const sessions = [...new Set(events.filter((event) => event.source !== "github" && event.source !== "deferral-log").map((event) => event.session))];
   const fromGithub = events.filter((event) => event.source === "github").length;
   const named = [rows.length > 0 ? `rows: ${rows.map((row) => `#${row}`).join(", ")}` : "", prs.length > 0 ? `pull requests: ${prs.map((pr) => `#${pr}`).join(", ")}` : ""].filter(Boolean);
   const out = [`TRACE #${number}${named.length > 0 ? `  (${named.join("; ")})` : ""}`];
@@ -452,6 +538,7 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
   if (ingested) out.push(...ingestLines(ingested));
   if (held) out.push("TRANSCRIPTS HELD, per actor (the earliest turn or wake in the store; Claude Code sessions and Codex reviewer sessions):", ...heldFrom(held));
   out.push(...ghCallLines({ events: found, held }));
+  if (held) out.push(deferralHeldLine(held));
   if (github) out.push(`GitHub: ${github.calls} REST calls (gh api); ${github.read} events read, ${github.added} new to the store`);
   out.push(NOT_HELD, "", ...DEFINITIONS);
   return out.join("\n");
@@ -613,7 +700,7 @@ async function readSources({ since, storePath, budget }) {
   const cache = join(homedir(), ".cache", "a11ign");
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
-  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, ghLedgers: ghLedgerFiles(), now });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, ghLedgers: ghLedgerFiles(), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)], now });
   const gh = budgetedGh({ gh: ghApi, budget });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
@@ -658,7 +745,7 @@ async function main() {
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
-  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath, ghLedgers: ghLedgerFiles() });
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath, ghLedgers: ghLedgerFiles(), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)] });
   const gh = countingGh(ghApi);
   const { rows, prs } = resolveSubject(number, rowRepo, gh);
   const seen = readGithubEvents({ rows, prs, repo: rowRepo, gh });

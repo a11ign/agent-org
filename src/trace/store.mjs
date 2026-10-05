@@ -15,8 +15,8 @@
 //   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. It includes the time the harness spent on the tool call that
 //                 preceded the message, so a turn that follows a slow tool reads long. Named in `DEFINITIONS`.
 //   deliveryLagMs MEASURED when the ledger line pairs with the delivery: delivered - typed. `null` when it does not pair (never 0). It is the harness's lag, NOT the
-//                 gate's deferral: how long a busy seat held an order before `wake` typed it is in no durable record (`wake-deferred` is rewritten every tick and holds
-//                 only what is deferred NOW), so deferral spans are a later slice that snapshots it.
+//                 gate's deferral: how long a busy seat held an order before `wake` typed it was in no durable record (`wake-deferred` is rewritten every tick and holds
+//                 only what is deferred NOW) until `wake-deferral-log` (#3510), which keeps each ENDED deferral and is read as `kind: deferral`.
 //
 // ONE API MESSAGE IS WRITTEN ONCE PER CONTENT BLOCK (measured: 23 assistant records were 8 message ids in one live transcript). A reader that sums every record
 // double counts, so a turn is built per `message.id` from its LAST record, whose `output_tokens` is the final figure.
@@ -28,7 +28,7 @@ import { dirname } from "node:path";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.mjs";
 
 export const DEFINITIONS = [
-  "EVENT: one record in the store, `kind` turn | wake | compaction, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
+  "EVENT: one record in the store, `kind` turn | wake | compaction | gh_call | deferral, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
   "TURN: one API message of a Claude session (de-duplicated by message id), with its tokens, cost and wall-clock. It belongs to the wake that precedes it in its transcript.",
   "WAKE: a delivery that started a model turn (wakes-per-row's definition). `deliveryLagMs` is delivery minus the time `wake` typed the order, when the ledger line pairs (not the gate's deferral, which no record keeps).",
   "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. A turn after a slow tool call includes that call.",
@@ -40,6 +40,7 @@ export const DEFINITIONS = [
   "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
   "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
   "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model (no rate for a Codex model is sourced). Its wall-clock runs from the last record sent to the model.",
+  "DEFERRAL (`kind: deferral`, `source: deferral-log`, #3510): one wait of an order for a busy seat, written by the gate's own tick when it ENDED (`wake-deferral-log`, beside `wake-deferred`): `startedAt` is the tick that first found the order deferred, `completedAt` (and `at`) the tick that found it no longer deferred, so each end is at most one tick late, and `how` is `delivered` (the ledger holds that cause key at or after the start) or `gone` (it left with no delivery: the order stopped being true). `session` is the addressee in the key. KEYED BY THE CAUSE KEY'S ROW OR PULL REQUEST (`subjectOf`), else the session's name. A wait still OPEN is not here (the log holds ended ones), and a wait that ended before the first tick to write the log is in no record: it can only be inferred from the review event, the ledger's delivery and the seat's own turns.",
   "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED BY THE LINE'S SESSION ID (#3589): `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) on each call, which is the file name of its transcript, and a turn carries its transcript's id; a call is on that session and, through the session's next turn, on a row (`keyedBy: session`). A line with no id (a unit or script outside any session, or a line written before the wrapper named its session) is `unkeyed: script`; one whose session has no later turn in the store yet is `unkeyed: no-turn`; either way the call's session is `gh-ledger` and it has no row. A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
   "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
 ];
@@ -68,11 +69,11 @@ export const PRICES = [
 
 /**
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
- * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger", at: number, session: string, row: number | null,
+ * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
  *   costUsd?: number | null, transcript?: string, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
  *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
- *   completedAt?: number | null, outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
+ *   completedAt?: number | null, how?: "delivered" | "gone", outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
  *   script?: string, sessionId?: string, keyedBy?: "session" | "time" | null, unkeyed?: "script" | "no-turn" }} TraceEvent
  */
 
@@ -157,6 +158,22 @@ export function subjectOfSession(session, rowRepo) {
   const reviewer = reviewerTarget(session, rowRepo);
   if (reviewer) return { row: null, pr: reviewer.number, repo: reviewer.repo === rowRepo ? null : reviewer.repo.split("/")[1] };
   return { row: null, pr: null, repo: null };
+}
+
+/**
+ * One event per ended deferral of the gate's log (`deferral-log.mjs`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
+ * again) is the one event. `at` is the END, which is when the store learned of it; the start is `startedAt`.
+ * @param {import("../deferral-log.mjs").EndedDeferral[]} spans @param {string} rowRepo
+ * @returns {TraceEvent[]}
+ */
+export function eventsOfDeferrals(spans, rowRepo) {
+  return spans.map(({ key, startMs, endMs, how }) => {
+    const [session = key, cause = null] = key.split("/");
+    const subject = subjectOf(key);
+    const several = subjectsOf(key);
+    const named = subject.row === null && subject.pr === null && !several.rows && !several.prs ? subjectOfSession(session, rowRepo) : { ...subject, ...several };
+    return { id: `deferral:${key}:${startMs}`, kind: "deferral", source: "deferral-log", at: endMs, session, ...named, cause, causeKey: key, wakeId: null, startedAt: startMs, completedAt: endMs, how };
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------

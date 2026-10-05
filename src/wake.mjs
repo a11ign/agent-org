@@ -84,6 +84,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.mjs" is unchanged.
 import { readAgents, listingIsComplete } from "./herdr-agents.mjs";
+import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.mjs";
 export { readAgents, listingIsComplete };
 
 /**
@@ -3822,13 +3823,15 @@ export function splitRefusals(refused) {
  * hide a stuck order or accuse a healthy one.
  *
  * @param {string} path @param {string[]} keys the causeKeys deferred THIS tick @param {number} now
- * @param {{ read?: typeof readFileSync, write?: typeof writeFileSync }} [io]
+ * @param {{ read?: typeof readFileSync, write?: typeof writeFileSync, ledgerPath?: string }} [io] `ledgerPath` is the delivery ledger an ended deferral is checked against (#3510)
  * @returns {Map<string, number>} each of `keys` to how long (ms) it has been deferred, 0 for one first seen now
  */
-export function deferralAges(path, keys, now, { read = readFileSync, write = writeFileSync } = {}) {
+export function deferralAges(path, keys, now, { read = readFileSync, write = writeFileSync, ledgerPath = undefined } = {}) {
   const since = readDeferralHistory(path, read);
   const kept = new Map(keys.map((key) => [key, since.get(key) ?? now]));
   mkdirSync(dirname(path), { recursive: true });
+  // #3510: a span that ENDED is appended to the durable log first (see `recordEndedDeferrals`); a caller with no ledger has no way to say `delivered`, so it keeps no log.
+  if (ledgerPath) recordEndedDeferrals({ logPath: `${dirname(path)}/${DEFERRAL_LOG_FILE}`, previous: since, current: kept, deliveries: () => readLedgerDeliveries(ledgerPath, read), now });
   write(path, [...kept].map(([key, at]) => `${key}\t${at}\n`).join(""));
   return new Map(keys.map((key) => [key, now - /** @type {number} */ (kept.get(key))]));
 }
@@ -6897,7 +6900,7 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
     process.exit(EXIT.ATTENTION);
   }
   // #3029: A SEAT MID-TURN IS DEFERRED, NOT UNDELIVERED. Only what has no way to arrive makes the tick exit ATTENTION, and the summary counts only that.
-  const report = refusalReport(refused, (keys) => deferralAges(`${dirname(ledgerPath)}/wake-deferred`, keys, Date.now()));
+  const report = refusalReport(refused, (keys) => deferralAges(`${dirname(ledgerPath)}/wake-deferred`, keys, Date.now(), { ledgerPath }));
   for (const line of report.deferred) process.stderr.write(`DEFERRED ${line}\n`);
   for (const line of report.undelivered) process.stderr.write(`UNDELIVERED ${line}\n`);
   if (report.summary !== null) {
@@ -6931,7 +6934,12 @@ function main() {
   // is outstanding -- so exiting QUIET on an empty stdin would have left the queue undelivered exactly
   // when it mattered most.
   const handoffs = readHandoffs(queuePath);
-  if (nothingToDeliver(gateOrders, handoffs)) process.exit(EXIT.QUIET);
+  if (nothingToDeliver(gateOrders, handoffs)) {
+    // #3510: THE QUIET TICK IS WHERE A DEFERRAL THAT WENT AWAY ENDS (the order stopped being true, so the gate emits nothing), and `finishTick` is never reached from here: without this the span is
+    // logged by whichever later tick has orders, with ITS clock, and `wake-deferred` keeps a key nobody defers, which would give a re-deferral months on the old start. Nothing is deferred when nothing is offered.
+    deferralAges(`${dirname(ledgerPath)}/wake-deferred`, [], Date.now(), { ledgerPath });
+    process.exit(EXIT.QUIET);
+  }
 
   // WHAT WAS ALREADY WAITING, BEFORE THIS TICK DELIVERS ANYTHING (#2102). Reported first and reported whatever
   // happens next, because the backlog is a fact about the org that every session running a tick should
