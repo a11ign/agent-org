@@ -29,7 +29,7 @@ import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
-import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents } from "./store.mjs";
+import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents, subjectOf, subjectsOf as subjectsOfKey } from "./store.mjs";
 import { DEFINITIONS as WATERFALL_DEFINITIONS, renderWaterfall, waterfall } from "./waterfall.mjs";
 
 /** @typedef {import("./ingest-state.mjs").FileState} FileState
@@ -727,7 +727,7 @@ function openRowsWithin({ rowRepo, gh }) {
   }
 }
 
-/** One pull request's own events, tagged with its repository's short name when it is a keyed repository's (how the store keeps `repo`). @param {{ pull: import("../wakes-per-row.mjs").PullRequest, rowRepo: string, gh: (args: string[]) => any }} input */
+/** One pull request's own events, tagged with its repository's short name when it is a keyed repository's (how the store keeps `repo`). @param {{ pull: { number: number, repo: string }, rowRepo: string, gh: (args: string[]) => any }} input */
 function pullEventsOf({ pull, rowRepo, gh }) {
   const events = readGithubEvents({ rows: [], prs: [pull.number], repo: pull.repo, gh });
   return pull.repo === rowRepo ? events : events.map((event) => ({ ...event, repo: pull.repo.split("/")[1] }));
@@ -786,6 +786,76 @@ export function githubEventsOfMerged({ pulls, rowRepo, held, gh }) {
   return { events, unreadRows };
 }
 
+/** @typedef {{ number: number, isPull: boolean, repo: string | null }} Named a row, or a pull request of the primary repository (`repo` null) or of a keyed one (its short name) */
+
+/** Which row or pull request, as one string: the form `githubEventsOfMerged` keeps its `merged` set in. @param {Named} subject */
+const nameOf = ({ number, isPull, repo }) => (isPull ? `${repo ?? "primary"}#${number}` : `row ${number}`);
+
+/** The rows and pull requests ONE ledger key names, the way `aggregate.mjs` reads it, so what is read here is what a repeat is judged by. A key naming none (`ready-queue-empty`) names none. @param {string} key @returns {Named[]} */
+function namedByKey(key) {
+  const named = { ...subjectOf(key), ...subjectsOfKey(key) };
+  const numbers = (/** @type {unknown[]} */ list) => list.filter((number) => typeof number === "number");
+  return [
+    ...numbers([named.row, ...(named.rows ?? [])]).map((number) => ({ number, isPull: false, repo: null })),
+    ...numbers([named.pr, ...(named.prs ?? [])]).map((number) => ({ number, isPull: true, repo: named.repo ?? null })),
+  ];
+}
+
+/** What a reading can no longer change: a row that was closed, a pull request that was merged or closed. A subject with none of these is open, so its record grows and a stored reading may be stale. @param {import("./store.mjs").TraceEvent[]} held */
+function settledIn(held) {
+  const github = held.filter((event) => event.source === "github");
+  return new Set([
+    ...github.flatMap(({ kind, row }) => (kind === "closed" && typeof row === "number" ? [nameOf({ number: row, isPull: false, repo: null })] : [])),
+    ...github.flatMap(({ kind, pr, repo }) => ((kind === "merged" || kind === "closed") && typeof pr === "number" ? [nameOf({ number: pr, isPull: true, repo: repo ?? null })] : [])),
+  ]);
+}
+
+/**
+ * The rows and pull requests the wakes of the window name, each once, in the order a wake first named it. The oldest first, so that when the budget stops the reading it is the newest wakes that stay unexplained.
+ * @param {import("./store.mjs").TraceEvent[]} held @param {number} since
+ */
+function namedByWakes(held, since) {
+  const wakes = held.filter((event) => event.kind === "wake" && event.causeKey && event.at >= since).sort((a, b) => a.at - b.at);
+  return [...new Map(wakes.flatMap((wake) => namedByKey(String(wake.causeKey))).map((subject) => [nameOf(subject), subject])).values()];
+}
+
+/** @param {{ subject: Named, rowRepo: string, gh: (args: string[]) => any }} input */
+function readNamed({ subject, rowRepo, gh }) {
+  if (!subject.isPull) return readGithubEvents({ rows: [subject.number], prs: [], repo: rowRepo, gh });
+  return pullEventsOf({ pull: { number: subject.number, repo: subject.repo === null ? rowRepo : `${rowRepo.split("/")[0]}/${subject.repo}` }, rowRepo, gh });
+}
+
+/**
+ * What the aggregate reads of GitHub for the subjects the window's WAKES name: a repeat is `after a change` or `unchanged` only from the store's record of its row or pull request, and
+ * `githubEventsOfMerged` reads only the merged ones, so a wake naming a row that is open, closed another way or closed in an earlier week had no record to read (349 of the 599 repeats of the
+ * week of 2026-09-28, #3688). `held` is the store AFTER the merged reading was added to it: a subject it settles (see `settledIn`) is not read again, an OPEN one is read on every run because
+ * its record grows. Oldest naming first, within the same budget, and it STOPS when `gh` refuses a call; what it did not reach is returned by name and stays `unexplained`, as does a key that names
+ * none. A subject that cannot be read for another reason (a number GitHub does not know) is returned as `failed` with the message and the next one is tried: one key must not cost the week.
+ * @param {{ held: import("./store.mjs").TraceEvent[], since: number, rowRepo: string, gh: ReturnType<typeof budgetedGh> }} input
+ */
+export function githubEventsOfNamed({ held, since, rowRepo, gh }) {
+  const settled = settledIn(held);
+  /** @type {import("./store.mjs").TraceEvent[]} */
+  const events = [];
+  /** @type {string[]} */
+  const unread = [];
+  /** @type {{ subject: string, message: string }[]} */
+  const failed = [];
+  for (const subject of namedByWakes(held, since).filter((named) => !settled.has(nameOf(named)))) {
+    if (gh.stopped) {
+      unread.push(nameOf(subject));
+      continue;
+    }
+    try {
+      events.push(...readNamed({ subject, rowRepo, gh }));
+    } catch (error) {
+      if (isSpent(error)) unread.push(nameOf(subject));
+      else failed.push({ subject: nameOf(subject), message: String(/** @type {Error} */ (error).message) });
+    }
+  }
+  return { events, unread, failed };
+}
+
 /** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.mjs").LedgerEntry[], cache: string }} input */
 function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
   const transcripts = readTranscripts(join(homedir(), ".claude", "projects"), starts[0]);
@@ -807,12 +877,15 @@ export function budgetLine({ budget, floor = RATE_FLOOR, gapMs = PACE_GAP_MS }) 
 
 /**
  * What the GitHub reading cost and how it ended, for the footer. A stop is NAMED, because a run that stopped at the floor has not read the weeks it left PARTIAL.
- * @param {{ github: { calls: number, read: number, added: number, remaining: { first: number | null, last: number | null }, stopped: { reason: string, message: string } | null }, budget: number, unread: number }} input
+ * `github.named`, when the run read the subjects the wakes name (`githubEventsOfNamed`), adds how many of them it did not reach and which it could not read: their repeats stay `unexplained`.
+ * @param {{ github: { calls: number, read: number, added: number, remaining: { first: number | null, last: number | null }, stopped: { reason: string, message: string } | null, named?: { unread: number, failed: { subject: string, message: string }[] } }, budget: number, unread: number }} input
  */
 export function githubSummary({ github, budget, unread }) {
   const { first, last } = github.remaining;
   const stop = github.stopped ? `; STOPPED AT THE ${github.stopped.reason === "floor" ? "FLOOR" : "BUDGET"}: ${github.stopped.message}` : "";
-  return `GitHub: ${github.calls} REST calls (gh api, pool ${REST_POOL}, budget ${budget}); X-Ratelimit-Remaining ${first ?? "unread"} at the first reply, ${last ?? "unread"} at the last; ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unread}${stop}`;
+  const { named } = github;
+  const wakes = named ? `; subjects the wakes name, not yet read: ${named.unread}${named.failed.map(({ subject, message }) => `; could not read ${subject}: ${message}`).join("")}` : "";
+  return `GitHub: ${github.calls} REST calls (gh api, pool ${REST_POOL}, budget ${budget}); X-Ratelimit-Remaining ${first ?? "unread"} at the first reply, ${last ?? "unread"} at the last; ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unread}${wakes}${stop}`;
 }
 
 /**
@@ -833,7 +906,9 @@ async function readSources({ since, storePath, budget, log }) {
   const gh = budgetedGh({ gh: metered, budget, floor: RATE_FLOOR, gapMs: PACE_GAP_MS });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
-  const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped };
+  const addedOfMerged = appendToStore(store, seen).added;
+  const named = githubEventsOfNamed({ held: store.events, since, rowRepo, gh }); // after the merged reading is in the store: a subject it read is not read twice
+  const github = { calls: gh.calls, read: seen.length + named.events.length, added: addedOfMerged + appendToStore(store, named.events).added, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped, named: { unread: named.unread.length, failed: named.failed } };
   return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github };
 }
 

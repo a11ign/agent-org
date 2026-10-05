@@ -11,9 +11,9 @@ import { test } from "node:test";
 import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.mjs";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
-import { weekStart } from "./aggregate.mjs";
+import { aggregate, weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, budgetLine, githubEventsOfMerged, githubSummary, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -648,6 +648,90 @@ test("BUDGET: a failure that is not the budget is not swallowed, and a pull requ
   const held = [{ kind: "merged", pr: 20, repo: null }, { kind: "closed", row: 2 }];
   const idle = budgetedGh({ gh: listingGh(), budget: 0 });
   assert.deepEqual(githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held, gh: idle }), { events: [], unreadRows: [] }, "nothing to read, so even a budget of 0 reads and marks nothing");
+});
+
+// THE SUBJECTS THE WAKES NAME (#3688). The re-delivered table judged a repeat from the store's GitHub record of the row or pull request its key names, and the store held that record only for the rows a
+// pull request MERGED IN THE WINDOW closed: a wake naming any other subject was `unexplained` for want of a record to read.
+const NAMED_WEEK = at("2026-09-28T00:00:00Z");
+const NAMED_ROW_REPO = "a11ign/a11ign";
+const namedWake = (id, when, key) => ({ id, kind: "wake", source: "wake-ledger", at: at(when), session: key.split("/")[0], row: null, pr: null, repo: null, cause: "x", causeKey: key, wakeId: id });
+/** A repeat: the same key delivered twice, at 11:00 and 11:30 of the 29th unless the times are given. */
+const repeated = (key, first = "2026-09-29T11:00:00Z", second = "2026-09-29T11:30:00Z") => [namedWake(`wake:${key}:1`, first, key), namedWake(`wake:${key}:2`, second, key)];
+/** A `gh` that answers an issue or pull request (created 10:00 on the 29th) and a timeline per subject; a path containing a fragment of `broken` answers with an HTTP error. */
+function namedGh({ timelines = {}, broken = [] } = {}) {
+  const seen = [];
+  const gh = (args) => {
+    seen.push(args[0]);
+    const path = args[0].split("?")[0];
+    if (broken.some((fragment) => path.includes(fragment))) throw new Error(`HTTP 404 ${path}`);
+    if (path.endsWith("/timeline")) return timelines[path.replace(/^repos\//, "").replace("/timeline", "")] ?? [];
+    return { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } };
+  };
+  return Object.assign(gh, { seen, rate: { remaining: 4000, resource: "core" } });
+}
+const blockedAt = (when) => ({ event: "labeled", id: 1, created_at: when, actor: { login: "someone" }, label: { name: "blocked" } });
+const readNamed = ({ held, gh, since = NAMED_WEEK }) => githubEventsOfNamed({ held, since, rowRepo: NAMED_ROW_REPO, gh });
+/** The re-delivered class's repeats of the week of the 28th, as [after a change, unchanged, unexplained]. */
+function splitOf(events) {
+  const week = aggregate({ events, pulls: [], rowRepo: NAMED_ROW_REPO, now: at("2026-10-06T00:00:00Z"), since: NAMED_WEEK, held: { from: NAMED_WEEK, basis: "test fixture" } }).weeks.find((one) => one.start === NAMED_WEEK);
+  const { afterChange, unchanged, unexplained } = week.repeats.classes.find((entry) => entry.id === "redelivered").split;
+  return [afterChange.count, unchanged.count, unexplained.count];
+}
+const NAMING_WAKES = [...repeated("worker-12/ready-row-unclaimed/row-12"), ...repeated("worker-13/pr-review-blocked/pr-agent-org#5"), ...repeated("worker-14/ready-row-unclaimed/row-14"), ...repeated("ceo/org-health/some-signal")];
+
+test("NAMED (#3688): a wake naming a row no merged pull request closed, or a keyed repository's pull request, has its record read, so its repeat is `after a change` or `unchanged`; a key naming no subject stays `unexplained` and costs nothing", () => {
+  assert.deepEqual(splitOf(NAMING_WAKES), [0, 0, 4], "BEFORE: with no record of any of them, every repeat is unexplained");
+  const gh = budgetedGh({ gh: namedGh({ timelines: { "a11ign/a11ign/issues/12": [blockedAt("2026-09-29T11:10:00Z")] } }), budget: 100 });
+  const { events, unread, failed } = readNamed({ held: NAMING_WAKES, gh });
+  assert.deepEqual([unread, failed], [[], []]);
+  assert.deepEqual(events.filter((event) => event.kind === "opened").map((event) => [event.pr, event.repo]), [[5, "agent-org"]], "the pull request of a keyed repository carries its short name, as the merged reading's do");
+  assert.equal(gh.calls, 6, "three subjects, an issue or pull request and a timeline each; `org-health` names none and read nothing");
+  assert.deepEqual(splitOf([...NAMING_WAKES, ...events]), [1, 2, 1], "row 12 changed (a wait label at 11:10, between the deliveries), row 14 and pull request 5 did not, and `org-health` still names nothing");
+});
+
+test("NAMED (#3688): the budget stops the extra reading as it stops the merged-row one, the OLDEST naming first, and what it did not reach is named and stays unexplained", () => {
+  const wakes = [...repeated("worker-12/ready-row-unclaimed/row-12", "2026-09-29T10:00:00Z", "2026-09-29T11:30:00Z"), ...repeated("worker-13/ready-row-unclaimed/row-13", "2026-09-29T08:00:00Z", "2026-09-29T11:20:00Z"),
+    ...repeated("worker-14/ready-row-unclaimed/row-14", "2026-09-29T09:00:00Z", "2026-09-29T11:40:00Z")];
+  const gh = budgetedGh({ gh: namedGh(), budget: 3 });
+  const { events, unread } = readNamed({ held: wakes, gh });
+  assert.equal(gh.calls, 3, "exactly the budget: the fourth call was refused before it was made");
+  assert.deepEqual(unread, ["row 14", "row 12"], "row 13 was named first (08:00) and read whole; row 14 (09:00) stopped at its timeline and stored nothing; row 12 was never tried");
+  assert.deepEqual([...new Set(events.map((event) => event.row))], [13], "what finished is kept, and only that");
+  assert.deepEqual(splitOf([...wakes, ...events]), [0, 1, 2], "row 13's repeat is read, the two the budget did not reach are not");
+  const spent = budgetedGh({ gh: namedGh(), budget: 0 });
+  assert.deepEqual(readNamed({ held: wakes, gh: spent }).unread, ["row 13", "row 14", "row 12"], "with no budget nothing is read and all three are named");
+});
+
+test("NAMED (#3688): a wake before the window names nothing to read", () => {
+  const old = repeated("worker-99/ready-row-unclaimed/row-99", "2026-09-20T11:00:00Z", "2026-09-20T11:30:00Z");
+  assert.equal(readNamed({ held: old, gh: budgetedGh({ gh: namedGh(), budget: 10 }) }).events.length, 0, "a wake of the week before is not this window's");
+  assert.equal(readNamed({ held: old, since: at("2026-09-14T00:00:00Z"), gh: budgetedGh({ gh: namedGh(), budget: 10 }) }).events.length > 0, true, "POSITIVE CONTROL: the same wake is read when the window reaches it");
+});
+
+test("NAMED (#3688): what the store holds as SETTLED costs no call, and an OPEN subject is read again", () => {
+  const settled = [{ kind: "closed", source: "github", row: 12, pr: null, repo: null }, { kind: "merged", source: "github", row: null, pr: 5, repo: "agent-org" }];
+  const gh = budgetedGh({ gh: namedGh(), budget: 100 });
+  const { events } = readNamed({ held: [...NAMING_WAKES, ...settled], gh });
+  assert.equal(gh.calls, 2, "row 12 (closed) and agent-org pull request 5 (merged) are settled and cost nothing; row 14 is open, so its record is read");
+  assert.deepEqual([...new Set(events.map((event) => event.row))], [14]);
+  const sameNumber = readNamed({ held: [...NAMING_WAKES, { kind: "merged", source: "github", row: null, pr: 5, repo: null }], gh: budgetedGh({ gh: namedGh(), budget: 100 }) });
+  assert.ok(sameNumber.events.some((event) => event.pr === 5), "POSITIVE CONTROL: a merged pull request 5 of the PRIMARY repository does not settle agent-org's pull request 5");
+});
+
+test("NAMED (#3688): a subject GitHub refuses is named with the reason and the next is still read, a key naming several rows reads each, and a subject named twice is read once", () => {
+  const wakes = [...NAMING_WAKES, ...repeated("ceo/row-call-count-signal/12,14")];
+  const underlying = namedGh({ broken: ["issues/12"] });
+  const { events, failed, unread } = readNamed({ held: wakes, gh: budgetedGh({ gh: underlying, budget: 100 }) });
+  assert.deepEqual(failed, [{ subject: "row 12", message: "HTTP 404 repos/a11ign/a11ign/issues/12" }], "named, with GitHub's own words, and not swallowed");
+  assert.deepEqual([...new Set(events.map((event) => event.row ?? `pr ${event.pr}`))].sort(), [14, "pr 5"], "the subjects after the refused one were read");
+  assert.deepEqual(unread, [], "a refusal that is not the budget is not the budget's stop");
+  assert.equal(underlying.seen.filter((path) => /issues\/14$/.test(path)).length, 1, "row 14 is named by two keys and read once");
+});
+
+test("NAMED (#3688): the footer says how many subjects the wakes name that were not read, and which could not be", () => {
+  const github = { calls: 12, read: 30, added: 4, remaining: { first: 1749, last: 1737 }, stopped: null };
+  assert.equal(githubSummary({ github, budget: 1500, unread: 0 }), "GitHub: 12 REST calls (gh api, pool core, budget 1500); X-Ratelimit-Remaining 1749 at the first reply, 1737 at the last; 30 events read, 4 new to the store; rows whose GitHub events are not yet read: 0", "a run that did not read them says nothing of them");
+  assert.match(githubSummary({ github: { ...github, named: { unread: 3, failed: [{ subject: "row 12", message: "HTTP 404" }] } }, budget: 1500, unread: 0 }), /rows whose GitHub events are not yet read: 0; subjects the wakes name, not yet read: 3; could not read row 12: HTTP 404$/);
 });
 
 /** A `gh` that answers `{}` and reports the rate limit a reply would carry: `remaining` counts down from `start` by one per call, from the pool `resource`. */
