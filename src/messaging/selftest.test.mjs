@@ -1,4 +1,4 @@
-// no-token: nothing here sends to any chat; the queue is a fake port over a temp file and the seats are a list
+// no-token: clearBeforeOrder -- nothing here sends to any chat or prompts a seat: the queue is a fake port over a temp file, the seats are a list, and the tick step's spawn is injected
 // @ts-check
 // THE CHAIRMAN'S PATH, CHECKED END TO END BY THE ORGANISATION (a11ign/a11ign#3540, done-whens 1 to 4).
 //
