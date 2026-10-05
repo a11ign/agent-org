@@ -27,8 +27,8 @@
 // that needs `herdr agent list`'s `agent_status`, and putting it here would make the gate untestable
 // without a running org and unrunnable from CI. `wake.mjs` owns that half; `row-claim.mjs` remains the
 // authority on whether a row is actually yours.
-import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -123,7 +123,7 @@ import { worktreeOwner } from "./worktree-owner.mjs";
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
-  stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr } from "./work-gate/pr-orders.mjs";
+  stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr, hungCheckOf } from "./work-gate/pr-orders.mjs";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
@@ -6648,8 +6648,260 @@ export function redPrFacts(prs, decided, options = {}) {
   });
 }
 
+// ---- #3723: GITHUB'S OWN STATUS, READ ONCE A TICK, AND WHAT A RUNNER OUTAGE HOLDS ---------------------------------------------------------------
+
+/** Where the gate asks, and the bound it asks within: 3 s at most, started WITH the tick's first reads, failing open (`ceo`'s exception to #3566's freeze). */
+export const GITHUB_STATUS_URL = "https://www.githubstatus.com/api/v2/summary.json";
+export const GITHUB_STATUS_TIMEOUT_MS = 3000;
+const GITHUB_STATUS_FILE = "github-status.json";
+/** The worker's own boot is not the fetch's wall, and the reader gives it this much beyond the bound before it calls the answer absent. */
+const GITHUB_STATUS_GRACE_MS = 500;
+const GITHUB_STATUS_POLL_MS = 25;
+/** The row's three: a job that cannot START (Actions), cannot be READ (API Requests) or cannot be PUSHED to (Git Operations). Copilot, Pages and the rest are not runner starts. */
+const INCIDENT_COMPONENTS = Object.freeze(["Actions", "API Requests", "Git Operations"]);
+/** Every status the page has reported for a component. One outside this set is a page the gate does not understand, which is UNKNOWN and never an incident. */
+const COMPONENT_STATUSES = Object.freeze(["operational", "degraded_performance", "partial_outage", "major_outage", "under_maintenance"]);
+
+/**
+ * The one HTTP call of the tick, run by a CHILD `node` so the gate -- which is synchronous -- does not wait for it: it is started before the first read and
+ * collected after the last, by which time it is long finished. It leaves ONE file, written whole and renamed into place, carrying the token of the tick that
+ * asked, so a reading an earlier tick left can never stand in for this tick's. It never throws past its own end: any failure is an `error` in the file.
+ */
+const GITHUB_STATUS_WORKER = `
+const { writeFileSync, renameSync } = require("node:fs");
+const [url, timeoutMs, file, token] = process.argv.slice(1);
+const began = performance.now();
+const answer = (reading) => {
+  writeFileSync(file + ".part", JSON.stringify({ token, wallMs: Math.round(performance.now() - began), ...reading }));
+  renameSync(file + ".part", file);
+};
+fetch(url, { signal: AbortSignal.timeout(Number(timeoutMs)) })
+  .then((res) => res.text().then((body) => answer({ status: res.status, body })))
+  .catch((err) => answer({ error: String((err && err.name) || err) }));
+`;
+
+/** @typedef {{ state: "incident", name: string, id: string | null, components: { name: string, status: string }[], wallMs?: number }
+ *   | { state: "clear", wallMs?: number } | { state: "unknown", why: string, wallMs?: number }} GithubIncident */
+
+/**
+ * PURE. What the status page's answer says about the three components, as `incident`, `clear` or `unknown`. UNKNOWN IS NEVER A HOLD: a fetch that failed, a
+ * non-200, a body that is not JSON, one that names none of the three components, or a component status the gate has not seen all leave the gate exactly as it
+ * was. A KNOWN non-operational component outranks an unknown one beside it, because it is the one that says something.
+ * @param {{ status?: number, body?: string, error?: string, wallMs?: number } | null | undefined} envelope what the worker wrote
+ * @returns {GithubIncident}
+ */
+export function githubIncidentOf(envelope) {
+  const wallMs = typeof envelope?.wallMs === "number" ? envelope.wallMs : undefined;
+  /** @param {string} why @returns {GithubIncident} */
+  const unknown = (why) => ({ state: "unknown", why, wallMs });
+  if (!envelope || typeof envelope !== "object") return unknown("no answer");
+  if (envelope.error) return unknown(`the fetch failed (${envelope.error})`);
+  if (envelope.status !== 200) return unknown(`HTTP ${envelope.status}`);
+  /** @type {any} */
+  let summary;
+  try {
+    summary = JSON.parse(String(envelope.body));
+  } catch {
+    return unknown("the body was not JSON"); // the reading, not a swallowed fault: a status page serving HTML is unreadable, and unreadable fails open
+  }
+  const components = Array.isArray(summary?.components) ? summary.components : [];
+  const seen = INCIDENT_COMPONENTS.map((name) => components.find((/** @type {any} */ c) => c?.name === name)).filter(Boolean);
+  if (seen.length === 0) return unknown("none of the three components was named");
+  const down = seen.filter((c) => COMPONENT_STATUSES.includes(c.status) && c.status !== "operational");
+  if (down.length > 0) return { state: "incident", ...incidentNamed(summary, down), components: down.map((c) => ({ name: c.name, status: c.status })), wallMs };
+  const unrecognised = seen.filter((c) => !COMPONENT_STATUSES.includes(c.status));
+  return unrecognised.length > 0 ? unknown(`${unrecognised[0].name} reported "${unrecognised[0].status}", a status the gate does not know`) : { state: "clear", wallMs };
+}
+
+/**
+ * The incident to NAME: the unresolved one that touches one of the three components, else the first, else the component's own words. Its `id` keys the
+ * signal, so the same incident on the next tick is the same order.
+ * @param {any} summary @param {{ name: string, status: string }[]} down
+ * @returns {{ name: string, id: string | null }}
+ */
+function incidentNamed(summary, down) {
+  const incidents = Array.isArray(summary?.incidents) ? summary.incidents : [];
+  const touching = incidents.find((/** @type {any} */ i) => (i?.components ?? []).some((/** @type {any} */ c) => INCIDENT_COMPONENTS.includes(c?.name))) ?? incidents[0];
+  return { name: String(touching?.name ?? `${down[0].name} is ${down[0].status}`), id: touching?.id ? String(touching.id) : null };
+}
+
+/** @param {number} ms */
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * START THE ONE STATUS CALL and return the means of collecting it. STARTING costs a process spawn and nothing else, so the tick's first read is not
+ * delayed by it; `settle()` is called once the orders are decided and finds the answer already written. IT NEVER WAITS PAST THE BOUND: with no answer by
+ * `timeoutMs` plus the worker's boot it returns `unknown`, and a worker that could not be started is `unknown` at once. The call's own wall comes back as
+ * `wallMs` (the worker times itself), which `main` prints so the tick's cost can be read per call.
+ * @param {{ url?: string, timeoutMs?: number, file?: string, spawnWorker?: typeof spawn, nowMs?: () => number }} [options]
+ * @returns {{ settle: () => GithubIncident }}
+ */
+export function startGithubStatus({ url = GITHUB_STATUS_URL, timeoutMs = GITHUB_STATUS_TIMEOUT_MS, file = join(REVIEWER_STATE_DIR, GITHUB_STATUS_FILE),
+  spawnWorker = spawn, nowMs = () => Date.now() } = {}) {
+  const token = randomUUID();
+  const began = nowMs();
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    const worker = spawnWorker(process.execPath, ["-e", GITHUB_STATUS_WORKER, url, String(timeoutMs), file, token], { stdio: "ignore" });
+    worker.on("error", () => {}); // an unspawnable worker is the missing file `settle` reads as unknown; the event must not be an uncaught throw
+    worker.unref();
+  } catch (err) {
+    return { settle: () => ({ state: "unknown", why: `the worker could not start (${err instanceof Error ? err.message : String(err)})` }) };
+  }
+  return { settle: () => collectGithubStatus({ file, token, deadline: began + timeoutMs + GITHUB_STATUS_GRACE_MS, nowMs }) };
+}
+
+/** @param {{ file: string, token: string, deadline: number, nowMs: () => number }} asked @returns {GithubIncident} */
+function collectGithubStatus({ file, token, deadline, nowMs }) {
+  for (;;) {
+    const envelope = readJsonOrNull(file);
+    if (envelope?.token === token) return githubIncidentOf(envelope);
+    if (nowMs() >= deadline) return { state: "unknown", why: "no answer within the bound" };
+    sleepMs(GITHUB_STATUS_POLL_MS);
+  }
+}
+
+/** @param {string} path @returns {any} the parsed file, or `null` when it is absent or not yet whole -- the caller asks again until its deadline */
+function readJsonOrNull(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string[]} args @param {(args: string[]) => string} run @returns {any} the answer, or `null` when `gh` refused or said something that is not JSON: UNCLASSIFIED, which is never held */
+function readGhJson(args, run) {
+  try {
+    return JSON.parse(run(args));
+  } catch {
+    return null;
+  }
+}
+
+const ACTIONS_JOB_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/\d+\/job\/(\d+)/;
+/** A job that NEVER GOT A RUNNER: no steps and no runner, whatever its conclusion. Measured on the 2026-10-05 jobs: `cancelled`, `runner_name: ""`, zero steps. A cancelled job that had steps ran. */
+const neverStarted = (/** @type {any} */ job) => job !== null && typeof job === "object" && job.steps === 0 && !job.runner_name;
+const JOB_FIELDS = "{conclusion, runner_name, steps: (.steps // [] | length)}";
+const NOT_FAILING_JOB_CONCLUSIONS = Object.freeze(["success", "skipped", "neutral"]);
+
+/**
+ * PURE (given `run`). WHY AN ORDER IS A RUNNER-START FAILURE, or `null` for "it is not one, or the gate cannot tell". The three kinds of the row, all filed under
+ * `pr-checks-failing`, are told apart by the discriminator they already carry: `hung-check` and `ejected` name themselves, and what is left is a settled red.
+ *  - red:      EVERY red blocking check is an Actions job that never got a runner (one that RAN and failed sends the order, whatever sits beside it).
+ *  - hung:     the check the order names is QUEUED, so it never started; an IN_PROGRESS one ran and hangs, which is its owner's.
+ *  - ejected:  the `merge_group` run behind the ejection failed ONLY in jobs that never got a runner.
+ * Each read that is refused, or a check with no job to read, is `null`: THE ORDER GOES OUT.
+ * @param {any} order @param {any} pr
+ * @param {{ required: string[] | null, nowMs: number, job: (url: unknown) => any, ghJson: (args: string[]) => any }} reads
+ * @returns {string | null}
+ */
+function runnerStartOf(order, pr, reads) {
+  if (order.discriminator === "ejected") return ejectionNeverStarted(order, pr, reads.ghJson);
+  if (order.discriminator === "hung-check") return queuedPastItsBound(pr, reads);
+  const red = blockingChecks(newestPerName(pr.statusCheckRollup ?? []), reads.required).filter((c) => checksSettledGreen([c]) === false);
+  if (red.length === 0 || !red.every((c) => neverStarted(reads.job(c.detailsUrl)))) return null;
+  return `${red.map((c) => `\`${c.name}\``).join(", ")}: no step ran and no runner was assigned`;
+}
+
+/** @param {any} pr @param {{ required: string[] | null, nowMs: number }} reads @returns {string | null} */
+function queuedPastItsBound(pr, { required, nowMs }) {
+  const hung = hungCheckOf(pr, required, nowMs);
+  /** @type {any} */
+  const named = hung && newestPerName(pr.statusCheckRollup ?? []).find((/** @type {any} */ c) => String(c.name) === hung.name);
+  return hung && String(named?.status).toUpperCase() === "QUEUED" ? `\`${hung.name}\` has been QUEUED ${hung.runningMinutes} minutes with no runner` : null;
+}
+
+/**
+ * The ejection's `merge_group` run is found by its branch as `readEjectionRun` finds it, but by ANY conclusion and not `failure` only, and its jobs are read for
+ * steps and runner. A11ign/toolchain#3's run was `failure` overall with its one job `cancelled`, zero steps, 18 min 53 s queued.
+ * @param {any} order @param {any} pr @param {(args: string[]) => any} ghJson @returns {string | null}
+ */
+function ejectionNeverStarted(order, pr, ghJson) {
+  const removedAt = /\/ejected\/(.+)$/.exec(String(order.causeKey))?.[1];
+  const repo = pr.repo ?? repoNow();
+  const runs = removedAt === undefined ? null : ghJson(["api", `repos/${repo}/actions/runs?event=merge_group&per_page=50`, "--jq", "[.workflow_runs[] | {id, head_branch, created_at}]"]);
+  const ejected = (Array.isArray(runs) ? runs : []).filter((r) => String(r.head_branch).includes(`/pr-${pr.number}-`) && String(r.created_at) <= String(removedAt))
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+  const jobs = ejected === undefined ? null : ghJson(["api", `repos/${repo}/actions/runs/${ejected.id}/jobs?per_page=100`, "--jq", `[.jobs[] | ${JOB_FIELDS}]`]);
+  const failing = (Array.isArray(jobs) ? jobs : []).filter((j) => !NOT_FAILING_JOB_CONCLUSIONS.includes(String(j.conclusion)));
+  return failing.length > 0 && failing.every(neverStarted) ? `the queue's run ${ejected.id} failed only in jobs that never got a runner` : null;
+}
+
+/**
+ * HOLD, DO NOT WAKE: while GitHub reports an incident, the `pr-checks-failing` orders -- a red, a hung check, a merge-queue ejection -- whose failure is a RUNNER START
+ * are withheld, and everything else goes out unchanged. NOTHING IS WRITTEN: a held order is simply not printed, so the tick after the incident clears sees the same
+ * PR in the same state and delivers the order whole, through the ledger as any new one. The reading that clears the hold is the next tick's own status read; no call,
+ * label or file stands between. A red that RAN, an order the gate cannot classify, and every other cause are untouched, and so is every order when the reading is not `incident`.
+ * @param {any[]} orders @param {GithubIncident} incident
+ * @param {{ prs: any[], required?: string[] | null, run?: (args: string[]) => string, nowMs?: number }} facts `prs` of every repository, to find the pull request an order names
+ * @returns {{ orders: any[], held: { subject: string, session: string, why: string }[] }}
+ */
+export function holdForGithubIncident(orders, incident, { prs, required = null, run = defaultRun, nowMs = Date.now() }) {
+  if (incident?.state !== "incident") return { orders, held: [] };
+  const byRef = new Map(prs.map((pr) => [`pr-${subjectRef(pr.repoKey, pr.number)}`, pr]));
+  /** @type {Map<string, any>} */
+  const jobs = new Map(); // one read per job per tick, however many orders name it
+  const ghJson = (/** @type {string[]} */ args) => readGhJson(args, run);
+  const job = (/** @type {unknown} */ url) => {
+    const found = ACTIONS_JOB_URL.exec(String(url ?? ""));
+    if (found === null) return null; // not an Actions job (a status context, a third party): nothing to read steps from
+    if (!jobs.has(found[0])) jobs.set(found[0], ghJson(["api", `repos/${found[1]}/actions/jobs/${found[2]}`, "--jq", JOB_FIELDS]));
+    return jobs.get(found[0]);
+  };
+  /** @type {{ subject: string, session: string, why: string }[]} */
+  const held = [];
+  const kept = orders.filter((order) => {
+    const pr = order.cause === "pr-checks-failing" ? byRef.get(order.subject) : undefined;
+    const why = pr === undefined ? null : runnerStartOf(order, pr, { required: pr.repo === undefined ? required : null, nowMs, job, ghJson });
+    if (why !== null) held.push({ subject: order.subject, session: order.session, why });
+    return why === null;
+  });
+  return { orders: kept, held };
+}
+
+/**
+ * THE ONE SIGNAL, as an `org-health` order to `ceo` (no new order kind: an existing cause carries it), keyed on the incident so it is raised once and not once per held
+ * row. It NAMES the incident and what is held and why, which is how a hold is never silent. `[]` unless the reading is an incident.
+ * @param {GithubIncident} incident @param {{ subject: string, session: string, why: string }[]} held
+ * @returns {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string }[]}
+ */
+export function githubIncidentOrder(incident, held) {
+  if (incident?.state !== "incident") return [];
+  const key = incident.id ?? incident.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return [{
+    session: "ceo",
+    cause: "org-health",
+    subject: "github-incident",
+    discriminator: key,
+    prompt: `GITHUB REPORTS AN INCIDENT: "${incident.name}" (${incident.components.map((c) => `${c.name} ${c.status}`).join(", ")}; githubstatus.com). `
+      + `This is the gate's one signal for it, raised once. WHILE IT STANDS the gate withholds the orders whose failure is a runner start -- a job cancelled with no steps and `
+      + `no runner, a check queued past its bound, a merge-queue ejection whose jobs never got a runner -- so owners are not woken to re-run something that failed to START, `
+      + `which also deepens GitHub's queue. A red that RAN and failed a test still goes out. ${held.length === 0 ? "Nothing is held this tick." : `HELD THIS TICK (${held.length}): `
+      + held.map((h) => `${h.subject} (${h.session}: ${h.why})`).join("; ")}. IT CLEARS ITSELF: the first tick after GitHub reports Actions, API Requests and Git `
+      + "Operations operational delivers each held order to its owner, with no label to lift. Nothing is asked of you unless the incident outlasts the day.",
+    causeKey: `ceo/org-health/github-incident/${key}`,
+  }];
+}
+
+/**
+ * The tick's end of it: collect the reading, say it on stderr (its wall is the cost of the call, per tick), hold what a runner outage holds, and return the
+ * signal beside what remains. `required` is the primary's, so only a pull request of the primary's repository is read against it.
+ * @param {{ settle: () => GithubIncident }} status @param {any[]} orders @param {{ prs: any[], required: string[] | null }} facts
+ */
+function holdForIncidentNow(status, orders, facts) {
+  const incident = status.settle();
+  const wall = incident.wallMs === undefined ? "wall not read" : `${incident.wallMs} ms`;
+  const { orders: kept, held } = holdForGithubIncident(orders, incident, facts);
+  if (incident.state === "unknown") process.stderr.write(`github-status: UNKNOWN (${incident.why}; ${wall}) -- nothing is held, the gate reads as it always did.\n`);
+  else if (incident.state === "clear") process.stderr.write(`github-status: operational (call ${wall}).\n`);
+  else process.stderr.write(`GITHUB INCIDENT: ${incident.name} (call ${wall}); holding ${held.length} runner-start order(s)${held.map((h) => ` ${h.subject}`).join("")}.\n`);
+  return { orders: kept, signal: githubIncidentOrder(incident, held) };
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
+  const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
   // that cannot reach GitHub delivers nothing, so on that path the stderr line is the only thing that says the
   // disk is full. Its ORDER is put in front of the others further down.
@@ -6723,7 +6975,9 @@ function main() {
     offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
-  const { delivered: orders, performed } = performActions(markOutageReads([...decided, ...others.flatMap((tick) => tick.orders)], outageNow));
+  const incident = holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required });
+  const { delivered: orders, performed } = performActions(markOutageReads(incident.orders, outageNow));
+  orders.push(...incident.signal);
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, pools }, { readToolAgreement }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
