@@ -68,7 +68,7 @@ const REFUSAL_LINE_LIMIT = 200;
  */
 
 /** @returns {Promise<QueuePort>} the real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */
-async function realQueue() {
+export async function realQueue() {
   const [session, wake] = await Promise.all([import("../prompt-session.mjs"), import("../wake.mjs")]);
   const { promptOrQueue, defaultRun, attributed, EXIT, STANCE, NOT_QUEUED_PREFIX } = session;
   // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.mjs`, so the file's name is defined once, there.

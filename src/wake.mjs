@@ -85,6 +85,8 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.mjs" is unchanged.
 import { readAgents, listingIsComplete, absentSeats } from "./herdr-agents.mjs";
 import { persistentRoles, persistentEntries } from "./project-roles.mjs";
+import { liveToolVersion } from "./lib/tool-version.mjs";
+import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.mjs"; // #3540: the question of whether to start the self-test at all
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.mjs";
 export { readAgents, listingIsComplete };
 
@@ -5582,6 +5584,46 @@ export function startAbsentSeats({ run = defaultRun, env = spawnEnvironment(), c
       + "a start now could be a second seat under one name."];
   }
   return seats.filter((s) => absent.has(s.name)).map((seat) => startSeat(run, seat, { env, checkout }));
+}
+
+/** The most the self-test's tick call may take: it never waits for a seat (it remembers a queued entry), so this is a herdr call or two and a hung child is killed, not waited on. */
+const SELFTEST_STEP_TIMEOUT_MS = 120_000;
+
+/**
+ * THE TICK'S STEP FOR THE CHAIRMAN'S PATH (#3540): after a release that touched the messaging code, the queue or the roster's readers, send ONE synthetic inbound through it and read
+ * the result. `messaging/selftest.mjs --tick` DECIDES (a pure function of two tags and a file list, so a quiet tick costs one `git` call and no turn), runs, and prints one JSON line;
+ * this step only delivers what that line says is owed to `ceo`. It is the queue's writer because `src/messaging/` may not name the queue, and a RED goes to `ceo`'s queue and NEVER to the chairman.
+ *
+ * Run as a CHILD so a self-test that throws or hangs costs this step and not the tick. A line that cannot be read says so on every tick, as a seat that cannot be started does.
+ *
+ * @param {{ spawn?: typeof spawnSync, program?: string, queueFile?: string, now?: number, ask?: () => ReturnType<typeof worthAChild> }} [deps] `ask` is the question, injectable for a test
+ * @returns {string[]} one line per thing worth a journal read; `[]` when the self-test had nothing to say
+ */
+export function checkChairmanPath({ spawn = spawnSync, program = fileURLToPath(new URL("./messaging/selftest.mjs", import.meta.url)), queueFile = handoffQueuePath(ledgerPathFrom([])), now = Date.now(),
+  ask = () => worthAChild({ state: readSelftestState(selftestPaths(homedir()).state), current: liveToolVersion(), now }) } = {}) {
+  // A QUIET TICK STARTS NO PROCESS (a tick that does nothing is pinned at one `node` by `work-tick-cost.test.ts`): the question is answered from the state file and the tag.
+  /** @type {ReturnType<typeof worthAChild>} */
+  let asked;
+  try {
+    asked = ask();
+  } catch (err) {
+    return [`MESSAGING SELFTEST NOT RUN: it could not be asked whether a run is due (${herdrReason(err)})`];
+  }
+  if (!asked.spawn) return asked.line === null ? [] : [asked.line];
+  const child = spawn(process.execPath, [program, "--tick"], { encoding: "utf8", timeout: SELFTEST_STEP_TIMEOUT_MS });
+  const lastLine = String(child.stdout ?? "").trim().split("\n").at(-1) ?? "";
+  /** @type {{ lines?: string[], report?: string | null } | null} */
+  let answer = null;
+  try {
+    answer = child.status === 0 ? JSON.parse(lastLine) : null;
+  } catch {
+    answer = null;
+  }
+  if (answer === null) {
+    return [`MESSAGING SELFTEST NOT RUN: ${child.error ? herdrReason(child.error) : `exit ${child.status}, ${String(child.stderr ?? "").trim().split("\n")[0] || "no message"}`}`];
+  }
+  if (typeof answer.report === "string") queueHandoff(queueFile, { session: "ceo", prompt: answer.report, decision: false, fyi: false, now });
+  return answer.lines ?? [];
 }
 
 /**

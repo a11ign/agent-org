@@ -48,7 +48,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 217 to 218 (a11ign/a11ign#3511): `src/trace/waterfall.mjs` is a NEW source file that a shipped command imports (`trace.mjs` and `aggregate.mjs`, `trace -- <row>` and `--aggregate`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 218 to 219 (a11ign/a11ign#3512): `src/trace/swimlane.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `trace -- <row> --html`), so it cannot be `.ts`.
 // 219 to 220 (a11ign/a11ign#3515): `src/trace/publish.mjs` is a NEW source file that a shipped unit runs (`trace-publish.service`, `/usr/bin/node src/trace/publish.mjs`), so it cannot be `.ts` (node on the host has no TypeScript).
-const SOURCE_MJS_PIN = 220;
+// 220 to 221 (a11ign/a11ign#3540): `src/messaging/selftest.mjs` is a NEW source file that a shipped command imports (`messaging:selftest` in `commands.mjs`, and the work tick's `--tick` call, both run under plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 221;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
@@ -56,7 +57,8 @@ const SOURCE_MJS_PIN = 220;
 // 48 to 49 (a11ign/a11ign#3511): `waterfall.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 49 to 50 (a11ign/a11ign#3512): `swimlane.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 50 to 51 (a11ign/a11ign#3515): `publish.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
-const TEST_MJS_PIN = 51;
+// 51 to 52 (a11ign/a11ign#3540): `selftest.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 52;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
