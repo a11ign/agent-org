@@ -452,8 +452,11 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
  * same reason as `prsRead`. `io` is for the test: the clock, the last merge, the ledger and the log, so nothing here needs a token.
  * #3486: `claimedComments` IS THE CLAIMED ROWS' COMMENTS (`readClaimedRowComments`), `undefined` WHEN THE CALLER DOES NOT ASK, so the claimed rows are not clocked (see `overdueFacts`).
+ * #3731: `held` IS THE ORDERS THE GATE WITHHELD THIS TICK FOR A RUNNER START (`holdForGithubIncident`'s `held`), and a pull request one of them names is NOT COUNTED as red: `decided` is
+ * the list from BEFORE the hold, so without it the red the gate chose not to wake anyone for tripped `red-pr-unattended` two hours later, a second alarm for a failure the org had
+ * decided not to act on. NOTHING IS RECORDED: the next tick with the incident gone holds nothing, so the same red counts again by itself. `undefined` is a caller with no hold.
  * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
+ * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
@@ -461,7 +464,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
-export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, pools },
+export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun) } = {}) {
@@ -474,7 +477,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     now,
     lastMergedAt: lastMergedAt(),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
-    redPrs: prsRead === null ? null : redPrFacts(prs, decided, { holdStands }),
+    redPrs: prsRead === null ? null : redPrFacts(withoutHeld(prs, held), decided, { holdStands }),
     overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now,
       holders: holdersForClock({ openRowsRead, claimFacts, now, readHolderAgents }) }),
     refusals: claimRefusals ?? null,
@@ -488,6 +491,16 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     ...teamAccessFact(teamAccess()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
+}
+
+/**
+ * #3731: THE PULL REQUESTS THE GATE IS NOT WAKING ANYONE FOR. A held order names its pull request by the subject `redPrFacts` also keys on, so the one spelling excludes it.
+ * @param {any[]} prs @param {{ subject: string }[] | undefined} held
+ */
+function withoutHeld(prs, held) {
+  if (held === undefined || held.length === 0) return prs;
+  const subjects = new Set(held.map((h) => h.subject));
+  return prs.filter((pr) => !subjects.has(`pr-${subjectRef(pr.repoKey, pr.number)}`));
 }
 
 /**

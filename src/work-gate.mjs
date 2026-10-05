@@ -6896,7 +6896,7 @@ function holdForIncidentNow(status, orders, facts) {
   if (incident.state === "unknown") process.stderr.write(`github-status: UNKNOWN (${incident.why}; ${wall}) -- nothing is held, the gate reads as it always did.\n`);
   else if (incident.state === "clear") process.stderr.write(`github-status: operational (call ${wall}).\n`);
   else process.stderr.write(`GITHUB INCIDENT: ${incident.name} (call ${wall}); holding ${held.length} runner-start order(s)${held.map((h) => ` ${h.subject}`).join("")}.\n`);
-  return { orders: kept, signal: githubIncidentOrder(incident, held) };
+  return { orders: kept, held, signal: githubIncidentOrder(incident, held) };
 }
 
 function main() {
@@ -6978,7 +6978,7 @@ function main() {
   const incident = holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required });
   const { delivered: orders, performed } = performActions(markOutageReads(incident.orders, outageNow));
   orders.push(...incident.signal);
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, pools }, { readToolAgreement }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
