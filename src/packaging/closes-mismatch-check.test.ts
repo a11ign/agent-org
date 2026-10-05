@@ -14,6 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -236,6 +237,8 @@ test("#2822 DONE-WHEN 2 POSITIVE CONTROLS: every other mismatch keeps exit 1 and
 
 // --- the whole CLI against a fake `gh`, so the exit code is read from a real process ---
 
+const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.mjs", import.meta.url));
+
 function runCheck(ghAnswers: { own: number[]; open: unknown[] | "fail" }, body = "Closes #2810") {
   const dir = mkdtempSync(join(tmpdir(), "closes-check-"));
   const fake = join(dir, "gh");
@@ -251,7 +254,8 @@ case "$*" in
 esac
 `);
   chmodSync(fake, 0o755);
-  const result = spawnSync(process.execPath, ["packages/agent-org/src/closes-mismatch-check.mjs", "2810"], {
+  // Resolved from this file, not the working directory: the tool sits at `packages/agent-org/` in the project and at the root of its own checkout.
+  const result = spawnSync(process.execPath, [CHECK_CLI, "2810"], {
     encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PR_BODY: body },
   });
   return { status: result.status, out: result.stdout, // null when the check never asked: the sibling query is skipped unless this PR's own facts already fit

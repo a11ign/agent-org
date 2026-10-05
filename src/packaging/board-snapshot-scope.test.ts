@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   PROJECT_NUMBER,
   PROJECT_OWNER,
@@ -27,7 +28,10 @@ import {
 import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.mjs";
 import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.mjs";
 
-const THIS_FILE = "packages/lab/src/packaging/board-snapshot-scope.test.ts";
+// Resolved from this file, never a path typed from the project's root: the tool sits at `packages/agent-org/` in the project and at the
+// root of its own checkout, and a typed path that names no file makes `deriveClosureRequirements` answer `[]` -- a clean reading of nothing.
+const THIS_FILE = fileURLToPath(import.meta.url);
+const SNAPSHOT_SCRIPT = fileURLToPath(new URL("../board-snapshot.mjs", import.meta.url));
 
 /**
  * Captured LIVE 2026-09-18 against the ORG board: #1452, on `a11ign/projects/1` at "Ready".
@@ -105,8 +109,8 @@ test("#1275: this file imports NOTHING from board-snapshot.mjs -- the import tha
 test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same walk still charges board-snapshot.mjs for its gh call", () => {
   assert.deepEqual(deriveClosureRequirements(THIS_FILE).map((hit) => closureRequirementMessage(hit)), [],
     "the acceptance job has no token, no fleet and no corpus");
-  const snapshotScript = deriveClosureRequirements("packages/agent-org/src/board-snapshot.mjs");
-  assert.ok(snapshotScript.some((hit) => hit.requirement === "token" && hit.file === "packages/agent-org/src/board-snapshot.mjs"),
+  const snapshotScript = deriveClosureRequirements(SNAPSHOT_SCRIPT);
+  assert.ok(snapshotScript.some((hit) => hit.requirement === "token" && hit.file === SNAPSHOT_SCRIPT),
     "the walk that passes this file must still see the gh call left in board-snapshot.mjs, or passing proves "
     + `nothing -- got ${JSON.stringify(snapshotScript)}`);
 });
