@@ -2,7 +2,6 @@
 // COPIED FROM `packages/guards/src/walk-scope.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
-// - its dynamic import of select-changed-tests.mjs, now the tool's own copy beside it
 // - its dynamic import of ci-changed.mjs, now the tool's own copy beside it
 // - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
 // ==== end of copy header ====
@@ -716,7 +715,7 @@ export async function declareWalkScope(testUrl) {
     // Dynamic, not static: the selector's module graph is loaded only when a declaring guard's tests finish,
     // and never ahead of the observer in a declarer's import order.
     const [{ sourceClosure, packageIndex }, { knownPackages }] = await Promise.all(
-      [import("./select-changed-tests.mjs"), import("./ci-changed.mjs")]);
+      [import("./walk-scope-discovery.mjs"), import("./ci-changed.mjs")]);
     const packages = packageIndex(REPO_ROOT, knownPackages(REPO_ROOT));
     const own = new Set([...sourceClosure(testPath, REPO_ROOT, packages)]
       .map((absolute) => relative(REPO_ROOT, absolute)));
