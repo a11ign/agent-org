@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
 import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
+import { readElsewherePrs } from "./work-gate.mjs";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
@@ -156,6 +157,53 @@ test("#3566: the census names a command by its basename, cuts an argument to its
   const { commands, slowest } = summariseCensus(records);
   assert.deepEqual(commands.gh, { n: 5, wallMs: 1525 }, "an asynchronous spawn counts and adds no wall");
   assert.deepEqual(slowest.map((entry) => entry.line), ["gh b", "gh f", "herdr d", "git c", "gh e"]);
+});
+
+test("#3566: a `gh` aimed by GH_REPO carries its repository, a `gh` with no aim and a non-`gh` carry none, and the summary counts reads per repository", () => {
+  const aimed = describeSpawn("gh", ["pr", "list"], { env: { GH_REPO: "a11ign/agent-org" } });
+  assert.equal(aimed.repo, "a11ign/agent-org");
+  assert.equal("repo" in describeSpawn("gh", ["pr", "list"], { encoding: "utf8" }), false, "the control: no GH_REPO, no repo field");
+  assert.equal("repo" in describeSpawn("herdr", ["agent", "list"], { env: { GH_REPO: "a11ign/agent-org" } }), false, "only `gh` is aimed by GH_REPO");
+  const { ghRepos, commands } = summariseCensus([
+    { ...aimed, ms: 400 }, { ...aimed, ms: 600 }, { cmd: "gh", line: "gh pr list", ms: 50 },
+    { ...describeSpawn("gh", ["issue", "list"], { env: { GH_REPO: "a11ign/a11ign" } }), ms: 100 },
+  ]);
+  assert.deepEqual(ghRepos, { "a11ign/agent-org": { n: 2, wallMs: 1000 }, "a11ign/a11ign": { n: 1, wallMs: 100 } });
+  assert.deepEqual(commands.gh, { n: 4, wallMs: 1150 }, "an unaimed gh still counts under its command");
+});
+
+test("#3566: an open list the tick already read is not read again by `readElsewherePrs`, a refusal is kept as a refusal, and a repository not yet read still is", () => {
+  const scopes = [
+    { key: "", code: { repo: "a11ign/a11ign" }, tracker: { repo: "a11ign/a11ign" } },
+    { key: "agent-org", code: { repo: "a11ign/agent-org" }, tracker: null },
+    { key: "control", code: { repo: "a11ign/control" }, tracker: null },
+  ];
+  const asked: string[] = [];
+  const run = (args: string[], repo?: string) => {
+    asked.push(`${repo} ${args.includes("merged") ? "merged" : "open"}`);
+    return JSON.stringify(args.includes("merged") ? [] : [{ number: 38 }]);
+  };
+  readElsewherePrs(scopes as never, run as never);
+  assert.deepEqual(asked, ["a11ign/agent-org open", "a11ign/agent-org merged", "a11ign/control open", "a11ign/control merged"], "the control: with nothing known, both lists are asked of both");
+
+  asked.length = 0;
+  const readAlready = [{ number: 41, repoKey: "agent-org", repo: "a11ign/agent-org" }];
+  const known = [{ scope: scopes[1], read: { prs: readAlready } }, { scope: scopes[2], read: { prs: null } }];
+  const read = readElsewherePrs(scopes as never, run as never, known as never)!;
+  assert.deepEqual(asked, ["a11ign/agent-org merged", "a11ign/control merged"], "only the merged lists, which the lanes do not read, are asked");
+  assert.equal(read.open, null, "a refused list stays refused: the claim is skipped, never read as `no open pull request`");
+  const oneKnown = readElsewherePrs([scopes[0], scopes[1]] as never, run as never, known as never)!;
+  assert.deepEqual(oneKnown.open, readAlready, "the known list is what is returned, not a re-read one");
+
+  asked.length = 0;
+  readElsewherePrs(scopes as never, run as never, [known[0]] as never);
+  assert.deepEqual(asked, ["a11ign/agent-org merged", "a11ign/control open", "a11ign/control merged"], "a repository not among the known lanes is still read in full");
+});
+
+test("#3566: `main` hands the lanes `readOtherScopes` read to the claim-stall read, so no other repository's open list is asked twice", () => {
+  const source = readFileSync(join(SRC, "work-gate.mjs"), "utf8");
+  assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes\)/);
+  assert.match(source, /elsewhere: \(\) => readElsewherePrs\(undefined, undefined, otherScopes\)/);
 });
 
 test("#3566: the tick still has ONE exit, so no path out of main() skips the cost line", () => {

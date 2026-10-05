@@ -262,8 +262,8 @@ function startRun(ledgerPath) {
  */
 function tickCostLine(exit, run) {
   const reading = run.meter.reading();
-  const { commands, slowest } = summariseCensus(readCensus(run.censusPath));
-  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, slowest };
+  const { commands, ghRepos, slowest } = summariseCensus(readCensus(run.censusPath));
+  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, ghRepos, slowest };
 }
 
 /**

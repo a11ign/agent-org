@@ -36,16 +36,30 @@ const INSTALLED = Symbol.for("agent-org.spawn-census.installed");
 const tail = (arg) => String(arg).length > ARG_CHARS ? `…${String(arg).slice(-ARG_CHARS)}` : String(arg);
 
 /**
- * What ran, as `{ cmd, line }`: `cmd` is the program's basename (`gh`, `git`, `herdr`, `node`) and `line` the program plus its arguments, cut.
- * `execSync` hands over one string, whose first word is the program and the rest its arguments.
- * @param {string} file @param {unknown} argv
- * @returns {{ cmd: string, line: string }}
+ * The repository a `gh` call was aimed at. The gate aims by `GH_REPO` in the spawn's `env` and not by an argument, so without it nine
+ * `gh pr list --state open` lines look identical and the census cannot say whether they read nine repositories or one nine times
+ * (the 2026-10-05 reading, a11ign/a11ign#3566). The options object is the last non-array object among the arguments.
+ * @param {unknown[]} args
+ * @returns {string | undefined}
  */
-export function describeSpawn(file, argv) {
+function aimedRepo(args) {
+  const options = /** @type {any} */ (args.filter((arg) => arg !== null && typeof arg === "object" && !Array.isArray(arg)).at(-1));
+  const repo = options?.env?.GH_REPO;
+  return typeof repo === "string" && repo !== "" ? repo : undefined;
+}
+
+/**
+ * What ran, as `{ cmd, line }`: `cmd` is the program's basename (`gh`, `git`, `herdr`, `node`) and `line` the program plus its arguments, cut.
+ * `execSync` hands over one string, whose first word is the program and the rest its arguments. A `gh` aimed by `GH_REPO` also carries `repo`.
+ * @param {string} file @param {unknown} argv @param {unknown} [options] the spawn's options, where `env.GH_REPO` aims a `gh` call
+ * @returns {{ cmd: string, line: string, repo?: string }}
+ */
+export function describeSpawn(file, argv, options) {
   const [program = "", ...inline] = String(file).trim().split(/\s+/);
   const cmd = basename(program);
   const words = Array.isArray(argv) ? argv : inline;
-  return { cmd, line: [cmd, ...words.map(tail)].join(" ").slice(0, LINE_CHARS) };
+  const repo = cmd === "gh" ? aimedRepo([argv, options]) : undefined;
+  return { cmd, line: [cmd, ...words.map(tail)].join(" ").slice(0, LINE_CHARS), ...(repo === undefined ? {} : { repo }) };
 }
 
 /** @param {string} path @param {object} entry */
@@ -63,7 +77,7 @@ function appendRecord(path, entry) {
  */
 function countedBefore(path, original) {
   return function (/** @type {any[]} */ ...args) {
-    appendRecord(path, { ...describeSpawn(args[0], args[1]), ms: null, pid: process.pid });
+    appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: null, pid: process.pid });
     // @ts-ignore -- `this` is whatever the caller bound, passed through untouched
     return original.apply(this, args);
   };
@@ -101,7 +115,7 @@ export function installSpawnCensus(path) {
       try {
         return original.apply(this, args);
       } finally {
-        appendRecord(path, { ...describeSpawn(args[0], args[1]), ms: Math.round(performance.now() - started), pid: process.pid });
+        appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: Math.round(performance.now() - started), pid: process.pid });
       }
     };
   }
@@ -141,20 +155,25 @@ export function readCensus(path) {
 /**
  * The reading the cost line carries: per command, how many were started and how long the timed ones took (an asynchronous spawn adds to the count
  * and not to the wall), and the slowest command lines by wall.
- * @param {{ cmd: string, line: string, ms: number | null }[]} records
- * @returns {{ commands: Record<string, { n: number, wallMs: number }>, slowest: { line: string, ms: number }[] }}
+ * `ghRepos` is the same count for the `gh` calls aimed by `GH_REPO`, per repository: how many reads each repository took in one tick.
+ * @param {{ cmd: string, line: string, ms: number | null, repo?: string }[]} records
+ * @returns {{ commands: Record<string, { n: number, wallMs: number }>, ghRepos: Record<string, { n: number, wallMs: number }>, slowest: { line: string, ms: number }[] }}
  */
 export function summariseCensus(records) {
   /** @type {Record<string, { n: number, wallMs: number }>} */
   const commands = {};
-  for (const { cmd, ms } of records) {
-    const entry = (commands[cmd] ??= { n: 0, wallMs: 0 });
-    entry.n += 1;
-    entry.wallMs += ms ?? 0;
+  /** @type {Record<string, { n: number, wallMs: number }>} */
+  const ghRepos = {};
+  for (const { cmd, ms, repo } of records) {
+    const entries = repo === undefined ? [commands[cmd] ??= { n: 0, wallMs: 0 }] : [commands[cmd] ??= { n: 0, wallMs: 0 }, ghRepos[repo] ??= { n: 0, wallMs: 0 }];
+    for (const entry of entries) {
+      entry.n += 1;
+      entry.wallMs += ms ?? 0;
+    }
   }
   const slowest = records.filter((r) => r.ms !== null).map((r) => ({ line: r.line, ms: /** @type {number} */ (r.ms) }))
     .sort((a, b) => b.ms - a.ms).slice(0, SLOWEST_KEPT);
-  return { commands, slowest };
+  return { commands, ghRepos, slowest };
 }
 
 if (process.env[CENSUS_ENV]) installSpawnCensus(process.env[CENSUS_ENV]);
