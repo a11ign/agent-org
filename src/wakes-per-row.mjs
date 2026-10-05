@@ -19,7 +19,6 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { listMergedPulls } from "./trace/trace.mjs"; // trace imports this module back: both use each other only inside functions, never while loading
 
 export const DEFINITIONS = [
   "WAKE: a delivery that starts a model turn in a session -- a transcript `user` record wrapped in `<pasted_content`. /compact, /clear, local-command echoes, the continuation summary and tool results are not wakes.",
@@ -488,9 +487,10 @@ function gh(args) {
  * @param {string} repo
  * @param {{ from: number, to: number }} window
  * @param {(args: string[]) => any} [ghJson] one `gh api` call, parsed; injected so a test reads no GitHub
- * @returns {PullRequest[]}
+ * @returns {Promise<PullRequest[]>}
  */
-export function readMergedPulls(repo, window, ghJson = (args) => JSON.parse(gh(["api", ...args]))) {
+export async function readMergedPulls(repo, window, ghJson = (args) => JSON.parse(gh(["api", ...args]))) {
+  const { listMergedPulls } = await import("./trace/trace.mjs"); // at the call, not at load: `trace` and the modules it loads import this one, and a static import back is a cycle that crashed `aggregate.test.mjs` and `map.test.ts` (`NOT_DERIVABLE` read before it was initialised)
   try {
     return listMergedPulls({ repo, window, gh: ghJson });
   } catch (cause) {
@@ -600,7 +600,7 @@ async function main() {
   const rowRepo = declaration.tracker[0].repo;
   const repos = flagged ?? declaration.code.map((code) => code.repo);
   const cache = join(homedir(), ".cache", "a11ign");
-  const pulls = repos.flatMap((repo) => readMergedPulls(repo, window));
+  const pulls = (await Promise.all(repos.map((repo) => readMergedPulls(repo, window)))).flat();
   const rows = mergedRows(pulls, window, rowRepo).map((row) => row.row);
   const claimedAt = new Map(rows.map((row) => [row, readClaimedAt(row, rowRepo)]));
   const reading = measure({

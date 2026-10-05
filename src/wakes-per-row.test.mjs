@@ -289,7 +289,7 @@ function pullsList(pulls) {
   return { gh, paths };
 }
 
-test("readMergedPulls reads repos/<repo>/pulls, keeps the pull requests merged inside the window, and never asks the search API", () => {
+test("readMergedPulls reads repos/<repo>/pulls, keeps the pull requests merged inside the window, and never asks the search API", async () => {
   const list = pullsList([
     listed(5, "2026-10-04T14:00:00Z"), // merged after the window
     listed(4, "2026-10-04T12:00:00Z"),
@@ -297,19 +297,19 @@ test("readMergedPulls reads repos/<repo>/pulls, keeps the pull requests merged i
     listed(2, "2026-10-04T01:00:00Z"),
     listed(1, "2026-10-03T23:00:00Z", "2026-10-03T23:00:00Z"), // merged before it; updated before it too, so the read stops here
   ]);
-  const pulls = readMergedPulls("a11ign/a11ign", WINDOW, list.gh);
+  const pulls = await readMergedPulls("a11ign/a11ign", WINDOW, list.gh);
   assert.deepEqual(pulls.map((pull) => pull.number), [2, 4], "oldest merge first, whatever order the list came in");
   assert.deepEqual(pulls[0], { repo: "a11ign/a11ign", number: 2, createdAt: "2026-10-01T00:00:00Z", mergedAt: "2026-10-04T01:00:00Z", body: "" });
   assert.deepEqual(list.paths, ["repos/a11ign/a11ign/pulls"], "one page; no search/issues");
 });
 
-test("readMergedPulls refuses a window the list cannot finish in its page limit, in this tool's own flag, instead of returning part of it", () => {
+test("readMergedPulls refuses a window the list cannot finish in its page limit, in this tool's own flag, instead of returning part of it", async () => {
   const endless = pullsList(Array.from({ length: 3000 }, (_, index) => listed(index + 1, "2026-10-04T05:00:00Z", "2026-10-04T05:00:00Z")));
-  assert.throws(() => readMergedPulls("a11ign/a11ign", WINDOW, endless.gh), /more than 3000 closed pull requests.*start --from later/);
+  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, endless.gh), /more than 3000 closed pull requests.*start --from later/);
   assert.equal(endless.paths.length, 30, "thirty pages were read, then it stopped");
 });
 
-test("readMergedPulls lets any other failure through as it came, with no flag advice added to it", () => {
+test("readMergedPulls lets any other failure through as it came, with no flag advice added to it", async () => {
   const broken = () => { throw new Error("gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded"); };
-  assert.throws(() => readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
+  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
 });
