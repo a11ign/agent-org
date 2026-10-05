@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -456,5 +457,40 @@ describe("a quiet tick starts no process and asks no model", () => {
     assert.deepEqual(step(() => ({ spawn: false, line: null })), []);
     assert.deepEqual(step(() => ({ spawn: false, line: "messaging selftest still RED at seat for v1.0.0; retrying after 60 s" })), ["messaging selftest still RED at seat for v1.0.0; retrying after 60 s"]);
     assert.match(step(() => { throw new Error("git is gone"); })[0], /^MESSAGING SELFTEST NOT RUN: it could not be asked/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.mjs`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
+// `realQueue()`: the one call that does `import("../wake.mjs")`, and `wake.mjs` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
+// its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
+// `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
+const ENTRY = fileURLToPath(new URL("./selftest.mjs", import.meta.url));
+const UNSETTLED_TOP_LEVEL_AWAIT = 13;
+
+describe("the entry run as a process, which is how the tick starts it", () => {
+  /** @returns {import("node:child_process").SpawnSyncReturns<string>} */
+  function runTick() {
+    const home = join(scratch, `entry-home-${nextDir++}`);
+    const { state } = selftestPaths(home);
+    mkdirSync(dirname(state), { recursive: true });
+    const pending = { version: "v0.0.1", handoff: "handoff/liaison/00000000", taker: "liaison", queuedAt: START, updateId: 1, degraded: false };
+    writeFileSync(state, `${JSON.stringify({ lastPassed: null, decidedFor: null, lastAttemptAt: null, lastRed: null, lastReported: null, pending })}\n`);
+    return spawnSync(process.execPath, [ENTRY, "--tick"], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 60_000 });
+  }
+
+  test("--tick settles a waiting run through the real queue port: it does not exit 13, and its last stdout line is JSON", { skip: skipUnlessLoaded }, () => {
+    const child = runTick();
+    assert.notEqual(child.status, UNSETTLED_TOP_LEVEL_AWAIT, child.stderr);
+    assert.equal(child.status, 0, child.stderr);
+    const last = child.stdout.trim().split("\n").at(-1) ?? "";
+    const reading = JSON.parse(last);
+    assert.match(reading.lines.join("\n"), /^messaging selftest PASS for v0\.0\.1: .*\(settled\)$/);
+  });
+
+  test("the entry still SETS the exit code now that it does not await: a flag it refuses exits 2", () => {
+    const child = spawnSync(process.execPath, [ENTRY, "--send-to-chat"], { env: { ...process.env, HOME: join(scratch, `entry-home-${nextDir++}`) }, encoding: "utf8", timeout: 60_000 });
+    assert.equal(child.status, 2, child.stderr);
+    assert.match(child.stderr, /^messaging:selftest: /);
   });
 });

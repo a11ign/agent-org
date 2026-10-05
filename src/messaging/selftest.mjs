@@ -368,6 +368,11 @@ export async function main(argv, { home = homedir(), now = Date.now, out = conso
   }
 }
 
+// NO TOP-LEVEL `await` HERE (a11ign/a11ign#3701): `main` -> `tickSelftest` -> `realQueue()` does `import("../wake.mjs")`, and `wake.mjs` imports THIS file, so as the entry it is a module in a
+// cycle that is still evaluating. An `await` on `main` made `wake.mjs` wait for this file while this file waited for `wake.mjs`: Node drained the loop and exited 13 on every tick that had work.
+// `main` catches everything it throws, so this `then` has no rejection to leave unhandled.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await main(process.argv.slice(2));
+  main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
