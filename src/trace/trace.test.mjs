@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, readListings, render, resolveSubject } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, isMap, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -203,6 +203,35 @@ test("ARGS --aggregate: the flag takes no value, --since is rounded down to its 
   assert.equal(parseAggregateArgs(["--aggregate"]).budget, 1500, "the default spends a third of the hourly REST pool");
   assert.equal(parseAggregateArgs(["--aggregate", "--calls", "0"]).budget, 0);
   assert.throws(() => parseAggregateArgs(["--aggregate", "--calls", "many"]), /--calls must be a whole number/);
+});
+
+test("ARGS --map: the flag takes no value, --out is required, the three filters are carried, and --since is NOT rounded to a Monday", () => {
+  const now = at("2026-10-05T12:00:00Z");
+  assert.equal(isMap(["--", "--map", "--out", "/o.html"]), true);
+  assert.equal(isMap(["--", "--aggregate"]), false);
+  assert.equal(isMap(["--", "3406"]), false);
+  assert.throws(() => parseMapArgs(["--", "--map"], now), /usage: trace -- --map --out <path>/);
+  const parsed = parseMapArgs(["--", "--map", "--out", "/o.html", "--repo", "agent-org", "--week", "2026-W40", "--cause", "pr-review-blocked", "--since", "2026-09-28T13:00:00Z", "--store", "/s/events.ndjson"], now);
+  assert.deepEqual(parsed, { since: at("2026-09-28T13:00:00Z"), store: "/s/events.ndjson", out: "/o.html", budget: 1500, filter: { repo: "agent-org", week: at("2026-09-28T00:00:00Z"), cause: "pr-review-blocked" } });
+  assert.deepEqual(parseMapArgs(["--map", "--out", "/o.html"], now).filter, { repo: undefined, week: undefined, cause: undefined }, "no filter is every row");
+  assert.equal(parseMapArgs(["--map", "--out", "/o.html"], now).since, weekStart(now) - 4 * 7 * 24 * 60 * 60 * 1000, "the default window starts where --aggregate's does");
+  assert.equal(parseMapArgs(["--map", "--out", "/o.html", "--week", "2026-W40"], now).since, at("2026-09-28T00:00:00Z"), "--week alone reads from that week's Monday, not four weeks back");
+  assert.throws(() => parseMapArgs(["--map", "--out", "/o.html", "--since", "last week"], now), /--since must be an ISO time/);
+  assert.throws(() => parseMapArgs(["--map", "--out", "/o.html", "--calls", "many"], now), /--calls must be a whole number/);
+});
+
+test("ARGS --week: an ISO week, a bare week number of this year, or any day in the week; each is that week's Monday 00:00 UTC", () => {
+  const now = at("2026-10-05T12:00:00Z");
+  const monday = at("2026-09-28T00:00:00Z"); // ISO week 40 of 2026: 4 January 2026 is a Sunday, so week 1 starts Monday 2025-12-29
+  assert.equal(parseWeek("2026-W40", now), monday);
+  assert.equal(parseWeek("40", now), monday);
+  assert.equal(parseWeek("2026-10-04", now), monday, "a Sunday is the last day of its week");
+  assert.equal(parseWeek("2026-09-28T00:00:00Z", now), monday);
+  assert.equal(parseWeek("2026-W01", now), at("2025-12-29T00:00:00Z"), "week 1 of 2026 starts in 2025");
+  assert.equal(parseWeek("2025-W52", now), at("2025-12-22T00:00:00Z"));
+  assert.throws(() => parseWeek("54", now), /not an ISO week/);
+  assert.throws(() => parseWeek("0", now), /not an ISO week/);
+  assert.throws(() => parseWeek("last week", now), /--week must be an ISO week/);
 });
 
 /** A `gh api` that answers from a table and fails like gh does for anything else. */

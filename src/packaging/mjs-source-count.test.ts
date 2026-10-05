@@ -39,7 +39,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 // 209 to 210 (a11ign/a11ign#3516): `src/trace/gh-calls.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, line 22), so it cannot be `.ts` (node on the host has no TypeScript).
 // 210 to 211 (a11ign/a11ign#3536): `suite-slots.mjs` is a shipped command (`node src/suite-slots.mjs suite|run`) AND is imported by path by a11y-witness's `verify`, which runs under plain `node` with no `tsx`.
-const SOURCE_MJS_PIN = 211;
+// 211 to 212 (a11ign/a11ign#3514): `src/trace/map.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `--map`), so it cannot be `.ts` (node on the host has no TypeScript). Its test is `map.test.ts`, so TEST_MJS_PIN stays 44.
+const SOURCE_MJS_PIN = 212;
 const TEST_MJS_PIN = 44;
 
 const ROOTS = ["src", "host", ".github"];

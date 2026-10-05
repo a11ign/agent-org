@@ -2,7 +2,7 @@
 // @ts-check
 // command: trace -- every model turn, wake and GitHub event of one row, in order (a11ign/a11ign#3494, first and second slices).
 //
-// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513)
+// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.mjs`, #3514)
 //
 // It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
@@ -12,12 +12,13 @@
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
 // themselves. The calls are counted and the report says how many were made.
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
+import { buildMap } from "./map.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
@@ -42,6 +43,9 @@ const COST_DECIMALS = 4;
 const SHORT_SHA = 7;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
 const AGGREGATE_FLAG = "--aggregate";
+const MAP_FLAG = "--map";
+const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
+const MAX_ISO_WEEK = 53;
 const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool is the whole org's, and a second run continues where this one stopped
 const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
@@ -80,6 +84,45 @@ export function parseAggregateArgs(argv) {
 
 /** @param {string[]} argv */
 export const isAggregate = (argv) => argv.includes(AGGREGATE_FLAG);
+
+/** @param {string[]} argv */
+export const isMap = (argv) => argv.includes(MAP_FLAG);
+
+/**
+ * `--week` names one Monday-first UTC week: `2026-W40`, any day or time in it (`2026-09-30`), or a bare ISO week number `40` of this year. Returns its Monday 00:00 UTC.
+ * @param {string} text @param {number} now
+ */
+export function parseWeek(text, now) {
+  const iso = /^(?:(\d{4})-W)?(\d{1,2})$/i.exec(text);
+  if (iso) {
+    const week = Number(iso[2]);
+    if (week < 1 || week > MAX_ISO_WEEK) throw new Error(`--week ${text} is not an ISO week (1 to ${MAX_ISO_WEEK})`);
+    const year = iso[1] ? Number(iso[1]) : new Date(now).getUTCFullYear();
+    return weekStart(Date.UTC(year, 0, ISO_WEEK_ONE_DAY)) + (week - 1) * WEEK_DAYS * MS_PER_DAY;
+  }
+  const day = Date.parse(text);
+  if (Number.isNaN(day)) throw new Error(`--week must be an ISO week (2026-W40 or 40) or a date in the week (got ${text})`);
+  return weekStart(day);
+}
+
+/**
+ * `trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]`: the across-rows process map, written to one HTML file. `--since` is the start of
+ * the merge window and is NOT rounded to a Monday (a map of the last 7 days is a map of the last 7 days); without it the window starts where `--aggregate`'s does, or at `--week`'s Monday when that is given.
+ * @param {string[]} argv @param {number} [now]
+ */
+export function parseMapArgs(argv, now = Date.now()) {
+  const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== MAP_FLAG);
+  /** @type {Record<string, string>} */
+  const flags = {};
+  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  if (!flags.out) throw new Error("usage: trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]");
+  const week = flags.week === undefined ? undefined : parseWeek(flags.week, now);
+  const requested = flags.since ? Date.parse(flags.since) : (week ?? weekStart(now) - DEFAULT_AGGREGATE_WEEKS * WEEK_DAYS * MS_PER_DAY);
+  if (Number.isNaN(requested)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
+  const budget = flags.calls === undefined ? DEFAULT_GITHUB_CALLS : Number(flags.calls);
+  if (!Number.isInteger(budget) || budget < 0) throw new Error(`--calls must be a whole number of gh api calls (got ${flags.calls})`);
+  return { since: requested, store: flags.store ?? defaultStore(), out: flags.out, budget, filter: { repo: flags.repo, week, cause: flags.cause } };
+}
 
 /** The `gh` call ledgers `host/gh` writes (#3466): one per account, in the config directory the wrapper routes that account to. An account that never called has none, and the ingest says so. */
 const ghLedgerFiles = () => [join(homedir(), "workers", "gh"), join(homedir(), "leads", "gh"), join(homedir(), ".config", "gh")].map((dir) => join(dir, "gh-calls.tsv"));
@@ -535,8 +578,12 @@ function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
   return { readings, unreadable: transcripts.flatMap((transcript) => (transcript.ok ? [] : [transcript.file])) };
 }
 
-async function mainAggregate() {
-  const { since, store: storePath, json, budget } = parseAggregateArgs(process.argv.slice(2));
+/**
+ * What both reports read: the transcripts, the wake ledger and the `gh` call ledgers ingested into the store, the merged pull requests and open rows listed, and what GitHub saw of the merged rows
+ * read into the store, within the call budget.
+ * @param {{ since: number, storePath: string, budget: number }} input
+ */
+async function readSources({ since, storePath, budget }) {
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const declaration = homeProjectDeclaration();
   const rowRepo = declaration.tracker[0].repo;
@@ -548,6 +595,12 @@ async function mainAggregate() {
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
+  return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github };
+}
+
+async function mainAggregate() {
+  const { since, store: storePath, json, budget } = parseAggregateArgs(process.argv.slice(2));
+  const { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github } = await readSources({ since, storePath, budget });
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
@@ -555,8 +608,16 @@ async function mainAggregate() {
   console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), `GitHub: ${github.calls} REST calls (gh api, budget ${budget}); ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`, NOT_HELD] }));
 }
 
+async function mainMap() {
+  const { since, store: storePath, out, budget, filter } = parseMapArgs(process.argv.slice(2));
+  const { rowRepo, now, store, pulls, unreadRows, github } = await readSources({ since, storePath, budget });
+  writeFileSync(out, buildMap({ events: store.events, pulls, rowRepo, window: { from: since, to: now }, filter, generatedAt: now }));
+  console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; GitHub: ${github.calls} REST calls (gh api, budget ${budget}), ${github.added} events new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`);
+}
+
 async function main() {
   if (isAggregate(process.argv.slice(2))) return mainAggregate();
+  if (isMap(process.argv.slice(2))) return mainMap();
   const { number, since, store: storePath, json } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
