@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
 import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
 import { readElsewherePrs } from "./work-gate.mjs";
+import { claimRow } from "./row-claim.mjs";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
@@ -286,4 +287,42 @@ test("#3566: liveClaudeTurns does not read a transcript no write has touched wit
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/** A `gh` for one `ready` row whose body states its template fields and whose `blockedBy` is empty; every call it is asked is kept, in order. */
+function claimReads({ failBody = false } = {}) {
+  const calls: string[][] = [];
+  let labelReads = 0;
+  const run = (_cmd: string, args: string[]): string => {
+    calls.push(args);
+    const json = args[args.indexOf("--json") + 1];
+    if (args[1] === "view" && json === "number,title,labels,state") {
+      labelReads += 1;
+      const labels = labelReads === 1 ? ["ready"] : ["in-progress", "session:worker-9", "started", "was-ready"];
+      return JSON.stringify({ number: 77, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) });
+    }
+    if (args[1] === "view" && json === "body") {
+      if (failBody) throw new Error("simulated: the body read failed");
+      return JSON.stringify({ body: "Region: none\nAcceptance: x\nOpen-check: y\n" });
+    }
+    if (args[1] === "view" && json === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
+    return "[]";
+  };
+  return { calls, run };
+}
+const rowReads = (calls: string[][], json: string) => calls.filter((args) => args[0] === "issue" && args[1] === "view" && args.includes(json)).length;
+
+test("#3566: one claim reads the row's body and its blockedBy edge ONCE each, and still reads its labels fresh before and after the write", () => {
+  const { calls, run } = claimReads();
+  const got = claimRow(77, "worker-9", { run, moveStatus: () => ({ moved: true }) });
+  assert.equal(got.claimed, true, JSON.stringify(got));
+  assert.equal(rowReads(calls, "body"), 1, "the template check and B4's Region lookup both ask for the body");
+  assert.equal(rowReads(calls, "blockedBy"), 1, "the claim's own check and B2/B4's both ask for the edge");
+  assert.equal(rowReads(calls, "number,title,labels,state"), 3, "the labels are NOT remembered: before the checks, before the write, after it");
+});
+
+test("#3566 CONTROL: a read that FAILED is retried, not remembered, so a failed body read still reaches the second check", () => {
+  const { calls, run } = claimReads({ failBody: true });
+  claimRow(77, "worker-9", { run, moveStatus: () => ({ moved: true }) });
+  assert.equal(rowReads(calls, "body"), 2, "the template check's read failed (the claim fails open) and B4's Region lookup asked again");
 });
