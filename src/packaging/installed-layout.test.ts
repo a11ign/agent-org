@@ -102,11 +102,11 @@ function taggedTool(): string {
   return repository;
 }
 
-/** A `typescript` package that is nothing but a version, so "which one did the tool read" has an answer no real compiler could give. */
+/** A `typescript` package that is a version and the two members the resolver requires (#3729), so "which one did the tool read" has an answer no real compiler could give. */
 function fixtureTypescript(): string {
   const dir = scratch();
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "typescript", version: FIXTURE_TYPESCRIPT, main: "index.js" }));
-  writeFileSync(join(dir, "index.js"), `module.exports = { version: ${JSON.stringify(FIXTURE_TYPESCRIPT)} };\n`);
+  writeFileSync(join(dir, "index.js"), `module.exports = { version: ${JSON.stringify(FIXTURE_TYPESCRIPT)}, ScriptTarget: {}, createSourceFile() {} };\n`);
   return dir;
 }
 
@@ -295,7 +295,7 @@ function directoryHolding(version: string): string {
   const home = join(dir, "node_modules", "typescript");
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, "package.json"), JSON.stringify({ name: "typescript", version, main: "index.js" }));
-  writeFileSync(join(home, "index.js"), `module.exports = { version: ${JSON.stringify(version)} };\n`);
+  writeFileSync(join(home, "index.js"), `module.exports = { version: ${JSON.stringify(version)}, ScriptTarget: {}, createSourceFile() {} };\n`);
   return dir;
 }
 
