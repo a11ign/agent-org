@@ -13,9 +13,9 @@
 //
 // EVERY MOMENT OF A RUN IS ONE OF THREE THINGS, and never two:
 //   WORKING      a model turn was running (the union of the turns' spans: two sessions at once are one stretch of wall-clock). A span is the turn's `wallClockMs` before its end, which the store
-//                INFERS. MEASURED on worker-3641 (a11ign/a11ign#3641): five gaps of 365-524 s between consecutive turns carry spans of 0-4 s, so a long tool call is NOT in the next
-//                turn's span (`store.mjs` says it is) and prints as `unexplained`. A turn with no `wallClockMs` has a span of nothing: its tokens and dollars count, its time does not.
-//   WAITING      something RECORDED was in progress: a deferral span, a hold label, an order not yet delivered, a queue entry, an ejection, CI running, a review not yet posted. Each is named.
+//                INFERS: the model's own time, from the record the harness stamped after the tool finished. MEASURED on worker-3641 (a11ign/a11ign#3641, #3669): five gaps of 365-524 s
+//                between consecutive turns carry spans of 0-4 s, so a long tool call is in NO turn's span. A turn with no `wallClockMs` has a span of nothing: its tokens and dollars count, its time does not.
+//   WAITING      something RECORDED was in progress: a deferral span, a hold label, an order not yet delivered, a queue entry, an ejection, CI running, a review not yet posted, a tool call running (the turn's own `toolMs`, claimed last). Each is named.
 //                One wait is INFERRED and marked so, for the stretch between an approval and the ready mark of a draft (`approvedDraftSource`), with the records it was read from.
 //   unexplained  nothing was recorded. It is printed as such and is NEVER folded into WORKING (the acceptance's positive control).
 // A moment is given to the first of these that claims it, in that order, so the three add up to the wall-clock exactly.
@@ -48,7 +48,7 @@ const WAVE_GAP_MS = 60 * MS_PER_SECOND; // a check-run starting within a minute 
 export const DEFINITIONS = [
   "WATERFALL (#3511): the eight phases of a row, from its events. spec: filed -> claimed. claim: claimed -> the claimant's first turn on it. build: that turn -> the pull request opened. verify: opened -> ready_for_review (a pull request opened ready, which has no such event, has a verify of nothing, and only when it was queued or merged: the store does not say whether a pull request began as a draft). review: each push or ready -> the review that follows it (a ready mark on a head already reviewed starts none). CI: each head -> its last check-run completing, once per WAVE of checks (a check-run starting more than a minute after all the earlier ones finished starts a new wave, as the ready mark does; two overlapping runs of one name are two triggers of one wave). A head's time is its commit's date. queue: the first queue entry -> merged (an ejection is a repeat, not an end). merge: merged -> the row closed.",
   "A phase with a start and no end is OPEN and prints so, to the time of the reading, and is never printed as ended. One that started and was never ended before the pull request or row CLOSED is CUT at the close. A phase with no start record is `not held`, and one never reached is `not reached`, each with its reason.",
-  "WORKING + WAITING + unexplained = the wall-clock of a run, exactly. WORKING is the union of the turns' spans (a turn's span is its `wallClockMs` before its end, inferred by the store; a turn with none adds tokens and dollars and no time). WAITING is a RECORD: a deferral span, a hold label, an order delivered after it was typed, a merge-queue entry, an ejection, CI running, a review not yet posted, each named. unexplained is a gap with no record, and is never WORKING.",
+  "WORKING + WAITING + unexplained = the wall-clock of a run, exactly. WORKING is the union of the turns' spans (a turn's span is its `wallClockMs` before its end, inferred by the store; a turn with none adds tokens and dollars and no time). WAITING is a RECORD: a deferral span, a hold label, an order delivered after it was typed, a merge-queue entry, an ejection, CI running, a review not yet posted, a tool call running (the stretch before a turn that its own `toolMs` measures), each named. unexplained is a gap with no record, and is never WORKING.",
   "INFERRED (marked): a draft APPROVED and not yet marked ready is waiting on whoever the ledger's orders about it were delivered to; the review, those orders and that session's turns in the gap are named as the evidence.",
   "PHASES OVERLAP, so their wall-clocks add to more than the row's. EXCLUSIVE counts each moment once, in the latest-started phase running at it (time no phase covers is `between`), and the dollars and tokens of a turn are in the phase its END falls in, so both add up to the row's.",
   "DOLLARS are the store's own `costUsd` per turn; a turn with a `null` cost is counted UNPRICED, never as zero, and a phase with one is a floor.",
@@ -453,12 +453,34 @@ function approvedDraftSource(ctx, pull) {
 }
 
 /**
+ * A tool call running, one source per session, read from each turn's own `toolMs` (the store's measure of the stretch between the message that made the call and its result). That
+ * stretch is in no turn's span: the span starts after the tool finished. It is placed ending where the turn's span begins, which is within the harness's few seconds of where it
+ * ran (an attachment is stamped after the result), and a turn with no `toolMs` (an order before it, a store line from before the field) claims nothing: `null` is not 0 here either.
+ * @param {Context} ctx @returns {WaitSource[]}
+ */
+function toolSources(ctx) {
+  /** @type {Map<string, TraceEvent[]>} */
+  const bySession = new Map();
+  for (const turn of ctx.turns) {
+    if (typeof turn.toolMs !== "number" || typeof turn.wallClockMs !== "number") continue;
+    bySession.set(turn.session, [...(bySession.get(turn.session) ?? []), turn]);
+  }
+  return [...bySession].map(([session, turns]) => ({
+    source: "tool", inferred: false, evidence: turns.map((turn) => turn.id), label: `tool running (${session}, ${turns.length} ${turns.length === 1 ? "call" : "calls"})`,
+    spans: normalize(turns.map((turn) => {
+      const spanStart = turn.at - /** @type {number} */ (turn.wallClockMs);
+      return /** @type {Span} */ ([spanStart - /** @type {number} */ (turn.toolMs), spanStart]);
+    })),
+  }));
+}
+
+/**
  * @param {Context} ctx @param {Cut[]} reviewCuts @param {number} now
- * @returns {WaitSource[]} in the order they claim a moment
+ * @returns {WaitSource[]} in the order they claim a moment: the recorded causes first, and a tool running last, so it names only what nothing else had
  */
 function waitSources(ctx, reviewCuts, now) {
   return [...deferralSources(ctx), ...holdSources(ctx), ...deliverySources(ctx), ...ctx.pulls.flatMap((pull) => queueSources(ctx, pull)),
-    ...ctx.pulls.flatMap((pull) => ciSources(ctx, pull)), ...reviewSources(reviewCuts, now), ...ctx.pulls.flatMap((pull) => approvedDraftSource(ctx, pull))];
+    ...ctx.pulls.flatMap((pull) => ciSources(ctx, pull)), ...reviewSources(reviewCuts, now), ...ctx.pulls.flatMap((pull) => approvedDraftSource(ctx, pull)), ...toolSources(ctx)];
 }
 
 /**

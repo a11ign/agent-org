@@ -2,6 +2,7 @@
 // no-token: gh -- every event is a fixture; `waterfall` is a pure function and calls nothing
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { eventsOfTranscript } from "./store.mjs";
 import { BETWEEN, duration, PHASES, renderWaterfall, waterfall } from "./waterfall.mjs";
 
 const REPO_ROW = 9001;
@@ -109,6 +110,44 @@ test("BUILD: working is the union of the turns, and the rest of the run is unexp
   assert.equal(build.workingMs, 30 * 1000 + 20 * MINUTE + 4.5 * MINUTE, "10:40:00-10:40:30, 10:50:00-11:10:00, 11:15:00-11:19:30");
   assert.equal(build.unexplainedMs, 15 * MINUTE);
   assert.deepEqual(build.waits, []);
+});
+
+/** worker-9001's transcript, as the harness writes it: an order, a message that calls `pnpm test` at 10:00:05, the result at 10:06:05, an attachment, the next message at 10:06:12. */
+const LONG_TOOL_TRANSCRIPT = [
+  { type: "user", timestamp: "2026-10-04T10:00:00.000Z", message: { role: "user", content: "<pasted_content id=\"1\">\nYou are `worker-9001` -- row 9001 has been claimed for you.\n</pasted_content>" } },
+  { type: "assistant", timestamp: "2026-10-04T10:00:05.000Z", message: { id: "m1", model: "claude-sonnet-5-5", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "pnpm test" } }],
+    usage: { input_tokens: 1, output_tokens: 30, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } } },
+  { type: "user", timestamp: "2026-10-04T10:06:05.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } },
+  { type: "attachment", timestamp: "2026-10-04T10:06:07.000Z" },
+  { type: "assistant", timestamp: "2026-10-04T10:06:12.000Z", message: { id: "m2", model: "claude-sonnet-5-5", content: [{ type: "text", text: "green" }],
+    usage: { input_tokens: 1, output_tokens: 40, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } } },
+].map((record) => JSON.stringify(record)).join("\n");
+
+test("TOOL (#3669): a long tool call is a WAITING source named from the turn's own `toolMs`, and the same turns without the field print it as unexplained", () => {
+  const { events: fromTranscript } = eventsOfTranscript({ text: LONG_TOOL_TRANSCRIPT, file: "w.jsonl", ledger: [], rowRepo: "a11ign/a11ign" });
+  const row = [rowEvent("filed", "09:50:00"), rowEvent("claimed", "10:00:00", { claimant: "worker-9001" }), ghRecord("opened", "10:07:00")];
+  const build = (events) => phaseOf(waterfall({ events: [...row, ...events], now: NOW }), "build");
+  const named = build(fromTranscript);
+  assert.deepEqual(fromTranscript.filter((event) => event.kind === "turn").map((event) => event.toolMs), [null, 6 * MINUTE], "POSITIVE CONTROL: the fixture's second turn follows the 6-minute call");
+  assert.deepEqual(named.waits.map((wait) => [wait.source, wait.ms]), [["tool", 6 * MINUTE]]);
+  assert.match(named.waits[0].label, /^tool running \(worker-9001, 1 call\)$/);
+  assert.equal(named.workingMs, 10 * 1000, "the two turns' own seconds");
+  assert.equal(named.unexplainedMs, 7 * MINUTE - 10 * 1000 - 6 * MINUTE, "10:00:05-:07 and 10:06:12-10:07:00, the harness's seconds around the call");
+  const withoutField = build(fromTranscript.map(({ toolMs, ...event }) => event));
+  assert.deepEqual(withoutField.waits, [], "this is the assertion that goes RED when `toolMs` is not read");
+  assert.equal(withoutField.unexplainedMs, named.unexplainedMs + 6 * MINUTE, "what the field names is exactly what was unexplained without it");
+  assert.match(renderWaterfall(waterfall({ events: [...row, ...fromTranscript], now: NOW }), { title: "#9001", now: NOW }).join("\n"), /tool running \(worker-9001, 1 call\)/);
+});
+
+test("TOOL (#3669): a turn whose `toolMs` is null or 0 claims nothing, and a recorded wait keeps the moments it had (a tool running is claimed last)", () => {
+  const row = [rowEvent("filed", "10:00:00"), rowEvent("claimed", "10:30:00", { claimant: "worker-9001" }), ghRecord("opened", "10:50:00")];
+  const during = { id: "deferral:worker-9001:9", kind: "deferral", source: "deferral-log", at: at("10:44:00"), session: "worker-9001", row: REPO_ROW, pr: null, ...base, causeKey: "k",
+    startedAt: at("10:36:00"), completedAt: at("10:44:00"), how: "delivered" };
+  const turns = [turn("worker-9001", "10:30:00", "10:31:00", 0.1, { toolMs: null }), turn("worker-9001", "10:45:00", "10:46:00", 0.1, { toolMs: 10 * MINUTE }), turn("worker-9001", "10:48:00", "10:49:00", 0.1, { toolMs: 0 })];
+  const waits = Object.fromEntries(phaseOf(waterfall({ events: [...row, during, ...turns], now: NOW }), "build").waits.map((wait) => [wait.source, wait.ms]));
+  assert.equal(waits["deferral-log"], 8 * MINUTE, "the deferral keeps 10:36-10:44 although the tool's interval 10:35-10:45 covers it");
+  assert.equal(waits.tool, 2 * MINUTE, "and the tool is named only for what the deferral did not claim: 10:35-10:36 and 10:44-10:45");
+  assert.equal(Object.keys(waits).length, 2, "null and 0 add no source");
 });
 
 test("A GAP WITH NO RECORD is unexplained and never WORKING (the acceptance's positive control, with its own contrast)", () => {

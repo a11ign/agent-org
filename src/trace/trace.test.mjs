@@ -117,6 +117,50 @@ test("TURNS: one per message id, from its LAST block (a transcript writes a mess
   assert.equal(found.find((turn) => turn.id === "turn:msg_3")?.costUsd, null);
 });
 
+/** An assistant record whose one block is a tool call, as the harness writes it. */
+const toolUse = (timestamp, id, toolId) => JSON.stringify({
+  type: "assistant", timestamp, requestId: `req_${id}`, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "tool_use", id: toolId, name: "Bash", input: { command: "pnpm test" } }], usage: usage(1, 30, 100, 0) },
+});
+const attachment = (timestamp) => JSON.stringify({ type: "attachment", timestamp, attachment: { type: "hook_success" } });
+const toolResultFor = (timestamp, toolId) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: "ok" }] } });
+
+/** worker-9001 runs a 6-minute `pnpm test`: the call at 10:00:05, its result at 10:06:05, an attachment 2 s later, the next message at 10:06:12. */
+const LONG_TOOL = [
+  wake("2026-10-04T10:00:00.000Z", "worker-9001", "row 9001 has been claimed for you."),
+  toolUse("2026-10-04T10:00:05.000Z", "msg_t1", "tu1"),
+  toolResultFor("2026-10-04T10:06:05.000Z", "tu1"),
+  attachment("2026-10-04T10:06:07.000Z"),
+  block("2026-10-04T10:06:12.000Z", "msg_t2", "claude-sonnet-5-5", usage(2, 40, 200, 0)),
+];
+
+test("TOOL TIME (#3669): a message that follows a 6-minute tool call carries it as `toolMs`, and its `wallClockMs` is only the model's own seconds", () => {
+  const found = turns(read(LONG_TOOL.join("\n"), "t.jsonl").events);
+  assert.equal(found.length, 2, "POSITIVE CONTROL: both messages are turns");
+  const after = found.find((turn) => turn.id === "turn:msg_t2");
+  assert.equal(after?.toolMs, 6 * 60 * 1000, "from the call's last block at 10:00:05 to its result at 10:06:05");
+  assert.equal(after?.wallClockMs, 5000, "from the attachment at 10:06:07 to the block at 10:06:12: `store.mjs` once said this included the tool, and it does not");
+  assert.equal(found.find((turn) => turn.id === "turn:msg_t1")?.toolMs, null, "it follows an order, not a tool call: null, never 0");
+});
+
+test("TOOL TIME (#3669): a read that resumes between the call and its result still measures it, from the carried time of the last record", () => {
+  const whole = turns(read(LONG_TOOL.join("\n"), "t.jsonl").events);
+  const head = `${LONG_TOOL.slice(0, 2).join("\n")}\n`;
+  const first = eventsOfTranscript({ text: head, file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO });
+  const resumed = eventsOfTranscript({ text: LONG_TOOL.slice(2).join("\n"), file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO, carry: first.carry });
+  assert.equal(turns(resumed.events).length, 1, "POSITIVE CONTROL: the second read holds the message after the call");
+  assert.equal(whole.find((turn) => turn.id === "turn:msg_t2")?.toolMs, 6 * 60 * 1000, "POSITIVE CONTROL: a whole read measures it, so equality below is not null equal to null");
+  assert.equal(turns(resumed.events)[0].toolMs, 6 * 60 * 1000);
+  const cold = eventsOfTranscript({ text: LONG_TOOL.slice(2).join("\n"), file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO });
+  assert.equal(turns(cold.events)[0].toolMs, null, "with nothing carried nobody can say when the call began: null, never a guess");
+});
+
+test("TOOL TIME (#3669): an order or a prompt between two messages means no tool ran before the second, whatever the gap", () => {
+  const afterOrder = [LONG_TOOL[1], wake("2026-10-04T10:30:00.000Z", "worker-9001", "a second order."), block("2026-10-04T10:30:09.000Z", "msg_t3", "claude-sonnet-5-5", usage(2, 40, 200, 0))];
+  assert.equal(turns(read(afterOrder.join("\n"), "t2.jsonl").events).find((turn) => turn.id === "turn:msg_t3")?.toolMs, null);
+  const promptAfterResult = [...LONG_TOOL.slice(0, 3), wake("2026-10-04T10:30:00.000Z", "worker-9001", "typed after the result."), block("2026-10-04T10:30:09.000Z", "msg_t3", "claude-sonnet-5-5", usage(2, 40, 200, 0))];
+  assert.equal(turns(read(promptAfterResult.join("\n"), "t3.jsonl").events).find((turn) => turn.id === "turn:msg_t3")?.toolMs, null, "the gap before the message is the prompt's wait, not the tool's, even with a result before it");
+});
+
 test("WAKES: the ledger line pairs with the delivery, names the row, and its typing lag is measured", () => {
   const wakes = worker().events.filter((event) => event.kind === "wake");
   assert.equal(wakes.length, 2);
