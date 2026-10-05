@@ -1727,7 +1727,7 @@ export function noReviewCheckoutFor(session) {
  * @param {{label: string, status: string}[]} live
  * @param {ReviewerDeps} deps
  * @returns {{label: string, profile?: {kind: string, model: string, effort: string}, reviewer: true,
- *   order: {prompt: string}} | {refusal: string}}
+ *   order: {prompt: string}, workspace?: string} | {refusal: string}}
  */
 function reviewerTarget(order, live, deps) {
   const wrong = reviewerMismatch(order, order.session);
