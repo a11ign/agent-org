@@ -2210,6 +2210,10 @@ function closedNote(row, subject) {
  * NOT A JUDGMENT CAUSE, and the only one of the four that is not. The others ask "what should happen
  * next", a standing question deserving the 2h TTL. This names a question SOMEONE ELSE IS BLOCKED ON, so
  * it takes the 20-minute wake cadence -- 6.5 hours is what the absence of any cadence already cost.
+ * It is declared `GROUPS.ACTION` in `cause-declaration.mjs` (#3652): until then it was a judgment cause and
+ * this paragraph was untrue of the code, so a delivery held the key for two hours even after the label was
+ * removed and re-applied. The key carries no label time, so a re-applied label inside twenty minutes of a
+ * delivery waits out the rest of that window, and a label left standing trips `MAX_DELIVERIES` in about two hours.
  *
  * A PULL REQUEST IS ONE OF THE `rows` (#2492). `gh issue list` does not return pull requests, so a label
  * set on a PR was read by nothing (#2376 carried `answer:worker-tooling` and `answer:ceo` and the wake

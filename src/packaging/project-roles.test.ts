@@ -119,7 +119,7 @@ const EXPECTED_CAUSES = ["answer-given", "answer-label-unexplained", "answer-owe
   "row-call-count-signal", "row-off-board", "tick-overran", "trunk-red", "unclaimed-blocker-cleared",
   "verdict-comment-unreviewed", "verdict-not-convinced"];
 
-const EXPECTED_JUDGMENT = ["answer-given", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocked-unexaminable", "blocker-cleared",
+const EXPECTED_JUDGMENT = ["answer-given", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocked-unexaminable", "blocker-cleared",
   "chairman-answered", "chairman-blocked", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lab-job-finished", "lane-backlog-unpromoted", "org-health", "org-retrospective", "org-stalled", "ready-queue-empty", "ready-row-incomplete", "ready-row-unclaimable", "repeating-log-line", "reviewer-auth-failed",
   "row-branch-unshipped", "row-call-count-signal", "row-off-board", "tick-overran", "unclaimed-blocker-cleared"];
