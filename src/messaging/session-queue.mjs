@@ -14,8 +14,8 @@
 // ledger's fold never takes one for a notification. That keeps "is it open" a fold over lines and not a rewrite of a file the chairman's session is reading.
 //
 // **AN ASK NEEDS HIS OK, VERIFIED AS `chairman:record`'s IS.** `--message` is either (a) a message the ledger took in from him, with his words on stdin hashed and compared with the
-// receipt's, or (b) the bot message a `forme` ("Do it for me") press sat under, which is `answers.mjs`'s line (`direction: "answer", step: "forme"`; the press path is not wired yet,
-// so today only (a) can be produced by the listener). **ONE OK IS ONE ASK**: a ref that already has an ask is refused, so an OK for one act cannot be replayed into a second.
+// receipt's, or (b) the bot message a `forme` ("Do it for me") press sat under, which is `answers.mjs`'s line (`direction: "answer", step: "forme"`, `via: "button"`, one per message; a press is not an
+// answer, so it leaves the row's label alone). **ONE OK IS ONE ASK**: a ref that already has an ask is refused, so an OK for one act cannot be replayed into a second.
 // HONEST LIMIT, as `record.mjs`'s: an agent with a shell can append to the ledger or the file with no check at all. This makes an ask DETECTABLE against his chat, never impossible.
 //
 // **`what`, `why` AND `resultWanted` PASS THE CLASSIFIER'S SECRET SCAN** (`classifyText`, the one the chat passes): an ask carrying a credential shape is refused and the file is
@@ -46,7 +46,7 @@ export const QUEUE_FILE = "chairman-session-queue.jsonl";
 export const QUEUE_DIRECTION = "queue";
 /** The closed schema of an ask, in the order it is written. Pinned by the test: a field added here is a field the chairman's session has not been told about. */
 export const ASK_FIELDS = Object.freeze(["id", "askedAt", "approvedByMessage", "what", "why", "resultWanted"]);
-/** The step `answers.mjs` writes for a "Do it for me" press once that press is wired. */
+/** The step `answers.mjs` writes for a "Do it for me" press. */
 export const FORME_STEP = "forme";
 const FILE_MODE = 0o600;
 const GROUP_AND_OTHER = 0o077;

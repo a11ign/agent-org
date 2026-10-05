@@ -27,7 +27,7 @@ const { createForwarder, tellingWhenUndelivered, main, EXIT } = await import("./
 const { createConverse, notReached } = await import("./converse.mjs");
 const { createInbound } = await import("./inbound.mjs");
 const { createLedger, readLedgerLines } = await import("./ledger.mjs");
-const { createFakeProvider } = await import("./fake-provider.mjs");
+const { createFakeProvider } = await import("./fake-provider.ts");
 const { createOffsetStore, runListener } = await import("./providers/telegram/poll.mjs");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });

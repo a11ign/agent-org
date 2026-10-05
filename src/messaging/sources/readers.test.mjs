@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
 import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
