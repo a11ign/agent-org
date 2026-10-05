@@ -495,3 +495,42 @@ describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads t
     for (const entry of ["top.mjs", "bare.mjs"]) assert.deepEqual(forbiddenReachableFrom(join(dir, entry)).map((path) => path.split("/").pop()), ["host-config.mjs"], entry);
   });
 });
+
+describe("#3565 a refusal for a '#N' prints the corrected text with the row's values, and pasting it sends", () => {
+  /** `gh` over a row #3542 that is closed; the pull request read of the same number is a 404, as GitHub answers for an issue. @param {string[]} argv */
+  async function closedRowGh(argv) {
+    assertReadOnlyGh(argv);
+    if (argv[1] === `repos/${REPO}/issues/3542`) return JSON.stringify({ number: 3542, state: "closed", labels: [] });
+    if (argv[1] === `repos/${REPO}/pulls/3542` || argv[0] === "pr") throw new Error("HTTP 404");
+    return fixtureGh(argv);
+  }
+
+  test("'#3542 is closed' exits 2 with the placeholders named and the corrected text printed, nothing sent or written; that text exits 0 and says it", async () => {
+    const refused = await run(["#3542 is closed"], { gh: closedRowGh });
+    assert.equal(refused.code, EXIT.refused);
+    assert.match(refused.err, /REFUSED \(free text\): "#3542" is a row or pull request number outside a placeholder \(write #\{\{issue:3542\.number\}\}/);
+    assert.match(refused.err, /corrected, send this instead.*: #\{\{issue:3542\.number\}\} is \{\{issue:3542\.state\}\}$/m);
+    assert.deepEqual([refused.provider.sent, refused.ledger], [[], []]);
+
+    const pasted = await run(["#{{issue:3542.number}} is {{issue:3542.state}}"], { gh: closedRowGh });
+    assert.equal(pasted.code, EXIT.ok, pasted.err);
+    assert.deepEqual(pasted.provider.sent.map(({ text }) => text), [`#3542 is closed\n\n${STAMP}`]);
+  });
+
+  test("`--dry-run` shows the same corrected text, and the corrected text probes clean", async () => {
+    const probe = await run(["--dry-run", "#3542 is closed"], { gh: closedRowGh });
+    assert.equal(probe.code, EXIT.refused);
+    assert.match(probe.err, /corrected, send this instead.*: #\{\{issue:3542\.number\}\} is \{\{issue:3542\.state\}\}$/m);
+    const clean = await run(["--dry-run", "#{{issue:3542.number}} is {{issue:3542.state}}"], { gh: closedRowGh });
+    assert.equal(clean.code, EXIT.ok, clean.err);
+    assert.match(clean.out, /would send:\n#3542 is closed/);
+  });
+
+  test("a state the row does not read is refused, names what the reader returned, and prints no corrected text", async () => {
+    const { code, err, provider } = await run(["#3542 is merged"], { gh: closedRowGh });
+    assert.equal(code, EXIT.refused);
+    assert.match(err, /the reader returned "closed" for #3542, not "merged"/);
+    assert.doesNotMatch(err, /corrected, send this instead/);
+    assert.deepEqual(provider.sent, []);
+  });
+});
