@@ -1,5 +1,761 @@
 # agent-org
 
+## 0.47.5
+
+### Patch Changes
+
+- e7a18da: `trace` names the time a worker's tool call ran, where it used to print it as `unexplained`. A turn in the store now carries `toolMs` (`src/trace/store.mjs`): from the last block of the message that made a tool call to the call's result record, `null` when the message follows no tool call (an order, a prompt), never 0. `store.mjs` had said a turn's `wallClockMs` includes the tool that preceded it; measured on a real transcript it does not, because the record it is counted from is stamped after the tool finished (five calls of 365-524 s were followed by messages of 3-7 s), so a long `pnpm test` was in no turn's span. The comment and the `DEFINITIONS` entry are corrected. The waterfall (`src/trace/waterfall.mjs`) gives that stretch to a WAITING source, `tool running (<session>, N calls)`, claimed AFTER every recorded wait, so a deferral, a hold, CI or a queue entry that covers the same moment keeps it. On worker-3641's row the build phase reads `WAITING 31m03s + unexplained 18m15s` where it read `WAITING 0s + unexplained 49m18s`. **A turn already in the store has no `toolMs` and claims nothing**: the field reaches it only when its transcript is read again, because the store supersedes a stored turn with a differing copy. a11ign/a11ign#3669.
+
+## 0.47.4
+
+### Patch Changes
+
+- 382e0bb: A review tree gets each package's own `node_modules`, so `tsc -p packages/cli` (and `pnpm run build`) resolves a registry-installed `@a11ign/*` dependency there. pnpm puts a package's own dependencies under `packages/<dir>/node_modules`, not at the root, and `linkReviewDependencies` linked the root's only: in a review tree the build died at `TS2307: Cannot find module '@a11ign/documents'`. Every package of the tick's checkout that has a `node_modules` now gives its same-named package of the tree one, with the same entry names: a third-party entry and a registry `@a11ign/*` entry link to the tick's store, a workspace entry links to THIS tree's package of that name (a link to the tick's own would make the tree measure `main`), a scope directory is made real and linked child by child, and `.bin` is not linked (a package's `.bin` holds the shims of its own workspace bins, which run the tick's source). A package the tick has no `node_modules` for gets none, a package the pull request removed or renamed is skipped, a `node_modules` that is itself a link is replaced and never written through, and running it again changes nothing. What an earlier head linked and this one does not is removed on the next re-point (a dependency the pull request dropped from a package, a workspace package it removed or renamed, the `node_modules` of a package that no longer has a counterpart in the tick's checkout), so a re-pointed tree never resolves a dependency its head does not declare. No action to take: a host picks it up with the release and the next re-point of a review tree links the missing directories.
+
+## 0.47.3
+
+### Patch Changes
+
+- c0b5f13: The gate reads each code repository's open pull-request list 20 at a time and asks again at 100 only when the first page came back full. A GraphQL request is priced by the page it asks for times the nested connections each pull request carries, so the same query costs 7 points at 100 and 1 at 20 (measured by replaying what `gh` sends with `rateLimit { cost }`). The gate asked for 100 of each of six repositories every two minutes, for lists holding 0 or 1 pull request: 42 of the 49 points its 13 `pr list` calls cost per run, now 6 of 13. The answer is the same list: a page with room left is the whole list, a full one is read again at 100, and a refused second read is `null`, never the first page standing in. `GH_READS` states the three `pr list` reads per non-primary repository. a11ign/a11ign#3674.
+
+## 0.47.2
+
+### Patch Changes
+
+- 286f901: `trace` and `trace --aggregate` price every stored turn from `PRICES` as it stands when they READ it (`repriceEvents`, `src/trace/store.mjs`), not from the `costUsd` the line carried when it was ingested. The store is append-only and an unchanged transcript is not read again, so a price added later (the Sonnet 5 and Opus 5 rows, a11ign/a11ign#3582) never reached the turns stored before it: 147,675 turns kept `costUsd: null` and two weeks of the aggregate printed no dollars. A model with no price (the Codex model, `<synthetic>`) stays `null` and its row stays a floor; the stored lines are not rewritten. The waterfalls, `--map` and `--wake-cache` read the same repriced events. a11ign/a11ign#3638.
+
+## 0.47.1
+
+### Patch Changes
+
+- 1b2bc80: Seven packaging test files pass from a clean checkout of this repository, not only from inside the project's layout (a11ign/a11ign#3671, follow-up of #3511). Measured at `f52921a` with `AGENT_ORG_HOST` set, `node --import tsx --test` over the seven files: 314 tests, 295 pass, 19 fail; after, 327 tests, 327 pass, 0 fail (the 13 more are `tracker-leak-refusal.test.ts`, which failed as a whole at import and now runs its 14). The same seven files run laid out the way CI lays the tool into the project (`packages/agent-org/`, the project's `packaging/` siblings copied beside them, `AGENT_ORG_HOST` unset): 327 and 0. The whole suite on this branch: 6077 tests, 0 fail, 1 skipped (the `codex` one, which skips itself).
+  
+  Each failure was a test that took the project's directory layout for its own, and none is skipped or moved: the count of tests that now run only in the project is zero.
+  
+  - `closes-mismatch-check.test.ts` (7): the CLI harness named `packages/agent-org/src/closes-mismatch-check.mjs` from the working directory; it resolves the script from the test file.
+  - `stranded-branches.test.ts` (2): `fixtures/open-prs-lifetime.json` was never committed here; it is, byte-identical to the project's copy (and to the one on the unmerged `agent/agent-org-gate-exclusions-3002` branch).
+  - `row-file.test.ts` (5): the four `#2035` closure-warning tests and `#1193 clause 4` read `packages/lab/...`, `packages/agent-org/...` and `docs/adr/` from the working directory. They now run inside a throwaway git repository holding exactly the files they name (`inScratchProject`), so they no longer pass or fail on the project's contents.
+  - `reconstitution-drill.test.ts` (2): the drill ran against `process.cwd()`; it runs against `HOME_CHECKOUT`, the project the tool serves, which is the same directory in the project's layout.
+  - `acceptance-exit-code.test.ts` (1): `npm test` is read from the working directory's `package.json`, and this checkout has no `test` script. The test builds a project whose `test` glob holds one test that needs a token (an empty suite needs nothing and is not refused). It also declares `// no-token: gh`, proved by a run with no token and a fake `gh` first on `PATH` that was never called (23 pass): the file imports `pr-open.mjs`, so without the declaration the capability gate refused every Acceptance that runs it, the row's own included.
+  - `board-snapshot-scope.test.ts` (1): the file path and `board-snapshot.mjs` were typed from the project's root; they are resolved from the test file. The first assertion, that this file's closure needs no token, had been passing on a path that names no file, which the walk answers with `[]`.
+  - `tracker-leak-refusal.test.ts` (the file): it imported `./leak-patterns.mjs`, which this checkout does not have; it imports `../lib/leak-patterns.mjs` and iterates `leakPatterns()`. The mutation test, which spliced the product's `LEAK_PATTERNS` array empty, empties the two sources the tool splits it into (the generic list's entries and the declaration's list) and puts them back; it now also asserts the list it loops over is not empty.
+  
+  Mutation checks, each restored byte-identical: with the closure warning never firing, five `row-file` tests fail, and with every Region file reading as unread, three fail (including the no-warning direction); with the scratch project's corpus entry deleted, three fail; with `board-snapshot.mjs`'s `gh` call removed, or with `board-snapshot-scope.test.ts` importing it, the positive control fails alone; with the scratch suite's token test deleted, or `checkBody` gone, `acceptance-exit-code.test.ts` fails alone, and with a `gh(` call added to it the walk refuses its `no-token` declaration; with `leakRefusalReason` never refusing, nine fail, and always refusing, ten; with the neutering left out of the emptied-patterns test, that test fails alone. No production file changed.
+
+## 0.47.0
+
+### Minor Changes
+
+- c682cd8: `agent-org trace -- <row>` prints the row's waterfall above its events (a11ign/a11ign#3511, slice 4 of #3494): eight phases (spec, claim, build, verify, review, CI, queue, merge), each with its wall-clock split into WORKING (the union of the turns' spans), WAITING (a record, named: a deferral span, a hold label, an order delivered after it was typed, a merge-queue entry or ejection, CI running, a review not yet posted) and `unexplained` (a gap with no record, never folded into WORKING), with tokens and dollars per phase and per session. A phase with a start and no end prints OPEN and is read to the time of the reading; one never ended before the row closed is CUT at the close; one with no start record says `not held`. The phases overlap, so each also prints an EXCLUSIVE time (each moment in the latest-started phase running at it), which adds up to the row's wall-clock, as do the dollars of the turns that ended in each phase. Dollars are the store's own `costUsd` and a turn with a `null` cost is counted unpriced, never as zero. One wait is INFERRED and marked so: a draft approved and not yet marked ready is named, from the review, the order delivered about it and that session's turns in the gap, as waiting on whoever the order went to (measured on a11ign/a11ign#3406: 2h13m39s from the approval to the ready mark, waiting on the orchestrator). Every repeat is flagged in the phase it happened in with its evidence: a second review at the same head (both review ids), a re-queue at the same head (both queue entries), a re-wake with the same cause key, a CI re-run at the same head (a check of a later wave whose name already ran at it; two triggers of one check overlapping are not a re-run, measured on #3406), and a compaction. `trace --aggregate` gains, per week, each phase's share of the merged rows' wall-clock and dollars, and for each of the ten dearest rows the phase that cost most and the phase with the most wall-clock to itself; a share table whose parts do not add up to the whole throws instead of printing, and a row with no GitHub record in the store is counted apart and is in no share. `--json` carries the waterfalls.
+
+## 0.46.2
+
+### Patch Changes
+
+- 1a87ef4: A run that had to wait for a suite slot leaves a record that outlives it (a11ign/a11ign#3664, found reading #3608). `src/suite-slots.mjs` printed `all N slots ... are held; waiting for one` to the waiter's own stderr and kept nothing, so nobody could read afterwards whether a third contender ever queued. When a waiting run gets its slot it now appends ONE tab-separated line to `waits.log` in the slot directory (`~/.cache/agent-org/suite-slots/waits.log`): ISO time, waiter pid, cwd, milliseconds waited, slot, label. A run that took a free slot first time writes nothing; a record that cannot be written is said on stderr and the suite still runs. A waiter killed while still waiting writes nothing (the line is written on acquire). Three cases are pinned in `suite-slots.test.ts`: three contenders against two slots find exactly one record, naming the third; one contender, and two against two, find none.
+- b6bc9f6: An order that asks nothing of a lead seat never wakes or clears it (a11ign/a11ign#3562, chairman's order of 2026-10-04). An order with no declared decision (`--fyi`, or no flag, which already read as FYI) to `ceo`, `product-manager`, `orchestrator` or `liaison` is now QUEUED by `prompt:session` even when the seat is idle, with a `HELD` line saying so; the tick holds it, lets it ride in the seat's next real order (a declared decision's batch, or a gate order addressed to that seat, as a trailing `WAITING FOR YOUR NEXT ORDER` section) and retires it only when that delivery is recorded. One past `FYI_STALE_MS` (4 h, an unmeasured starting constant) is dropped with a `DROPPED FYI` line, on a quiet tick too, and a held FYI is not counted in the backlog the tick reports or the stall orders it raises. A lead seat is a roster role that is not an engineer (`isLeadSeat`): a `reviewer-<n>` or a spawned engineer still gets an undeclared order at once, because that is the re-review request. `recordDirectDelivery` now records `decision` so a later reading can tell a wake an FYI caused from one a decision did. Three existing tests that sent an undeclared order to a lead seat and expected delivery now declare it a decision. The cleared first-turn cache write does NOT fall because of this (it is 35% the auto-memory index, measured; a11ign/a11ign#3663).
+
+## 0.46.1
+
+### Patch Changes
+
+- 77cd374: `declaredGhAccount` answers UNKNOWN, naming the wrapper's refusal, for a call with neither `HERDR_WORKSPACE_ID` nor `GH_CONFIG_DIR` (a11ign/a11ign#3665). Since #3642 the `gh` wrapper refuses that call, but STEP 3 still read `~/.config/gh` and returned the human account, so `work-gate.mjs` named the human for a call the wrapper will not make. The workers README that `host:install` writes no longer says "only a shell with no workspace id is a person and uses the default config"; it says that call is refused and a shell outside a workspace must export `GH_CONFIG_DIR`. Both are pinned by a test that fails on the old text.
+
+## 0.46.0
+
+### Minor Changes
+
+- 7fb6b10: `src/ci-health-liveness.mjs` answers whether a project's weekly CI-health report arrived, as a gate question rather than a sentence (a11ign/a11ign#3659, #3212's done-when 4): did a `schedule` run of the declared workflow start for the latest cron slot, and is its `## CI health, week of <date>` comment on the report issue. Five verdicts, and only `PRESENT` is a pass: `NOT YET` (the slot plus a 6-hour grace has not passed, the grace being #965's recorded five-hour scheduler lateness with an hour over), `SILENT` (grace passed and no `schedule` run; a comment posted by a dispatch does not stand in, and the workflow's `state` is printed beside it because GitHub disables a schedule after 60 days without activity), `NO COMMENT` (a `schedule` run, no comment) and `CANNOT TELL` (a lookup failed, or the workflow's cron is not one plain `m h * * d`: never read as healthy, and no order is raised for it). The heading is the run's own UTC day minus seven, which is how `scripts/ci-health.mjs` writes it (the Monday 2026-10-05 run posts `week of 2026-09-28`), and a test pins the rule against that script's text. The slot is read from the workflow file's cron, and the repository, workflow and report issue come from the project's declaration (`tracker[0].repo`, `units.ciHealthWorkflow`, `units.ciHealthIssue`), or from `--repo`, `--workflow` and `--issue` together; an undeclared project reads `CANNOT TELL` naming the missing field, so nothing is defaulted. `ciHealthOrders` returns the gate's order shape for `SILENT` and `NO COMMENT` only, to `product-manager`, keyed on slot and verdict. The wiring into `work-gate.mjs`'s `decide` (beside `rowOffBoardOrders`) and the project's declaration are not part of this release.
+
+## 0.45.0
+
+### Minor Changes
+
+- 3d4759b: `host:check` now fails on two more ways the agents host can act as a person. (a) A shipped `.service` that declares no `Environment=GH_CONFIG_DIR=...` is a `NO IDENTITY DECLARED` finding whether or not a `gh` spawn is reachable from it: reach analysis says what a unit spends today, not what it is one `pnpm run` away from spending, and the `gh` wrapper sends a unit with no declaration to `~/.config/gh`. (b) A login in `~/.config/gh/hosts.yml` that is not one of the two org accounts' (read from `<workers>/gh` and `<leads>/gh`, never a literal name) is a `HUMAN LOGIN ON THE HOST` finding; a missing file passes and an unreadable one is a `HOST GH LOGIN UNREADABLE` finding, never "clean". Both remedies name the two account directories; (a)'s says `pnpm run host:install`, (b)'s is a manual `gh auth logout` because `host:install` writes no line of a person's config. A project whose units are fixtures passes `readGhHosts` to pin the second check. a11ign/a11ign#3643.
+
+### Patch Changes
+
+- ecdb3a5: `answer-owed` is an `ACTION` cause, not a `JUDGMENT` one (a11ign/a11ign#3652). A delivery held its causeKey for two hours even when the `answer:<session>` label had been removed and applied again, and the key carries no label time, so a question labelled inside that window never woke the session it named (`product-manager/answer-owed/row-3566`, four deliveries two hours apart and none at a label time). It now takes the documented twenty-minute cadence. A label that stands unanswered is offered every twenty minutes and trips `MAX_DELIVERIES` about two hours in.
+
+## 0.44.0
+
+### Minor Changes
+
+- 75bde8d: `org-health` reads each org team's level on every repository it reaches and trips `team-access-drifted` when a team holds `admin` anywhere, or a level other than the declared one on a declared repository (a11ign/a11ign#3634, the class gap of #3587: the `bots` team held `admin` on two repositories and no tick read it). A project opts in with `teamAccess.declaration` in `.agent-org/project.json`, a path inside the project to a file whose `teams.<slug>.layer` gives each team's level and whose `repositories` keys name the declared repositories (their common owner is the org); a project with no such key makes no call and gets no reading. The read is one paginated `orgs/<org>/teams/<slug>/repos` call per declared team on the core pool each tick (30 an hour per team at the 2-minute tick, 0.6% of 5,000), and the discriminator names `team:repository`, so a second repository is a new trip. A read that cannot run is `unknown` with its reason and never clear: a 404 (a token that cannot see the team), an empty listing, a partial line, an unreadable declaration and a malformed `teamAccess` key each say CANNOT_TELL.
+- c36f02f: The `gh` wrapper (`host/gh`) refuses a call that has no `HERDR_WORKSPACE_ID` and no `GH_CONFIG_DIR` (a11ign/a11ign#3642), instead of falling through to the human's own `~/.config/gh`. Rule 5 was written for a person at a terminal, but a plain ssh shell and a unit that declares no `GH_CONFIG_DIR` look identical to that person, and both acted as the org owner with admin (one spent his search limit). The refusal exits non-zero before `gh-real` and before the call ledger, prints one line (`git push` shows its credential helper's stderr) naming both bot config dirs, and says to `export GH_CONFIG_DIR=...` or run in a workspace; the explicit-`GH_CONFIG_DIR` and workspace routes are unchanged. **A host that installs this wrapper must have every unit declare `GH_CONFIG_DIR` first**, or that unit goes from acting as the human to failing; `host:install` copies the wrapper, so installing it is the host operator's act.
+
+## 0.43.1
+
+### Patch Changes
+
+- d246d50: The reviewer door (`src/reviewer/pr-review-verdict.sh`) no longer attaches a verdict to a commit it was not written at (a11ign/agent-org#3640, found on a11ign#3623). `gh pr review` has no commit option and posts to whatever the head is when it runs, so a review headed at `61389c15` and submitted after the author pushed was recorded on `0af5fe4a`, a different patch, and satisfied `reviewDecision` for a changeset its text did not describe. The door now reads the commit the opener names (the sha after `at`, in backticks, the spelling the gate already reads; an abbreviation resolves) and compares it with the head at post time: the same commit, or an earlier one with an equal patch id (a merge of `main`), posts; a different patch is refused with a new exit code, `5`, that names the head to review, and a verdict line that names no commit exits `2` before any `gh` call. A diff that will not read is exit `4`, could not tell, never "unchanged". The second-review refusal (exit `3`) now reads each review at the commit its body names, falling back to `commit_id` only when the body names none, so a review headed at an old commit but attached to the new head no longer blocks a fresh review of that head. The gate's own reading (`review-verdict.mjs`) already keys a verdict on the sha its body names and needed no change. A reviewer whose verdict line names the head they read sees no difference.
+
+## 0.43.0
+
+### Minor Changes
+
+- 79427ba: Removing `answer:<session>` from a claimed row now orders the claimant once, with the answer (`answer-given`, a11ign/a11ign#3632). The gate had a cause for the ANSWERER while the label stood (`answer-owed`) and none for the ASKER when it came off, so an answered claimant that had gone idle waited for `claim-stalled`'s next nudge, up to 120 minutes: `#3566` sat 44 minutes past its answer and tripped `overdue` as `idle-no-wait`, and `ceo` sent `#3566`, `#3385` and `#3573` one `prompt:session` each by hand. The order names the label removed, the account that removed it and the newest comment by that account at or before the removal, by id. It is keyed on the removal's time, so one answer is one order and a label re-applied and removed again is a second; it is read only from a claimed row updated in the last 90 minutes (`ANSWER_GIVEN_WINDOW_MS`, under `JUDGMENT_TTL_MS` so the ledger cannot resend it), from the row's own timeline, whose projection now also carries `unlabeled` events, the writing account and a comment's id. No order goes to a row with no claimant, to a claimant herdr says is not live, for a label named for the claimant itself, for a removal from before the claimant took the row, or for a label put back; a closed row is never read. A new cause, so a project that pins its cause list takes `answer-given`.
+
+## 0.42.0
+
+### Minor Changes
+
+- 7acedc8: The gate keeps each deferral that ENDED in a durable log, `wake-deferral-log` beside `wake-deferred`, one line `<causeKey>\t<startMs>\t<endMs>\t<delivered|gone>` appended by the tick that found the order no longer deferred, and the trace store reads it as `kind: deferral` (`source: deferral-log`), keyed to the cause key's row or pull request and ingested incrementally through the ingest state: `trace` prints each wait's span and its footer names the waits before the log's first tick as unrecorded (a11ign/a11ign#3510, slice 3 of #3494)
+
+## 0.41.0
+
+### Minor Changes
+
+- 9d3bf99: The weekly token-efficiency report is posted on the project's record issue every Monday at 07:30 London, by a timer (a11ign/a11ign#3627): `host/trace-weekly.timer.in` (`OnCalendar=Mon *-*-* 07:30:00 Europe/London`, `Persistent=true`, after the 07:10 board edition so the two do not share the work tick's API minute), `host/trace-weekly.service.in` and `host/trace-weekly-post.sh`, installed by `host:install` like the board dispatcher's pair and not started by it (no `Requires=`: a start at install would post a report). The script runs `agent-org trace -- --aggregate` in passes of at most 1,500 `gh api` calls until nothing is unread, a pass reads no more than the one before, six passes have run, or the core pool is down to a 1,000-call reserve (the work tick spends the same account's pool), reading the pool off a real call's `X-Ratelimit-*` headers; it asks for the Monday two weeks before the current one, because the four-week default holds more merged pull requests than GitHub's search returns (measured 2026-10-05: more than 1,000 on `a11ign/a11ign`) and `trace` refuses a list cut short. It posts under a one-line header carrying the week reported (the one before the week in progress) and `COMPLETE` or `PARTIAL (<why, as the report prints it>)`, with the passes run and what stopped them; a report over the 65,536-character comment limit is split into numbered comments and never truncated. **A project must declare the issue**: `units.traceWeeklyIssue`, a positive integer, beside `units.boardReportWorkflow`; the repository is `tracker[0].repo`. A missing or malformed declaration, a `trace` that exits non-zero, a footer the script cannot read, a pool it cannot read and a comment GitHub refuses each leave the script non-zero, so the unit shows failed and is never green with nothing posted.
+
+## 0.40.0
+
+### Minor Changes
+
+- 20030cc: `pr:open` labels a new pull request with its owner when the tree carries no `.a11y-owner` stamp (a11ign/a11ign#3639). agent-org's trees are made by hand with `git worktree add` and nobody stamps them (5 of 207 on the agent host, 2026-10-05), so three of the four open pull requests that day had no `session:` label and a red one could not be routed to anyone. The owner is now read from the row the pull request names (its `Closes` line, or an `owner/repo#N` in its title): exactly one `session:` label across the named rows labels the pull request, and no row, a row with no `session:` label, or rows naming two different sessions leaves it unlabelled as before. A stamped tree is unchanged and never reads a row. The label is also created in the repository when GitHub says it is absent, since `gh pr edit --add-label` of a label that does not exist is "not found"; a failure to read the row, to look the label up or to create it is printed, never swallowed.
+
+## 0.39.2
+
+### Patch Changes
+
+- aa7d91b: An `answer:<session>` label is called unexplained (`answer-label-unexplained`) only once it has stood `ANSWER_LABEL_GRACE_MS` (5 minutes) with no comment after it (a11ign/a11ign#3618). A session that labels first and comments second was ordered to "post the question" while it was typing it: on #3566 the label was set 06:32:28Z, the order to the labeller went out 06:34:23Z and the question was posted 06:34:30Z, and the same race hit `worker-3543` and `worker-3573`. `bareAnswerLabel` takes the caller's clock (`nowMs`, default `Date.now()`) and returns `null` for a younger label; `bareAnswerLabelOrders` passes the gate's own. A label past the window with no comment is called exactly as before, and a comment at or after the label still answers it.
+
+## 0.39.1
+
+### Patch Changes
+
+- 10d6d86: `instanceCacheRead` (the wake's read of an instance's context size, once per order delivered) no longer parses every transcript on the host. It reads transcripts newest first and stops at the first that names the session, which is the one that already won ("the most recently written transcript naming it"), and it skips a file whose first 64 KB already names another session without reading the rest. A head that names nothing, or cannot be read, still falls through to the whole-file read, so no answer changes. Measured: one call read 3.3 GB across 4,256 transcripts, 22.5 s wall and 23 s CPU, 554 MB RSS. a11ign/a11ign#3566, slice 6 of the tick's cost: the `wake` phase.
+
+## 0.39.0
+
+### Minor Changes
+
+- 9133599: `trace -- --aggregate` prints, under the re-delivered line of each week, the re-delivered orders BY GATE CAUSE (a11ign/a11ign#3626): the repeats of each cause, its distinct keys, the median gap between a repeat and the previous delivery of its key, and dollars (a floor, `not derivable` when every turn is unpriced), most repeats first, in the same week as the class and adding up to it. A repeat whose key carries `@deferred` is the same order re-sent after a deferral and is its own row (`<cause> @deferred`), since a deferral retry and a wake delivered anyway are different defects. A week with no repeats prints no table, and `--json 1` carries the rows as `causes` on the class.
+
+## 0.38.1
+
+### Patch Changes
+
+- e391102: The gate asks a reviewer for a pull request that is red only on a check `main` does not require (a11ign/a11ign#3597). `reviewableHead` and `reviewWait` read every check on the head, while `failingChecksOrder` reads the required set, so a pull request green on `gate` and red on `typecheck` was nobody's work: it earned no `draft-awaiting-verdict`, no `reviewer-agent-org-<n>` was started, and agent-org#211, #212 and #213 each waited for a review nobody had been sent for. Both now take the required list `draftOrder` already holds and read only the required checks for red and for running, and `withPatchIds` takes the same list, so the patch is read for the pull request the question is open for. A required check that is red is still `pr-checks-failing` and not a review's question; a required check still running is still `running`; a check outside the required set that is still running no longer holds the question. An unreadable required list counts every check, as before. The tick reads the list only when some check is red or a draft is green, so a head whose only open check is a non-required one still running, with nothing red anywhere, is still read as `running` until it settles. A project takes this with the next release; nothing to change.
+
+## 0.38.0
+
+### Minor Changes
+
+- 2101793: A physical or account ask is WALKED THROUGH, one step at a time (a11ign/a11ign#3425, C2 of #3409, chairman point 3). A brief for the chairman with a `Steps:` list (numbered items, each optionally followed by `Verify: {{placeholder}} is|contains <value>`) is sent as ONE step: the brief and step 1 under Done / Stuck / Explain more, never the later steps. On Done the step's `Verify:` is READ through the checked-facts vocabulary (`walk.mjs`, one read, the words built from it and stamped `as of`), and only a read that shows it sends the next step; a read that shows something else, or cannot be made, says plainly that it cannot see it, does not advance, and offers Done again, Stuck and Later. A step with no `Verify:` is confirmed on Done alone and says "I can't check that one from here". Stuck orders the liaison once per step. After the last verified step the request is answered on its row through the answers path (comment, `needs:chairman` removed, `answer:ceo` set) and the closing message carries the brief's `Unblocks:` line. State is the ledger: one `direction: "walk"` line per step transition keyed `walk:<request key>` (`confirmed`, `unseen`, `shown`), so a restart resumes at the right step and a repeated Done writes once. A typed reply under a walk is conversation and never the answer. A listener built without readers (or with no readable tracker, which is logged) refuses a procedure and writes nothing; every other request is answered as before. A brief with both `Steps:` and an options block, or an unreadable list, sends no alert and says why (`alert not sent: steps: ...`). `Answered` replies may carry `actions` and `recordSent`, which `createForwarder` passes on, so a reply can be a message with buttons whose ref the ledger learns.
+
+## 0.37.1
+
+### Patch Changes
+
+- 561bbf2: `row-claim claim` asks GitHub for the row's `body` and its `blockedBy` edge once each, not twice. The template check and B4's Region lookup both read the body, and the claim's own check and B2/B4's both read the edge; the checks before the first write now share one `gh issue view`/`list` per distinct read. The labels are still read fresh before the checks, before the write and after it, a read that fails is retried, and no check or refusal changes. Measured against a live row through a proxy `gh` (writes faked): 16 reads before, 14 after. a11ign/a11ign#3566, slice 5 of the tick's cost.
+
+## 0.37.0
+
+### Minor Changes
+
+- 0dc65b2: The tool no longer carries a test selector (a11ign/a11ign#3573). `agent-org select-changed-tests` is removed from the command table with its `src/lib/select-changed-tests.mjs`, and the declared copy of `ci-changed.mjs` loses its test-selection half (`testPackages`, `dependentsOf`, `readWorkspaceDependencyGraph`; `classify` now takes `(files, packages, { repoRoot, getPackedFiles })`), because the product's PR `ts` job runs the whole suite and `rstest run --changed` is the one selector left. Job gating is unchanged. `src/lib/walk-scope-discovery.mjs` is a new declared copy of the product's `packages/guards/src/walk-scope-discovery.mjs` (`packageIndex`, `sourceClosure`), which `walk-scope.mjs` now imports in place of the deleted selector. A project that still calls `agent-org select-changed-tests` must stop before taking this release.
+
+## 0.36.0
+
+### Minor Changes
+
+- 9b68243: A tick that runs over `TICK_SLOW_SECONDS` (180) or is killed by the timeout now tells `ceo` (a11ign/a11ign#3567). The slow one reports in its own tick, from its `tick-cost` line: wall (with `ExecStartPre`, which `TimeoutStartSec` also counts), CPU and the phase that took longest. The killed one is read by the NEXT tick: every tick writes `tick-running.json` beside the ledger and clears it whenever its process ends by itself, a crash included, so a marker still standing was left by a signalled process and is reported once with its start time and the most it can have run. One new cause, `tick-overran`, keyed per tick start. Known gap: a kill during `ExecStartPre` happens before the marker exists. `src/work-tick-health.mjs` is new.
+
+## 0.35.2
+
+### Patch Changes
+
+- 16f9f10: The tick's spawn census reads each synchronous spawn's CPU, and the `tick-cost` line carries `hottest`: the 5 command lines that used the most CPU, beside `slowest`'s 5 by wall. A spawn's `cpuMs` is the move in the tick's `cutime + cstime` while it was blocked, so it includes the child's own children; `null` when `/proc` cannot be read. `childrenCpuMs` moves to `lib/spawn-census.mjs` (the tick re-exports it). It exists because the `wake` phase of a waking tick is 15 to 55 s of CPU and nothing yet says whose. a11ign/a11ign#3566, slice 4 (the profile first).
+
+## 0.35.1
+
+### Patch Changes
+
+- fe24f07: The trace store prices turns of `claude-sonnet-5` and `claude-opus-5` (a11ign/a11ign#3582). `PRICES` matched by `startsWith` and its prefixes began at `claude-sonnet-5-5` and `claude-opus-5-5`, so the older ids matched none and every such turn had `costUsd: null`: 97% of two weeks' turns on the private store. The new rows are the published rates ($2 / $10 and $5 / $25 per million tokens, cache reads $0.20 and $0.50), marked `verified: false` because neither was reproduced against Claude Code's own `cost_usd`, and they stand after the `-5-5` rows because the first matching prefix wins. A Codex model still has no row: no rate for it is sourced, so its turns stay `null` rather than carry an invented figure.
+
+## 0.35.0
+
+### Minor Changes
+
+- 28cb82d: `trace -- --wake-cache` prints the cache write of the first turn after each wake, per standing seat (a11ign/a11ign#3563). Each wake's window is classed kept, compacted or cleared, and its gap since the seat's previous turn is classed up to 5 minutes, up to an hour or over an hour, so the two candidate causes of a re-wake's ~30k-token cache write (the window emptied, or the cache's lifetime lapsed) read as separate figures. What a wake did to the window is derived, not read (`last-order/` holds the last order's time only): a compaction between the turns is `compacted`, a new transcript file (a /clear starts one) is `cleared`, the same file is `kept`. A class no wake could be placed in prints `not derivable` and never 0; a Codex reviewer's request, which has no cache-write field, is counted apart; every definition is printed once at the top. `src/trace/wake-cache.mjs` is new.
+
+## 0.34.1
+
+### Patch Changes
+
+- aaf41fd: The gate reads each other repository's open pull-request list once a tick, not twice. `readOtherScopes` read it for the lanes and `readElsewherePrs` read it again for the claim-stall facts; the second now takes the first's list (a refusal stays a refusal). Measured by the census: 5 of 53 `gh` calls, about 4.6 s of a 34 s gate. The tick-cost line also carries `ghRepos`, the `gh` reads and their wall per repository, and a census record names the `GH_REPO` a `gh` call was aimed at. a11ign/a11ign#3566, slice 2 of the tick's cost.
+
+## 0.34.0
+
+### Minor Changes
+
+- c8c134b: `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>]` writes the across-rows process map as one self-contained HTML file (a11ign/a11ign#3514, slice 7 of #3494): a directly-follows graph of the chairman's ten phases (filed, boarded, claimed, build, verify, PR, review, CI, queue, merged) over the rows merged in the window, with an edge per step and the number of rows that took it as its width, each node's median wait and median dollars (the colour darkens with the dollars), and the three loops that are the waste drawn red and dashed with their counts and dollars: review -> rework -> review, queue -> eject -> queue and wake -> compaction. Everything on the drawing is also in a table beneath it, and a list of the repos, weeks and wake causes the window holds says what can be asked for. `--repo` keeps the rows whose last merging pull request is in that repository, `--week` the rows merged in one Monday-first UTC week (`2026-W40`, `40` for that week of this year, or any day in it), and `--cause` the rows with a wake of that cause, so a week before a fix and a week after can be set side by side. The page has no script, no stylesheet link and no URL. `boarded` is drawn as `not held` with no edge and no figure, because the store keeps no event for it (a board status change is a GraphQL project field and the store is REST only); `build` and `verify` are inferred from commit dates and named so on the page. `--since` for the map is the start of the merge window and is not rounded to a Monday, so a map of the last 7 days is one. `trace --aggregate` is unchanged: its ingest and listing now run in a function it shares with `--map`.
+
+## 0.33.2
+
+### Patch Changes
+
+- 2b7cfe4: `callerScript` names the unit behind a preload and a session's shell for what it is (a11ign/a11ign#3590). It took the FIRST `*.mjs` in the caller's command line, so a unit started as `node --import file:///.../crash-exit.mjs /.../work-gate.mjs` or `node --import=./src/lib/crash-exit.mjs src/work-tick.mjs` read `crash-exit.mjs` (2,756 of one host ledger's 7,510 calls), and a session's `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh` read as its snapshot file, one name per Claude Code process. `callerScript` now skips `--import <module>` and `--import=<module>` and names the shell `(a session's shell)` (exported as `SESSION_SHELL`), so `topCallers` and the trace ingest agree; the two lines `src/trace/gh-calls.mjs` kept to work round this are deleted.
+
+## 0.33.1
+
+### Patch Changes
+
+- d9dcc71: An order is never sent to a seat the same tick released, and herdr is asked about a gone seat once (a11ign/a11ign#3568). The tick of 2026-10-04T21:49Z released row #2702's claim, which closed `worker-2702`'s workspace, and then delivered three orders to it from the roster it had read before: seven `agent_not_found` lines, six `UNDELIVERED`, and #3536 offered to a dead seat. `performRelease` now reports `gone` when it closed the workspace, and `deliver` takes `goneSeats` (label to reason, returned by `deliver` and `deliverHandoffs` so the tick's second delivery inherits it): such a seat is not in the roster the router reads, so a pool order (`ready-row-unclaimed`) goes to a free engineer, an order a cause declares `mayRelane` goes to one through `relaneTarget` with no age bound, a derived cause is DROPPED with a `DROPPED` line (the gate derives it again from the row), and an authored order is left in the queue with a `LEFT QUEUED` line; none counts as `nowhere to go`. A refusal that says `agent_not_found` adds the seat to the same map, so one refusal per seat per tick is the most herdr is asked. A seat that dies between the roster read and the prompt still costs that one refusal.
+
+## 0.33.0
+
+### Minor Changes
+
+- 1046e66: The `gh` call ledger names the session that made each call, and the trace keys a call by it (a11ign/a11ign#3589, the exact key under #3516's weak one). `host/gh` appends `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID` when that is what is set; `-` when neither is, as in a unit) as a NINTH field after the caller. It goes last so that a line written before this one, with 8 fields, is read unchanged: `parseLine` returns the same entry it always did, with no `sessionId` key, and a 9-field line is that entry plus `sessionId`. Only `[A-Za-z0-9-]` survive into the field, so an odd value cannot add or remove a tab.
+  
+  A turn now carries `transcript`, the file name of the transcript it was read from (a Claude session's `CLAUDE_CODE_SESSION_ID` is its transcript's name; a Codex turn's is the uuid ending its rollout's file name, which `CODEX_THREAD_ID` holds: read in `~/.codex/sessions` rollouts, where the value a tool shell printed is the id in the rollout's own file name). `trace/gh-calls.mjs` keys a call to the session whose transcript has that name and, through that session's NEXT turn (the first that ended in a later second than the call's, so never the turn that issued it), to its row: exact, however many sessions were waiting on a tool at its second. The time rule (`toolWindows`, `keyCalls`, `viaShell`, `ambiguous`, `candidates`) is deleted; it keyed 27 of 11,751 calls on this host (a11ign/agent-org#209). A line with no id is `unkeyed: script` and is never joined by time; a line naming a session with no later turn in the store is `unkeyed: no-turn` and is asked again on every run.
+  
+  **What this does not do yet.** `host/gh` is installed by `host:install`, which is not run here, so until it is every NEW line is still an 8-field one and is `script`; and a turn already in the store has no `transcript`, so a call can be keyed only to a turn read after this version (a store record the time rule left `ambiguous` or `no-turn` is corrected once to `script`). Both age out as the ledgers (2 MiB, newest half kept) and the store turn over.
+
+## 0.32.0
+
+### Minor Changes
+
+- f176091: A host-wide limit on concurrent full test suites, and a chairman message that no longer waits for the tick (a11ign/a11ign#3536, the chairman's urgent order of 2026-10-04). **`src/suite-slots.mjs`**: a full suite takes one of 2 `flock` slots under `~/.cache/agent-org/suite-slots/` (`SLOT_COUNT`, the one place the number is written) and the rest queue; the wait prints at the start and every minute which slots are held, by what and for how long, and a holder that dies frees its slot with no clean-up. Every suite runs under `nice -n 15 ionice -c 3` (`NICE_LEVEL`, `IONICE_CLASS`). A missing `flock`, `nice` or `ionice` is a refusal naming it, never a silent run without the limit; a run with `CI` set takes no slot and is not reniced. Two entry points: `node src/suite-slots.mjs suite` runs the full agent-org suite (it had no single command), and `runUnderSlot` is what a11y-witness's `pnpm run verify` calls on itself, so the whole run holds one slot. A project takes the change by nothing at all for CI, and by running `verify` from a checkout of this repository that has the module. **`converse.mjs`** calls `prompt:session`'s `promptOrQueue` instead of `queueOrLose` alone: a chairman message (or button order) for an idle liaison, or for `ceo` when the liaison's seat refuses, is prompted at once and queues only for a busy seat; the recipient is still the two constants, and the ledger line carries `delivery: "delivered" | "queued"` (`verdict` keeps its words, and a direct delivery has no `handoff`). The `QueuePort` a test supplies now has `promptOrQueue`, `run` and `NOT_QUEUED_PREFIX` where it had `queueOrLose`.
+
+## 0.31.0
+
+### Minor Changes
+
+- c341d1a: The trace store holds every `gh` call, as one `source: "gh-ledger"` record each (`trace/gh-calls.mjs`, a11ign/a11ign#3516, slice of #3494), read from the `gh-calls.tsv` ledgers `host/gh` writes in each account's config directory (`~/workers/gh`, `~/leads/gh`, `~/.config/gh`). Each ledger is read incrementally through the ingest state (a trim past 2 MiB reads as a shrink, is read again from byte 0 and said, and adds nothing already held), and the newest two seconds of a ledger are held back to the next run so that identical lines of one second keep their order. `trace -- <row>` prints, beside the tokens and dollars, the calls keyed to the row and the GraphQL points they spent (a response's cost read, a call without one counted as a one-point FLOOR, and a pool only inferred from the call's shape marked), then every call keyed to no row, listed apart with the callers spending most, and from when the store holds calls per account. The footer's `NOT_HELD` no longer names the ledger.
+  
+  **The key is inferred, and weak, and the report says so.** A ledger line names an account, a workspace and the calling process, not a session. A call is keyed to a session only when it came from a session's shell and exactly one session's tool window (the gap between a turn and the next of the same wake, up to the tool_result) covers its second. Measured on 2,731 calls of the leads' workspaces, whose session is known: the turn's own span named one session 900 times and was wrong 763; the tool window names one for under 1% of calls, because several sessions are always waiting on a tool (on this host, 27 of 11,751 calls). So per-row figures are a LOWER BOUND, and a call with two covering sessions is `ambiguous` and names neither. The exact key is a session id in the ledger line, which `host/gh` does not write yet.
+
+## 0.30.5
+
+### Patch Changes
+
+- befb746: The outcome clock reads what an idle claimed row's holder waits on, wherever the pull request is: a review requested, checks pending, an approval the queue owns, `awaiting-evidence`, and now a `hold:` put by `pr:hold --until` for an event outside the repository (the new `pr-held` kind) all read as a declared wait, where such a holder used to be `pr-owned` and never read. A per-row holder idle for 80 minutes with NO readable wait is raised as `idle-no-wait`, and `never-started` and `wait-premise-gone` are raised at their own measured 80-minute bound instead of the claimed row's 135: `boundOf` reads a per-item bound. A standing seat idle between orders is not read (a11ign/a11ign#3569)
+
+## 0.30.4
+
+### Patch Changes
+
+- 51ac745: `org-retro` counts merged pull requests across every repository the project declares (a11ign/a11ign#3593). Its 2026-10-05 reading, "PRs merged: worse, -56" and a doubled "tokens per merged PR", came from a read with no `-R` (the primary repository alone: 48 merges, where `a11ign/agent-org` merged 82) divided into a token total summed over EVERY session. The population is the primary plus every `dora` entry (`mergedPopulation`), each read with `-R` (`readMerged`); PRs merged, the median open-to-merge and tokens per merged PR are computed over all of them, and each repository's own count prints beside the total. A repository whose list cannot be read makes the total `unknown`, never a 0. The read limit is 1,000 rather than 200, and a read that returns that many is `unknown` and says it hit the limit. The first reading after the change prints the old (primary only) and the new total once: each reading now records the repositories it counted in `org-retro-readings.jsonl`, and a previous reading without them was the old definition.
+
+## 0.30.3
+
+### Patch Changes
+
+- 404eff7: `chairman:reply` makes the road to a fact easy without loosening what it will say. A refusal for a `#3542` in free text now READS the row itself (`issue`, then `pr`, because the issues endpoint refuses a pull request) and names the fix with the real kind, number and value in it: `write #{{issue:3542.number}}; it is a row and reads "closed" now`, and for a state word the exact `{{issue:3542.state}}`, in place of a template with `N`. When those placeholders are the only thing in the way, the refusal prints the writer's own text with them in, on a `corrected, send this instead:` line, and that text sends (`--dry-run` prints the same line). Nothing a reader did not return is stated: `#3542 is merged` over a row that reads `closed` is still refused, and the reason says what the reader returned; a number neither reader can return is refused with why; a state word in a text about two rows is not guessed for either, and a text with any other number or secret-shaped string in it gets the per-row fixes but no corrected text. A text with no `#N` in it causes no extra read, and at most five rows are read for one refusal (a11ign/a11ign#3565).
+- d529dda: The gate no longer reads every Claude transcript on the host to count a row's calls. `liveClaudeTurns` skips a transcript nothing has written to within a day (`LIVE_TRANSCRIPT_HORIZON_MS`), and reads one that has been touched whole. Measured on the live `~/.claude/projects`, 3.3 GB over 4,221 files: 50.2 s wall and 38.1 s CPU before, 3.6 s and 3.4 s after, at host load 42. The tick-cost census also stops recording an asynchronous `exec` twice, and `util.promisify(execFile)` resolves `{ stdout, stderr }` under the preload again. a11ign/a11ign#3566, slice 3 of the tick's cost.
+
+## 0.30.2
+
+### Patch Changes
+
+- 644754e: `dora` places an npm release that has no `gitHead` and no tag by its provenance attestation, so Lead time for a package published through CI provenance reads a number instead of `unknown -- ancestry could not be read`. The commit is the `gitCommit` of the version's `slsa.dev/provenance/v1` statement (`/-/npm/v1/attestations/<package>@<version>`), tried only after `gitHead` and the tag; a release whose attestation cannot be read is still `unknown`, never `false`. It costs one request per release inside the window that has neither of the others. A version `0.0.0-...` (a name reservation) is no longer a release for any metric, so a package that holds only reservations reads `no release yet`. `npmReleasesFrom`, `commitFromAttestations` and `isNameReservation` are exported for the test (a11ign/a11ign#3591).
+- d3c4726: `pr:open` no longer refuses a row's own `cd <dir> && …` Acceptance with "an `&&`" (a11ign/a11ign#3596, found on #3593). `testFileArgumentsResolve` asked `unparseableConstruct` about the UNSTRIPPED line, so the `&&` that #3026 had declared legitimate was the construct it refused, and every agent-org row written in the shape the engineer brief prescribes had to be rewritten at PR time. It now asks about the line without its leading `cd`, and looks the runner's file arguments up in the `cd` target (not this process's directory); a SECOND `&&` is still refused.
+
+## 0.30.1
+
+### Patch Changes
+
+- c8f660f: The number of `.mjs` source files the tool has can no longer rise (a11ign/a11ign#3556, toolchain row 4d of #3550). `src/packaging/mjs-source-count.test.ts` pins 209 non-test `.mjs` files (under `src/`, `host/` and `.github/`, `src/packaging/` included where the tool's own repository lists the file, so the project helpers the gate copies in are not counted and a new production `.mjs` there is) and 44 `*.test.mjs`, read at `21eb99c` (210 and 44) less the one file this change converts, and fails when either count rises, naming the files the change added against its base (the merge group's first parent, or the merge-base with `origin/main`) where that base can be read. A drop passes and says the pin can be lowered, so two conversions merged together stay green. The refusal and the README carry the rule: a new source file is `.ts`, unless a shipped command imports it; then raise the pin in the same diff and say why. A touched `.mjs` may convert in the same pull request.
+  
+  `src/messaging/fake-provider.mjs`, the in-memory provider only tests import, is now `fake-provider.ts` and its 18 importing tests (and `docs/messaging.md`) point at it. The ADR's worked example, `src/messaging/sources/watched.mjs`, is not converted: a `.ts` a shipped command imports cannot load under the host's `node` (measured on `/usr/bin/node` 22.22.1: `ERR_NO_TYPESCRIPT`, and `agent-org messaging:watch` dies on `ERR_UNKNOWN_FILE_EXTENSION`). The same fault is already present in `select-changed-tests`, which imports `lib/source-text.ts`.
+
+## 0.30.0
+
+### Minor Changes
+
+- f993805: Every `work-tick` appends ONE line to `tick-cost.jsonl`, beside the wake ledger, saying what the tick cost: wall, CPU (its own and its children's, read from `/proc/self/stat`), peak memory, the load at the reading, the wall and CPU of each phase (`startup`, `version`, `gate`, `roster`, the three tear-downs, `queue`, `wake`), how many wakes it made, and every process it started, by command, with the five slowest command lines by wall. Under systemd the line also carries how long `ExecStartPre` took and the unit's peak memory, the figure the journal prints. A preload (`src/lib/spawn-census.mjs`) is how the gate's `gh`, `git` and `herdr` calls are counted without editing the forty places that spawn them. The file is cut to its newest half past 2 MB, and a line that cannot be written is said on stderr and never changes the tick's exit. Nothing is read from it by the org: it is the instrument for a11ign/a11ign#3566, which asks why a tick takes two to ten minutes.
+
+## 0.29.1
+
+### Patch Changes
+
+- b0db0c3: The "Do it for me" press writes the line `chairman:queue add` accepts as his OK (a11ign/a11ign#3581, D1b of #3409). `answers.mjs` used to answer a `forme` press "not available yet" and write nothing; it now writes ONE ledger line, `{direction: "answer", step: "forme", via: "button", messageRef}` (`FORME_STEP`, the constant `session-queue.mjs` verifies), once per message: a second press on the same message writes nothing and says so. The press is not an answer: the request's label is untouched and nobody is woken, and he is told in plain words that his session was asked and nothing happens until it reads the queue, never what the queue holds. The ask itself is still the liaison's `chairman:queue add`.
+
+## 0.29.0
+
+### Minor Changes
+
+- ce62010: `host:install` puts an `agent-org` command in the host's `binDir`, so a workspace can run `agent-org <cmd>` from any directory without a copy of the tool in the project (a11ign/a11ign#3532). It is `host/agent-org`, a three-line launcher that runs `node <tool>/src/bin.mjs "$@"`, where `<tool>` is `host.json`'s `tool`, rendered at install time like the `@@binDir@@` of the unit templates. It is COPIED, as `gh` is, and not linked: a link into a checkout that is mid-rebase would break the command for the whole org. The tool's checkout is moved only by `update-tool`, so the launcher runs whatever the host runs and holds no version of its own. A host that names no `tool` owns no launcher. `host:check` reports it NOT INSTALLED when absent and DIVERGED when the bytes differ, exactly as for `gh`. From a linked worktree it resolves the project as `pnpm run <alias>` did: with `AGENT_ORG_HOST` unset, the standalone layout now answers the repository the command is run in WHEN IT HOLDS `.agent-org/project.json` (the installed layout's rule, #3068, given to this layout), so the worktree is served and not the main checkout. #3039's refusal stands for every other working directory: the tool's own checkout, the home directory, or any directory not inside a declared repository still refuses naming `AGENT_ORG_HOST` and the file. `AGENT_ORG_HOST`, set, still wins and names the primary's checkout.
+- 3b8dbc3: `trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` prints the token-efficiency tracker, per UTC week (a11ign/a11ign#3513, slice 6 of #3494). Per week: dollars, tokens and wall-clock (first claim to merge) per merged row at p50 and p90 (nearest-rank, each week its own, never pooled); the overhead share of dollars and tokens by standing session, with UNMEASURED turns (a session no order named, a transcript that could not be read) counted apart and never folded into it; the cache-read share of input; the repeat waste in dollars by class (re-delivered orders, preamble reloads at each wake, re-reviews, re-queues, compactions), each turn priced once in the first class that claims it, so the classes add up; CI re-runs as a count and runner time with `dollars: not derivable`; deferred waits as `not held`, never 0, until the deferral log (#3510) is in the store; and the ten dearest merged rows, ties broken by tokens then row number. A row with an unpriced turn is marked as a floor, and a row with no priced turn has no dollar figure. A row with no merge is listed apart (open per GitHub's open-issue list, else "outside": merged before the weeks or closed without a merge) and is in no average. The wake counts are `wakes-per-row`'s, imported: for each week the report prints how many rows its own count of the same rows agrees with and the reason for each that it does not (unmeasured there, the row claimed before the store's ingest window, else printed as UNEXPLAINED). A week the store holds only part of, or that is not over, is marked PARTIAL and left out of the week-over-week comparison. Every definition is printed once at the top. `--calls` (default 1500) is a ceiling on EVERY `gh api` call of one run, the merged-pull-request search and the open-row list included, checked before each call: the run that would make one more stops (with `--calls 0` it makes none, and says the list of merged pull requests cannot be had), so it is never overshot by the several calls one pull request costs. Events are read oldest merge first, skipping what the store holds, so a second run continues; a week with unread rows is PARTIAL, and a budget spent before the open-row list leaves open rows `not asked`. A search that holds more than GitHub's 1000-result cap is refused rather than cut short: narrow `--since`. `--since` is rounded down to its Monday 00:00 UTC; without it the report starts four weeks before the current one. Phase share is the waterfall's (#3511).
+
+### Patch Changes
+
+- d30c3bc: The typecheck covers 44 more files (a11ign/a11ign#3571, follow-up to #3551). `tsconfig.json`'s `exclude` named 48 files that were not type-clean; measured with `tsc --noEmit` and `exclude` emptied at `758ad90`, 44 of them had 147 errors between them (`auto-arm-token.test.ts` had been made clean by #197), and none now do. `exclude` holds four files, the tests that import a sibling living in the project (`merge-guard`, `merge-guard-checks-rule`, `workflow-run-liveness`, `tracker-leak-refusal`), because copying the siblings in would fork a file two repositories must keep identical. The program is 473 files, up from 429, and the CI floor is 440. The fixes are types: JSDoc on the tests' fakes, narrowing assertions, and annotations on six sources whose declared types were narrower than what they accept (`fake-provider`, `listen`, `stall`, `org-retro`, `row-claim` and `poll`, the last two with a hoisted binding that behaves the same). One test (`pr-stall-reason.test.ts`, #3120 (4)) recorded `gh` calls through a seam `stalledPrFacts` no longer has and asserted none, which could not fail; it now asserts what it can.
+
+## 0.28.0
+
+### Minor Changes
+
+- f245fd1: `chairman:queue` (a11ign/a11ign#3427, D1 of #3409): "can you do it for me?" has somewhere to go. For an act the chairman's own Claude session can do with his OK (admin writes, UniFi, switch reads, control-plane reads) the org never takes the credential and never makes him do it by hand: `chairman:queue add --message=<ref> --what=... --why=... --result-wanted=...` appends ONE line (`{id, askedAt, approvedByMessage, what, why, resultWanted}`, a closed schema) to `~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, mode 0600, and only when the ref is a message the ledger took in from him with his words on stdin matching its hash (as `chairman:record`), or a "Do it for me" press the ledger holds (`answers.mjs` does not write that line yet). One OK is one ask, and a `what`, `why` or `resultWanted` holding a token or key shape is refused with the file unchanged. **There is no executor:** nothing reads the file but a human's session, and a test scans `src/messaging/` for a module that touches it and also spawns a process. His session runs `list`, `take <id>` and `done <id> --result=<one line> [--hand-fix]`; `list` and `take` write `lastRead` to the delivery ledger, so `status` can say `never read` or `not read since <time>` (whether the session is running is not observable, and it never says so). `messaging:measure` prints `hand-fixes by the chairman's session`, counting each `done --hand-fix` in the window its line falls in. A project takes the change by running `pnpm run chairman:queue`; nothing else changes.
+
+## 0.27.0
+
+### Minor Changes
+
+- facdd71: `chairman:reply` refuses text that looks like a flag, and has a `--dry-run`. A `liaison` once typed `--session=liaison` (every other org command asks which session it is) and the chairman was SENT it, as a line of its own. The text arrived by a door `parseArgs` does not guard, a `--` separator or stdin, so the check sits on the text after both are resolved: any word that is `--` and a letter is refused with exit 2, naming the token, and nothing is sent or ledgered (a spaced ` -- ` and a rule of dashes are still prose). `chairman:reply --dry-run` runs the same checks and the same readers, prints the stamped text and what each placeholder resolved to, and builds no provider and appends nothing to the ledger: exit 0 for a text that would send, 2 for one that would be refused, with the refusal printed, and a `--to` no inbound line holds is refused as a send would refuse it. Nothing to take: a command that sent text starting with `--` now refuses it.
+
+## 0.26.4
+
+### Patch Changes
+
+- 889295b: A spawned agent's first prompt is confirmed SUBMITTED, and a refused wake is never logged delivered (a11ign/a11ign#3546, found by the chairman 2026-10-04: `worker-3544` and `worker-3486` sat 10 and 16 minutes with the prompt typed and unsent while the gate had logged `WOKE ... (STARTED ...)`). `deliver` now types nothing into a process it just started until herdr reports it `interactive_ready` and `idle` (30 s bound, else UNDELIVERED with that reason), and after the prompt it reads the agent again: still `idle` after 30 s means the text is in the box, so it sends ONE Enter (`agent send-keys <label> enter`) and waits 10 s more. An agent that never leaves `idle` is UNDELIVERED, never STARTED, never recorded, and the start is undone (the workspace closed, the claim released) so the next tick offers the row again as an order instead of typing a second copy on top of the first. An agent that did start a turn is sent no Enter. Measured live on 2026-10-04: `agent start` returned `interactive_ready: true`, the prompt took the agent to `working` in 1.1 to 1.3 s, and `send-keys enter` on typed-but-unsent text started a turn in 1.3 s, so 30 s is about twenty times the reading. The second half: a refused `/clear` or `/compact` was filed under `refused` (printed UNDELIVERED) with `-- delivered anyway` and the order counted sent, so one order carried two statuses. A refusal that leaves the session reachable now rides on the DELIVERED line (`worker <- key [seat: /clear refused (agent_blocked)]`) and `refused` stays empty; one that says the agent is gone (`agent_not_found`) is UNDELIVERED with herdr's own words and nothing is typed. A context command's refusal now quotes herdr's stderr (`herdrReason`), not the `Command failed: herdr ...` line that named neither code. Existing herdr fakes in the tests answer `agent get` through `src/packaging/started-pane.ts`.
+
+## 0.26.3
+
+### Patch Changes
+
+- 3cc9e00: The trace store is the one source for "how long" on a row or pull request, and the outcome clock is held to it (a11ign/a11ign#3517, #3494's done-when 5). `src/trace/clock-feed.mjs` is a pure read of the store's records (`clockFeedOf`: when a row was filed or a pull request opened, when the clock starts, when a merge or close stopped it; `openMsOf`), and `clock-feed.test.mjs` runs the gate's own facts into `overdueReading` beside it and is RED, naming both numbers, when the clock's `since` or the line it states is not the store's; the same join holds `org-retro`'s median open-to-merge and the backlog age to it. The clock is NOT fed from the store at run time (the gate does not ingest it each tick). The comparison found a real divergence, fixed here: a pull request's ISSUE record (`issues/{n}`) reads a second after its own `created_at`, so the store dated #3575 one second after the clock (1 of 40 merged pull requests); a pull request now asks `pulls/{n}`.
+
+## 0.26.2
+
+### Patch Changes
+
+- 3116290: A pull request whose closing row still has an open `blocked-by` edge is not armed, and the refusal names the blocker. `arm-pr` and `auto-arm-sweep` both ask one decider, `blockerVerdict`, after the authorship and ejection checks and before any write: it reads each `Closes` row's native `blockedBy` (in the row's own repository for `Closes owner/repo#n`), counts only OPEN blockers, and names every blocked row with its open blockers. A list that cannot be read, or whose `totalCount` exceeds the page returned with no open node on it, is `cannot-ask` and arms nothing, as an unreadable label list does. `Closes: none` has no row to read and arms as before. The PR gets one comment, found again by a marker so a tick does not repeat it, saying it arms on the tick after the blocker closes. `refusalBeforeArming` now takes the PR's body (a11ign/a11ign#3544).
+
+## 0.26.1
+
+### Patch Changes
+
+- d85cb24: The tool is now typechecked, and CI runs it (a11ign/a11ign#3551, toolchain row 4a of #3550). `tsc` ran nowhere: 217 of the 244 `.mjs` files carry `// @ts-check` and 226 files are `*.test.ts`, and none of it was checked. Measured with `tsc --noEmit` on a throwaway config at `472ac76`: 206 errors in 68 files (198 in 64 once the target was ES2023, which the sources already needed for `toSorted` and `findLast`). Now a tracked `tsconfig.json`, an `npm run typecheck` script, `@types/node` as a devDependency, and a `typecheck` job in `ci.yml` on every pull request, merge-queue run and push to `main`. The program is 429 files outside `node_modules` and exits 0; its `exclude` names the 48 files (46 tests, 2 entry points) that nothing included imports and that are not yet clean, 150 errors between them, so a new file is checked from its first commit and the list can only shrink. Nineteen source files that the clean ones import were fixed forward, in JSDoc types and casts only: each compiles to byte-identical minified JavaScript before and after (`esbuild --minify`, compared per file). Five of the excluded tests import sibling modules that live in the project the tool is installed in, so they cannot be checked from this repository alone. Making `typecheck` a required check on `main` is a repository setting and is not made by this change.
+
+## 0.26.0
+
+### Minor Changes
+
+- 914d563: `host:check` and the org-health tick read which `agent-org` release every runner actually runs and signal when any is not the newest release tag for longer than one release cycle (a11ign/a11ign#3533). Three readings, each an independent fact about a runner: the tool checkout (the tag it sits at, or "at no release" and its commit), every worktree's resolved `node_modules/agent-org` for each declared project (its `package.json` version through the symlink, or none), and the last completed `ci.yml` run on `main` (the version its lockfile names, else the `agent-org resolved vX.Y.Z` line a resolver step prints; a run that names none is UNKNOWN). The newest tag is read from the tool's remote (`git ls-remote`), not the checkout, which may itself be behind. The cycle is derived from `host/work-tick.timer.in`: the tick's `OnUnitActiveSec` plus the nine-minute tag lag plus one more tick, 13 minutes at the shipped 2-minute tick. The comparison is one pure module, `src/lib/tool-version-agreement.mjs`, which `host:check` (a finding when a runner is behind, a note otherwise) and the new `runner-behind-newest-release` org-health signal both call; an unreadable runner is named as unread and never counted as agreeing. `host:check --json` does not carry it (the tick reads it itself), so a session is not woken twice. The gate's `orgHealthNow` takes a `readToolAgreement` seam that is silent unless the caller passes one, and `work-gate.mjs` passes the real reader, which runs `src/lib/tool-version-agreement.mjs --json` in a child process.
+
+## 0.25.1
+
+### Patch Changes
+
+- 7c585ea: The outcome clock names a claimed row for the two idle shapes it could not tell from a row being worked (a11ign/a11ign#3486, slice 2b): `wait-premise-gone` (its holder idle on a `Not-before:` that is in the past, #3131) and `never-started` (no commit, push or comment, no pull request, its holder idle, #3495). The reading is `idleClaimantReading` over the claim-stall tick's moves (`decideArgs.claimFacts`) and herdr's listing, read only when a claimed row is untouched past `OVERDUE_IDLE_CLAIM_MINUTES` (80, measured). A busy holder, a wait that still holds, a pull request that owns the row and a young claim name nothing; a refused or partial herdr listing is reported unread, never as clear. The rows are still RAISED at the 135-minute row bound: `boundOf` reads one bound per kind and lives in `org-health.mjs`.
+
+## 0.25.0
+
+### Minor Changes
+
+- a62e8a1: `agent-org trace` now holds every actor's turns on the row they were about (a11ign/a11ign#3519, slice 2b of #3494). Why a product-manager's turns on #3406 were missing, measured on the host's own transcripts and ledger: a wake whose ledger key lists several rows (`product-manager/row-call-count-signal/3125,3404`) was left with `row: null`, because the first of the list is a guess, and so were its turns (41 of the 42 product-manager turns on the row); and an order typed by `prompt:session` has no ledger line, so a ruling made in its turn belonged to nothing (1 of the 42). Now a key that lists rows or pull requests puts the wake and its turns on EACH of them (`rows`, `prs`; `row` stays null), and a turn that WROTE to a row or pull request of the primary repository with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>` is on that one (`touchedRows`, `touchedPrs`, inferred from the command text: a view, a command that names another clone or `--repo`, and a `gh api` write are not read). The Codex reviewers' sessions under `~/.codex/sessions/<year>/<month>/<day>/` are read by a new pure reader (`src/trace/codex-turns.mjs`) into the same turn events, one per model request (`response_id`, so the running `token_count` totals are not counted again), `harness: "codex"`, keyed to the pull request in the session's directory name (`reviewer-<n>`, `reviewer-<repo>-<n>`), with tokens (`input` the uncached part, since Codex counts cached tokens inside `input_tokens`), the model, and `costUsd: null` because `PRICES` has no row for it; the files are only read. The store is now a last-wins append-only log: a corrected copy of an event is appended and supersedes the stored one, an identical copy adds nothing, and nothing on disk is rewritten, which is how the fix reaches the turns already stored (the ingest state is version 2, so the first run after this is a reported cold start). The report prints the totals per actor on the row and, per kind of actor, from when its transcripts are held; `NOT_HELD` no longer lists Codex reviewer turns and now names the subagent transcripts, which are not read.
+
+## 0.24.1
+
+### Patch Changes
+
+- b73710a: A claimed row that holds no code stops reserving its Region (a11ign/a11ign#3541; #3418's holder said "No code is left to write" and the gate went on shelving #3509 behind it for 63 minutes). A claimed row labelled `no-code-left` is dropped from the claimed-row comparison, and the shelving reason names the label as the way out. Its open pull request, if any, still decides by its files. And for a claimed row the fenced block of a Region section is the declaration and the prose around it declares nothing, so a paragraph that names a root-level file to say the row no longer edits it no longer reserves it; a section with no fence is read as before.
+
+## 0.24.0
+
+### Minor Changes
+
+- d655231: A chairman message is never dropped. When the liaison's queue refuses a chat message for any reason (the seat absent from herdr's roster, a full inbox, a queue file that cannot be written, an entry that is not in the file), `converse.mjs` queues it for `ceo` instead (`FALLBACK_RECIPIENT`, written once, the liaison always first), with the same provenance text plus one line saying why it came to `ceo`. The chairman is told in plain words (`The liaison isn't running; I've passed this to ceo.`) and never the queue's refusal text, a handoff, a path or an error class; only when `ceo`'s queue refuses too is the message lost, and he is told that and asked to send it again. The ledger keeps one line per message with verdict `rerouted-to-ceo`, the new `taker` and the first line of each queue's refusal (`refusals`); the listener's `outcome` is `rerouted-to-ceo`. A button's order (`explain`, `stuck`) gets the same fallback and the same plain words in `answers.mjs`, and the listener's "queue would not load" reply is plain too (`notReached()` no longer takes the reason; it stays in the ledger). This reverses the rule of a11ign/a11ign#3416 ("no fallback to `ceo`") on the chairman's order of 2026-10-04 19:55Z (a11ign/a11ign#3538); the scan over `src/messaging/` still finds `converse.mjs` as the one caller of the queue.
+
+## 0.23.0
+
+### Minor Changes
+
+- 51c9080: `agent-org trace` now ingests only what changed since its last run (a11ign/a11ign#3526, first slice of #3494 after the store), so it can run after each merge or over many rows. A new state file beside the store (`<store>.ingest-state.json`, `src/trace/ingest-state.mjs`) keeps, per transcript, the byte offset read, the file's size and mtime at that read, a hash of its first bytes, and the carry a resume needs in the middle of a conversation: the session's name, the wake in force at the offset (a turn takes its row from the wake before it, so without it the first turn after the offset would have `row: null`), the time of the last record, and the ledger lines already paired. A file whose size and mtime are both unchanged is not opened; a grown one is read from its offset; a file that shrank or whose first bytes changed is read again from byte 0 and listed in the report; a missing, unparseable, foreign-version state, or a store smaller than at the last run, is a full ingest and a reported cold start, never an error and never a silent skip. The store is read once per run and appended to as one batch per source (the shipped ingest re-parsed all of it for every transcript). A message written in the last 5 minutes is held back to the next run, because its turn is built from its last block and the store is append-only (measured on 80 transcripts: blocks of one message are sometimes separated by other records, the longest gap between them was 47 s). The report states the bytes read, the transcripts unchanged, the cold start, any re-read, what was held back, and from when the state holds the transcripts; it still names what the store does not hold.
+
+## 0.22.2
+
+### Patch Changes
+
+- 8d77fde: The gate feeds the outcome clock the claimed rows' comments, so a claimed row past its bound is named overdue (a11ign/a11ign#3486, slice 2). `orgHealthNow` had `claimedComments` since slice 1 but the tick's call omitted it, so production clocked PRs and was silent about every claimed row. "No row is claimed" is now `[]` and a refused read of the comments stays `null`, reported as unread and never as nothing overdue. The dead `readHeadCommittedAt` and its `GH_READS.conditionalOnQuietStalledPr` entry are deleted; a Dependabot PR is a fixture of the clock.
+
+## 0.22.1
+
+### Patch Changes
+
+- dfb08c0: Two or more open pull requests that change one file are reported on the tick to the owner of the later one, before either conflicts: the order tells them not to rebase or ask for a review yet, and to hold behind the one ahead (`Waiting-for: merged #m`) until it merges; a pair already held and waiting is not reported again (a11ign/a11ign#3480)
+
+## 0.22.0
+
+### Minor Changes
+
+- fba8ff5: `agent-org trace -- <row-or-pr>` now holds what GitHub saw (a11ign/a11ign#3508, second slice of #3494): when each row was filed, claimed and released (the claim-record comments), when a hold or an `answer:` order was set and lifted, when each pull request was opened, made ready, reviewed (the state, and the head it was posted on), moved to a new head, run through CI (each check-run: name, conclusion, start, end, head), queued, taken out of the queue and merged or closed. Every record is `source: "github"` with a stable id, so a second ingest adds nothing. Only the REST pool is spent (`gh api`), the report states how many calls were made, and a call that fails or a list that would not fit in the pages read throws rather than printing a trace that lacks the reviews. `NOT_HELD` no longer lists GitHub events and still lists the `gh` call ledger, the gate's deferral spans and Codex reviewer turns. A queue exit is `outcome: "merged"` when it falls within five seconds of the merge and `"unmerged"` otherwise, which is how an ejection reads; a head move is dated by its commit, because the timeline carries no push event.
+
+## 0.21.3
+
+### Patch Changes
+
+- 241c16e: A claim whose pull request merged in another tracked repository is released as merged only after the holder's worktrees in THAT repository's clone were read: one with a dirty file or a commit on no remote is held, and an unlisted clone or a failed `git worktree list` refuses the release, in the gate's reading and in the performer's own re-read (a11ign/a11ign#3453)
+
+## 0.21.2
+
+### Patch Changes
+
+- a70b355: `chairman-listen` and `chairman-watch` in tool form now start (a11ign/a11ign#3485). Both took the project root from `process.cwd()`, and a unit in tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so each exited 2 on `<tool>/.agent-org/project.json` and `RestartPreventExitStatus=2` left it stopped; `work-tick` was immune because it resolves its project through `$AGENT_ORG_HOST`. `messaging:listen` and `messaging:watch` now take their root from `HOME_CHECKOUT` (`resolveHomeCheckout`): `$AGENT_ORG_HOST` wins where a unit declares it, and an installed project's `pnpm run messaging:*` still answers the directory it was run in. `messaging-units-start.test.ts` renders each shipped unit with the real `toolForm` and STARTS its `ExecStart` as a child, from its `WorkingDirectory` with its own environment, against a scratch project and HOME (no network, no real `~/.config`); its mutant is the pre-fix tool, which must exit 2. The other messaging commands (`check`, `pair`, `reply`, `record`, `correct`, `ask-ceo`, `watch-list`) still read `process.cwd()`: a person or `pnpm` runs them from the project.
+
+## 0.21.1
+
+### Patch Changes
+
+- 3642d17: A `blocker-cleared` order is dropped, with its reason logged, when its holder already acted on the news (a11ign/a11ign#3451). #3390's worker claimed 101 s AFTER its last blocker closed (a claim is refused while a `blockedBy` edge is open), was deferred 13 ticks, and was told "PICK IT BACK UP" 91 minutes later, 1 min 46 s after it opened its pull request in `a11ign/agent-org`, which the old screen (the home repository's `Closes:` lines) could not see. `claimStallTick` now hands the facts it already builds for every claimed row on to `blockerClearedReading` (`onFacts`), which drops the order for one of three reasons, a closed set: `claimed-after-clearing`, `own-pull-request` (an open, unheld, or since-merged pull request that `ownsPr` says is the claim's own, in any tracked repository) and `moved-since-clearing` (a comment, commit or push after the clearing). Each drop is returned beside the orders as `{causeKey, reason, at}` and printed as a `SHELVED row #n:` line. A refused read (no claim record, the other repository's open list, the closing times) drops nothing and the log names it. `blockerClearedOrders` keeps its signature and returns the orders alone.
+
+## 0.21.0
+
+### Minor Changes
+
+- 6849076: A run in progress can be watched with `chairman:watch add run <id>` (a11ign/a11ign#3502). Its state is the new vocabulary field `{{run:<id>.status}}`: the run's status (`queued`, `in_progress`) while it runs and its conclusion once it has one, so each move is told and the watch ends with the conclusion. Until now the only run field, `{{run:<id>.conclusion}}`, threw for a run that had not concluded, so `add` refused the one case a watch is for; that field is unchanged. The liaison's brief restates the vocabulary, so a project that pins it learns `run:<id>.status` from `PLACEHOLDER_NAMES`.
+
+## 0.20.0
+
+### Minor Changes
+
+- dee0bc9: A project's `beforeTick` can name one of the tool's own commands (`"beforeTick": "agent-org primary:update"`), and the `work-tick` unit in tool form then runs it from the tool checkout (`/usr/bin/node <tool>/src/update-primary.mjs`, through the same command table `agent-org` itself reads) instead of through the project's `node_modules`. A project that declared `pnpm run primary:update` ran the copy its lockfile pins, a second version of the tool on every tick, for the one step that moves the project's own checkout. The words are split on any whitespace, the one way `parseBeforeTick` lets a command through, so a tab or a run of spaces after `agent-org` is the same command. A command that is not the tool's is still the project's own and runs as written; an unknown tool command refuses, and so does one declared by a project that is not the host's primary, because the tool serves the primary only. To take the change, a project edits its `beforeTick` to `agent-org primary:update` AFTER the host runs this release (an older tool would run the word `agent-org` as a program and the primary would stop moving), then reinstalls the unit with `host:install`.
+
+## 0.19.7
+
+### Patch Changes
+
+- 8c05f9e: "Keep me posted on X" is recorded once and told when X changes state. `pnpm run chairman:watch -- add <row|pr|run|unit> <id> --message=<ref>` writes a `direction: "watch"` ledger line naming the thing and a message of the chairman's the ledger took in (an unknown ref, or a thing the placeholder vocabulary's readers cannot read, is refused and writes nothing); `list` and `remove` answer "what are you keeping me posted on" and end a watch without a message. Each tick the new `watched` source reads every active watch through those readers and offers `watch:<thing>` (`<what it is>: now <state>`) when the state differs from the last one told, and a watch ends when its final state (a row closed, a pull request merged or closed) has been told, derived from the ledger, so a final send that failed is offered again. A `run` cannot be watched yet: the vocabulary reads a run only once it has concluded.
+
+## 0.19.6
+
+### Patch Changes
+
+- 0eefc09: `release.yml`'s header and the README's Releases section no longer say the host tracks `main` and a tag is not a deploy, which `update-tool` made false (a11ign/a11ign#3443): they say the host runs the newest release tag, `host.json`'s `toolVersion` pins one as the rollback, a merge with a changeset is live about nine minutes after it lands and a merge with none is never live. Comment and prose only; the release test now requires `toolVersion` in the README's Releases section in place of the retired sentence.
+
+## 0.19.5
+
+### Patch Changes
+
+- 22a29bb: The board report names the agent-org version that produced it, in one line under its header, read from the tool checkout's live release tag by `liveToolVersion` and never from `package.json` (which a host's checkout can disagree with), so a report read later says which version wrote it. A checkout at no release tag prints `agent-org version not read` with the cause, never a version and never a blank (#3468, of #3443).
+
+## 0.19.4
+
+### Patch Changes
+
+- 3dd492f: The tick's version banner (`agent-org vX.Y.Z (<sha>)` and `agent-org vX.Y.Z`, a11ign/a11ign#3443) is an expected repeating line: `repeating-lines.allowlist.json` names it, so the detector stops offering it to `orchestrator` after 30 ticks (a11ign/a11ign#3497). The banner's fault forms, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, stay offered.
+
+## 0.19.3
+
+### Patch Changes
+
+- 4303124: A pull request is a claim's own by one test the open and merged lookups share (head, row suffix, title reference, session label), so a merge on a branch the claimant did not claim releases the claim as merged and is no longer read as idle (a11ign/a11ign#3445)
+
+## 0.19.2
+
+### Patch Changes
+
+- 7f01e32: A code-only scope no longer runs the tracker readings against the primary's tracker (a11ign/a11ign#3493). `scopeTick` gave such a scope `[]` for every tracker lane but still ran `readings.tracker` inside `inRepo(undefined)`, which is the ambient repository, so one closed row owing an answer became one `answer-owed` order per code scope, three of them telling the session to put `--repo <scope>` on a row that does not exist there. A scope whose `tracker` is `null` now reads nothing from a tracker (the shapes an empty tracker returns), and the primary and a keyed scope with its own tracker are unchanged.
+
+## 0.19.1
+
+### Patch Changes
+
+- 0532579: B4 now compares a row's Region with the Regions of the rows already claimed (`in-progress`), as well as with open pull requests' files, so a claimed row with no pull request yet holds its files (a11ign/a11ign#3475; #3414 was claimed over three files #3423 had held for 27 minutes, and the two rows ran into three conflicting pull requests). `row-claim claim` refuses a row whose Region shares a file with a claimed row's, naming it and the files; `row-claim check` prints the same verdict; and the gate shelves a Ready row behind it with the holder's number in the reason, offering it again by itself once that row closes or is released. Nothing is written: the holders are derived from the open rows on every tick. The exclusions are the pull-request ones: changesets, the asking row, a `blockedBy` edge in either direction, and a claimed row whose own open pull request declares `Closes #<row>`, which is counted once, by its files. A claim that cannot read the list of claimed rows is refused as INCONCLUSIVE rather than passed, and two rows both already `in-progress` do not refuse each other: the lower number proceeds.
+
+## 0.19.0
+
+### Minor Changes
+
+- 316d657: New command `agent-org trace -- <row-or-pr>` (a11ign/a11ign#3494, first slice): one append-only trace store of the org's model turns and wake-ledger deliveries, keyed by row, pull request and repository, and a printout of one row's events in order with tokens, cost and wall-clock. The model-turn source is the Claude transcript (platform-first reading on the row: Claude Code's OpenTelemetry has no file exporter, needs a receiver the host does not run, and cannot reach a running standing seat). A turn is built once per API message id, because a transcript writes a message once per content block; cost is computed from a price table checked against Claude Code's own `cost_usd`, and is `null`, never 0, for a model with no price. It reads `wakes-per-row.mjs`'s parsers by import. GitHub events, waits, the `gh` call ledger and Codex reviewer turns are not in the store yet, and the report says so.
+
+## 0.18.2
+
+### Patch Changes
+
+- 97477b8: A reviewer instance's ending closes EVERY herdr workspace under its label, not only a label held exactly once (a11ign/a11ign#3482; `reviewer-3460` held `w16B` and `w16N` on 2026-10-04, and the teardown said "left running" on every tick for as long as both lived). Each close is tried even after one fails, a failing close keeps the instance registered, and the warning names the count. A duplicate that holds no agent no longer stops the instance's OTHER workspace from being judged between turns, and no longer makes a live reviewer look dead under an open pull request. That duplicate is written once to the `reviewer-absences` ledger (`duplicate-agentless`), so it is seen while the pull request is still open.
+
+## 0.18.1
+
+### Patch Changes
+
+- 979e4f8: A declared milestone coming true is told to the chairman once, with the sentence the project wrote for it. `messaging.milestones` in `.agent-org/project.json` names a file (absent means none) listing moments as `{ key, what, when }`, where `when` is a row closed, a pull request merged or a release tagged; the `milestones` source emits `milestone:<key>` the first time one holds and never again, and does not infer a milestone from a label or from GitHub's own milestones. The first complete read records the moments already true as seen and tells none of them. A condition that cannot be read is `cannot-ask`, never "not yet". `messaging:check` validates the file and refuses an entry with a missing `key`, `what` or `when` by name. This registers the `milestone` event kind in `event.mjs` and `core.mjs` (told once, never reminded, not silent) and admits `gh api` on `issues/<n>`, `pulls/<n>` and `releases` in the read-only allowlist (a11ign/a11ign#3414).
+
+## 0.18.0
+
+### Minor Changes
+
+- 3427864: `org-health`'s seventh signal is now an OUTCOME CLOCK, `overdue`, in place of `pr-not-progressing` (a11ign/a11ign#3486, the chairman's "how do we make sure nothing happens again?"). Every open pull request has an age since it opened and every claimed row an age since its newest claim record; ONLY A MERGE OR A CLOSE STOPS IT, so a comment, a label, a hold, a draft and a push do not restart it and no state exempts an item. Past 100 minutes for a PR (3 x the 33.7 min median of 289 `a11ign/a11ign` PRs merged 2026-09-27..10-04) or 135 minutes for a claimed row (3 x the 44.5 min median of 282 rows closed 2026-10-01..10-04, from the newest claim record) the item is offered to `ceo` as one `org-health` order that names each item with its kind, the gate's own label for its state (`stallReasonOf`: red, conflicted, held-on-purpose, awaiting-author-draft ...) and its owner. The label rides on the alarm and is never a condition for raising it, which is what hid a hold whose reason had gone and an approved draft with no stamp. A refused read, or an item nothing dates, is an unknown and never young. `PR_NOT_PROGRESSING_MINUTES` (180) and `REASONS_THAT_ARE_NOT_A_STALL` are deleted, and the clock costs no `gh api` call where the signal it replaces paid one per quiet PR. `orgHealthNow` takes the claimed rows' comments as `claimedComments`; a caller that omits it clocks the PRs and says nothing about the rows.
+
+## 0.17.1
+
+### Patch Changes
+
+- d31cf97: `pr-hold.mjs` takes, reads and releases a hold on a pull request of any repository the project declares: `--repo-key=<key>` (the key `project.json`'s `code` gives it) or `owner/repo#n`, absent being the first repository so every existing call is unchanged, and a repository the project does not declare is refused naming the declared ones. Every `gh` call, the marker comment and the re-arm read-back are aimed at that repository. The gate lifts a keyed pull request's resolved hold through the same module, released WITH its key, and reads a bare `#n` in a keyed item's `Waiting-for:` as that repository's (a11ign/a11ign#3479).
+
+## 0.17.0
+
+### Minor Changes
+
+- 6327be6: The `gh` routing wrapper (`host/gh`) now records every call in a size-bounded ledger, `gh-calls.tsv` in the account's own config directory, so the caller that drains a GraphQL pool can be named by measurement rather than guessed. Each line carries the time, the account, the pool (`graphql` and `core` where `gh` says so, `graphql?` where it is inferred from the command family), the `rateLimit.cost` a `gh api graphql` response reported, the exit status, `argv[1] argv[2]`, the herdr workspace and the calling command line. The call itself is unchanged: same arguments, stdin, output bytes and exit status, and a ledger that cannot be written never fails it. The wrapper no longer `exec`s `gh`, so it forwards `TERM`, `INT` and `HUP` to it. `A11Y_GH_LEDGER=off` skips the ledger. `node src/gh-ledger.mjs <gh-calls.tsv> [--account <login>] [--resource graphql] [--top <n>]` ranks callers by points. Re-run `host:install` to pick the wrapper up; `host:check` reports `DIVERGED` until then.
+
+## 0.16.0
+
+### Minor Changes
+
+- aa4735f: The liaison can ask `ceo` for a ruling through `chairman:ask-ceo --row=N --message=<ref>` (the question on stdin), and a question that names nothing that clears it is refused (a11ign/a11ign#3490, split from #3417). It is `prompt:session ceo --needs-decision` with two refusals in front, both before anything is queued: a `--message` ref the ledger does not hold, and a question with no `Waiting-for:` line the gate's own parser (`parseWaits`) reads as a condition on a row (`Waiting-for: unlabelled answer:ceo #3490` passes; `soon`, `manual`, a bare `#3490` and a line inside a code fence do not). The target is the constant `ceo`, with no argument that names another session; `prompt:session`'s exit 2 is reported as queued and not retried; the verb set of `chairman:correct` is unchanged. `docs/messaging.md` says what the predicate is and why.
+
+## 0.15.3
+
+### Patch Changes
+
+- 94a1ffe: The work gate no longer asks a reviewer for a first verdict on a pull request that conflicts with its base (a11ign/a11ign#3476). `draftOrder` read red, then a settled green head, and never asked whether the pull request could merge, so a DIRTY one sat in the reviewer lane as a clean one does: #148 was approved 7m42s after #145 made it DIRTY, at a head the rebase had to replace. A `CONFLICTING` pull request now gets no `draft-awaiting-verdict` order; its owner's `pr-merge-conflict` order already says the rebase is owed, and once it is pushed the head is new and the review is asked once, at the head that can merge. An unread merge state (`UNKNOWN`) still asks for the review, and a verdict already given (rework owed, a convinced draft not yet ready) is still acted on: only the request for a first look is withheld.
+
+## 0.15.2
+
+### Patch Changes
+
+- f24cef3: Neither arming path re-queues a pull request the merge queue ejected for `failed_checks` while its head is unchanged (a11ign/a11ign#3487; #3460 was ejected four times on 2026-10-04, about seven minutes of CI each, every pass failing the same way). `arm-pr` logs `NOT arming` with the ejection time and exits `DONE`; `auto-arm-sweep` reports `SKIPPED` with the same reason; both ask the one `ejectionVerdict` in `pr-armed-state.mjs`, which reads `queueEjectionOf`. A push to the head, a dequeue for any other reason and a PR with no queue history arm as before. A queue read that is refused arms nothing and is reported as a lookup that failed (`arm-pr` exits `CANNOT_ASK`, the sweep exits `1`), never read as "not ejected".
+
+## 0.15.1
+
+### Patch Changes
+
+- 42bd79b: The trunk-red order now tells the fixer how to make its fix findable (a11ign/a11ign#3449): label what it opens `incident` and put `Incident: incident:trunk-red` on a line of its own in the body, on both the own path (the fix pull request) and the routed path (the filed row). `readFixRow` accepts an open pull request carrying that label and line, where it skipped pull requests and so reported `nobody has picked this up yet` beside an open fix PR, and returns the item's `session:` label as `holder`. The other incident and stall keys have no standing order that opens a fix and are labelled by hand.
+
+## 0.15.0
+
+### Minor Changes
+
+- 1370868: A finishing order that has waited past the deferral bound goes to a free engineer where its cause allows (a11ign/a11ign#3465, follow-up of #3448). An order now declares `mayRelane: true` when any session can carry it out, and the only declaration today is `draft-convinced-not-ready` with an attributed verdict (the ready-flip the gate also performs itself); a self-signed or unattributed verdict, and every other cause, stays queued for its owner and is raised to `ceo` as before. When a declared order has been deferred for more than `ORDER_STALL_MINUTES` (15) and an engineer is free (`route`'s own test, `ineligibleReason` included), the tick prompts that engineer with the order under a line saying why, and the ledger records the recipient. It never starts a process for it: with nobody free the order stays queued and its refusal says `not re-laned: <why>`, still in the busy-seat shape so its age keeps counting. An unreadable deferral record re-lanes nothing and says so.
+
+## 0.14.3
+
+### Patch Changes
+
+- 124539a: `host:install` no longer starts a timer whose window ended on purpose: a timer systemd reports `disabled` whose window record holds a `stop` row (no newer arm marker) is written like every unit, gets no `enable --now`, and is reported `SKIPPED <unit> -- its window ended (<cause>, <ticks> ticks, <at>); arm it with shadow-window.mjs --arm`. It used to enable it, so the single remedy every message names undid what `host:check` calls `EXPECTED DISABLED -- ITS WINDOW ENDED`. A timer disabled with no stop row, one re-armed after its stop, and an enabled one are enabled as before, and the `host:check` note no longer says `host:install` would restart it (a11ign/a11ign#3484).
+
+## 0.14.2
+
+### Patch Changes
+
+- 4e9fd64: An order to a live instance carries only what changed. A follow-up header no longer says "your first order and its brief still stand", a spawned engineer's first order is its identity, row, worktree, branch and the one line naming `engineer.md` (it no longer repeats the three autonomy and end-of-turn paragraphs that file now says once), and the dated incident stories in order text (`blocker-cleared`, the claim-stalled nudge and fourteen other causes) moved into the comment above the function that builds each order, leaving one clause of reason in the order.
+- ad2aac7: A reviewer workspace that herdr brings back after its ending is looked at again, and a pane stopped at an interactive prompt is reported (a11ign/a11ign#3458). The reviewer teardown walked the registry's keys and nothing else, and an ending deletes the key, so when herdr restarted in the same second and restored the closed workspaces of `reviewer-agent-org-35` and `-36` (2026-10-02) they sat at Codex's working-directory picker for two days. The sweep now also takes every workspace on the listing that carries an instance's label and has no registry key, asks its pull request's own repository, and ends it with the same ledger line when that is closed or merged; an open or unreadable state, a working pane, `reviewer-1` and `reviewer-2`, and a label held by two workspaces are left. A new `org-health` signal, `pane-stopped-at-a-prompt`, offers `ceo` any pane that is not working and has shown Codex's picker or a trust prompt for over fifteen minutes, naming the session, the pane and how long; the first sighting is kept in `pane-prompts` beside the ledger because herdr stamps no time on a screen.
+
+## 0.14.1
+
+### Patch Changes
+
+- 03704ef: A SENT `incident:` or `stall:` message now ends with `Impact:` and **`Being done:`** (it was `Doing:`): the newest comment an org account left on the open row whose body carries `Incident: <key>` (label `incident`), quoted with its age, or `nobody has picked this up yet` when no such row is open, or `I could not read it` when the read failed (the event is still sent). A CLEARED message gains `Lasted: at least <span> (counted from the message that told you)`, read from the ledger through the new `readEpisodeStart(key)` reader, and `not known` when it cannot be read. `readFixRow` changes shape (a row and its newest org comment, not a row and its holder) and now makes up to two `gh api` calls; `watch.mjs`'s read-only allowlist admits `issues/<n>/comments`. The hold-down, the key and `firstSeenAt` are unchanged (a11ign/a11ign#3419).
+
+## 0.14.0
+
+### Minor Changes
+
+- a94d56a: The liaison can record what the chairman said on a row and fix what he says is wrong, through two commands and nothing else (a11ign/a11ign#3417). `chairman:record --row=N --message=<ref>` (his words on stdin) writes one row comment, quoted with its HTML comment markers escaped and opening `Recorded by liaison from the chairman's message <ref>; not written by the chairman`: it never carries the listener's `Chairman answered via Telegram` line, which only the listener may write. `chairman:correct --row=N --message=<ref> --as=withdraw|reroute|re-ask` is a closed set: `withdraw --reason=stale|wrongly-labelled|already-done` removes `needs:chairman` with a comment and writes a `withdraw` ledger line; `reroute` sets `answer:product-manager` and no other label; `re-ask` writes a new brief, refused unless the watcher would send an alert for it. Every command refuses a `--message` ref that is not an accepted inbound line in the ledger, and (but for a `re-ask`'s brief) words that are not the ones the ledger hashed, so nothing is written for a message the chairman did not send; a failure between two steps is resumed by the next call and not repeated. An agent with a shell can still write any comment with `gh`: this makes a recorded answer detectable against the chairman's chat, not impossible.
+
+## 0.13.0
+
+### Minor Changes
+
+- 02ded8f: A standing lead (`ceo`, `product-manager`, `orchestrator`) is no longer `/clear`ed before every order: when its previous order landed 30 minutes ago or less and its window reads at or under 100k cache-read tokens (50% of 200k) it keeps the window and is typed the follow-up shape; recent and over that it is `/compact`ed; older, or whenever the previous order's time or the transcript cannot be read, it is cleared and typed the whole first-contact order as before. Both numbers are unmeasured starting constants (`KEEP_WITHIN_MS`, `KEEP_FILL_TOKENS`, `wake.mjs`). `deliver` and `clearThenPrompt` take the one decision (`prepareContext`), the time of each landed order is kept beside the ledger (`last-order/`), and a kept lead's follow-up says what its window holds from earlier turns is a reading at a moment. The batched-wake header and `prompt:session`'s output and queued-order notice say what THIS delivery did (kept, compacted or cleared) instead of the sentence that was true only of a clear. Reviewers, spawned workers and persistent seats are unchanged (a11ign/a11ign#3440).
+
+## 0.12.0
+
+### Minor Changes
+
+- 97222d5: The chairman's request message now carries buttons (a11ign/a11ign#3423). The Telegram provider declares `buttons: true` and draws `actions` as `reply_markup.inline_keyboard`, and `messaging:watch` hands each `needs:chairman` request its options (or Approve), Explain more and Later; the answers path read `callback_data` and the brief offered options, but nothing had ever drawn a button, so the chairman could only type. A button's `callback_data` is a closed vocabulary (`ans:<option id>`, or `act:` plus `approve`, `done`, `stuck`, `later`, `explain`, `forme`): anything else is dropped with a hash and never forwarded. A press resolves the request (an option, `approve`, `done`), snoozes its reminders for 24 hours (`later`; the label stays), or queues one order for the `liaison` (`explain`, `stuck`); a press on an answered message is told so and its keyboard is removed. Events gain an optional `actions` list that the core hands to a provider that declares `buttons`, and never to a cleared notice. `converse.mjs` queues for the `liaison` as well as `ceo`, through the same single call.
+
+## 0.11.1
+
+### Patch Changes
+
+- 4fe9e8f: `chairman:reply` now hands `createGhReaders` the files `{{fleet.workers-up}}`, `{{fleet.workers-down}}` and `{{gate.last-tick.age}}` read: the two `fleet-watch` files under the project's `runs/`, and the work-tick completion record beside the wake ledger (as `messaging:watch` names them). The wake ledger's directory is resolved when asked, so a host that cannot name it costs `{{gate.*}}` alone, with a diagnostic on stderr, and the command still loads outside a configured host (a11ign/a11ign#3446).
+
+## 0.11.0
+
+### Minor Changes
+
+- bdf181c: The host runs ONE agent-org version, the newest release tag (a11ign/a11ign#3443). `update-tool` fetches tags by name and checks out the newest `vX.Y.Z` (numeric order; a pre-release and a name such as `latest` are ignored) instead of `origin/main`, prints `agent-org vX.Y.Z (<sha>)`, and with no matching tag refuses and leaves the checkout where it is, with no fallback to `main`. `host.json`'s new `toolVersion` is `"latest"` (the default) or one `"vX.Y.Z"`, which pins the host there: pinning the previous tag is the whole of a rollback, and any other value is refused by name. A move restarts the long-running units (`systemctl --user try-restart` of the chairman listener) so no process keeps the old modules, `chairman-listen` and `chairman-watch` render `node <tool>/src/messaging/*.mjs` in tool form, and `work-tick` prints `agent-org vX.Y.Z` as the first line of each tick (`liveToolVersion` is the reader a report can call).
+
+## 0.10.0
+
+### Minor Changes
+
+- 433b9c2: A finished draft no longer waits behind a busy session, and a wait is no longer silent (a11ign/a11ign#3448). **The ready-flip**: a `convinced` draft whose verify stamp is RED (typically "no worktree is at this head", because its author works on another host) is marked ready by the gate with no session woken when every REQUIRED check is settled green at its head; the stamp stays the rule when the required list could not be read, when a required check is red, running or absent from the head, and for `pr:open` without `--draft`. The tick now reads the required-check list when a green draft is open as well as when anything is red (`requiredWhenRed` is `requiredWhenNeeded`). **A deferred order is a stall**: the busy-seat deferral limit is 15 minutes (was 60), and an order deferred that long, or a standing seat's queue whose oldest order is that old, is raised to `ceo` as the `order-deferred-too-long` org-health signal (one constant, `ORDER_STALL_MINUTES`, with its measurement beside it). **The GraphQL pool**: the off-board read now asks for `viewer { login }` and `rateLimit` (never charged), and an account's pool below 20% is raised as the `api-pool-low` signal naming the account, the pool and the reset.
+
+## 0.9.1
+
+### Patch Changes
+
+- cb8825d: A release of a declared package is told to the chairman in one line (package, version and the first sentence of its release notes, with the release page last), where before nothing read releases and three in 75 minutes went unheard. The watcher reads each code repository `project.json` declares; the first read of a repository records its existing releases as seen and tells none of them, and a draft or a pre-release is not told. A release with empty notes says no summary was written. This registers the `release` event kind in `event.mjs` and `core.mjs` (told once, never reminded, not silent) and admits `gh api repos/<owner>/<name>/releases` in the read-only allowlist.
+
+## 0.9.0
+
+### Minor Changes
+
+- 1c7f588: The chairman's chat messages are now queued for `liaison` and for no other session (`RECIPIENT`; the scan over `src/messaging/` still finds one caller and one label, and `ceo` is named nowhere in `converse.mjs`). The chairman is told `Got it, looking.` BEFORE the queue is written, in the same words each time and with no model in it; a refused queue, an absent seat or an entry not found in the queue file is told in words (`I could not reach the liaison: <the queue's refusal, verbatim>. Nothing has been done with your message.`), with no fallback to `ceo`. The handoff id stays in the ledger and no longer reaches the chat, and the ledger's inbound line gains `ackAt`. `provenanceText` no longer tells its reader not to answer with `prompt:session`: that is the liaison's brief (a11ign/a11ign#3416). Not to be merged-and-deployed on a host without the liaison seat running (#3415, E2).
+
+## 0.8.5
+
+### Patch Changes
+
+- 8460e7c: `chairman:reply`'s closed vocabulary gains four checked facts for the liaison: `{{fleet.workers-up}}` and `{{fleet.workers-down}}` (worker NAMES only, from the two files `fleet-watch` writes, refused when either is more than 130 minutes old or the roster is empty), `{{gate.last-tick.age}}` (the tick's completion record) and `{{release:OWNER/REPO.latest}}` (the newest published release). Each is stamped by the send's `as of`, a failed read refuses the send and names which, and `PLACEHOLDER_NAMES` exports the list so the liaison's brief can be tested against it. `createGhReaders` takes the file paths from its host; `chairman:reply` does not pass them yet, so the fleet and gate placeholders refuse there until it does (a11ign/a11ign#3420).
+
+## 0.8.4
+
+### Patch Changes
+
+- 2e3d335: The chairman's inbound classifier no longer forwards a credential typed in plain words. `My password is: <value>` was forwarded, written to the handoff queue and reply-quoted in the acknowledgement, because the one key-then-value pattern needed whitespace straight after `is` and the colon ended it; `pw: X`, `here's my password X`, `my password X` and a bare pasted token passed the same way. A credential word (`password`, `passwd`, `passphrase`, `pw`, `pwd`, `secret`, `api key`, `private key`, `credentials`, and the weaker `pass`, `pin`, `token`, `login`) with a value beside it after `is`, `was`, `are`, `:`, `=`, `-`, `->` or whitespace, and the value-first form (`<value> is my password`), are now dropped; so is `ASIA` (temporary AWS) beside the shapes the ledger's redactor already held. A git object name (40 or 64 hex digits) and a lowercase hyphenated slug (a branch name) are no longer dropped by the 32-character catch-all, which took both. A new `withhold` verdict covers one 16+ character token that mixes three of lower, upper, digit and symbol: it is handled as a drop (deleted from the chat, no hash in its ledger line), the chairman is told "That looks like a credential, so I haven't passed it on; send it again with 'not a secret' if it isn't", and a resend containing `not a secret` passes this tier only, never a definite shape. A drop or a withhold is sent without `replyTo` (it already was; a test now pins it), so the chat does not render the message above the reply.
+
+## 0.8.3
+
+### Patch Changes
+
+- 9d12c24: A request alert reaches the chairman as a brief and not as a ticket with a header: the message opens with `What is happening:` and carries `Ask`, `Only you because`, `Checked`, `How long` and `Unblocks`, the row's number and title appear nowhere in it, and the link is its last line. A brief that offers options (a `chairman-options` block, well-formed or not) must also carry `Recommend` and `Trade-off`; one that offers none must carry `Not the chairman's Claude session because`. A brief missing a required line is refused as before (`alert not sent:`, naming each missing label, logged once). The ledger's `text` field now holds the message as sent, link included (a11ign/a11ign#3412).
+
+## 0.8.2
+
+### Patch Changes
+
+- 50ab14b: `createReaders` gains `readFixRow(key)`, so the `Doing` line of a SENT incident or stall can name the open row that holds the fix instead of reading `not known`. A fix row says which incident it fixes by a label named for the event key (`incident:trunk-red`, `stall:no-merge`), and the holder is its `session:<name>` label. The reader returns `null` only when GitHub answered and no open row carries the label, and throws when it could not be asked (a11ign/a11ign#3439, follows #3424).
+
+## 0.8.1
+
+### Patch Changes
+
+- bf64d78: A SENT `incident:` or `stall:` event now carries two more lines after what started: **Impact** (a fixed table keyed by the event's own key: `Nothing can merge.`, `No worker can be woken.`, `Captures are paused.` and so on, `not known` for a key with no entry) and **Doing** (read once through the optional `readFixRow(key)` reader: the open row and its holder, `no row is open for this yet` only when the reader says `null`, and `not known` when the reader is not wired, throws or returns a non-row). The "cleared" text, the event's key, `firstSeenAt` and the core's hold-down and dedupe are unchanged, and a failed fix-row read never withholds the event. `readFixRow` is not wired in `readers.mjs` yet, so Doing reads `not known` until it is (a11ign/a11ign#3424).
+
+## 0.8.0
+
+### Minor Changes
+
+- d055e5c: `messaging:measure` reads how fast the org acknowledges and answers the chairman from the delivery ledger, for a window (`--window=<n>h`, default 24h): per message from the chairman, seconds to acknowledge and seconds to the first reply that names it (or `unanswered`), and asks sent, answered by the chairman, withdrawn (cleared with no answer before it) and refused by the brief rule. It writes nothing and judges nothing; a window with no lines prints `no messages in the window`, never a zero rate. `chairman:reply --to <messageRef>` (the flag was `--reply-to`) now refuses a ref no inbound ledger line holds, so a reply's `replyTo` always names a message that exists; without it `replyTo` is still `null`, and such a reply answers no message in the reading.
+
+## 0.7.9
+
+### Patch Changes
+
+- a8d857e: A claim that names no branch and no worktree (a host act, a fleet or lab reading, a hand-claim) now writes its own claim record, `Claimed-nothing: <reason>` under the marker, instead of nothing. The stall check used to skip such a claim with `claim-stall: #N carries session:S but no claim record names when or where -- not evaluated` on every tick, so an abandoned one could not be told from a live one; it now reads the record's own time and the claimant's comments like any claim, and the nudge applies. A claim with no git object is never released by the stall check: a stalled one stays `nudged`, and the blockedBy and gone-holder releases ("holds nothing built") leave it held. A release is still spelled `released by` with no field, so the two never share a spelling, and releasing a nothing-claim posts the release record so a later claim that wrote nothing does not inherit the old one's time (a11ign/a11ign#3407).
+- 31a5608: The daily summary is opt-in and an absent `messaging.summary` means off (chairman, 2026-10-04: "the chairman does not want a daily message"; a11ign/a11ign#3410). It had defaulted to 08:00 London, so a host that never declared one sent `summary:2026-10-03` and `summary:2026-10-04`. `parseMessagingConfig` now returns `summary: null` for an absent key and `runWatch` then constructs no summary source, so nothing is read for it and nothing is sent; a present key (`summary: {}` included, which takes `DEFAULT_SUMMARY`'s fields) works as before, and a malformed one is still refused. `messaging:check` says `no daily summary` rather than a time. `DEFAULT_SUMMARY` is now the field defaults of a declared summary and no longer a default for an absent one.
+
+## 0.7.8
+
+### Patch Changes
+
+- 7105923: The isolation gate's copy skips an `@a11ign/*` dependency that has no sibling directory when it is spelled as a caret or tilde range (`^0.1.0`, `~0.1.0`), because that is how a package consumes one published from another repository and npm fetches it from the registry; a sibling that exists is still packed, and any other spelling with no sibling still fails. This matches the original, which `agent-org-wiring.test.ts` compares (a11ign/a11ign#3403, move 6 of #69).
+
+## 0.7.7
+
+### Patch Changes
+
+- 801ec25: A row labelled `needs:chairman` whose newest chairman-side event (a comment by the chairman's own login, or an answer comment opening with the messaging provenance line) is newer than its newest `labeled` event now orders `ceo` (`chairman-answered`) to take the label off or re-ask, keyed on the row and the event's time so it fires once per new event. Two REST calls per labelled row and none when nothing carries the label; a row whose timeline could not be read is reported on stderr, never counted as unanswered (a11ign/a11ign#3390).
+
+## 0.7.6
+
+### Patch Changes
+
+- 279a54c: The call-count signal leaves out a claimed row that declares a wait (`needs:chairman`, `answer:<session>`, a `blockedBy` edge, a future `Not-before:`, `parked`, `blocked`, `hold:*`), and counts a row whose wait has been lifted from the lifting rather than from the claim, so a standing seat's work elsewhere during the wait is not charged to the row. The lifting is read once, from the row's events, for a row already over the threshold, and a refused read keeps the whole window and says so on stderr (a11ign/a11ign#3384).
+
+## 0.7.5
+
+### Patch Changes
+
+- 61af713: A keyed repository's dependency change no longer costs a reviewer. When the clone's `node_modules` lacks a package the pull request's `package.json` declares, the tick installs into the REVIEW TREE (`pnpm install --frozen-lockfile --ignore-scripts` when the tree has a lockfile, `--no-lockfile` when it has none) instead of refusing; the shared clone is never written. When that install fails the refusal names the first line of pnpm's failure and a hand remedy that works over a clone that already has a `node_modules`: `rm -rf <clone>/node_modules && cp -a <tree>/node_modules <clone>/node_modules`. The old `mv <tree>/node_modules <clone>/node_modules` moved the tree's directory INTO an existing one (`node_modules/node_modules`) and left every package missing.
+
+## 0.7.4
+
+### Patch Changes
+
+- 8f1813f: A `sent` ledger line records `silent`, the flag the provider says it APPLIED (a boolean, or `null` when the provider returned none), so "was the summary silent" is answerable from `ledger.jsonl` and no longer only from a reading of the code path (a11ign/a11ign#3385, found closing #2905). It is the applied flag and not the requested one: a provider that drops `silent` records `false`. Lines already written carry no key and stay so.
+
+## 0.7.3
+
+### Patch Changes
+
+- 00c26a8: The work gate lifts a pull request's `hold:*` itself when every `Waiting-for:` it declares is `merged` or `closed` and true, through `pr-hold.mjs --release` (which re-arms a pull request that carried `rearm-on-release`), instead of ordering a possibly busy session to remove one label. A hold on a row, a label or unreadable condition, `manual`, an `answer:*` and `blocked` stay with a session, and a release that fails falls back to the old order (a11ign/a11ign#3364).
+
+## 0.7.2
+
+### Patch Changes
+
+- 0b02579: `src/merge-guard/merge-ref-staleness-rule.mjs` is deleted, with its test: `fetchMergeRefBehindBy` ran `git fetch origin pull/N/merge`, `rev-parse` and `rev-list` with no `cwd`, so a caller on the tick would have read the tool's own checkout instead of the project's, and nothing called it. `mergeRefIsStale` and `mergeRefStalenessReason` had no caller either (`git grep` at `origin/main` found only the module's own test), so they go too rather than wait for one. (a11ign/a11ign#3367)
+- 95e907f: `pr:open create ...` and `pr:edit edit ...` no longer reach `gh` as `gh pr create create` (a11ign/a11ign#3357). The command table already supplies the mode (`FIXED_ARGS`), and the program's own usage text spells it, so an author following the usage text lost a turn to a failure that said "nothing was created". `planInvocation` now drops a leading repeat of the table's fixed arguments, so `pr:open --title ...` and `pr:open create --title ...` are the same command; a `create` later in the arguments (a title) is left alone.
+
+## 0.7.1
+
+### Patch Changes
+
+- e29309d: The gate compares a row with the whole of a pull request of more than 100 files instead of dropping it: `gh pr list --json files` returns the first 100 and `comparablePrFiles` refuses a short list, so a row overlapping the 146-file version PR was offered every tick and refused at the spawn (30 ticks, 2026-10-03). `readPrs` now pages a truncated PR's files through REST, as the claim does, caches the list by PR number and head sha in the state directory (`truncated-pr-files.json`, newest 20), and, when paging fails, leaves the PR out of the comparison as before and says so on stderr.
+
+## 0.7.0
+
+### Minor Changes
+
+- d11317e: A pull request is marked ready only on a green verify stamp for its head (a11ign/a11ign#3215). `pr:open` refuses a create WITHOUT `--draft` when the project's `verify --check` is not green for this head and this body, naming the reasons and the command that makes it green; a draft opens on a passing body alone. The gate's `gh pr ready` after a `convinced` verdict is withheld on the same reading, and the author (not `product-manager`) is told once per patch. The stamp is read through the project's own script, never re-run: a project declares verify by having a `verify` script in `package.json`, and answers `--check [--draft-body=<file>]` with exit 0 or 1 and `  - <reason>` lines. **A project with no `verify` script is not refused**, and `pr:open` says `no verify declared for <name>`. `main` takes the reading as a `verifyStamp` dependency wired in the entry block, so a caller of `main` is unchanged.
+
+## 0.6.1
+
+### Patch Changes
+
+- 113e15e: A refused chairman alert is logged as `alert not sent: …`, no longer under the `chairman-options:` prefix: `messaging:watch` prefixed every request problem with it, so the refusal added in #122 was filed under the name of the malformed options block and a grep for options problems found refusals too. A request problem now names itself where it is made (`requestEvent`), and the watcher adds nothing. A malformed options block is still logged as `chairman-options: …`, and the ledger's note carries the same text.
+
+## 0.6.0
+
+### Minor Changes
+
+- 422f9a2: A `needs:chairman` alert states the act, or is not sent (a11ign/a11ign#3335). The alert is the row title plus three lines read from the newest org brief on the row (`brief for the chairman` from an OWNER, MEMBER or COLLABORATOR): `Ask:` (the one-line act), `Only you because:` (why no session can do it) and `Checked:` (what was read just before the label went on, and when, that shows the act is not already done). A row with the label and no such brief, or a brief missing any of the three, sends nothing; the reason names the missing lines and goes through the same note channel as a malformed `chairman-options` block (written to the ledger once per distinct reason, and logged). The row stays labelled, so a refusal is never read as the label going and nothing "Cleared" is sent for it. **A project that pins this tag must have its sessions write the three lines in the brief**, or its chairman alerts stop; the first line of the brief is no longer quoted, since `Ask:` replaces it. `Checked:` is a claim the source cannot re-read. The `chairman-options` block is unchanged.
+
+## 0.5.0
+
+### Minor Changes
+
+- de971e0: `row-file --board=<n> --lane=<owner> [--session=<name>]` boards a row that already exists (a11ign/a11ign#3330, for #3328's sweep of `regression` rows filed under `github.token`, which cannot resolve Project 1). An OPEN row on no board gets the Project item, Status Ready, then `ready` and `lane:<owner>` ADDED beside the labels it carries, and the read-back confirms all three. A row already on the board in any Status is left alone (exit 0, says so); a closed row, a claimed row, a body `--promote` would refuse, an unreadable board status and an unknown lane each change nothing and exit 1. `--board=` takes no flag but `--lane=` and `--session=`, and a malformed value never falls through to filing. `boardAndVerify` gained `session: null` (skip the Filed-by read-back for a row somebody else filed) and `lead` (its refusals no longer say "FILED as #n" of a row that already existed).
+
+## 0.4.2
+
+### Patch Changes
+
+- e3da32f: The whole-suite resolver follows a script's delegation through the project's pnpm passthrough, `node scripts/pnpm.mjs run <script>`, as well as `pnpm run <script>` (a11ign/a11ign#3151). It matched only the second, so a project whose `test` script chains through the passthrough (to run on a box with `corepack pnpm` and no `pnpm` on PATH) resolved `test` to no `*.test.ts` glob and refused every whole-suite acceptance. The passthrough is recognised by its file name, `pnpm.mjs`; a runner of any other name is not followed.
+
+## 0.4.1
+
+### Patch Changes
+
+- 814c4a9: The reviewers' verdict door resolves and is kept current (a11ign/a11ign#3316, found on #3311). Orders now print `$HOME/reviewer/bin/pr-review-verdict`, the path `install-reviewer-bin.sh` writes to, because `~/reviewer/bin` is on no PATH and the bare name was `command not found` for a reviewer that had finished its review. `host:check` reads the installed door against the shipped one and reports it `DRIFTED` or `NOT INSTALLED` (a clean report says `CURRENT`), and `host:install` runs the installer, which keeps the previous copy as `.bak-<stamp>` and reads the install back byte for byte.
+
+## 0.4.0
+
+### Minor Changes
+
+- f25625f: `MUTATION: MISSING` is a printed line and no longer fails (a11ign/a11ign#3282, decided on #3213). `mutationRecordReport` returns `ok: true` for a diff that changes a test with no `Mutation:` record, so CI's acceptance job and `pr:open` print the omission and go on; a DUPLICATE `Mutation:` header still fails, being a body the parser cannot read as one record. The project posts the survivors of a machine-chosen mutant set as a pull request comment instead.
+
+## 0.3.1
+
+### Patch Changes
+
+- d0a77c2: A keyed repository's first review's refusals each name something that works. When the clone has no `package.json` (the repository's first pull request adds it), the missing-dependency refusal no longer names `pnpm install` there, which answers `ERR_PNPM_NO_PKG_MANIFEST`: it names the install in the review tree and the move of its `node_modules` into the clone, and a clone with a manifest reads as before. A keyed reviewer herdr refuses with `blocked during startup` whose clone has no `trust_level = "trusted"` entry in the reviewer's codex config now says so, naming the file and the `[projects."<clone>"]` entry to add; any other refusal keeps its text.
+
+## 0.3.0
+
+### Minor Changes
+
+- c3d33b3: A lane marked `reviewOnly` in the project's lanes file protects its owner's REVIEW, not authorship (a11ign/a11ign#3254, #1756 Ruling item 7). `row-file` derives no `lane:<owner>` label from such a lane, so a path-only pipeline row is filed `lane:any` and an engineer can claim it; a Region that also touches another lane keeps that lane's label, and `lane:<owner>` for a genuine decision is still set by hand. And the owner's own login (`ROLE_LOGIN`, `ceo` is `a11ign-ai-leads`) may no longer author or arm a pull request touching the lane: `arm-pr` exits `REFUSED` without arming, `auto-arm-sweep` skips it so it cannot undo that one job later, and `pr-open create` refuses before anything is sent. There is no override and no `Lane-exception:` form. A lane without the field behaves exactly as before.
+
+## 0.2.5
+
+### Patch Changes
+
+- d398f12: The tick's `N order(s) had nowhere to go` summary no longer counts a Ready row that is only waiting for a free engineer seat (a11ign/a11ign#3266). A `ready-row-unclaimed` offer refused because every seat in the roster is `working` or holds its one row (#2407), with or without the `MAX_SPAWNS_PER_TICK` tail, is written `DEFERRED ... (waiting <m> min; retried next tick)` and does not make the tick exit 1, as a seat mid-turn already was (#3029). Past `CAPACITY_WAIT_LIMIT_MS` (30 minutes, sized from the 67 capacity waits of 2026-10-01 to 2026-10-03 that ended in a claim: longest 13) it is `UNDELIVERED` with its age. A roster with an idle, drained, B2-skipped, `unknown`, `absent` or `blocked` seat, or a `; no spawn:` fault, is still `UNDELIVERED`, and `org-retro`'s idle-minutes figure counts both forms.
+
+## 0.2.4
+
+### Patch Changes
+
+- 099e59a: `pr:open` and `pr:edit` now run every report CI's acceptance job runs over a body (a11ign/a11ign#3209). `checkBody` composed two (Acceptance, Closes) while the CI entry composed four, so a body with no `Mutation:` record, or a `## Measured` section with no command and output, passed `pr:open` and went red in CI (8 of 9 sampled acceptance failures were `MUTATION: MISSING`). The four are now one exported list, `CI_BODY_REPORTS`, run by `runCiBodyReports` from both the CLI entry and `checkBody`, so a fifth report reaches `pr:open` with no second edit. The diff `mutationRecordReport` needs is read from the local tree with `ACMR` and `--no-renames`, as CI reads it; one that cannot be read is `UNCHECKED` and not a refusal. The acceptance report's whole-suite NOTE now prints from `pr:open` too, because it is part of what CI prints.
+
+## 0.2.3
+
+### Patch Changes
+
+- d599a63: The tick's review tree links each package under the name its `package.json` declares, not its directory's: `@a11ign/x` lands in `node_modules/@a11ign/x` and an unscoped package such as `a11ign` directly in `node_modules/`, so a reviewer's Acceptance can import a renamed package. An entry with no readable manifest is skipped, the unscoped link is the tree's own and never the checkout's, and a link whose package was removed or renamed is removed.
+
+## 0.2.2
+
+### Patch Changes
+
+- ffc165d: A refusal posted for a failing check no longer dead-ends the pull request once the check is green at an equal patch (a11ign/a11ign#3199, from #3154). A verdict is valid for a patch on a base, and the patch id cannot see a defect in the base: when a `CHANGES_REQUESTED` was posted at a commit with a failing check run and the head has none, the reviewer door (`pr-review-verdict`) posts a newer review of either state, and the gate stops reading the refusal as the pull request's verdict, so the reviewer seat is asked for a fresh look instead of the author being told the rework is theirs. One decider, `refusalLifted`, reads check-run conclusions (never the review's prose) for both; an approval, an all-green refused commit, a failing head and an unreadable check all stay refused. The extra reads happen only on the equal-patch refusal path, one check-runs read per commit compared.
+
+## 0.2.1
+
+### Patch Changes
+
+- e8ca25c: A merge to `main` that carries a changeset is tagged and released with no version pull request: `release.yml` builds a release commit on top of the merge (the last tag's version and changelog, the changesets that tag already consumed removed, `changeset version` over the rest) and pushes it as the tag. `main`'s own `package.json` version and `CHANGELOG.md` lag the last tag, and a project pins the tag's tree.
+
 ## 0.2.0
 
 ### Minor Changes
