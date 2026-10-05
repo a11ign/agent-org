@@ -10,10 +10,12 @@ import { readFileSync } from "node:fs";
 
 /**
  * @typedef {{time: string, account: string, resource: string, cost: number | null, status: number,
- *            command: string, workspace: string, caller: string}} LedgerEntry
+ *            command: string, workspace: string, caller: string, sessionId?: string}} LedgerEntry `sessionId` is the 9th field, the id of the session that made
+ *            the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did
  */
 
 const FIELDS = 8;
+const NO_SESSION = "-";
 const DEFAULT_TOP = 15;
 const SCRIPT_NAME = /([^/\s]+\.(?:mjs|cjs|js|ts|sh|py))\b/;
 
@@ -26,8 +28,9 @@ export function parseLine(line) {
   if (f.length < FIELDS || !/^\d{4}-\d\d-\d\dT/.test(f[0])) return null;
   const status = Number(f[4]);
   if (!Number.isInteger(status)) return null;
+  const sessionId = f.length > FIELDS ? f[FIELDS] : NO_SESSION;
   return { time: f[0], account: f[1], resource: f[2], cost: f[3] === "" ? null : Number(f[3]), status,
-    command: f[5], workspace: f[6], caller: f.slice(FIELDS - 1).join("\t") };
+    command: f[5], workspace: f[6], caller: f[FIELDS - 1], ...(sessionId === NO_SESSION || sessionId === "" ? {} : { sessionId }) };
 }
 
 /** @param {string} text @returns {LedgerEntry[]} */

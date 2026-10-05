@@ -1,9 +1,10 @@
-// a11ign/a11ign#3516: the `gh` call ledger as a source of the trace store. Fixtures only: nothing here reads a real ledger, `~/.claude` or GitHub.
-// no-token: gh -- every ledger is a file this test writes in the shipped line shape (`host/gh`'s: time, account, resource, cost, status, argv[1] argv[2], workspace, the calling process's command line).
+// a11ign/a11ign#3516, #3589: the `gh` call ledger as a source of the trace store, keyed by the session id on each line. Fixtures only: nothing here reads a real ledger, `~/.claude` or GitHub.
+// no-token: gh -- every ledger is a file this test writes in the shipped line shape (`host/gh`'s: time, account, resource, cost, status, argv[1] argv[2], workspace, the calling process's command line, the session id).
 //
-// POSITIVE CONTROLS, named where they live: a call is keyed to the session whose window covers it and not to the first turn (the two sessions below carry different rows, and the second call must
-// be on the second); the cost of a call survives the read (a reader that drops the field reads null for the call whose response carried 3); an unkeyed call is asserted to EXIST before it is asserted
-// to have no row (`assert.ok(call)` first), so an ingest that dropped it fails there and not by passing an emptiness check.
+// POSITIVE CONTROLS, named where they live: a call is keyed by the id on its line, and the case that proves it is a second at which TWO sessions were running a tool (a keyer that ignores the id and reads the time is on
+// `ambiguous` there, and RED); a call is keyed to the session it names and not to the first turn (the sessions below carry different rows, and the second call must be on the second); the cost of a call survives the
+// read (a reader that drops the field reads null for the call whose response carried 3); an unkeyed call is asserted to EXIST before it is asserted to have no row (`find` asserts it), so an ingest that dropped it fails
+// there and not by passing an emptiness check.
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,8 +12,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger, topCallers } from "../gh-ledger.mjs";
 import { emptyState } from "./ingest-state.mjs";
-import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyCalls, keyed, summarize, toolWindows } from "./gh-calls.mjs";
-import { openStore } from "./store.mjs";
+import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyed, summarize } from "./gh-calls.mjs";
+import { appendToStore, openStore } from "./store.mjs";
 import type { TraceEvent } from "./store.mjs";
 
 const at = (iso: string): number => Date.parse(iso);
@@ -20,96 +21,86 @@ const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
 const SHELL = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL";
 const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs --json";
+/** The transcripts' ids: a Claude Code session's `CLAUDE_CODE_SESSION_ID` is the file name of its transcript. */
+const T9001 = "0b5e7f10-9001-4a00-8000-000000000001";
+const T9002 = "0b5e7f10-9002-4a00-8000-000000000002";
+const TORCH = "0b5e7f10-0000-4a00-8000-0000000000aa";
 
-/** One ledger line in the shape `host/gh` writes it. */
-const line = ({ time, account = WORKERS, resource = "graphql", cost = "", status = 0, command = "issue view", workspace = "w1AX", caller = SHELL }:
-  { time: string, account?: string, resource?: string, cost?: string | number, status?: number, command?: string, workspace?: string, caller?: string }): string =>
-  [time, account, resource, cost, status, command, workspace, caller].join("\t");
+/** One ledger line in the shape `host/gh` writes it: the 8 fields, and the session id as the 9th when the call had one. */
+const line = ({ time, account = WORKERS, resource = "graphql", cost = "", status = 0, command = "issue view", workspace = "w1AX", caller = SHELL, sessionId }:
+  { time: string, account?: string, resource?: string, cost?: string | number, status?: number, command?: string, workspace?: string, caller?: string, sessionId?: string }): string =>
+  [time, account, resource, cost, status, command, workspace, caller, ...(sessionId === undefined ? [] : [sessionId])].join("\t");
 
-/** One turn, as the store holds it. `wallClockMs` runs back to the tool_result that began it. */
-const turn = (session: string, row: number | null, iso: string, wallClockMs: number, wakeId: string): TraceEvent => ({ id: `turn:${session}:${iso}`, kind: "turn", source: "transcript", at: at(iso), session, row, pr: null, repo: null, cause: null, causeKey: null, wakeId, wallClockMs });
+/** One turn, as the store holds it: `transcript` is the id of the file it was read from. */
+const turn = (session: string, row: number | null, iso: string, transcript: string): TraceEvent => ({ id: `turn:${session}:${iso}`, kind: "turn", source: "transcript", at: at(iso), session, transcript, row, pr: null, repo: null, cause: null, causeKey: null, wakeId: "w" });
 
 /**
- * worker-9001 (row 9001): a turn at 10:00:10 and the next at 10:00:40, whose tool_result came at 10:00:34, so a tool ran from 10:00:10 to 10:00:34.
- * worker-9002 (row 9002): the same shape at 10:05:00, tool until 10:05:25.
- * orchestrator: a tool from 10:00:05 to 10:00:25, which overlaps worker-9001's from 10:00:10 to 10:00:25.
- * worker-9003: a turn in each of TWO wakes: the time between them is idle, not a tool.
+ * worker-9001 (row 9001): a turn at 10:00:10 and the next at 10:00:40, so a tool ran in between.
+ * worker-9002 (row 9002): the same shape at 10:05:00 and 10:05:30.
+ * orchestrator: a tool from 10:00:05 to 10:00:30, which overlaps worker-9001's, so at 10:00:20 TWO sessions are running a tool: the case #209's time rule left `ambiguous`.
  */
 const TURNS = [
-  turn("worker-9001", 9001, "2026-10-04T10:00:10Z", 4000, "w1"), turn("worker-9001", 9001, "2026-10-04T10:00:40Z", 6000, "w1"),
-  turn("worker-9002", 9002, "2026-10-04T10:05:00Z", 4000, "w2"), turn("worker-9002", 9002, "2026-10-04T10:05:30Z", 5000, "w2"),
-  turn("orchestrator", null, "2026-10-04T10:00:05Z", 4000, "o1"), turn("orchestrator", null, "2026-10-04T10:00:30Z", 5000, "o1"),
-  turn("worker-9003", 9003, "2026-10-04T10:10:00Z", 4000, "x1"), turn("worker-9003", 9003, "2026-10-04T10:40:00Z", 4000, "x2"),
+  turn("worker-9001", 9001, "2026-10-04T10:00:10Z", T9001), turn("worker-9001", 9001, "2026-10-04T10:00:40Z", T9001),
+  turn("worker-9002", 9002, "2026-10-04T10:05:00Z", T9002), turn("worker-9002", 9002, "2026-10-04T10:05:30Z", T9002),
+  turn("orchestrator", null, "2026-10-04T10:00:05Z", TORCH), turn("orchestrator", null, "2026-10-04T10:00:30Z", TORCH),
 ];
 
 const LEDGER = [
-  line({ time: "2026-10-04T10:00:30Z", cost: 3 }), // from a shell, only worker-9001's tool was running: keyed to row 9001, and its response carried 3 points
-  line({ time: "2026-10-04T10:05:10Z", resource: "core", command: "api repos/a11ign/a11ign/issues/9002" }), // keyed to row 9002: the first turn of the store is row 9001's
-  line({ time: "2026-10-04T10:00:20Z" }), // two sessions' tools were running
-  line({ time: "2026-10-04T10:20:00Z", account: LEADS, resource: "graphql?", command: "pr list", workspace: "w2" }), // no window covers it
-  line({ time: "2026-10-04T10:00:30Z", caller: UNIT, resource: "graphql?", command: "pr list", workspace: "-" }), // a unit, in worker-9001's tool window: never keyed by time
-  line({ time: "2026-10-04T10:25:00Z" }), // between worker-9003's two wakes: idle is not a tool
+  line({ time: "2026-10-04T10:00:30Z", cost: 3, sessionId: T9001 }), // keyed to row 9001 through the turn that follows it, and its response carried 3 points
+  line({ time: "2026-10-04T10:05:10Z", resource: "core", command: "api repos/a11ign/a11ign/issues/9002", sessionId: T9002 }), // keyed to row 9002: the first turn of the store is row 9001's
+  line({ time: "2026-10-04T10:00:20Z", sessionId: T9001 }), // two sessions' tools were running: the id names worker-9001's
+  line({ time: "2026-10-04T10:20:00Z", account: LEADS, resource: "graphql?", command: "pr list", workspace: "w2", sessionId: T9001 }), // names a session, but no turn of it follows
+  line({ time: "2026-10-04T10:00:30Z", caller: UNIT, resource: "graphql?", command: "pr list", workspace: "-", sessionId: "-" }), // a unit, in worker-9001's tool window: no id, never joined by time
+  line({ time: "2026-10-04T10:25:00Z" }), // a line of before the wrapper wrote an id (8 fields), from a session's shell: no id, and unkeyed
 ].join("\n");
 
 const calls = (text: string = LEDGER): TraceEvent[] => callsOfLedgerText(`${text}\n`).calls;
 /** The call at `time`, asserted to EXIST first: an ingest that dropped it fails here and not by an emptiness check on what follows. */
-const find = (all: TraceEvent[], time: string, resource?: string): TraceEvent => {
-  const hit = all.find((call) => call.at === at(time) && (resource === undefined || call.resource === resource));
+const find = (all: TraceEvent[], time: string, resource?: string, sessionId?: string): TraceEvent => {
+  const hit = all.find((call) => call.at === at(time) && (resource === undefined || call.resource === resource) && (sessionId === undefined || call.sessionId === sessionId));
   assert.ok(hit, `no call at ${time}`);
   return hit;
 };
 const withTurns = (events: TraceEvent[] = TURNS): TraceEvent[] => keyed(calls(), events);
 
-test("KEYED: each call is one gh-ledger record on the session whose tool window covers its second, and a call outside every window keeps row: null", () => {
+test("KEYED: each call is one gh-ledger record on the session its line names, through that session's next turn, and a call no turn follows keeps row: null", () => {
   const all = withTurns();
   assert.equal(all.length, 6, "one record per line");
   assert.ok(all.every((call) => call.source === "gh-ledger" && call.kind === "gh_call"));
   const first = find(all, "2026-10-04T10:00:30Z", "graphql");
-  assert.deepEqual([first.session, first.row, first.keyedBy], ["worker-9001", 9001, "time"]);
+  assert.deepEqual([first.session, first.row, first.keyedBy], ["worker-9001", 9001, "session"]);
   assert.equal(first.cost, 3, "the cost the response carried is held: a reader that drops the field fails here");
-  assert.deepEqual([first.account, first.resource, first.exit, first.command, first.workspace], [WORKERS, "graphql", 0, "issue view", "w1AX"]);
+  assert.deepEqual([first.account, first.resource, first.exit, first.command, first.workspace, first.sessionId], [WORKERS, "graphql", 0, "issue view", "w1AX", T9001]);
   const second = find(all, "2026-10-04T10:05:10Z");
   assert.deepEqual([second.session, second.row, second.cost], ["worker-9002", 9002, null], "keyed to the SECOND session: a reader that keys every call to the first turn is on row 9001");
   const outside = find(all, "2026-10-04T10:20:00Z");
-  assert.ok(outside, "the call is HELD, not dropped");
-  assert.deepEqual([outside.row, outside.session, outside.keyedBy, outside.unkeyed, outside.candidates], [null, "gh-ledger", null, "no-turn", 0]);
-  const idle = find(all, "2026-10-04T10:25:00Z");
-  assert.deepEqual([idle.row, idle.unkeyed], [null, "no-turn"], "the time between two wakes of a session is idle, and no tool ran in it");
+  assert.deepEqual([outside.row, outside.session, outside.keyedBy, outside.unkeyed], [null, "gh-ledger", null, "no-turn"], "the session is named and no later turn of it is held: HELD, not dropped, and retried on a later run");
 });
 
-test("KEYED: two sessions covering a call name NEITHER, and a call from a unit or script is never keyed by time even when one session's window covers it", () => {
+test("KEYED: a second at which TWO sessions were running a tool keys each call to the session its line names (the case the time rule left `ambiguous`)", () => {
+  const both = [line({ time: "2026-10-04T10:00:20Z", sessionId: T9001 }), line({ time: "2026-10-04T10:00:20Z", sessionId: TORCH })].join("\n");
+  const [nine, orchestrator] = keyed(calls(both), TURNS);
+  assert.deepEqual([nine.session, nine.row, nine.keyedBy, nine.unkeyed], ["worker-9001", 9001, "session", undefined]);
+  assert.deepEqual([orchestrator.session, orchestrator.row, orchestrator.keyedBy], ["orchestrator", null, "session"], "the orchestrator's call is on the orchestrator, which has no row, and is not worker-9001's");
+});
+
+test("KEYED: a call with no id is `script`, never keyed by time, even in a session's shell and even when one session's window covers its second; an 8-field line of before the change reads as it did", () => {
   const all = withTurns();
-  const both = find(all, "2026-10-04T10:00:20Z");
-  assert.deepEqual([both.row, both.session, both.unkeyed, both.candidates], [null, "gh-ledger", "ambiguous", 2]);
   const unit = find(all, "2026-10-04T10:00:30Z", "graphql?");
-  assert.deepEqual([unit.row, unit.session, unit.unkeyed, unit.script, unit.viaShell], [null, "gh-ledger", "script", "work-gate.mjs", false],
+  assert.deepEqual([unit.row, unit.session, unit.unkeyed, unit.script, unit.sessionId], [null, "gh-ledger", "script", "work-gate.mjs", undefined],
     "the window of worker-9001 covers this second, and the unit is still no session's");
-  assert.equal(find(all, "2026-10-04T10:00:30Z", "graphql").script, "(a session's shell)", "a shell is named for what it is, not for its snapshot file");
+  const old = find(all, "2026-10-04T10:25:00Z");
+  assert.deepEqual([old.row, old.unkeyed, old.script, "sessionId" in old], [null, "script", "(a session's shell)", false], "an 8-field line has no id, so it is not keyed: a shell is named for what it is, not for its snapshot file");
+  assert.equal(find(all, "2026-10-04T10:00:30Z", "graphql").script, "(a session's shell)");
   const preloaded = callsOfLedgerText(`${line({ time: "2026-10-04T10:00:00Z", caller: "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs" })}\n`).calls[0];
   assert.equal(preloaded.script, "work-tick.mjs", "the `--import=` form of the preload is stripped too");
 });
 
-test("KEYED: a window is the gap between turns of one wake up to the tool_result, widened to whole seconds, and its turn is the one that follows", () => {
-  const windows = toolWindows(TURNS);
-  const nine = windows.find((window) => window.session === "worker-9001");
-  assert.ok(nine, "worker-9001's window exists");
-  assert.deepEqual([nine.from, nine.to], [at("2026-10-04T10:00:10Z"), at("2026-10-04T10:00:34Z") + 999]);
-  assert.equal(nine.turn.at, at("2026-10-04T10:00:40Z"));
-  assert.equal(windows.some((window) => window.session === "worker-9003"), false, "two wakes are two windows of nothing");
-  const edge = (iso: string, viaShell = true) => keyCalls([{ at: at(iso), viaShell }], windows)[0];
-  assert.equal("turn" in edge("2026-10-04T10:00:34Z"), true, "the last second of the tool, whose line carries its start of the second");
-  assert.equal("turn" in edge("2026-10-04T10:00:35Z"), false, "the second after the tool_result is the model's, not a tool's");
-});
-
-test("INGEST: a half line is skipped as parseLine skips it, three identical calls are three records, and a line read again is the record already held", () => {
-  const same = line({ time: "2026-10-04T10:05:11Z", command: "pr list", resource: "graphql?" });
-  const text = `${[same, same, same, "2026-10-04T10:05:12Z\tonly\tthree"].join("\n")}\n`;
-  const first = callsOfLedgerText(text);
-  assert.equal(first.skipped, 1);
-  assert.equal(first.calls.length, 3);
-  assert.equal(new Set(first.calls.map((call) => call.id)).size, 3, "an identical line is told apart by its order");
-  assert.deepEqual(callsOfLedgerText(text).calls.map((call) => call.id), first.calls.map((call) => call.id), "ids are the line's, not the read's");
-  assert.deepEqual(callsOfLedgerText(`${same}\n`).calls.map((call) => call.id), [first.calls[0].id], "a trim that keeps only the first of three still holds its id");
+test("KEYED: the turn that ISSUED a call is not its next turn: the call is keyed to the first turn that ended in a LATER second, in the same wake and so on the same row", () => {
+  const issuing = turn("worker-9001", 9001, "2026-10-04T10:00:20Z", T9001); // ends at 10:00:20.000, and the call it issued finished in that second
+  const following = { ...turn("worker-9001", 9007, "2026-10-04T10:00:22Z", T9001), id: "turn:following" };
+  const [call] = keyed(calls(line({ time: "2026-10-04T10:00:20Z", sessionId: T9001 })), [following, issuing]); // out of order on purpose: the turns are sorted by the keyer, not by luck
+  assert.deepEqual([call.row, call.keyedBy], [9007, "session"], "a keyer that took the first turn at or after the call's second is on the issuing turn's row, 9001");
 });
 
 /** A host: a scratch store and a ledger each of two accounts, written the way `host/gh` appends. */
@@ -173,16 +164,28 @@ test("INGEST: a trim reads as a shrink, is read again from byte 0 and SAID, and 
   assert.match(ghIngestLines(after).join("\n"), /read again from byte 0: .*gh-calls.tsv: (shrank|its first bytes changed)/);
 });
 
-test("INGEST: a call whose turn had not been read is keyed on a LATER run, once; one that no turn ever covers stays unkeyed and is not corrected again", () => {
+test("INGEST: a call whose turn had not been read is keyed on a LATER run, once; one that no turn ever follows stays unkeyed and is not corrected again", () => {
   const { ledgers, store, run } = host();
-  writeFileSync(ledgers.workers, lines(line({ time: "2026-10-04T10:00:30Z" }), line({ time: "2026-10-04T10:20:00Z" })));
+  writeFileSync(ledgers.workers, lines(line({ time: "2026-10-04T10:00:30Z", sessionId: T9001 }), line({ time: "2026-10-04T10:20:00Z", sessionId: T9001 })));
   assert.equal(run(NOW, [ledgers.workers]).rekeyed, 0);
   assert.deepEqual(store.events.map((event) => event.unkeyed), ["no-turn", "no-turn"], "no turn is in the store yet, so both are unkeyed");
   store.events.push(...TURNS);
   const later = run(NOW, [ledgers.workers]);
-  assert.deepEqual([later.rekeyed, later.added], [1, 0], "only the call a turn now covers is corrected");
-  assert.deepEqual(store.events.filter((event) => event.kind === "gh_call").map((event) => [event.row, event.keyedBy]), [[9001, "time"], [null, null]]);
+  assert.deepEqual([later.rekeyed, later.added], [1, 0], "only the call a turn now follows is corrected");
+  assert.deepEqual(store.events.filter((event) => event.kind === "gh_call").map((event) => [event.row, event.keyedBy]), [[9001, "session"], [null, null]]);
   assert.equal(run(NOW, [ledgers.workers]).rekeyed, 0, "a keyed call is not asked again");
+});
+
+test("INGEST: a call the time rule left `ambiguous` (a record of before #3589) is corrected to `script` once, and its time-rule fields are gone; a `script` record is not asked again", () => {
+  const { ledgers, store, run } = host();
+  const [legacy] = calls(line({ time: "2026-10-04T10:00:20Z" }));
+  appendToStore(store, [{ ...legacy, viaShell: true, unkeyed: "ambiguous", candidates: 2 } as unknown as TraceEvent]);
+  const first = run(NOW, [ledgers.workers]);
+  assert.equal(first.rekeyed, 1, "POSITIVE CONTROL: the legacy record was offered and changed");
+  const held = store.events.find((event) => event.id === legacy.id);
+  assert.ok(held, "the call is still held");
+  assert.deepEqual([held.unkeyed, "viaShell" in held, "candidates" in held], ["script", false, false]);
+  assert.equal(run(NOW, [ledgers.workers]).rekeyed, 0);
 });
 
 test("POINTS: a call's points are the cost its response carried, else one for a GraphQL call, and they agree with gh-ledger.mjs's own reading of the same lines", () => {
@@ -198,14 +201,14 @@ test("REPORT: the row's calls and GraphQL points, the floor marked, the calls of
   const all = withTurns();
   const mine = all.filter((call) => call.row === 9001);
   const text = ghCallLines({ events: mine, held: all }).join("\n");
-  assert.match(text, /keyed to this row \(INFERRED and a LOWER BOUND.*1 calls: 1 on the GraphQL pool = 3 points \(3 read from responses, 0 calls FLOOR/);
-  assert.match(text, /KEYED TO NO ROW, listed apart \(2 of the store's 6 are keyed\): 4 calls/);
-  assert.match(text, /because: 1 came from a script or unit.*; 1 had two or more sessions' tool windows covering them; 2 had none/);
+  assert.match(text, /keyed to this row \(by the session id on the line; a LOWER BOUND.*2 calls: 2 on the GraphQL pool = 4 points \(3 read from responses, 1 calls FLOOR/);
+  assert.match(text, /KEYED TO NO ROW, listed apart \(3 of the store's 6 are keyed\): 3 calls/);
+  assert.match(text, /because: 2 carry no session id.*; 1 name a session the store holds no later turn of yet/);
   assert.match(text, /\d+ pts +\d+ calls +a11ign-ai-workers work-gate\.mjs/, "the unit that burns the pool is named by its script");
   assert.match(text, /a11ign-ai-leads +held from 2026-10-04T10:20Z/, "the earliest call per account");
   assert.match(text, /a11ign-ai-workers +held from 2026-10-04T10:00Z/);
   assert.match(text, /a call older than that is GONE/);
-  const floor = ghCallLines({ events: all.filter((call) => call.unkeyed === "script") }).join("\n");
+  const floor = ghCallLines({ events: all.filter((call) => call.resource === "graphql?" && call.unkeyed === "script") }).join("\n");
   assert.match(floor, /1 calls: 1 on the GraphQL pool = 1 points \(0 read from responses, 1 calls FLOOR at 1 point each.*1 of the pool assignments only inferred/, "a floor is marked, never stated as a reading");
   assert.match(ghCallLines({ events: [] }).join("\n"), /keyed to this row.*: none/);
 });

@@ -44,6 +44,12 @@ const REVIEWER = [
 
 const read = (lines, file = "rollout-a.jsonl", extra = {}) => eventsOfCodexSession({ text: `${lines.join("\n")}\n`, file, rowRepo: ROW_REPO, ...extra });
 
+test("TRANSCRIPT ID (#3589): a turn carries the uuid ending its rollout's file name, which `CODEX_THREAD_ID` holds in the shell that session started; a file with no uuid carries none", () => {
+  const id = "01a109e5-898a-7183-9545-94bb9ea0c2b3";
+  assert.equal(read(REVIEWER, `/h/.codex/sessions/2026/10/05/rollout-2026-10-05T03-30-00-${id}.jsonl`).events[0].transcript, id);
+  assert.equal("transcript" in read(REVIEWER, "rollout-a.jsonl").events[0], false, "no uuid, no key: never a guessed one");
+});
+
 test("TURNS: one per model request (not per running total), keyed to the pull request the reviewer was reviewing, with tokens, model and no invented cost", () => {
   const { session, events } = read(REVIEWER);
   assert.equal(session, "reviewer-9100");

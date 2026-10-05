@@ -39,7 +39,7 @@ export const DEFINITIONS = [
   "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
   "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
   "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model. Its wall-clock runs from the last record sent to the model.",
-  "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED, and INFERRED: a call is on a session, and through its next turn on a row, only when it came from a session's shell and exactly one session's tool window covered its second (`keyedBy: time`); else the call's session is `gh-ledger`, it has no row, and `unkeyed` says why (`script`, `ambiguous`, `no-turn`). A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
+  "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED BY THE LINE'S SESSION ID (#3589): `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) on each call, which is the file name of its transcript, and a turn carries its transcript's id; a call is on that session and, through the session's next turn, on a row (`keyedBy: session`). A line with no id (a unit or script outside any session, or a line written before the wrapper named its session) is `unkeyed: script`; one whose session has no later turn in the store yet is `unkeyed: no-turn`; either way the call's session is `gh-ledger` and it has no row. A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
   "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
 ];
 
@@ -64,10 +64,10 @@ export const PRICES = [
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
  * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
+ *   costUsd?: number | null, transcript?: string, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
  *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
  *   completedAt?: number | null, outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
- *   script?: string, viaShell?: boolean, keyedBy?: "time" | null, unkeyed?: "script" | "ambiguous" | "no-turn", candidates?: number }} TraceEvent
+ *   script?: string, sessionId?: string, keyedBy?: "session" | "time" | null, unkeyed?: "script" | "no-turn" }} TraceEvent
  */
 
 /**
@@ -243,6 +243,9 @@ function settledBoundary({ records, groups, end, now }) {
 
 /** @typedef {import("./ingest-state.mjs").Carry} Carry */
 
+/** A Claude transcript's id is its file name (`<id>.jsonl`), and is what `CLAUDE_CODE_SESSION_ID` holds in the session that wrote it: the key `host/gh` writes on a `gh` call (#3589). @param {string} file */
+const transcriptId = (file) => (file.split("/").pop() ?? file).replace(/\.jsonl$/, "");
+
 /**
  * Every event one transcript holds, or the part of it from a resume point. A turn belongs to the latest wake before it; a turn before any wake belongs to the session
  * itself. `carry` is what the read before this one left (`null` for a read from byte 0), and the returned `carry` and `consumed` are what the next one starts from:
@@ -288,7 +291,7 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   const owner = (/** @type {number} */ at) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
     ?? { id: null, ...subjectOfSession(session, rowRepo), cause: null, causeKey: null };
   const priorAt = carry?.lastAt ?? null;
-  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, owner, priorAt, rowRepo }), ...compactionsOf(settled, session, owner));
+  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, transcript: transcriptId(file), owner, priorAt, rowRepo }), ...compactionsOf(settled, session, owner));
   const lastAt = settled.findLast((candidate) => !Number.isNaN(candidate.at))?.at ?? priorAt;
   const remembered = [...used, ...spent].filter((entry) => latest === null || entry.at >= latest.at - LEDGER_MEMORY_MS);
   return {
@@ -336,10 +339,10 @@ const listedBy = ({ rows, prs }) => ({ ...(rows ? { rows } : {}), ...(prs ? { pr
 
 /**
  * One turn per `message.id`, from its last record. `priorAt` is the time of the record before this read began, for the wall-clock of a turn that is the first thing in it.
- * @param {{ records: Rec[], groups: MessageGroup[], session: string, owner: Owner, priorAt: number | null, rowRepo: string }} input
+ * @param {{ records: Rec[], groups: MessageGroup[], session: string, transcript: string, owner: Owner, priorAt: number | null, rowRepo: string }} input
  * @returns {TraceEvent[]}
  */
-function turnsOf({ records, groups, session, owner, priorAt, rowRepo }) {
+function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo }) {
   const before = recordBefore(records, priorAt);
   return groups.map(({ id: messageId, first, last, record }) => {
     const endedAt = records[last].at;
@@ -347,7 +350,7 @@ function turnsOf({ records, groups, session, owner, priorAt, rowRepo }) {
     const tokens = tokensOf(record.message.usage);
     const own = owner(endedAt);
     return {
-      id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
+      id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, transcript, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
       causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens),
       wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, sidechain: record.isSidechain === true,
       ...touchesOf(records.slice(first, last + 1).filter(({ record: block }) => block?.message?.id === messageId), rowRepo),

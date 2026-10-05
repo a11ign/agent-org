@@ -85,6 +85,34 @@ test("#3466: a `gh api graphql` call appends ONE line naming account, resource, 
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
+test("#3589: the line carries the session id of the session that made the call as its LAST field, Claude's first, then Codex's, and `-` (read as no id) when there is none", () => {
+  const h = host();
+  try {
+    const CLAUDE = "593792d3-21f4-4deb-baa9-12403b79ecfe";
+    const CODEX = "01a109e5-898a-7183-9545-94bb9ea0c2b3";
+    h.run({ CLAUDE_CODE_SESSION_ID: CLAUDE }, "pr", "list");
+    h.run({ CODEX_THREAD_ID: CODEX }, "pr", "list");
+    h.run({ CLAUDE_CODE_SESSION_ID: CLAUDE, CODEX_THREAD_ID: CODEX }, "pr", "list");
+    h.run({}, "pr", "list");
+    h.run({ CLAUDE_CODE_SESSION_ID: "a b\tc;$(x)" }, "pr", "list");
+    const raw = h.lines();
+    assert.equal(raw.length, 5, "POSITIVE CONTROL: every call wrote a line");
+    assert.ok(raw.every((l) => l.split("\t").length === 9), "nine fields on every line, so a hostile id cannot add or remove one");
+    assert.deepEqual(raw.map((l) => l.split("\t")[8]), [CLAUDE, CODEX, CLAUDE, "-", "abcx"], "the id is the last field; only [A-Za-z0-9-] survive (`a b<tab>c;$(x)` leaves `abcx`)");
+    assert.deepEqual(h.lines().map((l) => parseLine(l)?.sessionId), [CLAUDE, CODEX, CLAUDE, undefined, "abcx"], "the reader reads it, and a `-` is no id");
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
+test("#3589: a line written BEFORE the id was added (8 fields) still parses, to the same entry it always did, and a 9-field line is the same entry plus the id", () => {
+  const OLD = ["2026-10-04T14:00:00Z", WORKERS, "graphql", "3", "0", "api graphql", "w3", "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1-a.sh"].join("\t");
+  const before = { time: "2026-10-04T14:00:00Z", account: WORKERS, resource: "graphql", cost: 3, status: 0, command: "api graphql", workspace: "w3",
+    caller: "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1-a.sh" };
+  assert.deepEqual(parseLine(OLD), before, "exactly the entry of before: no `sessionId` key, not even an undefined one");
+  assert.deepEqual(parseLine(`${OLD}\tsess-1`), { ...before, sessionId: "sess-1" });
+  assert.deepEqual(parseLine(`${OLD}\t-`), before, "a `-` is the wrapper's 'no id'");
+  assert.equal(parseLedger(`${OLD}\n${OLD}\tsess-1\n`).length, 2, "a ledger holding both generations of line reads both");
+});
+
 test("#3466: the cost is the response's, SUMMED over pages, and absent when the query never asked for it", () => {
   const h = host();
   try {
