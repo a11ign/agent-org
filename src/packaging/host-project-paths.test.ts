@@ -76,7 +76,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 test("#2620: no home-directory literal remains in the tool's sources, its templates or its scripts", () => {
   const files = toolFiles();
-  assert.equal(files.length, 3 + 17, "POSITIVE CONTROL: twenty files are scanned (three sources, seventeen host entries -- the two the shadow window added, #2867, the two chairman-watch templates, #2901, the listener's, #2907, the agent-org launcher, #3532, and the weekly report's pair and script, a11ign/a11ign#3627, included), so an emptiness below is not a scan of nothing");
+  assert.equal(files.length, 3 + 19, "POSITIVE CONTROL: twenty-two files are scanned (three sources, nineteen host entries -- the two the shadow window added, #2867, the two chairman-watch templates, #2901, the listener's, #2907, the agent-org launcher, #3532, the weekly report's pair and script, a11ign/a11ign#3627, and the trace pages' pair, a11ign/a11ign#3515, included), so an emptiness below is not a scan of nothing");
   const offenders = files.filter((file) => HOME_LITERAL.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
@@ -139,6 +139,7 @@ test("#2620: NO UNIT IS RENAMED -- the tool's units carry the names they had, an
   assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "a11ign-", declaredKeys: new Set(["causes", "units"]) }), [
     "a11ign-board-report.service", "a11ign-board-report.timer",
     "a11ign-shadow-window.service", "a11ign-shadow-window.timer",
+    "a11ign-trace-publish.service", "a11ign-trace-publish.timer",
     "a11ign-trace-weekly.service", "a11ign-trace-weekly.timer",
     "a11ign-work-tick.service", "a11ign-work-tick.timer",
     "a11ign-worktree-prune.service", "a11ign-worktree-prune.timer",
@@ -147,7 +148,7 @@ test("#2620: NO UNIT IS RENAMED -- the tool's units carry the names they had, an
 
 // --- 3. the tool's own entries are classified ---------------------------------------------------------------------------------------
 
-test("#2620: the tool's 17 entries are classified -- the original 8, the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) and the weekly report's three (a11ign/a11ign#3627) -- and the host-data entry is host.json's, not a file", () => {
+test("#2620: the tool's 19 entries are classified -- the original 8, the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) the weekly report's three (a11ign/a11ign#3627) and the trace pages' two (a11ign/a11ign#3515) -- and the host-data entry is host.json's, not a file", () => {
   // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
@@ -161,7 +162,9 @@ test("#2620: the tool's 17 entries are classified -- the original 8, the shadow 
   assert.equal(agentOrgLauncher.length, 1, "POSITIVE CONTROL: #3532's launcher is one more, copied to binDir, so the 8 below is still the original eight");
   const traceWeekly = inTool.filter((name) => name.startsWith("trace-weekly"));
   assert.equal(traceWeekly.length, 3, "POSITIVE CONTROL: a11ign/a11ign#3627's pair and its script are three more, so the 8 below is still the original eight");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length - agentOrgLauncher.length - traceWeekly.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  const tracePublish = inTool.filter((name) => name.startsWith("trace-publish"));
+  assert.equal(tracePublish.length, 2, "POSITIVE CONTROL: a11ign/a11ign#3515's pair is two more, so the 8 below is still the original eight");
+  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length - agentOrgLauncher.length - traceWeekly.length - tracePublish.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);
@@ -226,7 +229,7 @@ test("#2620: a fixture project's paths and prefix change the units, the wrapper 
   assert.match(work, /^Environment=HOME=\/srv\/ci$/m);
   assert.match(shippedUnitText("acme-work-tick.timer", ACME) ?? "", /^Requires=acme-work-tick\.service$/m);
   assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "acme-", declaredKeys: new Set() }).filter((u) => u.endsWith(".service")),
-    ["acme-board-report.service", "acme-shadow-window.service", "acme-trace-weekly.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
+    ["acme-board-report.service", "acme-shadow-window.service", "acme-trace-publish.service", "acme-trace-weekly.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
   for (const text of [work, shippedScriptText("gh", ACME) ?? ""]) assert.doesNotMatch(text, /\/home\/agent/, "and none of a11ign's host survives");
   assert.match(shippedScriptText("gh", ACME) ?? "", /A11Y_GH_REAL:-\/srv\/ci\/bin\/gh-real/);
   const files = ownedIdentityFiles(ACME);
