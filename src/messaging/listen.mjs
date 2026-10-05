@@ -43,7 +43,7 @@ import { createLedger, describeError } from "./ledger.mjs";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.mjs";
 import { readSecretFile, SecretFileRefusal } from "./secret.mjs";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.mjs";
-import { createWatchReaders } from "./watch-list.mjs";
+import { createWatchReaders, hostFiles } from "./watch-list.mjs";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const LOCK_FILE = "listener.lock";
@@ -259,11 +259,13 @@ export function createForwarder({ answers, send, converse, log, clearKeyboard })
  * **A WALK IS AN OPTIONAL CAPABILITY OF A LISTENER THAT ANSWERS REQUESTS, SO IT DOES NOT TAKE THE LISTENER DOWN:** a project with no readable tracker is told on the journal, and a procedure is then refused
  * on its first press (`answers.mjs`: no readers, nothing written) while every other request is answered as it was.
  *
- * @param {{ root: string, now: () => number, err: (line: string) => void }} input @returns {import("./placeholders.mjs").Readers | undefined}
+ * `{{fleet.*}}` and `{{gate.*}}` read the files `hostFiles` names, so a `Verify:` over a worker power-on can be read (#3646).
+ *
+ * @param {{ root: string, now: () => number, err: (line: string) => void }} input @returns {Promise<import("./placeholders.mjs").Readers | undefined>}
  */
-function verifyingReaders({ root, now, err }) {
+export async function verifyingReaders({ root, now, err }) {
   try {
-    return createWatchReaders(trackerRepo(root), now);
+    return createWatchReaders(trackerRepo(root), now, await hostFiles({ root, err: (line) => err(`messaging:listen: ${line}`) }));
   } catch (error) {
     err(`messaging:listen: walk-throughs are off, so a procedure brief is refused: ${describeError(error)}`);
     return undefined;
@@ -287,7 +289,7 @@ async function listen(deps, config) {
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
     // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
-    const verifying = readers ?? (github === undefined ? verifyingReaders({ root: /** @type {string} */ (root), now, err }) : undefined);
+    const verifying = readers ?? (github === undefined ? await verifyingReaders({ root: /** @type {string} */ (root), now, err }) : undefined);
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, readers: verifying, orders: { liaison: (order) => conversation.orderLiaison(order) } });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
