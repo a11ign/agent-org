@@ -95,6 +95,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "agent-org",
   // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
+  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.mjs`, which decides whether a head has moved; the timer is only a clock.
+  "trace-publish.service.in", "trace-publish.timer.in",
 ]);
 
 /**
@@ -352,6 +354,10 @@ const OTHER_TOOL_FORMS = Object.freeze({
   "trace-weekly.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/trace-weekly-post.sh"],
+  ],
+  // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
+  "trace-publish.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node src/trace/publish.mjs"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own

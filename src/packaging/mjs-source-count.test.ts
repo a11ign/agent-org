@@ -47,14 +47,16 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 216 to 217 (a11ign/a11ign#3659): `src/ci-health-liveness.mjs` is the file the row's Region names, and the gate (`work-gate.mjs`, run by the tick under plain `node`) will import it, so it cannot be `.ts` (node on the host has no TypeScript).
 // 217 to 218 (a11ign/a11ign#3511): `src/trace/waterfall.mjs` is a NEW source file that a shipped command imports (`trace.mjs` and `aggregate.mjs`, `trace -- <row>` and `--aggregate`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 218 to 219 (a11ign/a11ign#3512): `src/trace/swimlane.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `trace -- <row> --html`), so it cannot be `.ts`.
-const SOURCE_MJS_PIN = 219;
+// 219 to 220 (a11ign/a11ign#3515): `src/trace/publish.mjs` is a NEW source file that a shipped unit runs (`trace-publish.service`, `/usr/bin/node src/trace/publish.mjs`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 220;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 47 to 48 (a11ign/a11ign#3659): `ci-health-liveness.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 48 to 49 (a11ign/a11ign#3511): `waterfall.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 49 to 50 (a11ign/a11ign#3512): `swimlane.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
-const TEST_MJS_PIN = 50;
+// 50 to 51 (a11ign/a11ign#3515): `publish.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
+const TEST_MJS_PIN = 51;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");

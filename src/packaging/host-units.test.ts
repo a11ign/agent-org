@@ -853,7 +853,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1280,6 +1280,8 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.mjs --arm` creates the
     // marker (no marker, nothing read, exit 0), which the unit's own comments say; that is why a fifth entry here is a decision made and not one missed.
     "a11ign-shadow-window.timer",
+    // a11ign/a11ign#3515: the trace pages' timer. Its service runs once at `host:install` and DECIDES whether anything moved: a first install publishes, a re-install on an unmoved head does nothing.
+    "a11ign-trace-publish.timer",
     "a11ign-work-tick.timer",
     "a11ign-worktree-prune.timer",
   ], "`Requires=` in a timer's [Unit] is an ordinary start dependency, so `enable --now` on the timer "
@@ -2839,4 +2841,15 @@ test("#3627: installed as the tool, the weekly report's service runs the script 
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
   assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
   assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
+});
+
+test("#3515: installed as the tool, the trace pages' service runs publish.mjs from the tool and is told where the host's declaration is", () => {
+  const rendered = readFileSync(join(SHIPPED_DIR, "trace-publish.service.in"), "utf8")
+    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/publish\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  const installed = toolForm("trace-publish.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/publish\.mjs$/m);
+  assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
 });

@@ -1,0 +1,16 @@
+[Unit]
+# THE CLOCK BEHIND THE TRACE PAGES -- a11ign/a11ign#3515. See @@prefix@@trace-publish.service for what it runs. `Requires=` makes `host:install` run the service once (the partition in
+# host-units.test.ts names every timer that does), which is safe here: the service DECIDES, and a run that finds nothing moved does nothing.
+Description=Ten-minute check of whether the trace pages are stale (#3515)
+Requires=@@prefix@@trace-publish.service
+
+[Timer]
+# TEN MINUTES, because "after each merge" is met by looking at the heads of `main` often, and one REST call per repository per tick is cheap (six repositories, 36 an hour). The
+# hourly regeneration the row asks for when nothing merged is the service's own age check, not this clock: a faster clock would not make it hourlier, only dearer.
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
