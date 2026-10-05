@@ -96,7 +96,7 @@ test("(3) NEITHER: a version whose attestation cannot be read has no commit, and
     const { commits } = readers({});
     const releases = npmReleasesFrom({ document: registryDocument({}), repository, since: SINCE, commits });
     assert.equal(releases[0].commit, null, repository.repo);
-    const reading = measureRepository(repository, world(releases), NOW) as Any;
+    const reading = measureRepository(repository, world(releases, repository), NOW) as Any;
     assert.equal(reading.leadTime, null);
     assert.equal(reading.reasons.leadTime, "ancestry of #13 could not be read");
   }
@@ -106,7 +106,7 @@ test("(4) Lead time prints a number once the commit is placed: the same world as
   for (const repository of npmEntries()) {
     const { commits } = readers({ attestations: { "0.1.0": attestationsFor(ATTESTED) } });
     const releases = npmReleasesFrom({ document: registryDocument({}), repository, since: SINCE, commits });
-    const reading = measureRepository(repository, world(releases), NOW) as Any;
+    const reading = measureRepository(repository, world(releases, repository), NOW) as Any;
     assert.equal(reading.status, "read");
     assert.equal(reading.leadTime.changes, 1);
     assert.ok(Math.abs(reading.leadTime.medianMinutes - 97.697) < 0.001, `merge 08:00:00Z to publish 09:37:41.806Z is 97.697 minutes, read ${reading.leadTime.medianMinutes}`);
@@ -120,7 +120,7 @@ test("(5) a name reservation is not a release for any metric, and is never looke
   const releases = npmReleasesFrom({ document: registryDocument({}), repository, since: SINCE, commits });
   assert.deepEqual(releases.map((release: Any) => release.id), ["0.1.0"], "two reservations and one release read as ONE release");
   assert.deepEqual(calls.tag, ["v0.1.0"]);
-  const reading = measureRepository(repository, world(releases), NOW) as Any;
+  const reading = measureRepository(repository, world(releases, repository), NOW) as Any;
   assert.equal(reading.deploymentFrequency.value, 1);
   assert.deepEqual([isNameReservation("0.0.0-reserved.0"), isNameReservation("0.0.0-stage"), isNameReservation("0.1.0"), isNameReservation("0.0.1"), isNameReservation("1.0.0-rc.1")], [true, true, false, false, false]);
 });
@@ -130,7 +130,7 @@ test("(5b) a package that holds only reservations is `no release yet`, not a rel
   const document = { versions: { "0.0.0-reserved.0": {} }, time: { "0.0.0-reserved.0": PUBLISHED } };
   const releases = npmReleasesFrom({ document, repository, since: SINCE, commits: readers({}).commits });
   assert.deepEqual(releases, []);
-  assert.equal((measureRepository(repository, { ...world(releases), mergedPrs: () => [] }, NOW) as Any).status, "no release yet");
+  assert.equal((measureRepository(repository, { ...world(releases, repository), mergedPrs: () => [] }, NOW) as Any).status, "no release yet");
 });
 
 test("(6) a release older than the window is not looked up at all", () => {
@@ -155,11 +155,17 @@ test("(7) the attestation reader takes only a provenance statement's 40-hex gitC
   for (const [name, document] of unreadable) assert.equal(commitFromAttestations(document), null, name);
 });
 
-/** One repository's world around a release list: the merged pull request #13 whose merge commit is the one the release was cut from. */
-function world(releases: Any[]) {
+/**
+ * One repository's world around a release list: the merged pull request #13 whose merge commit is the one the release was cut from. ITS PATHS ARE DERIVED
+ * FROM THE REPOSITORY'S OWN `releasablePaths`, because the population is derived and a fixed list of paths held only the repositories that existed when it
+ * was written: `a11ign/toolchain` (a11ign/a11ign#3719) declares `packages/toolchain/`, none of the four paths this listed, so its one change read as not
+ * releasable and (3) and (4) failed on a declaration that was right. `docs/notes.md` is under no repository's paths and keeps the filter honest: the change
+ * counts because of the releasable path, and not because every path counts.
+ */
+function world(releases: Any[], repository: Any) {
   return {
     releases: () => releases,
-    mergedPrs: () => [{ number: 13, mergedAt: MERGED, mergeCommit: ATTESTED, paths: ["packages/pdf/index.ts", "packages/nvda-worker/a.ts", "packages/worker-fleet/b.ts", "packages/cli/c.ts"] }],
+    mergedPrs: () => [{ number: 13, mergedAt: MERGED, mergeCommit: ATTESTED, paths: [...(repository.releasablePaths as string[]).map((path) => `${path}index.ts`), "docs/notes.md"] }],
     regressions: () => [],
     range: () => ({ status: "identical", commits: [] }),
   };
