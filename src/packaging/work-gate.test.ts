@@ -34,7 +34,7 @@ import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied
 import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
 import { deriveClosureRequirements } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
-import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, readReadyRows, EXIT, CAUSES,
+import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
@@ -811,6 +811,51 @@ test("#2101 comparablePrFiles reads the declaration off the body gh already retu
   ]).map((p: { number: number, closes: number[] }) => [p.number, p.closes]),
   [[2077, [2076]], [2084, []], [2085, []]],
   "an opt-out and a bare mention declare NO row, so neither can exclude one");
+});
+
+// --- #3674: THE OPEN LIST COSTS BY THE PAGE IT ASKS FOR, NOT BY THE PULL REQUESTS THAT ANSWER -------------------------------------
+//
+// The gate asked 100 of each of six repositories every two minutes: 7 GraphQL points apiece against 1 at 20 (measured by replaying the
+// query with `rateLimit { cost }`), for lists holding 0 or 1 pull request. The narrow page is the whole list unless it came back FULL.
+
+/** `gh`'s answer for an open list of `n` pull requests; only what `readPrs` looks at (`files` and `changedFiles`) is present. */
+const openList = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: i + 1, files: [], changedFiles: 0 })));
+const limitOf = (args: string[]) => Number(args[args.indexOf("--limit") + 1]);
+
+test("#3674 an open list with room left in its first page is ONE call, at the narrow limit", () => {
+  for (const n of [0, 1, OPEN_PRS_FIRST_PAGE - 1]) {
+    const calls: string[][] = [];
+    const prs = readPrs((args: string[]) => { calls.push(args); return openList(n); });
+    assert.equal(calls.length, 1, `${n} open: the first page was not full, so it is the whole list and nothing is asked twice`);
+    assert.equal(limitOf(calls[0]), OPEN_PRS_FIRST_PAGE);
+    assert.equal(prs?.length, n);
+  }
+});
+
+test("#3674 a FULL first page is asked again at the limit, so no pull request falls out of the list silently", () => {
+  const calls: string[][] = [];
+  // THE POSITIVE CONTROL for the test above: the answer to the wider call is what comes back, not the first page's.
+  const prs = readPrs((args: string[]) => { calls.push(args); return openList(limitOf(args) === OPEN_PRS_LIMIT ? 35 : OPEN_PRS_FIRST_PAGE); });
+  assert.deepEqual(calls.map(limitOf), [OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT]);
+  assert.equal(prs?.length, 35, "the list is the wide read's, 35 pull requests, never the 20 of a page that may have been cut");
+  assert.ok(calls.every((args) => args.slice(0, 4).join(" ") === "pr list --state open"), "both are the open list, nothing else");
+});
+
+test("#3674 a refused second read is null, never the first page standing in for a list that may be cut", () => {
+  const prs = readPrs((args: string[]) => {
+    if (limitOf(args) === OPEN_PRS_LIMIT) throw new Error("gh exited non-zero with empty stdout");
+    return openList(OPEN_PRS_FIRST_PAGE);
+  });
+  assert.equal(prs, null, "#1286: a list that could not be read whole is refused, and the callers keep refused apart from empty");
+  assert.ok(OPEN_PRS_FIRST_PAGE < OPEN_PRS_LIMIT, "a first page as wide as the limit would make the second read the same call");
+});
+
+test("#3674 the census states the narrow open list, the widening and the per-repository `pr list` reads, and the unconditional count has not moved", () => {
+  assert.equal(GH_READS.unconditional.length, 11, "the widening is conditional, so no unconditional read was added");
+  assert.ok(GH_READS.unconditional[0].includes("--limit 20"), "the first unconditional read is the narrow open list");
+  assert.match(GH_READS.conditionalOnFullOpenPage, /--limit 100.*first page/);
+  assert.match(GH_READS.perOtherCodeRepositoryOpenList, /readLanes/);
+  assert.match(GH_READS.perOtherCodeRepositoryMergedList, /readElsewherePrs/);
 });
 
 test("#2101 `body` rides on readPrs's existing field list -- another field, never another call", () => {

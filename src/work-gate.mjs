@@ -227,17 +227,21 @@ export const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
   { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
 
 /**
- * Open PRs with everything the draft lane needs, in ONE call.
- *
- * `null` MEANS REFUSED, NEVER EMPTY -- `queueReport`'s rule (#1286), and for its reason: a refused `gh`
- * exits non-zero with empty stdout, so a reader that returns `[]` for it reports "nothing is queued" and
- * the org acts on it. Every caller below must keep the two apart.
- * @param {(args: string[]) => string} run
- * @returns {any[] | null}
+ * #3674: THE OPEN LIST IS ASKED AT THE SMALLEST PAGE THAT CAN BE COMPLETE, AND AT `OPEN_PRS_LIMIT` ONLY WHEN IT WAS NOT. The request's price is
+ * the size of the page it asks for times the nested connections each pull request carries (comments, labels, files, reviews, closing issues,
+ * check contexts), NOT the number of pull requests that answer: at 100 it costs 7 GraphQL points and at 20 it costs 1, MEASURED 2026-10-05 by
+ * replaying the query `gh` sends (`GH_DEBUG=api`) with `rateLimit { cost }`, the same answer for every repository. The gate asked 100 of each
+ * of six code repositories every two minutes, and they held 1, 1, 0, 0, 0 and 0 open pull requests: 42 of the run's 49 `pr list` points.
+ * A page that comes back FULL may have been cut, so it is asked again at the limit; a page with room left is the whole list, and no pull
+ * request can fall out of it silently, which is the property the 100 was chosen for.
  */
-export function readPrs(run = defaultRun) {
-  try {
-    const out = run(["pr", "list", "--state", "open", "--limit", "100", "--json",
+export const OPEN_PRS_FIRST_PAGE = 20;
+/** How many open pull requests one repository's list can hold before the gate stops seeing the oldest (as it always has: `gh`'s own `--limit`). */
+export const OPEN_PRS_LIMIT = 100;
+
+/** @param {number} limit @returns {string[]} `gh`'s arguments for the open list, newest `limit` first */
+function openPrsArgs(limit) {
+  return ["pr", "list", "--state", "open", "--limit", String(limit), "--json",
       "number,isDraft,headRefOid,baseRefName,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
       // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND NO QUEUE READ HERE TOUCHED IT.
       // Measured at `468a74f1b`: `git grep -l reviewDecision -- '*.mjs'` returns exactly ONE file, and it
@@ -275,8 +279,23 @@ export function readPrs(run = defaultRun) {
       // #2823: `closingIssuesReferences` (what GitHub will close) and `createdAt` (how long the condition has stood), on the
       // same call, so `closesUnresolvedOrders` reads the Closes condition without a second request.
       // #2996: `updatedAt`, the QUIET SINCE of a wait with no stated reason, on the same call.
-      + "closingIssuesReferences,createdAt,updatedAt"]);
-    const parsed = JSON.parse(out);
+      + "closingIssuesReferences,createdAt,updatedAt"];
+}
+
+/**
+ * Open PRs with everything the draft lane needs: ONE call, and a second only for a list that filled its first page (`OPEN_PRS_FIRST_PAGE`).
+ *
+ * `null` MEANS REFUSED, NEVER EMPTY -- `queueReport`'s rule (#1286), and for its reason: a refused `gh`
+ * exits non-zero with empty stdout, so a reader that returns `[]` for it reports "nothing is queued" and
+ * the org acts on it. Every caller below must keep the two apart. A refused SECOND read is `null` too: the first page alone is a list that may
+ * be cut, which is the one answer a caller cannot tell from a whole one.
+ * @param {(args: string[]) => string} run
+ * @returns {any[] | null}
+ */
+export function readPrs(run = defaultRun) {
+  try {
+    const first = JSON.parse(run(openPrsArgs(OPEN_PRS_FIRST_PAGE)));
+    const parsed = Array.isArray(first) && first.length >= OPEN_PRS_FIRST_PAGE ? JSON.parse(run(openPrsArgs(OPEN_PRS_LIMIT))) : first;
     return Array.isArray(parsed) ? withPagedFiles(parsed, { run }) : null;
   } catch {
     return null;
@@ -384,7 +403,8 @@ function writePagedFilesCache(/** @type {string} */ path, /** @type {Record<stri
  * because it was the third conditional read all along and this constant had never said so.
  */
 export const GH_READS = Object.freeze({
-  unconditional: ["pr list", "issue list --label ready", "issue list --label backlog",
+  // #3674: ONE `pr list` PER CODE REPOSITORY (readPrs, at `OPEN_PRS_FIRST_PAGE`, 1 point each), the primary's here and the others' in `perOtherCodeRepositoryOpenList`.
+  unconditional: ["pr list --state open --limit 20 (readPrs)", "issue list --label ready", "issue list --label backlog",
     "issue list --label chairman-blocked", "issue list (all open: answer/blocked labels)",
     // #2202: TWO SMALL CALLS, because a closed row still owing an answer is invisible to the open read above
     // and `gh` cannot filter a label PREFIX. The first lists the repo's `answer:` label names, the second
@@ -407,6 +427,11 @@ export const GH_READS = Object.freeze({
   conditionalOnChairmanLabelledRow: "api repos/{owner}/{repo}/issues/{n}/events and /comments (withChairmanEventTimes -- chairman-answered)",
   // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
   // it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
+  // #3674: AND TWO MORE `pr list` PER NON-PRIMARY CODE REPOSITORY -- its open list (`readLanes`) and its merged one (`readElsewherePrs`, paid when any row is claimed). 1 point
+  // each; the primary's own merged list is `conditionalOnClaimedBranches`. A list that FILLS its first page is asked again at `OPEN_PRS_LIMIT` (7 points): `conditionalOnFullOpenPage`.
+  perOtherCodeRepositoryOpenList: "pr list --state open --limit 20 (readPrs via readLanes -- per non-primary code repository)",
+  perOtherCodeRepositoryMergedList: "pr list --state merged --limit 100 (readMergedPrs via readElsewherePrs -- per non-primary code repository, while a row is claimed)",
+  conditionalOnFullOpenPage: "pr list --state open --limit 100 (readPrs -- only for a repository whose first page of OPEN_PRS_FIRST_PAGE came back full)",
   perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs (readTrunkRed -- trunk-red for a declared code repository)",
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
