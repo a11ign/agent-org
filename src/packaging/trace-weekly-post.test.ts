@@ -13,8 +13,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SHIPPED_DIR, toolForm } from "../host-units.mjs";
+import { fileURLToPath } from "node:url";
 
+// Resolved by path and NOT imported from `host-units.mjs`: that import would charge this file `History: full` (work-gate.test.ts, #2174). The tool-form test is in host-units.test.ts for that reason.
+const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
 const SCRIPT = join(SHIPPED_DIR, "trace-weekly-post.sh");
 const COMMENT_LIMIT = 65_536; // GitHub's limit on a comment, in characters
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -229,12 +231,4 @@ test("#3627: the service is a oneshot that runs the script as the org's account,
   assert.match(service, /^Environment=GH_CONFIG_DIR=@@workersDir@@\/gh$/m, "the workers account, never the person's");
   assert.match(service, /^TimeoutStartSec=\d+$/m, "a hung run fails rather than holding next Monday's slot");
   assert.doesNotMatch(service, /^\[Install\]/m, "an [Install] would run it at every boot");
-});
-
-test("#3627: installed as the tool, the service runs the script from the tool and is told where the project's declaration is", () => {
-  const rendered = CLOCK("trace-weekly.service.in").replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  const installed = toolForm("trace-weekly.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
 });

@@ -38,7 +38,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
+  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
@@ -2728,4 +2728,14 @@ test("#3464: a tool command is the same command however its words are separated 
   assert.deepEqual(pre("agent-org  primary:update   --drift"), [`${viaTool[0]} --drift`], "arguments are split the same way, and joined by one space");
   assert.throws(() => pre("agent-org\tno:such-command"), HostConfigRefusal, "an unknown tool command refuses however it is spelt");
   assert.deepEqual(pre("npm\trun widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm\trun widgets:update`], "a project's own command is still run as written");
+});
+
+// a11ign/a11ign#3627: here and not in trace-weekly-post.test.ts, which must not import this module (that would charge it `History: full`, work-gate.test.ts #2174).
+test("#3627: installed as the tool, the weekly report's service runs the script from the tool and is told where the project's declaration is", () => {
+  const rendered = readFileSync(join(SHIPPED_DIR, "trace-weekly.service.in"), "utf8")
+    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  const installed = toolForm("trace-weekly.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
 });
