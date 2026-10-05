@@ -46,6 +46,17 @@ export const CENSUS_ENV = "AGENT_ORG_TICK_CENSUS";
 /** How many of the slowest (and the hottest) command lines one reading keeps: the row asks for the top 5 by wall, and by CPU. */
 export const SLOWEST_KEPT = 5;
 
+/** How many subcommands one reading names (the slowest by wall); the rest are summed into `other`, so a line stays short and the total still adds up. */
+export const SUBCOMMANDS_KEPT = 10;
+
+/**
+ * The programs whose first words say what they did, and how many: `gh pr list` and `herdr agent list` take two (and `gh api <path>` needs its path), while
+ * `git rev-parse HEAD` is `rev-parse` and its argument is not part of the name. A `node` is named by its script, in `slowest`.
+ */
+const SUBCOMMAND_WORDS = { gh: 2, git: 1, herdr: 2 };
+/** Options of those programs that take their value as the NEXT word, which is therefore not a subcommand: git's `-C` and `-c`, gh's `-R`. */
+const VALUE_OPTIONS = new Set(["-C", "-c", "-R", "--repo"]);
+
 /** One argument and one command line are cut here: an order's prompt is an argument and has no business in a cost record. */
 const ARG_CHARS = 40;
 const LINE_CHARS = 120;
@@ -73,17 +84,40 @@ function aimedRepo(args) {
 }
 
 /**
+ * What a `gh`, `git` or `herdr` call DID, by its first words that are not options (two for `gh` and `herdr`, one for `git`): `pr list`, `issue view`, `api repos/<owner>/<repo>/issues/#/timeline`.
+ * A path segment that is only digits is `#` and a query string is dropped, so an issue number does not make every call its own name -- that is
+ * what a count by subcommand is for, and the line's per-command total cannot say which of 66 `gh` calls took the 50 s (a11ign/a11ign#3566).
+ * `undefined` for any other program, and for a call with only options.
+ * @param {string} cmd @param {unknown[]} words
+ * @returns {string | undefined}
+ */
+function subcommandOf(cmd, words) {
+  const wanted = /** @type {Record<string, number>} */ (SUBCOMMAND_WORDS)[cmd];
+  if (wanted === undefined) return undefined;
+  /** @type {string[]} */
+  const named = [];
+  for (let at = 0; at < words.length && named.length < wanted; at += 1) {
+    const word = String(words[at]);
+    if (VALUE_OPTIONS.has(word)) at += 1;
+    else if (!word.startsWith("-")) named.push(word.split("?")[0].replace(/(?<=^|\/)\d+(?=\/|$)/g, "#"));
+  }
+  return named.length === 0 ? undefined : named.join(" ");
+}
+
+/**
  * What ran, as `{ cmd, line }`: `cmd` is the program's basename (`gh`, `git`, `herdr`, `node`) and `line` the program plus its arguments, cut.
- * `execSync` hands over one string, whose first word is the program and the rest its arguments. A `gh` aimed by `GH_REPO` also carries `repo`.
+ * `execSync` hands over one string, whose first word is the program and the rest its arguments. A `gh` aimed by `GH_REPO` also carries `repo`;
+ * a `gh`, `git` or `herdr` also carries `sub`, the subcommand.
  * @param {string} file @param {unknown} argv @param {unknown} [options] the spawn's options, where `env.GH_REPO` aims a `gh` call
- * @returns {{ cmd: string, line: string, repo?: string }}
+ * @returns {{ cmd: string, line: string, repo?: string, sub?: string }}
  */
 export function describeSpawn(file, argv, options) {
   const [program = "", ...inline] = String(file).trim().split(/\s+/);
   const cmd = basename(program);
   const words = Array.isArray(argv) ? argv : inline;
   const repo = cmd === "gh" ? aimedRepo([argv, options]) : undefined;
-  return { cmd, line: [cmd, ...words.map(tail)].join(" ").slice(0, LINE_CHARS), ...(repo === undefined ? {} : { repo }) };
+  const sub = subcommandOf(cmd, words);
+  return { cmd, line: [cmd, ...words.map(tail)].join(" ").slice(0, LINE_CHARS), ...(repo === undefined ? {} : { repo }), ...(sub === undefined ? {} : { sub }) };
 }
 
 /** @param {string} path @param {object} entry */
@@ -181,13 +215,38 @@ export function readCensus(path) {
 }
 
 /**
+ * Per `<program> <subcommand>`: how many were started and their wall, the `SUBCOMMANDS_KEPT` slowest by wall, the rest summed into `other`.
+ * A record with no `sub` (a `node`, or a record from before the field) is left out, not counted under an empty name.
+ * @param {{ cmd: string, sub?: string, ms: number | null }[]} records
+ * @returns {Record<string, { n: number, wallMs: number }>}
+ */
+function summariseSubcommands(records) {
+  /** @type {Map<string, { n: number, wallMs: number }>} */
+  const totals = new Map();
+  for (const { cmd, sub, ms } of records) {
+    if (sub === undefined) continue;
+    const entry = totals.get(`${cmd} ${sub}`) ?? { n: 0, wallMs: 0 };
+    entry.n += 1;
+    entry.wallMs += ms ?? 0;
+    totals.set(`${cmd} ${sub}`, entry);
+  }
+  const ranked = [...totals].sort(([, a], [, b]) => b.wallMs - a.wallMs || b.n - a.n);
+  const named = Object.fromEntries(ranked.slice(0, SUBCOMMANDS_KEPT));
+  const rest = ranked.slice(SUBCOMMANDS_KEPT);
+  if (rest.length === 0) return named;
+  return { ...named, other: { n: rest.reduce((sum, [, e]) => sum + e.n, 0), wallMs: rest.reduce((sum, [, e]) => sum + e.wallMs, 0) } };
+}
+
+/**
  * The reading the cost line carries: per command, how many were started and how long the timed ones took (an asynchronous spawn adds to the count
  * and not to the wall), and the slowest command lines by wall.
  * `ghRepos` is the same count for the `gh` calls aimed by `GH_REPO`, per repository: how many reads each repository took in one tick.
+ * `subcommands` is the same count per `gh pr list`, `git rev-parse`, `herdr agent list`: which of a command's calls the wall went to.
  * `hottest` is the same cut by CPU, the other half of the row's question (wall far above CPU is waiting, CPU near wall is work): a timed spawn's
  * `cpuMs` is inclusive of its descendants, so a `node` that starts `gh` is listed with the `gh`'s CPU in it.
- * @param {{ cmd: string, line: string, ms: number | null, cpuMs?: number | null, repo?: string }[]} records
+ * @param {{ cmd: string, line: string, ms: number | null, cpuMs?: number | null, repo?: string, sub?: string }[]} records
  * @returns {{ commands: Record<string, { n: number, wallMs: number }>, ghRepos: Record<string, { n: number, wallMs: number }>,
+ *   subcommands: Record<string, { n: number, wallMs: number }>,
  *   slowest: { line: string, ms: number }[], hottest: { line: string, cpuMs: number, ms: number }[] }}
  */
 export function summariseCensus(records) {
@@ -207,7 +266,7 @@ export function summariseCensus(records) {
   const hottest = records.filter((r) => typeof r.cpuMs === "number" && r.ms !== null)
     .map((r) => ({ line: r.line, cpuMs: /** @type {number} */ (r.cpuMs), ms: /** @type {number} */ (r.ms) }))
     .sort((a, b) => b.cpuMs - a.cpuMs).slice(0, SLOWEST_KEPT);
-  return { commands, ghRepos, slowest, hottest };
+  return { commands, ghRepos, subcommands: summariseSubcommands(records), slowest, hottest };
 }
 
 if (process.env[CENSUS_ENV]) installSpawnCensus(process.env[CENSUS_ENV]);
