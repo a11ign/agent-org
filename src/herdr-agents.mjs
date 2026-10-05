@@ -64,3 +64,21 @@ const STANDING_PANES = Object.freeze(["ceo", "orchestrator"]);
 export function listingIsComplete(agents) {
   return STANDING_PANES.every((pane) => agents.some((a) => a.label === pane));
 }
+
+/**
+ * THE PERSISTENT SEATS THAT ARE NOT RUNNING: those no workspace in herdr's listing carries the label of. PRESENT MEANS LISTED, IN
+ * ANY STATUS (`working`, `blocked`, `unknown`, `idle`), because a second start would be two seats with one name, and a status says
+ * what a seat is doing and not whether it exists. A role that is not persistent is never named: a `worker-<n>` that is not up or a
+ * `reviewer-<n>` is absent by design and is started for a cause, not for a roster line.
+ *
+ * `agents` is `readAgents`'s answer and must be a COMPLETE listing: a caller holding `null` or a partial list has no right to call
+ * this (a partial list reads every seat as absent), which is why the start step checks {@link listingIsComplete} first.
+ *
+ * @param {readonly string[]} seats the persistent roster names
+ * @param {readonly { label: string, status?: string }[]} agents `readAgents`'s answer: the labels decide, the status is carried and ignored
+ * @returns {string[]}
+ */
+export function absentSeats(seats, agents) {
+  const listed = new Set(agents.map((a) => a.label));
+  return seats.filter((seat) => !listed.has(seat));
+}

@@ -42,7 +42,7 @@ export { childrenCpuMs };
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
 import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares,
-  tearDownReviewers, recoverNow }
+  tearDownReviewers, recoverNow, startAbsentSeats }
   from "./wake.mjs";
 
 /**
@@ -359,6 +359,10 @@ function main() {
   // FIRST, BEFORE ANYTHING CAN DECIDE (#3443): the host runs one agent-org version and a journal read must say which made each decision. Read from the
   // checkout at this tick, never remembered; a checkout at no release says so rather than naming one.
   console.log(meter.phase("version", toolVersionLine));
+
+  // THEN THE SEATS THE ROSTER MARKS PERSISTENT (#3539): the first tick after a release moves the tag reads THAT tag's roster and starts what it
+  // names and is absent. Before the gate and before the quiet exit, because a seat nobody started is most invisible on the tick that has nothing else to say.
+  for (const line of meter.phase("seats", () => startAbsentSeats())) process.stderr.write(`${line}\n`);
 
   const gate = meter.phase("gate", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" }));
   if (gate.error) {

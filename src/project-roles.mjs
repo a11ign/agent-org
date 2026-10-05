@@ -79,3 +79,25 @@ export function roleBriefPath(name, root = HOME_CHECKOUT) {
   }
   return { relative: `${dir}/${name}`, absolute: join(absoluteDir, name) };
 }
+
+/**
+ * The roles `sessions.json` MARKS `persistent` (#3415), in file order: a seat that is never cleared, whatever its `role`.
+ * READ, NOT TYPED, and a ROLE fact like `drain` and `spare` (`_rolesNotProcesses`): it names no pane, pid or workspace.
+ * An unreadable roster throws -- a caller that can fail open says so itself.
+ *
+ * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
+ * @returns {string[]}
+ */
+export function persistentRoles(path = roleBriefPath("sessions.json").absolute) {
+  return persistentEntries(path).map((s) => s.name);
+}
+
+/**
+ * The persistent entries with the brief each names, for the step that STARTS a seat from it.
+ * @param {string | URL} [path] the roster file
+ * @returns {{ name: string, brief?: string }[]}
+ */
+export function persistentEntries(path = roleBriefPath("sessions.json").absolute) {
+  const { live } = /** @type {{ live: { name: string, persistent?: boolean, brief?: string }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  return live.filter((s) => s.persistent === true).map(({ name, brief }) => ({ name, brief }));
+}

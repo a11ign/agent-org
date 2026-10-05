@@ -2166,10 +2166,13 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     assert.match(install.stdout, /installed .*\/\.local\/bin\/gh/);
     const after = JSON.parse(run("--json").stdout);
     assert.deepEqual(identityFindings(JSON.stringify(after)), [], "after the install every identity file matches");
-    assert.equal(after.notes.length, 1, "the person's user.name is carried as a note, and the correct .zshenv adds none");
+    // #3539: THE TEMP PROJECT HOLDS NO ROSTER AND THE TEMP HOME NO HERDR, so `host:check` adds its own `persistent seats: UNKNOWN` note; this test is about the identity files
+    // and the compile cache, so the seat note is set aside here and read by `persistent-seat-running.test.ts`.
+    const notSeats = <N extends { unit: string }>(notes: N[]) => notes.filter((n) => n.unit !== "persistent seats");
+    assert.equal(notSeats(after.notes).length, 1, "the person's user.name is carried as a note, and the correct .zshenv adds none");
     rmSync(join(home, ".zshenv"));
     const without = JSON.parse(run("--json").stdout);
-    assert.deepEqual(without.notes.map((n: { problem: string }) => n.problem).sort(),
+    assert.deepEqual(notSeats<{ unit: string, problem: string }>(without.notes).map((n: { problem: string }) => n.problem).sort(),
       ["GLOBAL GIT IDENTITY IS A PERSON'S", "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME"],
       "WIRING: `host:check --json` carries the compile-cache note when the account's .zshenv is gone");
     assert.ok(without.findings.every((f: { unit: string }) => !f.unit.endsWith(".zshenv")), "and never as a finding");
