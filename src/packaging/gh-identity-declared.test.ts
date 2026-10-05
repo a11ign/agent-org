@@ -42,9 +42,10 @@
 // this row does not attempt, and is reported as such rather than claimed done.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { declaredGhAccount } from "../gh-identity.mjs";
 import { homeHostConfig } from "../host-config.mjs";
@@ -449,4 +450,84 @@ test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from th
       + `-- every one of the ${agentHost.length} agent-host scripts in the population runs under exactly `
       + "this routing, so the seam they would depend on does not currently work here");
   }
+});
+
+// --- #3642: THE WRAPPER REFUSES A CALL THAT NAMES NO ACCOUNT -----------------------------------------------------------------
+//
+// THE WRAPPER IS RUN, NOT READ (`host-units.test.ts` does the same for its own cases): a stub `gh-real` sits behind it and a marker file
+// is the POSITIVE CONTROL for "reached gh-real", since a wrapper that refused and a wrapper that ran a stub printing nothing look alike.
+// The wrapper text is rendered with a regex rather than through `host-units.mjs` (which needs the project's git history), as
+// `gh-call-ledger.test.ts` does; every path a placeholder stands for is overridden by an environment variable below.
+
+const WRAPPER_FILE = (() => {
+  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const rendered = join(mkdtempSync(join(tmpdir(), "gh-refuse-render-")), "gh");
+  writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
+  return rendered;
+})();
+const STUB_STATUS = 7; // a status nothing else here returns, so it can only have come from the stub
+
+function wrapperSandbox() {
+  const root = mkdtempSync(join(tmpdir(), "gh-refuse-"));
+  const marker = join(root, "reached");
+  const ledger = join(root, "ledger.tsv");
+  const stub = join(root, "gh-real");
+  writeFileSync(stub, `#!/bin/sh\necho "reached" > "${marker}"\necho "CONFIG=<\${GH_CONFIG_DIR-UNSET}>"\nexit ${STUB_STATUS}\n`, { mode: 0o755 });
+  const workersDir = join(root, "workers");
+  const leadsDir = join(root, "leads");
+  for (const dir of [workersDir, leadsDir]) configDir(join(dir, "gh"), "a-bot");
+  writeFileSync(join(leadsDir, "workspaces.txt"), "w6\n");
+  // The environment is built from NOTHING, never from `process.env`: the test runner may itself run in a workspace or under a config dir.
+  const run = (env: Record<string, string>) => {
+    const r = spawnSync("sh", [WRAPPER_FILE, "api", "user"], { encoding: "utf8", env: {
+      PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, A11Y_WORKERS_DIR: workersDir, A11Y_LEADS_DIR: leadsDir, A11Y_GH_LEDGER: ledger, ...env } });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, reached: existsSync(marker), ledgerWritten: existsSync(ledger) };
+  };
+  return { root, workersDir, leadsDir, run };
+}
+
+test("#3642: with no HERDR_WORKSPACE_ID and no GH_CONFIG_DIR the wrapper REFUSES, runs nothing, names both bot dirs and writes no ledger line", () => {
+  const { root, workersDir, leadsDir, run } = wrapperSandbox();
+  try {
+    const r = run({});
+    assert.notEqual(r.status, 0, "a refusal is a non-zero exit");
+    assert.notEqual(r.status, STUB_STATUS, "and it is the wrapper's own, not the stub's");
+    assert.equal(r.reached, false, "gh-real never ran: this is the whole point, the call would have been the human's");
+    assert.equal(r.stdout, "", "nothing on stdout for a caller to parse as an answer");
+    assert.match(r.stderr, /no workspace id and no GH_CONFIG_DIR/);
+    assert.ok(r.stderr.includes(`${workersDir}/gh`), "names the workers dir");
+    assert.ok(r.stderr.includes(`${leadsDir}/gh`), "names the leads dir");
+    assert.match(r.stderr, /export GH_CONFIG_DIR=/, "and says what to do about it");
+    assert.equal(r.stderr.trimEnd().split("\n").length, 1, "ONE line: `git push` shows its credential helper's stderr and a caller reads it there");
+    assert.equal(r.ledgerWritten, false, "a refusal that ran no call writes no ledger line");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3642: an EMPTY HERDR_WORKSPACE_ID and an EMPTY GH_CONFIG_DIR are unset to the wrapper, so they refuse too", () => {
+  const { root, run } = wrapperSandbox();
+  try {
+    const r = run({ HERDR_WORKSPACE_ID: "", GH_CONFIG_DIR: "" });
+    assert.notEqual(r.status, 0);
+    assert.equal(r.reached, false);
+    assert.match(r.stderr, /no workspace id and no GH_CONFIG_DIR/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3642: the routes that name an account are UNCHANGED -- an explicit GH_CONFIG_DIR, a workspace id, a leads id (the refusal's positive control)", () => {
+  const { root, workersDir, leadsDir, run } = wrapperSandbox();
+  try {
+    const cases: [string, Record<string, string>, string][] = [
+      ["an explicit GH_CONFIG_DIR, no workspace", { GH_CONFIG_DIR: "/somewhere/else" }, "/somewhere/else"],
+      ["an explicit GH_CONFIG_DIR beats a workspace id", { GH_CONFIG_DIR: "/somewhere/else", HERDR_WORKSPACE_ID: "w9" }, "/somewhere/else"],
+      ["an agent workspace", { HERDR_WORKSPACE_ID: "w9" }, `${workersDir}/gh`],
+      ["a workspace on the leads list", { HERDR_WORKSPACE_ID: "w6" }, `${leadsDir}/gh`],
+    ];
+    for (const [what, env, config] of cases) {
+      const r = run(env);
+      assert.equal(r.reached, true, `${what}: the stub ran`);
+      assert.equal(r.status, STUB_STATUS, `${what}: gh-real's own status is the wrapper's`);
+      assert.equal(r.stdout.trim(), `CONFIG=<${config}>`, what);
+      assert.doesNotMatch(r.stderr, /no workspace id and no GH_CONFIG_DIR/, what);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

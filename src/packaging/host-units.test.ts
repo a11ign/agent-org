@@ -1903,12 +1903,14 @@ test("#2332: an explicit GH_CONFIG_DIR is passed through UNCHANGED, whatever the
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2332: a shell with NO workspace id is a person, and is left alone", () => {
+test("#3642: a shell with NO workspace id and NO GH_CONFIG_DIR is refused, never left alone as the human (it was, until #3642)", () => {
   const { root, run } = wrapperHost();
   try {
     const r = run({});
-    assert.match(r.stdout, /CONFIG=<UNSET>/);
-    assert.ok(r.reached);
+    assert.equal(r.reached, false, "gh-real never ran, so nothing acted as the human");
+    assert.notEqual(r.status, 0);
+    assert.doesNotMatch(r.stdout, /CONFIG=<UNSET>/, "UNSET is the human account from here");
+    assert.match(r.stderr, /no workspace id and no GH_CONFIG_DIR/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

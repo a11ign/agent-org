@@ -13,8 +13,13 @@
 #      product-manager, orchestrator) gets @@leadsDir@@/gh (a11ign-ai-leads);
 #   3. any other agent workspace (HERDR_WORKSPACE_ID set) gets @@workersDir@@/gh (a11ign-ai-workers);
 #   4. an agent workspace whose config is missing REFUSES, never falls through to the human;
-#   5. a shell with no workspace id (a person at a terminal, or a unit that forgot to declare) is not an
-#      agent, so it is left alone: the human's own login, as before.
+#   5. a call with no workspace id and no GH_CONFIG_DIR (a plain ssh shell, or a unit that forgot to declare one)
+#      REFUSES, never falls through to the human's own login (#3642). The first four rules closed the fall-through for an
+#      agent workspace; this one closes it for everything else on the host, because rule 5 used to say "a person at a
+#      terminal, left alone" and a plain ssh shell and an undeclared unit are indistinguishable from that person: both
+#      acted as the org owner, with admin, and one spent his search limit. Admin acts are done from the chairman's own
+#      machine, never from this host. The refusal exits before gh-real and BEFORE THE LEDGER below, so it writes no line:
+#      a ledger line goes into the account's own config dir and there is no account here to name.
 #
 # Routing is by herdr workspace id, which survives a session restart.
 #
@@ -26,7 +31,12 @@
 GH_REAL=${A11Y_GH_REAL:-@@binDir@@/gh-real}
 WORKERS_DIR=${A11Y_WORKERS_DIR:-@@workersDir@@}
 LEADS_DIR=${A11Y_LEADS_DIR:-@@leadsDir@@}
-if [ -z "$GH_CONFIG_DIR" ] && [ -n "$HERDR_WORKSPACE_ID" ]; then
+if [ -z "$GH_CONFIG_DIR" ] && [ -z "$HERDR_WORKSPACE_ID" ]; then
+  # One line, no markup: `git push` reaches this through its credential helper and prints only what the helper's stderr says.
+  echo "gh: refusing, no workspace id and no GH_CONFIG_DIR, so this call would act as the human account and no agent may. Run: export GH_CONFIG_DIR=$WORKERS_DIR/gh (or $LEADS_DIR/gh for a lead), or run inside an agent workspace. Admin acts are done from the chairman's own machine." >&2
+  exit 1
+fi
+if [ -z "$GH_CONFIG_DIR" ]; then
   if grep -qxF "$HERDR_WORKSPACE_ID" "$LEADS_DIR/workspaces.txt" 2>/dev/null; then
     dir=$LEADS_DIR/gh
   else
