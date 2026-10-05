@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // @ts-check
-// command: say whether ci-health.yml's Monday run and its comment on the report issue arrived this week
 // DID THE CI-HEALTH COMMENT ARRIVE? -- a11ign/a11ign#3659, the standing duty of #3212's done-when 4.
 //
 //   node src/ci-health-liveness.mjs                     read the latest Monday slot; exit 0 only for PRESENT
-//   node src/ci-health-liveness.mjs --repo=a11ign/a11ign --workflow=ci-health.yml --issue=928
+//   node src/ci-health-liveness.mjs --repo=<owner/name> --workflow=ci-health.yml --issue=928
 //                                                       name the three facts when the project does not declare them yet
 //
 // ## The gap
@@ -54,6 +53,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { homeHostConfig } from "./host-config.mjs";
+import { READY_LABEL } from "./claim-labels.mjs";
 
 export const VERDICT = Object.freeze({
   PRESENT: "PRESENT",
@@ -183,7 +183,7 @@ export function ciHealthOrders(reading) {
     subject: "ci-health",
     discriminator,
     prompt: `The week's CI-health report did not arrive: ${half} is missing (${reading.verdict}).\n${readingLine(reading)}\n`
-      + "A finding is a row: file it `ready` with the cause named (a schedule GitHub disabled after 60 days without activity, a run that failed, "
+      + `A finding is a row: file it \`${READY_LABEL}\` with the cause named (a schedule GitHub disabled after 60 days without activity, a run that failed, `
       + "a comment the script refused) and its owner. THIS ORDER DOES NOT FIX THE SCHEDULE, and it is not raised again for the same slot and verdict.",
     causeKey: `product-manager/ci-health-missing/${discriminator}`,
   }];
