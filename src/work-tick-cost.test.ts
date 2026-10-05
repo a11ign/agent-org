@@ -163,7 +163,7 @@ test("#3566: a `gh` aimed by GH_REPO carries its repository, a `gh` with no aim 
   const aimed = describeSpawn("gh", ["pr", "list"], { env: { GH_REPO: "a11ign/agent-org" } });
   assert.equal(aimed.repo, "a11ign/agent-org");
   assert.equal("repo" in describeSpawn("gh", ["pr", "list"], { encoding: "utf8" }), false, "the control: no GH_REPO, no repo field");
-  assert.equal("repo" in describeSpawn("git", ["status"], { env: { GH_REPO: "a11ign/agent-org" } }), false, "only `gh` is aimed by GH_REPO");
+  assert.equal("repo" in describeSpawn("herdr", ["agent", "list"], { env: { GH_REPO: "a11ign/agent-org" } }), false, "only `gh` is aimed by GH_REPO");
   const { ghRepos, commands } = summariseCensus([
     { ...aimed, ms: 400 }, { ...aimed, ms: 600 }, { cmd: "gh", line: "gh pr list", ms: 50 },
     { ...describeSpawn("gh", ["issue", "list"], { env: { GH_REPO: "a11ign/a11ign" } }), ms: 100 },
