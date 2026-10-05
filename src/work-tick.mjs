@@ -42,7 +42,7 @@ export { childrenCpuMs };
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
 import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares,
-  tearDownReviewers, recoverNow, startAbsentSeats }
+  tearDownReviewers, recoverNow, startAbsentSeats, checkChairmanPath }
   from "./wake.mjs";
 
 /**
@@ -363,6 +363,10 @@ function main() {
   // THEN THE SEATS THE ROSTER MARKS PERSISTENT (#3539): the first tick after a release moves the tag reads THAT tag's roster and starts what it
   // names and is absent. Before the gate and before the quiet exit, because a seat nobody started is most invisible on the tick that has nothing else to say.
   for (const line of meter.phase("seats", () => startAbsentSeats())) process.stderr.write(`${line}\n`);
+
+  // THEN THE CHAIRMAN'S PATH (#3540): the first tick after a release that touched the messaging code, the queue or the roster's readers sends one synthetic inbound through it. After the seats
+  // step, so a liaison this tick just started is the seat the check meets; a no-op on every other tick. Its red reaches `ceo`'s queue (written here, so the gate below delivers it) and never the chairman.
+  for (const line of meter.phase("chairmanPath", () => checkChairmanPath())) process.stderr.write(`${line}\n`);
 
   const gate = meter.phase("gate", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" }));
   if (gate.error) {

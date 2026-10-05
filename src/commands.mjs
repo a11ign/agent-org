@@ -28,6 +28,7 @@ export const COMMANDS = {
   "hygiene:report": "control-plane-hygiene.mjs",
   "messaging:listen": "messaging/listen.mjs",
   "messaging:pair": "messaging/providers/telegram/pair.mjs",
+  "messaging:selftest": "messaging/selftest.mjs",
   "messaging:watch": "messaging/watch.mjs",
   "pr:edit": "pr-open.mjs",
   "pr:hold": "pr-hold.mjs",
