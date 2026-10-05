@@ -26,6 +26,7 @@ export const DEFINITIONS = [
   "CACHE-READ SHARE OF INPUT: cacheRead / (input + cacheRead + cacheWrite5m + cacheWrite1h), summed over every turn of the week. Output tokens are not in the denominator.",
   "REPEAT WASTE, priced from the store, each turn priced ONCE in the first class that claims it, in this order, so the classes add up: re-delivered order, re-review, re-queue, compaction, preamble reload. A class never counts a turn another class already counted; its COUNT is every occurrence.",
   "  re-delivered order: a wake whose session and ledger key (without the `@deferred` suffix) were delivered before. Dollars: every turn that wake started.",
+  "    BY GATE CAUSE (the wake's own `cause`, in the same week as the class, most repeats first): repeats, distinct keys, the MEDIAN GAP between a repeat and the previous delivery of its key (whenever that was), and dollars (a floor, as every dollar here). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row (`<cause> @deferred`).",
   "  re-review: a `reviewed` event on a pull request after an earlier one. Dollars: the turns of that pull request's reviewer session between its first review and the later one.",
   "  re-queue: an `added_to_merge_queue` after an earlier one on the same pull request. Dollars: the turns on the pull request's rows between its last unmerged exit from the queue and the re-entry.",
   "  compaction: a compaction of a session. Dollars: the INPUT side (input, cacheRead, cacheWrite; not output) of the first turn the session took after it, which re-reads the window.",
@@ -60,7 +61,8 @@ const DEFERRAL_LOG_HELD = false;
  * @typedef {import("./store.mjs").Tokens} Tokens
  * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
  * @typedef {{ dollars: number, priced: number, unpriced: number, turns: number, tokens: number }} Tally
- * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number }} RepeatClass
+ * @typedef {{ cause: string, deferred: boolean, count: number, keys: number, medianGapMs: number | null, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number }} RedeliveredCause
+ * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number, causes?: RedeliveredCause[] }} RepeatClass
  */
 
 /** @param {number} ms the Monday 00:00 UTC of the week holding `ms` */
@@ -276,18 +278,60 @@ function priceOnce(turns, claimed, part) {
 /** A class whose every turn is unpriced is NOT zero dollars: it is not derivable, and says how many turns it could not price. @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
 const classOf = (head, priced) => ({ ...head, dollars: priced.priced === 0 && priced.unpriced > 0 ? NOT_DERIVABLE : priced.dollars, floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
 
-/** @param {Repeat} context */
-function redelivered({ events, turnsOf, at, claimed }) {
-  const seen = new Set();
-  /** @type {TraceEvent[]} */
+const DEFERRED_MARK = "@deferred:";
+
+/**
+ * The wakes of the week that repeat an order their session already had, each with its ledger key and the time since that key was last delivered (in this week or before it).
+ * @param {TraceEvent[]} events @param {number} at the week's start
+ */
+function repeatsOf(events, at) {
+  /** @type {Map<string, number>} */
+  const lastDelivered = new Map();
+  /** @type {{ wake: TraceEvent, key: string, gapMs: number }[]} */
   const repeats = [];
   for (const wake of events.filter((event) => event.kind === "wake" && event.causeKey).sort((a, b) => a.at - b.at)) {
-    const key = `${wake.session}\t${String(wake.causeKey).split("@deferred:")[0]}`;
-    if (seen.has(key) && inWeek(wake, at)) repeats.push(wake);
-    seen.add(key);
+    const key = `${wake.session}\t${String(wake.causeKey).split(DEFERRED_MARK)[0]}`;
+    const before = lastDelivered.get(key);
+    if (before !== undefined && inWeek(wake, at)) repeats.push({ wake, key, gapMs: wake.at - before });
+    lastDelivered.set(key, wake.at);
   }
-  const turns = repeats.flatMap((wake) => turnsOf.wake.get(wake.id) ?? []);
-  return classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, priceOnce(turns, claimed, "whole"));
+  return repeats;
+}
+
+/**
+ * The repeats by gate cause (the wake's own `cause`). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row: a deferral retry and a wake that was
+ * delivered anyway are different defects. Dollars are priced once per turn through the shared `claimed`, so the rows add up to the class.
+ * @param {ReturnType<typeof repeatsOf>} repeats @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed
+ * @returns {{ causes: RedeliveredCause[], priced: ReturnType<typeof priceOnce>[] }}
+ */
+function causesOf(repeats, turnsOfWake, claimed) {
+  /** @type {Map<string, typeof repeats>} */
+  const groups = new Map();
+  for (const repeat of repeats) {
+    const group = `${repeat.wake.cause ?? "unknown"}\t${String(repeat.wake.causeKey).includes(DEFERRED_MARK)}`;
+    groups.set(group, [...(groups.get(group) ?? []), repeat]);
+  }
+  const entries = [...groups].map(([group, members]) => {
+    const [cause, deferred] = group.split("\t");
+    const priced = priceOnce(members.flatMap(({ wake }) => turnsOfWake.get(wake.id) ?? []), claimed, "whole");
+    const money = classOf({ id: group, label: cause, count: members.length }, priced);
+    return { priced, row: /** @type {RedeliveredCause} */ ({
+      cause, deferred: deferred === "true", count: members.length, keys: new Set(members.map(({ key }) => key)).size, medianGapMs: nearestRank(members.map(({ gapMs }) => gapMs), FIRST_RANK_PERCENT),
+      dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced }) };
+  });
+  entries.sort((a, b) => b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
+  return { causes: entries.map(({ row }) => row), priced: entries.map(({ priced }) => priced) };
+}
+
+/** @param {ReturnType<typeof priceOnce>[]} tallies @returns {ReturnType<typeof priceOnce>} */
+const sumPriced = (tallies) => tallies.reduce((sum, one) => ({ dollars: sum.dollars + one.dollars, tokens: sum.tokens + one.tokens, floor: sum.floor || one.floor, priced: sum.priced + one.priced, unpriced: sum.unpriced + one.unpriced }),
+  { dollars: 0, tokens: 0, floor: false, priced: 0, unpriced: 0 });
+
+/** @param {Repeat} context */
+function redelivered({ events, turnsOf, at, claimed }) {
+  const repeats = repeatsOf(events, at);
+  const { causes, priced } = causesOf(repeats, turnsOf.wake, claimed);
+  return { ...classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, sumPriced(priced)), causes };
 }
 
 /** The events of one kind, by pull request key, in time order. @param {TraceEvent[]} events @param {string} kind @param {Keys} keys */
@@ -551,6 +595,21 @@ function classLine(entry, githubUnread) {
   return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}${fromGithub}`;
 }
 
+const MINUTE_MS = 60 * 1000;
+/** A gap between two deliveries: minutes under an hour (a nag every 22 minutes is not "0.4h"), hours above. @param {number | null} ms */
+const gap = (ms) => (ms === null ? "n/a" : ms < 60 * MINUTE_MS ? `${Math.round(ms / MINUTE_MS)} min` : hours(ms));
+
+/** The re-delivered class's table by gate cause, under its line; no repeats, no table. @param {RepeatClass} entry */
+function causeLines(entry) {
+  if (!entry.causes || entry.causes.length === 0) return [];
+  const rows = entry.causes.map((own) => {
+    const money = typeof own.dollars === "number" ? dollars(own.dollars, own.floor) : `dollars: ${own.dollars}`;
+    const name = own.deferred ? `${own.cause} @deferred` : own.cause;
+    return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${String(own.keys).padStart(13)}  ${gap(own.medianGapMs).padStart(9)}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
+  });
+  return [`      ${"by gate cause".padEnd(40)} ${"repeats".padStart(5)} ${"distinct keys".padStart(13)}  ${"median gap".padStart(9)}  dollars`, ...rows];
+}
+
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function weekLines(week) {
   const { perRow, spend } = week;
@@ -566,7 +625,7 @@ function weekLines(week) {
   lines.push(`  UNMEASURED (not overhead): ${spend.unmeasured.turns} turns, ${dollars(spend.unmeasured.dollars)}; transcripts the ingest could not read: ${spend.unmeasured.unreadableTranscripts.length}${spend.unmeasured.unreadableTranscripts.map((file) => `\n    ${file}`).join("")}`,
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
-    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.map((entry) => classLine(entry, week.githubUnread)));
+    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.flatMap((entry) => [classLine(entry, week.githubUnread), ...causeLines(entry)]));
   return [...lines, ...dearestLines(week), ...wakeLines(week)];
 }
 
