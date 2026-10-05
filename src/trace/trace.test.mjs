@@ -13,7 +13,7 @@ import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { aggregate, weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -575,8 +575,8 @@ test("BUDGET: the (budget+1)th call is refused BEFORE it is made, every call is 
   assert.throws(() => bounded(["c"]), { code: "GH_CALLS_SPENT", message: /--calls 2 is spent/ });
   assert.deepEqual(underlying.seen, ["a", "b"], "the third call never reached gh");
   assert.equal(bounded.calls, 2);
-  const failing = budgetedGh({ gh: () => { throw new Error("HTTP 500"); }, budget: 5 });
-  assert.throws(() => failing(["x"]), /HTTP 500/);
+  const failing = budgetedGh({ gh: () => { throw new Error("HTTP 422"); }, budget: 5 });
+  assert.throws(() => failing(["x"]), /HTTP 422/);
   assert.equal(failing.calls, 1, "a call that failed was still a call");
 });
 
@@ -643,8 +643,8 @@ test("BUDGET: a pull request costs several calls, and the budget is checked per 
 
 test("BUDGET: a failure that is not the budget is not swallowed, and a pull request the store already holds costs no call", () => {
   const pulls = [{ repo: "a11ign/a11ign", number: 20, createdAt: "2026-09-29T09:00:00Z", mergedAt: "2026-09-29T12:00:00Z", body: "Closes a11ign/a11ign#2" }];
-  const broken = budgetedGh({ gh: () => { throw new Error("HTTP 502"); }, budget: 50 });
-  assert.throws(() => githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh: broken }), /HTTP 502/);
+  const broken = budgetedGh({ gh: () => { throw new Error("HTTP 403"); }, budget: 50 });
+  assert.throws(() => githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh: broken }), /HTTP 403/);
   const held = [{ kind: "merged", pr: 20, repo: null }, { kind: "closed", row: 2 }];
   const idle = budgetedGh({ gh: listingGh(), budget: 0 });
   assert.deepEqual(githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held, gh: idle }), { events: [], unreadRows: [] }, "nothing to read, so even a budget of 0 reads and marks nothing");
@@ -739,6 +739,105 @@ function meteredFake({ start, resource = "core" }) {
   const gh = () => { gh.rate = { remaining: start - (gh.made += 1), resource }; return {}; };
   return Object.assign(gh, { rate: null, made: 0 });
 }
+
+/** The error `execFileSync` throws for a `gh api` that exits 1: `gh` says the status on stderr, and the message carries it after the command. */
+const ghFailure = (status, text = "Error") => Object.assign(new Error(`Command failed: gh api repos/a11ign/a11ign/commits/b79830d/check-runs\ngh: ${text} (HTTP ${status})`), { status: 1, stderr: `gh: ${text} (HTTP ${status})\n`, stdout: `HTTP/2.0 ${status} ${text}\r\n\r\n{}` });
+
+/** A `gh` whose calls throw `failures` in order and then answer; `made` is every call that reached it. */
+function flakyGh(failures, { rate = { remaining: 4000, resource: "core" } } = {}) {
+  const gh = () => {
+    gh.made += 1;
+    if (gh.made <= failures.length) throw failures[gh.made - 1];
+    return { ok: true };
+  };
+  return Object.assign(gh, { made: 0, rate });
+}
+
+test("RETRY (#3700): the status of a failed gh call is read off its stderr, its message or its -i reply, and a failure naming none is null, never 0", () => {
+  assert.equal(httpStatusOf(ghFailure(500, "Internal Server Error")), 500);
+  assert.equal(httpStatusOf({ stderr: "", message: "x", stdout: "HTTP/2.0 502 Bad Gateway\r\nretry-after: 1" }), 502);
+  assert.equal(httpStatusOf(new Error("HTTP 503")), 503);
+  assert.equal(httpStatusOf(Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" })), null);
+  assert.equal(httpStatusOf(undefined), null);
+});
+
+test("RETRY (#3700): a 500 that the next call clears is survived, every try is a COUNTED call, and the pause before each grows", () => {
+  const waits = [];
+  const underlying = flakyGh([ghFailure(500), ghFailure(500)]);
+  const bounded = budgetedGh({ gh: underlying, budget: 10, pause: (ms) => waits.push(ms) });
+  assert.deepEqual(bounded(["repos/a11ign/a11ign/pulls"]), { ok: true });
+  assert.equal(underlying.made, 3, "the third try answered");
+  assert.equal(bounded.calls, 3, "the budget line's total counts all three tries, not the one the reader asked for");
+  assert.deepEqual(waits, [2000, 4000], "a pause before each retry, longer before the last");
+  assert.equal(bounded.stopped, null, "a call that was cleared stopped nothing");
+});
+
+test("RETRY (#3700): each of 500, 502, 503 and 504 is retried", () => {
+  for (const status of [500, 502, 503, 504]) {
+    const underlying = flakyGh([ghFailure(status)]);
+    const bounded = budgetedGh({ gh: underlying, budget: 10, pause: () => {} });
+    bounded(["x"]);
+    assert.equal(underlying.made, 2, `HTTP ${status} was tried again`);
+  }
+});
+
+test("RETRY (#3700): a 4xx is an ANSWER and is NOT retried: 404, 403 and 422 each reach the caller as they came, after one call and no pause", () => {
+  for (const status of [404, 403, 422]) {
+    const waits = [];
+    const failure = ghFailure(status);
+    const underlying = flakyGh([failure, failure, failure]);
+    const bounded = budgetedGh({ gh: underlying, budget: 10, pause: (ms) => waits.push(ms) });
+    assert.throws(() => bounded(["x"]), (error) => error === failure, `HTTP ${status} is the error itself, not a stop`);
+    assert.equal(underlying.made, 1, `HTTP ${status} was asked once`);
+    assert.deepEqual(waits, [], `HTTP ${status} waited for nothing`);
+    assert.equal(bounded.stopped, null);
+  }
+  const unknown = flakyGh([new Error("spawn gh ENOENT")]);
+  assert.throws(() => budgetedGh({ gh: unknown, budget: 10, pause: () => {} })(["x"]), /ENOENT/);
+  assert.equal(unknown.made, 1, "a failure that names no status is not retried either");
+});
+
+test("RETRY (#3700): a 500 that outlasts its tries STOPS the run with the url and the status, as a stop (code, reason failure), not a stack", () => {
+  const underlying = flakyGh([ghFailure(500), ghFailure(500), ghFailure(500), ghFailure(500)]);
+  const bounded = budgetedGh({ gh: underlying, budget: 10, pause: () => {} });
+  assert.throws(() => bounded(["-i", "repos/a11ign/a11ign/commits/b79830d/check-runs", "-f", "page=1"]), { code: "GH_CALLS_SPENT", reason: "failure", message: "stopped at gh api -i repos/a11ign/a11ign/commits/b79830d/check-runs -f page=1: HTTP 500 after 3 attempts" });
+  assert.equal(underlying.made, 3, "three tries, and no fourth");
+  assert.equal(bounded.calls, 3);
+  assert.equal(bounded.stopped.reason, "failure");
+});
+
+test("RETRY (#3700): the tries are the BUDGET's and the PACE's: a budget that ends mid-retry refuses the try, and a gap longer than the pause is still kept", () => {
+  const tight = flakyGh([ghFailure(500), ghFailure(500), ghFailure(500)]);
+  const bounded = budgetedGh({ gh: tight, budget: 2, pause: () => {} });
+  assert.throws(() => bounded(["x"]), { reason: "budget", message: /--calls 2 is spent/ });
+  assert.equal(tight.made, 2, "the third try was refused BEFORE it was made");
+  let now = 0;
+  const waits = [];
+  const slow = budgetedGh({ gh: flakyGh([ghFailure(503)]), budget: 10, gapMs: 3000, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
+  slow(["x"]);
+  assert.deepEqual(waits, [2000, 1000], "the retry pause (2000) and then the 1000 ms the 3000 ms gap still lacked");
+  const low = flakyGh([ghFailure(500)], { rate: { remaining: 5, resource: "core" } });
+  assert.throws(() => budgetedGh({ gh: low, budget: 10, floor: 10, pause: () => {} })(["x"]), { reason: "floor" }, "a retry is under the floor like any call");
+});
+
+test("RETRY (#3700): a pull request whose reading a 500 stopped is unread, what was read before it is kept, and the summary says the run stopped at the url", () => {
+  const pull = (number, row, mergedAt) => ({ repo: "a11ign/a11ign", number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
+  const pulls = [pull(20, 2, "2026-09-29T12:00:00Z"), pull(10, 1, "2026-09-29T11:00:00Z")];
+  const underlying = listingGh();
+  const gh = budgetedGh({ gh: Object.assign((args) => { if (args.join(" ").includes("pulls/20")) throw ghFailure(500); return underlying(args); }, { rate: underlying.rate }), budget: 50, pause: () => {} });
+  const { events, unreadRows } = githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh });
+  assert.deepEqual(events.map((event) => event.id), ["gh:a11ign/a11ign#10:opened:once", "gh:a11ign/a11ign#1:filed:once"], "the older merge was read whole and kept");
+  assert.deepEqual(unreadRows, [2], "the pull request the 500 stopped is named unread");
+  assert.equal(gh.stopped.reason, "failure");
+  const github = { calls: gh.calls, read: events.length, added: events.length, remaining: { first: null, last: null }, stopped: gh.stopped };
+  assert.match(githubSummary({ github, budget: 50, unread: 1 }), /STOPPED AT THE GITHUB ERROR: stopped at gh api repos\/a11ign\/a11ign\/pulls\/20: HTTP 500 after 3 attempts$/);
+});
+
+test("RETRY (#3700): a 500 that stops the LISTING is an error that names the url and the status and carries the stop's code, so the entry prints it and exits 1", () => {
+  const window = { from: at("2026-09-28T00:00:00Z"), to: at("2026-10-05T00:00:00Z") };
+  const gh = budgetedGh({ gh: Object.assign(() => { throw ghFailure(500); }, { rate: { remaining: 4000, resource: "core" } }), budget: 50, pause: () => {} });
+  assert.throws(() => readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh, budget: 50 }), { code: "GH_CALLS_SPENT", message: /stopped at gh api -X GET repos\/a11ign\/a11ign\/pulls .*HTTP 500 after 3 attempts, listing the merged pull requests \(3 made\).*run it again/ });
+});
 
 test("PACE (#3644): a call waits until the gap since the last one ended, the first and a late one wait for nothing, and the budget refusal comes before any wait", () => {
   let now = 1000;
