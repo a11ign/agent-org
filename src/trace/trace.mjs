@@ -622,7 +622,7 @@ const spent = (message, reason) => Object.assign(new Error(message), { code: BUD
  * `gh` that makes at most `budget` calls and counts every one (a failed call is still a call). The (budget+1)th THROWS, before it is made, with `code: GH_CALLS_SPENT`: the budget is
  * checked per CALL, because one pull request costs several (the issue, each page of its timeline, a check-runs list per head), so a check per pull request can be overshot by all of them.
  * It PACES: a call waits until `gapMs` have passed since the last one ended. It stops at a FLOOR: when the reply last read carried an `X-Ratelimit-Remaining` under `floor`, the next call
- * throws the same code with `reason: "floor"`, before it is made. And it refuses a reply from a pool other than `core` (the search API's 30 a minute is the limit this exists to keep off).
+ * throws the same code with `reason: "floor"`, before it is made. And it refuses a reply whose pool is not `core`, one that names no pool included (the search API's 30 a minute is the limit this exists to keep off).
  * `.stopped` says which of the two stops ended the run, or `null`.
  * @param {{ gh: ((args: string[]) => any) & { rate?: { remaining: number, resource: string | null } | null }, budget: number, floor?: number, gapMs?: number, pause?: (ms: number) => void, clock?: () => number }} input
  * @returns {((args: string[]) => any) & { calls: number, stopped: { reason: "budget" | "floor", message: string } | null }}
@@ -649,8 +649,8 @@ export function budgetedGh({ gh, budget, floor = 0, gapMs = 0, pause = pauseMs, 
     } finally {
       lastEnd = clock();
     }
-    const pool = gh.rate?.resource;
-    if (pool && pool !== REST_POOL) throw new Error(`a reply came from the "${pool}" pool, not "${REST_POOL}": ${args.join(" ")} must not be read by this report (the search API allows 30 calls a minute per user)`);
+    const pool = gh.rate?.resource ?? null;
+    if (pool !== REST_POOL) throw new Error(`a reply came from ${pool === null ? "no named pool (X-Ratelimit-Resource is absent)" : `the "${pool}" pool`}, not "${REST_POOL}": ${args.join(" ")} must not be read by this report, because a pool that is not named cannot be known not to be the search API (30 calls a minute per user)`);
     return reply;
   };
   return /** @type {any} */ (Object.defineProperties(bounded, { calls: { get: () => counted.calls }, stopped: { get: () => stopped } }));

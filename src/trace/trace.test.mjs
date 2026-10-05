@@ -563,7 +563,7 @@ function listingGh({ merged = [], open = [] } = {}) {
     if (/\/timeline\?/.test(args[0])) return [];
     return { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } };
   };
-  return Object.assign(gh, { seen });
+  return Object.assign(gh, { seen, rate: { remaining: 4000, resource: "core" } }); // a real reply names its pool; a fake that does not is refused (see POOL)
 }
 const mergedItem = (number, body = "", { mergedAt = "2026-09-29T11:00:00Z", updatedAt = mergedAt } = {}) => ({ number, created_at: "2026-09-29T09:00:00Z", updated_at: updatedAt, merged_at: mergedAt, body });
 
@@ -659,7 +659,7 @@ function meteredFake({ start, resource = "core" }) {
 test("PACE (#3644): a call waits until the gap since the last one ended, the first and a late one wait for nothing, and the budget refusal comes before any wait", () => {
   let now = 1000;
   const waits = [];
-  const gh = budgetedGh({ gh: () => ({}), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
+  const gh = budgetedGh({ gh: Object.assign(() => ({}), { rate: { remaining: 4000, resource: "core" } }), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
   gh(["a"]);
   gh(["b"]);
   now += 400;
@@ -704,6 +704,18 @@ test("POOL (#3644): a reply from any pool but core is refused, so a search that 
   const gh = budgetedGh({ gh: meteredFake({ start: 1000, resource: "search" }), budget: 5 });
   assert.throws(() => gh(["-X", "GET", "search/issues"]), /came from the "search" pool, not "core".*30 calls a minute/);
   assert.equal(budgetedGh({ gh: meteredFake({ start: 1000 }), budget: 5 })(["x"]) !== undefined, true, "a core reply passes");
+});
+
+test("POOL (#3644): a reply that names NO pool is refused too: a pool that is not named cannot be known not to be the search API", () => {
+  const unnamed = (rate) => budgetedGh({ gh: Object.assign(() => ({}), { rate }), budget: 5 });
+  assert.throws(() => unnamed({ remaining: 4000, resource: null })(["x"]), /no named pool \(X-Ratelimit-Resource is absent\), not "core"/, "the remaining header came back and the resource header did not");
+  assert.throws(() => unnamed(null)(["x"]), /no named pool/, "no rate-limit header at all");
+  assert.throws(() => budgetedGh({ gh: () => ({}), budget: 5 })(["x"]), /no named pool/, "a gh that reports no rate at all");
+  for (const head of ["x-ratelimit-remaining: 4000\n", ""]) {
+    const { rate } = splitHttp(`HTTP/2.0 200 OK\n${head}\n{}`);
+    assert.throws(() => unnamed(rate)(["x"]), /no named pool/, `what splitHttp makes of a reply with ${head ? "no resource header" : "no rate headers"} is refused`);
+  }
+  assert.equal(unnamed({ remaining: 4000, resource: "core" })(["x"]) !== undefined, true, "POSITIVE CONTROL: the same wrapper passes a reply that names core");
 });
 
 test("RATE HEADERS (#3644): `gh api -i` is split into its rate limit and its body; an absent header is NO reading, never a reading of zero", () => {
