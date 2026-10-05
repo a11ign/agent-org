@@ -245,13 +245,16 @@ test("#1984: a workspace routed to a config that is not installed is UNKNOWN -- 
   }
 });
 
-test("#1984: with neither variable set, a person's own shell reads the human account", () => {
+test("#3665: with neither variable set, the wrapper REFUSES (#3642), so the account is UNKNOWN even when a human config exists", () => {
   const root = mkdtempSync(join(tmpdir(), "gh-identity-"));
   try {
+    // THE CONTROL: a readable human login is exactly what the old reading returned. The refusal must outrank it.
     configDir(join(root, ".config/gh"), "a-human-login");
     const account = declaredGhAccount({ env: {}, host: FAKE_HOST(root) });
-    assert.equal(account.login, "a-human-login");
-    assert.match(account.source, /human account/);
+    assert.equal(account.login, null, "naming the human here would name an account for a call the wrapper will not make");
+    assert.match(account.source, /UNKNOWN/);
+    assert.match(account.source, /REFUSES/);
+    assert.doesNotMatch(account.source, /declared as the human account|a-human-login/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
