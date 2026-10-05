@@ -221,7 +221,7 @@ const MUTANTS: Mutant[] = [
     breaks: Object.keys(CASES).filter((k) => /\(a\)|\(d\) (a review headed|CONTROL|FALLBACK)/.test(k)) },
   { name: "the named commit is compared only when it is spelt exactly as the head", from: 'local a="${1,,}" b="${2,,}"', to: 'local a="$1" b="$2"; [[ "$a" == "$b" ]] && return 0; return 1',
     breaks: [AT_DOOR("(a) the named sha equals the head")] },
-  { name: "the second-review refusal reads commit_id, not the body", from: '((.body | split("\\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\\\s+`(?<sha>[0-9a-fA-F]{7,40})`")?.sha) // .commit_id)', to: ".commit_id",
+  { name: "the second-review refusal reads commit_id, not the body", from: '((.body | split("\\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id)', to: ".commit_id",
     breaks: [AT_DOOR("(d) a review headed at an old commit")] },
   { name: "a body that names no commit is read at nothing", from: "// .commit_id", to: '// ""',
     breaks: [AT_DOOR("(d) FALLBACK")] },

@@ -256,7 +256,7 @@ refuse_second_review() {
   # is only where GitHub attached it, which is the HEAD at the moment of posting and so says nothing about what the reviewer read. It is the
   # fallback for a body that names none. The named one may be an abbreviation; the compare and check-run reads below resolve it.
   reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
-      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")?.sha) // .commit_id), .html_url] | @tsv' \
+      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id), .html_url] | @tsv' \
       | sort -r)" || undetermined "its reviews would not read"
   [[ -n "$reviews" ]] || return 0
   while IFS=$'\t' read -r when state commit url; do
