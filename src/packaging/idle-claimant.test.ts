@@ -9,8 +9,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  idleClaimantReading, idleNudgePrompt, WAIT_FIELDS, IDLE_CLAIMANT_MINUTES, IDLE_CLAIMANT_MS, IDLE_STATUSES, EVIDENCE_LABEL,
+  idleClaimantReading, idleNudgePrompt, WAIT_FIELDS, IDLE_CLAIMANT_MINUTES, IDLE_CLAIMANT_MS, IDLE_STATUSES, EVIDENCE_LABEL, HOLD_LABEL_PREFIX,
 } from "../idle-claimant.mjs";
+import { HOLD_PREFIX } from "../pr-hold-state.mjs";
 import {
   claimReading, claimStalledOrders, nextStallState, nudgeKey, claimFactsFrom,
 } from "../claim-stall.mjs";
@@ -77,6 +78,8 @@ const CASE: Record<string, Parameters<typeof reading>[0]> = {
   "checks-pending": { prs: [{ ...GREEN_PR, checksPending: true }] },
   "review-approved": { prs: [{ ...GREEN_PR, reviewDecision: "APPROVED" }] },
   "awaiting-evidence": { prs: [{ ...GREEN_PR, labels: [{ name: EVIDENCE_LABEL }] }] },
+  // #3569: an external event with a GitHub referent, held through `pr:hold --until`.
+  "pr-held": { prs: [{ ...GREEN_PR, labels: [{ name: `${HOLD_PREFIX}worker-9` }] }] },
 };
 
 test("#2999 (2) the case table covers EXACTLY the exported wait-field set, so a new kind cannot be added without a case", () => {
@@ -96,6 +99,7 @@ for (const kind of Object.keys(WAIT_FIELDS)) {
 
 test("#2999 `awaiting-evidence` is the gate's own label, and `blocked` (a claim with no referent) is NOT a wait field", () => {
   assert.equal(EVIDENCE_LABEL, AWAITING_EVIDENCE_LABEL);
+  assert.equal(HOLD_LABEL_PREFIX, HOLD_PREFIX, "#3569: the leaf's restatement of the hold prefix cannot drift from `pr-hold-state.mjs`'s");
   assert.equal(Object.hasOwn(WAIT_FIELDS, "blocked"), false);
 });
 
@@ -126,6 +130,7 @@ test("#2999 (4) the nudge names every row-field spelling and the pull-request wa
   for (const spelling of rowSpellings) assert.ok(text.includes(spelling), `the nudge must spell \`${spelling}\``);
   assert.match(text, /NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE/);
   assert.ok(text.includes(EVIDENCE_LABEL));
+  assert.ok(text.includes("pr:hold"), "#3569: an event outside the repository is a hold with a condition, and the nudge says so");
   assert.match(text, /RELEASED/, "a holder that can be released is told so");
   assert.doesNotMatch(idleNudgePrompt({ row: 1, branch: null, idleMinutes: 50, releaseMinutes: 120, canRelease: false }), /RELEASED/,
     "and one holding a pull request is not told a threat that will not be carried out");

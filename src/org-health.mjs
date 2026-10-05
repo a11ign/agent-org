@@ -350,17 +350,18 @@ export function fleetIdleReading({ now, fleet, waiting }) {
 }
 
 /**
- * @typedef {{ kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null }} OverdueCandidate
+ * @typedef {{ kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null, boundMinutes?: number }} OverdueCandidate
  * One open item the outcome clock runs on. `since` is when it OPENED (epoch ms): a PR's `createdAt`, a row's newest claim record. It is `null` when
  * nothing dates it, which is an unknown and never an age. `reason` is the gate's own label for the state (`stallReasonOf` for a PR) and is DISPLAYED, never
- * a condition; `owner` is `null` when NOBODY could be named.
+ * a condition; `owner` is `null` when NOBODY could be named. `boundMinutes` is the item's OWN bound, set by the reader that measured one (an idle claimed
+ * row's 80 minutes, #3569) and absent for every other item, which keeps its kind's.
  */
 
 /** @param {number} minutes @returns {string} how long an item has been open: minutes under two hours, hours to one decimal after */
 const openFor = (minutes) => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
 
-/** @param {OverdueCandidate} item @returns {number} the minutes it may stay open before it is overdue */
-const boundOf = (item) => (item.kind === "pr" ? OVERDUE_PR_MINUTES : OVERDUE_ROW_MINUTES);
+/** @param {OverdueCandidate} item @returns {number} the minutes it may stay open before it is overdue: its own when it carries one, else its kind's */
+const boundOf = (item) => item.boundMinutes ?? (item.kind === "pr" ? OVERDUE_PR_MINUTES : OVERDUE_ROW_MINUTES);
 
 /**
  * SIGNAL 7: THE OUTCOME CLOCK (#3486, replacing #2970's 180-minute "not progressing"). Every open PR and every claimed row has an age since it opened;
@@ -386,7 +387,8 @@ export function overdueReading({ now, items, unread = [] }) {
     return doubts.length === 0 ? clear(SIGNALS.OVERDUE) : unknown(SIGNALS.OVERDUE, doubts.join("; "));
   }
   const named = overdue.slice(0, MAX_NAMED).map((item) => `#${item.number} (${item.kind === "pr" ? "PR" : "row"}, ${item.reason}, open `
-    + `${openFor(Math.round((now - /** @type {number} */ (item.since)) / MS_PER_MINUTE))}, ${item.owner === null ? "NO OWNER" : `owner ${item.owner}`})`);
+    + `${openFor(Math.round((now - /** @type {number} */ (item.since)) / MS_PER_MINUTE))}, ${item.owner === null ? "NO OWNER" : `owner ${item.owner}`}`
+    + `${item.boundMinutes === undefined ? "" : `, bound ${item.boundMinutes} min`})`);
   const more = overdue.length > MAX_NAMED ? `, and ${overdue.length - MAX_NAMED} more` : "";
   const key = overdue.map((item) => `${item.kind}#${item.number}:${item.reason}`).sort().join(",");
   return { signal: SIGNALS.OVERDUE, status: "tripped", firstTrippedAt: crossedAt(overdue[0]), discriminator: `${SIGNALS.OVERDUE}@${key}`,
