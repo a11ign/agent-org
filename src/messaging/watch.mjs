@@ -58,7 +58,7 @@ import { observeStalls } from "./sources/stall.mjs";
 import { observeWatched } from "./sources/watched.mjs";
 import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
-import { createWatchReaders } from "./watch-list.mjs";
+import { createWatchReaders, hostFiles } from "./watch-list.mjs";
 import { walkPosition } from "./walk.mjs";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
@@ -540,7 +540,7 @@ export async function main(deps = {}) {
   const result = await runWatch({
     github: reader, provider, repo: trackerRepo(root), summary: config.summary, releaseRepos: github === undefined ? declaredCodeRepos(root) : [], milestonesPath: config.milestones,
     readers: readers ?? (github === undefined ? hostReaders({ root, home, now, err, github: reader }) : undefined),
-    watchReaders: watchReaders ?? (github === undefined ? createWatchReaders(trackerRepo(root), now) : undefined),
+    watchReaders: watchReaders ?? (github === undefined ? createWatchReaders(trackerRepo(root), now, await hostFiles({ root, err: (line) => err(`messaging:watch: ${line}`) })) : undefined),
     ledger: createLedger({ path: defaultLedgerPath(home), now }), now, log: err,
   });
   for (const { key, action } of result.decisions) if (!IDLE_ACTIONS.has(action)) out(`${key}: ${action}`);

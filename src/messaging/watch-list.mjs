@@ -25,10 +25,11 @@
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs, promisify } from "node:util";
 
+import { completionPath } from "../lib/tick-completion.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { stateFingerprint } from "./event.mjs";
 import { STATUS, createLedger, describeError } from "./ledger.mjs";
@@ -189,9 +190,32 @@ function guardedRunner(file, assertRead) {
   };
 }
 
-/** @param {string} repo @param {() => number} now @returns {import("./placeholders.mjs").Readers} the real reads, over `gh` and `systemctl` runners that make no write */
-export function createWatchReaders(repo, now = Date.now) {
-  return createGhReaders({ gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now });
+/**
+ * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs` names them for the watcher: the two files `fleet-watch` writes under the project's `runs/`,
+ * and the tick's completion record beside the wake ledger. WITHOUT THEM those placeholders refuse ("this host named no fleet-watch state files"), which is the right
+ * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.mjs` is imported WHEN ASKED, as `reply-cli.mjs` does:
+ * it resolves the host at import, and a host that cannot name the record must cost `{{gate.*}}` and nothing else.
+ *
+ * @param {{ root: string, err: (line: string) => void }} where
+ * @returns {Promise<{ fleet: { statePath: string, capturesPath: string }, gateRecordPath?: string }>} no `gateRecordPath` when the host could not name one, said on `err`
+ */
+export async function hostFiles({ root, err }) {
+  const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
+  try {
+    const { stateEntryPath } = await import("../host-config.mjs");
+    return { fleet, gateRecordPath: completionPath(stateEntryPath("wake-ledger")) };
+  } catch (error) {
+    err(`this host could not name the work-tick completion record, so {{gate.*}} will refuse: ${describeError(error)}`);
+    return { fleet };
+  }
+}
+
+/**
+ * @param {string} repo @param {() => number} now @param {{ fleet?: { statePath: string, capturesPath: string }, gateRecordPath?: string }} [files] what `hostFiles` names
+ * @returns {import("./placeholders.mjs").Readers} the real reads, over `gh` and `systemctl` runners that make no write
+ */
+export function createWatchReaders(repo, now = Date.now, files = {}) {
+  return createGhReaders({ gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now, ...files });
 }
 
 /** What a caller may leave out. A spread and not parameter defaults, as `record.mjs` does. */

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createForwarder, tellingWhenUndelivered, main, EXIT } = await import("./listen.mjs");
+const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.mjs");
 const { createConverse, notReached } = await import("./converse.mjs");
 const { createInbound } = await import("./inbound.mjs");
 const { createLedger, readLedgerLines } = await import("./ledger.mjs");
@@ -383,5 +383,33 @@ describe("a message that can no longer be answered has its keyboard taken off (a
   test("the program wires both: the provider's clearKeyboard to the forwarder, and the liaison's order to the answers", () => {
     assert.match(SOURCE, /clearKeyboard: \(ref\) => provider\.clearKeyboard\(ref\)/);
     assert.match(SOURCE, /orders: \{ liaison: \(order\) => conversation\.orderLiaison\(order\) \}/);
+  });
+});
+
+describe("(#3646) the walk-through's readers are handed the fleet-watch files and the gate record", () => {
+  /** A project root whose tracker is declared and whose `runs/` holds the two files `fleet-watch` writes, a poll that has just answered for one worker. */
+  function projectWithFleet() {
+    const root = join(scratch, `walk-root-${nextDir += 1}`);
+    mkdirSync(join(root, ".agent-org"), { recursive: true });
+    mkdirSync(join(root, "runs"), { recursive: true });
+    writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ schema: 1, tracker: [{ repo: "a11ign/a11ign" }] }));
+    const at = Date.now() - 1_000;
+    writeFileSync(join(root, "runs", "fleet-watch-state.json"), "{}");
+    writeFileSync(join(root, "runs", "fleet-captures-state.json"), JSON.stringify({ since: 1, workers: { "worker-a": { captures: 0, seenAt: at, lastRoseAt: null, rises: [] } } }));
+    return root;
+  }
+
+  test("{{fleet.workers-up}} is read from the project's runs/, and the gate is not 'named no record': its path is the host's", async () => {
+    const lines = /** @type {string[]} */ ([]);
+    const readers = /** @type {NonNullable<Awaited<ReturnType<typeof verifyingReaders>>>} */ (await verifyingReaders({ root: projectWithFleet(), now: Date.now, err: (line) => lines.push(line) }));
+    assert.deepEqual((await readers.fleet()).up, ["worker-a"]);
+    // Whether the host's record exists is the machine's, so either answer passes; only "this host named none" is the defect.
+    const gate = await readers.gate().catch((/** @type {unknown} */ error) => error);
+    assert.doesNotMatch(String(gate), /named no work-tick completion record/);
+    assert.deepEqual(lines, []);
+  });
+
+  test("CONTROL: the program passes what `hostFiles` named, and not nothing (the readers above would refuse if it did not)", () => {
+    assert.match(SOURCE, /createWatchReaders\(trackerRepo\(root\), now, await hostFiles\(/);
   });
 });

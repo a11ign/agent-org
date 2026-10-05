@@ -1,3 +1,4 @@
+// no-token: prepareContext -- the provider, the ledger and the readers are injected fixtures and nothing here calls it; `watch.mjs` only carries it in through `WATCHED`'s `requestActions` import (#3581)
 // @ts-check
 // `chairman:watch`: THE LIST (a11ign/a11ign#3418, acceptance 4 to 6). The ledger is real and the readers are a world the test moves.
 //
@@ -5,16 +6,18 @@
 // something); (6) removes a watch that IS listed, and the second `list` empty is read against the first, which was not.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "./fake-provider.ts";
+import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.mjs";
 import { createLedger } from "./ledger.mjs";
+import { parsePlaceholders, readPlaceholders } from "./placeholders.mjs";
 import { defaultLedgerPath } from "./state.mjs";
 import { WATCHED, runWatch } from "./watch.mjs";
-import { createWatchList, foldWatches, main } from "./watch-list.mjs";
+import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.mjs";
 
 // THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
 // between ticks, answering as the placeholder vocabulary's `Readers`, and a ledger that already holds the chairman's message.
@@ -299,5 +302,68 @@ describe("chairman:watch as a command", () => {
       assert.equal(result.code, 2, name);
       assert.deepEqual(result.asked, [], `${name}: nothing was read`);
     }
+  });
+});
+
+describe("(#3646) the listener's readers name the fleet-watch files and the gate record, so a Verify over them can be read", () => {
+  const MINUTE = 60_000;
+  const NOW = Date.parse("2026-10-05T09:00:00Z");
+  const FACTS = "{{fleet.workers-up}} | {{fleet.workers-down}} | {{gate.last-tick.age}}";
+
+  /** The two files `fleet-watch` writes, 10 minutes old. `worker-b` is in the state file (answered, not ready), `worker-d` has not answered for an hour. */
+  function fleetFiles() {
+    const directory = mkdtempSync(join(scratch, "fleet-"));
+    const wroteAt = NOW - 10 * MINUTE;
+    const statePath = join(directory, "fleet-watch-state.json");
+    const capturesPath = join(directory, "fleet-captures-state.json");
+    writeFileSync(statePath, JSON.stringify({ "worker-b  host-z.example:8765": NOW - 30 * MINUTE }));
+    const stamp = (/** @type {number} */ behind) => ({ captures: 0, seenAt: wroteAt - behind, lastRoseAt: null, rises: [] });
+    writeFileSync(capturesPath, JSON.stringify({ since: 1, workers: { "worker-a": stamp(0), "worker-b": stamp(0), "worker-c": stamp(0), "worker-d": stamp(60 * MINUTE) } }));
+    for (const path of [statePath, capturesPath]) utimesSync(path, wroteAt / 1000, wroteAt / 1000);
+    return { statePath, capturesPath };
+  }
+
+  /** @param {Parameters<typeof createWatchReaders>[2]} files @returns {Promise<{ values: Map<string, string>, failures: { placeholder: string, reason: string }[] }>} the real reads of `FACTS` */
+  async function read(files) {
+    return readPlaceholders(parsePlaceholders(FACTS).placeholders, { readers: createWatchReaders(TRACKER, () => NOW, files), now: () => NOW });
+  }
+
+  /** @returns {string} a gate record written 4 minutes ago */
+  function gateRecord() {
+    const path = join(mkdtempSync(join(scratch, "gate-")), COMPLETION_FILE);
+    writeCompletion(path, { at: NOW - 4 * MINUTE, exit: 0 });
+    return path;
+  }
+
+  test("(1) given the two fleet files it reads who is up and who is down, with the poll's age; (4) a worker the fixture names down reads as down", async () => {
+    const { values, failures } = await read({ fleet: fleetFiles() });
+    assert.equal(values.get("{{fleet.workers-up}}"), "worker-a, worker-c (fleet-watch poll 10m ago)");
+    assert.equal(values.get("{{fleet.workers-down}}"), "worker-b, worker-d (fleet-watch poll 10m ago)");
+    assert.deepEqual(failures.map(({ placeholder }) => placeholder), ["{{gate.last-tick.age}}"], "no gate record was named, so only the gate refuses");
+  });
+
+  test("(2) given a gate record it reads how long ago the gate last completed a tick", async () => {
+    const { values, failures } = await read({ gateRecordPath: gateRecord() });
+    assert.equal(values.get("{{gate.last-tick.age}}"), "4m");
+    assert.deepEqual(failures.map(({ placeholder }) => placeholder), ["{{fleet.workers-up}}", "{{fleet.workers-down}}"]);
+  });
+
+  test("(3) POSITIVE CONTROL: with neither path the same call fails closed and says so, so (1) and (2) are the paths' doing", async () => {
+    const { values, failures } = await read(undefined);
+    assert.equal(values.size, 0);
+    assert.deepEqual(failures.map(({ placeholder }) => placeholder), ["{{fleet.workers-up}}", "{{fleet.workers-down}}", "{{gate.last-tick.age}}"]);
+    assert.match(failures[0].reason, /named no fleet-watch state files/);
+    assert.match(failures[2].reason, /named no work-tick completion record/);
+  });
+
+  test("a fleet whose watcher stopped is refused and not read as 'everything is down' or 'nothing is'", async () => {
+    const readers = createWatchReaders(TRACKER, () => NOW + 3 * 60 * MINUTE, { fleet: fleetFiles() });
+    await assert.rejects(() => readers.fleet(), /that is not a reading of the fleet/);
+  });
+
+  test("hostFiles names fleet-watch's two files under the project's runs/ and the completion record beside the wake ledger", async () => {
+    const files = await hostFiles({ root: "/checkout", err: (line) => assert.fail(line) });
+    assert.deepEqual(files.fleet, { statePath: "/checkout/runs/fleet-watch-state.json", capturesPath: "/checkout/runs/fleet-captures-state.json" });
+    assert.match(String(files.gateRecordPath), new RegExp(`/${COMPLETION_FILE}$`));
   });
 });
