@@ -29,6 +29,8 @@ import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
+import { clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, slowThresholdSeconds, slowTickOrders, tickMarkerPath,
+  writeStartMarker } from "./work-tick-health.mjs";
 import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, summariseCensus } from "./lib/spawn-census.mjs";
 
 // Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
@@ -218,23 +220,26 @@ export function appendTickCost(path, line) {
 }
 
 /**
- * What one tick carries from its start to `finish`: where it records, the meter, and how many wakes `wake` reported.
- * @typedef {{ recordPath: string, costPath: string, censusPath: string, meter: ReturnType<typeof createMeter>, wakes: number }} Run
+ * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the
+ * two reports a tick makes about itself (`work-tick-health.mjs`).
+ * @typedef {{ recordPath: string, costPath: string, censusPath: string, markerPath: string, wakeCommand: { node: string, args: string[] },
+ *   meter: ReturnType<typeof createMeter>, wakes: number }} Run
  */
 
 /**
  * THE CENSUS STARTS HERE, before the first spawn, and reaches every process the tick starts two ways: this process is patched in place (it runs the
  * tear-downs itself), and `NODE_OPTIONS` preloads the patch into every `node` below it, the gate and the `node` the gate starts included. One file
  * per tick process, so a tick run by hand beside the timer's cannot read the other's commands.
- * @param {string} ledgerPath @returns {Run}
+ * @param {string} ledgerPath @param {string[]} wakeArgs the arguments that run `wake` as a child, after `node` @returns {Run}
  */
-function startRun(ledgerPath) {
+function startRun(ledgerPath, wakeArgs) {
   const censusPath = join(dirname(ledgerPath), `tick-census.${process.pid}.jsonl`);
   const preload = `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`;
   process.env[CENSUS_ENV] = censusPath;
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
   installSpawnCensus(censusPath);
-  return { recordPath: completionPath(ledgerPath), costPath: tickCostPath(ledgerPath), censusPath, meter: createMeter(), wakes: 0 };
+  return { recordPath: completionPath(ledgerPath), costPath: tickCostPath(ledgerPath), censusPath, markerPath: tickMarkerPath(ledgerPath),
+    wakeCommand: { node: process.execPath, args: wakeArgs }, meter: createMeter(), wakes: 0 };
 }
 
 /**
@@ -249,17 +254,51 @@ function tickCostLine(exit, run) {
 
 /**
  * Said on stderr and never thrown, like the completion record below: a tick that did its work must not become a failure because the file that
- * reports on its cost could not be written. The census file is removed either way.
- * @param {number} exit @param {Run} run
+ * reports on its cost could not be written. The census file is removed either way. Returns the line, which is what "was this tick slow" reads, or
+ * `null` when it could not be made: a tick whose cost cannot be read is not reported slow on a guess.
+ * @param {number} exit @param {Run} run @returns {ReturnType<typeof tickCostLine> | null}
  */
 function recordCost(exit, run) {
   try {
-    appendTickCost(run.costPath, tickCostLine(exit, run));
+    const line = tickCostLine(exit, run);
+    appendTickCost(run.costPath, line);
+    return line;
   } catch (err) {
     process.stderr.write(`TICK COST NOT RECORDED at ${run.costPath}: ${String(/** @type {any} */ (err)?.message ?? err)}.\n`);
+    return null;
   } finally {
     rmSync(run.censusPath, { force: true });
   }
+}
+
+// ---- A TICK THAT REPORTS ITSELF (a11ign/a11ign#3567) -------------------------------------------------------------------------------------------
+
+/**
+ * AT THE START: read what a killed predecessor left, then leave a marker of our own, in that order. The marker is cleared by `exit`, which runs when
+ * the process ends BY ITSELF, whatever the code, a crash included, and does not run when a signal ends it: a marker still standing is exactly a tick
+ * that was killed. The report goes out here, before the gate, because a gate that is the slow part must not delay the news that it was.
+ * @param {Run} run
+ */
+function beginTickHealth(run) {
+  try {
+    const killed = readKilledTick(run.markerPath);
+    writeStartMarker(run.markerPath, { at: Math.round(Date.now() - process.uptime() * MS_PER_SECOND), pid: process.pid });
+    process.on("exit", () => clearOwnMarker(run.markerPath, process.pid));
+    deliverTickOrders(killedTickOrders(killed, { foundAt: Date.now(), costPath: run.costPath }), run.wakeCommand);
+  } catch (err) {
+    process.stderr.write(`TICK HEALTH NOT RECORDED at ${run.markerPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. A killed tick will not be reported.\n`);
+  }
+}
+
+/**
+ * AT THE END, after the cost line, which is what it reads. The marker is cleared FIRST: a tick killed while it reports must not be reported again as
+ * killed by the next one, and one report per tick is the row's own rule.
+ * @param {ReturnType<typeof tickCostLine> | null} line @param {Run} run
+ */
+function reportIfSlow(line, run) {
+  clearOwnMarker(run.markerPath, process.pid);
+  if (line === null) return;
+  deliverTickOrders(slowTickOrders(line, { thresholdSeconds: slowThresholdSeconds(), costPath: run.costPath }), run.wakeCommand);
 }
 
 /**
@@ -280,7 +319,7 @@ function finish(code, run) {
     } catch (err) {
       process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
     }
-    recordCost(code, run);
+    reportIfSlow(recordCost(code, run), run);
   }
   process.exit(code);
 }
@@ -312,13 +351,14 @@ function main() {
   });
   const passthrough = process.argv.slice(2);
   const ledgerPath = ledgerPathFrom(passthrough);
-  const run = startRun(ledgerPath);
+  /** @param {string} name */
+  const here = (name) => fileURLToPath(new URL(name, import.meta.url));
+  const run = startRun(ledgerPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough]);
+  beginTickHealth(run);
   const { meter } = run;
   // FIRST, BEFORE ANYTHING CAN DECIDE (#3443): the host runs one agent-org version and a journal read must say which made each decision. Read from the
   // checkout at this tick, never remembered; a checkout at no release says so rather than naming one.
   console.log(meter.phase("version", toolVersionLine));
-  /** @param {string} name */
-  const here = (name) => fileURLToPath(new URL(name, import.meta.url));
 
   const gate = meter.phase("gate", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" }));
   if (gate.error) {
@@ -337,8 +377,7 @@ function main() {
   if (next.why) process.stderr.write(`${next.why}\n`);
   if (!next.deliver) finish(next.exit ?? EXIT.CANNOT_ASK, run);
 
-  const wake = meter.phase("wake", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough],
-    { encoding: "utf8", input: gate.stdout }));
+  const wake = meter.phase("wake", () => spawnSync(run.wakeCommand.node, run.wakeCommand.args, { encoding: "utf8", input: gate.stdout }));
   if (wake.error) {
     process.stderr.write(`CANNOT ASK: could not run wake (${wake.error.message}). The gate found work and `
       + "it was NOT delivered.\n");

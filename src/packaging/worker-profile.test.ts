@@ -31,7 +31,8 @@ const GATE = ["work-gate.mjs", "work-gate/pr-orders.mjs", "work-gate/lab-job-ord
   "repeating-lines.mjs", // #2848: the repeating-line order is built beside the journal reading, not in the gate
   "org-health.mjs", // #2936: the org-health order beside its four readings
   "org-retro.mjs", // #2938: and the daily retrospective's beside the numbers it carries
-  "work-gate/row-call-count-orders.mjs"] // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
+  "work-gate/row-call-count-orders.mjs", // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
+  "work-tick-health.mjs"] // #3567: and `tick-overran`'s, which the TICK builds about itself and no gate ever sees
   .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
 
 /** The two shapes `profileFor` and `spawnInvocation` return, and narrowing that ASSERTS rather than casts. */
@@ -59,6 +60,7 @@ test("every cause work-gate can actually emit has a profile, and nothing else do
   assert.ok(emitted.includes("pr-checks-failing"), "and the fourth, `work-gate/pr-orders.mjs` (#2542), which now holds every pull-request order");
   assert.ok(emitted.includes("lab-job-finished"), "and the fifth, `work-gate/lab-job-orders.mjs` (#2729), whose cause is declared by a11ign's plugin");
   assert.ok(emitted.includes("org-retrospective"), "and the sixth, `org-retro.mjs` (#2938), whose order is built beside the numbers it carries");
+  assert.ok(emitted.includes("tick-overran"), "and the seventh, `work-tick-health.mjs` (#3567), built by the tick and not the gate");
   assert.deepEqual(Object.keys(PROFILES).sort(), [...new Set(emitted)].sort(),
     "a cause work-gate emits with no profile refuses at run time, and a profile for a cause that no "
     + "longer exists is a routing decision nothing will ever read");
