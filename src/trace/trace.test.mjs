@@ -7,11 +7,12 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.mjs";
 import { parseLedger } from "../wakes-per-row.mjs";
-import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
+import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -506,4 +507,63 @@ test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, key
   assert.match(text, /gh ledgers: 0 read .*1 unchanged/);
   assert.doesNotMatch(text, /gh-ledger {2,}/, "a call is summarised, never one line of the trace");
   assert.match(text, /6 events \(0 from GitHub\), 3 turns across 1 sessions \(worker-9001\)/, "and a call is not an event of the row's listing, a turn, or a session: `gh-ledger` is a source");
+});
+
+const DEFERRED_PR = "orchestrator/pr-review-blocked/pr-9100";
+const SPAN = { key: DEFERRED_PR, startMs: at("2026-10-04T10:31:00Z"), endMs: at("2026-10-04T10:43:03Z"), how: /** @type {const} */ ("delivered") };
+
+test("DEFERRAL (#3510): a span is keyed by its cause key's pull request (subjectOf), joined to the row through the pull request, and read twice is one event", () => {
+  const [event] = eventsOfDeferrals([SPAN], ROW_REPO);
+  assert.deepEqual([event.kind, event.source, event.session, event.pr, event.row, event.at, event.startedAt, event.how], ["deferral", "deferral-log", "orchestrator", 9100, null, SPAN.endMs, SPAN.startMs, "delivered"]);
+  assert.deepEqual(eventsForRow([event], { rows: [9001], prs: [9100] }), [event], "the pull request that closes the row carries it");
+  assert.deepEqual(eventsForRow([event], { rows: [9001], prs: [] }), [], "a row alone does not reach a pull request's wait, as for every pull request event");
+  assert.equal(eventsOfDeferrals([{ ...SPAN, key: "worker-9001/blocker-cleared/x" }], ROW_REPO)[0].row, 9001, "a key that names nothing falls back to the session's name, as a wake does");
+  const store = openStore(join(mkdtempSync(join(tmpdir(), "trace-deferral-id-")), "events.ndjson"));
+  assert.equal(appendToStore(store, [event, ...eventsOfDeferrals([SPAN], ROW_REPO)]).added, 1, "the id is the key and the start: a line appended twice by a killed tick is one event");
+});
+
+test("DEFERRAL (#3510): the log is ingested INCREMENTALLY through the ingest state: a second run reads nothing, an appended span reads only the new bytes, and a bad line fails the file and moves nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-deferral-"));
+  const logFile = join(dir, DEFERRAL_LOG_FILE);
+  const store = openStore(join(dir, "events.ndjson"));
+  const state = { version: 2, firstRunAt: 0, firstRunSince: 0, storeBytes: 0, files: {} };
+  const run = (/** @type {any} */ from) => ingestDeferrals({ logs: [logFile], rowRepo: ROW_REPO, store, state: from, now: at("2026-10-04T12:00:00Z") });
+  assert.deepEqual(run(state).report.absent, [logFile], "no log is ABSENT, never an empty one");
+  writeFileSync(logFile, deferralLogText([SPAN]));
+  const first = run(state);
+  assert.deepEqual([first.report.read, first.report.spans, first.report.added], [1, 1, 1]);
+  const second = run(first.state);
+  assert.deepEqual([second.report.read, second.report.unchanged, second.report.spans], [0, 1, 0], "nothing is read twice");
+  const later = { key: "orchestrator/ready-queue-empty/x", startMs: SPAN.endMs, endMs: SPAN.endMs + 60_000, how: /** @type {const} */ ("gone") };
+  writeFileSync(logFile, deferralLogText([SPAN, later]));
+  const third = run(second.state);
+  assert.deepEqual([third.report.spans, third.report.added, third.report.reread], [1, 1, []], "only the span the log gained");
+  writeFileSync(logFile, `${deferralLogText([SPAN, later])}${later.key}\tnot-a-number\t1\tgone\n`);
+  const bad = run(third.state);
+  assert.equal(bad.report.failed.length, 1);
+  assert.match(bad.report.failed[0], /has a line that is not "<causeKey>/);
+  assert.deepEqual(bad.state.files, third.state.files, "the state does not move past a line that could not be read");
+  writeFileSync(logFile, deferralLogText([later]));
+  assert.match(run(third.state).report.reread[0], /shrank|first bytes changed/, "a log that shrank is read again from byte 0, and SAID");
+});
+
+test("DEFERRAL (#3510): through ingestTranscripts the same state holds the transcripts and the log, and the report prints the span the two events join and keeps naming what is unrecorded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-deferral-run-"));
+  mkdirSync(join(dir, "projects", "p"), { recursive: true });
+  writeFileSync(join(dir, "projects", "p", "orchestrator.jsonl"), ORCHESTRATOR);
+  const logFile = join(dir, DEFERRAL_LOG_FILE);
+  writeFileSync(logFile, deferralLogText([SPAN]));
+  const input = { root: join(dir, "projects"), since: 0, ledger: LEDGER, rowRepo: ROW_REPO, storePath: join(dir, "events.ndjson"), deferralLogs: [logFile], now: at("2026-10-04T12:00:00Z") };
+  assert.equal(ingestTranscripts(input).report.deferrals.added, 1);
+  const second = ingestTranscripts(input);
+  assert.deepEqual([second.report.deferrals.read, second.report.deferrals.unchanged, second.report.read], [0, 1, 0]);
+  const text = render({ number: 9100, rows: [9001], prs: [9100], events: eventsForRow(second.store.events, { rows: [9001], prs: [9100] }), ingest: second.report, held: second.store.events });
+  assert.match(text, /2026-10-04 10:43:03 {2}orchestrator +DEFERRED orchestrator\/pr-review-blocked\/pr-9100 {2}waited 12m03s \(from 2026-10-04 10:31:00Z\), delivered/);
+  assert.match(text, /deferral logs: 0 read, 1 unchanged/);
+  assert.match(text, /DEFERRAL SPANS HELD: 1 ended waits, the earliest started 2026-10-04 10:31Z; a wait before the first tick that wrote the log is unrecorded/);
+  const alone = render({ number: 9100, rows: [9001], prs: [9100], events: [], held: eventsOfDeferrals([SPAN], ROW_REPO) });
+  assert.doesNotMatch(alone, /orchestrator +held from/, "a deferral is not a transcript: a store holding only one has no actor `held from`");
+  assert.match(alone, /DEFERRAL SPANS HELD: 1 ended waits/);
+  const empty = render({ number: 9100, rows: [9001], prs: [9100], events: [], held: [] });
+  assert.match(empty, /DEFERRAL SPANS HELD: none in the store yet/);
 });
