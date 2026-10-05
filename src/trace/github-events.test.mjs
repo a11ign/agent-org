@@ -58,7 +58,7 @@ const ISSUES = {
 };
 
 /** A `gh api` answering from the table, as gh does: a path it does not know FAILS. `seen` is every path asked. */
-const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE } = {}) => {
+const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE, draft } = {}) => {
   const seen = [];
   const gh = (args) => {
     seen.push(args[0]);
@@ -66,7 +66,7 @@ const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE } = {}) => {
     const issue = /issues\/(\d+)$/.exec(path);
     if (issue) return issue[1] === "3406" ? { ...ISSUES[3406], created_at: "2026-10-04T11:44:58Z" } : ISSUES[issue[1]]; // a pull request's ISSUE record, a second late as #3575's was
     const ownRecord = /pulls\/(\d+)$/.exec(path);
-    if (ownRecord) return ISSUES[ownRecord[1]];
+    if (ownRecord) return draft === undefined ? ISSUES[ownRecord[1]] : { ...ISSUES[ownRecord[1]], draft }; // the pull object's `draft` is the state NOW; absent = not read
     const timeline = /issues\/(\d+)\/timeline$/.exec(path);
     if (timeline) return timeline[1] === "3406" ? pull : ROW_TIMELINE;
     const checks = /commits\/(\w+)\/check-runs$/.exec(path);
@@ -210,4 +210,24 @@ test("A PULL REQUEST IS OPENED AT ITS OWN `created_at` (`pulls/{n}`), not its is
   assert.equal(opened.at, at("2026-10-04T11:44:57Z"), "the pull request's own time");
   assert.notEqual(opened.at, at("2026-10-04T11:44:58Z"), "POSITIVE CONTROL: the issue record the fake also holds says another second, so reading it would be caught here");
   assert.equal(read().find((event) => event.kind === "filed" && event.row === 3508).at, at("2026-10-04T17:54:45Z"), "a row has no pull record and is read from its issue");
+});
+
+const openedOf = (options) => read(fakeGh(options)).find((event) => event.kind === "opened" && event.pr === 3406);
+const stamp = (event, id, created_at) => ({ id, event, created_at, commit_id: null, actor: { login: "a11ign-ai-workers" } });
+const NO_SWITCH = PR_TIMELINE.filter((raw) => raw.event !== "ready_for_review");
+
+test("OPENED CARRIES `draft`: true for a draft, false for one opened ready, null when the pull object was not read -- and null is never false (#3670)", () => {
+  assert.equal(openedOf({ pull: NO_SWITCH, draft: true }).draft, true, "a pull request still a draft was opened as one");
+  assert.equal(openedOf({ pull: NO_SWITCH, draft: false }).draft, false, "one with no ready mark and not a draft was opened ready");
+  assert.equal(openedOf({ pull: NO_SWITCH }).draft, null, "the pull object carries no `draft`: unread, which is not `false`");
+  assert.ok("draft" in openedOf({ pull: NO_SWITCH }), "the field is there as null, not left off");
+  assert.equal(read().find((event) => event.kind === "filed" && event.row === 3508).draft, undefined, "a row is not a pull request and has no draft state");
+});
+
+test("THE PULL OBJECT'S `draft` IS THE STATE NOW, so the timeline's first draft/ready event outranks it: a draft marked ready reads draft: true on `opened` (#3670)", () => {
+  assert.equal(openedOf({ draft: false }).draft, true, "POSITIVE CONTROL: marked ready later, the pull object says false, and reading it alone would call this PR opened ready");
+  const converted = [...NO_SWITCH, stamp("convert_to_draft", 1, "2026-10-04T12:00:00Z"), stamp("ready_for_review", 2, "2026-10-04T12:30:00Z")];
+  assert.equal(openedOf({ pull: converted, draft: false }).draft, false, "opened ready, converted to draft and marked ready again: the FIRST switch says it was ready");
+  assert.equal(openedOf({ pull: [...NO_SWITCH, stamp("convert_to_draft", 1, "2026-10-04T12:00:00Z")], draft: true }).draft, false, "opened ready, a draft only now");
+  assert.equal(openedOf({ draft: undefined }).draft, true, "the timeline alone is enough when the pull object was not read");
 });

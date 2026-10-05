@@ -264,7 +264,7 @@ test("OPEN: a phase with a start and no end prints open, to the reading, and is 
   assert.equal(verify.runs[0].end, NOW, "an open run is read up to the reading");
   assert.equal(verify.runs[0].wallClockMs, NOW - at("11:20:00"));
   assert.equal(wf.open, true);
-  assert.match(verify.runs[0].note, /still a draft, or opened ready/, "the store does not say whether it began as a draft, and the report says so");
+  assert.match(verify.runs[0].note, /still a draft, or opened ready/, "a record with no `draft` (written before the field) does not say whether it began as a draft, and the report says so");
   for (const name of ["queue", "merge"]) assert.deepEqual([phaseOf(wf, name).state, phaseOf(wf, name).why?.startsWith("not reached")], ["not reached", true]);
   const text = renderWaterfall(wf, { title: "#9001", now: NOW }).join("\n");
   assert.match(text, /verify +OPEN/);
@@ -309,4 +309,35 @@ test("PRINT: the eight phases in order, each with wall-clock, WORKING, WAITING, 
 
 test("DURATION: seconds, minutes and hours", () => {
   assert.deepEqual([0, 400, 4000, 65000, 2 * 3600000 + 15 * 60000 + 8000].map(duration), ["0s", "<1s", "4s", "1m05s", "2h15m08s"], "a wait of under a second is not printed as none");
+});
+
+/** A pull request with no ready_for_review event, its `opened` carrying `draft` (left off when `undefined`, as a record written before the field), and a queue entry when `queued`. */
+const unmarked = ({ draft, queued = false }) => {
+  const opened = ghRecord("opened", "11:20:00", draft === undefined ? {} : { draft });
+  const queue = queued ? [ghRecord("added_to_merge_queue", "12:30:00", { id: "gh:a11ign/a11ign#9100:added_to_merge_queue:q1" })] : [];
+  return phaseOf(waterfall({ events: [opened, ...queue], now: NOW }), "verify");
+};
+const OPENED_READY = /opened ready \(draft: false\)/;
+
+test("VERIFY READS `opened.draft`: the opened-ready note prints only for draft: false, queued or not, and never as a guess (#3670)", () => {
+  for (const queued of [true, false]) {
+    const verify = unmarked({ draft: false, queued });
+    assert.match(verify.runs[0].note, OPENED_READY);
+    assert.deepEqual([verify.state, verify.runs[0].wallClockMs], ["ended", 0], "a pull request opened ready has a verify of nothing, whether or not it has been queued yet");
+  }
+  for (const draft of [true, null, undefined]) {
+    for (const queued of [true, false]) assert.doesNotMatch(unmarked({ draft, queued }).runs[0].note, OPENED_READY, `draft: ${draft}, queued: ${queued} is not known to be opened ready`);
+  }
+});
+
+test("VERIFY: a draft with no ready mark is still a draft, one queued without it says the mark is missing, and an unread draft says the store does not know (#3670)", () => {
+  const draft = unmarked({ draft: true });
+  assert.deepEqual([draft.state, draft.runs[0].to], ["open", null]);
+  assert.match(draft.runs[0].note, /opened as a draft, no ready_for_review yet/);
+  assert.doesNotMatch(draft.runs[0].note, /or opened ready/, "it is no longer a guess between the two");
+  assert.match(unmarked({ draft: true, queued: true }).runs[0].note, /holds no ready_for_review event/);
+  for (const unread of [null, undefined]) {
+    assert.match(unmarked({ draft: unread }).runs[0].note, /still a draft, or opened ready/);
+    assert.match(unmarked({ draft: unread, queued: true }).runs[0].note, /does not say whether it began as a draft/);
+  }
 });

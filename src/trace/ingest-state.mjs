@@ -15,7 +15,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export const STATE_VERSION = 2;
+// A version moves when a fix to what a turn CARRIES must reach turns already stored: the state of another version is a cold start, every transcript is read from byte 0, and
+// `appendToStore` supersedes each stored turn with the differing copy. 3: `toolMs` (a11ign/a11ign#3669), absent from every turn stored before it, so its tool time printed as `unexplained` (#3680).
+export const STATE_VERSION = 3;
 
 /** The first bytes hashed to tell a rewritten file from a grown one. Small, so that checking a grown file costs next to nothing. */
 export const HEAD_BYTES = 256;

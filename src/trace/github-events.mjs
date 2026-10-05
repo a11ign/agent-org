@@ -7,7 +7,7 @@
 // call would print a trace that silently lacks the reviews, and a truncated one would look complete.
 //
 // WHAT GITHUB HOLDS FOR IT (measured 2026-10-04 on #3406, #3494 and #3508):
-//   `issues/{n}`, `pulls/{n}`         when it was filed (a row: `issues`) or opened (a pull request: `pulls`), and by whom. A pull request is an issue too, but its
+//   `issues/{n}`, `pulls/{n}`         when it was filed (a row: `issues`) or opened (a pull request: `pulls`), and by whom.  A pull request's `opened` also carries `draft` (#3670): whether it was OPENED as a draft, or `null` when not known. A pull request is an issue too, but its
 //                                     issue record can read ONE SECOND LATER than the pull request's own `created_at`, which is what `gh pr list --json createdAt`
 //                                     and so the outcome clock read (measured 2026-10-04: 1 of 40 merged pull requests, #3575 among them), so a pull request asks `pulls`.
 //   `issues/{n}/timeline`             `reviewed`, `ready_for_review`, `added_to_merge_queue`, `removed_from_merge_queue`, `merged`, `closed`, `committed`,
@@ -177,13 +177,27 @@ function headsOf(timeline) {
 }
 
 /**
+ * Whether a pull request was OPENED as a draft: `true`, `false`, or `null` when this read cannot say (never `false` for "not read").
+ * The pull object's `draft` is the state NOW, so a draft marked ready later reads `false` there; the timeline's first draft/ready event says what it was at the
+ * opening (`ready_for_review` first: a draft; `convert_to_draft` first: ready), and only a pull request with neither is still in the state it was opened in.
+ * @param {{ pull: any, timeline: any[] }} input
+ * @returns {boolean | null}
+ */
+export function openedAsDraft({ pull, timeline }) {
+  const firstSwitch = timeline.find((raw) => raw.event === "ready_for_review" || raw.event === "convert_to_draft")?.event;
+  if (firstSwitch) return firstSwitch === "ready_for_review";
+  return typeof pull?.draft === "boolean" ? pull.draft : null;
+}
+
+/**
  * Everything GitHub holds for one row or pull request.
  * @param {{ subject: Subject, repo: string, gh: Gh }} input
  */
 function eventsOfSubject({ subject, repo, gh }) {
   const issue = gh([`repos/${repo}/${subject.isPull ? "pulls" : "issues"}/${subject.number}`]);
   const timeline = readPages(gh, `repos/${repo}/issues/${subject.number}/timeline`, (reply) => reply);
-  const born = record(subject, repo, subject.isPull ? "opened" : "filed", "once", { at: timeOf(issue?.created_at, `#${subject.number}`), actor: issue?.user?.login ?? null });
+  const born = record(subject, repo, subject.isPull ? "opened" : "filed", "once", { at: timeOf(issue?.created_at, `#${subject.number}`), actor: issue?.user?.login ?? null,
+    ...(subject.isPull ? { draft: openedAsDraft({ pull: issue, timeline }) } : {}) });
   const events = [born, ...eventsOfTimeline({ subject, repo, timeline })];
   if (!subject.isPull) return events;
   for (const sha of headsOf(timeline)) {
