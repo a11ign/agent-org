@@ -1,10 +1,10 @@
 // a11ign/a11ign#3452: wakes per merged row. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub.
-// no-token: gh -- every source is an injected fixture; the only `gh` calls in the module are `readMergedPulls` and `readClaimedAt`, which no test here calls
+// no-token: gh -- every source is an injected fixture; the only `gh` calls in the module are `readMergedPulls`'s default and `readClaimedAt`; the tests inject `readMergedPulls`'s reader and call no other
 // The worker-3390 fixture is the worked example on the row, in the real record shape (a `user` record whose string content is wrapped in `<pasted_content`).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  compareReadings, dailyMeans, isWake, matchLedger, measure, parseArgs, parseLedger, parseTranscript, renderReading, reviewerTarget, rowsClosedBy, workerRowFor,
+  compareReadings, dailyMeans, isWake, matchLedger, measure, parseArgs, parseLedger, parseTranscript, readMergedPulls, renderReading, reviewerTarget, rowsClosedBy, workerRowFor,
 } from "./wakes-per-row.mjs";
 
 const at = (iso) => Date.parse(iso);
@@ -273,4 +273,43 @@ test("parseArgs refuses a missing or inverted window", () => {
   // No `--repos` means "the declaration's code repositories", which only `main` can read; the flag overrides it.
   assert.equal(parseArgs(["--from", "2026-10-01T00:00:00Z", "--to", "2026-10-04T12:00:00Z"]).repos, null);
   assert.deepEqual(parseArgs(["--from", "2026-10-01T00:00:00Z", "--to", "2026-10-04T12:00:00Z", "--repos", "a/b,c/d"]).repos, ["a/b", "c/d"]);
+});
+
+// ---- the merged pull requests are read from the pull-requests LIST, never the search API --------------------------------------------------------------------
+const listed = (number, mergedAt, updatedAt = mergedAt) => ({ number, created_at: "2026-10-01T00:00:00Z", merged_at: mergedAt, updated_at: updatedAt, body: null });
+
+/** A fake `gh api` over a pull-requests list of `pulls` (newest update first), 100 to a page; it records every path it is asked for. */
+function pullsList(pulls) {
+  const paths = [];
+  const gh = (args) => {
+    paths.push(args[args.indexOf("GET") + 1]);
+    const page = Number(args.find((arg) => arg.startsWith("page="))?.slice("page=".length) ?? 1);
+    return pulls.slice((page - 1) * 100, page * 100);
+  };
+  return { gh, paths };
+}
+
+test("readMergedPulls reads repos/<repo>/pulls, keeps the pull requests merged inside the window, and never asks the search API", async () => {
+  const list = pullsList([
+    listed(5, "2026-10-04T14:00:00Z"), // merged after the window
+    listed(4, "2026-10-04T12:00:00Z"),
+    listed(3, null, "2026-10-04T11:00:00Z"), // closed unmerged
+    listed(2, "2026-10-04T01:00:00Z"),
+    listed(1, "2026-10-03T23:00:00Z", "2026-10-03T23:00:00Z"), // merged before it; updated before it too, so the read stops here
+  ]);
+  const pulls = await readMergedPulls("a11ign/a11ign", WINDOW, list.gh);
+  assert.deepEqual(pulls.map((pull) => pull.number), [2, 4], "oldest merge first, whatever order the list came in");
+  assert.deepEqual(pulls[0], { repo: "a11ign/a11ign", number: 2, createdAt: "2026-10-01T00:00:00Z", mergedAt: "2026-10-04T01:00:00Z", body: "" });
+  assert.deepEqual(list.paths, ["repos/a11ign/a11ign/pulls"], "one page; no search/issues");
+});
+
+test("readMergedPulls refuses a window the list cannot finish in its page limit, in this tool's own flag, instead of returning part of it", async () => {
+  const endless = pullsList(Array.from({ length: 3000 }, (_, index) => listed(index + 1, "2026-10-04T05:00:00Z", "2026-10-04T05:00:00Z")));
+  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, endless.gh), /more than 3000 closed pull requests.*start --from later/);
+  assert.equal(endless.paths.length, 30, "thirty pages were read, then it stopped");
+});
+
+test("readMergedPulls lets any other failure through as it came, with no flag advice added to it", async () => {
+  const broken = () => { throw new Error("gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded"); };
+  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
 });

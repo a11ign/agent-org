@@ -481,16 +481,21 @@ function gh(args) {
 }
 
 /**
- * Merged pull requests of one repository in the window, through the search API (REST, its own pool).
+ * Merged pull requests of one repository in the window, from the pull-requests LIST (`core` pool), through the one reader `trace` uses. Not the search API (30 calls a minute per user,
+ * 1,000 results at most, cut short without saying so): a window the list cannot finish in its page limit is REFUSED rather than read part way. The list is newest-update first and the
+ * limit counts every pull request updated since `from`, not only those merged before `to`, so the remedy is a LATER `--from`, which the reader's own message calls `--since`.
  * @param {string} repo
  * @param {{ from: number, to: number }} window
- * @returns {PullRequest[]}
+ * @param {(args: string[]) => any} [ghJson] one `gh api` call, parsed; injected so a test reads no GitHub
+ * @returns {Promise<PullRequest[]>}
  */
-export function readMergedPulls(repo, window) {
-  const range = `${new Date(window.from).toISOString()}..${new Date(window.to).toISOString()}`;
-  const query = encodeURIComponent(`repo:${repo} is:pr is:merged merged:${range}`);
-  const out = gh(["api", "--paginate", `search/issues?q=${query}&per_page=${SEARCH_PAGE}`, "--jq", ".items[] | {number, createdAt: .created_at, mergedAt: .pull_request.merged_at, body: (.body // \"\")}"]);
-  return out.split("\n").filter(Boolean).map((line) => ({ repo, ...JSON.parse(line) }));
+export async function readMergedPulls(repo, window, ghJson = (args) => JSON.parse(gh(["api", ...args]))) {
+  const { listMergedPulls } = await import("./trace/trace.mjs"); // at the call, not at load: `trace` and the modules it loads import this one, and a static import back is a cycle that crashed `aggregate.test.mjs` and `map.test.ts` (`NOT_DERIVABLE` read before it was initialised)
+  try {
+    return listMergedPulls({ repo, window, gh: ghJson });
+  } catch (cause) {
+    throw cause instanceof Error ? new Error(cause.message.replace("narrow --since", "start --from later"), { cause }) : cause;
+  }
 }
 
 /**
@@ -595,7 +600,7 @@ async function main() {
   const rowRepo = declaration.tracker[0].repo;
   const repos = flagged ?? declaration.code.map((code) => code.repo);
   const cache = join(homedir(), ".cache", "a11ign");
-  const pulls = repos.flatMap((repo) => readMergedPulls(repo, window));
+  const pulls = (await Promise.all(repos.map((repo) => readMergedPulls(repo, window)))).flat();
   const rows = mergedRows(pulls, window, rowRepo).map((row) => row.row);
   const claimedAt = new Map(rows.map((row) => [row, readClaimedAt(row, rowRepo)]));
   const reading = measure({
