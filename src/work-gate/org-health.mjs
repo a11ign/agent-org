@@ -23,7 +23,7 @@ import { readAgents } from "../herdr-agents.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
 import { NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
 import { FLEET_IDLE_HOURS, readLastMergedAt, orgHealthTick,
-  primaryStandingSince } from "../org-health.mjs";
+  primaryStandingSince, readTeamAccess } from "../org-health.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
@@ -456,13 +456,15 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
- *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement }} [io] `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
+ *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
+ *           teamAccess?: () => import("../org-health.mjs").TeamAccessFact | undefined }} [io] `teamAccess` (#3634) is the team-level read, ONE `gh api` call per declared team each tick (the 2-minute tick is 30 calls an hour of a 5,000-an-hour core pool, 0.6% per team, the same price as `lastMergedAt`), and NO CALL AT ALL for a project that declares no `teamAccess`; a test that must reach no remote passes `() => undefined` `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined } = {}) {
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined,
+    teamAccess = () => readTeamAccess(defaultRun) } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
@@ -483,6 +485,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     waits,
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
+    ...teamAccessFact(teamAccess()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
 }
@@ -492,6 +495,12 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
  * @param {ReturnType<typeof import("../org-health.mjs").readToolAgreement>} read @returns {{ toolAgreement?: { now: number, result: any } | null }}
  */
 const toolAgreementFact = (read) => (read === undefined ? {} : { toolAgreement: read });
+
+/**
+ * #3634: THE FACT, OR NOTHING, as `toolAgreementFact`: `undefined` is a project that declares no `teamAccess`, so the reading is silent.
+ * @param {import("../org-health.mjs").TeamAccessFact | undefined} read
+ */
+const teamAccessFact = (read) => (read === undefined ? {} : { teamAccess: read });
 
 /**
  * #3364: THE WAIT READ AFTER THE GATE HAS LIFTED WHAT IT CAN, so the readings and the orders see only the stale waits a session still owes. `null` stays `null`.
