@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
 import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
+import { renderWakeCache, wakeCache } from "./wake-cache.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
@@ -44,6 +45,8 @@ const SHORT_SHA = 7;
 const CODEX_DEPTH = 3; // sessions/<year>/<month>/<day>/rollout-*.jsonl
 const AGGREGATE_FLAG = "--aggregate";
 const MAP_FLAG = "--map";
+const WAKE_CACHE_FLAG = "--wake-cache";
+const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing seat has a hundred or more first turns, and the store holds little older
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
 const MAX_ISO_WEEK = 53;
 const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool is the whole org's, and a second run continues where this one stopped
@@ -87,6 +90,26 @@ export const isAggregate = (argv) => argv.includes(AGGREGATE_FLAG);
 
 /** @param {string[]} argv */
 export const isMap = (argv) => argv.includes(MAP_FLAG);
+
+/** @param {string[]} argv */
+export const isWakeCache = (argv) => argv.includes(WAKE_CACHE_FLAG);
+
+/**
+ * `trace -- --wake-cache [--since <ISO>] [--until <ISO>] [--store <path>] [--json 1]`: the cache write of the first turn after each wake, per seat (#3563). `--since` is the start of the window and
+ * is NOT rounded to a Monday; without it the window is the last seven days. `--until` ends it (default: now), so a before and an after of a change are two runs of one instrument.
+ * @param {string[]} argv @param {number} [now]
+ */
+export function parseWakeCacheArgs(argv, now = Date.now()) {
+  const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== WAKE_CACHE_FLAG);
+  /** @type {Record<string, string>} */
+  const flags = {};
+  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const since = flags.since ? Date.parse(flags.since) : now - DEFAULT_WAKE_CACHE_DAYS * MS_PER_DAY;
+  if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
+  const until = flags.until ? Date.parse(flags.until) : now;
+  if (Number.isNaN(until)) throw new Error(`--until must be an ISO time (got ${flags.until})`);
+  return { since, until, store: flags.store ?? defaultStore(), json: flags.json === "1" };
+}
 
 /**
  * `--week` names one Monday-first UTC week: `2026-W40`, any day or time in it (`2026-09-30`), or a bare ISO week number `40` of this year. Returns its Monday 00:00 UTC.
@@ -615,8 +638,21 @@ async function mainMap() {
   console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; GitHub: ${github.calls} REST calls (gh api, budget ${budget}), ${github.added} events new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`);
 }
 
+/** The first turn after each wake needs the transcripts and the wake ledger and nothing from GitHub, so it makes no `gh` call. */
+async function mainWakeCache() {
+  const { since, until, store: storePath, json } = parseWakeCacheArgs(process.argv.slice(2));
+  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const rowRepo = homeProjectDeclaration().tracker[0].repo;
+  const now = Date.now();
+  const ledger = parseLedger(readFileSync(join(homedir(), ".cache", "a11ign", "wake-ledger"), "utf8"));
+  const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, now });
+  const report = wakeCache({ events: store.events, window: { from: since, to: until } });
+  console.log(json ? JSON.stringify(report, null, 2) : renderWakeCache(report, { footer: ["", ...ingestLines(ingested)] }));
+}
+
 async function main() {
   if (isAggregate(process.argv.slice(2))) return mainAggregate();
+  if (isWakeCache(process.argv.slice(2))) return mainWakeCache();
   if (isMap(process.argv.slice(2))) return mainMap();
   const { number, since, store: storePath, json } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.mjs");

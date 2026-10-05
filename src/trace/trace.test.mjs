@@ -10,7 +10,8 @@ import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, isMap, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
+import { ACTION, wakeCache } from "./wake-cache.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -218,6 +219,33 @@ test("ARGS --map: the flag takes no value, --out is required, the three filters 
   assert.equal(parseMapArgs(["--map", "--out", "/o.html", "--week", "2026-W40"], now).since, at("2026-09-28T00:00:00Z"), "--week alone reads from that week's Monday, not four weeks back");
   assert.throws(() => parseMapArgs(["--map", "--out", "/o.html", "--since", "last week"], now), /--since must be an ISO time/);
   assert.throws(() => parseMapArgs(["--map", "--out", "/o.html", "--calls", "many"], now), /--calls must be a whole number/);
+});
+
+test("ARGS --wake-cache: a window that starts at --since (not rounded) or a week back, and a store; no GitHub budget", () => {
+  const now = at("2026-10-05T12:00:00Z");
+  assert.equal(isWakeCache(["--", "--wake-cache"]), true);
+  assert.equal(isWakeCache(["--", "--aggregate"]), false);
+  assert.deepEqual(parseWakeCacheArgs(["--", "--wake-cache", "--since", "2026-10-01T13:00:00Z", "--until", "2026-10-04T15:00:00Z", "--store", "/s/events.ndjson", "--json", "1"], now), { since: at("2026-10-01T13:00:00Z"), until: at("2026-10-04T15:00:00Z"), store: "/s/events.ndjson", json: true });
+  assert.equal(parseWakeCacheArgs(["--wake-cache"], now).until, now, "the window ends now unless --until says otherwise");
+  assert.throws(() => parseWakeCacheArgs(["--wake-cache", "--until", "soon"], now), /--until must be an ISO time/);
+  assert.equal(parseWakeCacheArgs(["--wake-cache"], now).since, now - 7 * 24 * 60 * 60 * 1000, "the default window is the last seven days");
+  assert.throws(() => parseWakeCacheArgs(["--wake-cache", "--since", "last week"], now), /--since must be an ISO time/);
+});
+
+test("WAKE-CACHE reads what the ingest writes: a second transcript file for the same seat is a cleared window, the same file a kept one", () => {
+  const first = [
+    wake("2026-10-04T10:00:00.000Z", "ceo"), block("2026-10-04T10:00:05.000Z", "msg_c1", "claude-sonnet-5-5", usage(2, 20, 23711, 30000)),
+    wake("2026-10-04T10:10:00.000Z", "ceo"), block("2026-10-04T10:10:05.000Z", "msg_c2", "claude-sonnet-5-5", usage(2, 20, 60000, 900)),
+  ].join("\n");
+  const afterClear = [wake("2026-10-04T10:20:00.000Z", "ceo"), block("2026-10-04T10:20:05.000Z", "msg_c3", "claude-sonnet-5-5", usage(2, 20, 23711, 29000))].join("\n");
+  const events = [...read(first, "/p/aaaa.jsonl").events, ...read(afterClear, "/p/bbbb.jsonl").events];
+  const ceo = wakeCache({ events, window: { from: at("2026-10-04T00:00:00Z"), to: at("2026-10-05T00:00:00Z") } }).seats.find((seat) => seat.seat === "ceo");
+  const by = (name) => ceo.actions.find((entry) => entry.action === name);
+  assert.equal(by(ACTION.UNKNOWN).wakes, 1, "the seat's first wake has no previous turn");
+  assert.equal(by(ACTION.KEPT).wakes, 1);
+  assert.equal(by(ACTION.KEPT).write.p50, 900);
+  assert.equal(by(ACTION.CLEARED).wakes, 1, "the second file begins at the /clear");
+  assert.equal(by(ACTION.CLEARED).write.p50, 29_000);
 });
 
 test("ARGS --week: an ISO week, a bare week number of this year, or any day in the week; each is that week's Monday 00:00 UTC", () => {
