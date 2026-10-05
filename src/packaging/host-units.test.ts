@@ -1984,6 +1984,9 @@ test("#2332: an in-sync host reads clean, and the installer wrote a runnable, ex
     assert.equal(readFileSync(join(where.workersDir, "README.md"), "utf8"), WORKERS_README);
     assert.doesNotMatch(WORKERS_README, /everything else uses the default \(human\) config/,
       "the sentence #1950 made false must not survive in the file host:install writes");
+    assert.doesNotMatch(WORKERS_README, /Only a shell with no workspace id is a person/,
+      "#3665: the wrapper refuses a call with no workspace id and no GH_CONFIG_DIR (#3642), it does not use the default config");
+    assert.match(WORKERS_README, /neither a workspace id nor GH_CONFIG_DIR is REFUSED/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

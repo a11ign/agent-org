@@ -11,7 +11,8 @@
 //   2. else, `HERDR_WORKSPACE_ID` set: the LEADS list (`host.json`'s `gh.leadsWorkspaces`) routes to the
 //      leads config, every other workspace id to the workers config -- and a config that is not INSTALLED
 //      there is a REFUSAL, never a fallback to the human account (chairman, #1950, #2332, #2333).
-//   3. neither variable set: this is a person's own shell, left to `gh`'s own default config.
+//   3. neither variable set: the wrapper REFUSES the call (#3642) -- it would act as the human account, and no
+//      agent may. There is no account to name, so this answers UNKNOWN with the refusal as the source.
 //
 // EACH BRANCH READS THE ACCOUNT OFF THE CONFIG DIRECTORY'S OWN `hosts.yml` (the `user:` line `gh auth
 // login` writes there) rather than assuming a name -- "a11ign-ai-workers" and "a11ign-ai-leads" are never
@@ -21,8 +22,8 @@
 //
 // NEVER GUESSES. A branch that cannot read an account says UNKNOWN and names why -- a host with no
 // `.agent-org/host.json`, a `GH_CONFIG_DIR` naming a directory with no `hosts.yml`, a workspace the
-// wrapper would itself refuse, or a shell with neither variable and no `~/.config/gh` either (a fresh
-// checkout, or a GitHub Actions runner, where `GH_TOKEN` decides instead and this question does not apply).
+// wrapper would itself refuse, or a shell with neither variable (which the wrapper refuses, and which on a
+// GitHub Actions runner never reaches it, `GH_TOKEN` deciding instead).
 // "Confirmed false" and "could not determine" are different states and must never share a value
 // (`.agent-org/roles/engineer.md`).
 //
@@ -152,16 +153,12 @@ export function declaredGhAccount({ env = process.env, host, read = readFileSync
       : { login, source: `declared via HERDR_WORKSPACE_ID=${workspaceId} -> ${dir}` };
   }
 
-  // STEP 3: neither variable set -- a person's own shell, or a process the wrapper does not recognise as
-  // an agent at all (a GitHub Actions runner, a fresh checkout with no session). `gh`'s own default is the
-  // human's config directory, named by `host.json`'s `home` rather than a literal (`host-units.mjs`'s
-  // `humanConfigDir` reads the identical path for the identical reason).
-  const humanDir = join(resolvedHost.home, ".config/gh");
-  const login = loginInConfigDir(humanDir, read);
-  return login === null
-    ? { login: null,
-        source: `UNKNOWN: no GH_CONFIG_DIR, no HERDR_WORKSPACE_ID, and ${humanDir} names no readable `
-          + "hosts.yml -- this process is not routed by the wrapper at all (a fresh checkout, or a runner "
-          + "where GH_TOKEN decides instead and this question does not apply)" }
-    : { login, source: "declared as the human account -- no HERDR_WORKSPACE_ID, so this is a person's own shell" };
+  // STEP 3: neither variable set. The wrapper REFUSES this call (#3642) rather than letting `gh` fall back to
+  // the human's `~/.config/gh`, so no account would be used and none is named -- reading that file here would
+  // report the very account the wrapper exists to keep an agent from acting as. A person's own shell is
+  // refused the same way: an admin act is done from the chairman's own machine, not from this host.
+  return { login: null,
+    source: "UNKNOWN: no GH_CONFIG_DIR and no HERDR_WORKSPACE_ID -- the wrapper REFUSES this call (#3642) "
+      + "rather than acting as the human account. Where `gh` is not wrapped at all (a fresh checkout, or a "
+      + "runner where GH_TOKEN decides instead) this question does not apply" };
 }

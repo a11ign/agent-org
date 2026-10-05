@@ -1530,7 +1530,7 @@ Owned by the repository (packages/agent-org/src/host-units.mjs): \`pnpm run host
 
 - \`gh/\` — GH_CONFIG_DIR for the machine account \`a11ign-ai-workers\` (device-flow login; token lives only in gh/hosts.yml, mode 600).
 - \`~/leads/\` — the same for \`a11ign-ai-leads\` (write, not admin; its own GraphQL pool). \`~/leads/workspaces.txt\` lists the herdr workspace ids that use it (w6 ceo, w2 product-manager, w5 orchestrator).
-- The routing is \`~/.local/bin/gh\` (shipped as packages/agent-org/host/gh, a wrapper over \`gh-real\`): an explicit GH_CONFIG_DIR always wins; an agent workspace (HERDR_WORKSPACE_ID set) routes to \`~/leads/gh\` when it is on that list and here otherwise; an agent workspace whose config is missing REFUSES; NO agent acts as the human account. Only a shell with no workspace id is a person and uses the default config.
+- The routing is \`~/.local/bin/gh\` (shipped as packages/agent-org/host/gh, a wrapper over \`gh-real\`): an explicit GH_CONFIG_DIR always wins; an agent workspace (HERDR_WORKSPACE_ID set) routes to \`~/leads/gh\` when it is on that list and here otherwise; an agent workspace whose config is missing REFUSES; NO agent acts as the human account. A call with neither a workspace id nor GH_CONFIG_DIR is REFUSED too (#3642), so a shell outside a workspace must export GH_CONFIG_DIR first.
 - \`git push\` goes through the same wrapper: the global gitconfig's credential helper is \`!~/.local/bin/gh auth git-credential\`, and \`host:check\` reports it when it is not.
 - \`~/workers/workspaces.txt\`, if it is still there, is the retired allow-list and nothing reads it any more.
 `;
