@@ -11,8 +11,9 @@
 // not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the deferral spans from before the gate's log began,
 // and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.mjs`, #3516), and so is the gate's log of ended deferrals (`wake-deferral-log`, #3510).
 //
-// GITHUB IS READ THROUGH `gh api` ONLY (the REST pool), to learn which rows a pull request closes and which pull requests close a row, and then for the events
-// themselves. The calls are counted and the report says how many were made.
+// GITHUB IS READ THROUGH `gh api` ONLY, ON THE REST `core` POOL AND NEVER THE SEARCH API (30 calls a minute per user: a 1,500-call pass spent a person's limit on 2026-10-05, #3644), to learn which rows
+// a pull request closes and which pull requests close a row (the row's timeline, the pull requests list), and then for the events themselves. The aggregate SAYS what it may spend before its first call,
+// PACES itself and stops at a floor of `X-Ratelimit-Remaining`; the calls are counted and the report says how many were made.
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -41,8 +42,7 @@ const WEEK_DAYS = 7;
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
-const SEARCH_PAGE = 100;
-const SEARCH_RESULT_CAP = 1000; // GitHub's search returns no more than this many results of one query, however many pages are asked for
+const LIST_PAGE = 100;
 const LIST_MAX_PAGES = 30;
 const BUDGET_SPENT = "GH_CALLS_SPENT";
 const COST_DECIMALS = 4;
@@ -58,6 +58,9 @@ const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
 const MAX_ISO_WEEK = 53;
 const DEFAULT_GITHUB_CALLS = 1500; // a third of the REST pool an hour: the pool is the whole org's, and a second run continues where this one stopped
+const REST_POOL = "core"; // `X-Ratelimit-Resource` of every endpoint this reads; a reply from any other pool (`search`) is a read that must not be here
+const PACE_GAP_MS = 250; // between two calls: at most 240 a minute, whatever the budget, and far under the 900 points a minute GitHub allows a REST client
+const RATE_FLOOR = 500; // `X-Ratelimit-Remaining` this run leaves alone: a tenth of the 5,000 an hour that the org's own sessions draw on too
 const DEFAULT_AGGREGATE_WEEKS = 4; // the weeks before this one that `--aggregate` reads when `--since` is not given
 
 /** What this slice does not hold. Printed under every report. */
@@ -386,16 +389,53 @@ export function resolveSubject(number, rowRepo, gh = ghApi) {
   const pull = askPull(number, rowRepo, gh);
   const rows = pull ? rowsClosedBy(pull.body ?? "", rowRepo) : [number];
   const prs = new Set(pull ? [number] : []);
-  for (const row of rows) {
-    const found = gh(["-X", "GET", "search/issues", "-f", `q=repo:${rowRepo} is:pr ${row} in:body`, "-f", `per_page=${SEARCH_PAGE}`]);
-    for (const candidate of found.items ?? []) if (rowsClosedBy(candidate.body ?? "", rowRepo).includes(row)) prs.add(candidate.number);
-  }
+  for (const row of rows) for (const found of pullsClosing({ row, rowRepo, gh })) prs.add(found);
   return { rows, prs: [...prs] };
+}
+
+/**
+ * The pull requests of `rowRepo` whose body closes `row`, from the row's own timeline: a pull request that names a row leaves a `cross-referenced` event on it, carrying the pull request
+ * and its body. This is the row's timeline, a REST list on the `core` pool, where the search API (30 calls a minute per user) is not used. A mention that closes nothing, or closes another
+ * repository's row, is not a link, and a pull request of another repository is not read under `rowRepo`.
+ * @param {{ row: number, rowRepo: string, gh: (args: string[]) => any }} input @returns {number[]}
+ */
+function pullsClosing({ row, rowRepo, gh }) {
+  const { items, reached } = pagedList({ gh, path: `repos/${rowRepo}/issues/${row}/timeline` });
+  if (!reached) throw new Error(`gh api repos/${rowRepo}/issues/${row}/timeline: more than ${LIST_MAX_PAGES} pages; refusing to name the pull requests of a row on part of its timeline`);
+  const sources = items.filter((event) => event.event === "cross-referenced" && event.source?.issue?.pull_request && String(event.source.issue.repository_url).endsWith(`/repos/${rowRepo}`)).map((event) => event.source.issue);
+  return sources.filter((issue) => rowsClosedBy(issue.body ?? "", rowRepo).includes(row)).map((issue) => issue.number);
+}
+
+/** @param {string[]} args */
+function runGhApi(args) {
+  return execFileSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 /** @param {string[]} args */
 function ghApi(args) {
-  return JSON.parse(execFileSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] }));
+  return JSON.parse(runGhApi(args));
+}
+
+/** The rate-limit headers of a `gh api -i` reply and its body. A pool's `Remaining` is read off a REAL call, never off `rate_limit`, which has reported a full pool during an outage. @param {string} text */
+export function splitHttp(text) {
+  const [head, ...rest] = text.split(/\r?\n\r?\n/);
+  const header = (/** @type {string} */ name) => new RegExp(`^${name}:\\s*(.+?)\\s*$`, "im").exec(head)?.[1];
+  const remaining = Number(header("x-ratelimit-remaining")); // NaN when the header is absent: no reading, which is not a reading of zero
+  return { rate: Number.isNaN(remaining) ? null : { remaining, resource: header("x-ratelimit-resource") ?? null }, body: rest.join("\n\n") };
+}
+
+/**
+ * `gh api` that also remembers the rate-limit headers of the last reply (`.rate`) and of the first (`.first`), so a run can pace itself, stop at a floor, and say what it spent.
+ * @returns {((args: string[]) => any) & { rate: { remaining: number, resource: string | null } | null, first: { remaining: number, resource: string | null } | null }}
+ */
+function meteredGhApi() {
+  const metered = Object.assign((/** @type {string[]} */ args) => {
+    const { rate, body } = splitHttp(runGhApi(["-i", ...args]));
+    metered.rate = rate;
+    metered.first ??= rate;
+    return JSON.parse(body);
+  }, { rate: /** @type {any} */ (null), first: /** @type {any} */ (null) });
+  return metered;
 }
 
 /** The pull request numbered `number`, or `null` on a 404 (it is a row); any other failure throws. @param {number} number @param {string} rowRepo @param {(args: string[]) => any} gh */
@@ -572,60 +612,98 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
   return out.join("\n");
 }
 
+/** @param {number} ms */
+const pauseMs = (ms) => void Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, ms);
+
+/** @param {string} message @param {"budget" | "floor"} reason */
+const spent = (message, reason) => Object.assign(new Error(message), { code: BUDGET_SPENT, reason });
+
 /**
  * `gh` that makes at most `budget` calls and counts every one (a failed call is still a call). The (budget+1)th THROWS, before it is made, with `code: GH_CALLS_SPENT`: the budget is
  * checked per CALL, because one pull request costs several (the issue, each page of its timeline, a check-runs list per head), so a check per pull request can be overshot by all of them.
- * @param {{ gh: (args: string[]) => any, budget: number }} input
- * @returns {((args: string[]) => any) & { calls: number }}
+ * It PACES: a call waits until `gapMs` have passed since the last one ended. It stops at a FLOOR: when the reply last read carried an `X-Ratelimit-Remaining` under `floor`, the next call
+ * throws the same code with `reason: "floor"`, before it is made. And it refuses a reply from a pool other than `core` (the search API's 30 a minute is the limit this exists to keep off).
+ * `.stopped` says which of the two stops ended the run, or `null`.
+ * @param {{ gh: ((args: string[]) => any) & { rate?: { remaining: number, resource: string | null } | null }, budget: number, floor?: number, gapMs?: number, pause?: (ms: number) => void, clock?: () => number }} input
+ * @returns {((args: string[]) => any) & { calls: number, stopped: { reason: "budget" | "floor", message: string } | null }}
  */
-export function budgetedGh({ gh, budget }) {
+export function budgetedGh({ gh, budget, floor = 0, gapMs = 0, pause = pauseMs, clock = Date.now }) {
   const counted = countingGh(gh);
-  const bounded = (/** @type {string[]} */ args) => {
-    if (counted.calls >= budget) throw Object.assign(new Error(`--calls ${budget} is spent`), { code: BUDGET_SPENT });
-    return counted(args);
+  /** @type {number | null} */
+  let lastEnd = null;
+  /** @type {{ reason: "budget" | "floor", message: string } | null} */
+  let stopped = null;
+  const stop = (/** @type {string} */ message, /** @type {"budget" | "floor"} */ reason) => {
+    stopped = { reason, message };
+    return spent(message, reason);
   };
-  return /** @type {any} */ (Object.defineProperty(bounded, "calls", { get: () => counted.calls }));
+  const bounded = (/** @type {string[]} */ args) => {
+    if (counted.calls >= budget) throw stop(`--calls ${budget} is spent`, "budget");
+    const left = gh.rate?.remaining;
+    if (left !== undefined && left < floor) throw stop(`X-Ratelimit-Remaining is ${left}, under the floor of ${floor}`, "floor");
+    if (lastEnd !== null && clock() - lastEnd < gapMs) pause(gapMs - (clock() - lastEnd));
+    /** @type {any} */
+    let reply;
+    try {
+      reply = counted(args);
+    } finally {
+      lastEnd = clock();
+    }
+    const pool = gh.rate?.resource;
+    if (pool && pool !== REST_POOL) throw new Error(`a reply came from the "${pool}" pool, not "${REST_POOL}": ${args.join(" ")} must not be read by this report (the search API allows 30 calls a minute per user)`);
+    return reply;
+  };
+  return /** @type {any} */ (Object.defineProperties(bounded, { calls: { get: () => counted.calls }, stopped: { get: () => stopped } }));
 }
 
 /** @param {any} error */
 const isSpent = (error) => error?.code === BUDGET_SPENT;
 
 /**
- * Merged pull requests of one repository in the window, one counted call per page of the search API. Past GitHub's 1000-result cap the list would be CUT SHORT without saying so
- * (`gh api --paginate` stops there silently), and a week missing its pull requests prints as a smaller week: so that is refused, and `--since` is narrowed instead.
+ * Every item of a REST list, one counted call per page, until a page comes back short (the end of the list), `done` says the pages read hold what was wanted, or LIST_MAX_PAGES have been
+ * read: that last is `reached: false`, and a caller must refuse it rather than print a list that stops part way without saying so.
+ * @param {{ gh: (args: string[]) => any, path: string, params?: string[], done?: (page: any[]) => boolean }} input
+ * @returns {{ items: any[], reached: boolean }}
+ */
+function pagedList({ gh, path, params = [], done = () => false }) {
+  /** @type {any[]} */
+  const items = [];
+  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
+    const reply = gh(["-X", "GET", path, ...params.flatMap((param) => ["-f", param]), "-f", `per_page=${LIST_PAGE}`, "-f", `page=${page}`]);
+    if (!Array.isArray(reply)) throw new Error(`gh api ${path}: the reply carried no list where one was expected`);
+    items.push(...reply);
+    if (reply.length < LIST_PAGE || done(reply)) return { items, reached: true };
+  }
+  return { items, reached: false };
+}
+
+/**
+ * Merged pull requests of one repository in the window, one counted call per page of the pull requests list, NEWEST UPDATE FIRST, read until a page reaches a pull request last updated
+ * before the window: a pull request merged in the window was updated at or after its merge, so none can be further down. This is the REST list on the `core` pool; the search API it replaces
+ * (30 calls a minute per user, 1,000 results at most) is not used. A list that is not finished in LIST_MAX_PAGES is REFUSED, not cut short, because a week missing its pull requests
+ * prints as a smaller week: `--since` is narrowed instead.
  * @param {{ repo: string, window: { from: number, to: number }, gh: (args: string[]) => any }} input
  * @returns {import("../wakes-per-row.mjs").PullRequest[]}
  */
 export function listMergedPulls({ repo, window, gh }) {
-  const range = `${new Date(window.from).toISOString()}..${new Date(window.to).toISOString()}`;
-  /** @type {import("../wakes-per-row.mjs").PullRequest[]} */
-  const pulls = [];
-  for (let page = 1; page <= SEARCH_RESULT_CAP / SEARCH_PAGE; page += 1) {
-    const reply = gh(["-X", "GET", "search/issues", "-f", `q=repo:${repo} is:pr is:merged merged:${range}`, "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
-    const items = reply.items ?? [];
-    pulls.push(...items.map((/** @type {any} */ item) => ({ repo, number: item.number, createdAt: item.created_at, mergedAt: item.pull_request?.merged_at, body: item.body ?? "" })));
-    if (pulls.length >= reply.total_count || items.length < SEARCH_PAGE) return pulls;
-  }
-  throw new Error(`${repo} has more merged pull requests since ${new Date(window.from).toISOString()} than GitHub's search returns (${SEARCH_RESULT_CAP}); a list cut short would print smaller weeks, so narrow --since`);
+  const { items, reached } = pagedList({ gh, path: `repos/${repo}/pulls`, params: ["state=closed", "sort=updated", "direction=desc"], done: (page) => page.some((pull) => Date.parse(pull.updated_at) < window.from) });
+  if (!reached) throw new Error(`${repo} has more than ${LIST_MAX_PAGES * LIST_PAGE} closed pull requests updated since ${new Date(window.from).toISOString()}; a list cut short would print smaller weeks, so narrow --since`);
+  const inWindow = items.filter((pull) => pull.merged_at && Date.parse(pull.merged_at) >= window.from && Date.parse(pull.merged_at) <= window.to);
+  inWindow.sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at) || a.number - b.number); // the list is in order of UPDATE, which moves between two runs; the report's tied lines follow this order
+  return inWindow.map((pull) => ({ repo, number: pull.number, createdAt: pull.created_at, mergedAt: pull.merged_at, body: pull.body ?? "" }));
 }
 
 /** The rows GitHub says are open now, one counted call per page, pull requests (which the issues endpoint also lists) left out. @param {{ rowRepo: string, gh: (args: string[]) => any }} input @returns {number[]} */
 export function listOpenRows({ rowRepo, gh }) {
-  /** @type {number[]} */
-  const rows = [];
-  for (let page = 1; page <= LIST_MAX_PAGES; page += 1) {
-    const items = gh(["-X", "GET", `repos/${rowRepo}/issues`, "-f", "state=open", "-f", `per_page=${SEARCH_PAGE}`, "-f", `page=${page}`]);
-    if (!Array.isArray(items)) throw new Error(`gh api repos/${rowRepo}/issues: the reply carried no list where one was expected`);
-    rows.push(...items.filter((item) => !item.pull_request).map((item) => item.number));
-    if (items.length < SEARCH_PAGE) return rows;
-  }
-  throw new Error(`gh api repos/${rowRepo}/issues: more than ${LIST_MAX_PAGES} pages; refusing to call a row open on part of the list`);
+  const { items, reached } = pagedList({ gh, path: `repos/${rowRepo}/issues`, params: ["state=open"] });
+  if (!reached) throw new Error(`gh api repos/${rowRepo}/issues: more than ${LIST_MAX_PAGES} pages; refusing to call a row open on part of the list`);
+  return items.filter((item) => !item.pull_request).map((item) => item.number);
 }
 
 /**
  * What the run must know before it can place a single week: the merged pull requests of every code repository, then which rows are open. Both are counted calls. Without the pull
- * requests there is no list of merged rows, so a budget that cannot list them is an ERROR (a partial list would print smaller weeks); the open rows are optional, and a budget
- * spent before them leaves them unknown (`null`, printed `not asked`).
+ * requests there is no list of merged rows, so a stop (the budget, or the floor) that cannot list them is an ERROR (a partial list would print smaller weeks); the open rows are optional, and a stop
+ * before them leaves them unknown (`null`, printed `not asked`).
  * @param {{ repos: string[], rowRepo: string, window: { from: number, to: number }, gh: ReturnType<typeof budgetedGh>, budget: number }} input
  */
 export function readListings({ repos, rowRepo, window, gh, budget }) {
@@ -634,7 +712,8 @@ export function readListings({ repos, rowRepo, window, gh, budget }) {
     return { pulls, openRows: openRowsWithin({ rowRepo, gh }) };
   } catch (cause) {
     if (!isSpent(cause)) throw cause;
-    throw new Error(`--calls ${budget} is too small to list the merged pull requests (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; raise --calls`, { cause });
+    const why = gh.stopped?.reason === "floor" ? `stopped at the floor: ${gh.stopped.message}` : `--calls ${budget} is too small`;
+    throw new Error(`${why} to list the merged pull requests (${gh.calls} made): no week can be placed without that list, and a part of it would print smaller weeks; ${gh.stopped?.reason === "floor" ? "wait for the pool to refill" : "raise --calls"}`, { cause });
   }
 }
 
@@ -717,11 +796,32 @@ function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
 }
 
 /**
- * What both reports read: the transcripts, the wake ledger and the `gh` call ledgers ingested into the store, the merged pull requests and open rows listed, and what GitHub saw of the merged rows
- * read into the store, within the call budget.
- * @param {{ since: number, storePath: string, budget: number }} input
+ * What a run says BEFORE its first call: the most it may spend, the pool it spends, how it paces itself and where it stops. Said first so that a person who started it knows what it will cost
+ * without waiting for the end, which is where this used to be said.
+ * @param {{ budget: number, floor?: number, gapMs?: number }} input
  */
-async function readSources({ since, storePath, budget }) {
+export function budgetLine({ budget, floor = RATE_FLOOR, gapMs = PACE_GAP_MS }) {
+  const longest = Math.ceil((budget * gapMs) / MS_PER_SECOND);
+  return `GitHub budget: at most ${budget} gh api calls, all on the REST "${REST_POOL}" pool (X-Ratelimit-Resource, checked on every reply; the search API is never called), at least ${gapMs} ms apart (${longest} s if all are spent), and it stops, saying so, when X-Ratelimit-Remaining falls under ${floor}`;
+}
+
+/**
+ * What the GitHub reading cost and how it ended, for the footer. A stop is NAMED, because a run that stopped at the floor has not read the weeks it left PARTIAL.
+ * @param {{ github: { calls: number, read: number, added: number, remaining: { first: number | null, last: number | null }, stopped: { reason: string, message: string } | null }, budget: number, unread: number }} input
+ */
+export function githubSummary({ github, budget, unread }) {
+  const { first, last } = github.remaining;
+  const stop = github.stopped ? `; STOPPED AT THE ${github.stopped.reason === "floor" ? "FLOOR" : "BUDGET"}: ${github.stopped.message}` : "";
+  return `GitHub: ${github.calls} REST calls (gh api, pool ${REST_POOL}, budget ${budget}); X-Ratelimit-Remaining ${first ?? "unread"} at the first reply, ${last ?? "unread"} at the last; ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unread}${stop}`;
+}
+
+/**
+ * What both reports read: the transcripts, the wake ledger and the `gh` call ledgers ingested into the store, the merged pull requests and open rows listed, and what GitHub saw of the merged rows
+ * read into the store, within the call budget. `log` receives the budget line before anything is read.
+ * @param {{ since: number, storePath: string, budget: number, log: (line: string) => void }} input
+ */
+async function readSources({ since, storePath, budget, log }) {
+  log(budgetLine({ budget }));
   const { homeProjectDeclaration } = await import("../project-config.mjs");
   const declaration = homeProjectDeclaration();
   const rowRepo = declaration.tracker[0].repo;
@@ -729,28 +829,30 @@ async function readSources({ since, storePath, budget }) {
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
   const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, ghLedgers: ghLedgerFiles(), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)], now });
-  const gh = budgetedGh({ gh: ghApi, budget });
+  const metered = meteredGhApi();
+  const gh = budgetedGh({ gh: metered, budget, floor: RATE_FLOOR, gapMs: PACE_GAP_MS });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
-  const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
+  const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped };
   return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github };
 }
 
 async function mainAggregate() {
   const { since, store: storePath, json, budget } = parseAggregateArgs(process.argv.slice(2));
-  const { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github } = await readSources({ since, storePath, budget });
+  const log = json ? console.error : console.log; // stdout of a `--json 1` run is the JSON and nothing before it
+  const { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github } = await readSources({ since, storePath, budget, log });
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
   const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows });
-  console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), `GitHub: ${github.calls} REST calls (gh api, budget ${budget}); ${github.read} events read, ${github.added} new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`, NOT_HELD] }));
+  console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), githubSummary({ github, budget, unread: unreadRows.length }), NOT_HELD] }));
 }
 
 async function mainMap() {
   const { since, store: storePath, out, budget, filter } = parseMapArgs(process.argv.slice(2));
-  const { rowRepo, now, store, pulls, unreadRows, github } = await readSources({ since, storePath, budget });
+  const { rowRepo, now, store, pulls, unreadRows, github } = await readSources({ since, storePath, budget, log: console.log });
   writeFileSync(out, buildMap({ events: repriceEvents(store.events), pulls, rowRepo, window: { from: since, to: now }, filter, generatedAt: now }));
-  console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; GitHub: ${github.calls} REST calls (gh api, budget ${budget}), ${github.added} events new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`);
+  console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; ${githubSummary({ github, budget, unread: unreadRows.length })}`);
 }
 
 /** The first turn after each wake needs the transcripts and the wake ledger and nothing from GitHub, so it makes no `gh` call. */
