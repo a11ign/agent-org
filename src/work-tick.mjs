@@ -16,13 +16,20 @@
 // THE TICK IS CHEAP ON PURPOSE. Two `gh` calls, no model. That is the whole point of #912 -- the clock was
 // never the defect, the defect was that the clock woke a MODEL. Run this as often as the rate limit allows;
 // it costs nothing when the org is quiet, which is most of the time.
-import { spawnSync } from "node:child_process";
+//
+// ... AND "CHEAP" IS A CLAIM THE TICK NOW CARRIES THE EVIDENCE FOR (a11ign/a11ign#3566). Two to ten minutes of wall clock was measured on 2026-10-04
+// and nobody could say whether it was the host or the children, so every tick appends one `tick-cost` line: wall and CPU per phase, children's CPU
+// included, and the commands started, by name.
+import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { realpathSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { loadavg } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
+import { CENSUS_ENV, installSpawnCensus, readCensus, summariseCensus } from "./lib/spawn-census.mjs";
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
 // stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
@@ -108,84 +115,259 @@ function queuedOrderCount(path) {
   }
 }
 
+// ---- THE COST OF A TICK (a11ign/a11ign#3566) ------------------------------------------------------------------------------------------------
+
+/** One JSON object per tick, beside the wake ledger. NOT IN the ledger: that file is tab-separated deliveries, and a line of another shape is read as one. */
+export const TICK_COST_FILE = "tick-cost.jsonl";
+
+/**
+ * The file is cut to its newest half past this size. A line is about a kilobyte and a tick runs every two minutes, so the cap holds about two days of
+ * ticks -- enough to read three consecutive ones and a bad afternoon, and never a file nobody trims.
+ */
+export const TICK_COST_BYTES = 2 * 1024 * 1024;
+
+/** Linux's `USER_HZ`: `/proc/<pid>/stat` counts CPU in these, and it is 100 on every kernel configuration this host runs. */
+const CLOCK_TICKS_PER_SECOND = 100;
+const MS_PER_SECOND = 1000;
+const KB = 1024;
+const MICROSECONDS_PER_MS = 1000;
+
+/** @param {string} ledgerPath @returns {string} */
+export function tickCostPath(ledgerPath) {
+  return join(dirname(ledgerPath), TICK_COST_FILE);
+}
+
+/**
+ * CPU the tick's CHILDREN used, in ms, from the `cutime` and `cstime` fields of `/proc/self/stat` -- which count every child this process has waited
+ * for, and each of those counts the ones it waited for. `process.cpuUsage()` cannot say it: it is this process alone, and systemd's `CPU:` figure,
+ * which the row's table quotes, is the whole tree. Reading the two against each other is how "starved" is told from "waiting".
+ *
+ * The command name is field 2 and may hold spaces and brackets, so the fields are counted from the LAST `)`. `NaN` (`null` in the line) when the
+ * file is unreadable: an unknown CPU is not zero CPU.
+ * @param {() => string} [readStat] @returns {number}
+ */
+export function childrenCpuMs(readStat = () => readFileSync("/proc/self/stat", "utf8")) {
+  try {
+    const stat = readStat();
+    const afterName = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const [cutimeAt, cstimeAt] = [13, 14]; // fields 16 and 17 of proc(5); `afterName` starts at field 3
+    return (Number(afterName[cutimeAt]) + Number(afterName[cstimeAt])) * (MS_PER_SECOND / CLOCK_TICKS_PER_SECOND);
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/** @returns {{ selfMs: number, childrenMs: number }} */
+function readCpu() {
+  const { user, system } = process.cpuUsage();
+  return { selfMs: (user + system) / MICROSECONDS_PER_MS, childrenMs: childrenCpuMs() };
+}
+
+const round = (/** @type {number} */ ms) => Math.round(ms);
+
+/**
+ * Times named steps of one tick, wall and CPU (children included), and reads the totals. Every source is a parameter so a test can run a tick of two
+ * phases with numbers it states; the defaults are the real ones.
+ *
+ * `startup` is there from the start: it is node's boot and the imports (`wake.mjs` is six thousand lines), which no step of `main()` can time.
+ * @param {{ clock?: () => number, cpu?: () => { selfMs: number, childrenMs: number }, uptimeMs?: () => number, maxRssKb?: () => number }} [sources]
+ */
+export function createMeter({ clock = () => performance.now(), cpu = readCpu, uptimeMs = () => process.uptime() * MS_PER_SECOND,
+  maxRssKb = () => process.resourceUsage().maxRSS } = {}) {
+  const totalCpuMs = () => { const { selfMs, childrenMs } = cpu(); return selfMs + childrenMs; };
+  /** @type {Record<string, { wallMs: number, cpuMs: number }>} */
+  const phases = { startup: { wallMs: round(uptimeMs()), cpuMs: round(totalCpuMs()) } };
+  return {
+    /** @template T @param {string} name @param {() => T} step @returns {T} */
+    phase(name, step) {
+      const [wallFrom, cpuFrom] = [clock(), totalCpuMs()];
+      const result = step();
+      phases[name] = { wallMs: round(clock() - wallFrom), cpuMs: round(totalCpuMs() - cpuFrom) };
+      return result;
+    },
+    reading() {
+      const { selfMs, childrenMs } = cpu();
+      return { wallMs: round(uptimeMs()), cpuMs: { self: round(selfMs), children: round(childrenMs) }, maxRssKb: maxRssKb(), phases };
+    },
+  };
+}
+
+/**
+ * What only systemd knows about this run: how long `ExecStartPre` took (the gap between the unit starting to activate and its main process being
+ * forked, which no line of this file can time because it runs before this process exists) and the unit's peak memory, the figure the row's table
+ * quotes. `null` for both off systemd or when either cannot be read, said on stderr: an unknown is not zero.
+ * @param {{ env?: NodeJS.ProcessEnv, readText?: (path: string) => string, run?: (file: string, args: string[]) => string }} [sources]
+ * @returns {{ prestartMs: number | null, cgroupPeakKb: number | null }}
+ */
+export function readUnitFacts({ env = process.env, readText = (path) => readFileSync(path, "utf8"),
+  run = (file, args) => execFileSync(file, args, { encoding: "utf8" }) } = {}) {
+  const unknown = { prestartMs: null, cgroupPeakKb: null };
+  if (!env.INVOCATION_ID) return unknown;
+  try {
+    const cgroup = readText("/proc/self/cgroup").split("\n").map((line) => line.split("::")[1]).find(Boolean) ?? "";
+    const unit = basenameOf(cgroup);
+    const shown = run("systemctl", ["--user", "show", unit, "--property=InactiveExitTimestampMonotonic", "--property=ExecMainStartTimestampMonotonic"]);
+    const at = Object.fromEntries(shown.trim().split("\n").map((line) => line.split("=")));
+    const prestartMs = (Number(at.ExecMainStartTimestampMonotonic) - Number(at.InactiveExitTimestampMonotonic)) / MICROSECONDS_PER_MS;
+    const peakBytes = Number(readText(`/sys/fs/cgroup${cgroup}/memory.peak`));
+    return { prestartMs: Number.isFinite(prestartMs) ? round(prestartMs) : null, cgroupPeakKb: Number.isFinite(peakBytes) ? round(peakBytes / KB) : null };
+  } catch (error) {
+    process.stderr.write(`TICK COST: systemd's own figures could not be read (${String(/** @type {any} */ (error)?.message ?? error).split("\n")[0]}).\n`);
+    return unknown;
+  }
+}
+
+/** @param {string} path @returns {string} */
+const basenameOf = (path) => path.slice(path.lastIndexOf("/") + 1);
+
+/**
+ * Appends one line, and cuts the file to its newest half past {@link TICK_COST_BYTES}, from a whole line (the cut lands mid-line, so the first
+ * partial line is dropped) and by rename, so a reader never sees half a file.
+ * @param {string} path @param {object} line
+ */
+export function appendTickCost(path, line) {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(line)}\n`);
+  if (statSync(path).size <= TICK_COST_BYTES) return;
+  const text = readFileSync(path, "utf8");
+  const newest = text.slice(-TICK_COST_BYTES / 2);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, newest.slice(newest.indexOf("\n") + 1));
+  renameSync(temporary, path);
+}
+
+/**
+ * What one tick carries from its start to `finish`: where it records, the meter, and how many wakes `wake` reported.
+ * @typedef {{ recordPath: string, costPath: string, censusPath: string, meter: ReturnType<typeof createMeter>, wakes: number }} Run
+ */
+
+/**
+ * THE CENSUS STARTS HERE, before the first spawn, and reaches every process the tick starts two ways: this process is patched in place (it runs the
+ * tear-downs itself), and `NODE_OPTIONS` preloads the patch into every `node` below it, the gate and the `node` the gate starts included. One file
+ * per tick process, so a tick run by hand beside the timer's cannot read the other's commands.
+ * @param {string} ledgerPath @returns {Run}
+ */
+function startRun(ledgerPath) {
+  const censusPath = join(dirname(ledgerPath), `tick-census.${process.pid}.jsonl`);
+  const preload = `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`;
+  process.env[CENSUS_ENV] = censusPath;
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
+  installSpawnCensus(censusPath);
+  return { recordPath: completionPath(ledgerPath), costPath: tickCostPath(ledgerPath), censusPath, meter: createMeter(), wakes: 0 };
+}
+
+/**
+ * The line, as the tick stands when it is about to exit. The wall is read BEFORE systemd is asked anything, so asking is not charged to the tick.
+ * @param {number} exit @param {Run} run
+ */
+function tickCostLine(exit, run) {
+  const reading = run.meter.reading();
+  const { commands, slowest } = summariseCensus(readCensus(run.censusPath));
+  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, slowest };
+}
+
+/**
+ * Said on stderr and never thrown, like the completion record below: a tick that did its work must not become a failure because the file that
+ * reports on its cost could not be written. The census file is removed either way.
+ * @param {number} exit @param {Run} run
+ */
+function recordCost(exit, run) {
+  try {
+    appendTickCost(run.costPath, tickCostLine(exit, run));
+  } catch (err) {
+    process.stderr.write(`TICK COST NOT RECORDED at ${run.costPath}: ${String(/** @type {any} */ (err)?.message ?? err)}.\n`);
+  } finally {
+    rmSync(run.censusPath, { force: true });
+  }
+}
+
 /**
  * THE ONE WAY OUT OF `main()`, so that REACHING IT is what the completion record means (#3040). A tick that decided an exit -- quiet, orders with nowhere
  * to go, a refused read -- COMPLETED, and the organisation waiting is not the gate crashing, so every one of those is recorded. A tick that threw
  * never gets here (the preload exits it with `CRASH`), and a tick ending with `CRASH` because a child crashed is not recorded either.
  *
  * A record that cannot be written is said on stderr and does not change the exit: the watcher then reads a stale record and says so, which is the
- * outcome that counts, and a tick that did its work must not be turned into a failure by the file that reports on it.
+ * outcome that counts, and a tick that did its work must not be turned into a failure by the file that reports on it. The cost line follows the
+ * same two rules, and is written SECOND: the record is what an incident reads, the cost is what a person does.
  *
- * @param {number} code @param {string} recordPath @returns {never}
+ * @param {number} code @param {Run} run @returns {never}
  */
-function finish(code, recordPath) {
+function finish(code, run) {
   if (code !== EXIT.CRASH) {
     try {
-      writeCompletion(recordPath, { at: Date.now(), exit: code });
+      writeCompletion(run.recordPath, { at: Date.now(), exit: code });
     } catch (err) {
-      process.stderr.write(`COMPLETION NOT RECORDED at ${recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
+      process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
     }
+    recordCost(code, run);
   }
   process.exit(code);
+}
+
+/**
+ * The three tear-downs and the blocked-session report, each one a phase. BEFORE the quiet exit, deliberately, all four: each is an event that
+ * produces no order, so a quiet gate is the tick on which it most needs doing.
+ * @param {NonNullable<ReturnType<typeof readAgents>>} roster @param {string} ledgerPath @param {Run["meter"]} meter
+ */
+function tidyRoster(roster, ledgerPath, meter) {
+  const blocked = blockedSessions(roster);
+  if (blocked.length > 0) {
+    process.stderr.write(`BLOCKED ${blocked.join(", ")} -- stopped on a question nobody is going to `
+      + "answer. A blocked session is NOT wakeable, so it takes no further cause until a human clears "
+      + "it: read its pane (`herdr --session org agent read <name>`) and answer, or restart it.\n");
+  }
+  // A spawned engineer's row closing is an event that produces no order (#2323).
+  meter.phase("tearDownSpares", () => tearDownSpares(roster, ledgerPath));
+  // AND ITS SIBLING FOR REVIEWER INSTANCES (#2401): ended when their pull request merges or closes.
+  meter.phase("tearDownReviewers", () => tearDownReviewers(roster, ledgerPath));
+  // AND THE RECOVERY OF WORK A RESTART OR A KILL DROPPED (#2470): a pane whose last line reads `Interrupted`, and a delivery the ledger
+  // recorded that never arrived. It QUEUES (a resume is an authored handoff), and the queue is what makes a quiet gate deliver.
+  meter.phase("recover", () => recoverNow(roster, ledgerPath));
 }
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
     entry: import.meta.url, command: "node packages/agent-org/src/work-tick.mjs",
   });
+  const passthrough = process.argv.slice(2);
+  const ledgerPath = ledgerPathFrom(passthrough);
+  const run = startRun(ledgerPath);
+  const { meter } = run;
   // FIRST, BEFORE ANYTHING CAN DECIDE (#3443): the host runs one agent-org version and a journal read must say which made each decision. Read from the
   // checkout at this tick, never remembered; a checkout at no release says so rather than naming one.
-  console.log(toolVersionLine());
+  console.log(meter.phase("version", toolVersionLine));
   /** @param {string} name */
   const here = (name) => fileURLToPath(new URL(name, import.meta.url));
-  const passthrough = process.argv.slice(2);
-  const recordPath = completionPath(ledgerPathFrom(passthrough));
 
-  const gate = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" });
+  const gate = meter.phase("gate", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" }));
   if (gate.error) {
     process.stderr.write(`CANNOT ASK: could not run work-gate (${gate.error.message}).\n`);
-    finish(EXIT.CANNOT_ASK, recordPath);
+    finish(EXIT.CANNOT_ASK, run);
   }
   if (gate.stderr) process.stderr.write(gate.stderr);
 
   // BEFORE THE QUIET EXIT, DELIBERATELY. A blocked session is most invisible precisely when the queue is
   // quiet -- there is no other output that tick, and nothing else looks at the roster.
-  const roster = readAgents();
-  if (roster !== null) {
-    const blocked = blockedSessions(roster);
-    if (blocked.length > 0) {
-      process.stderr.write(`BLOCKED ${blocked.join(", ")} -- stopped on a question nobody is going to `
-        + "answer. A blocked session is NOT wakeable, so it takes no further cause until a human clears "
-        + "it: read its pane (`herdr --session org agent read <name>`) and answer, or restart it.\n");
-    }
-    // ALSO BEFORE THE QUIET EXIT, FOR THE SAME REASON IN THE OTHER DIRECTION (#2323): a spawned engineer's row
-    // closing is an event that produces no order, so a quiet gate is the tick on which a finished spare most
-    // needs ending -- and `wake`, which owns the rule, is never run on one.
-    tearDownSpares(roster, ledgerPathFrom(passthrough));
-    // AND ITS SIBLING FOR REVIEWER INSTANCES (#2401): ended when their pull request merges or closes.
-    tearDownReviewers(roster, ledgerPathFrom(passthrough));
-    // AND THE RECOVERY OF WORK A RESTART OR A KILL DROPPED (#2470): a pane whose last line reads `Interrupted`, and a delivery the ledger
-    // recorded that never arrived. BEFORE THE QUIET EXIT FOR THE SAME REASON -- a session the outage silenced produces no order, so it is
-    // found on a quiet tick or never. It QUEUES (a resume is an authored handoff), and the queue is what makes a quiet gate deliver.
-    recoverNow(roster, ledgerPathFrom(passthrough));
-  }
+  const roster = meter.phase("roster", readAgents);
+  if (roster !== null) tidyRoster(roster, ledgerPath, meter);
 
-  const next = afterGate(gate.status ?? EXIT.CANNOT_ASK,
-    { queued: queuedOrderCount(handoffQueuePath(ledgerPathFrom(passthrough))) });
+  const queued = meter.phase("queue", () => queuedOrderCount(handoffQueuePath(ledgerPath)));
+  const next = afterGate(gate.status ?? EXIT.CANNOT_ASK, { queued });
   if (next.why) process.stderr.write(`${next.why}\n`);
-  if (!next.deliver) finish(next.exit ?? EXIT.CANNOT_ASK, recordPath);
+  if (!next.deliver) finish(next.exit ?? EXIT.CANNOT_ASK, run);
 
-  const wake = spawnSync(process.execPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough],
-    { encoding: "utf8", input: gate.stdout });
+  const wake = meter.phase("wake", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./wake.mjs"), ...passthrough],
+    { encoding: "utf8", input: gate.stdout }));
   if (wake.error) {
     process.stderr.write(`CANNOT ASK: could not run wake (${wake.error.message}). The gate found work and `
       + "it was NOT delivered.\n");
-    finish(EXIT.CANNOT_ASK, recordPath);
+    finish(EXIT.CANNOT_ASK, run);
   }
   if (wake.stdout) process.stdout.write(wake.stdout);
   if (wake.stderr) process.stderr.write(wake.stderr);
+  run.wakes = (wake.stdout ?? "").split("\n").filter((line) => line.startsWith("WOKE ")).length;
   if (wake.status === EXIT.CRASH) process.stderr.write("wake CRASHED (its stack is above): the orders the gate found were NOT delivered.\n");
-  finish(wake.status ?? EXIT.CANNOT_ASK, recordPath);
+  finish(wake.status ?? EXIT.CANNOT_ASK, run);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
