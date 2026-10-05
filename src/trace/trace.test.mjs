@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.mjs";
 import { parseLedger } from "../wakes-per-row.mjs";
-import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
+import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
 import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, waterfallsOf } from "./trace.mjs";
@@ -411,6 +411,56 @@ test("REPORT: the totals are per actor, a Codex reviewer is its own actor, and t
   assert.match(text, /reviewer \(codex\)\s+held from 2026-10-04T11:00Z/);
   assert.match(text, /product-manager\s+held from 2026-10-04T12:28Z/);
   assert.doesNotMatch(text, /NOT IN THIS STORE YET[^\n]*Codex/);
+});
+
+// STORED BEFORE ITS PRICE (#3638): the per-row and per-pull-request totals and the repricing function the readers share.
+const storedTurn = (id, model, costUsd, extra = {}) => ({ id, kind: "turn", source: "transcript", at: at("2026-10-04T11:00:00Z"), session: "reviewer-9100", row: null, pr: 9100, repo: null, cause: null, causeKey: null,
+  wakeId: null, model, tokens: { input: 1000, output: 500, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }, costUsd, wallClockMs: null, ...extra });
+
+test("REPRICED: repriceEvents prices from PRICES now, never from the line, and leaves a model with no price null and every other event alone", () => {
+  const late = storedTurn("turn:late", "claude-sonnet-5", null);
+  const wrong = storedTurn("turn:wrong", "claude-sonnet-5", 99);
+  const codex = storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex" });
+  const synthetic = storedTurn("turn:syn", "<synthetic>", null);
+  const wake = { id: "wake:1", kind: "wake", source: "wake-ledger", at: 1, session: "x", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: "wake:1" };
+  const [a, b, c, d, e] = repriceEvents([late, wrong, codex, synthetic, wake]);
+  assert.equal(a.costUsd, (1000 * 2 + 500 * 10) / 1e6, "priced since: the Sonnet 5 row did not exist when this line was written");
+  assert.equal(b.costUsd, a.costUsd, "the stored 99 is not trusted over PRICES");
+  assert.equal(c.costUsd, null, "no Codex rate is sourced: null, never 0");
+  assert.equal(d.costUsd, null);
+  assert.equal(e, wake, "not a turn: returned as it came");
+  assert.equal(late.costUsd, null, "the input is not mutated: the store stays as it was written");
+  const same = storedTurn("turn:same", "claude-sonnet-5", a.costUsd);
+  assert.equal(repriceEvents([same])[0], same, "a turn already at PRICES is the same object");
+});
+
+test("REPRICED: a changed price in PRICES moves a turn stored at the old one", () => {
+  const row = PRICES.find((price) => price.prefix === "claude-opus-5");
+  const was = row.output;
+  const stored = storedTurn("turn:opus", "claude-opus-5", costOf("claude-opus-5", storedTurn("x", "x", null).tokens));
+  try {
+    row.output = was * 2;
+    assert.equal(repriceEvents([stored])[0].costUsd, (1000 * 5 + 500 * 50) / 1e6);
+  } finally {
+    row.output = was;
+  }
+  assert.equal(repriceEvents([stored])[0].costUsd, stored.costUsd);
+});
+
+test("REPRICED: the report prints a turn stored null at its price (per line and per actor), and the Codex turn beside it is still $? and unpriced", () => {
+  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex", at: at("2026-10-04T11:05:00Z") })];
+  const text = render({ number: 9100, rows: [], prs: [9100], events, held: events });
+  assert.match(text, /turn\s+\?\s+\$0\.0070\s.*claude-sonnet-5\n/, "the line shows dollars");
+  assert.match(text, /turn\s+\?\s+\$\?\s.*gpt-5\.6-luna\n/, "the Codex line stays unpriced");
+  assert.match(text, /\n {2}reviewer-9100\s+1 turns\s+\$0\.0070 over 1 priced\s+out 500\n/);
+  assert.match(text, /\n {2}reviewer-9100 \(codex\)\s+1 turns\s+\$0\.0000 over 0 priced\s+out 500\n/);
+});
+
+test("REPRICED: the waterfall's dollars are at PRICES too (a turn stored null of a model priced since is in them, a Codex turn is counted unpriced)", () => {
+  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex" })];
+  const [{ waterfall: drawn }] = waterfallsOf({ rows: [], prs: [9100], number: 9100, events, now: at("2026-10-05T00:00:00Z") });
+  assert.equal(drawn.spend.dollars, (1000 * 2 + 500 * 10) / 1e6);
+  assert.deepEqual([drawn.spend.priced, drawn.spend.unpriced], [1, 1]);
 });
 
 /** A `gh api` that counts what reaches it, and answers a search, the open-issue list, an issue and an empty timeline the way GitHub does. */

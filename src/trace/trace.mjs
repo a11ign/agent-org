@@ -27,7 +27,7 @@ import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
-import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore } from "./store.mjs";
+import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents } from "./store.mjs";
 import { DEFINITIONS as WATERFALL_DEFINITIONS, renderWaterfall, waterfall } from "./waterfall.mjs";
 
 /** @typedef {import("./ingest-state.mjs").FileState} FileState
@@ -523,7 +523,8 @@ function ingestLines(ingested) {
  * The waterfall of each row the number names, or of the pull request alone when it closes none. A row's waterfall reads that row's events and the pull requests' that close it.
  * @param {{ rows: number[], prs: number[], number: number, events: import("./store.mjs").TraceEvent[], now: number }} input
  */
-export function waterfallsOf({ rows, prs, number, events, now }) {
+export function waterfallsOf({ rows, prs, number, events: stored, now }) {
+  const events = repriceEvents(stored);
   const subjects = rows.length > 0 ? rows.map((row) => ({ title: `row #${row}`, found: eventsForRow(events, { rows: [row], prs }) })) : [{ title: `pull request #${number}`, found: events }];
   return subjects.map(({ title, found }) => ({ title, waterfall: waterfall({ events: found, now }) }));
 }
@@ -534,7 +535,7 @@ export function waterfallsOf({ rows, prs, number, events, now }) {
  *   github?: { calls: number, read: number, added: number }, held?: import("./store.mjs").TraceEvent[], now?: number }} input `held` is every event of the store, for the footer's "held from"; `now` is the reading's time, which an open phase runs to
  */
 export function render({ number, rows, prs, events: found, ingest: ingested, github, held, now = Date.now() }) {
-  const events = found.filter((event) => event.source !== "gh-ledger"); // a row can hold thousands of calls: they are summarised below, never one line each
+  const events = repriceEvents(found).filter((event) => event.source !== "gh-ledger"); // a row can hold thousands of calls: they are summarised below, never one line each
   const turns = events.filter((event) => event.kind === "turn");
   const priced = turns.filter((event) => typeof event.costUsd === "number");
   const total = priced.reduce((sum, event) => sum + (event.costUsd ?? 0), 0);
@@ -735,7 +736,7 @@ async function mainAggregate() {
 async function mainMap() {
   const { since, store: storePath, out, budget, filter } = parseMapArgs(process.argv.slice(2));
   const { rowRepo, now, store, pulls, unreadRows, github } = await readSources({ since, storePath, budget });
-  writeFileSync(out, buildMap({ events: store.events, pulls, rowRepo, window: { from: since, to: now }, filter, generatedAt: now }));
+  writeFileSync(out, buildMap({ events: repriceEvents(store.events), pulls, rowRepo, window: { from: since, to: now }, filter, generatedAt: now }));
   console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; GitHub: ${github.calls} REST calls (gh api, budget ${budget}), ${github.added} events new to the store; rows whose GitHub events are not yet read: ${unreadRows.length}`);
 }
 
@@ -747,7 +748,7 @@ async function mainWakeCache() {
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(homedir(), ".cache", "a11ign", "wake-ledger"), "utf8"));
   const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, now });
-  const report = wakeCache({ events: store.events, window: { from: since, to: until } });
+  const report = wakeCache({ events: repriceEvents(store.events), window: { from: since, to: until } });
   console.log(json ? JSON.stringify(report, null, 2) : renderWakeCache(report, { footer: ["", ...ingestLines(ingested)] }));
 }
 
@@ -766,7 +767,7 @@ async function main() {
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
   const events = eventsForRow(store.events, { rows, prs });
   const now = Date.now();
-  console.log(json ? JSON.stringify({ number, rows, prs, github, waterfalls: waterfallsOf({ rows, prs, number, events, now }), events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events, now }));
+  console.log(json ? JSON.stringify({ number, rows, prs, github, waterfalls: waterfallsOf({ rows, prs, number, events, now }), events: repriceEvents(events) }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events, now }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
