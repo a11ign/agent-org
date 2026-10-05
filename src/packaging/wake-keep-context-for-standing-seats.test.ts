@@ -191,7 +191,7 @@ test("#3440 (7) prompt:session tells its sender what THIS delivery did: kept, co
   const say = (s: Scenario) => {
     const dir = mkdtempSync(join(scratch, "ps-"));
     return captured(() => promptOrQueue({ run: recorder().run, label: LEAD, text: "x", agents: agents([LEAD]), path: join(dir, "queue"),
-      stance: "undeclared" as never, sender: "worker-1", sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) })).out;
+      stance: "decision" as never, sender: "worker-1", sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) })).out;
   };
   assert.equal(say(SCENARIOS[0]), "PROMPTED ceo, context kept (not cleared)\n");
   assert.match(say(SCENARIOS[2]), /^PROMPTED ceo, context compacted \(not cleared/);

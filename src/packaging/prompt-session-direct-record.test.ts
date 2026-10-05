@@ -74,7 +74,8 @@ test("POSITIVE CONTROL: an idle target leaves exactly one direct line naming the
     const written = lines(direct);
     assert.equal(written.length, 1, "one order, one line");
     const line = JSON.parse(written[0]);
-    assert.deepEqual(Object.keys(line).sort(), ["cleared", "prompt", "sender", "sentAt", "session"]);
+    assert.deepEqual(Object.keys(line).sort(), ["cleared", "decision", "prompt", "sender", "sentAt", "session"]);
+    assert.equal(line.decision, false, "the declaration is recorded (#3562): an undeclared order is not a decision");
     assert.equal(line.session, "reviewer-2376");
     assert.equal(line.sender, "worker-tooling");
     assert.equal(line.prompt, ORDER);
@@ -86,7 +87,7 @@ test("POSITIVE CONTROL: an idle target leaves exactly one direct line naming the
 test("a standing seat is recorded as CLEARED, and an unknown sender as null", () => {
   inLedgerDir((queue, direct) => {
     quietly(() => promptOrQueue({ run: accepting, label: "product-manager", text: ORDER, agents, path: queue,
-      stance: STANCE.UNDECLARED, sender: null }));
+      stance: STANCE.DECISION, sender: null }));
     const line = JSON.parse(lines(direct)[0]);
     assert.equal(line.cleared, true);
     assert.equal(line.sender, null);

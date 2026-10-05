@@ -32,7 +32,7 @@ import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
-  handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer } from "./wake.mjs";
+  handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer, isLeadSeat, FYI_STALE_MS } from "./wake.mjs";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
 import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
@@ -246,29 +246,9 @@ export function promptWithContext(run, label, text, { sender = null, sleep, cont
  * @returns {number}
  */
 export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UNDECLARED, sender = null }) {
-  const decision = stance === STANCE.DECISION;
-  if (!queueable(label, agents)) {
-    process.stderr.write(`${NOT_QUEUED_PREFIX}${why}. Nothing will retry this -- a name the org `
-      + "does not know is an author error, not a busy session. Fix the name and run it again.\n");
-    return EXIT.REFUSED;
-  }
-  // BEFORE THE WRITE, DELIBERATELY. Refusing after the append would leave the order on the queue it was
-  // refused for joining, which is the one outcome the row that asked for this ruled out by name.
-  const tooDeep = deepQueueRefusal(queueDepth(label, path).mine, { label, text, decision });
-  if (tooDeep) {
-    process.stderr.write(tooDeep);
-    return EXIT.REFUSED;
-  }
-  let entry;
-  try {
-    entry = queueHandoff(path, { session: label, prompt: attributed(text, sender), decision });
-  } catch (err) {
-    // THE ONE CASE WHERE AN ORDER REALLY IS LOST, so it is the loudest line this file can print.
-    process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: ${why}; and the queue at ${path} could not be `
-      + `written (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}). `
-      + "THIS ORDER IS LOST -- nothing else holds a copy. Send it again.\n");
-    return EXIT.REFUSED;
-  }
+  const queued = appendOrder({ label, text, why, agents, path, stance, sender });
+  if ("code" in queued) return queued.code;
+  const { entry } = queued;
   process.stderr.write(`NOT PROMPTED NOW: ${why}.\n`
     + `QUEUED ${entry.id} -- the next \`pnpm run work:tick\` delivers it to "${label}" once the gate judges `
     + "that session between tasks. DO NOT RETRY: a retry that lands the instant it goes idle is a second "
@@ -278,6 +258,59 @@ export function queueOrLose({ label, text, why, agents, path, stance = STANCE.UN
   process.stderr.write(stanceNote(stance));
   process.stderr.write(queueDepthNote(label, path));
   return EXIT.QUEUED;
+}
+
+/**
+ * AN FYI TO A LEAD SEAT IS QUEUED WHETHER OR NOT THE SEAT IS IDLE, and never wakes or clears it (chairman, 2026-10-04, #3562): it waits for the seat's
+ * next real order -- a declared decision, a row order, a gate cause -- rides in it, and is dropped if it is still waiting after {@link FYI_STALE_MS}.
+ * The sender is told exactly that, because "QUEUED" alone is the line an author reads as "it will be delivered soon" and then asks again.
+ *
+ * @param {{label: string, text: string, agents: {label: string, status: string}[] | null, path: string, stance: Stance, sender: string | null}} fyi
+ * @returns {number}
+ */
+export function holdFyi({ label, text, agents, path, stance, sender }) {
+  const why = `an order that declares no decision never wakes or clears "${label}"`;
+  const queued = appendOrder({ label, text, why, agents, path, stance, sender, fyi: true });
+  if ("code" in queued) return queued.code;
+  process.stderr.write(`HELD ${queued.entry.id} -- ${why}. It rides in "${label}"'s next real order (a \`${DECISION_FLAG}\` order, a row order, a gate cause) and `
+    + `is DROPPED if none comes within ${Math.round(FYI_STALE_MS / 3_600_000)}h. If this needs an answer, send it again with ${DECISION_FLAG} -- the same words are the same order, `
+    + "so it is not queued twice; if it can go on a row, write it there.\n");
+  process.stderr.write(stanceNote(stance));
+  process.stderr.write(queueDepthNote(label, path));
+  return EXIT.QUEUED;
+}
+
+/**
+ * THE SHARED HALF OF QUEUEING: refuse a name the org does not know, refuse a pile that is too deep, write the entry. Returns the entry, or the exit code
+ * of a refusal that has already been printed -- so the two callers differ only in what they SAY about a queued order.
+ *
+ * @param {{label: string, text: string, why: string, agents: {label: string, status: string}[] | null,
+ *          path: string, stance: Stance, sender: string | null, fyi?: boolean}} order `fyi` marks an entry {@link holdFyi} wrote, for the tick to hold
+ * @returns {{entry: {id: string}} | {code: number}}
+ */
+function appendOrder({ label, text, why, agents, path, stance, sender, fyi = false }) {
+  const decision = stance === STANCE.DECISION;
+  if (!queueable(label, agents)) {
+    process.stderr.write(`${NOT_QUEUED_PREFIX}${why}. Nothing will retry this -- a name the org `
+      + "does not know is an author error, not a busy session. Fix the name and run it again.\n");
+    return { code: EXIT.REFUSED };
+  }
+  // BEFORE THE WRITE, DELIBERATELY. Refusing after the append would leave the order on the queue it was
+  // refused for joining, which is the one outcome the row that asked for this ruled out by name.
+  const tooDeep = deepQueueRefusal(queueDepth(label, path).mine, { label, text, decision });
+  if (tooDeep) {
+    process.stderr.write(tooDeep);
+    return { code: EXIT.REFUSED };
+  }
+  try {
+    return { entry: queueHandoff(path, { session: label, prompt: attributed(text, sender), decision, fyi }) };
+  } catch (err) {
+    // THE ONE CASE WHERE AN ORDER REALLY IS LOST, so it is the loudest line this file can print.
+    process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: ${why}; and the queue at ${path} could not be `
+      + `written (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}). `
+      + "THIS ORDER IS LOST -- nothing else holds a copy. Send it again.\n");
+    return { code: EXIT.REFUSED };
+  }
 }
 
 /**
@@ -369,9 +402,14 @@ export const FYI_FLAG = "--fyi";
  * type it -- so one declaration does both jobs and there is no second way to say the same thing. */
 export const NEEDS_DECISION_FLAG = "--needs-decision";
 
-/** @typedef {"decision" | "fyi" | "undeclared"} Stance */
-/** @type {{DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared"}} */
-export const STANCE = { DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" };
+/** @typedef {"decision" | "fyi" | "undeclared" | "order"} Stance */
+/**
+ * `ORDER` (#3562) IS FOR A PROGRAMMATIC CALLER ONLY, with no flag: a real order that asks for no answer. It wakes its seat as a decision does, but it is
+ * not exempt from the deep-queue refusal, which `converse.mjs` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
+ * author who types no flag is UNDECLARED, which reads as an FYI.
+ * @type {{DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order"}}
+ */
+export const STANCE = { DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" };
 
 /**
  * PURE. Split the declaration off the arguments -- and NEVER LEAVE A FLAG IN THE TEXT.
@@ -416,6 +454,7 @@ export function stanceNote(stance) {
       + "row exists, the label is the answer and this order only points at it.\n";
   }
   if (stance === STANCE.FYI) return "DECLARED FYI -- recorded: this order asks for no answer.\n";
+  if (stance === STANCE.ORDER) return "A REAL ORDER, NOT AN FYI -- recorded: it wakes its seat, and asks for no answer.\n";
   return `NO DECLARATION, SO THIS IS RECORDED AS FYI (the default). If it asks for an answer, send it `
     + `again with ${DECISION_FLAG} -- the same words are the same order, so it is not queued twice.\n`;
 }
@@ -496,12 +535,15 @@ export function directRecordPath(queuePath) {
  * author back to retrying, which #1966 says never to do. The loss of the record is one stderr line.
  *
  * @param {string} queuePath the handoff queue's path; the record lands in its directory
- * @param {{label: string, text: string, sender: string | null, cleared: boolean, now?: number}} delivery
+ * `decision` IS THE SENDER'S DECLARATION AT THE MOMENT OF DELIVERY (#3562): a line written before it existed has none, and a reading of how many wakes and clears
+ * an FYI caused could only be bounded from above by every direct delivery to a lead seat. Absent is "not recorded", never "an FYI".
+ *
+ * @param {{label: string, text: string, sender: string | null, cleared: boolean, decision?: boolean, now?: number}} delivery
  * @returns {boolean}
  */
-export function recordDirectDelivery(queuePath, { label, text, sender, cleared, now = Date.now() }) {
+export function recordDirectDelivery(queuePath, { label, text, sender, cleared, decision, now = Date.now() }) {
   const path = directRecordPath(queuePath);
-  const line = { session: label, sender, sentAt: now, prompt: text.slice(0, DIRECT_RECORD_PROMPT_CHARS), cleared };
+  const line = { session: label, sender, sentAt: now, prompt: text.slice(0, DIRECT_RECORD_PROMPT_CHARS), cleared, decision };
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(line)}\n`);
@@ -533,6 +575,9 @@ const CONTEXT_WORDS = Object.freeze({
  * @returns {number}
  */
 export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout, contextRoot, clock = orderClockIn(`${dirname(path)}/last-order`) }) {
+  // BEFORE `promptable`, because an FYI is held for an IDLE seat too: waking it is the cost this declaration exists to refuse (#3562). A name the org does
+  // not know is still refused first, inside `holdFyi`, as for any queued order.
+  if ((stance === STANCE.FYI || stance === STANCE.UNDECLARED) && isLeadSeat(label)) return holdFyi({ label, text, agents, path, stance, sender });
   const why = promptable(label, agents);
   if (why) return queueOrLose({ label, text, why, agents, path, stance, sender });
 
@@ -551,7 +596,7 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
   if (report?.startsWith(PROMPT_REFUSED_PREFIX)) {
     return queueOrLose({ label, text, why: report, agents, path, stance, sender });
   }
-  recordDirectDelivery(path, { label, text, sender, cleared: action === CONTEXT_ACTION.CLEARED && !report });
+  recordDirectDelivery(path, { label, text, sender, cleared: action === CONTEXT_ACTION.CLEARED && !report, decision: stance === STANCE.DECISION });
   if (report) {
     process.stderr.write(`${report}\n`);
     return EXIT.REFUSED;

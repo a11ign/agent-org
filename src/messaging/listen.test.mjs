@@ -258,7 +258,7 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
     return {
       calls,
       port: {
-        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }), attributed: (/** @type {string} */ text) => text,
+        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" }), attributed: (/** @type {string} */ text) => text,
         handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
         run: () => "", NOT_QUEUED_PREFIX: "NOT PROMPTED, AND NOT QUEUED: ",
         promptOrQueue(/** @type {Record<string, any>} */ order) { calls.push(order); return 2; },
