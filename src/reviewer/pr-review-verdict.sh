@@ -32,6 +32,9 @@
 #           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
 #           A CHANGES_REQUESTED posted while a check run failed at its commit, when none fails at the head, does not stand (a11ign#3199).
 #        4  COULD NOT TELL whether it has one (a `gh` read failed). Nothing was posted; the door is safe to run again.
+#        5  REFUSED: the head moved since you reviewed it (#3640). The opener names the commit reviewed and the pull request's head now
+#           has a DIFFERENT patch. `gh pr review` has no commit option and attaches to whatever the head is, so posting would hand
+#           `reviewDecision` an approval of a patch the text does not describe. Nothing was posted; the message names the head to review.
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
 #                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
@@ -64,6 +67,13 @@ body="$(<"$file")"
 # THE OPENER IS STILL THE FIRST LINE, and it is the only part validated: the clock and the authors' timers parse it.
 opener="$(head -n 1 "$file")"
 [[ "$opener" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
+# THE COMMIT THE VERDICT IS ABOUT (#3640). The sha after `at`, in backticks, is the spelling `HEAD_AFTER_AT` in review-verdict.mjs reads, so the
+# door and the gate agree on which commit a verdict names. A verdict that names none cannot be shown to be about the head it will attach to,
+# and the gate would never count it, so it is refused here rather than posted unchecked.
+NAMED_SHA_PATTERN='(^|[^[:alnum:]_])(at|of)[[:space:]]+`([0-9a-fA-F]{7,40})`'
+named_sha_in() { [[ "$1" =~ $NAMED_SHA_PATTERN ]] && echo "${BASH_REMATCH[3]}"; }
+named="$(named_sha_in "$opener")" || named=""
+[[ -n "$named" ]] || { echo "pr-review-verdict: the verdict line of '$file' names no commit; it must read 'at <sha>' with the sha in backticks (#3640)" >&2; exit 2; }
 
 # AN ENVIRONMENT FAILURE IS NOT A VERDICT (a11ign#3050, from #3033). A reviewer whose own checkout, toolchain or token is broken has learned
 # nothing about the author's change, and a request-changes made of that sends the author to fix what is not theirs. Refused HERE, before any
@@ -195,34 +205,78 @@ refusal_lifted() {
   return 1
 }
 
-refuse_second_review() {
-  local pr head base reviews when state commit url head_pid pid differing=" "
+# Whether two spellings of a commit are one commit: a full sha and its abbreviation, either way round, as `headMatches` in review-verdict.mjs.
+same_commit() {
+  local a="${1,,}" b="${2,,}"
+  # AN EMPTY SPELLING IS A PREFIX OF EVERYTHING, so it must never be read as a match: absence of a commit is not equality with one.
+  [[ -n "$a" && -n "$b" ]] || return 1
+  [[ "$a" == "$b"* || "$b" == "$a"* ]]
+}
+
+PR_HEAD=""
+PR_BASE=""
+HEAD_PID=""
+read_pull_request() {
+  local pr
   pr="$(gh api "repos/$REPO/pulls/$n" --jq '[.head.sha, .base.ref] | @tsv')" || undetermined "the pull request would not read"
-  IFS=$'\t' read -r head base <<<"$pr"
+  IFS=$'\t' read -r PR_HEAD PR_BASE <<<"$pr"
+}
+
+# Sets HEAD_PID to the head's patch id, reading it once however many of the checks below ask. NEVER CALLED INSIDE `$( )`: the cache and the
+# `undetermined` exit would both be lost in the subshell.
+read_head_patch_id() {
+  [[ -n "$HEAD_PID" ]] || HEAD_PID="$(patch_id_of "$PR_BASE" "$PR_HEAD")" || undetermined "the head's diff would not read"
+}
+
+# THE VERDICT IS ABOUT THE COMMIT ITS OPENER NAMES, AND `gh pr review` ATTACHES IT TO THE HEAD (#3640, found on #3623). `gh pr review` has no
+# commit option, so a review posted after the author pushed lands on the NEW head while its text describes the old one: #3623's approval, headed
+# `61389c15`, was recorded on `0af5fe4a`, two commits that are not the same patch, and `reviewDecision` counted it for a changeset its text never
+# described. THE SAME TEST AS THE SECOND-REVIEW REFUSAL, BY PATCH AND NOT BY SHA: a merge of `main` moves the head and leaves the work (#3033), and
+# refusing that would send a reviewer back to re-read nothing. A read that fails is COULD-NOT-TELL, never "unchanged".
+EXIT_HEAD_MOVED=5
+refuse_stale_head() {
+  same_commit "$named" "$PR_HEAD" && return 0
+  local named_pid; named_pid="$(patch_id_of "$PR_BASE" "$named")" || undetermined "the diff at ${named:0:8}, the commit the verdict names, would not read"
+  read_head_patch_id
+  [[ "$named_pid" != "$HEAD_PID" ]] || return 0
+  echo "pr-review-verdict: NOT POSTED. The head moved since you reviewed it: your verdict names ${named:0:8}, #$n's head is now ${PR_HEAD:0:8} and" \
+       "its patch differs. \`gh pr review\` would attach this verdict to ${PR_HEAD:0:8}, a change it does not describe. Review \`${PR_HEAD}\`," \
+       "name it in the verdict line, and run the door again." >&2
+  exit "$EXIT_HEAD_MOVED"
+}
+
+refuse_second_review() {
+  local reviews when state commit url pid differing=" "
   # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
   # door itself requires above). A DISMISSED review no longer stands, a COMMENTED one is not a verdict, and a code owner's hand-written
   # approval of one path (agent-org#66: "approved for the workflow change only") opens some other way and is not the duplicate
   # a11ign#3050 exists to stop. `$n` is digits by now, so it is safe inside the jq program.
+  #
+  # THE COMMIT A REVIEW IS AT IS THE ONE ITS BODY NAMES (#3640), the same reading as `named` above and as the gate's `verdictAtHead`; `commit_id`
+  # is only where GitHub attached it, which is the HEAD at the moment of posting and so says nothing about what the reviewer read. It is the
+  # fallback for a body that names none. The named one may be an abbreviation; the compare and check-run reads below resolve it.
   reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
-      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, .commit_id, .html_url] | @tsv' \
+      --jq '.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and ((.body // "") | startswith("**Review of #'"$n"' at "))) | [.submitted_at, .state, ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")?.sha) // .commit_id), .html_url] | @tsv' \
       | sort -r)" || undetermined "its reviews would not read"
   [[ -n "$reviews" ]] || return 0
   while IFS=$'\t' read -r when state commit url; do
-    if [[ "$commit" != "$head" ]]; then
+    if ! same_commit "$commit" "$PR_HEAD"; then
       [[ "$differing" != *" $commit "* ]] || continue
-      head_pid="${head_pid:-$(patch_id_of "$base" "$head")}" || undetermined "the head's diff would not read"
-      pid="$(patch_id_of "$base" "$commit")" || undetermined "the diff at ${commit:0:8} would not read"
-      [[ "$pid" == "$head_pid" ]] || { differing+="$commit "; continue; }
+      pid="$(patch_id_of "$PR_BASE" "$commit")" || undetermined "the diff at ${commit:0:8} would not read"
+      read_head_patch_id
+      [[ "$pid" == "$HEAD_PID" ]] || { differing+="$commit "; continue; }
       # An equal patch at ANOTHER commit: a refusal posted for a check that has since cleared no longer applies. An approval always does (#3033).
-      if [[ "$state" == CHANGES_REQUESTED ]] && refusal_lifted "$commit" "$head"; then continue; fi
+      if [[ "$state" == CHANGES_REQUESTED ]] && refusal_lifted "$commit" "$PR_HEAD"; then continue; fi
     fi
     echo "pr-review-verdict: NOT POSTED. #$n already has a review at an equal patch: $state at $when ($url, commit ${commit:0:8}," \
-         "head ${head:0:8}). A second review at one patch is refused whatever its verdict; if this refusal is wrong, escalate to" \
+         "head ${PR_HEAD:0:8}). A second review at one patch is refused whatever its verdict; if this refusal is wrong, escalate to" \
          "product-manager rather than posting again." >&2
     exit "$EXIT_SECOND_REVIEW"
   done <<<"$reviews"
 }
 
+read_pull_request
+refuse_stale_head
 refuse_second_review
 
 gh pr review "$n" --repo "$REPO" "$flag" --body "$body"
