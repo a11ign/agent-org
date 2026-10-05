@@ -16,10 +16,34 @@ import { basename } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
 
+/** Linux's `USER_HZ`: `/proc/<pid>/stat` counts CPU in these, and it is 100 on every kernel configuration this host runs. */
+const CLOCK_TICKS_PER_SECOND = 100;
+const MS_PER_SECOND = 1000;
+
+/**
+ * CPU this process's CHILDREN used, in ms, from the `cutime` and `cstime` fields of `/proc/self/stat` -- which count every child this process has waited
+ * for, and each of those counts the ones it waited for. `process.cpuUsage()` cannot say it: it is this process alone, and systemd's `CPU:` figure,
+ * which the row's table quotes, is the whole tree. Reading the two against each other is how "starved" is told from "waiting".
+ *
+ * The command name is field 2 and may hold spaces and brackets, so the fields are counted from the LAST `)`. `NaN` (`null` in the line) when the
+ * file is unreadable: an unknown CPU is not zero CPU.
+ * @param {() => string} [readStat] @returns {number}
+ */
+export function childrenCpuMs(readStat = () => readFileSync("/proc/self/stat", "utf8")) {
+  try {
+    const stat = readStat();
+    const afterName = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const [cutimeAt, cstimeAt] = [13, 14]; // fields 16 and 17 of proc(5); `afterName` starts at field 3
+    return (Number(afterName[cutimeAt]) + Number(afterName[cstimeAt])) * (MS_PER_SECOND / CLOCK_TICKS_PER_SECOND);
+  } catch {
+    return Number.NaN;
+  }
+}
+
 /** Where each process of the tick appends its lines. Set by the tick, inherited by every child it starts. */
 export const CENSUS_ENV = "AGENT_ORG_TICK_CENSUS";
 
-/** How many of the slowest command lines one reading keeps: the row asks for the top 5 by wall. */
+/** How many of the slowest (and the hottest) command lines one reading keeps: the row asks for the top 5 by wall, and by CPU. */
 export const SLOWEST_KEPT = 5;
 
 /** One argument and one command line are cut here: an order's prompt is an argument and has no business in a cost record. */
@@ -112,10 +136,14 @@ export function installSpawnCensus(path) {
     const original = target[name];
     target[name] = function (/** @type {any[]} */ ...args) {
       const started = performance.now();
+      const cpuBefore = childrenCpuMs();
       try {
         return original.apply(this, args);
       } finally {
-        appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: Math.round(performance.now() - started), pid: process.pid });
+        // The caller is blocked until the child is reaped, so the move in `cutime + cstime` is that child's CPU and its descendants' -- a record's
+        // `cpuMs` is INCLUSIVE, as its `ms` is. `null` when `/proc` was unreadable: an unknown CPU is not zero.
+        const cpuMs = Math.round(childrenCpuMs() - cpuBefore);
+        appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: Math.round(performance.now() - started), cpuMs: Number.isNaN(cpuMs) ? null : cpuMs, pid: process.pid });
       }
     };
   }
@@ -156,8 +184,11 @@ export function readCensus(path) {
  * The reading the cost line carries: per command, how many were started and how long the timed ones took (an asynchronous spawn adds to the count
  * and not to the wall), and the slowest command lines by wall.
  * `ghRepos` is the same count for the `gh` calls aimed by `GH_REPO`, per repository: how many reads each repository took in one tick.
- * @param {{ cmd: string, line: string, ms: number | null, repo?: string }[]} records
- * @returns {{ commands: Record<string, { n: number, wallMs: number }>, ghRepos: Record<string, { n: number, wallMs: number }>, slowest: { line: string, ms: number }[] }}
+ * `hottest` is the same cut by CPU, the other half of the row's question (wall far above CPU is waiting, CPU near wall is work): a timed spawn's
+ * `cpuMs` is inclusive of its descendants, so a `node` that starts `gh` is listed with the `gh`'s CPU in it.
+ * @param {{ cmd: string, line: string, ms: number | null, cpuMs?: number | null, repo?: string }[]} records
+ * @returns {{ commands: Record<string, { n: number, wallMs: number }>, ghRepos: Record<string, { n: number, wallMs: number }>,
+ *   slowest: { line: string, ms: number }[], hottest: { line: string, cpuMs: number, ms: number }[] }}
  */
 export function summariseCensus(records) {
   /** @type {Record<string, { n: number, wallMs: number }>} */
@@ -173,7 +204,10 @@ export function summariseCensus(records) {
   }
   const slowest = records.filter((r) => r.ms !== null).map((r) => ({ line: r.line, ms: /** @type {number} */ (r.ms) }))
     .sort((a, b) => b.ms - a.ms).slice(0, SLOWEST_KEPT);
-  return { commands, ghRepos, slowest };
+  const hottest = records.filter((r) => typeof r.cpuMs === "number" && r.ms !== null)
+    .map((r) => ({ line: r.line, cpuMs: /** @type {number} */ (r.cpuMs), ms: /** @type {number} */ (r.ms) }))
+    .sort((a, b) => b.cpuMs - a.cpuMs).slice(0, SLOWEST_KEPT);
+  return { commands, ghRepos, slowest, hottest };
 }
 
 if (process.env[CENSUS_ENV]) installSpawnCensus(process.env[CENSUS_ENV]);
