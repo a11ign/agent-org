@@ -91,7 +91,7 @@ anything. The classifier in 2(d) is a heuristic.
 
 | Row | What it is | Where |
 |---|---|---|
-| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.mjs` |
+| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.ts` |
 | 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.mjs`, `check.mjs`, `host/chairman-watch.*.in` |
 | 3 | The Telegram provider | `providers/telegram/` |
 | 4 | The one-shot program the timer runs, and the request and summary sources | `watch.mjs`, `sources/requests.mjs`, `sources/summary.mjs` |
@@ -115,7 +115,7 @@ Nothing in this row sends a message to anyone.
 | `src/messaging/ledger.mjs` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
 | `src/messaging/rate-limit.mjs` | The token bucket and the hourly cap, on an injected clock. |
 | `src/messaging/provider-contract.mjs` | `runProviderConformance(provider)`. |
-| `src/messaging/fake-provider.mjs` | The in-memory provider that passes it, and records what it was given. |
+| `src/messaging/fake-provider.ts` | The in-memory provider that passes it, and records what it was given. |
 
 The clock, the ledger path and the provider are injected, so every test is hermetic and fast. The core takes no `fetch`: only a
 provider reaches a network. `node --test "src/messaging/**/*.test.mjs"` runs in `gate`.

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createMessenger } from "./core.mjs";
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 
 const START = Date.parse("2026-10-04T09:00:00Z");

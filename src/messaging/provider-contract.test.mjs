@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ConformanceError, runProviderConformance } from "./provider-contract.mjs";
-import { FULL_CAPABILITIES, createFakeProvider } from "./fake-provider.mjs";
+import { FULL_CAPABILITIES, createFakeProvider } from "./fake-provider.ts";
 
 /** @param {unknown} provider @returns {Promise<string[]>} the names of the checks that failed */
 async function failedChecks(provider) {

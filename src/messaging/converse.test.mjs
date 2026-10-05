@@ -25,7 +25,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, FALLBACK_RECIPIENT, PASSED_REFUSED, PASSED_SEAT_ABSENT, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { createInbound } from "./inbound.mjs";
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 

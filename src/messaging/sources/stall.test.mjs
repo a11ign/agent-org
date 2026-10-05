@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createMessenger } from "../core.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { DEFAULT_STALL_CONFIG, TICK_INTERVAL_MS, allIdleEvents, noMergeEvents, observeStalls } from "./stall.mjs";
 

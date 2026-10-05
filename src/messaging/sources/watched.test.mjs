@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { normalizeEvent } from "../event.mjs";
-import { createFakeProvider } from "../fake-provider.mjs";
+import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.mjs";
 import { WATCHED, runWatch } from "../watch.mjs";
 import { activeWatches, createWatchList } from "../watch-list.mjs";

@@ -13,7 +13,7 @@ import { after, describe, test } from "node:test";
 
 import { actionData, createInbound } from "./inbound.mjs";
 import { createAnswers, requestActions } from "./answers.mjs";
-import { createFakeProvider } from "./fake-provider.mjs";
+import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 import { createSecret } from "./secret.mjs";
 import { createTelegramProvider } from "./providers/telegram/send.mjs";
