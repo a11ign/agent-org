@@ -32,6 +32,7 @@ export const DEFAULT_RECENT_ROWS = 6;
 export const MAP_WINDOW_DAYS = 7;
 const DEFAULT_MAP_CALLS = 300; // a fifth of `trace`'s own default: the pool is the whole org's, an unread row is counted on the page, and the next run continues where this one stopped
 const CLOSED_ROWS_PAGE = 100;
+export const CLOSED_ROWS_MAX_PAGES = 30;
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
 const RENDER_TIMEOUT_MS = 30 * MS_PER_MINUTE;
 export const STAMP_FILE = ".published.json";
@@ -173,18 +174,29 @@ const ghApi = (args) => JSON.parse(execFileSync("gh", ["api", ...args], { encodi
 export const readHead = (repo) => ghApi([`repos/${repo}/branches/main`]).commit.sha;
 
 /**
- * The rows CLOSED most recently in `repo`, newest closing first: closed issues that are not pull requests, closed on or after `since`. The search is by closing date and not by `sort=updated`
- * of the issues listing, which MEASURED 2026-10-05 returned the record issue (#928, closed 2026-09-12) first because it is commented on all day, and a swimlane of it is a 100 kB page of nothing a
- * chairman asked to see.
+ * The rows CLOSED most recently in `repo`, newest closing first: closed issues that are not pull requests, closed on or after `since`. This is the REST issues list on the `core` pool; the
+ * search API it replaces (30 calls a minute per user) is not used (a11ign/a11ign#3695). `since` filters by UPDATE, and an issue closed at T was updated at or after T, so the list holds EVERY issue
+ * closed since the time and the rest is a filter on `closed_at`. It also holds the record issue (#928, closed 2026-09-12), which MEASURED 2026-10-05 is commented on all day and so is updated
+ * inside the window: `closed_at` is what keeps it out, and `sort=updated` is not used because it puts that issue first. The list is read in creation order, which a comment cannot move between two
+ * pages. It reads more pages than the search did, one counted call each, and a list not finished in CLOSED_ROWS_MAX_PAGES is REFUSED, not cut short, because a swimlane missing its newest row
+ * prints as a quieter week.
  * @param {string} repo @param {number} count @param {number} since ms @param {(args: string[]) => any} [gh]
  */
 export function recentClosedRows(repo, count, since, gh = ghApi) {
   if (count === 0) return [];
-  const day = new Date(since).toISOString().slice(0, "YYYY-MM-DD".length);
-  const found = gh(["-X", "GET", "search/issues", "-f", `q=repo:${repo} is:issue is:closed closed:>=${day}`, "-f", "sort=updated", "-f", `per_page=${CLOSED_ROWS_PAGE}`]);
-  return (found.items ?? []).filter((issue) => !issue.pull_request && Date.parse(issue.closed_at) >= since)
-    .sort((one, other) => Date.parse(other.closed_at) - Date.parse(one.closed_at)).slice(0, count).map((issue) => issue.number);
+  const closed = [];
+  for (let page = 1; page <= CLOSED_ROWS_MAX_PAGES; page += 1) {
+    const reply = gh(["-X", "GET", `repos/${repo}/issues`, "-f", "state=closed", "-f", `since=${new Date(since).toISOString()}`, "-f", `per_page=${CLOSED_ROWS_PAGE}`, "-f", `page=${page}`]);
+    if (!Array.isArray(reply)) throw new Error(`gh api repos/${repo}/issues: the reply carried no list where one was expected`);
+    closed.push(...reply);
+    if (reply.length < CLOSED_ROWS_PAGE) return closedSince(closed, since).slice(0, count).map((issue) => issue.number);
+  }
+  throw new Error(`${repo} has more than ${CLOSED_ROWS_MAX_PAGES * CLOSED_ROWS_PAGE} issues closed and updated since ${new Date(since).toISOString()}; a list cut short could miss the newest rows, so narrow the window`);
 }
+
+/** Issues (not pull requests, which the issues endpoint also lists) closed on or after `since`, newest closing first. @param {any[]} issues @param {number} since ms */
+const closedSince = (issues, since) => issues.filter((issue) => !issue.pull_request && Date.parse(issue.closed_at) >= since)
+  .sort((one, other) => Date.parse(other.closed_at) - Date.parse(one.closed_at));
 
 /** Run `trace` for one page, as a child process: it is a command with its own ingest state, and a crash in it must not take the others down. @param {{ calls: number, now: number }} budget */
 export const traceRenderer = ({ calls, now }) => (/** @type {{ kind: "map" | "row", row?: number, out: string }} */ { kind, row, out }) => {

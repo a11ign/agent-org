@@ -822,15 +822,11 @@ test("BUDGET LINE (#3644): what a run may spend, on which pool, how paced and wh
 // SELF: this file names `search/issues` in order to look for it, so the scan below is of the sources only and never of a test.
 const TRACE_DIR = dirname(fileURLToPath(import.meta.url));
 const callsSearchApi = (text) => /search\/issues/.test(text);
-// `publish.mjs` reached `main` (#3515) after #3644 was filed and still reads the closed rows through the search API; it is outside this row's Region and is a11ign/a11ign#3695. It is
-// named here so that nothing ELSE is excused, and the test below fails when it stops searching, so the exception is deleted with the fix and is never left standing.
-const SEARCH_UNTIL_3695 = ["publish.mjs"];
-
-test("NO SEARCH (#3644): no source of src/trace/ reads the search API but the one named for #3695; the scan finds one where there is one", () => {
+test("NO SEARCH (#3644): no source of src/trace/ reads the search API; the scan finds one where there is one", () => {
   const sources = readdirSync(TRACE_DIR).filter((name) => /\.mjs$/.test(name) && !/\.test\./.test(name));
   assert.ok(sources.includes("trace.mjs"), "the scan reads the file the row is about");
-  assert.deepEqual(sources.filter((name) => callsSearchApi(readFileSync(join(TRACE_DIR, name), "utf8"))), SEARCH_UNTIL_3695);
-  assert.equal(callsSearchApi('ghApi(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, and the list above holds the one file that has it");
+  assert.deepEqual(sources.filter((name) => callsSearchApi(readFileSync(join(TRACE_DIR, name), "utf8"))), []);
+  assert.equal(callsSearchApi('ghApi(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, so the empty list above is the sources and not a scan that finds nothing");
 });
 
 test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, keys the calls to the turns it just read, and a second run reads nothing; the report summarises the calls and prints none", () => {
