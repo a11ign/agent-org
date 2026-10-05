@@ -183,7 +183,8 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     const roster = agents();
     const { value, stderr } = capturingStderr(() => {
       try {
-        return q.promptOrQueue({ run: q.run, label: recipient, text, agents: roster, path, stance: q.STANCE.UNDECLARED, sender: CHAIRMAN_SENDER, ...q.delivery });
+        // A REAL ORDER, NOT THE CLI DEFAULT (#3562): an undeclared order to a lead seat reads as an FYI and is HELD for the seat's next real order, and the chairman's message is the one order that must wake it. `ORDER` and not `DECISION`, because a decision is exempt from the deep-queue refusal this module's reroute depends on.
+        return q.promptOrQueue({ run: q.run, label: recipient, text, agents: roster, path, stance: q.STANCE.ORDER, sender: CHAIRMAN_SENDER, ...q.delivery });
       } catch (error) {
         // herdr missing or hung is a refusal like any other, and the next recipient is tried: this must not end the listener's turn with the message unrecorded.
         process.stderr.write(`${q.NOT_QUEUED_PREFIX}${describeError(error)}\n`);

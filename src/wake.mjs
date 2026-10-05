@@ -2277,7 +2277,7 @@ function droppedId(entry) {
  *
  * @param {string} path
  * @param {(p: any, enc: any) => any} [read]
- * @returns {{id: string, session: string, prompt: string, queuedAt: number, decision?: boolean}[]}
+ * @returns {{id: string, session: string, prompt: string, queuedAt: number, decision?: boolean, fyi?: boolean}[]}
  */
 export function readHandoffs(path, read = readFileSync) {
   let raw;
@@ -2309,7 +2309,7 @@ export function readHandoffs(path, read = readFileSync) {
     // the dangerous direction, and the whole reason the declaration exists. Only the flag is taken from
     // the later line: the wait is still measured from the first.
     else if (declaresDecision(entry) && !declaresDecision(first)) {
-      byId.set(entry.id, { ...first, decision: true });
+      byId.set(entry.id, { ...first, decision: true, fyi: false });
     }
   }
   return [...byId.values()];
@@ -2328,13 +2328,16 @@ export function readHandoffs(path, read = readFileSync) {
  * none, and {@link declaresDecision} reads that as FYI -- the stated default, not a silent one.
  *
  * @param {string} path
- * @param {{session: string, prompt: string, decision?: boolean, now?: number, resume?: boolean,
+ * `fyi` (#3562) says the sender HELD this order at write time because it asks nothing of a lead seat ({@link holdsAsFyi}): it is written on every entry, `false`
+ * included, and an entry written before the field existed has none and is delivered as it always was -- an order queued before this shipped is never held or expired by it.
+ *
+ * @param {{session: string, prompt: string, decision?: boolean, fyi?: boolean, now?: number, resume?: boolean,
  *          write?: typeof writeFileSync, mkdir?: typeof mkdirSync}} order
  */
-export function queueHandoff(path, { session, prompt, decision = false, now = Date.now(),
+export function queueHandoff(path, { session, prompt, decision = false, fyi = false, now = Date.now(),
   write = writeFileSync, mkdir = mkdirSync, resume = false }) {
   // `resume` (#2470) marks a RE-SEND of an order a restart killed: it is delivered as a plain prompt and never behind a `/clear`.
-  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now, decision, ...(resume ? { resume: true } : {}) };
+  const entry = { id: handoffId(session, prompt), session, prompt, queuedAt: now, decision, fyi, ...(resume ? { resume: true } : {}) };
   mkdir(dirname(path), { recursive: true });
   write(path, `${JSON.stringify(entry)}\n`, { flag: "a" });
   return entry;
@@ -2405,6 +2408,132 @@ export function nothingToDeliver(orders, handoffs) {
  */
 export function staleHandoffs(handoffs, now = Date.now()) {
   return handoffs.filter((h) => now - Number(h.queuedAt ?? 0) >= HANDOFF_STALE_MS);
+}
+
+/**
+ * HOW LONG AN FYI WAITS FOR A REAL ORDER BEFORE IT IS DROPPED (chairman, 2026-10-04, #3562): an order that asks nothing of a lead seat never wakes
+ * or clears it, so it waits for the seat's next real order and rides in it. A status notice says what was true when it was sent, and a reader who
+ * meets it hours later and acts on it acts on a morning that has turned over -- the failure the clear used to prevent for free.
+ *
+ * AN UNMEASURED STARTING CONSTANT, twice {@link HANDOFF_STALE_MS} because that bound is for an order someone is WAITING on, and nobody waits on an FYI;
+ * the busiest seats get a real order every few minutes, so a notice that outlives four hours belongs to a seat nothing is asking anything of.
+ * WOULD CHANGE ON: a reading of how long an FYI waited before it rode, from the `RODE` lines the tick prints. Moving it is this one line.
+ */
+export const FYI_STALE_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * IS THIS ADDRESS A LEAD SEAT -- a roster role that is not an engineer (`ceo`, `product-manager`, `orchestrator`, `liaison`)? Read from the file,
+ * as {@link isPersistentRole} is, so a role added there is covered with no edit here. AN ENGINEER AND A REVIEWER ARE NOT: an unflagged
+ * `prompt:session` to `reviewer-<n>` is the re-review request the routing rule tells an author to send after a push, and holding it as an FYI
+ * would stall the one order that seat exists to receive.
+ * @param {string} label @param {string | URL} [path] the roster file, for a test
+ */
+export function isLeadSeat(label, path = SESSIONS_FILE) {
+  const { live } = /** @type {{ live: { name: string, role: string, family?: object }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  return live.some((s) => s.name === label && s.role !== "engineer" && s.family === undefined);
+}
+
+/**
+ * IS THIS QUEUED ORDER AN FYI THAT MUST NOT WAKE ITS SEAT: `prompt:session` held it at write time (`fyi`), it still declares no decision, it is addressed to a lead
+ * seat, and it is not a re-send of an order a restart killed (`resume`, #2470, which was already being delivered). An UNDECLARED order reads as FYI
+ * ({@link declaresDecision}, `FYI_FLAG`), and `prompt:session` is where that default is given its consequence; THE FLAG IS READ HERE, NOT RE-DERIVED from the
+ * absence of a decision, so an order the chairman's message queued as a real one (`STANCE.ORDER`) or one written before the field existed is never held.
+ * @param {{session: string, decision?: boolean, fyi?: boolean, resume?: boolean}} handoff @param {(label: string) => boolean} [isLead]
+ */
+export function holdsAsFyi(handoff, isLead = isLeadSeat) {
+  return handoff.fyi === true && !declaresDecision(handoff) && handoff.resume !== true && isLead(handoff.session);
+}
+
+/**
+ * SPLIT THE QUEUE INTO WHAT THIS TICK MAY DELIVER, WHAT STAYS HELD, AND WHAT HAS EXPIRED (#3562).
+ *
+ * A REAL ORDER IS THE SEAT'S WAKE-UP AND AN FYI IS LUGGAGE ON IT. `deliver` is the unit of a wake and clears a seat's window first, so an FYI that
+ * delivered itself paid a whole starting-context write to say nothing was asked. Here the seats that have a real handoff this tick take their
+ * FYIs in the same batch; the gate's own orders carry theirs through {@link ridingGateOrders}; every other FYI is `held`, and one past
+ * {@link FYI_STALE_MS} is `expired` -- dropped by the caller with a line, never delivered late.
+ *
+ * @template {{id: string, session: string, queuedAt?: number, decision?: boolean, fyi?: boolean, resume?: boolean}} T
+ * @param {readonly T[]} handoffs
+ * @param {{now?: number, isLead?: (label: string) => boolean}} [opts]
+ * @returns {{deliver: T[], held: T[], expired: T[]}}
+ */
+export function foldFyis(handoffs, { now = Date.now(), isLead = isLeadSeat } = {}) {
+  const fyis = handoffs.filter((h) => holdsAsFyi(h, isLead));
+  const real = handoffs.filter((h) => !fyis.includes(h));
+  const expired = fyis.filter((h) => now - Number(h.queuedAt ?? 0) >= FYI_STALE_MS);
+  const live = fyis.filter((h) => !expired.includes(h));
+  const waking = new Set(real.map((h) => h.session));
+  return { deliver: [...real, ...live.filter((h) => waking.has(h.session))], held: live.filter((h) => !waking.has(h.session)), expired };
+}
+
+/**
+ * The line a tick prints for an FYI it dropped unread: which seat, how old, and the opening of what it said, so the author can put it on a row.
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number}} fyi @param {number} [now]
+ */
+export function expiredFyiLine(fyi, now = Date.now()) {
+  const first = fyi.prompt.replace(/\s+/g, " ").slice(0, 100);
+  return `DROPPED FYI ${fyi.id} to ${fyi.session}: queued ${waitedFor(now - Number(fyi.queuedAt ?? now))} ago and no real order reached the seat inside `
+    + `${Math.round(FYI_STALE_MS / 3_600_000)}h, so it asked nothing and is now stale. It began: "${first}"\n`;
+}
+
+/**
+ * DROP THE EXPIRED FYIs, SAYING SO. `dropHandoffs` appends a retirement and the text stays in the log, so a drop loses nothing a person cannot read back.
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number}[]} expired @param {string} queuePath
+ * @param {{drop?: typeof dropHandoffs, say?: (line: string) => void, now?: number}} [deps]
+ */
+export function dropExpiredFyis(expired, queuePath, { drop = dropHandoffs, say = (line) => { process.stderr.write(line); }, now = Date.now() } = {}) {
+  if (expired.length === 0) return;
+  drop(queuePath, expired.map((f) => f.id));
+  for (const fyi of expired) say(expiredFyiLine(fyi, now));
+}
+
+/**
+ * RETIRE THE FYIs A GATE ORDER CARRIED, once `deliver` has recorded that order as sent. A recipient that is not the addressed seat (`record`'s second
+ * argument, #3568's re-route) did not receive what was written to the addressed one, so those FYIs stay held.
+ * @param {readonly string[] | undefined} ids @param {string | undefined} recipient @param {string} queuePath @param {typeof dropHandoffs} [drop]
+ */
+export function retireRiddenFyis(ids, recipient, queuePath, drop = dropHandoffs) {
+  if (ids === undefined || recipient !== undefined) return;
+  drop(queuePath, [...ids]);
+}
+
+/** How many bytes of held FYIs ride one gate order: well inside {@link HANDOFF_BATCH_BYTES}, which the order's own text also spends from. */
+const FYI_RIDE_BYTES = 16 * 1024;
+
+/**
+ * THE HELD FYIs, AS A SECTION OF THE ORDER THEY RIDE IN. It says they ask nothing and are readings at the moment they were sent, because that is
+ * what separates luggage from the order the seat was woken for.
+ * @param {readonly {prompt: string, queuedAt?: number}[]} fyis @param {number} now
+ */
+function fyiSection(fyis, now) {
+  const items = fyis.map((f, i) => `FYI ${i + 1} (queued ${waitedFor(now - Number(f.queuedAt ?? now))} ago):\n${f.prompt}`);
+  return `WAITING FOR YOUR NEXT ORDER, THIS ONE: ${fyis.length} FYI${fyis.length === 1 ? "" : "s"} that asked nothing of you and so did not wake you. `
+    + `Each is a reading at the moment it was sent -- re-read anything it names.\n\n${items.join("\n\n")}`;
+}
+
+/**
+ * LET THE HELD FYIs RIDE THE GATE'S OWN ORDERS (#3562): each order addressed to a seat that has some takes them, up to {@link FYI_RIDE_BYTES}, and the
+ * ids come back keyed by the order's causeKey so the caller retires them only when `deliver` records that order as sent. An order that is refused,
+ * deferred or re-routed to a different seat carries nothing away: its FYIs stay held for the next tick.
+ *
+ * @template {{session: string, causeKey: string, prompt: string}} O
+ * @template {{id: string, session: string, prompt: string, queuedAt?: number}} F
+ * @param {readonly O[]} orders @param {readonly F[]} held @param {number} [now]
+ * @returns {{orders: O[], rides: Map<string, string[]>}}
+ */
+export function ridingGateOrders(orders, held, now = Date.now()) {
+  /** @type {Map<string, string[]>} */
+  const rides = new Map();
+  const taken = new Set();
+  const carrying = orders.map((order) => {
+    const mine = held.filter((f) => f.session === order.session && !taken.has(f.session));
+    if (mine.length === 0) return order;
+    taken.add(order.session);
+    const { take } = fitBatch(mine, FYI_RIDE_BYTES, now);
+    rides.set(order.causeKey, take.map((f) => f.id));
+    return { ...order, prompt: `${order.prompt}\n\n${fyiSection(take, now)}` };
+  });
+  return { orders: carrying, rides };
 }
 
 /**
@@ -2750,7 +2879,7 @@ export function recordDrop(path, order, { reason, reroutedTo }, { write = writeF
  * remove. The re-addressed order keeps its `queuedAt` and its `decision`: the wait is still measured from when
  * the author first asked, and an ask stays an ask.
  *
- * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}[]} handoffs
+ * @param {readonly {id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean, fyi?: boolean}[]} handoffs
  * @param {EndedDeps} deps
  * @returns {{settled: string[], lines: string[]}} the ids no longer waiting, and what to say about each order touched
  */
@@ -2809,7 +2938,7 @@ function settleOrphan(order, holder, deps) {
 /**
  * Carry out one order's outcome, and say it. The line NAMES THE TARGET AS GONE -- never as busy -- and says what was
  * done about the order, who wrote it, and how long it waited.
- * @param {{id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean}} order
+ * @param {{id: string, session: string, prompt: string, queuedAt?: number, decision?: boolean, fyi?: boolean}} order
  * @param {ReturnType<typeof readdress>} outcome @param {EndedDeps} deps
  * @returns {{done: boolean, said: string}}
  */
@@ -2824,7 +2953,7 @@ function settle(order, outcome, deps) {
       + "neither re-addressed nor dropped and is asked again next tick.\n" };
   }
   if ("to" in outcome) {
-    const entry = queueHandoff(deps.queuePath, { session: outcome.to, decision: order.decision === true,
+    const entry = queueHandoff(deps.queuePath, { session: outcome.to, decision: order.decision === true, fyi: order.fyi === true,
       prompt: `${order.prompt}\n\n(Re-addressed by the tick: this was written for "${order.session}", which has ended. `
         + `You hold #${outcome.ref}, which it names.)`, now: Number(order.queuedAt ?? now), write: deps.write });
     recordDrop(deps.queuePath, order, { reason: `target ended; re-addressed to the holder of #${outcome.ref}`,
@@ -6934,7 +7063,9 @@ function main() {
   // is outstanding -- so exiting QUIET on an empty stdin would have left the queue undelivered exactly
   // when it mattered most.
   const handoffs = readHandoffs(queuePath);
-  if (nothingToDeliver(gateOrders, handoffs)) {
+  // A HELD FYI IS NOT WORK (#3562): it waits for a real order, so a queue of nothing else is a quiet tick -- unless one has expired, which still needs dropping.
+  const early = foldFyis(handoffs);
+  if (nothingToDeliver(gateOrders, [...early.deliver, ...early.expired])) {
     // #3510: THE QUIET TICK IS WHERE A DEFERRAL THAT WENT AWAY ENDS (the order stopped being true, so the gate emits nothing), and `finishTick` is never reached from here: without this the span is
     // logged by whichever later tick has orders, with ITS clock, and `wake-deferred` keeps a key nobody defers, which would give a re-deferral months on the old start. Nothing is deferred when nothing is offered.
     deferralAges(`${dirname(ledgerPath)}/wake-deferred`, [], Date.now(), { ledgerPath });
@@ -6954,7 +7085,12 @@ function main() {
   if (agents === null) exitCannotAsk(gateOrders.length, handoffs);
   const { orders, failed: releasesNotDone, goneSeats: released } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
-  const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  const queued = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  // #3562: AN FYI NEVER WAKES A LEAD SEAT. It is held until the seat's next real order and rides in it, and one past the bound is dropped here, before it
+  // can reach the backlog the tick reports to `ceo`: an order that waits BY DESIGN is not a stalled one.
+  const fyis = foldFyis(queued);
+  dropExpiredFyis(fyis.expired, queuePath);
+  const waiting = fyis.deliver;
   const backlog = handoffBacklog(waiting);
   for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
   // #3448: AN ORDER THAT HAS WAITED ON A BUSY SESSION PAST THE BOUND IS TOLD TO `ceo`, and it is told before this tick delivers: it rides `orders` like any gate order.
@@ -6972,11 +7108,14 @@ function main() {
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
-  const todo = undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o));
+  const { orders: todo, rides } = ridingGateOrders(
+    undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o)), fyis.held);
   mkdirSync(dirname(ledgerPath), { recursive: true });
   /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
-  const record = (key, recipient, noClear) => writeFileSync(ledgerPath,
-    ledgerLine(Date.now(), key, recipient, noClear), { flag: "a" });
+  const record = (key, recipient, noClear) => {
+    writeFileSync(ledgerPath, ledgerLine(Date.now(), key, recipient, noClear), { flag: "a" });
+    retireRiddenFyis(rides.get(key), recipient, queuePath);
+  };
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.

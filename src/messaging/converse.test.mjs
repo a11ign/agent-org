@@ -100,7 +100,7 @@ const fakeQueue = {
     }
     return fakeQueue.queueOrLose({ ...order, why: seat ? `"${order.label}" is ${seat.status}` : `no session named "${order.label}"` });
   },
-  STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared" }),
+  STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" }),
   attributed: (/** @type {string} */ text, /** @type {string | null} */ sender) => `Sent to you by \`${sender}\`:\n\n${text}`,
   handoffId: (/** @type {string} */ session, /** @type {string} */ prompt) => `handoff/${session}/${createHash("sha256").update(prompt).digest("hex").slice(0, 8)}`,
   readHandoffs: /** @type {(path: string) => any[]} */ (entries),
