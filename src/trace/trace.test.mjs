@@ -12,7 +12,7 @@ import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, waterfallsOf } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -206,6 +206,27 @@ test("REPORT: GitHub events print between the turns, the footer says how many ca
   assert.doesNotMatch(NOT_HELD, /gh call ledger/, "#3516: the ledger is a source now, and a footer that still said it was missing would deny the report above it");
   assert.doesNotMatch(NOT_HELD, /Codex/);
   assert.match(text, /across 2 sessions/, "`github` is a source, not a session");
+});
+
+test("WATERFALL (#3511): the report prints the eight phases above the events, one waterfall per row a pull request closes, and a pull request closing none is its own", () => {
+  const github = (kind, iso, extra = {}) => ({ id: `gh:${kind}:${iso}:${extra.row ?? extra.pr}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: null, repo: null, cause: null,
+    causeKey: null, wakeId: null, actor: "a11ign-bot", ...extra });
+  const pullEvents = [github("opened", "2026-10-04T10:20:00Z", { pr: 9100 }), github("reviewed", "2026-10-04T10:35:00Z", { pr: 9100, state: "APPROVED", headSha: "0fde4737ea065e2d794cfab07b39373e715fede4" }),
+    github("merged", "2026-10-04T10:50:00Z", { pr: 9100 }), github("closed", "2026-10-04T10:50:00Z", { pr: 9100 })];
+  const rowEvents = (row) => [github("filed", "2026-10-04T09:00:00Z", { row }), github("claimed", "2026-10-04T09:30:00Z", { row, claimant: "worker-9001" }), github("closed", "2026-10-04T10:50:05Z", { row })];
+  const events = eventsForRow([...worker().events, ...orchestrator().events, ...pullEvents, ...rowEvents(9001), ...rowEvents(9002)], { rows: [9001, 9002], prs: [9100] });
+  const now = at("2026-10-04T12:00:00Z");
+  const drawn = waterfallsOf({ rows: [9001, 9002], prs: [9100], number: 9100, events, now });
+  assert.deepEqual(drawn.map((one) => one.title), ["row #9001", "row #9002"], "a pull request that closes two rows is drawn once for each");
+  assert.deepEqual(drawn.map((one) => one.waterfall.start), [at("2026-10-04T09:00:00Z"), at("2026-10-04T09:00:00Z")]);
+  const text = render({ number: 9100, rows: [9001, 9002], prs: [9100], events, now });
+  assert.ok(text.indexOf("WATERFALL row #9001") > 0 && text.indexOf("WATERFALL row #9001") < text.indexOf("\nEVENTS\n"), "the waterfall comes first, then the events");
+  assert.match(text, /WATERFALL row #9002 {2}\(read 2026-10-04 12:00:00Z\)/);
+  for (const phase of ["spec", "claim", "build", "verify", "review", "CI", "queue", "merge"]) assert.match(text, new RegExp(`^  ${phase.padEnd(7)} [A-Z ]+ `, "m"), `the ${phase} phase is printed`);
+  assert.match(text, /merge +ENDED +wall-clock 5s .* unexplained 5s/, "merged -> the row closed 5 s later, and nothing records those 5 s");
+  assert.ok(text.includes("WATERFALL (#3511): the eight phases of a row"), "the definitions travel with the report");
+  assert.equal(waterfallsOf({ rows: [], prs: [], number: 9100, events: pullEvents, now })[0].title, "pull request #9100");
+  assert.match(render({ number: 9100, rows: [], prs: [9100], events: pullEvents, now }), /WATERFALL pull request #9100/);
 });
 
 test("ARGS: the row is required and `--` is tolerated", () => {

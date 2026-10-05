@@ -4,6 +4,8 @@
 //
 // `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.mjs`, #3514)
 //
+// THE WATERFALL (`waterfall.mjs`, #3511) is printed first, above the events: the row's eight phases, WORKING versus WAITING with what it waited on, tokens and dollars per phase, every repeat flagged.
+//
 // It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
 // not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the deferral spans from before the gate's log began,
@@ -26,6 +28,7 @@ import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
 import { countingGh, readGithubEvents } from "./github-events.mjs";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.mjs";
 import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore } from "./store.mjs";
+import { DEFINITIONS as WATERFALL_DEFINITIONS, renderWaterfall, waterfall } from "./waterfall.mjs";
 
 /** @typedef {import("./ingest-state.mjs").FileState} FileState
  * @typedef {import("./ingest-state.mjs").IngestState} IngestState
@@ -517,11 +520,20 @@ function ingestLines(ingested) {
 }
 
 /**
+ * The waterfall of each row the number names, or of the pull request alone when it closes none. A row's waterfall reads that row's events and the pull requests' that close it.
+ * @param {{ rows: number[], prs: number[], number: number, events: import("./store.mjs").TraceEvent[], now: number }} input
+ */
+export function waterfallsOf({ rows, prs, number, events, now }) {
+  const subjects = rows.length > 0 ? rows.map((row) => ({ title: `row #${row}`, found: eventsForRow(events, { rows: [row], prs }) })) : [{ title: `pull request #${number}`, found: events }];
+  return subjects.map(({ title, found }) => ({ title, waterfall: waterfall({ events: found, now }) }));
+}
+
+/**
  * The report for one row's events, as text.
  * @param {{ number: number, rows: number[], prs: number[], events: import("./store.mjs").TraceEvent[], ingest?: IngestReport,
- *   github?: { calls: number, read: number, added: number }, held?: import("./store.mjs").TraceEvent[] }} input `held` is every event of the store, for the footer's "held from"
+ *   github?: { calls: number, read: number, added: number }, held?: import("./store.mjs").TraceEvent[], now?: number }} input `held` is every event of the store, for the footer's "held from"; `now` is the reading's time, which an open phase runs to
  */
-export function render({ number, rows, prs, events: found, ingest: ingested, github, held }) {
+export function render({ number, rows, prs, events: found, ingest: ingested, github, held, now = Date.now() }) {
   const events = found.filter((event) => event.source !== "gh-ledger"); // a row can hold thousands of calls: they are summarised below, never one line each
   const turns = events.filter((event) => event.kind === "turn");
   const priced = turns.filter((event) => typeof event.costUsd === "number");
@@ -530,6 +542,8 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
   const fromGithub = events.filter((event) => event.source === "github").length;
   const named = [rows.length > 0 ? `rows: ${rows.map((row) => `#${row}`).join(", ")}` : "", prs.length > 0 ? `pull requests: ${prs.map((pr) => `#${pr}`).join(", ")}` : ""].filter(Boolean);
   const out = [`TRACE #${number}${named.length > 0 ? `  (${named.join("; ")})` : ""}`];
+  for (const { title, waterfall: drawn } of waterfallsOf({ rows, prs, number, events: found, now })) out.push("", ...renderWaterfall(drawn, { title, now }));
+  out.push("", "EVENTS");
   if (events.length === 0) out.push("no events: nothing in the store names this row or its pull requests within the ingested window (widen it with --since).");
   for (const event of events) out.push(line(event));
   out.push("", `${events.length} events (${fromGithub} from GitHub), ${turns.length} turns across ${sessions.length} sessions (${sessions.join(", ")})`);
@@ -540,7 +554,7 @@ export function render({ number, rows, prs, events: found, ingest: ingested, git
   out.push(...ghCallLines({ events: found, held }));
   if (held) out.push(deferralHeldLine(held));
   if (github) out.push(`GitHub: ${github.calls} REST calls (gh api); ${github.read} events read, ${github.added} new to the store`);
-  out.push(NOT_HELD, "", ...DEFINITIONS);
+  out.push(NOT_HELD, "", ...WATERFALL_DEFINITIONS, ...DEFINITIONS);
   return out.join("\n");
 }
 
@@ -751,7 +765,8 @@ async function main() {
   const seen = readGithubEvents({ rows, prs, repo: rowRepo, gh });
   const github = { calls: gh.calls, read: seen.length, added: appendToStore(store, seen).added };
   const events = eventsForRow(store.events, { rows, prs });
-  console.log(json ? JSON.stringify({ number, rows, prs, github, events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events }));
+  const now = Date.now();
+  console.log(json ? JSON.stringify({ number, rows, prs, github, waterfalls: waterfallsOf({ rows, prs, number, events, now }), events }, null, 2) : render({ number, rows, prs, events, ingest: ingested, github, held: store.events, now }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
