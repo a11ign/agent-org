@@ -185,9 +185,9 @@ function queueLoops(prEvents) {
   });
 }
 
-/** The input side of the first turn the session took after the compaction: what re-reading the window cost. @param {TraceEvent} compaction @param {TraceEvent[]} sessionTurns @returns {Spend} */
+/** The input side of the first turn the session took after the compaction: what re-reading the window cost. A subagent's turn is its own context, not the session re-reading its window, so it is skipped (as `aggregate` does). @param {TraceEvent} compaction @param {TraceEvent[]} sessionTurns @returns {Spend} */
 function compactionSpend(compaction, sessionTurns) {
-  const next = sessionTurns.find((turn) => turn.at > compaction.at && turn.tokens);
+  const next = sessionTurns.find((turn) => !turn.sidechain && turn.at > compaction.at && turn.tokens);
   const cost = next?.tokens ? costOf(next.model, { ...next.tokens, output: 0 }) : null;
   return { dollars: cost ?? 0, floor: cost === null };
 }

@@ -183,6 +183,17 @@ test("LOOPS: review -> rework -> review, queue -> eject -> queue and wake -> com
   assert.equal(m.wakes, 4, "wake, beside compaction: the wakes on the rows (101 has two, 102 and 201 one each)");
 });
 
+test("LOOPS: a compaction is priced at the session's own next turn, never a subagent's (sidechain) turn between", () => {
+  // A subagent turn 30 minutes after the compaction, with a window an order of magnitude larger than the session's own: were it taken, the loop would cost $2.00 and not $0.022.
+  const subagent = turn("2026-09-22T11:30:00Z", "worker-101", 1, { row: 101, sidechain: true, tokens: { input: 1000000, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 } });
+  const m = model({}, [...EVENTS, subagent]);
+  assert.equal(loop(m, "compaction").count, 1);
+  near(loop(m, "compaction").dollars, 0.022);
+  assert.equal(loop(m, "compaction").floor, false);
+  // The positive control: the same turn NOT marked sidechain is the next turn, and is priced, so the guard above is what kept it out.
+  near(loop(model({}, [...EVENTS, { ...subagent, sidechain: false }]), "compaction").dollars, 2);
+});
+
 /** The loops drawn red: every loop with a count is a `.loop` group, and the stylesheet paints `.loop` in the red that the red arrowhead uses and the ordinary edges do not. */
 function assertLoopsRed(html: string): void {
   const groups = [...html.matchAll(/<g class="(loop)" data-loop="(\w+)" data-count="(\d+)">/g)];
