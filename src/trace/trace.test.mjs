@@ -70,6 +70,27 @@ test("COST: the price table reproduces Claude Code's own cost_usd on the two req
   assert.ok(PRICES.filter((price) => price.verified).length === 2, "exactly the two checked rows are marked verified");
 });
 
+test("COST (#3582): claude-sonnet-5 and claude-opus-5 are priced at their own rates, and the 5.5 ids still at theirs", () => {
+  const tokens = tokensOf({ input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 });
+  // Published rates (claude-api model docs, 2026-09-25): input + output + cache read, per million tokens.
+  assert.equal(costOf("claude-sonnet-5", tokens), 2 + 10 + 0.2);
+  assert.equal(costOf("claude-opus-5", tokens), 5 + 25 + 0.5);
+  assert.equal(costOf("claude-opus-5-5", tokens), 4 + 20 + 0.2, "5.5 is not priced as 5: the shorter prefix must stand after the longer");
+  assert.equal(costOf("claude-sonnet-5-5", tokens), 2 + 10 + 0.2);
+  assert.equal(costOf("gpt-5.6-luna", tokens), null, "no Codex rate is sourced: unknown, never 0");
+  assert.equal(costOf("claude-opus-4-8", tokens), null, "a model still without a row stays null");
+});
+
+test("COST (#3582): POSITIVE CONTROL: with the two rows deleted the same turns are unpriced", () => {
+  const tokens = tokensOf(usage(10, 20, 30, 40));
+  const without = PRICES.filter((price) => price.prefix !== "claude-opus-5" && price.prefix !== "claude-sonnet-5");
+  assert.equal(without.length, PRICES.length - 2, "the table holds exactly those two rows to delete");
+  const priced = (table, model) => table.find((entry) => model.startsWith(entry.prefix)) ?? null;
+  assert.equal(priced(without, "claude-opus-5"), null);
+  assert.equal(priced(without, "claude-sonnet-5"), null);
+  assert.ok(priced(PRICES, "claude-opus-5") && priced(PRICES, "claude-sonnet-5") && costOf("claude-opus-5", tokens) !== null);
+});
+
 test("COST: a model with no price is null, never 0; and a missing split is priced as 1-hour writes", () => {
   assert.equal(costOf("<synthetic>", tokensOf(usage(1, 5, 0, 0))), null);
   assert.equal(costOf(undefined, tokensOf(usage(1, 5, 0, 0))), null);

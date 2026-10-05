@@ -9,8 +9,9 @@
 //
 // WHAT IS MEASURED AND WHAT IS INFERRED, because the two wear the same clothes in a report:
 //   tokens        MEASURED: the API's own `usage` for the message.
-//   costUsd       COMPUTED from `PRICES`. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1 and
-//                 Opus 5.5 rows are the published rates, not checked. A model with no row costs `null`, never 0.
+//   costUsd       COMPUTED from `PRICES`. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1,
+//                 Opus 5.5, Opus 5 and Sonnet 5 rows are the published rates, not checked. A model with no row costs `null`, never 0 (a Codex model has none: no rate
+//                 for it is sourced, a11ign/a11ign#3582).
 //   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. It includes the time the harness spent on the tool call that
 //                 preceded the message, so a turn that follows a slow tool reads long. Named in `DEFINITIONS`.
 //   deliveryLagMs MEASURED when the ledger line pairs with the delivery: delivered - typed. `null` when it does not pair (never 0). It is the harness's lag, NOT the
@@ -38,7 +39,7 @@ export const DEFINITIONS = [
   "KEY: row, pr and repo come from the order's cause key, else the session's name (worker-<n> is row n, reviewer-<n> is pull request n). An event with none is kept, with row null.",
   "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
   "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
-  "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model. Its wall-clock runs from the last record sent to the model.",
+  "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model (no rate for a Codex model is sourced). Its wall-clock runs from the last record sent to the model.",
   "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED BY THE LINE'S SESSION ID (#3589): `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) on each call, which is the file name of its transcript, and a turn carries its transcript's id; a call is on that session and, through the session's next turn, on a row (`keyedBy: session`). A line with no id (a unit or script outside any session, or a line written before the wrapper named its session) is `unkeyed: script`; one whose session has no later turn in the store yet is `unkeyed: no-turn`; either way the call's session is `gh-ledger` and it has no row. A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
   "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
 ];
@@ -57,6 +58,11 @@ export const PRICES = [
   { prefix: "claude-fable-5", input: 10, output: 50, cacheRead: 0.25, verified: false },
   { prefix: "claude-opus-5-5", input: 4, output: 20, cacheRead: 0.2, verified: false },
   { prefix: "claude-sonnet-5-5", input: 2, output: 10, cacheRead: 0.2, verified: true },
+  // The ids before 5.5 (a11ign/a11ign#3582). `costOf` takes the FIRST prefix that matches, so these stand after `-5-5` or they would price its turns. Rates: the claude-api
+  // skill's model docs (2026-09-25): Opus 5 $5 / $25 with cache reads at 0.1x ("every other model", Opus 5.5 being 0.05x and Fable 5.1 0.025x), Sonnet 5 at Sonnet 5.5's
+  // prices ($2 / $10, reads $0.20). Not reproduced against a `cost_usd`.
+  { prefix: "claude-opus-5", input: 5, output: 25, cacheRead: 0.5, verified: false },
+  { prefix: "claude-sonnet-5", input: 2, output: 10, cacheRead: 0.2, verified: false },
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1, verified: true },
 ];
 
