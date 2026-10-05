@@ -403,8 +403,8 @@ test("SUBJECT OF A NUMBER: a pull request resolves to the rows it closes, a row 
 test("SUBJECT OF A NUMBER (#3644): a row's pull requests are read from its timeline, page by page, and no call is a search", () => {
   const seen = [];
   const full = Array.from({ length: 100 }, () => ({ event: "labeled" }));
-  const gh = (args) => { seen.push(args.join(" ")); return /page=1$/.test(args.join(" ")) ? full : [mention(9100, "Closes #9001")]; };
-  const found = resolveSubject(9001, ROW_REPO, (args) => (/pulls\//.test(args[0]) ? (() => { throw Object.assign(new Error("Not Found"), { stderr: "HTTP 404" }); })() : gh(args)));
+  const timeline = (args) => { seen.push(args.join(" ")); return /page=1$/.test(args.join(" ")) ? full : [mention(9100, "Closes #9001")]; };
+  const found = resolveSubject(9001, ROW_REPO, (args) => (/pulls\//.test(args[0]) ? (() => { throw Object.assign(new Error("Not Found"), { stderr: "HTTP 404" }); })() : timeline(args)));
   assert.deepEqual(found, { rows: [9001], prs: [9100] }, "the pull request is on page 2 of the timeline");
   assert.equal(seen.length, 2);
   assert.ok(seen.every((call) => !/search/.test(call)), seen.join("\n"));
@@ -743,26 +743,26 @@ function meteredFake({ start, resource = "core" }) {
 test("PACE (#3644): a call waits until the gap since the last one ended, the first and a late one wait for nothing, and the budget refusal comes before any wait", () => {
   let now = 1000;
   const waits = [];
-  const gh = budgetedGh({ gh: Object.assign(() => ({}), { rate: { remaining: 4000, resource: "core" } }), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
-  gh(["a"]);
-  gh(["b"]);
+  const bounded = budgetedGh({ gh: Object.assign(() => ({}), { rate: { remaining: 4000, resource: "core" } }), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
+  bounded(["a"]);
+  bounded(["b"]);
   now += 400;
-  gh(["c"]);
+  bounded(["c"]);
   assert.deepEqual(waits, [250], "the second call waited the whole gap; the third came 400 ms after the second and waited for nothing; the first had nothing before it");
-  assert.throws(() => gh(["d"]), /--calls 3 is spent/);
+  assert.throws(() => bounded(["d"]), /--calls 3 is spent/);
   assert.deepEqual(waits, [250], "a refused call does not pace");
 });
 
 test("FLOOR (#3644): the call after a reply that left X-Ratelimit-Remaining under the floor is refused BEFORE it is made, and says it was the floor and not the budget", () => {
   const underlying = meteredFake({ start: 12 });
-  const gh = budgetedGh({ gh: underlying, budget: 100, floor: 10 });
-  gh(["a"]);
-  gh(["b"]);
-  gh(["c"]);
+  const bounded = budgetedGh({ gh: underlying, budget: 100, floor: 10 });
+  bounded(["a"]);
+  bounded(["b"]);
+  bounded(["c"]);
   assert.equal(underlying.rate.remaining, 9);
-  assert.throws(() => gh(["d"]), { code: "GH_CALLS_SPENT", reason: "floor", message: /X-Ratelimit-Remaining is 9, under the floor of 10/ });
+  assert.throws(() => bounded(["d"]), { code: "GH_CALLS_SPENT", reason: "floor", message: /X-Ratelimit-Remaining is 9, under the floor of 10/ });
   assert.equal(underlying.made, 3, "the fourth call never reached gh");
-  assert.deepEqual(gh.stopped, { reason: "floor", message: "X-Ratelimit-Remaining is 9, under the floor of 10" });
+  assert.deepEqual(bounded.stopped, { reason: "floor", message: "X-Ratelimit-Remaining is 9, under the floor of 10" });
   const roomy = budgetedGh({ gh: meteredFake({ start: 1000 }), budget: 2, floor: 10 });
   roomy(["a"]);
   roomy(["b"]);
@@ -785,8 +785,8 @@ test("FLOOR (#3644): at the floor the listings are an ERROR that says so, and a 
 });
 
 test("POOL (#3644): a reply from any pool but core is refused, so a search that slipped in is loud and not a quiet 30-a-minute wall", () => {
-  const gh = budgetedGh({ gh: meteredFake({ start: 1000, resource: "search" }), budget: 5 });
-  assert.throws(() => gh(["-X", "GET", "search/issues"]), /came from the "search" pool, not "core".*30 calls a minute/);
+  const bounded = budgetedGh({ gh: meteredFake({ start: 1000, resource: "search" }), budget: 5 });
+  assert.throws(() => bounded(["-X", "GET", "search/issues"]), /came from the "search" pool, not "core".*30 calls a minute/);
   assert.equal(budgetedGh({ gh: meteredFake({ start: 1000 }), budget: 5 })(["x"]) !== undefined, true, "a core reply passes");
 });
 
@@ -830,7 +830,7 @@ test("NO SEARCH (#3644): no source of src/trace/ reads the search API but the on
   const sources = readdirSync(TRACE_DIR).filter((name) => /\.mjs$/.test(name) && !/\.test\./.test(name));
   assert.ok(sources.includes("trace.mjs"), "the scan reads the file the row is about");
   assert.deepEqual(sources.filter((name) => callsSearchApi(readFileSync(join(TRACE_DIR, name), "utf8"))), SEARCH_UNTIL_3695);
-  assert.equal(callsSearchApi('gh(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, and the list above holds the one file that has it");
+  assert.equal(callsSearchApi('ghApi(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, and the list above holds the one file that has it");
 });
 
 test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, keys the calls to the turns it just read, and a second run reads nothing; the report summarises the calls and prints none", () => {
