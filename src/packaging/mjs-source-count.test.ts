@@ -37,7 +37,8 @@ import { TOOL_REPO_ENV, resolveBase, scanAtBase, undeclaredGrowth } from "../lib
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
-const SOURCE_MJS_PIN = 209;
+// 209 to 210 (a11ign/a11ign#3516): `src/trace/gh-calls.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, line 22), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 210;
 const TEST_MJS_PIN = 44;
 
 const ROOTS = ["src", "host", ".github"];

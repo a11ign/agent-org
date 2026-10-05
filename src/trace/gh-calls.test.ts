@@ -13,19 +13,21 @@ import { parseLedger, topCallers } from "../gh-ledger.mjs";
 import { emptyState } from "./ingest-state.mjs";
 import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyCalls, keyed, summarize, toolWindows } from "./gh-calls.mjs";
 import { openStore } from "./store.mjs";
+import type { TraceEvent } from "./store.mjs";
 
-const at = (iso) => Date.parse(iso);
+const at = (iso: string): number => Date.parse(iso);
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
 const SHELL = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL";
 const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs --json";
 
 /** One ledger line in the shape `host/gh` writes it. */
-const line = ({ time, account = WORKERS, resource = "graphql", cost = "", status = 0, command = "issue view", workspace = "w1AX", caller = SHELL }) =>
+const line = ({ time, account = WORKERS, resource = "graphql", cost = "", status = 0, command = "issue view", workspace = "w1AX", caller = SHELL }:
+  { time: string, account?: string, resource?: string, cost?: string | number, status?: number, command?: string, workspace?: string, caller?: string }): string =>
   [time, account, resource, cost, status, command, workspace, caller].join("\t");
 
 /** One turn, as the store holds it. `wallClockMs` runs back to the tool_result that began it. */
-const turn = (session, row, iso, wallClockMs, wakeId) => ({ id: `turn:${session}:${iso}`, kind: "turn", source: "transcript", at: at(iso), session, row, pr: null, repo: null, cause: null, causeKey: null, wakeId, wallClockMs });
+const turn = (session: string, row: number | null, iso: string, wallClockMs: number, wakeId: string): TraceEvent => ({ id: `turn:${session}:${iso}`, kind: "turn", source: "transcript", at: at(iso), session, row, pr: null, repo: null, cause: null, causeKey: null, wakeId, wallClockMs });
 
 /**
  * worker-9001 (row 9001): a turn at 10:00:10 and the next at 10:00:40, whose tool_result came at 10:00:34, so a tool ran from 10:00:10 to 10:00:34.
@@ -49,9 +51,14 @@ const LEDGER = [
   line({ time: "2026-10-04T10:25:00Z" }), // between worker-9003's two wakes: idle is not a tool
 ].join("\n");
 
-const calls = (text = LEDGER) => callsOfLedgerText(`${text}\n`).calls;
-const find = (all, time, resource) => all.find((call) => call.at === at(time) && (resource === undefined || call.resource === resource));
-const withTurns = (events = TURNS) => keyed(calls(), events);
+const calls = (text: string = LEDGER): TraceEvent[] => callsOfLedgerText(`${text}\n`).calls;
+/** The call at `time`, asserted to EXIST first: an ingest that dropped it fails here and not by an emptiness check on what follows. */
+const find = (all: TraceEvent[], time: string, resource?: string): TraceEvent => {
+  const hit = all.find((call) => call.at === at(time) && (resource === undefined || call.resource === resource));
+  assert.ok(hit, `no call at ${time}`);
+  return hit;
+};
+const withTurns = (events: TraceEvent[] = TURNS): TraceEvent[] => keyed(calls(), events);
 
 test("KEYED: each call is one gh-ledger record on the session whose tool window covers its second, and a call outside every window keeps row: null", () => {
   const all = withTurns();
@@ -85,10 +92,11 @@ test("KEYED: two sessions covering a call name NEITHER, and a call from a unit o
 test("KEYED: a window is the gap between turns of one wake up to the tool_result, widened to whole seconds, and its turn is the one that follows", () => {
   const windows = toolWindows(TURNS);
   const nine = windows.find((window) => window.session === "worker-9001");
+  assert.ok(nine, "worker-9001's window exists");
   assert.deepEqual([nine.from, nine.to], [at("2026-10-04T10:00:10Z"), at("2026-10-04T10:00:34Z") + 999]);
   assert.equal(nine.turn.at, at("2026-10-04T10:00:40Z"));
   assert.equal(windows.some((window) => window.session === "worker-9003"), false, "two wakes are two windows of nothing");
-  const edge = (iso, viaShell = true) => keyCalls([{ at: at(iso), viaShell }], windows)[0];
+  const edge = (iso: string, viaShell = true) => keyCalls([{ at: at(iso), viaShell }], windows)[0];
   assert.equal("turn" in edge("2026-10-04T10:00:34Z"), true, "the last second of the tool, whose line carries its start of the second");
   assert.equal("turn" in edge("2026-10-04T10:00:35Z"), false, "the second after the tool_result is the model's, not a tool's");
 });
@@ -105,14 +113,14 @@ test("INGEST: a half line is skipped as parseLine skips it, three identical call
 });
 
 /** A host: a scratch store and a ledger each of two accounts, written the way `host/gh` appends. */
-function host() {
+function host(): { root: string, ledgers: Record<"workers" | "leads" | "absent", string>, store: ReturnType<typeof openStore>, state: { current: ReturnType<typeof emptyState> }, run: (now: number, files?: string[]) => ReturnType<typeof ingestGhCalls>["report"] } {
   const root = mkdtempSync(join(tmpdir(), "gh-calls-3516-"));
   mkdirSync(join(root, "workers"));
   mkdirSync(join(root, "leads"));
   const ledgers = { workers: join(root, "workers", "gh-calls.tsv"), leads: join(root, "leads", "gh-calls.tsv"), absent: join(root, "nobody", "gh-calls.tsv") };
   const store = openStore(join(root, "events.ndjson"));
   const state = { current: emptyState({ now: 0, since: 0 }) };
-  const run = (now, files = [ledgers.workers, ledgers.leads, ledgers.absent]) => {
+  const run = (now: number, files: string[] = [ledgers.workers, ledgers.leads, ledgers.absent]) => {
     const done = ingestGhCalls({ ledgers: files, store, state: state.current, now });
     state.current = done.state;
     return done.report;
@@ -120,7 +128,7 @@ function host() {
   return { root, ledgers, store, state, run };
 }
 
-const lines = (...text) => `${text.join("\n")}\n`;
+const lines = (...text: string[]): string => `${text.join("\n")}\n`;
 const NOW = at("2026-10-04T12:00:00Z");
 
 test("INGEST: running it twice adds nothing, an account with no ledger is said so, and the second run reads no byte", () => {
@@ -154,7 +162,7 @@ test("INGEST: only the bytes a ledger gained are parsed, and the lines of the la
 
 test("INGEST: a trim reads as a shrink, is read again from byte 0 and SAID, and adds nothing already held; the newest half is all that is left, and the new calls after it are added", () => {
   const { ledgers, store, run } = host();
-  const old = Array.from({ length: 6 }, (_, i) => line({ time: `2026-10-04T10:00:0${i}Z`, command: `issue view ${i}` }));
+  const old = Array.from({ length: 6 }, (_, i: number) => line({ time: `2026-10-04T10:00:0${i}Z`, command: `issue view ${i}` }));
   writeFileSync(ledgers.workers, lines(...old));
   assert.equal(run(NOW, [ledgers.workers]).added, 6);
   writeFileSync(ledgers.workers, `half-a-line\tcut\n${lines(...old.slice(3), line({ time: "2026-10-04T10:00:09Z", command: "pr list" }))}`);
