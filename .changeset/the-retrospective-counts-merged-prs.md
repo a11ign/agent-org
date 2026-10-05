@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`org-retro` counts merged pull requests across every repository the project declares (a11ign/a11ign#3593). Its 2026-10-05 reading, "PRs merged: worse, -56" and a doubled "tokens per merged PR", came from a read with no `-R` (the primary repository alone: 48 merges, where `a11ign/agent-org` merged 82) divided into a token total summed over EVERY session. The population is the primary plus every `dora` entry (`mergedPopulation`), each read with `-R` (`readMerged`); PRs merged, the median open-to-merge and tokens per merged PR are computed over all of them, and each repository's own count prints beside the total. A repository whose list cannot be read makes the total `unknown`, never a 0. The read limit is 1,000 rather than 200, and a read that returns that many is `unknown` and says it hit the limit. The first reading after the change prints the old (primary only) and the new total once: each reading now records the repositories it counted in `org-retro-readings.jsonl`, and a previous reading without them was the old definition.
