@@ -337,9 +337,9 @@ test("BY GATE CAUSE: the report prints the table under the re-delivered line, th
   const lines = printed.split("\n");
   const head = lines.findIndex((line) => line.includes("by gate cause"));
   assert.ok(lines[head - 1].includes("re-delivered orders"), "the table sits directly under the class line");
-  assert.match(lines[head + 1], /pr-checks-failing @deferred\s+1\s+1\s+20 min\s+\$4\.0/);
-  assert.match(lines[head + 2], /pr-checks-failing\s+2\s+1\s+20 min\s+\$3\.0/);
-  assert.match(lines[head + 3], /answer-owed\s+1\s+1\s+170\.0h\s+dollars: not derivable/);
+  assert.match(lines[head + 1], /pr-checks-failing @deferred\s+1\s+1\s+20 min\b.*\$4\.0+$/);
+  assert.match(lines[head + 2], /pr-checks-failing\s+2\s+1\s+20 min\b.*\$3\.0+$/);
+  assert.match(lines[head + 3], /answer-owed\s+1\s+1\s+170\.0h\b.*dollars: not derivable/);
   const quiet = renderAggregate(report({ events: EVENTS.filter((event) => event.kind !== "wake") }));
   assert.equal(quiet.includes("by gate cause"), false, "no repeats, no table");
   assert.equal(weekOf(report({ events: EVENTS.filter((event) => event.kind !== "wake") }), WEEK_B).repeats.classes[0].causes.length, 0);
@@ -349,6 +349,93 @@ test("BY GATE CAUSE: a fixture whose repeats are all one cause prints that cause
   const only = weekOf(report({ events: [...WEEK_B_TURNS, wake("a", "2026-09-29T08:00:00Z", "ceo", "ceo/answer-owed/row-1", { cause: "answer-owed" }), wake("b", "2026-09-29T09:00:00Z", "ceo", "ceo/answer-owed/row-1", { cause: "answer-owed" })] }), WEEK_B)
     .repeats.classes[0];
   assert.deepEqual(only.causes.map(({ cause, count }) => [cause, count]), [["answer-owed", 1]]);
+});
+
+
+// THE SPLIT (#3661): each cause's repeats are AFTER A CHANGE, UNCHANGED or UNEXPLAINED, read from the store's GitHub record. A repeat is in exactly one.
+const ROW_KEY = "worker-11/ready-row-unclaimed/row-11";
+const SPLIT_ROW = [
+  github("filed", "2026-09-29T07:00:00Z", { row: 11 }),
+  github("released", "2026-09-29T08:30:00Z", { row: 11, claimant: "worker-11" }), // between delivery 1 and 2: wake 2 is a row worked a second time
+  github("claimed", "2026-09-29T09:00:00Z", { row: 11, claimant: "worker-11" }), // at delivery 2's own instant: that delivery answered it, so it is not a change for wake 3
+  github("released", "2026-09-29T10:00:01Z", { row: 11, claimant: "worker-11" }), // after wake 3: not a change for it either
+  wake("wake:s:1", "2026-09-29T08:00:00Z", "worker-11", ROW_KEY, { cause: "ready-row-unclaimed" }),
+  wake("wake:s:2", "2026-09-29T09:00:00Z", "worker-11", ROW_KEY, { cause: "ready-row-unclaimed" }),
+  wake("wake:s:3", "2026-09-29T10:00:00Z", "worker-11", ROW_KEY, { cause: "ready-row-unclaimed" }),
+  turn({ when: "2026-09-29T09:05:00Z", session: "worker-11", cost: 3, wakeId: "wake:s:2" }), turn({ when: "2026-09-29T10:05:00Z", session: "worker-11", cost: 5, wakeId: "wake:s:3" }),
+];
+const causeOf = (entry, name) => entry.causes.find((own) => own.cause === name);
+const figures = (share) => [share.count, share.dollars];
+/** The positive control: the three parts of a cause add up to its repeats and its dollars, and a breakdown that does not is RED. */
+function assertAddsUp(own) {
+  const parts = Object.values(own.split);
+  const priced = (value) => (typeof value === "number" ? value : 0);
+  assert.equal(parts.reduce((sum, part) => sum + part.count, 0), own.count, `${own.cause}: after a change + unchanged + unexplained must be the cause's repeats`);
+  near(parts.reduce((sum, part) => sum + priced(part.dollars), 0), priced(own.dollars));
+}
+
+test("SPLIT: one repeat after a release and one with no change in between read after a change 1 and unchanged 1, each with its own dollars; a change at or before the previous delivery, or after the repeat, is no change", () => {
+  const own = causeOf(causesOf(SPLIT_ROW), "ready-row-unclaimed");
+  assert.deepEqual([own.count, ...Object.values(own.split).map(figures)], [2, [1, 3], [1, 5], [0, 0]]);
+  assertAddsUp(own);
+});
+
+test("SPLIT: a repeat whose row has no GitHub events, and one whose key names no subject, read unexplained and are in neither column (never folded into unchanged)", () => {
+  const own = causeOf(causesOf([...SPLIT_ROW, github("filed", "2026-09-29T07:00:00Z", { row: 99 }),
+    wake("wake:u:1", "2026-09-29T11:00:00Z", "worker-12", "worker-12/ready-row-unclaimed/row-12", { cause: "unheld" }), wake("wake:u:2", "2026-09-29T11:30:00Z", "worker-12", "worker-12/ready-row-unclaimed/row-12", { cause: "unheld" }),
+    wake("wake:n:1", "2026-09-29T11:00:00Z", "ceo", "ceo/org-health/some-signal", { cause: "unnamed" }), wake("wake:n:2", "2026-09-29T11:30:00Z", "ceo", "ceo/org-health/some-signal", { cause: "unnamed" })]), "unheld");
+  assert.deepEqual([own.count, ...Object.values(own.split).map((share) => share.count)], [1, 0, 0, 1], "row 12 has no events in the store");
+  const unnamed = causeOf(causesOf([wake("wake:n:1", "2026-09-29T11:00:00Z", "worker-13", "worker-13/org-health/some-signal", { cause: "unnamed" }),
+    wake("wake:n:2", "2026-09-29T11:30:00Z", "worker-13", "worker-13/org-health/some-signal", { cause: "unnamed" }), github("filed", "2026-09-29T07:00:00Z", { row: 13 })]), "unnamed");
+  assert.deepEqual(Object.values(unnamed.split).map((share) => share.count), [0, 0, 1], "the session's NAME is worker-13, but the key names no row: the store's attribution is not the order's subject");
+  assertAddsUp(own);
+  assertAddsUp(unnamed);
+});
+
+test("SPLIT: a key that carries a head reads after a change when the head moved to a DIFFERENT one; the same head, a CI run, a review, and a head moved on a key with no head are not", () => {
+  const key = "worker-21/pr-checks-failing/pr-21/abcdef12";
+  const bare = "worker-22/pr-review-blocked/pr-22";
+  const wakes = (session, causeKey, cause) => [0, 20, 40].map((minute, index) => wake(`wake:h:${session}:${index}`, `2026-09-29T08:${String(minute).padStart(2, "0")}:00Z`, session, causeKey, { cause }));
+  const own = causeOf(causesOf([
+    github("opened", "2026-09-29T07:00:00Z", { pr: 21 }), github("head_moved", "2026-09-29T08:10:00Z", { pr: 21, headSha: "ffffffff00112233" }), // before repeat 1: a different head
+    github("head_moved", "2026-09-29T08:30:00Z", { pr: 21, headSha: "abcdef1234567890" }), github("ci_run", "2026-09-29T08:35:00Z", { pr: 21, headSha: "abcdef1234567890" }), // before repeat 2: the same head, and a CI run
+    github("opened", "2026-09-29T07:00:00Z", { pr: 22 }), github("head_moved", "2026-09-29T08:10:00Z", { pr: 22, headSha: "ffffffff00112233" }), github("reviewed", "2026-09-29T08:30:00Z", { pr: 22 }),
+    ...wakes("worker-21", key, "pr-checks-failing"), ...wakes("worker-22", bare, "pr-review-blocked"),
+  ]), "pr-checks-failing");
+  assert.deepEqual(Object.values(own.split).map((share) => share.count), [1, 1, 0], "repeat 1 after the head moved away, repeat 2 on the same head");
+  const noHead = causeOf(causesOf([github("opened", "2026-09-29T07:00:00Z", { pr: 22 }), github("head_moved", "2026-09-29T08:10:00Z", { pr: 22, headSha: "ffffffff00112233" }),
+    github("reviewed", "2026-09-29T08:30:00Z", { pr: 22 }), ...wakes("worker-22", bare, "pr-review-blocked")]), "pr-review-blocked");
+  assert.deepEqual(Object.values(noHead.split).map((share) => share.count), [0, 2, 0], "a key with no head is not changed by a head moving, nor by a review");
+  assertAddsUp(own);
+  assertAddsUp(noHead);
+});
+
+test("SPLIT: a label going on or off the row is a change, and the class's split adds up to the class (its total unchanged by the split)", () => {
+  const key = "worker-14/answer-owed/row-14";
+  const events = [...SPLIT_ROW, github("filed", "2026-09-29T07:00:00Z", { row: 14 }), github("unlabeled", "2026-09-29T08:30:00Z", { row: 14, name: "answer:worker-14" }),
+    wake("wake:l:1", "2026-09-29T08:00:00Z", "worker-14", key, { cause: "answer-owed" }), wake("wake:l:2", "2026-09-29T09:00:00Z", "worker-14", key, { cause: "answer-owed" }),
+    turn({ when: "2026-09-29T09:05:00Z", session: "worker-14", cost: 2, wakeId: "wake:l:2" })];
+  const entry = causesOf(events);
+  assert.deepEqual(causeOf(entry, "answer-owed").split.afterChange.count, 1);
+  for (const own of entry.causes) assertAddsUp(own);
+  assert.equal(Object.values(entry.split).reduce((sum, share) => sum + share.count, 0), entry.count, "the class's three parts are its repeats");
+  near(Object.values(entry.split).reduce((sum, share) => sum + share.dollars, 0), entry.dollars);
+  near(entry.dollars, 10); // 3 + 5 + 2, as it was before the split
+});
+
+test("SPLIT: a breakdown that does not add up is RED (the positive control the check names)", () => {
+  const own = causeOf(causesOf(SPLIT_ROW), "ready-row-unclaimed");
+  assertAddsUp(own);
+  assert.throws(() => assertAddsUp({ ...own, split: { ...own.split, unexplained: { ...own.split.unexplained, count: 1 } } }), /must be the cause's repeats/);
+  assert.throws(() => assertAddsUp({ ...own, split: { ...own.split, unchanged: { ...own.split.unchanged, dollars: 4 } } }));
+});
+
+test("SPLIT: the table prints a column for each part and a closing row for the class", () => {
+  const lines = renderAggregate(report({ events: SPLIT_ROW })).split("\n");
+  const head = lines.findIndex((line) => line.includes("by gate cause"));
+  assert.match(lines[head], /after a change\s+unchanged\s+unexplained\s+dollars$/);
+  assert.match(lines[head + 1], /ready-row-unclaimed\s+2\s+1\s+1\.0h\s+1 \$3\.0+\s+1 \$5\.0+\s+0 \$0\.0+\s+\$8\.0+$/);
+  assert.match(lines[head + 2], /all causes\s+2\s+1 \$3\.0+\s+1 \$5\.0+\s+0 \$0\.0+\s+\$8\.0+$/);
 });
 
 

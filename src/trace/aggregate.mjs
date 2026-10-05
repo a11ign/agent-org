@@ -11,7 +11,7 @@
 //   prints `not held`. A row with no turn in the store has no figure and is counted apart.
 //   NEVER MIXED. A week is its own population: nothing is pooled across weeks, and a week the store holds only part of is marked PARTIAL and left out of the comparison.
 //   NEVER AVERAGED OPEN. A row with no merge is listed apart and is in no percentile.
-import { costOf, eventsForRow, repriceEvents } from "./store.mjs";
+import { costOf, eventsForRow, repriceEvents, subjectOf, subjectsOf } from "./store.mjs";
 import { BETWEEN, PHASES, waterfall } from "./waterfall.mjs";
 import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.mjs";
 
@@ -28,6 +28,7 @@ export const DEFINITIONS = [
   "REPEAT WASTE, priced from the store, each turn priced ONCE in the first class that claims it, in this order, so the classes add up: re-delivered order, re-review, re-queue, compaction, preamble reload. A class never counts a turn another class already counted; its COUNT is every occurrence.",
   "  re-delivered order: a wake whose session and ledger key (without the `@deferred` suffix) were delivered before. Dollars: every turn that wake started.",
   "    BY GATE CAUSE (the wake's own `cause`, in the same week as the class, dearest first: a cause with no derivable dollars sorts last): repeats, distinct keys, the MEDIAN GAP between a repeat and the previous delivery of its key (whenever that was), and dollars (a floor, as every dollar here). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row (`<cause> @deferred`).",
+  "    EACH CAUSE'S REPEATS ARE SPLIT three ways, read from the store's GitHub record and never guessed: AFTER A CHANGE (between the previous delivery of the key and the repeat, a `claimed`, `released`, `labeled` or `unlabeled` event on the row or pull request the key names, or, for a key that carries a head sha, a `head_moved` to a different head: a row worked a second time), UNCHANGED (the store holds no such record: the order re-sent, the waste), UNEXPLAINED (the store holds no GitHub event at all for the subject, or the key names none: nothing is known, so it is in neither column). The three add up to the cause's repeats, and their dollars to its dollars.",
   "  re-review: a `reviewed` event on a pull request after an earlier one. Dollars: the turns of that pull request's reviewer session between its first review and the later one.",
   "  re-queue: an `added_to_merge_queue` after an earlier one on the same pull request. Dollars: the turns on the pull request's rows between its last unmerged exit from the queue and the re-entry.",
   "  compaction: a compaction of a session. Dollars: the INPUT side (input, cacheRead, cacheWrite; not output) of the first turn the session took after it, which re-reads the window.",
@@ -64,8 +65,10 @@ const DEFERRAL_LOG_HELD = false;
  * @typedef {import("./store.mjs").Tokens} Tokens
  * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
  * @typedef {{ dollars: number, priced: number, unpriced: number, turns: number, tokens: number }} Tally
- * @typedef {{ cause: string, deferred: boolean, count: number, keys: number, medianGapMs: number | null, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number }} RedeliveredCause
- * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number, causes?: RedeliveredCause[] }} RepeatClass
+ * @typedef {{ count: number, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number }} Share
+ * @typedef {Record<"afterChange" | "unchanged" | "unexplained", Share>} Split
+ * @typedef {{ cause: string, deferred: boolean, count: number, keys: number, medianGapMs: number | null, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number, split: Split }} RedeliveredCause
+ * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number, causes?: RedeliveredCause[], split?: Split }} RepeatClass
  */
 
 /** @param {number} ms the Monday 00:00 UTC of the week holding `ms` */
@@ -328,34 +331,95 @@ function priceOnce(turns, claimed, part) {
   return { dollars, tokens, floor, priced, unpriced };
 }
 
+/** Every turn unpriced is NOT zero dollars: it is not derivable. @param {ReturnType<typeof priceOnce>} priced */
+const dollarsOf = (priced) => (priced.priced === 0 && priced.unpriced > 0 ? NOT_DERIVABLE : priced.dollars);
+
 /** A class whose every turn is unpriced is NOT zero dollars: it is not derivable, and says how many turns it could not price. @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
-const classOf = (head, priced) => ({ ...head, dollars: priced.priced === 0 && priced.unpriced > 0 ? NOT_DERIVABLE : priced.dollars, floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
+const classOf = (head, priced) => ({ ...head, dollars: dollarsOf(priced), floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
 
 const DEFERRED_MARK = "@deferred:";
 
+/** What counts as a change to an order's subject: the claim, a release, or a wait label going on or off. A head moving counts only for a key that names a head. */
+const CHANGE_KINDS = new Set(["claimed", "released", "labeled", "unlabeled"]);
+/** The head a pull request's key carries (`worker-2667/pr-checks-failing/pr-2669/ed8208fe`): the gate's short prefix of the sha. */
+const HEAD_OF_KEY = /\/pr-(?:[\w.-]+#)?\d+\/([0-9a-f]{7,40})$/;
+const CHANGES = /** @type {const} */ (["afterChange", "unchanged", "unexplained"]);
+
+/** The rows and pull requests a subject names, as keys that cannot be mistaken for one another. @param {Partial<TraceEvent>} named @param {Keys} keys */
+const subjectKeys = (named, keys) => [
+  ...[named.row, ...(named.rows ?? [])].filter((row) => typeof row === "number").map((row) => `row ${row}`),
+  ...[named.pr, ...(named.prs ?? [])].filter((pr) => typeof pr === "number").map((pr) => prKey(keys, named.repo ?? null, pr)),
+];
+
+/** What GitHub saw of each row and pull request, by subject key. @param {TraceEvent[]} events @param {Keys} keys */
+function githubRecord(events, keys) {
+  /** @type {Map<string, TraceEvent[]>} */
+  const record = new Map();
+  for (const event of events.filter((candidate) => candidate.source === "github")) {
+    for (const subject of subjectKeys(event, keys)) record.set(subject, [...(record.get(subject) ?? []), event]);
+  }
+  return record;
+}
+
 /**
- * The wakes of the week that repeat an order their session already had, each with its ledger key and the time since that key was last delivered (in this week or before it).
- * @param {TraceEvent[]} events @param {number} at the week's start
+ * Whether the order's subject changed between the previous delivery of its key and this repeat, from the store's GITHUB record alone. The subject is the one THE KEY names (not the
+ * session's name: a worker's row is the store's attribution, not the order's), so a key that names none is `unexplained`, like a subject the store holds no GitHub event for: with no
+ * record, "nothing changed" is not a finding. A change is in (previous delivery, this one]; one at the previous delivery's own instant is what that delivery answered.
+ * @param {{ wake: TraceEvent, gapMs: number }} repeat @param {Map<string, TraceEvent[]>} record @param {Keys} keys
+ * @returns {typeof CHANGES[number]}
  */
-function repeatsOf(events, at) {
+function changeOf({ wake, gapMs }, record, keys) {
+  const key = String(wake.causeKey);
+  const held = subjectKeys({ ...subjectOf(key), ...subjectsOf(key) }, keys).flatMap((subject) => record.get(subject) ?? []);
+  if (held.length === 0) return "unexplained";
+  const head = HEAD_OF_KEY.exec(key.split(DEFERRED_MARK)[0])?.[1];
+  const movedAway = (/** @type {TraceEvent} */ event) => head !== undefined && event.kind === "head_moved" && typeof event.headSha === "string" && !event.headSha.startsWith(head);
+  return held.some((event) => event.at > wake.at - gapMs && event.at <= wake.at && (CHANGE_KINDS.has(event.kind) || movedAway(event))) ? "afterChange" : "unchanged";
+}
+
+/**
+ * The wakes of the week that repeat an order their session already had, each with its ledger key, the time since that key was last delivered (in this week or before it) and
+ * whether the order's subject changed in between.
+ * @param {TraceEvent[]} events @param {number} at the week's start @param {Keys} keys
+ */
+function repeatsOf(events, at, keys) {
+  const record = githubRecord(events, keys);
   /** @type {Map<string, number>} */
   const lastDelivered = new Map();
-  /** @type {{ wake: TraceEvent, key: string, gapMs: number }[]} */
+  /** @type {{ wake: TraceEvent, key: string, gapMs: number, change: typeof CHANGES[number] }[]} */
   const repeats = [];
   for (const wake of events.filter((event) => event.kind === "wake" && event.causeKey).sort((a, b) => a.at - b.at)) {
     const key = `${wake.session}\t${String(wake.causeKey).split(DEFERRED_MARK)[0]}`;
     const before = lastDelivered.get(key);
-    if (before !== undefined && inWeek(wake, at)) repeats.push({ wake, key, gapMs: wake.at - before });
+    if (before !== undefined && inWeek(wake, at)) repeats.push({ wake, key, gapMs: wake.at - before, change: changeOf({ wake, gapMs: wake.at - before }, record, keys) });
     lastDelivered.set(key, wake.at);
   }
   return repeats;
 }
 
+/** @typedef {{ count: number, priced: ReturnType<typeof priceOnce> }} Part */
+
+/** @param {Part} part @returns {Share} */
+const figuresOf = ({ count, priced }) => ({ count, dollars: dollarsOf(priced), floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
+
+/** The several parts as one: their repeats and their priced turns, added. @param {Part[]} parts @returns {Part} */
+const totalOf = (parts) => ({ count: parts.reduce((sum, part) => sum + part.count, 0), priced: sumPriced(parts.map((part) => part.priced)) });
+
+/** The three parts of a cause's repeats, each priced once, so they add up to the cause. @param {ReturnType<typeof repeatsOf>} members @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed */
+const partsOf = (members, turnsOfWake, claimed) => /** @type {Record<typeof CHANGES[number], Part>} */ (Object.fromEntries(CHANGES.map((change) => {
+  const own = members.filter((member) => member.change === change);
+  return [change, { count: own.length, priced: priceOnce(own.flatMap(({ wake }) => turnsOfWake.get(wake.id) ?? []), claimed, "whole") }];
+})));
+
+/** @param {Record<typeof CHANGES[number], Part>} parts @returns {Split} */
+const splitOf = (parts) => /** @type {Split} */ (Object.fromEntries(CHANGES.map((change) => [change, figuresOf(parts[change])])));
+
 /**
  * The repeats by gate cause (the wake's own `cause`). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row: a deferral retry and a wake that was
  * delivered anyway are different defects. Dollars are priced once per turn through the shared `claimed`, so the rows add up to the class; the dearest cause is first (the chairman's order is in dollars), repeats beside it.
+ * Each cause's repeats are split after a change / unchanged / unexplained (`changeOf`), and the three parts are priced apart and added for the cause, so the split adds up to the cause by construction.
  * @param {ReturnType<typeof repeatsOf>} repeats @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed
- * @returns {{ causes: RedeliveredCause[], priced: ReturnType<typeof priceOnce>[] }}
+ * @returns {{ causes: RedeliveredCause[], parts: Record<typeof CHANGES[number], Part>[] }}
  */
 function causesOf(repeats, turnsOfWake, claimed) {
   /** @type {Map<string, typeof repeats>} */
@@ -366,15 +430,16 @@ function causesOf(repeats, turnsOfWake, claimed) {
   }
   const entries = [...groups].map(([group, members]) => {
     const [cause, deferred] = group.split("\t");
-    const priced = priceOnce(members.flatMap(({ wake }) => turnsOfWake.get(wake.id) ?? []), claimed, "whole");
+    const parts = partsOf(members, turnsOfWake, claimed);
+    const priced = sumPriced(CHANGES.map((change) => parts[change].priced));
     const money = classOf({ id: group, label: cause, count: members.length }, priced);
-    return { priced, row: /** @type {RedeliveredCause} */ ({
+    return { parts, row: /** @type {RedeliveredCause} */ ({
       cause, deferred: deferred === "true", count: members.length, keys: new Set(members.map(({ key }) => key)).size, medianGapMs: nearestRank(members.map(({ gapMs }) => gapMs), FIRST_RANK_PERCENT),
-      dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced }) };
+      dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced, split: splitOf(parts) }) };
   });
   const worth = (/** @type {RedeliveredCause} */ row) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
   entries.sort((a, b) => worth(b.row) - worth(a.row) || b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
-  return { causes: entries.map(({ row }) => row), priced: entries.map(({ priced }) => priced) };
+  return { causes: entries.map(({ row }) => row), parts: entries.map(({ parts }) => parts) };
 }
 
 /** @param {ReturnType<typeof priceOnce>[]} tallies @returns {ReturnType<typeof priceOnce>} */
@@ -382,10 +447,11 @@ const sumPriced = (tallies) => tallies.reduce((sum, one) => ({ dollars: sum.doll
   { dollars: 0, tokens: 0, floor: false, priced: 0, unpriced: 0 });
 
 /** @param {Repeat} context */
-function redelivered({ events, turnsOf, at, claimed }) {
-  const repeats = repeatsOf(events, at);
-  const { causes, priced } = causesOf(repeats, turnsOf.wake, claimed);
-  return { ...classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, sumPriced(priced)), causes };
+function redelivered({ events, turnsOf, at, claimed, keys }) {
+  const repeats = repeatsOf(events, at, keys);
+  const { causes, parts } = causesOf(repeats, turnsOf.wake, claimed);
+  const whole = /** @type {Record<typeof CHANGES[number], Part>} */ (Object.fromEntries(CHANGES.map((change) => [change, totalOf(parts.map((own) => own[change]))])));
+  return { ...classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, sumPriced(CHANGES.map((change) => whole[change].priced))), causes, split: splitOf(whole) };
 }
 
 /** The events of one kind, by pull request key, in time order. @param {TraceEvent[]} events @param {string} kind @param {Keys} keys */
@@ -659,15 +725,27 @@ const MINUTE_MS = 60 * 1000;
 /** A gap between two deliveries: minutes under an hour (a nag every 22 minutes is not "0.4h"), hours above. @param {number | null} ms */
 const gap = (ms) => (ms === null ? "n/a" : ms < 60 * MINUTE_MS ? `${Math.round(ms / MINUTE_MS)} min` : hours(ms));
 
-/** The re-delivered class's table by gate cause, under its line; no repeats, no table. @param {RepeatClass} entry */
+/** One part of a split as a table cell: how many repeats and what they cost. @param {Share} share */
+const shareCell = (share) => `${share.count} ${typeof share.dollars === "number" ? dollars(share.dollars, share.floor) : "n/a"}`;
+const SPLIT_COLUMNS = [["afterChange", "after a change"], ["unchanged", "unchanged"], ["unexplained", "unexplained"]];
+const SPLIT_WIDTH = 16;
+
+/** The three split cells of a row, in the header's order. @param {Split} split */
+const splitCells = (split) => SPLIT_COLUMNS.map(([change]) => shareCell(split[/** @type {keyof Split} */ (change)]).padStart(SPLIT_WIDTH)).join(" ");
+
+/** The re-delivered class's table by gate cause, under its line, with each cause's repeats split into after a change / unchanged / unexplained and a closing row for the class; no repeats, no table. @param {RepeatClass} entry */
 function causeLines(entry) {
   if (!entry.causes || entry.causes.length === 0) return [];
-  const rows = entry.causes.map((own) => {
+  const row = (/** @type {string} */ name, /** @type {{ count: number, dollars: number | string, floor: boolean, unpriced?: number, keys?: number, medianGapMs?: number | null }} */ own, /** @type {Split | undefined} */ split) => {
     const money = typeof own.dollars === "number" ? dollars(own.dollars, own.floor) : `dollars: ${own.dollars}`;
-    const name = own.deferred ? `${own.cause} @deferred` : own.cause;
-    return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${String(own.keys).padStart(13)}  ${gap(own.medianGapMs).padStart(9)}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
-  });
-  return [`      ${"by gate cause".padEnd(40)} ${"repeats".padStart(5)} ${"distinct keys".padStart(13)}  ${"median gap".padStart(9)}  dollars`, ...rows];
+    const keys = own.keys === undefined ? "" : String(own.keys);
+    const median = own.medianGapMs === undefined ? "" : gap(own.medianGapMs);
+    return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${keys.padStart(13)}  ${median.padStart(9)}  ${splitCells(/** @type {Split} */ (split)).trimEnd()}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
+  };
+  const rows = entry.causes.map((own) => row(own.deferred ? `${own.cause} @deferred` : own.cause, own, own.split));
+  const heads = SPLIT_COLUMNS.map(([, label]) => label.padStart(SPLIT_WIDTH)).join(" ");
+  return [`      ${"by gate cause".padEnd(40)} ${"repeats".padStart(5)} ${"distinct keys".padStart(13)}  ${"median gap".padStart(9)}  ${heads}  dollars`, ...rows,
+    ...(entry.split ? [row("all causes", entry, entry.split)] : [])];
 }
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
