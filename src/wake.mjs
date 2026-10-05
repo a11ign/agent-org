@@ -32,7 +32,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
   fstatSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, loadavg, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
@@ -4469,6 +4469,38 @@ export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESS
   return { sent: action === CONTEXT_ACTION.CLEARED, refusal };
 }
 
+/** The host's 1-minute load average and the cores it has, as read once by whoever asks ({@link hostLoadRefusal}). */
+/** @typedef {{load: number, cores: number}} HostLoad */
+
+/**
+ * A run may name the 1-minute load instead of reading it, which is what lets a test drive the wake ENTRY (a subprocess) without being
+ * refused by the load of the machine it runs on -- the seam `A11Y_MEMINFO_PATH` is for the memory hold. The host never sets it.
+ */
+export const HOST_LOAD_ENV = "A11Y_HOST_LOAD";
+
+/** @param {Record<string, string | undefined>} [env] @returns {HostLoad} what the tick reads of this host: the production seam `deliver` is handed (#3560). */
+function readHostLoad(env = process.env) {
+  const named = Number(env[HOST_LOAD_ENV]);
+  return { load: env[HOST_LOAD_ENV] ? named : loadavg()[0], cores: availableParallelism() };
+}
+
+/**
+ * Why a NEW engineer must not start while the host is over its core count, or `null` (#3560, chairman via `ceo`, 2026-10-04).
+ *
+ * MEASURED BY `ceo` AT 21:35Z: load 98 on 16 cores with swap in use, and the gate's own tick took 6 min 44 s while it kept starting one
+ * more full-suite engineer per tick (`MAX_SPAWNS_PER_TICK` caps the count, and nothing read the load). THE PAUSE IS DERIVED, NOT SET: no
+ * state file, no label, so nothing can be left on. The next tick reads the load again, and the order -- refused like any spawn, never
+ * written to the ledger -- is offered then. EXACTLY EQUAL DOES NOT REFUSE: "over" is the chairman's word.
+ *
+ * THE THRESHOLD IS THE CORE COUNT THE CHAIRMAN NAMED, NOT A MEASURED OPTIMUM. It lowers nothing a running suite makes (#3536).
+ * A reading that is absent (no seam, a test) is no refusal, as `memory` and `claimable` are.
+ * @param {HostLoad | undefined} reading @returns {string | null}
+ */
+export function hostLoadRefusal(reading) {
+  if (reading === undefined || !(reading.load > reading.cores)) return null;
+  return `host load ${Number(reading.load.toFixed(2))} is over its ${reading.cores} cores: no new engineer is started`;
+}
+
 /**
  * Who takes this order: a session that is already free, or a process started for a role that has none.
  *
@@ -4487,8 +4519,9 @@ export function clearBeforeOrder(run, label, sleep, contextRoot, sessions = SESS
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
  *   relane?: {deferredSince: Map<string, number>, now: number},
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
- *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer} & ReviewerDeps} deps
- *   (`memory`, from {@link ReviewerDeps}, is the memory hold both spawn paths ask -- {@link spawnMemoryGate});
+ *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer, hostLoad?: () => HostLoad} & ReviewerDeps} deps
+ *   (`memory`, from {@link ReviewerDeps}, is the memory hold both spawn paths ask -- {@link spawnMemoryGate}; `hostLoad` is the load reading
+ *   the engineer spawn alone asks -- {@link hostLoadRefusal});
  *   `spawned` is how many ENGINEER processes this tick has already started -- see `MAX_SPAWNS_PER_TICK`, which a
  *   reviewer start never spends (#2401); `ineligibleReason` is {@link route}'s; `env` is the spawn's environment
  *   ({@link spawnEnvironment}); `relane` is {@link relaneTarget}'s clock and deferral record (#3465)
@@ -4519,6 +4552,8 @@ function targetFor(order, live, roster, deps) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
+  const overloaded = hostLoadRefusal(deps.hostLoad?.());
+  if (overloaded !== null) return { refusal: `${routed.refusal}; ${overloaded}` };
   const spawn = spawnWorker(order, live, roster,
     { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer,
       memory: deps.memory });
@@ -4760,7 +4795,7 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
- *          memory?: () => string | null, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
+ *          memory?: () => string | null, hostLoad?: () => HostLoad, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
  *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
  *          relane?: {deferredSince: Map<string, number>, now: number}} & Partial<ReviewerDeps>} [deps]
  *   `relane` (#3465) is {@link relaneTarget}'s clock and the deferral record: a declared finishing order over the bound goes to a free engineer. Absent, none is re-laned.
@@ -4782,7 +4817,7 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
 export function deliver(orders, agents, roster,
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory,
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane } = {}) {
   const sent = [];
   const refused = [];
@@ -4802,7 +4837,7 @@ export function deliver(orders, agents, roster,
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, memory, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane });
+      claimable, claimer, memory, hostLoad, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane });
     if ("refusal" in target) {
       refused.push(`${order.causeKey}: ${target.refusal}`);
       continue;
@@ -6853,7 +6888,7 @@ function main() {
   const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    memory: spawnMemoryGate(), claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
+    memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable });

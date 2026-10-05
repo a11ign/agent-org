@@ -1,7 +1,7 @@
 // @ts-check
 // a11ign/a11ign#3494, first slice: THE TRACE STORE -- one append-only record per event, keyed by row (and pull request, and repository).
 //
-// THREE SOURCES TODAY, and each record says which: `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
+// FOUR SOURCES TODAY, and each record says which: `source: "gh-ledger"` for one `gh` call (`gh-calls.mjs`, #3516), `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
 // `codex-turns.mjs`, #3519, marked `harness: "codex"`), `source: "wake-ledger"` for the
 // order the gate delivered, `source: "github"` for what GitHub saw of a row and its pull requests (`github-events.mjs`, #3508). The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
 // it has no file exporter, needs a receiver the host does not run, and cannot reach a standing seat that is already running. So the transcript is the source and
@@ -39,6 +39,7 @@ export const DEFINITIONS = [
   "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
   "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
   "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model. Its wall-clock runs from the last record sent to the model.",
+  "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED, and INFERRED: a call is on a session, and through its next turn on a row, only when it came from a session's shell and exactly one session's tool window covered its second (`keyedBy: time`); else the call's session is `gh-ledger`, it has no row, and `unkeyed` says why (`script`, `ambiguous`, `no-turn`). A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
   "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
 ];
 
@@ -61,11 +62,12 @@ export const PRICES = [
 
 /**
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
- * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github", at: number, session: string, row: number | null,
+ * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
  *   costUsd?: number | null, wallClockMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
  *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
- *   completedAt?: number | null, outcome?: "merged" | "unmerged" }} TraceEvent
+ *   completedAt?: number | null, outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
+ *   script?: string, viaShell?: boolean, keyedBy?: "time" | null, unkeyed?: "script" | "ambiguous" | "no-turn", candidates?: number }} TraceEvent
  */
 
 /**

@@ -240,7 +240,9 @@ function tick(dir: string, meminfoText: string | null) {
   writeFileSync(join(dir, "gh"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(dir, "herdr"), STUB_MODE);
   chmodSync(join(dir, "gh"), STUB_MODE);
-  const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` };
+  const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`,
+    // #3560: the spawn is not refused for the load of the machine this runs on.
+    A11Y_HOST_LOAD: "0" };
   if (meminfoText !== null) {
     writeFileSync(join(dir, "meminfo"), meminfoText);
     env[MEMINFO_ENV] = join(dir, "meminfo");

@@ -3,14 +3,14 @@
 // The records are in the shapes measured on 2026-10-04: an `assistant` record per content block sharing one `message.id`, `usage.cache_creation` split by TTL, and a
 // `user` record wrapped in `<pasted_content` for a delivered order.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfTranscript, openStore, PRICES, readStore, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { weekStart } from "./aggregate.mjs";
-import { budgetedGh, githubEventsOfMerged, isAggregate, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, readListings, render, resolveSubject } from "./trace.mjs";
+import { budgetedGh, githubEventsOfMerged, ingestTranscripts, isAggregate, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, readListings, render, resolveSubject } from "./trace.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -172,7 +172,8 @@ test("REPORT: GitHub events print between the turns, the footer says how many ca
   assert.match(text, /3 from GitHub/);
   assert.equal(text.indexOf("REVIEW") > text.indexOf("WAKE"), true, "the review falls between the turns, in time order");
   assert.doesNotMatch(NOT_HELD, /GitHub/);
-  for (const still of ["gh call ledger", "deferral spans"]) assert.ok(NOT_HELD.includes(still), still);
+  assert.ok(NOT_HELD.includes("deferral spans"));
+  assert.doesNotMatch(NOT_HELD, /gh call ledger/, "#3516: the ledger is a source now, and a footer that still said it was missing would deny the report above it");
   assert.doesNotMatch(NOT_HELD, /Codex/);
   assert.match(text, /across 2 sessions/, "`github` is a source, not a session");
 });
@@ -395,4 +396,28 @@ test("BUDGET: a failure that is not the budget is not swallowed, and a pull requ
   const held = [{ kind: "merged", pr: 20, repo: null }, { kind: "closed", row: 2 }];
   const idle = budgetedGh({ gh: listingGh(), budget: 0 });
   assert.deepEqual(githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held, gh: idle }), { events: [], unreadRows: [] }, "nothing to read, so even a budget of 0 reads and marks nothing");
+});
+
+test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, keys the calls to the turns it just read, and a second run reads nothing; the report summarises the calls and prints none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-gh-ledger-"));
+  mkdirSync(join(dir, "projects", "p"), { recursive: true });
+  writeFileSync(join(dir, "projects", "p", "worker-9001.jsonl"), WORKER);
+  const shell = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true";
+  const call = (time, resource, cost) => ["2026-10-04T" + time + "Z", "a11ign-ai-workers", resource, cost, 0, "issue view", "w1AX", shell].join("\t");
+  const ledgerFile = join(dir, "gh-calls.tsv");
+  // msg_1 ended 10:00:08 and the tool_result of msg_2's turn came at 10:00:20: a tool ran between them. The second call is after both turns.
+  writeFileSync(ledgerFile, `${[call("10:00:15", "graphql", 3), call("10:00:15", "graphql?", ""), call("10:30:00", "core", "")].join("\n")}\n`);
+  const input = { root: join(dir, "projects"), since: 0, ledger: LEDGER, rowRepo: ROW_REPO, storePath: join(dir, "events.ndjson"), ghLedgers: [ledgerFile], now: at("2026-10-04T12:00:00Z") };
+  const first = ingestTranscripts(input);
+  assert.deepEqual([first.report.ghCalls.added, first.report.ghCalls.calls], [3, 3]);
+  const calls = first.store.events.filter((event) => event.kind === "gh_call");
+  assert.deepEqual(calls.map((event) => [event.row, event.keyedBy]), [[9001, "time"], [9001, "time"], [null, null]], "keyed to the turn the transcript pass JUST read: the order of the two passes is the join");
+  const second = ingestTranscripts({ ...input, storePath: input.storePath });
+  assert.deepEqual([second.report.ghCalls.added, second.report.ghCalls.read, second.report.ghCalls.unchanged, second.report.read], [0, 0, 1, 0], "one state holds both: nothing is read twice");
+  const text = render({ number: 9001, rows: [9001], prs: [], events: eventsForRow(second.store.events, { rows: [9001], prs: [] }), ingest: second.report, held: second.store.events });
+  assert.match(text, /GH CALLS keyed to this row.*: 2 calls: 2 on the GraphQL pool = 4 points \(3 read from responses, 1 calls FLOOR/);
+  assert.match(text, /GH CALLS KEYED TO NO ROW.*\(2 of the store's 3 are keyed\): 1 calls/);
+  assert.match(text, /gh ledgers: 0 read .*1 unchanged/);
+  assert.doesNotMatch(text, /gh-ledger {2,}/, "a call is summarised, never one line of the trace");
+  assert.match(text, /6 events \(0 from GitHub\), 3 turns across 1 sessions \(worker-9001\)/, "and a call is not an event of the row's listing, a turn, or a session: `gh-ledger` is a source");
 });

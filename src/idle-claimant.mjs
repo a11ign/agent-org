@@ -50,6 +50,12 @@ export const IDLE_STATUSES = Object.freeze(["idle", "done"]);
 export const EVIDENCE_LABEL = "awaiting-evidence";
 
 /**
+ * `pr-hold-state.mjs`'s `HOLD_PREFIX`, restated for the reason `EVIDENCE_LABEL` is (a leaf cannot import what imports `wait-condition.mjs`);
+ * `idle-claimant.test.ts` pins it equal to the original.
+ */
+export const HOLD_LABEL_PREFIX = "hold:";
+
+/**
  * EVERY KIND OF WAIT THAT CLEARS A HOLDER, and what the holder writes to declare it. `on: "row"` kinds are decided by the gate through
  * `waiting-condition.mjs` (the one reader of a row's wait) and arrive as `waitKinds`; `on: "pr"` kinds are decided here from the holder's own
  * open pull request. A new kind cannot be added without a case: `idle-claimant.test.ts` derives its table from this object's keys.
@@ -67,6 +73,10 @@ export const WAIT_FIELDS = Object.freeze({
   "checks-pending": { on: "pr", spelling: "a check run still in progress on the pull request" },
   "review-approved": { on: "pr", spelling: "an APPROVED pull request, which the merge queue owns" },
   "awaiting-evidence": { on: "pr", spelling: `the \`${EVIDENCE_LABEL}\` label on the pull request` },
+  // AN EXTERNAL EVENT (#3569): `pr:hold --until "merged #n"` puts `hold:<session>` on the pull request and records its `Waiting-for:` condition, which the
+  // gate re-reads every tick and LIFTS when it is true (#3364, `liftableHolds`). A hold that names no reason is `wait-without-reason`'s, raised after
+  // MANUAL_WAIT_HOURS, so counting the label here cannot hide one for long. A background run has no kind: nothing the gate reads can see one (#3569).
+  "pr-held": { on: "pr", spelling: `\`pnpm run pr:hold <n> --until "merged #<m>"\` (the \`${HOLD_LABEL_PREFIX}<session>\` label and its \`Waiting-for:\`, which the gate lifts)` },
 });
 
 /** @typedef {{ label: string, status: string }} Agent */
@@ -74,10 +84,11 @@ export const WAIT_FIELDS = Object.freeze({
  *   checksPending?: boolean }} IdlePr a `gh pr list --json` object, as `readPrs` returns it, plus `checksPending`, which THE GATE derives: the rollup is
  * read only where `stillRunning` and `newestPerName` live, so this leaf neither re-decides what a running check is nor reads a rollup unnarrowed */
 
+/** @param {IdlePr} pr @returns {string[]} */
+const labelNames = (pr) => (pr.labels ?? []).map((l) => String(typeof l === "string" ? l : l?.name));
+
 /** @param {IdlePr} pr @returns {boolean} */
-function hasEvidenceLabel(pr) {
-  return (pr.labels ?? []).some((l) => String(typeof l === "string" ? l : l?.name) === EVIDENCE_LABEL);
-}
+const hasEvidenceLabel = (pr) => labelNames(pr).includes(EVIDENCE_LABEL);
 
 /**
  * The wait kinds ONE open pull request carries. `review-requested` is a live `reviewer-<n>` pane that holds an agent: the gate starts it
@@ -93,6 +104,7 @@ function prWaitKinds(pr, agents) {
   if (pr.checksPending === true) kinds.push("checks-pending");
   if (pr.reviewDecision === "APPROVED") kinds.push("review-approved");
   if (hasEvidenceLabel(pr)) kinds.push("awaiting-evidence");
+  if (labelNames(pr).some((name) => name.startsWith(HOLD_LABEL_PREFIX))) kinds.push("pr-held");
   return kinds;
 }
 
@@ -141,10 +153,10 @@ export function idleClaimantReading(facts, ctx) {
  */
 export function idleNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease }) {
   const spellings = Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `\`${f.spelling}\``).join(" | ");
-  return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (one named in this terminal is not one).\n`
-    + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each field clears itself: ${spellings} | an open pull request needing a reviewer, a check or the `
-    + `merge queue | the \`${EVIDENCE_LABEL}\` label. To continue: commit, push \`${branch ?? "your branch"}\` or comment on the row.\n`
+  return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (the terminal is not one).\n`
+    + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each clears itself: ${spellings} | an open PR awaiting review, checks or the queue | `
+    + `\`${EVIDENCE_LABEL}\` | \`pnpm run pr:hold <n> --until "merged #<m>"\` (outside event). To continue: commit, push \`${branch ?? "your branch"}\` or comment.\n`
     + (canRelease
-      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; your worktree and unpushed work are KEPT.`
+      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; worktree and unpushed work are KEPT.`
       : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
 }
