@@ -38,7 +38,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
+  liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
 
@@ -1600,6 +1600,8 @@ const UNIT_BODY = (workingDir: string) => "[Unit]\nDescription=board report\n[Se
   // DECLARED, because `hostUnitDrift` now asks `identityDrift` too and this unit's opaque `ExecStart` is
   // charged on UNKNOWN (#1993): an undeclared one would add a third finding to every pair asserted below.
   + "Environment=GH_CONFIG_DIR=/home/agent/workers/gh\n";
+const trustingEvery = (paths: string[]) => paths.map((path) => `[projects."${path}"]\ntrust_level = "trusted"\n`).join("\n");
+
 /**
  * A REAL SHIPPED DIRECTORY AND A REAL INSTALLED ONE, because `hostUnitDrift` discovers the shipped set
  * with `shippedUnits(dir, {})` -- the real `readdirSync`, not the injected `readDir`. A stub `shippedDir`
@@ -1630,7 +1632,9 @@ const hostWithOneUnit = (installedSuffix: string) => {
   writeFileSync(join(dirs.repo, "package.json"), JSON.stringify({ packageManager: "pnpm@10.0.0" }));
   // PINNED SATISFIED TOO (#3643): `hostUnitDrift` now reads `~/.config/gh`, and an unpinned one reads whoever is logged in on the machine running the suite.
   const readGhHosts = (() => { throw Object.assign(new Error("no hosts.yml"), { code: "ENOENT" }); }) as never;
-  return { ...identity, installedDir: dirs.installed, readGhHosts,
+  // PINNED SATISFIED TOO (#3702): `hostUnitDrift` now reads `~/.codex/config.toml` against the real `host.json`'s clones, so an unpinned one reads the machine's.
+  const readCodexConfig = () => trustingEvery(Object.values(homeHostConfig().clones ?? {}));
+  return { ...identity, installedDir: dirs.installed, readGhHosts, readCodexConfig,
     settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh"),
     pnpm: { path: dirs.bin, repoRoot: dirs.repo, version: () => "10.0.0\n" } };
 };
@@ -2852,4 +2856,57 @@ test("#3515: installed as the tool, the trace pages' service runs publish.mjs fr
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
   assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/publish\.mjs$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
+});
+
+// --- #3702: A CLONE `host.json` DECLARES MUST BE ONE THE REVIEWER'S CODEX TRUSTS -----------------------------------------------------------
+//
+// `toolchain`'s clone was declared by #3578 and `~/.codex/config.toml` had no entry for it, so `reviewer-toolchain-1` was refused at startup
+// on 30 consecutive ticks and a pull request had no reviewer. Nothing said a new clone needs the entry; `host:check` now does, and writes nothing.
+
+const cloneHost = (clones: Record<string, string> | undefined) => ({ ...homeHostConfig(), home: "/h", ...(clones === undefined ? {} : { clones }) } as never);
+const CLONES = { "agent-org": "/r/agent-org", toolchain: "/r/toolchain" };
+
+test("#3702: a declared clone with no trusted table is a finding naming the clone, and the remedy edits nothing", () => {
+  const host = cloneHost(CLONES);
+  const readCodexConfig = () => trustingEvery(["/r/agent-org", "/r/other"]);
+  const [f, ...rest] = codexTrustDrift({ host, readCodexConfig });
+  assert.deepEqual(rest, [], "only the clone without an entry");
+  assert.equal(f?.unit, "/r/toolchain");
+  assert.equal(f.problem, "CLONE NOT TRUSTED BY CODEX");
+  assert.equal(f.manualFix, true, "the grant is a ruling, so `host:install` is not offered as the fix");
+  assert.match(f.detail, /\[projects\."\/r\/toolchain"\]/, "it names the exact table to add");
+  assert.match(f.detail, /edits nothing/);
+  // CONTROL (the other direction): once the table is there, the finding stops.
+  assert.deepEqual(codexTrustDrift({ host, readCodexConfig: () => trustingEvery(["/r/agent-org", "/r/toolchain"]) }), []);
+});
+
+test("#3702: `trust_level` counts only inside the clone's own table, and only when it is \"trusted\"", () => {
+  const host = cloneHost({ toolchain: "/r/toolchain" });
+  const drift = (text: string) => codexTrustDrift({ host, readCodexConfig: () => text }).length;
+  assert.equal(drift('[projects."/r/toolchain"]\ntrust_level = "untrusted"\n'), 1, "a table that says untrusted is not trust");
+  assert.equal(drift('[projects."/r/toolchain"]\nother = 1\n[projects."/r/else"]\ntrust_level = "trusted"\n'), 1, "a neighbour's line is not this clone's");
+  assert.equal(drift('[projects."/r/toolchain/sub"]\ntrust_level = "trusted"\n'), 1, "a child path is not the clone: nothing wider");
+  assert.equal(drift('trust_level = "trusted"\n[projects."/r/toolchain"]\n'), 1, "a line above the table is not inside it");
+  assert.equal(drift("[projects.'/r/toolchain']  # added by hand\ntrust_level = 'trusted' # ruled\n"), 0, "single quotes and trailing comments are TOML too");
+  assert.deepEqual([...codexTrustedProjects(trustingEvery(["/a", "/b"]))], ["/a", "/b"]);
+});
+
+test("#3702: an absent or unreadable config says which, and no `clones` means nothing to check", () => {
+  const host = cloneHost({ toolchain: "/r/toolchain" });
+  const refuse = (code: string) => () => { throw Object.assign(new Error("boom"), { code }); };
+  const [absent] = codexTrustDrift({ host, readCodexConfig: refuse("ENOENT") });
+  assert.match(absent?.detail ?? "", /it does not exist/, "absent is a finding, not 'trusts everything'");
+  const [unreadable] = codexTrustDrift({ host, readCodexConfig: refuse("EACCES") });
+  assert.match(unreadable?.detail ?? "", /could not be read \(boom\)/, "unreadable is a finding that says it does not know");
+  assert.deepEqual(codexTrustDrift({ host: cloneHost(undefined), readCodexConfig: refuse("ENOENT") }), [], "no clones declared: nothing to trust");
+});
+
+test("#3702: `host:check` REPORTS an untrusted clone -- the check is wired in", () => {
+  // THE MUTANT: dropping `...codexTrustDrift(deps)` from `hostUnitDrift` leaves every direct call above green. The fixture host declares
+  // no clones, so this one DECLARES them: a population of zero would make both assertions pass whether or not the check is wired.
+  const clean = hostWithOneUnit("");
+  const host = { ...homeHostConfig(), clones: CLONES } as never;
+  const flagged = (readCodexConfig: () => string) => hostUnitDrift({ ...clean, host, readCodexConfig }).filter((d) => d.problem === "CLONE NOT TRUSTED BY CODEX");
+  assert.deepEqual(flagged(() => trustingEvery(Object.values(CLONES))), [], "CONTROL: every declared clone trusted reads clean");
+  assert.deepEqual(flagged(() => "").map((d) => d.unit).sort(), Object.values(CLONES).sort(), "a config trusting nothing flags every declared clone");
 });
