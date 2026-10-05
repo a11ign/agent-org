@@ -12,13 +12,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { absentSeats } from "../herdr-agents.mjs";
 import { persistentRoles, roleBriefPath } from "../project-roles.mjs";
 import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.mjs";
-import { persistentSeatDrift, persistentSeatNotes, driftReport, systemdUserAvailable } from "../host-units.mjs";
+import { persistentSeatDrift, persistentSeatNotes, driftReport } from "../host-units.mjs";
 import { RECIPIENT } from "../messaging/converse.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "seat-3539-"));
@@ -122,28 +123,54 @@ test("2: an unreadable roster or an unreadable herdr is UNKNOWN by name, never c
   assert.deepEqual(persistentSeatNotes({ seats: ["liaison"], agents: [] }), [], "the control: when both read, there is nothing to note");
 });
 
-/** A `herdr` on PATH: `workspace list` answers `labels`, `agent list` answers nothing, and `broken` makes every call fail. */
-function stubHerdrDir(labels: string[], broken = false): string {
-  const dir = mkdtempSync(join(scratch, "bin-"));
+const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/host-units/", import.meta.url));
+
+/**
+ * A project and a machine for `host:check` to read. The project is `host-units.test.ts`'s fixture (its units, scripts and declaration, with the roles directory declared, and the tool linked at
+ * `packages/agent-org`) PLUS the roster this file is about, built here and not imported from `host-units-project.ts`, which sets `$AGENT_ORG_HOST` for the whole
+ * file and would point the routing test at a project with no roster. The machine is a temp HOME, a `host.json` (the declared one names this host's own paths, which a
+ * runner does not have), a `systemctl` that answers (so the check does not depend on a user manager), and a `herdr` whose `workspace list` answers `labels` -- or
+ * fails every call when `broken`.
+ */
+function seatHost(labels: string[], broken = false) {
+  const root = mkdtempSync(join(scratch, "project-"));
+  const declaration = join(root, ".agent-org");
+  mkdirSync(join(declaration, "roles"), { recursive: true });
+  cpSync(join(FIXTURE_DIR, "units"), join(declaration, "units"), { recursive: true });
+  cpSync(join(FIXTURE_DIR, "scripts"), join(root, "scripts"), { recursive: true });
+  cpSync(join(FIXTURE_DIR, "package.json"), join(root, "package.json"));
+  writeFileSync(join(declaration, "project.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(FIXTURE_DIR, "project.json"), "utf8")), roles: { dir: ".agent-org/roles" } }));
+  cpSync(ROSTER, join(declaration, "roles/sessions.json"));
+  mkdirSync(join(root, "packages"));
+  symlinkSync(TOOL_ROOT, join(root, "packages/agent-org"), "dir");
+  const home = mkdtempSync(join(scratch, "home-"));
+  const bin = join(home, "stub-bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "systemctl"), '#!/bin/sh\ncase "$*" in *is-enabled*) echo enabled;; *is-active*) echo active;; *) echo LANG=C;; esac\n', { mode: 0o755 });
   const body = JSON.stringify({ result: { workspaces: labels.map((label) => ({ label, agent_status: "idle" })), agents: [] } });
-  writeFileSync(join(dir, "herdr"), broken ? "#!/bin/sh\nexit 1\n" : `#!/bin/sh\necho '${body}'\n`);
-  chmodSync(join(dir, "herdr"), 0o755);
-  return dir;
+  writeFileSync(join(bin, "herdr"), broken ? "#!/bin/sh\nexit 1\n" : `#!/bin/sh\necho '${body}'\n`);
+  chmodSync(join(bin, "herdr"), 0o755);
+  const hostFile = join(declaration, "host.json");
+  writeFileSync(hostFile, readFileSync(join(FIXTURE_DIR, "host.json"), "utf8").replace("@@PROJECT@@", root)
+    .replace('"/home/agent"', JSON.stringify(home)).replace('"/home/agent/.local/bin"', JSON.stringify(join(home, ".local/bin"))));
+  return { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
 }
-function hostCheck(dir: string, ...flags: string[]) {
-  const entry = new URL("../host-units.mjs", import.meta.url).pathname;
-  return spawnSync(process.execPath, [entry, ...flags], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+function hostCheck(env: ReturnType<typeof seatHost>, ...flags: string[]) {
+  const done = spawnSync(process.execPath, [join(TOOL_ROOT, "src/host-units.mjs"), ...flags], { encoding: "utf8", env });
+  assert.notEqual(done.stdout, "", `host-units.mjs ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
+  return done;
 }
 
-test("2: `host:check` ITSELF fails with a line naming the absent seat, and shows none when every seat is present", { skip: !systemdUserAvailable() && "no systemd user manager on this machine: host:check answers NOT CHECKED here, so there is no seat reading to make" }, () => {
-  const absent = hostCheck(stubHerdrDir(["ceo", "orchestrator"]));
-  assert.match(absent.stdout, /seat liaison: PERSISTENT SEAT NOT RUNNING/);
+test("2: `host:check` ITSELF fails with a line naming the absent seat, and shows none when every seat is present", () => {
+  const absent = hostCheck(seatHost(["ceo", "orchestrator"]));
+  assert.match(absent.stdout, /seat liaison: PERSISTENT SEAT NOT RUNNING/, absent.stderr);
   assert.equal(absent.status, 1, "the check's failing exit");
-  const present = hostCheck(stubHerdrDir(["ceo", "orchestrator", "liaison"]));
+  const present = hostCheck(seatHost(["ceo", "orchestrator", "liaison"]));
   assert.doesNotMatch(present.stdout, /seat liaison/);
-  const findings = JSON.parse(hostCheck(stubHerdrDir(["ceo", "orchestrator", "liaison"]), "--json").stdout).findings;
+  const findings = JSON.parse(hostCheck(seatHost(["ceo", "orchestrator", "liaison"]), "--json").stdout).findings;
   assert.ok(!findings.some((f: { unit: string }) => f.unit === "seat liaison"));
-  const unknown = hostCheck(stubHerdrDir([], true));
+  const unknown = hostCheck(seatHost([], true));
   assert.match(unknown.stdout, /persistent seats: UNKNOWN/);
   assert.doesNotMatch(unknown.stdout, /seat liaison: PERSISTENT SEAT NOT RUNNING/, "an unreadable herdr is not an absent seat");
 });
