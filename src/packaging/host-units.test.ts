@@ -2172,7 +2172,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     assert.equal(notSeats(after.notes).length, 1, "the person's user.name is carried as a note, and the correct .zshenv adds none");
     rmSync(join(home, ".zshenv"));
     const without = JSON.parse(run("--json").stdout);
-    assert.deepEqual(notSeats(without.notes).map((n: { problem: string }) => n.problem).sort(),
+    assert.deepEqual(notSeats<{ unit: string, problem: string }>(without.notes).map((n: { problem: string }) => n.problem).sort(),
       ["GLOBAL GIT IDENTITY IS A PERSON'S", "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME"],
       "WIRING: `host:check --json` carries the compile-cache note when the account's .zshenv is gone");
     assert.ok(without.findings.every((f: { unit: string }) => !f.unit.endsWith(".zshenv")), "and never as a finding");
