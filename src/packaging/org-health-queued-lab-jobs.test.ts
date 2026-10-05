@@ -40,6 +40,8 @@ function tickOver(ps: () => string, openRowsRead: unknown[] | null = []) {
       now: NOW, lastMergedAt: () => NOW - HOUR_MS, log: (line: string) => said.push(line), readCopies: () => [] as never,
       readCaptures: (() => IDLE_FLEET) as never,
       readLabJobs: () => dispatchedLabJobsOrSay(() => readDispatchedLabJobs({ run: ps })),
+      // #3672: no remote: a project that declares `teamAccess` would otherwise make the live `gh api` read here, and this file asserts nothing about it
+      teamAccess: () => undefined,
     },
   );
   return { orders, said };

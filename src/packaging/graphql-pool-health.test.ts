@@ -86,7 +86,9 @@ test("#3448 (3): the org-health tick raises a low pool to ceo, is silent about a
   const lines: string[] = [];
   const tick = (pools: unknown) => orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: [], decideArgs, decided: decide({ prs: [], readyRows: [] } as never), pools } as never,
     { now: NOW, lastMergedAt: () => NOW, log: (line: string) => lines.push(line), readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
-      readLabJobs: () => [], readWaits: (() => ({ facts: new Map(), stale: [], bare: [], manual: 0 })) as never }) as { subject: string; session: string }[];
+      readLabJobs: () => [], readWaits: (() => ({ facts: new Map(), stale: [], bare: [], manual: 0 })) as never,
+      // #3672: no remote: a project that declares `teamAccess` would otherwise make the live `gh api` read here
+      teamAccess: () => undefined }) as { subject: string; session: string }[];
   assert.deepEqual(tick([pool(10)]).filter((o) => o.subject === SIGNALS.POOL_LOW).map((o) => o.session), ["ceo"], "POSITIVE CONTROL: a low pool is an order to ceo");
   assert.deepEqual(tick([pool(4000)]).filter((o) => o.subject === SIGNALS.POOL_LOW), []);
   assert.deepEqual(tick([]).filter((o) => o.subject === SIGNALS.POOL_LOW), [], "an unread pool raises nothing...");

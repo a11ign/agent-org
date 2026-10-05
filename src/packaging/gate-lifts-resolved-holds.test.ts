@@ -191,7 +191,9 @@ function tick(prRaw: Record<string, unknown>, release: (n: number, s: string) =>
   const decided = decide({ prs, readyRows: [], openRows: rows } as never);
   const orders = orgHealthNow({ prsRead: [prRaw], readyRead: [], openRowsRead: [], decideArgs, decided } as never,
     { now: NOW, lastMergedAt: () => NOW - HOUR_MS, log: () => {}, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
-      readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never, release: release as never });
+      readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never, release: release as never,
+      // #3672: no remote: a project that declares `teamAccess` would otherwise make the live `gh api` read here (this file's `gh` is the fake above)
+      teamAccess: () => undefined });
   return orders as { session: string; subject: string; cause: string }[];
 }
 
