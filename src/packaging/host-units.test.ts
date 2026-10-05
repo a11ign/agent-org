@@ -32,7 +32,7 @@ import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
-  entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands,
+  entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands, humanLoginOnHost, HUMAN_LOGIN_ON_HOST,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
   supersededHostScripts, unitEntryPoints, missingUnitPrograms, workingDirectoryOf,
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
@@ -1626,7 +1626,9 @@ const hostWithOneUnit = (installedSuffix: string) => {
   // PINNED SATISFIED TOO (#2896): a `pnpm` on the fixture PATH at the version the fixture project declares, so the real host's PATH is not read.
   writeFileSync(join(dirs.bin, "pnpm"), "");
   writeFileSync(join(dirs.repo, "package.json"), JSON.stringify({ packageManager: "pnpm@10.0.0" }));
-  return { ...identity, installedDir: dirs.installed,
+  // PINNED SATISFIED TOO (#3643): `hostUnitDrift` now reads `~/.config/gh`, and an unpinned one reads whoever is logged in on the machine running the suite.
+  const readGhHosts = (() => { throw Object.assign(new Error("no hosts.yml"), { code: "ENOENT" }); }) as never;
+  return { ...identity, installedDir: dirs.installed, readGhHosts,
     settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh"),
     pnpm: { path: dirs.bin, repoRoot: dirs.repo, version: () => "10.0.0\n" } };
 };
@@ -2283,6 +2285,97 @@ test("#2332: `host:check` REFUSES an undeclared gh unit and a human-declaring on
     assert.ok(hostUnitDrift(clean).some((d) => d.problem === problem && d.unit === unit),
       `${problem}: \`host:check\` reports it against the unit`);
   }
+});
+
+// --- #3643: A UNIT THAT SPAWNS NOTHING STILL HAS TO SAY WHOSE ACCOUNT IT IS, AND THE HOST MUST NOT HOLD A PERSON'S LOGIN ---------------
+//
+// Reach analysis answers "does this unit spend a rate limit TODAY". `a11ign-corpus-snapshot.service` reached no `gh` spawn and declared
+// nothing, so it passed both checks while the wrapper's rule 5 sent it to `~/.config/gh`, logged in as the org owner with admin.
+
+test("#3643: a shipped unit that declares no GH_CONFIG_DIR is a finding EVEN WHERE NO `gh` SPAWN IS REACHABLE", () => {
+  const silent = oneUnit("[Service]\nType=oneshot\n");
+  // THE CASE IS WHAT IT SAYS IT IS: reach analysis finds nothing, so the finding below is the new rule's doing and not the old one's.
+  assert.deepEqual(unitsSpendingGh(silent), [], "the unit reaches no gh spawn and starts no command at all");
+  const [f, ...rest] = identityDrift(silent);
+  assert.deepEqual(rest, [], "one finding");
+  assert.equal(f?.problem, "NO IDENTITY DECLARED");
+  assert.equal(f?.unit, "a11ign-x.service");
+  assert.match(f.detail, /reaches no `gh` spawn/, "and says why it is a finding anyway");
+  assert.match(f.detail, /\/home\/agent\/workers\/gh/, "the remedy names the workers dir");
+  assert.match(f.detail, /\/home\/agent\/leads\/gh/, "and the leads dir");
+  assert.match(f.detail, /pnpm run host:install/, "and the command that lands the unit");
+  // CONTROL: the same unit WITH the declaration reads clean, so the finding above is the missing line and nothing else.
+  assert.deepEqual(identityDrift(oneUnit("[Service]\nType=oneshot\nEnvironment=GH_CONFIG_DIR=/home/agent/workers/gh\n")), []);
+  // A unit that DOES reach a spawn is still ONE finding and keeps its own reason, not a second one for the same missing line.
+  const spawning = identityDrift(oneUnit("[Service]\nExecStart=/home/agent/.local/bin/opaque.sh\n"));
+  assert.equal(spawning.length, 1);
+  assert.match(spawning[0].detail, /UNKNOWN rather than no/);
+});
+
+/** A host whose `~/.config/gh` and two bot configs hold exactly the `hosts.yml` texts given (`null` writes nothing). */
+const ghHost = (files: { person: string | null, workers?: string | null, leads?: string | null }) => {
+  const root = mkdtempSync(join(tmpdir(), "host-units-3643-"));
+  const dirs = { person: join(root, "home", ".config", "gh"), workers: join(root, "workers", "gh"), leads: join(root, "leads", "gh") };
+  for (const [name, text] of Object.entries({ workers: "user: workers-bot\n", leads: "user: leads-bot\n", ...files })) {
+    if (text === null) continue;
+    const dir = dirs[name as keyof typeof dirs];
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "hosts.yml"), text);
+  }
+  return { host: { ...homeHostConfig(), home: join(root, "home"), gh: { ...homeHostConfig().gh, workers: join(root, "workers"), leads: join(root, "leads") } } as never, dirs };
+};
+
+const hostsYml = (user: string) => `github.com:\n    users:\n        ${user}:\n            oauth_token: gho_x\n    git_protocol: https\n    user: ${user}\n`;
+
+test("#3643: a human login in ~/.config/gh is a finding, however the person is named", () => {
+  for (const user of ["DanBeckDev", "somebody-renamed"]) {
+    const { host, dirs } = ghHost({ person: hostsYml(user), workers: hostsYml("a11ign-ai-workers"), leads: hostsYml("a11ign-ai-leads") });
+    const [f, ...rest] = humanLoginOnHost({ host });
+    assert.deepEqual(rest, [], `${user}: one finding`);
+    assert.equal(f?.problem, HUMAN_LOGIN_ON_HOST);
+    assert.equal(f?.unit, dirs.person);
+    assert.equal(f?.manualFix, true, "`host:install` writes no line of it");
+    assert.match(f.detail, new RegExp(`\`${user}\``), "and names the login it read");
+    assert.match(f.detail, /\/workers\/gh/);
+    assert.match(f.detail, /\/leads\/gh/);
+  }
+  // THE OLD, SINGLE-ACCOUNT LAYOUT (no `users:` block) is read too.
+  assert.equal(humanLoginOnHost(ghHost({ person: "github.com:\n    user: DanBeckDev\n    oauth_token: x\n" })).length, 1);
+  // A multi-account file names only the person, and the token under a login is not a login.
+  const mixed = ghHost({ person: "github.com:\n    users:\n        workers-bot:\n            oauth_token: x\n        DanBeckDev:\n            oauth_token: y\n    user: workers-bot\n" });
+  const [m] = humanLoginOnHost(mixed);
+  assert.match(m.detail, /`DanBeckDev`/);
+  assert.doesNotMatch(m.detail, /workers-bot|oauth_token/);
+});
+
+test("#3643 CONTROLS: a bot login passes, a missing ~/.config/gh passes, an empty one passes", () => {
+  assert.deepEqual(humanLoginOnHost(ghHost({ person: hostsYml("workers-bot") })), [], "the workers account");
+  assert.deepEqual(humanLoginOnHost(ghHost({ person: hostsYml("leads-bot") })), [], "the leads account");
+  assert.deepEqual(humanLoginOnHost(ghHost({ person: null })), [], "no ~/.config/gh is a pass, not an unknown");
+  assert.deepEqual(humanLoginOnHost(ghHost({ person: "" })), [], "a hosts.yml with no login in it");
+  assert.deepEqual(humanLoginOnHost(ghHost({ person: "github.com:\n    users: {}\n" })), []);
+});
+
+test("#3643: an UNREADABLE ~/.config/gh is a finding that says it does not know, and an unreadable bot config says the bot logins are incomplete", () => {
+  const { host, dirs } = ghHost({ person: null });
+  mkdirSync(join(dirs.person, "hosts.yml"), { recursive: true }); // a directory where the file should be: EISDIR, not ENOENT
+  const [f, ...rest] = humanLoginOnHost({ host });
+  assert.deepEqual(rest, []);
+  assert.equal(f?.problem, "HOST GH LOGIN UNREADABLE");
+  assert.match(f.detail, /UNKNOWN rather than no/, "it is never read as clean");
+  const noBots = ghHost({ person: hostsYml("DanBeckDev"), workers: null });
+  const [g] = humanLoginOnHost(noBots);
+  assert.equal(g?.problem, HUMAN_LOGIN_ON_HOST);
+  assert.match(g.detail, /could not be read, so the bot logins are incomplete/);
+});
+
+test("#3643: `host:check` REFUSES a human login on the host -- the check is wired in", () => {
+  // THE MUTANT: dropping `...humanLoginOnHost(deps)` from `hostUnitDrift` leaves every direct call above green.
+  const clean = hostWithOneUnit("");
+  assert.deepEqual(hostUnitDrift(clean).filter((d) => d.problem === HUMAN_LOGIN_ON_HOST), [], "CONTROL: the pinned fixture reads clean");
+  const { host } = ghHost({ person: hostsYml("DanBeckDev") });
+  assert.ok(hostUnitDrift({ ...clean, host, readGhHosts: undefined }).some((d) => d.problem === HUMAN_LOGIN_ON_HOST),
+    "`host:check` reports it");
 });
 
 test("#2332: a shipped unit that changes the account is a reviewed change, NOT 'installed identity the repo lacks'", () => {

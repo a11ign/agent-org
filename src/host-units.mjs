@@ -942,7 +942,7 @@ function declaredConfigDir(unitText) {
 }
 
 /**
- * The findings: a unit that spawns `gh` and never says as whom (so it gets the fallback account), and a
+ * The findings: a unit that never says as whom (so it gets the fallback account), spawning `gh` or not (#3643), and a
  * unit that says the answer is the PERSON, which no unit may since #2332 unless a named entry says why.
  * @param {Parameters<typeof unitsSpendingGh>[0] & { humanAllowed?: Record<string, string> }} [deps]
  * @returns {Finding[]}
@@ -951,21 +951,114 @@ export function identityDrift(deps = {}) {
   return [...undeclaredIdentity(deps), ...humanAccountDeclared(deps)];
 }
 
-/** @param {Parameters<typeof unitsSpendingGh>[0]} deps @returns {Finding[]} */
+/**
+ * EVERY SHIPPED `.service` THAT DECLARES NO `GH_CONFIG_DIR` (#3643), whether or not a `gh` spawn is reachable from it. Reach analysis
+ * answers "does it spend a rate limit TODAY"; it cannot answer "is it one `pnpm run` from doing so", and a unit that spawns nothing
+ * it can see still acts as the person the moment a script it starts grows a `gh` call. `a11ign-corpus-snapshot.service` read clean
+ * on exactly that footing while it acted as the chairman with admin.
+ * @param {Parameters<typeof unitsSpendingGh>[0]} deps @returns {Finding[]}
+ */
 function undeclaredIdentity(deps) {
-  return unitsSpendingGh(deps)
-    .filter((u) => !u.declared)
-    .map(({ unit, via, opaque }) => ({ unit, problem: "NO IDENTITY DECLARED",
-      detail: `${opaque
-        ? `it starts \`${via}\`, which this repository does not ship and cannot read, so whether it `
-          + "spawns `gh` is UNKNOWN rather than no (#1993)"
-        : `it reaches a \`gh\` spawn (via ${via.replace(`${REPO_ROOT}/`, "")})`}`
-        + " and carries no `Environment=GH_CONFIG_DIR=...` line. A systemd unit has no "
-        + "`HERDR_WORKSPACE_ID`, so the `gh` wrapper falls back to `~/.config/gh` -- a person's "
-        + "account -- and the unit spends a human's rate limit until it runs out, then refuses "
-        + `silently (#1974). Add \`Environment=GH_CONFIG_DIR=${workersDirectory(deps)}/gh\` to the unit, or `
-        + `\`${leadsDirectory(deps)}/gh\` where the job needs the write access the workers account lacks `
-        + "(the corpus backup's own comment is the worked example)." }));
+  const spending = new Map(unitsSpendingGh(deps).map((u) => [u.unit, u]));
+  return shippedUnitNames(deps)
+    .filter((unit) => unit.endsWith(".service") && declaredConfigDir(String(shippedUnitText(unit, deps))) === null)
+    .map((unit) => ({ unit, problem: "NO IDENTITY DECLARED",
+      detail: `${undeclaredReach(spending.get(unit))} A systemd unit has no \`HERDR_WORKSPACE_ID\`, so the \`gh\` wrapper `
+        + "falls back to `~/.config/gh` -- a person's account -- and the unit spends a human's rate limit (or acts with "
+        + `a human's admin) and refuses silently when it runs out (#1974). Add \`Environment=GH_CONFIG_DIR=${workersDirectory(deps)}/gh\` `
+        + `to the unit, or \`${leadsDirectory(deps)}/gh\` where the job needs the write access the workers account lacks `
+        + "(the corpus backup's own comment is the worked example), then run `pnpm run host:install`." }));
+}
+
+/**
+ * Why an undeclared unit is a finding, from what `unitsSpendingGh` read of it: a spawn found, a command it could not follow, or
+ * NOTHING -- which is still a finding, because declaring is cheap and "no spawn reached" is a reading at a moment (#3643).
+ * @param {ReturnType<typeof unitsSpendingGh>[number] | undefined} spends @returns {string}
+ */
+function undeclaredReach(spends) {
+  if (spends === undefined) {
+    return "It reaches no `gh` spawn this repository can read, and it carries no `Environment=GH_CONFIG_DIR=...` line anyway.";
+  }
+  const { via, opaque } = spends;
+  return `${opaque
+    ? `It starts \`${via}\`, which this repository does not ship and cannot read, so whether it `
+      + "spawns `gh` is UNKNOWN rather than no (#1993)"
+    : `It reaches a \`gh\` spawn (via ${via.replace(`${REPO_ROOT}/`, "")})`} and carries no \`Environment=GH_CONFIG_DIR=...\` line.`;
+}
+
+/** The problem a login for a person in `~/.config/gh` is reported under (#3643). */
+export const HUMAN_LOGIN_ON_HOST = "HUMAN LOGIN ON THE HOST";
+
+/**
+ * The logins a `gh` `hosts.yml` holds: the active `user:` of each host and the keys under a multi-account `users:` block. A line
+ * scanner and not a YAML parser, because `yaml` is a devDependency and this file runs from the tool's checkout without one.
+ * @param {string} text @returns {Set<string>}
+ */
+function ghLogins(text) {
+  const logins = new Set();
+  let usersIndent = -1;
+  let childIndent = -1;
+  for (const line of text.split("\n")) {
+    const match = /^( *)([^\s#:][^:]*?):\s*(.*?)\s*$/.exec(line);
+    if (!match) continue;
+    const [, pad, key, value] = match;
+    if (pad.length <= usersIndent) usersIndent = -1;
+    if (key === "users" && value === "") {
+      usersIndent = pad.length;
+      childIndent = -1;
+    } else if (usersIndent >= 0) {
+      if (childIndent < 0) childIndent = pad.length;
+      if (pad.length === childIndent) logins.add(key);
+    } else if (key === "user" && value !== "") {
+      logins.add(value.replace(/^(["'])(.*)\1$/, "$2"));
+    }
+  }
+  return logins;
+}
+
+/**
+ * ONE `gh` config directory's logins, in three states that never share a value: `absent` (no `hosts.yml`, which is an answer),
+ * `unreadable` (it is there and could not be read or is not a file, which is NOT "clean"), or the logins read.
+ * @param {string} dir @param {typeof readFileSync} read
+ * @returns {{ state: "absent" } | { state: "unreadable", cause: string } | { state: "read", logins: Set<string> }}
+ */
+function readGhLogins(dir, read) {
+  try {
+    return { state: "read", logins: ghLogins(String(read(join(dir, "hosts.yml"), "utf8"))) };
+  } catch (cause) {
+    const { code, message } = /** @type {NodeJS.ErrnoException} */ (cause);
+    return code === "ENOENT" ? { state: "absent" } : { state: "unreadable", cause: message };
+  }
+}
+
+/**
+ * IS THE PERSON LOGGED IN ON THE AGENTS HOST (#3643)? `~/.config/gh` is where the wrapper's rule 5 sends any shell with no workspace id
+ * and no `GH_CONFIG_DIR`, so a human login there means every plain ssh shell and every undeclared unit acts as them, with their admin.
+ * THE HUMAN IS "A LOGIN THAT IS NOT ONE OF THE TWO BOT ACCOUNTS'", read from `workers/gh` and `leads/gh`, never a literal name, so a
+ * renamed person is still caught. A missing `~/.config/gh` is a pass; an unreadable one is a finding that says it does not know.
+ * @param {{ host?: HostConfig, readGhHosts?: typeof readFileSync }} [deps] @returns {Finding[]}
+ */
+export function humanLoginOnHost(deps = {}) {
+  const { readGhHosts = readFileSync } = deps;
+  const host = deps.host ?? homeHostConfig();
+  const personal = join(host.home, ".config", "gh");
+  const found = readGhLogins(personal, readGhHosts);
+  if (found.state === "absent") return [];
+  const remedy = `Log it out with \`gh auth logout\` (\`GH_CONFIG_DIR\` unset) as that person; \`host:install\` does not touch it. The org's accounts are \`${host.gh.workers}/gh\` and \`${host.gh.leads}/gh\`.`;
+  if (found.state === "unreadable") {
+    return [{ unit: personal, problem: "HOST GH LOGIN UNREADABLE", manualFix: true,
+      detail: `\`${join(personal, "hosts.yml")}\` could not be read (${found.cause}), so whether a person is logged in is UNKNOWN rather than no. ${remedy}` }];
+  }
+  const bots = [host.gh.workers, host.gh.leads].map((dir) => ({ dir, ...readGhLogins(join(dir, "gh"), readGhHosts) }));
+  const botLogins = new Set(bots.flatMap((bot) => (bot.state === "read" ? [...bot.logins] : [])));
+  const humans = [...found.logins].filter((login) => !botLogins.has(login));
+  if (humans.length === 0) return [];
+  const unknown = bots.filter((bot) => bot.state !== "read").map((bot) => `${bot.dir}/gh`);
+  return [{ unit: personal, problem: HUMAN_LOGIN_ON_HOST, manualFix: true,
+    detail: `it is logged in as ${humans.map((l) => `\`${l}\``).join(", ")}, which is not an org account${unknown.length === 0 ? ""
+      : ` (${unknown.join(" and ")} could not be read, so the bot logins are incomplete)`}. The \`gh\` wrapper sends every shell with no `
+      + "`HERDR_WORKSPACE_ID` and no `GH_CONFIG_DIR` here, so each plain ssh shell and each unit that declares none acts as that person "
+      + `with their admin (#3643). ${remedy}` }];
 }
 
 /**
@@ -2235,7 +2328,7 @@ function unclassifiedInLiveTree(deps) {
  * `ExecStart` names -- resolved against the unit's OWN `WorkingDirectory`, a different tree again -- is
  * absent. "Installed and current" was never the same claim as "the program it names exists".
  * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]
- *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0]
+ *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & Parameters<typeof humanLoginOnHost>[0]
  *   & { pnpm?: Parameters<typeof pnpmDrift>[0] }} [deps]
  */
 export function hostUnitDrift(deps = {}) {
@@ -2245,7 +2338,7 @@ export function hostUnitDrift(deps = {}) {
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
-    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
