@@ -1,0 +1,7 @@
+---
+"agent-org": patch
+---
+
+The number of `.mjs` source files the tool has can no longer rise (a11ign/a11ign#3556, toolchain row 4d of #3550). `src/packaging/mjs-source-count.test.ts` pins 209 non-test `.mjs` files (under `src/`, `host/` and `.github/`, `src/packaging/` included where the tool's own repository lists the file, so the project helpers the gate copies in are not counted and a new production `.mjs` there is) and 44 `*.test.mjs`, read at `21eb99c` (210 and 44) less the one file this change converts, and fails when either count rises, naming the files the change added against its base (the merge group's first parent, or the merge-base with `origin/main`) where that base can be read. A drop passes and says the pin can be lowered, so two conversions merged together stay green. The refusal and the README carry the rule: a new source file is `.ts`, unless a shipped command imports it; then raise the pin in the same diff and say why. A touched `.mjs` may convert in the same pull request.
+
+`src/messaging/fake-provider.mjs`, the in-memory provider only tests import, is now `fake-provider.ts` and its 18 importing tests (and `docs/messaging.md`) point at it. The ADR's worked example, `src/messaging/sources/watched.mjs`, is not converted: a `.ts` a shipped command imports cannot load under the host's `node` (measured on `/usr/bin/node` 22.22.1: `ERR_NO_TYPESCRIPT`, and `agent-org messaging:watch` dies on `ERR_UNKNOWN_FILE_EXTENSION`). The same fault is already present in `select-changed-tests`, which imports `lib/source-text.ts`.
