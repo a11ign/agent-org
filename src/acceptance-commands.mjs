@@ -2428,17 +2428,23 @@ export function testFileArgumentsResolve(command) {
   // #419 closed the BACKTICK form of this and the pipe form was never considered. The refusal is right;
   // the assertion about what it checked is the defect -- the same class as `row-reachability` reporting
   // a Region-scoped search as a whole-tree one (#719).
-  const construct = unparseableConstruct(command);
+  // #3596: ASKED OF THE STRIPPED LINE. #3026 declared a leading `cd <dir> &&` legitimate and `tsxTestFileArgs`
+  // strips it, but this asked about the whole line, so the `&&` it had just allowed was the construct it
+  // refused -- on every row written in the shape the engineer brief prescribes. A SECOND `&&` still is one.
+  const construct = unparseableConstruct(stripLeadingCd(command));
   if (construct) return { ok: false, unparseable: construct };
+  // The arguments are relative to the `cd` target, so they are looked up THERE: a file that exists only
+  // relative to this process is not the file the command runs.
+  const base = leadingCdTarget(command) ?? process.cwd();
   const missing = tsxTestFileArgs(command).filter((pattern) => {
     if (/[*?[{]/.test(pattern)) {
       try {
-        return globSync(pattern).length === 0;
+        return globSync(pattern, { cwd: base }).length === 0;
       } catch {
         return true;
       }
     }
-    return !existsSync(pattern);
+    return !existsSync(resolve(base, pattern));
   });
   return missing.length === 0 ? { ok: true } : { ok: false, missing };
 }
