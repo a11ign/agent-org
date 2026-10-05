@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`messaging/selftest.mjs --tick` no longer exits 13 ("Detected unsettled top-level await") when it has work to do, so the check that follows a messaging release reports `PASS`, `RED` or `sent` and not `MESSAGING SELFTEST NOT RUN` (a11ign/a11ign#3701). The entry ended in `process.exitCode = await main(...)`, and `main` -> `tickSelftest` -> `realQueue()` imports `wake.mjs`, which imports `selftest.mjs`: the entry, still waiting on its own `await`, was a module in that cycle, so each waited for the other and Node drained the loop. The entry now sets the exit code in a `then`. Every test called `main` with an injected queue, which skips `realQueue()`, the one call that closes the cycle; `selftest.test.mjs` now runs the entry as a process (an isolated `HOME`, a state file that says a run is already waiting, so nothing is queued) and asserts it does not exit 13, its last stdout line is JSON, and a refused flag still exits 2. What `tickSelftest` decides and writes is unchanged.
