@@ -439,7 +439,7 @@ export function routeWithFallback(order, agents, roster, ineligibleReason) {
 }
 
 /**
- * #3465: A FINISHING ORDER DEFERRED PAST {@link BUSY_SEAT_DEFERRAL_MS} GOES TO A FREE ENGINEER, WHERE ITS CAUSE ALLOWS. PURE; the clock and the roster are inputs.
+ * #3465: A FINISHING ORDER DEFERRED PAST {@link BUSY_SEAT_DEFERRAL_MS} (OR ADDRESSED TO A SEAT THAT HAS ENDED) GOES TO A FREE ENGINEER, WHERE ITS CAUSE ALLOWS. PURE; the clock and the roster are inputs.
  *
  * #3448 bounded the wait and REPORTED it, so an order a busy `product-manager` could not take was told to `ceo`, who re-laned it by hand. Re-laning is safe only for
  * an order any session can carry out, so the CAUSE declares it (`mayRelane` on the order, `pr-orders.mjs`: a ready-flip of a verdict somebody else wrote) and
@@ -451,17 +451,20 @@ export function routeWithFallback(order, agents, roster, ineligibleReason) {
  *
  * @param {{session: string, causeKey: string, prompt: string, mayRelane?: boolean}} order
  * @param {{ deferredSince?: Map<string, number>, now: number, live: {label: string, status: string}[], roster: string[],
- *   ineligibleReason?: (label: string) => string | null }} facts `deferredSince` is {@link readDeferralHistory}'s; absent, nothing is re-laned
+ *   ineligibleReason?: (label: string) => string | null, goneSeats?: ReadonlyMap<string, string> }} facts `deferredSince` is {@link readDeferralHistory}'s; absent, nothing is re-laned
+ *   for age. `goneSeats` (#3568) is the seats this tick found ended: an order declared `mayRelane` for one goes to a free engineer at once
  * @returns {{label: string, order: {prompt: string}} | {refusal: string} | null} `null` when this order is not re-laned: undeclared, not yet over the bound, or not deferred
  */
-export function relaneTarget(order, { deferredSince, now, live, roster, ineligibleReason }) {
+export function relaneTarget(order, { deferredSince, now, live, roster, ineligibleReason, goneSeats }) {
   if (order.mayRelane !== true || order.session === "engineers") return null;
   const since = deferredSince?.get(order.causeKey);
-  if (since === undefined || now - since <= BUSY_SEAT_DEFERRAL_MS) return null;
+  // #3568: A SEAT THAT HAS ENDED HAS NO TURN TO WAIT OUT, so the bound does not apply to it: nothing will ever free it.
+  const ended = goneSeats?.has(order.session) === true;
+  if (!ended && (since === undefined || now - since <= BUSY_SEAT_DEFERRAL_MS)) return null;
   const free = route("engineers", live, withSpareInstances(roster, live), ineligibleReason);
   if ("refusal" in free) return free;
-  const minutes = Math.round((now - since) / 60_000);
-  return { label: free.label, order: { prompt: `RE-LANED TO YOU: "${order.session}" has been busy for ${minutes} minutes (the bound is ${ORDER_STALL_MINUTES}) and this is a finishing act any session can carry out.\n\n${order.prompt}` } };
+  const why = ended ? `"${order.session}" has ended` : `"${order.session}" has been busy for ${Math.round((now - (since ?? now)) / 60_000)} minutes (the bound is ${ORDER_STALL_MINUTES})`;
+  return { label: free.label, order: { prompt: `RE-LANED TO YOU: ${why} and this is a finishing act any session can carry out.\n\n${order.prompt}` } };
 }
 
 /**
@@ -3200,21 +3203,22 @@ function batchedOrder(take, held, now) {
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, queuePath?: string, drop?: typeof dropHandoffs,
  *          now?: number, budget?: number, unavailable?: (label: string) => string | null,
- *          sleep?: (ms: number) => void, contextRoot?: string, checkout?: CheckoutDeps, clock?: OrderClock}} [deps] `clock` is
+ *          sleep?: (ms: number) => void, contextRoot?: string, checkout?: CheckoutDeps, clock?: OrderClock,
+ *          goneSeats?: ReadonlyMap<string, string>}} [deps] `goneSeats` is `deliver`'s (#3568), passed straight through; `clock` is
  *   `deliver`'s last-order record (#3440), passed straight through; `sleep` is `deliver`'s clear settle,
  *   passed straight through (#2546); `contextRoot` is `deliver`'s compact-check transcript root, the same way (#2688);
  *   `checkout` is the seam a live reviewer's re-point reads, the same way (#3031: a handoff now reaches one)
- * @returns {{sent: string[], refused: string[], ids: string[], busied: Set<string>}} `ids` is every
- *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale.
+ * @returns {{sent: string[], refused: string[], settled: string[], goneSeats: Map<string, string>, ids: string[], busied: Set<string>}} `ids` is every
+ *   order a delivery CARRIED, which is what the caller subtracts before calling anything still stale; `settled` and `goneSeats` are `deliver`'s (#3568)
  */
 export function deliverHandoffs(handoffs, agents, roster,
   { run = defaultRun, queuePath, drop = dropHandoffs, now = Date.now(),
-    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot, checkout, clock } = {}) {
+    budget = HANDOFF_BATCH_BYTES, unavailable, sleep, contextRoot, checkout, clock, goneSeats } = {}) {
   const batches = handoffBatches(handoffs, { now, budget, roster });
   /** @type {string[]} */
   const landed = [];
-  const { sent, refused } = deliver(batches, agents, roster,
-    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot, checkout, clock });
+  const { sent, refused, settled, goneSeats: gone } = deliver(batches, agents, roster,
+    { run, record: (key) => landed.push(key), unavailable, sleep, contextRoot, checkout, clock, goneSeats });
   // THE BATCH IS WHAT WAS ACCEPTED; THE IDS ARE WHAT IT COVERED. `record` fires on the causeKey, because
   // that is the seam `deliver` offers, so the ids to retire come back through the batch that carried
   // them -- and a batch nobody accepted retires nothing, which is the assertion this whole queue is for.
@@ -3222,7 +3226,7 @@ export function deliverHandoffs(handoffs, agents, roster,
   const delivered = batches.filter((b) => done.has(b.causeKey));
   const ids = delivered.flatMap((b) => b.ids);
   if (queuePath) drop(queuePath, ids);
-  return { sent, refused, ids, busied: new Set(delivered.map((b) => b.session)) };
+  return { sent, refused, settled, goneSeats: gone, ids, busied: new Set(delivered.map((b) => b.session)) };
 }
 
 /**
@@ -4517,7 +4521,7 @@ export function hostLoadRefusal(reading) {
  * @param {{label: string, status: string}[]} live
  * @param {string[]} roster
  * @param {{run: (args: string[]) => string, spawned: number, ineligibleReason?: (label: string) => string | null,
- *   relane?: {deferredSince: Map<string, number>, now: number},
+ *   relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>,
  *   env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *   claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer, hostLoad?: () => HostLoad} & ReviewerDeps} deps
  *   (`memory`, from {@link ReviewerDeps}, is the memory hold both spawn paths ask -- {@link spawnMemoryGate}; `hostLoad` is the load reading
@@ -4545,7 +4549,7 @@ function targetFor(order, live, roster, deps) {
       : { label: routed.label, order: repointedForReviewer({ session: routed.label, prompt: order.prompt }, deps.checkout) };
   }
   // #3465: A DECLARED FINISHING ORDER OVER THE BOUND TRIES A FREE ENGINEER BEFORE IT IS LEFT TO WAIT; nothing else here is a candidate (`relaneTarget`).
-  const relaned = deps.relane === undefined ? null : relaneTarget(order, { ...deps.relane, live, roster, ineligibleReason: deps.ineligibleReason });
+  const relaned = relaneTarget(order, { deferredSince: undefined, now: Date.now(), ...deps.relane, live, roster, ineligibleReason: deps.ineligibleReason, goneSeats: deps.goneSeats });
   if (relaned !== null) return "label" in relaned ? relaned : { refusal: `${routed.refusal}; not re-laned: ${relaned.refusal}` };
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
   if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
@@ -4797,7 +4801,7 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, hostLoad?: () => HostLoad, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
  *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
- *          relane?: {deferredSince: Map<string, number>, now: number}} & Partial<ReviewerDeps>} [deps]
+ *          relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>} & Partial<ReviewerDeps>} [deps]
  *   `relane` (#3465) is {@link relaneTarget}'s clock and the deferral record: a declared finishing order over the bound goes to a free engineer. Absent, none is re-laned.
  *   `clock` is the standing seats' last-order record and the time ({@link OrderClock}, #3440); absent, no seat's window is kept for
  *   being recent. `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
@@ -4811,21 +4815,28 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
  *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
  *   asks about a standing session's worktree; `codexConfig` reads the reviewer's codex config for a keyed reviewer's trust note (#3264)
- * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[]}}
+ * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[], settled: string[], goneSeats: Map<string, string>}}
+ *   `settled` (#3568) is one line per order addressed to a seat that ended this tick -- DROPPED (derived) or LEFT QUEUED (authored) -- and is not a refusal;
+ *   `goneSeats` is every seat the tick found ended, label to the reason, for the next delivery of the same tick
  *   `outaged` (#2685) is `stuck`'s OWN shape -- capped at `MAX_DELIVERIES`, not retried -- for a causeKey work-gate
  *   marked `outageNow`: several of THIS TICK's own reads were refused together, so several causes reaching the cap
  *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats } = {}) {
   const sent = [];
   const refused = [];
+  /** @type {string[]} */
+  const settled = [];
+  // #3568: A SEAT THAT ENDED -- released earlier in this tick, or refused with `agent_not_found` by herdr -- IS NOT IN `live`, so no order is routed to it and
+  // herdr is not called about it again. Its pool orders go to a free engineer, and what is addressed to it BY NAME is settled by {@link endedSeatLine}.
+  const gone = new Map(goneSeats ?? []);
   /** @type {string[]} */
   const stuck = [];
   /** @type {string[]} */
   const outaged = [];
-  const live = agents.map((a) => ({ ...a }));
+  const live = agents.filter((a) => !gone.has(a.label)).map((a) => ({ ...a }));
   let spawned = 0;
   for (const order of orders) {
     // A CAUSE THAT KEEPS COMING BACK IS NOT A TIMING PROBLEM. Offering it a seventh time would be the
@@ -4837,9 +4848,10 @@ export function deliver(orders, agents, roster,
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, memory, hostLoad, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane });
+      claimable, claimer, memory, hostLoad, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane, goneSeats: gone });
     if ("refusal" in target) {
-      refused.push(`${order.causeKey}: ${target.refusal}`);
+      const left = endedSeatLine(order, gone);
+      if (left === null) refused.push(`${order.causeKey}: ${target.refusal}`); else settled.push(left);
       continue;
     }
     // A SESSION OUT OF ALLOWANCE IS NOT DELIVERED TO (#2256), for the reason a `blocked` one is not: a prompt typed into it
@@ -4864,6 +4876,7 @@ export function deliver(orders, agents, roster,
     const before = contextBefore(order, { run, sleep, contextRoot, clock, target });
     if ("undelivered" in before) {
       refused.push(`${order.causeKey}: ${before.undelivered}`);
+      noteGoneSeat(live, gone, target.label, before.undelivered);
       continue;
     }
     const { action: context, note } = before;
@@ -4871,6 +4884,7 @@ export function deliver(orders, agents, roster,
     const failure = promptTarget(order, target, { run, sleep, launch, context, claimer, env });
     if (failure !== null) {
       refused.push(`${order.causeKey}: ${failure}`);
+      noteGoneSeat(live, gone, target.label, failure);
       continue;
     }
     // Woken agents are working NOW, so a second order in this same tick must not go to the same one. A
@@ -4893,7 +4907,37 @@ export function deliver(orders, agents, roster,
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
       : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}`);
   }
-  return { sent, refused, stuck, outaged };
+  return { sent, refused, stuck, outaged, settled, goneSeats: gone };
+}
+
+/**
+ * #3568: A SEAT HERDR SAYS IS GONE IS LEFT OUT OF EVERY LATER ORDER OF THE TICK. `refusal` is herdr's own words, and only `agent_not_found` ({@link AGENT_ABSENT}) is
+ * "gone": a busy or blocked seat still exists and keeps its place. One call that found the seat missing is the whole cost -- the tick of 2026-10-04T21:49Z asked herdr
+ * about `worker-2702` seven times and every answer was the first one. A seat that DIES BETWEEN the roster read and the prompt still costs that one refusal, and says so.
+ * @param {{label: string, status: string}[]} live mutated: the seat leaves it @param {Map<string, string>} gone mutated: the seat joins it
+ * @param {string} label @param {string} refusal
+ */
+function noteGoneSeat(live, gone, label, refusal) {
+  if (!AGENT_ABSENT.test(refusal)) return;
+  gone.set(label, firstLine(refusal));
+  const at = live.findIndex((a) => a.label === label);
+  if (at >= 0) live.splice(at, 1);
+}
+
+/**
+ * #3568: WHAT BECOMES OF AN ORDER ADDRESSED TO A SEAT THAT ENDED THIS TICK, none of it "nowhere to go" -- or `null` when the order is not about such a seat.
+ * AN AUTHORED ORDER (a queued handoff, which carries `ids`) STAYS IN THE QUEUE: nothing was delivered, so nothing is retired, and the next tick's
+ * {@link settleEndedOrders} re-addresses it to whoever holds what it names or drops it with its prompt kept. A DERIVED CAUSE IS DROPPED, because the gate
+ * derives it again from the row on the next tick and an order written to the ledger now would suppress that for the whole wake window.
+ * @param {{causeKey: string, session: string, ids?: string[]}} order @param {ReadonlyMap<string, string>} gone
+ * @returns {string | null} the line for the tick log
+ */
+function endedSeatLine(order, gone) {
+  const why = gone.get(order.session);
+  if (why === undefined) return null;
+  return order.ids === undefined
+    ? `DROPPED ${order.causeKey}: "${order.session}" ended this tick (${why}); the next tick derives it again from the row.`
+    : `LEFT QUEUED ${order.causeKey}: "${order.session}" ended this tick (${why}); the queue keeps it for the next tick.`;
 }
 
 // --- #2323: A SPAWNED INSTANCE ENDS WHEN ITS ROW DOES, AND EVERY ENDING IS A LEDGER LINE ---
@@ -6078,7 +6122,8 @@ function recordReleaseCycle(request, deps, kept) {
  * running). A stalled release that never confirmed death must not let a later same-session claim adopt a tree still in use.
  *
  * @param {ReleaseRequest} request @param {ReleaseDeps} deps
- * @returns {{ released: boolean, why: string }}
+ * @returns {{ released: boolean, why: string, gone?: boolean }} `gone` (#3568) is true when THIS release closed the holder's workspace: from then on the
+ *   seat is not a place to send an order, and the tick that did it must not send one
  */
 export function performRelease(request, deps) {
   const plan = releasePlan(request, deps);
@@ -6100,7 +6145,7 @@ export function performRelease(request, deps) {
   }
   settleRelease(request, { ...plan, restored: new RegExp(`restored to \`${READY_LABEL}\``).test(ran.output) }, deps);
   recordReleaseCycle(request, deps, plan.keep);
-  return { released: true, why: `#${request.row} (${request.session}, ${request.why}): ${plan.keep
+  return { released: true, gone: closed === "closed", why: `#${request.row} (${request.session}, ${request.why}): ${plan.keep
     ? `worktree KEPT at ${request.worktree}` : "nothing kept"}` };
 }
 
@@ -6109,10 +6154,11 @@ export function performRelease(request, deps) {
  * line on stderr naming what to look at, and the gate emits the order again next tick. Returns one line per release for the tick log.
  *
  * @param {ReleaseRequest[]} requests @param {{label: string, status: string}[]} agents
- * @param {{ ledgerPath: string, host: { worktreesDir: string, primary: string }, now?: number }} where
+ * @param {{ ledgerPath: string, host: { worktreesDir: string, primary: string }, now?: number, goneSeats?: Map<string, string> }} where
+ *   `goneSeats` (#3568) is told every seat whose workspace a release closed, which is how the tick knows not to send it an order
  * @returns {string[]}
  */
-export function performClaimReleases(requests, agents, { ledgerPath, host, now = Date.now() }) {
+export function performClaimReleases(requests, agents, { ledgerPath, host, now = Date.now(), goneSeats }) {
   const lines = [];
   const paths = sparePathsFrom(ledgerPath);
   const keptPath = keptClaimsPath(ledgerPath);
@@ -6134,6 +6180,7 @@ export function performClaimReleases(requests, agents, { ledgerPath, host, now =
           if (kept === null) delete all[row]; else all[row] = kept;
           writeKeptClaims(keptPath, all);
         } });
+      if (result.gone === true) goneSeats?.set(request.session, `its workspace was closed by the release of #${request.row}`);
       lines.push(`${result.released ? "RELEASED" : "NOT RELEASED"} ${result.why}`);
     } catch (err) {
       lines.push(`NOT RELEASED #${request.row}: release FAILED (${firstLine(err)})`);
@@ -6628,16 +6675,19 @@ function escalationMemory(ledgerPath, unavailable) {
  * @template {{ causeKey: string, release?: import("./claim-stall.mjs").ReleaseRequest }} O
  * @param {O[]} orders @param {{label: string, status: string}[]} agents
  * @param {{ ledgerPath: string, hostLayout: { worktreesDir: string, primary: string } }} where
- * @returns {{ orders: O[], failed: string[] }} the orders that remain, and one line per release that did not land
+ * @returns {{ orders: O[], failed: string[], goneSeats: Map<string, string> }} the orders that remain, one line per release that did not land, and the seats
+ *   whose workspace a release closed (#3568): herdr's listing was read BEFORE this, so it still shows them, and an order sent to one is refused `agent_not_found`
  */
 function performReleases(orders, agents, { ledgerPath, hostLayout }) {
   const requests = orders.flatMap((o) => (o.release === undefined ? [] : [o.release]));
-  const lines = performClaimReleases(requests, agents, { ledgerPath, host: hostLayout });
+  /** @type {Map<string, string>} */
+  const goneSeats = new Map();
+  const lines = performClaimReleases(requests, agents, { ledgerPath, host: hostLayout, goneSeats });
   for (const line of lines) process.stdout.write(`${line}\n`);
   // A RELEASE THAT DID NOT LAND IS NOT QUIET: it is retried next tick (the gate emits it again), and the tick says so with the same exit an
   // undelivered order gets, so a release that fails EVERY tick is a repeating line in the journal and an ATTENTION exit, never a silence.
   const failed = lines.filter((line) => line.startsWith("NOT RELEASED")).map((line) => `claim release not done -- ${line.slice("NOT RELEASED ".length)}`);
-  return { orders: orders.filter((o) => o.release === undefined), failed };
+  return { orders: orders.filter((o) => o.release === undefined), failed, goneSeats };
 }
 
 /**
@@ -6779,12 +6829,14 @@ export function panePromptOrdersNow({ ledgerPath, now = Date.now(), run = defaul
  * and the list of orders that had nowhere to go. THE BREAKER'S ALARM: printing `STUCK` and stopping is what let two of `ceo`'s causes go silent for
  * over half an hour with every session idle -- see `escalateStuck`.
  * @param {{ handed: ReturnType<typeof deliverHandoffs>, sent: string[], gateRefused: string[], stuck: string[],
- *   outaged: string[], ledgerPath: string, unavailable: (label: string) => string | null }} outcome
+ *   outaged: string[], ledgerPath: string, unavailable: (label: string) => string | null, settled?: string[] }} outcome
  * @returns {never}
  */
-export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, unavailable }) {
+export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPath, unavailable, settled = [] }) {
   const refused = [...handed.refused, ...gateRefused];
   for (const line of [...handed.sent, ...sent]) process.stdout.write(`WOKE ${line}\n`);
+  // #3568: an order for a seat that ended this tick is said, and is not "nowhere to go": the exit is not touched by it.
+  for (const line of [...(handed.settled ?? []), ...settled]) process.stderr.write(`${line}\n`);
   for (const line of stuck) process.stderr.write(`STUCK ${line}\n`);
   escalateStuck(stuck, undefined, undefined, escalationMemory(ledgerPath, unavailable));
   if (stuck.length > 0) {
@@ -6851,7 +6903,7 @@ function main() {
   // ten-hour backlog most needs saying. It says it, unclassified, because nothing is known about any target.
   const agents = readAgents();
   if (agents === null) exitCannotAsk(gateOrders.length, handoffs);
-  const { orders, failed: releasesNotDone } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
+  const { orders, failed: releasesNotDone, goneSeats: released } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
 
   const waiting = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
   const backlog = handoffBacklog(waiting);
@@ -6863,7 +6915,7 @@ function main() {
   // has not, and will be re-derived unchanged by the next tick if it loses the session to this one.
   const unavailable = memoised(unavailableReason);
   const clock = orderClockIn(join(dirname(ledgerPath), "last-order"));
-  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable, clock });
+  const handed = deliverHandoffs(waiting, agents, roster, { queuePath, unavailable, clock, goneSeats: released });
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
   for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
@@ -6885,13 +6937,15 @@ function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const { sent, refused: gateRefused, stuck, outaged } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
+  // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
+  const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
+    goneSeats: handed.goneSeats,
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
-  finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable });
+  finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

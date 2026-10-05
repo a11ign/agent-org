@@ -1161,6 +1161,7 @@ test("#2470 (4) a stalled release ENDS the spare's workspace, declines the claim
   const r = releaseHost({ world: { dirty: [{ file: "a.mjs", ago: 900 }], unpushed: 2 } });
   const got = performRelease(STALL, r.deps);
   assert.equal(got.released, true, JSON.stringify(got));
+  assert.equal(got.gone, true, "#3568: and it SAYS the workspace is closed, so the tick does not send an order to the seat it just ended");
   const closeAt = r.runs.findIndex((a) => a.includes("close"));
   assert.deepEqual(r.runs[closeAt], ["--session", "org", "workspace", "close", "w0"], "the instance is ended so a fresh one takes the row");
   const decline = r.decline()!;
@@ -1197,6 +1198,7 @@ test("#2470 (6) a claim by a role that is NOT a spare is released and NEVER ende
   const r = releaseHost({ spare: false, agents: [{ label: "worker-capture", status: "working" }], world: { unpushed: 1 }, labels: holdsRow });
   const got = performRelease({ ...STALL, session: "worker-capture" }, r.deps);
   assert.equal(got.released, true);
+  assert.equal(got.gone, false, "#3568: nothing was closed, so the seat is still one an order may be sent to");
   assert.equal(r.runs.some((a) => a.includes("close")), false, "no workspace is closed");
   assert.equal(r.cycles.length, 0, "and no cycle line: it is not an instance's ending");
   assert.deepEqual(r.dropped, []);
