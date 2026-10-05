@@ -84,6 +84,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.mjs" is unchanged.
 import { readAgents, listingIsComplete } from "./herdr-agents.mjs";
+import { persistentRoles, persistentEntries, absentSeats } from "./persistent-seats.mjs";
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.mjs";
 export { readAgents, listingIsComplete };
 
@@ -5383,19 +5384,8 @@ export function drainedRoles(path = SESSIONS_FILE) {
   return live.filter((s) => s.role === "engineer" && s.drain === true).map((s) => s.name);
 }
 
-/**
- * The roles `sessions.json` MARKS `persistent` (#3415), in file order: a seat that is never cleared, whatever its `role`.
- * READ, NOT TYPED, and a ROLE fact like `drain` and `spare` (`_rolesNotProcesses`): it names no pane, pid or workspace.
- * An unreadable roster throws, as {@link drainedRoles} does -- a caller that can fail open ({@link isPersistentRole}'s
- * claim-time reader) says so itself.
- *
- * @param {string | URL} [path] the roster file; a parameter so a test can hand it a fixture
- * @returns {string[]}
- */
-export function persistentRoles(path = SESSIONS_FILE) {
-  const { live } = /** @type {{ live: { name: string, persistent?: boolean }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
-  return live.filter((s) => s.persistent === true).map((s) => s.name);
-}
+/** `persistentRoles` moved to `./persistent-seats.mjs` (#3539), which `host-units.mjs` needs too and cannot reach through this file; imported above and re-exported. */
+export { persistentRoles };
 
 /**
  * Is this address a PERSISTENT seat -- one whose context is kept and compacted, never wiped before an order (#3415)?
@@ -5407,6 +5397,83 @@ export function persistentRoles(path = SESSIONS_FILE) {
  */
 export function isPersistentRole(label, path = SESSIONS_FILE) {
   return persistentRoles(path).includes(label);
+}
+
+/**
+ * THE FLAGS A PERSISTENT SEAT IS STARTED WITH (#3539): the values `ceo` hand-started the `liaison` with on 2026-10-04, and the STARTING
+ * values, not a finding. MODEL AND EFFORT ARE A CHOICE AND NOT A MEASUREMENT -- nobody has run the seat on another tier and recorded it
+ * failing, which is `agent-practices.md`'s bar for raising one. Moving them to the roster entry is a later row's.
+ *
+ * `--dangerously-skip-permissions` and the removed `AskUserQuestion` are the spawned engineer's reasoning ({@link agentArgs}): nobody is at the
+ * terminal, so a seat that stops to ask is a seat that hangs `blocked` and takes no order. THE PROMPT GOES BEFORE THESE FLAGS, never after:
+ * `--disallowedTools` takes a list and would swallow a trailing prompt as another tool name.
+ */
+export const SEAT_START_FLAGS = Object.freeze(["--model", "sonnet", "--effort", "medium", "--dangerously-skip-permissions",
+  "--disallowedTools", "AskUserQuestion"]);
+
+/**
+ * What a seat is told when the organisation starts it: who it is, and the brief to read. Nothing else, because the brief says what the seat
+ * is for and the orders that follow carry the rest through {@link addressed}.
+ * @param {string} name @param {string} brief the roster's `brief`, relative to the checkout the seat starts in
+ */
+export function seatFirstPrompt(name, brief) {
+  return `You are \`${name}\`, an org session in this repository. Use that name wherever a command asks which session you are `
+    + `(\`--session=${name}\`). You are a persistent seat, started by the organisation: read your brief, \`${brief}\`, first. It says what you are `
+    + "for and what you never do.";
+}
+
+/**
+ * Start ONE absent seat: a workspace labelled with its name in the project checkout, the agent from its brief, and herdr read back that the
+ * seat is listed. A start herdr refuses closes the workspace it opened ({@link closedNote}, as {@link openPane} does for its own), because a
+ * labelled workspace with no agent is `unknown` to every tick and would make the seat look present while nothing answers.
+ * @param {(args: string[]) => string} run
+ * @param {{ name: string, brief?: string }} seat
+ * @param {{ env: Record<string, string>, checkout: string }} where
+ * @returns {string} the line the tick prints
+ */
+function startSeat(run, { name, brief }, { env, checkout }) {
+  if (brief === undefined) return `SEAT NOT STARTED ${name}: its roster entry names no brief, and a seat is started from its brief.`;
+  const pane = openPane(run, name, env, checkout);
+  if ("refusal" in pane) return `SEAT NOT STARTED ${name}: ${pane.refusal}`;
+  try {
+    run(["--session", "org", "agent", "start", name, "--kind", "claude", "--pane", pane.pane, "--",
+      seatFirstPrompt(name, brief), ...SEAT_START_FLAGS]);
+  } catch (err) {
+    return `SEAT NOT STARTED ${name}: herdr refused to start it (${herdrReason(err)})${closedNote(run, pane.workspace)}`;
+  }
+  const listed = readAgents(run)?.some((a) => a.label === name) === true;
+  return listed ? `SEAT STARTED ${name} (workspace ${pane.workspace}, in ${checkout}), and herdr lists it.`
+    : `SEAT STARTED ${name} (workspace ${pane.workspace}) but herdr does not list it on read-back: look at the workspace before the next tick, which would start a second.`;
+}
+
+/**
+ * THE TICK'S FIRST STEP FOR A PERSISTENT SEAT (#3539): start every seat the roster marks persistent that herdr does not list. A seat that is
+ * PRESENT, in any status, gets no write at all -- no prompt, no clear, no second workspace -- because a second start is two seats with one name.
+ *
+ * IT STARTS NOTHING WHEN IT CANNOT TELL. An unreadable roster or herdr, and a listing that is not the whole org ({@link listingIsComplete}: a
+ * partial list reads every seat absent, the failure {@link readAgents}'s own header describes), each become a line and no write; the line
+ * repeats on the next tick and `host:check` names the same seat, which is what makes the gate offer it. A seat whose start was refused repeats
+ * the same way, and nothing is left half-open.
+ *
+ * @param {{ run?: (args: string[]) => string, env?: Record<string, string>, checkout?: string, sessionsPath?: string | URL }} [deps]
+ * @returns {string[]} one line per seat acted on or not checked, `[]` when every persistent seat is present
+ */
+export function startAbsentSeats({ run = defaultRun, env = spawnEnvironment(), checkout = HOME_CHECKOUT, sessionsPath = SESSIONS_FILE } = {}) {
+  let seats;
+  try {
+    seats = persistentEntries(sessionsPath);
+  } catch (err) {
+    return [`SEATS NOT CHECKED: the roster could not be read (${herdrReason(err)}), so no persistent seat was looked for.`];
+  }
+  const agents = readAgents(run);
+  if (agents === null) return ["SEATS NOT CHECKED: herdr could not be asked, so no persistent seat was looked for or started."];
+  const absent = new Set(absentSeats(seats.map((s) => s.name), agents));
+  if (absent.size === 0) return [];
+  if (!listingIsComplete(agents)) {
+    return [`SEATS NOT STARTED: ${[...absent].join(", ")} read absent, but herdr's listing does not show the standing panes, so it may be partial; `
+      + "a start now could be a second seat under one name."];
+  }
+  return seats.filter((s) => absent.has(s.name)).map((seat) => startSeat(run, seat, { env, checkout }));
 }
 
 /**
