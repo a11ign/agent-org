@@ -166,9 +166,31 @@ export function holdDecision({ holders, session, steal }) {
     message: `STEALING from ${others.join(", ")} — say why to them` };
 }
 
-/** @param {HeldPr} pr @param {string} session @param {"add"|"remove"} how */
+/**
+ * #3862: A SESSION'S FIRST HOLD ADDS A LABEL THE REPOSITORY DOES NOT HAVE YET. `gh pr edit --add-label` refuses
+ * one (`'hold:worker-x' not found`), so the take died with a Node stack and every new session created its label by
+ * hand. Create it, with the description the hand-made ones carry, and add it ONCE MORE; any other failure, and a
+ * failed create, is rethrown as it always was. The one retry is deliberate: a second `not found` is a fault, not a
+ * label still to be made.
+ *
+ * @param {HeldPr} pr @param {string} session @param {"add"|"remove"} how
+ */
 function writeLabel(pr, session, how) {
-  writeRawLabel(pr, `${HOLD_PREFIX}${session}`, how);
+  const label = `${HOLD_PREFIX}${session}`;
+  try {
+    writeRawLabel(pr, label, how);
+  } catch (error) {
+    if (how !== "add" || !isLabelNotFound(error, label)) throw error;
+    gh(["label", "create", label, "--repo", pr.repo, "--force",
+      "--description", `This PR is HELD by ${session} and must not merge.`]);
+    writeRawLabel(pr, label, how);
+  }
+}
+
+/** @param {unknown} error @param {string} label @returns {boolean} whether `gh` said THIS label does not exist */
+function isLabelNotFound(error, label) {
+  const stderr = /** @type {{stderr?: unknown}} */ (error)?.stderr;
+  return typeof stderr === "string" && stderr.includes(`'${label}' not found`);
 }
 
 /** @param {HeldPr} pr @param {string} label @param {"add"|"remove"} how */
