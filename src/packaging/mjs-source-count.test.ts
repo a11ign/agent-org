@@ -49,7 +49,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 218 to 219 (a11ign/a11ign#3512): `src/trace/swimlane.mjs` is a NEW source file that a shipped command imports (`trace.mjs`, `trace -- <row> --html`), so it cannot be `.ts`.
 // 219 to 220 (a11ign/a11ign#3515): `src/trace/publish.mjs` is a NEW source file that a shipped unit runs (`trace-publish.service`, `/usr/bin/node src/trace/publish.mjs`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 220 to 221 (a11ign/a11ign#3540): `src/messaging/selftest.mjs` is a NEW source file that a shipped command imports (`messaging:selftest` in `commands.mjs`, and the work tick's `--tick` call, both run under plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
-const SOURCE_MJS_PIN = 221;
+// 221 to 222 (a11ign/a11ign#3883): `src/claim-label-strip.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build, and `close-rows-for-merged-pr.mjs`), so it cannot be `.ts` (node on the host has no TypeScript). It is the leaf that lets the gate strip a closed row's claim labels without importing the close path (#2174). Its tests are in `closed-row-ends-instance.test.ts`, so TEST_MJS_PIN stays 52.
+const SOURCE_MJS_PIN = 222;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
