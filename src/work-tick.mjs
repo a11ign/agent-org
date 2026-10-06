@@ -343,7 +343,31 @@ function finish(code, run) {
 
 /** The one GitHub object the last completion lives in (a11ign/a11ign#3880): a variable of the project's tracker repository (the declaration's first), because it is ONE value overwritten in place, where a comment stream grows. */
 export const HEARTBEAT_VARIABLE = "GATE_LAST_TICK";
+/**
+ * ITS SIBLING FOR A READER WITH NO TOKEN (a11ign/a11ign#3896): the control plane's token has no scopes, and GitHub answers it `403` for an Actions variable
+ * while it reads every public object of the repository. So the tick also EDITS one standing comment of the tracker repository, whose `updated_at` is the last
+ * completion on GitHub's own clock. It is comment `HEARTBEAT_COMMENT_ID` on a11ign/a11ign#3880, a CLOSED issue, so the gate never offers it as a row (an open
+ * unlabelled issue is a stall, #3212). Created by hand once, as the variable was, by `a11ign-ai-workers`: only a comment's author (or an admin) may edit it, and that
+ * is the identity the work-tick unit's `GH_CONFIG_DIR` runs as. The tick only edits: a deleted comment fails loudly and is never recreated in a loop.
+ */
+export const HEARTBEAT_COMMENT_ID = 6026375754;
+/** The first line of the comment body, so a reader (or a person) can tell the object from a stray comment. */
+export const HEARTBEAT_COMMENT_MARKER = "<!-- gate-heartbeat -->";
 const HEARTBEAT_TIMEOUT_MS = 30_000;
+
+/**
+ * The comment's body for one completion. It MUST differ on every tick: MEASURED 2026-10-06 on this very comment, an edit that changes nothing leaves
+ * `updated_at` where it was, so a body that repeated would read as a gate that stopped. The epoch milliseconds are unique per completion; the ISO stamp is for a person.
+ * @param {number} at epoch milliseconds @returns {string}
+ */
+export function heartbeatCommentBody(at) {
+  return `${HEARTBEAT_COMMENT_MARKER}\n${at} ${new Date(at).toISOString()}\n`;
+}
+
+/** @param {unknown} err @returns {string} what `gh` said, else the error's own message */
+function whatGhSaid(err) {
+  return String(/** @type {any} */ (err)?.stderr ?? "").trim() || String(/** @type {any} */ (err)?.message ?? err);
+}
 
 /**
  * THE COMPLETION, WHERE SOMETHING OFF THIS HOST CAN READ IT (#3851, incident #3846 1c). `work-tick-completion.json` is a file on a machine that may be
@@ -351,19 +375,29 @@ const HEARTBEAT_TIMEOUT_MS = 30_000;
  * AFTER the file, and ONLY IF the file was written (a record that failed leaves the reader off this host with the stale value the file's reader has too), because the file is what `incident:gate-crash` reads on this host, and only from `finish`, so it means what the file means: a tick
  * that reached the end, not a tick that started.
  *
- * A write that fails is said on stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome
- * that counts. The variable must already exist (`gh api -X POST repos/<repo>/actions/variables`); a missing one fails here and says so.
+ * Two writes, each failing alone: the variable (the host's own readers) and the standing comment (the reader with no token, #3896). A write that fails is said on
+ * stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome that counts. The variable must already
+ * exist (`gh api -X POST repos/<repo>/actions/variables`) and so must the comment; a missing one fails here and says so.
  * @param {number} at epoch milliseconds @param {(file: string, args: string[], options: object) => unknown} [run] @returns {void}
  */
 export function writeHeartbeat(at, run = execFileSync) {
   let repo = "the tracker";
   try {
     repo = homeProjectDeclaration().tracker[0].repo;
-    run("gh", ["api", "-X", "PATCH", `repos/${repo}/actions/variables/${HEARTBEAT_VARIABLE}`, "-f", `value=${at}`],
-      { stdio: ["ignore", "ignore", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS });
   } catch (err) {
-    const said = String(/** @type {any} */ (err)?.stderr ?? "").trim() || String(/** @type {any} */ (err)?.message ?? err);
-    process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${said}. A reader off this host will see the previous value.\n`);
+    process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
+    return;
+  }
+  const options = { stdio: ["ignore", "ignore", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS };
+  try {
+    run("gh", ["api", "-X", "PATCH", `repos/${repo}/actions/variables/${HEARTBEAT_VARIABLE}`, "-f", `value=${at}`], options);
+  } catch (err) {
+    process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
+  }
+  try {
+    run("gh", ["api", "-X", "PATCH", `repos/${repo}/issues/comments/${HEARTBEAT_COMMENT_ID}`, "-f", `body=${heartbeatCommentBody(at)}`], options);
+  } catch (err) {
+    process.stderr.write(`HEARTBEAT COMMENT NOT WRITTEN to ${repo} comment ${HEARTBEAT_COMMENT_ID}: ${whatGhSaid(err)}. A reader with no token will see the previous value.\n`);
   }
 }
 
