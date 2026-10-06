@@ -7,19 +7,23 @@
 // queue entry would be read back by `readHandoffs` as an order still waiting and delivered again.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promptOrQueue as settlingPromptOrQueue, recordDirectDelivery, directRecordPath, DIRECT_RECORD_FILE, STANCE, EXIT,
   PROMPT_REFUSED_PREFIX } from "../prompt-session.mjs";
-import { handoffQueuePath, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.mjs";
+import { COMPACT_THRESHOLD_TOKENS, handoffQueuePath, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.mjs";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** #2771: a delivery to a `reviewer-<n>` re-points that reviewer's tree first, and the default seams are REAL git on the host's
  * `~/reviews` and the primary's refs. A test that is not about the checkout injects this instead: every git call answers one head. */
 const FAKE_HEAD = "d".repeat(40);
 const FAKE_CHECKOUT = { git: () => `${FAKE_HEAD}\n`, exists: () => true, link: () => null, root: "/fake-reviews", repoRoot: "/fake-primary" };
-const promptOrQueue: typeof settlingPromptOrQueue = (order) => settlingPromptOrQueue({ checkout: FAKE_CHECKOUT, ...order, sleep: noSettle });
+/** A `reviewer-<n>` is a per-row instance, so its order reads its own transcripts to decide `/compact` (#2688); the default root is the host's real
+ * `~/.claude/projects` (3.5 GB on this one, seconds per delivery). An empty root answers "cannot tell", which is never a compaction. */
+const NO_TRANSCRIPTS = join(tmpdir(), "a11y-3549-no-transcripts");
+const promptOrQueue: typeof settlingPromptOrQueue = (order) =>
+  settlingPromptOrQueue({ checkout: FAKE_CHECKOUT, ...order, sleep: noSettle, contextRoot: NO_TRANSCRIPTS });
 
 
 const agents = [{ label: "reviewer-2376", status: "idle" }, { label: "reviewer-2377", status: "working" },
@@ -100,6 +104,34 @@ test("the prompt is cut at 300 characters", () => {
       path: queue, stance: STANCE.UNDECLARED, sender: "a" }));
     assert.equal(JSON.parse(lines(direct)[0]).prompt.length, 300);
   });
+});
+
+test("#3549 THE WRAPPER DOES NOT READ THE HOST'S TRANSCRIPTS: an over-threshold transcript under $HOME is not acted on, and IS when the root is the default", () => {
+  const home = mkdtempSync(join(tmpdir(), "prompt-session-home-"));
+  const realHome = process.env.HOME;
+  try {
+    mkdirSync(join(home, ".claude", "projects", "p"), { recursive: true });
+    writeFileSync(join(home, ".claude", "projects", "p", "t.jsonl"), `${[
+      JSON.stringify({ type: "user", message: { role: "user", content: "You are `reviewer-2376`, an org session in this repository." } }),
+      JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5",
+        usage: { input_tokens: 5, cache_read_input_tokens: COMPACT_THRESHOLD_TOKENS + 1, cache_creation_input_tokens: 0, output_tokens: 12 } } }),
+    ].join("\n")}\n`);
+    process.env.HOME = home;
+    const compacted = (send: typeof settlingPromptOrQueue, extra: object) => {
+      const calls: string[][] = [];
+      inLedgerDir((queue) => {
+        quietly(() => send({ run: (args) => { calls.push(args); return ""; }, label: "reviewer-2376", text: ORDER, agents, path: queue,
+          stance: STANCE.UNDECLARED, sender: "worker-tooling", checkout: FAKE_CHECKOUT, sleep: noSettle, ...extra }));
+      });
+      return calls.some((call) => call.includes("/compact"));
+    };
+    assert.equal(compacted(promptOrQueue, {}), false, "the wrapper's empty root: nothing to compact");
+    assert.equal(compacted(settlingPromptOrQueue, {}), true,
+      "POSITIVE CONTROL: the default root WOULD have read it, so the line above is the wrapper's doing and not an unreadable fixture");
+  } finally {
+    process.env.HOME = realHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("a direct delivery leaves the QUEUE byte-identical, so the gate cannot deliver it again", () => {
