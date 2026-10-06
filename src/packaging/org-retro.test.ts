@@ -13,8 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildReport, renderReport, retrospectiveDue, retrospectiveOrder, retrospectiveKey, retrospectiveTick, ledgerEntries, ledgerStats,
   idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
@@ -25,6 +24,7 @@ import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../h
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.mjs";
 import { PROFILES } from "../worker-profile.mjs";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T00:00:00Z");
@@ -427,7 +427,7 @@ test("verdictFor is decided by the declared direction alone: the same pair reads
 });
 
 test("no previous line, or a readings file that cannot be read, prints `no baseline` / `unknown`: never `same`, never a delta against 0", () => {
-  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const dir = tmpDir("org-retro-");
   const unreadable = [
     ["an absent file is a first day", readReadings(join(dir, "absent.jsonl")), "no baseline"],
     ["an empty file is a first day", parseReadings(""), "no baseline"],
@@ -455,7 +455,7 @@ test("the baseline is the latest line BEFORE today, however old, and a corrupt l
 });
 
 test("delivering the offer appends exactly one line per UTC date, and a manual run appends none", () => {
-  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const dir = tmpDir("org-retro-");
   const path = join(dir, READINGS_FILE);
   const read = ({ now, stateDir }: { now: number; stateDir: string }) => ({ ...fixtureRead(), readings: readReadings(join(stateDir, READINGS_FILE)), now });
   const tickAt = (now: number) => retrospectiveTick({ now, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "" });
@@ -474,13 +474,13 @@ test("delivering the offer appends exactly one line per UTC date, and a manual r
   assert.equal(readReadings(path).entries.length, 2);
   assert.equal(recordReading({ stateDir: dir, date: "2026-10-03", numbers: {} }), "already recorded");
   // A file the disk would not read is left alone, never appended to blind: here the "file" is a directory, which reads as EISDIR and not as a first day.
-  const blocked = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const blocked = tmpDir("org-retro-");
   mkdirSync(join(blocked, READINGS_FILE));
   assert.equal(recordReading({ stateDir: blocked, date: "2026-10-09", numbers: {} }), "not recorded");
 });
 
 test("a readings file with no line that parses is left as it is, not appended to (#2985)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "org-retro-"));
+  const dir = tmpDir("org-retro-");
   const path = join(dir, READINGS_FILE);
   writeFileSync(path, "not json\n");
   assert.equal(recordReading({ stateDir: dir, date: "2026-10-09", numbers: { prsMerged: 1 } }), "not recorded");
@@ -500,7 +500,7 @@ test("a failing write does not stop the offer, and says so", () => {
 });
 
 test("a manual run of the CLI reads the previous line and writes nothing", () => {
-  const home = mkdtempSync(join(tmpdir(), "org-retro-home-"));
+  const home = tmpDir("org-retro-home-");
   const stateDir = join(home, ".cache", "a11ign");
   mkdirSync(stateDir, { recursive: true });
   const path = join(stateDir, READINGS_FILE);

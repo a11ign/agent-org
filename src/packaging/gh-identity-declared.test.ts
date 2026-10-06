@@ -53,6 +53,7 @@ import { localImports, stripComments } from "../lib/local-import-closure.mjs";
 import { SPAWNS_GH } from "../acceptance-commands.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
+import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const REPO = HOME_CHECKOUT;
 
@@ -464,7 +465,7 @@ test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from th
 
 const WRAPPER_FILE = (() => {
   const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
-  const rendered = join(mkdtempSync(join(tmpdir(), "gh-refuse-render-")), "gh");
+  const rendered = join(tmpDirForFile("gh-refuse-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;
 })();

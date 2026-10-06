@@ -18,6 +18,7 @@ import { parsePlaceholders, readPlaceholders } from "./placeholders.mjs";
 import { defaultLedgerPath } from "./state.mjs";
 import { WATCHED, runWatch } from "./watch.mjs";
 import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
 // between ticks, answering as the placeholder vocabulary's `Readers`, and a ledger that already holds the chairman's message.
@@ -261,7 +262,7 @@ describe("chairman:watch as a command", () => {
 
   /** @returns {{ home: string, root: string }} a project and a home of their own, the ledger holding the chairman's message */
   function place() {
-    const base = mkdtempSync(join(tmpdir(), "watch-cli-"));
+    const base = tmpDir("watch-cli-");
     const [root, home] = [join(base, "root"), join(base, "home")];
     mkdirSync(join(root, ".agent-org"), { recursive: true });
     createLedger({ path: defaultLedgerPath(home), now: clock }).append({ direction: "in", origin: "converse", messageRef: MESSAGE, updateId: 1 });

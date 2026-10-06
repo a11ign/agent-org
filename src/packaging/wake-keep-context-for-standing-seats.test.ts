@@ -11,18 +11,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { deliver, deliverHandoffs, clearBeforeOrder, prepareContext, orderClockIn, keepsContext, CONTEXT_ACTION,
   KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
 import { clearThenPrompt, promptWithContext, promptOrQueue, queueOrLose } from "../prompt-session.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const noSettle = () => {};
 const MINUTE = 60_000;
 const NOW = 20 * 60 * 60 * 1000;
-const scratch = mkdtempSync(join(tmpdir(), "keep-3440-"));
-process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
+const scratch = tmpDirForFile("keep-3440-");
 
 /** A transcript root holding no transcript at all: "cannot tell". */
 const NO_TRANSCRIPTS = join(scratch, "no-transcripts");
@@ -189,7 +188,7 @@ function captured(fn: () => unknown) {
 
 test("#3440 (7) prompt:session tells its sender what THIS delivery did: kept, compacted or cleared", () => {
   const say = (s: Scenario) => {
-    const dir = mkdtempSync(join(scratch, "ps-"));
+    const dir = tmpDir("ps-", scratch);
     return captured(() => promptOrQueue({ run: recorder().run, label: LEAD, text: "x", agents: agents([LEAD]), path: join(dir, "queue"),
       stance: "decision" as never, sender: "worker-1", sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) })).out;
   };
@@ -199,7 +198,7 @@ test("#3440 (7) prompt:session tells its sender what THIS delivery did: kept, co
 });
 
 test("#3440 (7) the queued-order refusal no longer says a standing seat is always cleared first", () => {
-  const dir = mkdtempSync(join(scratch, "q-"));
+  const dir = tmpDir("q-", scratch);
   const { err } = captured(() => queueOrLose({ label: LEAD, text: "x", why: "it is busy", agents: [{ label: LEAD, status: "working" }],
     path: join(dir, "queue"), stance: "undeclared" as never }));
   assert.match(err, /QUEUED/, "it queued, so the text under test was printed");

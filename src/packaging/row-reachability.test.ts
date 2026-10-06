@@ -36,6 +36,7 @@ import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { ABSENT_FIXTURE_SYMBOLS } from "../lib/fixture-symbols.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const examined = { paths: 3, symbols: 2, region: 3 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
@@ -454,7 +455,7 @@ const EXECUTABLE = 0o755;
 
 /** A `PATH` whose first entry holds a `gh` that records being run and fails, as the refusing shim does. */
 function pathWithRecordingGh(): string {
-  const dir = mkdtempSync(join(tmpdir(), "a11y-1566-"));
+  const dir = tmpDir("a11y-1566-");
   writeFileSync(join(dir, "gh"), `#!/bin/sh\necho "$*" >> ${GH_MARKER}\nexit 97\n`);
   chmodSync(join(dir, "gh"), EXECUTABLE);
   return `${dir}:${process.env.PATH ?? ""}`;

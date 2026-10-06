@@ -2,14 +2,14 @@
 // store and a scratch state. Nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub.
 // no-token: gh -- no test here calls `gh`; `ingestTranscripts` is the transcript half of a run and never reaches GitHub
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.mjs";
 import { openStore, QUIET_MS, readStore } from "./store.mjs";
 import { ingestTranscripts, render } from "./trace.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -37,7 +37,7 @@ const WORKER = [wake("2026-10-04T10:00:00.000Z", "worker-9001", "row 9001 has be
 
 /** A scratch world: a projects directory, a store and (beside it) a state, all under one temporary directory. */
 function world() {
-  const dir = mkdtempSync(join(tmpdir(), "ingest-state-"));
+  const dir = tmpDir("ingest-state-");
   const root = join(dir, "projects");
   mkdirSync(join(root, "-proj"), { recursive: true });
   const storePath = join(dir, "events.ndjson");

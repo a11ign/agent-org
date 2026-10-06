@@ -4,12 +4,12 @@
 // from #3508's own timeline for the claim-record comment. What is CONSTRUCTED, because #3406 has none of it: the `pr:hold` pair, the force-push, the second head and its
 // run still going, the release comment, the `answer:` pair, and the ejection. They are marked `constructed`.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { countingGh, eventsOfCheckRuns, eventsOfTimeline, GITHUB_KINDS, readGithubEvents } from "./github-events.mjs";
 import { appendEvents, eventsForRow, readStore } from "./store.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const REPO = "a11ign/a11ign";
 const HEAD = "0fde4737ea065e2d794cfab07b39373e715fede4";
@@ -147,7 +147,7 @@ test("ID: a `reviewed` event at another head is another record; the same read tw
 });
 
 test("STORE: ingesting twice adds nothing; a run seen going and later complete is two records, and nothing is rewritten", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "trace-gh-")), "events.ndjson");
+  const path = join(tmpDir("trace-gh-"), "events.ndjson");
   const first = appendEvents(path, read());
   assert.ok(first.added >= 20);
   assert.deepEqual(appendEvents(path, read()), { added: 0, superseded: 0, skipped: first.added });

@@ -29,9 +29,10 @@ import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { carryBranch, branchCheckedOutLocally } from "../carry-branch.mjs";
 import { declareTreeWideGuard } from "../lib/tree-wide-guard.mjs";
 import { REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2827: `carryBranch` now writes #2782's removal log, and a test must not write the host's real record.
-process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "carry-removal-log-")), "worktree-removals");
+process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("carry-removal-log-"), "worktree-removals");
 
 // #716/#704: this file's own population is the whole tracked tree, not one file -- declared here
 // rather than inferred from its source, per ceo's ruling (2026-09-09) that the tree-wide-guard

@@ -6,8 +6,7 @@
 // read (a reader that drops the field reads null for the call whose response carried 3); an unkeyed call is asserted to EXIST before it is asserted to have no row (`find` asserts it), so an ingest that dropped it fails
 // there and not by passing an emptiness check.
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger, topCallers } from "../gh-ledger.mjs";
@@ -15,6 +14,7 @@ import { emptyState } from "./ingest-state.mjs";
 import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyed, summarize } from "./gh-calls.mjs";
 import { appendToStore, openStore } from "./store.mjs";
 import type { TraceEvent } from "./store.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 const WORKERS = "a11ign-ai-workers";
@@ -105,7 +105,7 @@ test("KEYED: the turn that ISSUED a call is not its next turn: the call is keyed
 
 /** A host: a scratch store and a ledger each of two accounts, written the way `host/gh` appends. */
 function host(): { root: string, ledgers: Record<"workers" | "leads" | "absent", string>, store: ReturnType<typeof openStore>, state: { current: ReturnType<typeof emptyState> }, run: (now: number, files?: string[]) => ReturnType<typeof ingestGhCalls>["report"] } {
-  const root = mkdtempSync(join(tmpdir(), "gh-calls-3516-"));
+  const root = tmpDir("gh-calls-3516-");
   mkdirSync(join(root, "workers"));
   mkdirSync(join(root, "leads"));
   const ledgers = { workers: join(root, "workers", "gh-calls.tsv"), leads: join(root, "leads", "gh-calls.tsv"), absent: join(root, "nobody", "gh-calls.tsv") };

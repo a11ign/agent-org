@@ -12,11 +12,11 @@
 // over the network is exactly the kind of check this repo's own rules say does not belong in a unit test.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runDrill } from "../reconstitution-drill.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THE TOOL SERVES, not the working directory: the roster, the first messages and the memory index live in the project's
 // `.agent-org/roles/`, and the tool's own checkout holds none. In the project's layout the two are the same directory.
@@ -62,7 +62,7 @@ test("a roster agent with no role file is reported as a gap, not silently droppe
  * checkout should not have a real agent's file deleted even temporarily mid-test-run.
  */
 test("MUTATION: a missing README, a missing message block, and a missing memory index are each caught", () => {
-  const dir = mkdtempSync(join(tmpdir(), "reconstitution-drill-mutation-"));
+  const dir = tmpDir("reconstitution-drill-mutation-");
 
   // 1. No README at all -- the drill must refuse cleanly, not throw.
   const emptyReport = runDrill(dir);
@@ -107,7 +107,7 @@ test("MUTATION: a missing README, a missing message block, and a missing memory 
 });
 
 test("the worker template block substitutes <name> per agent, not a literal placeholder", () => {
-  const dir = mkdtempSync(join(tmpdir(), "reconstitution-drill-worker-template-"));
+  const dir = tmpDir("reconstitution-drill-worker-template-");
   mkdirSync(join(dir, ".agent-org", "roles"), { recursive: true });
   writeFileSync(join(dir, ".agent-org", "roles", "README.md"),
     "# If this machine is lost\n\n## The roster\n\n"

@@ -9,11 +9,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { fileURLToPath } from "node:url";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // Resolved by path and NOT imported from `host-units.mjs`: that import would charge this file `History: full` (work-gate.test.ts, #2174). The tool-form test is in host-units.test.ts for that reason.
 const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
@@ -43,7 +43,7 @@ type Setup = {
 
 /** Runs the real script against fake `gh` and `agent-org`. `reports[n]` is what pass n+1 prints (the last one repeats). */
 function run({ declaration = DECLARED, reports, remaining = ["4000"], ghFails = false, traceFails = false, env = {}, resource = "core" }: Setup): Run {
-  const dir = mkdtempSync(join(tmpdir(), "trace-weekly-"));
+  const dir = tmpDir("trace-weekly-");
   const bin = join(dir, "bin");
   mkdirSync(bin);
   // The script calls a bare `node`, and the PATH below names only system directories: a runner whose node is in a toolcache directory (CI's is) would

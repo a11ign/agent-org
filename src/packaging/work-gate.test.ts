@@ -73,6 +73,7 @@ import { primaryLaunchRefusal, launchCheckoutOf }
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
 import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
@@ -4826,7 +4827,7 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   // an empty or truncated one would make the import below pass by having nothing to resolve.
   assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-work-gate-no-modules-")));
+  const root = realpathSync(tmpDir("a11y-work-gate-no-modules-"));
   // THE COPY LIST BEYOND THE STATIC CLOSURE IS GENERATED, never hand-listed (#3232): the project's `.agent-org/` and the tool's `host/` go in WHOLE,
   // so a new import edge that reads one more file of either (`roles.dir`'s briefs, a unit template) cannot fail this test for want of a list entry.
   // `copied-tool-fixture.ts` then writes the host file the copy is told to use over the one copied here.
@@ -5632,7 +5633,7 @@ test("#2609: a quiet tracker pays nothing -- no closed row wearing an answer: la
 });
 
 test("#2609: `endedSessionLabels` reads a teardown's record, and a label that STARTED AGAIN is not ended", () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "a11y-ended-labels-")));
+  const dir = realpathSync(tmpDir("a11y-ended-labels-"));
   const at = (ms: number) => new Date(ms).toISOString();
   writeFileSync(join(dir, "spare-cycles"), [JSON.stringify({ role: "worker-8", at: ENDED_AT }), "not json",
     JSON.stringify({ role: "worker-9", at: ENDED_AT })].join("\n") + "\n");

@@ -14,10 +14,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 import { EXIT_NOTHING_SENT, main } from "../pr-open.mjs";
 import { decide, performActions } from "../work-gate.mjs";
 import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.mjs";
@@ -54,7 +54,7 @@ const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, 
 
 /** A project checkout with a commit, and the author's linked worktree on a branch of its own. `declares`: whether `package.json` has a `verify` script. */
 function fixture({ declares = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "verify-stamp-test-"));
+  const root = tmpDir("verify-stamp-test-");
   const checkout = join(root, "project");
   execFileSync("git", ["init", "-q", "-b", "main", checkout], { env: sandboxGitEnv() });
   git(checkout, "config", "user.email", "t@example.invalid");

@@ -12,8 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { absentSeats } from "../herdr-agents.mjs";
@@ -21,9 +20,9 @@ import { persistentRoles, roleBriefPath } from "../project-roles.mjs";
 import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.mjs";
 import { persistentSeatDrift, persistentSeatNotes, driftReport } from "../host-units.mjs";
 import { RECIPIENT } from "../messaging/converse.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
-const scratch = mkdtempSync(join(tmpdir(), "seat-3539-"));
-process.on("exit", () => rmSync(scratch, { recursive: true, force: true }));
+const scratch = tmpDirForFile("seat-3539-");
 
 const BRIEF = ".agent-org/roles/liaison.md";
 const CHECKOUT = "/srv/project-checkout";
@@ -134,7 +133,7 @@ const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/host-units/", import.meta.
  * fails every call when `broken`.
  */
 function seatHost(labels: string[], broken = false) {
-  const root = mkdtempSync(join(scratch, "project-"));
+  const root = tmpDir("project-", scratch);
   const declaration = join(root, ".agent-org");
   mkdirSync(join(declaration, "roles"), { recursive: true });
   cpSync(join(FIXTURE_DIR, "units"), join(declaration, "units"), { recursive: true });
@@ -144,7 +143,7 @@ function seatHost(labels: string[], broken = false) {
   cpSync(ROSTER, join(declaration, "roles/sessions.json"));
   mkdirSync(join(root, "packages"));
   symlinkSync(TOOL_ROOT, join(root, "packages/agent-org"), "dir");
-  const home = mkdtempSync(join(scratch, "home-"));
+  const home = tmpDir("home-", scratch);
   const bin = join(home, "stub-bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "systemctl"), '#!/bin/sh\ncase "$*" in *is-enabled*) echo enabled;; *is-active*) echo active;; *) echo LANG=C;; esac\n', { mode: 0o755 });

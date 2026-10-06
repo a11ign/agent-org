@@ -34,14 +34,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ATTRIBUTION_CONTEXT_PREFIX, PARITY, PER_PR_REVIEWERS_FROM, RETIRED_REVIEWERS, attributionContext, attributedSession, parityOfReview,
   parityOwner, parityViolationsOnCommit, reviewingSession,
 } from "../review-attribution.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
@@ -219,7 +219,7 @@ function fakeGh(bin: string, tsvLine: string, { failStatus = false } = {}) {
 
 /** `cwd` is a path under the run's own temp dir, made if absent; the default is a directory no reviewer tree could be. */
 function runDoor(session: string | null, tsvLine: string, options: { failStatus?: boolean; cwd?: string } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "pr-review-verdict-"));
+  const dir = tmpDir("pr-review-verdict-");
   const cwd = join(dir, options.cwd ?? "elsewhere");
   mkdirSync(cwd, { recursive: true });
   const bin = join(dir, "bin");
@@ -283,7 +283,7 @@ test("#3030 (1): the attribution read-back proves the newest review is ours by e
 });
 
 test("#3030 (1): the first line is STILL validated as the verdict opener, and nothing is posted when it is not", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pr-review-verdict-"));
+  const dir = tmpDir("pr-review-verdict-");
   const bin = join(dir, "bin");
   const log = fakeGh(bin, TSV);
   const file = join(dir, "verdict.md");

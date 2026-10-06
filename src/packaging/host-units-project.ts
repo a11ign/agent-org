@@ -12,10 +12,10 @@
  * IMPORT THIS FIRST. ES modules evaluate in import order, so the environment variable is set before `host-units.mjs` (and `project-config.mjs`
  * beneath it) are evaluated; it imports nothing from the tool for the same reason.
  */
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 /** This checkout: the tool is its own tree, whatever the project it serves looks like. */
 export const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -26,7 +26,7 @@ const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/host-units/", import.meta.
 const CHECKOUT_PLACEHOLDER = "@@PROJECT@@";
 
 function buildProject(): string {
-  const root = mkdtempSync(join(tmpdir(), "host-units-project-"));
+  const root = tmpDirForFile("host-units-project-");
   const declaration = join(root, ".agent-org");
   mkdirSync(declaration);
   cpSync(join(FIXTURE_DIR, "units"), join(declaration, "units"), { recursive: true });
@@ -45,4 +45,3 @@ function buildProject(): string {
 /** The fixture project's root, and the process's `$AGENT_ORG_HOST` for as long as this file runs. */
 export const PROJECT_ROOT = buildProject();
 process.env.AGENT_ORG_HOST = join(PROJECT_ROOT, ".agent-org/host.json");
-process.on("exit", () => rmSync(PROJECT_ROOT, { recursive: true, force: true }));

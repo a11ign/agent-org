@@ -34,9 +34,10 @@ import { parityOwner } from "./review-attribution.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
+import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 // #2827: `removeReviewCheckout` now writes #2782's removal log, and a test must not write the host's real record.
-process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "review-removal-log-")), "worktree-removals");
+process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("review-removal-log-"), "worktree-removals");
 
 /**
  * The door's spelling as the INSTALLER writes it (`${A11Y_REVIEWER_BIN:-$HOME/reviewer/bin}/pr-review-verdict`), read from the script and not
