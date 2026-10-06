@@ -1296,6 +1296,9 @@ function installIntoTree({ fs, path, repoRoot, declared, missing, install }) {
   return absent.length === 0 ? null : `\`pnpm install\` in ${path} finished without ${namedList(absent)}; ${lacks}`;
 }
 
+/** pnpm's store, `.bin`'s own referent: its shims compute `basedir` from `$0` without following the symlink, so a linked `.bin` without it points at nothing (#3728). */
+const PNPM_STORE = ".pnpm";
+
 /**
  * A KEYED review tree takes its dependencies from the repository's own clone, and the tree's own `package.json` says which. A keyed
  * repository declares its own (`a11ign/agent-org`'s `devDependencies` are the three CI installs), so this is not {@link linkReviewDependencies}'s
@@ -1319,7 +1322,7 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, insta
   try {
     fs.mkdirSync(`${path}/node_modules`, { recursive: true });
     for (const entry of fs.readdirSync(modules)) {
-      if (entry === ".bin" || !entry.startsWith(".")) relink(fs, `${modules}/${entry}`, `${path}/node_modules/${entry}`);
+      if (entry === ".bin" || entry === PNPM_STORE || !entry.startsWith(".")) relink(fs, `${modules}/${entry}`, `${path}/node_modules/${entry}`);
     }
     return null;
   } catch (err) {
