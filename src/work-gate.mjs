@@ -570,7 +570,7 @@ export const GH_READS = Object.freeze({
   // holding it is only ever visible in herdr; an org running no per-row instance pays nothing. NOT `issue list --state closed --label in-progress`: 264 rows today, none a live claim.
   // #3883: ONE CALL, EVERY TICK THAT HAS A COMPLETE HERDR LISTING (always, on a live org): the CLOSED rows still carrying `in-progress`, `number,labels` only, filtered
   // server-side, so what comes back is the claim debris and nothing else (the 25 live-seat rows plus whatever a hand close left since the last tick), never 264 rows' comments.
-  conditionalOnCompleteHerdrListing: "issue list --state closed --label in-progress --limit 1000 --json number,labels (readClosedClaimLabelRows -- a closed row's claim labels, stripped when the holder is not listed)",
+  conditionalOnCompleteHerdrListing: "issue list --state closed --label in-progress --limit 1000 --json number,labels,closedAt (readClosedClaimLabelRows -- a closed row's claim labels, stripped when the holder is not listed)",
   conditionalOnListedWorker: "api graphql repository { issue(number: <each listed worker-<n>>) { state labels comments } } (readClosedClaimedRows -- a closed row's claim)",
   // #3390: TWO REST CALLS PER ROW LABELLED `needs:chairman` (its `labeled` events, and its comments), and NONE when nothing carries the label.
   conditionalOnChairmanLabelledRow: "api repos/{owner}/{repo}/issues/{n}/events and /comments (withChairmanEventTimes -- chairman-answered)",
@@ -3579,12 +3579,12 @@ const CLOSED_CLAIM_LABEL_LIMIT = 1000;
  * the whole population is the right one: it is what a hand close, a `Closes` resolved with another actor and a not-planned close all leave behind and no merge path ever sees. It asks for
  * no `comments`, and `--label` filters server-side, so the page is the debris and nothing else.
  * @param {(args: string[]) => string} [run]
- * @returns {{ number: number, labels: ({ name?: string } | string)[] }[] | null}
+ * @returns {{ number: number, labels: ({ name?: string } | string)[], closedAt?: string }[] | null}
  */
 export function readClosedClaimLabelRows(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--label", CLAIM_LABEL, "--limit", String(CLOSED_CLAIM_LABEL_LIMIT),
-      "--json", "number,labels"]));
+      "--json", "number,labels,closedAt"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -3604,13 +3604,29 @@ export function closedClaimLabelsWhenListed(agents, run = defaultRun) {
   return { rows: readClosedClaimLabelRows(run), agents };
 }
 
+/** #3900: how long a closed row may keep a STANDING seat's claim labels. A seat is always listed, so for it "listed" never says "still working on the closed row". */
+const STANDING_SEAT_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * #3900: DOES THIS LISTED HOLDER STILL HOLD A ROW CLOSED AT `closedAt`? A `worker-<n>` instance is listed only while its turn runs, so it is mid-turn on the row it just closed and always holds it
+ * (#3883). A STANDING seat is listed for ever and releases nothing by closing a row, so it holds one only inside the grace; past it the row is debris. A missing or unparseable `closedAt` holds
+ * (fail toward not stripping a label), and so does a clock reading that puts the close in the future.
+ * @param {string} holder @param {unknown} closedAt @param {number} nowMs
+ */
+function holdsClosedRow(holder, closedAt, nowMs) {
+  if (familyNumber(holder) !== null) return true;
+  const closedMs = typeof closedAt === "string" ? Date.parse(closedAt) : NaN;
+  return !(nowMs - closedMs > STANDING_SEAT_GRACE_MS);
+}
+
 /**
  * #3883: WHICH CLOSED ROWS' CLAIM LABELS ARE DEBRIS, PURE. A row is KEPT when a `session:<name>` label on it names a holder herdr LISTS (in any status: a listing says a seat exists, not what it
- * is doing); everything else -- an unlisted holder, or no `session:` label at all -- is stripped, by `labelsToStrip` (`answer:*` stays, as it decides).
- * @param {{ number: number, labels: ({ name?: string } | string)[] }[]} rows @param {{ label: string }[]} agents
+ * is doing) and that holder still holds it (`holdsClosedRow`, #3900: a standing seat's hold ends a day after the close); everything else -- an unlisted holder, a seat past the grace, or no
+ * `session:` label at all -- is stripped, by `labelsToStrip` (`answer:*` stays, as it decides).
+ * @param {{ number: number, labels: ({ name?: string } | string)[], closedAt?: string }[]} rows @param {{ label: string }[]} agents @param {number} [nowMs]
  * @returns {{ strip: { number: number, labels: string[] }[], kept: { number: number, holders: string[] }[] }}
  */
-export function closedClaimDebris(rows, agents) {
+export function closedClaimDebris(rows, agents, nowMs = Date.now()) {
   const listed = new Set(agents.map((a) => a.label));
   /** @type {{ number: number, labels: string[] }[]} */
   const strip = [];
@@ -3618,7 +3634,8 @@ export function closedClaimDebris(rows, agents) {
   const kept = [];
   for (const row of rows) {
     const labels = labelsOf(row);
-    const holders = labels.filter((l) => l.startsWith(SESSION_PREFIX)).map((l) => l.slice(SESSION_PREFIX.length)).filter((name) => listed.has(name));
+    const holders = labels.filter((l) => l.startsWith(SESSION_PREFIX)).map((l) => l.slice(SESSION_PREFIX.length))
+      .filter((name) => listed.has(name) && holdsClosedRow(name, row.closedAt, nowMs));
     if (holders.length > 0) kept.push({ number: row.number, holders });
     else strip.push({ number: row.number, labels });
   }
@@ -3634,13 +3651,13 @@ export function closedClaimDebris(rows, agents) {
  * SAID ON STDERR, NEVER STDOUT: stdout is the orders, one JSON line each. A row KEPT because its holder is listed is NAMED (it stays until that seat releases it), and an unread
  * read or an unasked one is said as such and never as "no debris". A refused edit is said and the tick goes on: the next tick asks again.
  * @param {ReturnType<typeof closedClaimLabelsWhenListed>} asked
- * @param {{ gh?: (args: string[]) => unknown, say?: (line: string) => void, repo?: string }} [deps]
+ * @param {{ gh?: (args: string[]) => unknown, say?: (line: string) => void, repo?: string, nowMs?: number }} [deps]
  * @returns {number} how many rows had their labels taken off
  */
-export function stripClosedClaims(asked, { gh = defaultRun, say = (line) => process.stderr.write(`${line}\n`), repo = repoNow() } = {}) {
+export function stripClosedClaims(asked, { gh = defaultRun, say = (line) => process.stderr.write(`${line}\n`), repo = repoNow(), nowMs = Date.now() } = {}) {
   if (asked === null) { say("GATE: closed rows' claim labels were NOT read this tick: herdr's listing was missing or incomplete, so no holder can be called unlisted."); return 0; }
   if (asked.rows === null) { say("GATE: the closed rows still carrying a claim label were NOT read this tick (the read was refused) -- none was stripped."); return 0; }
-  const { strip, kept } = closedClaimDebris(asked.rows, asked.agents);
+  const { strip, kept } = closedClaimDebris(asked.rows, asked.agents, nowMs);
   for (const { number, holders } of kept) say(`GATE: closed #${number} keeps its claim labels: ${holders.join(", ")} is listed by herdr, and releases it.`);
   const results = strip.map(({ number, labels }) => stripClaimLabelsVia(number, labels, repo, { gh, say, logPrefix: "GATE" }));
   return results.filter((result) => result === "stripped").length;
