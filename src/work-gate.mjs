@@ -1360,12 +1360,12 @@ export function baseTipWhenRed(prs, run = defaultRun) {
  * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
  * to deliver what the gate found, and `complexity` counts every inline ternary there.
  *
- * @param {any[]} openRows
+ * @param {any[]} openRows @param {(args: string[]) => string} [run]
  * @returns {any[] | null} `null` when not asked or refused -- `decide` treats both the same way
  */
-function claimedRowCommentsWhenHeld(openRows) {
+function claimedRowCommentsWhenHeld(openRows, run = defaultRun) {
   const held = openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
-  return held ? readClaimedRowComments() : null;
+  return held ? readClaimedRowComments(run) : null;
 }
 
 /**
@@ -1999,10 +1999,12 @@ function readPrimaryDriftNow() {
  * #2202: `readClosedAnswerRows` with its refusal SAID. Every other reader here degrades to `[]` silently, and
  * that is the one shape this row exists to end for this question -- an answer owed that stopped waking a
  * session with nothing saying it had -- so a refused read is a line, not an empty list.
+ * (#3566, slice 5) HANDED THE READ, NOT MAKING IT: the read is one of the follow-ups asked together (`readOpenRowFollowUps`), and the refusal is still
+ * said here, where it was, when the answer is used.
+ * @param {any[] | null} rows what `readClosedAnswerRows` answered
  * @returns {any[]}
  */
-function closedAnswerRows() {
-  const rows = readClosedAnswerRows();
+function closedAnswerRows(rows) {
   if (rows === null) {
     process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
       + "a merge already closed -- or a pull request no longer open -- is NOT being chased this tick (#2202, #2641).\n");
@@ -6346,11 +6348,11 @@ export function anyBlockerClearingCandidate(rows, today = todayIso(), nowMs = Da
  * (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about OR the read was
  * refused -- in both cases the caller's fallback is the unstaged first ask.
  *
- * @param {any[]} openRows
+ * @param {any[]} openRows @param {(args: string[]) => string} [run]
  */
-function closingsWhenRowsCleared(openRows) {
+function closingsWhenRowsCleared(openRows, run = defaultRun) {
   return (unclaimedClearings(openRows).length > 0 || anyBlockerClearingCandidate(openRows))
-    ? readRecentlyClosed() : null;
+    ? readRecentlyClosed(run) : null;
 }
 
 // --- #2618 (child 3c of #69): EVERY REPOSITORY THE PROJECT DECLARES, NOT ONE ---------------------------------------------
@@ -6524,7 +6526,7 @@ const NO_TRACKER_READINGS = { claimedComments: [], epics: [], closedRows: [], cl
  */
 function trackerReadings({ rows, allOpen }) {
   return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicsWhenShelfEmpty(rows),
-    closedRows: closedAnswerRows(), closings: closingsWhenRowsCleared(allOpen) };
+    closedRows: closedAnswerRows(readClosedAnswerRows()), closings: closingsWhenRowsCleared(allOpen) };
 }
 
 /**
@@ -6957,6 +6959,38 @@ function holdForIncidentNow(status, orders, facts) {
   return { orders: kept, held, signal: githubIncidentOrder(incident, held) };
 }
 
+/**
+ * (#3566, slice 5) THE TRACKER LANES `main` READS AFTER ITS OUTAGE CHECK, ASKED TOGETHER. The backlog, `needs:chairman` and open lists were three
+ * synchronous `gh issue list` calls, 3.2 s summed in one gate run; through `readWithFirstWaveTogether` they cost the slowest of the three. The
+ * readers, their commands and their parsing are unchanged, so only WHEN the waiting happens moves. They are asked AFTER the check that both
+ * `readPrs` and `readReadyRows` were refused, not with it: folding them in would make an outage tick ask three more refused questions. What the batch
+ * cannot foresee (a chairman row's events, read once the list is in hand) still runs one at a time, as before.
+ * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
+ */
+export function readTrackerLanes(run = defaultRun, batch = run === defaultRun ? runBatch : undefined) {
+  return readWithFirstWaveTogether((read) => ({
+    promotableRows: readPromotableRows(read),
+    chairmanBlocked: readChairmanBlocked(read),
+    openRowsRead: readOpenRows(read),
+  }), run, batch);
+}
+
+/**
+ * (#3566, slice 5) THE READS THAT NEED THE OPEN ROWS IN HAND, ASKED TOGETHER: the claimed rows' comments, the label list that opens the closed-answer
+ * read, and the recently-closed rows. Each stays CONDITIONAL on the rows exactly as before (`claimedRowCommentsWhenHeld`, `closingsWhenRowsCleared`
+ * decide from `allOpen`, so a quiet tracker asks for nothing extra: the rehearsal asks only what the rows in hand ask for). The closed-answer
+ * read's two searches are built from its label list's answer, so only the label list joins the batch and the searches follow one at a time.
+ * `null` is each read's own refusal (#1286), and `closedRows` is raw, for `closedAnswerRows` to say.
+ * @param {any[]} allOpen @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
+ */
+export function readOpenRowFollowUps(allOpen, run = defaultRun, batch = run === defaultRun ? runBatch : undefined) {
+  return readWithFirstWaveTogether((read) => ({
+    claimedComments: claimedRowCommentsWhenHeld(allOpen, read),
+    closedRows: readClosedAnswerRows(read),
+    closings: closingsWhenRowsCleared(allOpen, read),
+  }), run, batch);
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.mjs" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -6974,8 +7008,8 @@ function main() {
   }
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
-  const promotableRows = readPromotableRows();
-  const chairmanBlocked = readChairmanBlocked();
+  // #3566: this one, `needs:chairman` and the open rows (read below, as `openRowsRead`) are asked TOGETHER.
+  const { promotableRows, chairmanBlocked, openRowsRead } = readTrackerLanes();
   const unreadChairmanRows = chairmanReadsRefused(chairmanBlocked ?? []); // #3390: said, not skipped -- an unread row is not an unanswered one
   if (unreadChairmanRows.length > 0) process.stderr.write(`chairman-answered: could not read the timeline of ${unreadChairmanRows.map((n) => `#${n}`).join(", ")}; those rows are NOT checked this tick\n`);
   // ONE COALESCE PER REFUSED LANE, NAMED. `prs ?? []` was written three times and `readyRows ?? []` twice;
@@ -6990,9 +7024,8 @@ function main() {
   // it. `decide`'s label-derived causes want a list to filter, and an empty one is the right degradation
   // there; the dead man's switch needs to tell "refused" from "empty", so it is handed the raw result.
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
-  const openRowsRead = readOpenRows();
   const allOpen = openRowsRead ?? [];
-  const claimedComments = claimedRowCommentsWhenHeld(allOpen);
+  const { claimedComments, closedRows, closings } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
@@ -7007,7 +7040,7 @@ function main() {
   const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicsWhenShelfEmpty(rows),
-    answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows() }),
+    answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),
     openRows: allOpen,
     // #2110: CONDITIONAL, and the condition is answered for free from the list already in hand --
     // `readOpenRows` fetched the labels, so "is anything claimed at all" costs no call. A quiet org with
@@ -7024,7 +7057,7 @@ function main() {
     // is what lets the detection exist at all.
     hostDrift: readHostDrift(),
     // #2286: CONDITIONAL, and the condition is answered for free from the list already in hand.
-    closings: closingsWhenRowsCleared(allOpen),
+    closings,
     // #2356: `null` for a refused read or a green `main`, and the two need no telling apart HERE -- both
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
     trunkRed: readTrunkRed(),
