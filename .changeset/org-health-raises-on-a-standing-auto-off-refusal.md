@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`org-health` raises `fleet-auto-off-refusing` when the fleet's auto-off timer has refused to power workers off for more than 15 minutes (a11ign/a11ign#3853, incident #3846, 2b). On 2026-10-06 that timer refused 2,569 times over about twelve hours and nothing that raises read the record it keeps, so idle workers stayed on. `autoOffRefusalReading` reads `runs/fleet-auto-off-state.json` under the project's checkout (`readAutoOffRefusal`, which `orgHealthTick` calls itself when the caller gives no `autoOff` fact) and trips on a refusal whose FIRST tick (`refusal.since`) is over `AUTO_OFF_REFUSAL_MINUTES` (15) old, naming the reason and the age in the order `ceo` gets. It is a stated unknown, never a clear, when the file cannot be read or parsed, when the record's last tick is over `AUTO_OFF_RECORD_STALE_MINUTES` (5) old (the timer stopped), or when the refusal carries no `since`: `at` is rewritten every ten seconds and would read every standing refusal as brand new. `since` is the producer's to write (`fleet-auto-off.mjs`, outside this repository) and a tick that proceeds ends the run.

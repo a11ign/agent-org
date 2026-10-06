@@ -86,6 +86,20 @@ export const PRIMARY_STALE_MINUTES = 60;
  */
 export const ORDER_STALL_MINUTES = 15;
 /**
+ * A FLEET AUTO-OFF THAT HAS REFUSED THIS LONG IS AN OUTAGE NOBODY READ: FIFTEEN MINUTES (#3853, incident #3846, the chairman via `ceo`, 2026-10-06). The same
+ * quarter hour as {@link ORDER_STALL_MINUTES} and for the same reason: it is the chairman's ruling about how long a thing may wait unseen, and NOT a percentile.
+ * `fleet-auto-off` refused 2,569 ticks over about twelve hours that day and the org did not act, because nothing that raises read the record it keeps.
+ */
+export const AUTO_OFF_REFUSAL_MINUTES = 15;
+/**
+ * HOW OLD THE REFUSAL RECORD'S LAST TICK MAY BE BEFORE IT IS NOT BELIEVED: FIVE MINUTES. The timer ticks every 10 s and writes the record each time, so a refusal
+ * last written longer ago than this is a timer that has STOPPED (two of this gate's own ticks, {@link MINUTES_PER_TICK}), and a stopped timer cannot be said to
+ * still be refusing. It is a stated unknown, never a clear and never a trip.
+ */
+export const AUTO_OFF_RECORD_STALE_MINUTES = 5;
+/** Where `fleet-auto-off.mjs` keeps its state, relative to the checkout that runs it (`DEFAULT_STATE_PATH` there). */
+const AUTO_OFF_STATE_PATH = "runs/fleet-auto-off-state.json";
+/**
  * A POOL BELOW A FIFTH OF ITS LIMIT IS RAISED (#3448): 1,000 of 5,000 GraphQL points. THE REASON IS THE BURN RATE, NOT A PERCENTILE: `a11ign-ai-leads`
  * spent a whole window in the hour 2026-10-04 11:57Z-12:57Z (the chairman's read, #3448), about 83 points a minute, so a fifth is about twelve minutes of
  * warning at that rate -- six tick grids and a `ceo` turn, which a tenth (about six minutes) is not. A reading at a moment: re-derive before quoting.
@@ -160,6 +174,7 @@ export const SIGNALS = Object.freeze({
   PANE_AT_PROMPT: "pane-stopped-at-a-prompt",
   TOOL_VERSION: "runner-behind-newest-release",
   TEAM_ACCESS: "team-access-drifted",
+  AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
 });
 
 /**
@@ -501,6 +516,81 @@ export function panePromptReading({ now, panes }) {
   return { signal: SIGNALS.PANE_AT_PROMPT, status: "tripped", firstTrippedAt: over[0].since + PANE_PROMPT_MINUTES * MS_PER_MINUTE,
     discriminator: `${SIGNALS.PANE_AT_PROMPT}@${key}`,
     detail: `${over.length} pane(s) have stood at an interactive prompt for over ${PANE_PROMPT_MINUTES} min: ${named.join("; ")}${more}` };
+}
+
+/**
+ * @typedef {{ reason: string, detail: string, at: number, since: number | null }} AutoOffRefusal
+ * The refusal `fleet-auto-off.mjs` keeps in its state file. `at` is the LAST tick that refused (rewritten every ten seconds) and `since` is the FIRST tick of the
+ * unbroken run, `null` when the record carries none: a tick that proceeds, or has nothing to power off, writes `refusal: null`, which is what ends a run.
+ * @typedef {{ unreadable: string } | { refusal: AutoOffRefusal | null }} AutoOffFact
+ * What the state file said, or WHY it could not be read. `refusal: null` is a file that was read and records no refusal, which is not the same as `unreadable`.
+ */
+
+/**
+ * SIGNAL 15: `fleet-auto-off` HAS REFUSED TO POWER WORKERS OFF FOR OVER `AUTO_OFF_REFUSAL_MINUTES` (#3853). It is loud by design (it prints `refuse <reason>`, exits 1
+ * and records the refusal), and on 2026-10-06 that was 2,569 refusals nobody acted on, because nothing that raises read the record. THE AGE IS `since`, NOT `at`:
+ * `at` is the latest tick and is seconds old for as long as the refusal stands, so an age taken from it is never over. A record with no `since` is therefore an
+ * UNKNOWN that says so, never a fallback to `at`, which would read every standing refusal as brand new.
+ *
+ * AN UNKNOWN, NEVER A CLEAR, for a record that could not be read, that does not parse, whose last tick is older than `AUTO_OFF_RECORD_STALE_MINUTES` (the timer
+ * stopped), or that is inconsistent (`since` after `at`). STRICTLY OVER, as {@link orderStallReading} is. Keyed on `since`, so one unbroken refusal is one signal
+ * however long it lasts and however often its reason changes; a tick that proceeds ends the run and the next refusal is a new one.
+ * @param {{ now: number, autoOff: AutoOffFact }} input
+ * @returns {Reading}
+ */
+export function autoOffRefusalReading({ now, autoOff }) {
+  const signal = SIGNALS.AUTO_OFF_REFUSING;
+  if ("unreadable" in autoOff) return unknown(signal, autoOff.unreadable);
+  const { refusal } = autoOff;
+  if (refusal === null) return clear(signal);
+  if (now - refusal.at > AUTO_OFF_RECORD_STALE_MINUTES * MS_PER_MINUTE) {
+    return unknown(signal, `the record's last refusal (${refusal.reason}) was written ${ageText(refusal.at, now)} ago, so the timer has stopped and whether it still refuses is not known`);
+  }
+  if (refusal.since === null) return unknown(signal, `the record names a refusal (${refusal.reason}) but carries no \`since\`, so how long it has stood is not known`);
+  if (refusal.since > refusal.at) return unknown(signal, `the record's refusal began (${isoOf(refusal.since)}) after its last tick (${isoOf(refusal.at)}), so its age is not known`);
+  const tripAt = refusal.since + AUTO_OFF_REFUSAL_MINUTES * MS_PER_MINUTE;
+  if (now <= tripAt) return clear(signal);
+  return { signal, status: "tripped", firstTrippedAt: tripAt, discriminator: `${signal}@${isoOf(refusal.since)}`,
+    detail: `fleet auto-off has refused to power workers off for ${ageText(refusal.since, now)} (\`${refusal.reason}\`): ${refusal.detail.slice(0, MAX_QUOTED_CHARS)}` };
+}
+
+/** @param {unknown} value @returns {value is number} */
+const isTime = (value) => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * THE REFUSAL RECORD, from the state file as text. Anything that is not a refusal this reading can believe is `unreadable` with the reason, never a `null` refusal:
+ * absent and malformed are different from "refused nothing".
+ * @param {string | null} text `null` for a file that could not be read
+ * @param {string} path only for the sentence
+ * @returns {AutoOffFact}
+ */
+export function parseAutoOffState(text, path) {
+  if (text === null) return { unreadable: `\`${path}\` could not be read, so whether fleet auto-off is refusing is not known` };
+  let state;
+  try {
+    state = JSON.parse(text);
+  } catch (err) {
+    return { unreadable: `\`${path}\` is not JSON (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)})` };
+  }
+  if (state === null || typeof state !== "object" || Array.isArray(state)) return { unreadable: `\`${path}\` is not an object` };
+  const refusal = state.refusal ?? null;
+  if (refusal === null) return { refusal: null };
+  if (typeof refusal.reason !== "string" || typeof refusal.detail !== "string" || !isTime(refusal.at) || !(refusal.since === undefined || isTime(refusal.since))) {
+    return { unreadable: `\`${path}\` holds a refusal without a reason, a detail and a time` };
+  }
+  return { refusal: { reason: refusal.reason, detail: refusal.detail, at: refusal.at, since: refusal.since ?? null } };
+}
+
+/**
+ * THE FLEET'S REFUSAL RECORD, read from the checkout the tick serves (`runs/fleet-auto-off-state.json`, the path `fleet-auto-off.mjs` writes). NEVER THROWS. The
+ * unit that writes it runs where the fleet is driven, so a checkout that is not that machine holds a copy no tick keeps current: its last refusal ages past
+ * `AUTO_OFF_RECORD_STALE_MINUTES` and the reading says so, which is the answer and not a defect of the reader.
+ * @param {{ root?: string, read?: (path: string) => string }} [where]
+ * @returns {AutoOffFact}
+ */
+export function readAutoOffRefusal({ root = DEFAULT_ROOT, read = (path) => readFileSync(path, "utf8") } = {}) {
+  const path = resolve(root, AUTO_OFF_STATE_PATH);
+  return parseAutoOffState(readOrNull(read, path), path);
 }
 
 /**
@@ -865,7 +955,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact }} facts `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact }} facts `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -881,6 +971,7 @@ export function orgHealthReadings(facts) {
   if (facts.pools !== undefined) readings.push(poolLowReading({ pools: facts.pools }));
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
+  if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   return readings;
 }
 
@@ -928,6 +1019,10 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.TEAM_ACCESS]: "An org team holds a level on a repository that the project's declaration (`teamAccess.declaration` in `.agent-org/project.json`) does not give: `admin` anywhere it reaches, "
     + "or a level other than the declared one on a declared repository. DO NOT CHANGE THE TEAM'S LEVEL YOURSELF: it is an org-admin act, the chairman's. Read the declaration's own prose "
     + "for what the level should be, then put the repositories named on #928 and `" + ANSWER_PREFIX + "ceo` on the row that carries them, or open the pull request that declares the level if the declaration is the one that is wrong.",
+  [SIGNALS.AUTO_OFF_REFUSING]: "The fleet's auto-off timer holds every shutdown back because the checkout it runs from is not `main`'s (`stale-checkout`), its `git fetch` failed (`fetch-failed`) or "
+    + "the comparison could not be made (`cannot-tell`), so idle workers stay powered ON. It is loud by design and was unread: 2,569 refusals over twelve hours on 2026-10-06. READ THE REASON AND DETAIL "
+    + "above, then have `orchestrator` (the first reader for fleet questions) bring the control plane's checkout to `main` or fix the fetch. DO NOT RUN `fleet:*` YOURSELF, and do not clear the record by "
+    + "hand: it clears when a tick proceeds. Say on #928 what the refusal was and what ended it.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
@@ -976,12 +1071,13 @@ function copiesToCompare(pairs) {
  * caller has them already, and a leaf that reads them keeps `work-gate.mjs` out of it. In an extracted tree no original is
  * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
  * @param {Parameters<typeof orgHealthReadings>[0]} facts
- * @param {{ log?: (line: string) => void, readCopies?: () => CopyPair[] | null }} [io]
+ * @param {{ log?: (line: string) => void, readCopies?: () => CopyPair[] | null, readAutoOff?: () => AutoOffFact }} [io]
  */
-export function orgHealthTick(facts, { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies() } = {}) {
+export function orgHealthTick(facts, { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal() } = {}) {
   try {
     const copies = facts.copies !== undefined ? facts.copies : copiesToCompare(readCopies());
-    const readings = orgHealthReadings(copies === undefined ? facts : { ...facts, copies });
+    const autoOff = facts.autoOff !== undefined ? facts.autoOff : readAutoOff();
+    const readings = orgHealthReadings({ ...facts, autoOff, ...(copies === undefined ? {} : { copies }) });
     for (const r of readings) if (r.status === "unknown") log(`org-health: ${r.signal} UNKNOWN -- ${r.detail}; it is not read as clear.\n`);
     return orgHealthOrders(readings);
   } catch (err) {
