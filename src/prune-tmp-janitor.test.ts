@@ -1,3 +1,4 @@
+// no-token: gh -- every `pruneTmp` here is handed a fake `run` and `--fixtures-only` never reads the pull request list; the one `gh`-reaching family (review leftovers) is not run, and nothing imported reaches the real `gh`
 /**
  * a11ign/a11ign#3849: THE /TMP FIXTURE JANITOR -- the third family, the small-batch shape of a run, the timer that runs it and the user
  * tmpfiles rule that ages the private tmp root.
