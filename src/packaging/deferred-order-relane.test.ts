@@ -89,10 +89,15 @@ test("#3465: what is not re-laned -- an engineer the tick may not offer the orde
 
 test("#3465: an unreadable deferral record re-lanes nothing and SAYS SO, rather than guessing an age", () => {
   const dir = mkdtempSync(join(tmpdir(), "relane-"));
+  const origin = process.cwd();
+  // The log line keeps the first 160 characters of the error, and the error names the record's PATH before what was wrong with it. Under an agent session's
+  // long TMPDIR an absolute path alone fills that, and the `not "<causeKey>\t<ms>"` the assertion reads is cut away. So the ledger is given RELATIVE to a working
+  // directory inside `dir`: the path the message names is then `./wake-deferred`, whatever TMPDIR is (#3792).
+  process.chdir(dir);
   try {
     const lines: string[] = [];
     const log = (line: string) => { lines.push(line); };
-    const ledger = join(dir, "ledger");
+    const ledger = "ledger";
     const missing = relaneFacts(ledger, log);
     assert.equal(missing?.deferredSince.size, 0, "POSITIVE CONTROL: a MISSING record is no history, not a fault (ENOENT), and the facts are returned");
     assert.deepEqual(lines, []);
@@ -102,6 +107,7 @@ test("#3465: an unreadable deferral record re-lanes nothing and SAYS SO, rather 
     writeFileSync(join(dir, "wake-deferred"), `${KEY}\t${T0 - 16 * MINUTE}\n`);
     assert.equal(relaneFacts(ledger, log)?.deferredSince.get(KEY), T0 - 16 * MINUTE, "and a well-formed one is read as written");
   } finally {
+    process.chdir(origin);
     rmSync(dir, { recursive: true, force: true });
   }
 });
