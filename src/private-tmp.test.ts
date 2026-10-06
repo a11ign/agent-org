@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import config from "../scripts/rstest/rstest.config.mjs";
@@ -32,7 +32,16 @@ import {
 const REPO = fileURLToPath(new URL("..", import.meta.url));
 const SETUP = fileURLToPath(new URL("./private-tmp.ts", import.meta.url));
 const FILE_SETUP = fileURLToPath(new URL("./private-tmp-setup.ts", import.meta.url));
-const RSTEST = join(REPO, "node_modules", ".bin", "rstest");
+
+// The nearest `node_modules/.bin/rstest` above the package: CI checks the tool out inside a monorepo whose `node_modules` is at the root, not beside `src/`.
+function findRstest(from: string): string {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const candidate = join(dir, "node_modules", ".bin", "rstest");
+    if (existsSync(candidate)) return candidate;
+    if (dirname(dir) === dir) throw new Error(`no node_modules/.bin/rstest in ${from} or any directory above it`);
+  }
+}
+const RSTEST = findRstest(REPO);
 
 // `os.tmpdir()` is already this file's private directory when the suite runs under its own config, which is what the LIVE test below asserts.
 const scratch = mkdtempSync(join(tmpdir(), "private-tmp-"));
@@ -94,14 +103,15 @@ test("findLeaks names a file whose directory holds something, not one whose dire
   const leakerDir = await enterFileDir({ runRoot, testPath: "/p/src/leaker.test.ts", projectRoot: "/p", env, base });
   for (const name of ["a", "b", "c", "d", "e", "f", "g"]) mkdirSync(join(leakerDir, name, "deep"), { recursive: true });
   const cacheOnlyDir = await enterFileDir({ runRoot, testPath: "/p/src/cache-only.test.ts", projectRoot: "/p", env, base });
-  for (const name of ["tsx-1000", "v8-compile-cache-1000"]) mkdirSync(join(cacheOnlyDir, name));
+  for (const name of ["tsx-1000", "v8-compile-cache-1000", "node-compile-cache"]) mkdirSync(join(cacheOnlyDir, name));
   mkdirSync(join(leakerDir, "tsx-1000-mine"));
+  mkdirSync(join(leakerDir, "node-compile-cache-mine"));
   const leaks = await findLeaks(runRoot, base);
   assert.deepEqual(leaks.map(({ file }) => file), ["src/leaker.test.ts"], "the runtime's own caches are not a leak, and a look-alike name still is");
-  assert.deepEqual(leaks[0]?.entries, ["a", "b", "c", "d", "e", "f", "g", "tsx-1000-mine"]);
+  assert.deepEqual(leaks[0]?.entries, ["a", "b", "c", "d", "e", "f", "g", "node-compile-cache-mine", "tsx-1000-mine"]);
   const [headline, line] = leakReport(leaks);
   assert.match(headline ?? "", /1 test file\(s\) left something/);
-  assert.match(line ?? "", /src\/leaker\.test\.ts left 8 in its TMPDIR: a, b, c, d, e, \.\.\. and 3 more/);
+  assert.match(line ?? "", /src\/leaker\.test\.ts left 9 in its TMPDIR: a, b, c, d, e, \.\.\. and 4 more/);
   assert.deepEqual(leakReport([]), []);
   await removeRunRoot(runRoot, base);
   assert.equal(existsSync(runRoot), false, "a run root with a nested tree is gone");
@@ -133,6 +143,7 @@ function runFixture(name: string, files: Record<string, string>, extraEnv: NodeJ
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv, [BASE_ENV]: base, RSTEST_NO_AGENT: "1" };
   delete env[RUN_ROOT_ENV];
   const result = spawnSync(RSTEST, ["run", "--config", join(dir, "rstest.config.mjs")], { cwd: dir, env, encoding: "utf8" });
+  assert.equal(result.error, undefined, `the child rstest did not start: ${result.error?.message}`);
   return { status: result.status, output: `${result.stdout}${result.stderr}`, base, runs: readdirSync(base) };
 }
 

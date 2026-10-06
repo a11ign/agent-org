@@ -35,10 +35,11 @@ export const BASE_ENV = "A11Y_PRIVATE_TMP_BASE";
 export const LEAK_POLICY_ENV = "A11Y_PRIVATE_TMP_LEAKS";
 const RUN_PREFIX = "run-";
 const ENTRIES_NAMED_PER_FILE = 5;
-// Caches the RUNTIME writes into `TMPDIR` for any process, which no test made and none can remove: `tsx-<uid>` (tsx's transform cache) and `v8-compile-cache-<uid>`
-// (node's). Measured on the first full run after #3848: they were the ONLY entries left in 5 files, and a report that always names the same entries is a report
+// Caches the RUNTIME writes into `TMPDIR` for any process, which no test made and none can remove: `tsx-<uid>` (tsx's transform cache), `v8-compile-cache-<uid>`
+// and `node-compile-cache` (node's; CI's `installed-layout.test.ts` left the latter on #312's first run, from the `pnpm` it spawns, and no local run showed it).
+// Measured on the first full run after #3848: the first two were the ONLY entries left in 5 files, and a report that always names the same entries is a report
 // people learn to ignore, which would also make a leak red on every run, whatever it was. Exact names only: `tsx-1000-x` is still a leak.
-const RUNTIME_CACHE = /^(?:tsx|v8-compile-cache)-\d+$/;
+const RUNTIME_CACHE = /^(?:(?:tsx|v8-compile-cache)-\d+|node-compile-cache)$/;
 
 /** A test file that left something behind: its path from the project root, and the names of what is in its directory. */
 export type Leak = { file: string; entries: string[] };
