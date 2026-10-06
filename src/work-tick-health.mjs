@@ -130,7 +130,7 @@ const clock = (ms) => new Date(ms).toISOString();
  * `ExecStartPre`, which `TimeoutStartSec` also counts), and CPU is the tick's own plus every child's. `line` is the `tick-cost` line, so the order says
  * nothing the file does not.
  *
- * @param {{ at: number, wallMs: number, prestartMs?: number | null, cpuMs: { self: number, children: number }, phases: Record<string, { wallMs: number, cpuMs: number }> }} line
+ * @param {{ at: number, wallMs: number, prestartMs?: number | null, cpuMs: { self: number, children: number }, phases: Record<string, { wallMs: number, cpuMs?: number }> }} line
  * @param {{ thresholdSeconds?: number, costPath: string }} where
  * @returns {TickOrder[]}
  */
@@ -144,7 +144,7 @@ export function slowTickOrders(line, { thresholdSeconds = TICK_SLOW_SECONDS, cos
     prompt: `A TICK TOOK ${seconds(wallMs)} s (the limit is ${thresholdSeconds} s) and finished. It started at ${clock(startedAt)}.\n`
       + `Wall ${seconds(wallMs)} s${line.prestartMs ? `, of which ${seconds(line.prestartMs)} s was \`ExecStartPre\`` : ""}; CPU ${seconds(line.cpuMs.self + line.cpuMs.children)} s `
       + `(${seconds(line.cpuMs.self)} s its own, ${seconds(line.cpuMs.children)} s its children's). The phase that took longest: \`${phase}\`, ${seconds(took.wallMs)} s wall, `
-      + `${seconds(took.cpuMs)} s CPU.\n`
+      + `${took.cpuMs === undefined ? "CPU not measured" : `${seconds(took.cpuMs)} s CPU`}.\n`
       + `The rest is the last line of \`${costPath}\` (\`tail -n 1 ${costPath}\`): every phase, the commands the tick started and the 5 slowest and hottest command lines. `
       + "Wall far above CPU is waiting; CPU near wall is work.",
     causeKey: `ceo/${TICK_OVERRAN}/${TICK_SLOW}-${startedAt}`,

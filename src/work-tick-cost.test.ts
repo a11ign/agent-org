@@ -489,3 +489,29 @@ test("#3566 CONTROL: a file whose head names nothing is still read whole, and a 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+const gateSaying = (...lines: string[]) => `${lines.map((line) => `process.stderr.write(${JSON.stringify(`${line}\n`)});`).join(" ")} process.exit(0);`;
+
+test("#3730: the gate's `github-status: operational (call N ms).` line is a phase of its own, named beside `gate` and not folded into it", () => {
+  const { lines } = runTick({ gate: gateSaying("github-status: operational (call 251 ms).") });
+  const { phases } = lines[0];
+  assert.deepEqual(phases["github-status"], { wallMs: 251 }, JSON.stringify(phases));
+  assert.ok("gate" in phases, "the gate is still a phase: the call's wall sits INSIDE its wall, so the two are read beside each other and never added");
+});
+
+test("#3730: a read that FAILED (`UNKNOWN (...; N ms)`) and a held one (`GITHUB INCIDENT: ... (call N ms)`) carry their wall too, so a slow failing page is visible", () => {
+  const unknown = runTick({ gate: gateSaying("github-status: UNKNOWN (no answer within the bound; 5003 ms) -- nothing is held, the gate reads as it always did.") });
+  assert.deepEqual(unknown.lines[0].phases["github-status"], { wallMs: 5003 });
+  const incident = runTick({ gate: gateSaying("GITHUB INCIDENT: Actions degraded (call 1840 ms); holding 2 runner-start order(s) #1 #2.") });
+  assert.deepEqual(incident.lines[0].phases["github-status"], { wallMs: 1840 });
+});
+
+test("#3730 CONTROL: a gate that says no such line, or one whose wall was not read, adds NO phase and the tick neither fails nor writes a zero", () => {
+  for (const gate of [gateSaying(), gateSaying("github-status: UNKNOWN (the worker could not start (boom); wall not read) -- nothing is held."),
+    gateSaying("github-status: operational (call N ms)."), gateSaying("a line that merely mentions github-status: operational (call 9 ms).")]) {
+    const { ran, lines } = runTick({ gate });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(lines.length, 1, "the cost line is still written");
+    assert.equal("github-status" in lines[0].phases, false, JSON.stringify(lines[0].phases));
+  }
+});

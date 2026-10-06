@@ -227,3 +227,11 @@ test("#3567, through the tick: a tick whose gate CRASHES clears its marker too, 
   assert.equal(tick.run().status, ran.status);
   assert.deepEqual(tick.delivered(), [], "and the next tick has no marker to read");
 }));
+
+test("#3730: a longest phase some other process timed has a wall and NO CPU, and the order says so rather than printing NaN", () => {
+  const line = costLine(181);
+  line.phases = { ...line.phases, "github-status": { wallMs: 999_999 } } as typeof line.phases;
+  const [order] = slow(line);
+  assert.match(order.prompt, /took longest: `github-status`, 1000\.0 s wall, CPU not measured\./);
+  assert.doesNotMatch(order.prompt, /NaN/);
+});
