@@ -47,7 +47,7 @@ import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from ".
 // rather than reimplemented: `region-paths.mjs`'s own header records why a second copy of "what
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
 // property its own header states -- it runs before any `pnpm install` or build.
-import { declaredRegionFiles } from "./region-paths.mjs";
+import { declaredRegionFiles, regionCovers, splitRegionEntry } from "./region-paths.mjs";
 import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
 // #1959: THE ONE READER OF `docs/lane-ownership.json`, imported rather than re-parsed -- a lane's `paths`
 // and `except` are `ceo`'s to move, and a second copy here would drift the way #939's nine spellings did.
@@ -4719,6 +4719,121 @@ function claimSentence(row) {
     + `\`agent/<slug>-${row.repoKey}-${row.number}\`, \`../wt-${row.repoKey}-${row.number}\` and \`${SESSION_PREFIX}<you>\`.`;
 }
 
+// --- #3820: A PRODUCT ROW FIRST, UNTIL 6 OF THE LAST 10 ENGINEER STARTS WERE ONE ---------------------------------------------
+//
+// THE CHAIRMAN'S CAPACITY ORDER (#928, 2026-10-06): at least 60% of engineer starts go to product rows, ENFORCED BY THE GATE. A label
+// cannot say what a product row is (`ready:audit`: "a floor met by a label I control is not a measurement"; `out-of-release` answers
+// whether the row blocks the publish), so the row's own Region does: an entry under a `releasablePaths` entry of a `dora` repository
+// other than the tool's. A row declares its files to be claimed at all (B4), so it cannot claim to be product without naming them.
+
+/** The window and the floor, one line each: the chairman's numbers (6 of 10), which this mechanism does not choose. */
+export const PRODUCT_SHARE_WINDOW = 10;
+export const PRODUCT_SHARE_FLOOR = 6;
+
+/** The starts memory beside `claim-refusals.json`: `{ "<row>": { at, kind } }`, the newest `PRODUCT_SHARE_WINDOW` only. */
+export const ENGINEER_STARTS_FILE = "engineer-starts.json";
+
+/** The tool's own repository: releasable, and not product (agent-org is the org's, not the thing the org ships). */
+const TOOL_REPO = "a11ign/agent-org";
+
+/**
+ * The `{ key, paths }` a Region entry is judged against: each `dora` repository but the tool's, under the key `code` gives it.
+ * A `dora` repository `code` does not declare has no key a Region entry could carry, so it is left out rather than guessed.
+ * @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[] }[] }} declaration
+ * @returns {{ key: string, paths: string[] }[]}
+ */
+export function productRegionsOf({ code, dora }) {
+  return dora.filter((entry) => entry.repo !== TOOL_REPO).flatMap((entry) => {
+    const key = code.find((repository) => repository.repo === entry.repo)?.key;
+    return key === undefined ? [] : [{ key, paths: entry.releasablePaths }];
+  });
+}
+
+/**
+ * `product` when ONE Region entry lies under a releasable path of the repository its key names, else `org`. `unreadable` is a Region the
+ * parser found no entries in (`null`: no section; `[]`: a section naming no path), which counts as `org` and is SAID, never guessed.
+ * @param {string[] | null} entries what `declaredRegionFiles` read @param {{ key: string, paths: string[] }[]} regions `productRegionsOf`
+ * @returns {{ kind: "product" | "org", unreadable: boolean }}
+ */
+export function rowKind(entries, regions) {
+  if (entries === null || entries.length === 0) return { kind: "org", unreadable: true };
+  const product = entries.some((entry) => {
+    const { key, path } = splitRegionEntry(entry);
+    return regions.some((region) => region.key === key && region.paths.some((releasable) => regionCovers(releasable, path)));
+  });
+  return { kind: product ? "product" : "org", unreadable: false };
+}
+
+/**
+ * How many of the last `PRODUCT_SHARE_WINDOW` starts, newest by `at`, were product. `of` IS ALWAYS THE WINDOW: fewer recorded starts than ten
+ * count as not product, so a gate with no history offers product rows first, which is the direction the order points.
+ * @param {{ at: number, kind: string }[]} starts @returns {{ product: number, of: number }}
+ */
+export function productShare(starts) {
+  const last = [...starts].sort((a, b) => a.at - b.at).slice(-PRODUCT_SHARE_WINDOW);
+  return { product: last.filter((start) => start.kind === "product").length, of: PRODUCT_SHARE_WINDOW };
+}
+
+/**
+ * THE ROWS THE ENGINEER POOL IS OFFERED. Below the floor, ONLY the product rows when any is offerable; when none is, every row as before and
+ * ONE `NO PRODUCT ROW OFFERABLE` line, which `product-manager` reads as an order to stock the shelf. AN ENGINEER IS NEVER LEFT IDLE TO HOLD
+ * A RATIO. Only the pool is restricted: a row a lane routes to its owner is not an engineer's start and passes through. ABSENT MEANS NOT
+ * ASKED (`decide` sits on its complexity limit, so there is no default there): no starts or no declaration offers as the gate always did.
+ * @param {any[]} offerable @param {{ starts?: { at: number, kind: string }[], declaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void }} [read]
+ */
+export function offeredByShare(offerable, { starts, declaration, shareLog = (line) => process.stderr.write(line) } = {}) {
+  if (starts === undefined || declaration === undefined) return offerable;
+  const { product, of } = productShare(starts);
+  if (product >= PRODUCT_SHARE_FLOOR) return offerable;
+  const regions = productRegionsOf(declaration);
+  const pool = offerable.filter((row) => laneOwnerOf(row) === null).map((row) => ({ row, ...rowKind(declaredRegionFiles(String(row.body ?? "")), regions) }));
+  const productRows = pool.filter((entry) => entry.kind === "product").map((entry) => entry.row);
+  if (productRows.length > 0) return [...offerable.filter((row) => laneOwnerOf(row) !== null), ...productRows];
+  const unreadable = pool.filter((entry) => entry.unreadable).map((entry) => subjectRef(entry.row.repoKey, entry.row.number));
+  shareLog(`NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`);
+  return offerable;
+}
+
+/**
+ * THE LAST TEN ENGINEER STARTS, from the rows themselves and NO `gh` CALL: a start is a row the tick finds `in-progress` under a `session:worker-<n>`
+ * label (a spawned engineer, which is the only kind that claims a new row today), recorded ONCE at the first tick that sees it, with its kind decided
+ * THEN because the row's body is gone from the list once it closes. A seat's row (`session:ceo`) starts nothing. The time is the tick's, which is
+ * up to one tick after the claim and orders starts exactly as the claims were ordered. NEVER THROWS, for `claimRefusalStreaksNow`'s reason: a
+ * broken memory must not stop the orders behind it, and it reads as no history, which offers product first.
+ * @param {any[]} openRows @param {{ stateDir?: string, declaration: Parameters<typeof productRegionsOf>[0], now?: number, log?: (line: string) => void }} host
+ * @returns {{ row: string, at: number, kind: string }[]}
+ */
+export function recordEngineerStarts(openRows, { stateDir = REVIEWER_STATE_DIR, declaration, now = Date.now(), log = (line) => process.stderr.write(line) }) {
+  try {
+    const path = `${stateDir}/${ENGINEER_STARTS_FILE}`;
+    const before = readJsonObject(path);
+    const regions = productRegionsOf(declaration);
+    const after = { ...before };
+    for (const row of openRows.filter(startedByAnEngineer)) {
+      const ref = subjectRef(row.repoKey, row.number);
+      after[ref] ??= { at: now, kind: rowKind(declaredRegionFiles(String(row.body ?? "")), regions).kind };
+    }
+    const kept = Object.entries(after).sort(([, a], [, b]) => a.at - b.at).slice(-PRODUCT_SHARE_WINDOW);
+    if (JSON.stringify(Object.fromEntries(kept)) !== JSON.stringify(before)) writeJsonObject(path, Object.fromEntries(kept));
+    return kept.map(([row, start]) => ({ row, ...start }));
+  } catch (/** @type {any} */ err) {
+    log(`engineer-starts: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no history, so product rows are offered first this tick.\n`);
+    return [];
+  }
+}
+
+/** A claimed row held by a `worker-<n>` session: the only claim that is an engineer START. @param {any} row */
+function startedByAnEngineer(row) {
+  const labels = labelsOf(row);
+  return labels.includes(CLAIM_LABEL) && labels.some((label) => label.startsWith(`${SESSION_PREFIX}worker-`));
+}
+
+/** #3820: `decide`'s two arguments for the product share, read at the tick: the starts memory (local files, no `gh`) and the declaration `dora` is in. @param {any[]} openRows */
+function engineerShareReads(openRows) {
+  const declaration = homeProjectDeclaration();
+  return { engineerStarts: recordEngineerStarts(openRows, { declaration }), projectDeclaration: declaration };
+}
+
 /**
  * One order per unclaimed Ready row, priority rows first then oldest first, capped.
  *
@@ -5795,7 +5910,10 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           callCountSignals?: { row: number, session: string, calls: number }[],
  *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>, answerGiven?: ReturnType<typeof answerGivenOrders>,
  *           labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null,
- *           claimRefusals?: Record<string, { reason: string, ticks: number }> }} state
+ *           claimRefusals?: Record<string, { reason: string, ticks: number }>,
+ *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void }} state
+ *        `engineerStarts` and `projectDeclaration` (#3820) are the last engineer starts and the declaration that says which rows are product; the engineer pool is
+ *        offered product rows only while fewer than 6 of the last 10 starts were one (`offeredByShare`). OMITTED MEANS NOT ASKED: the offer is unrestricted.
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -5861,7 +5979,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven }) {
+  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -5887,7 +6005,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // causes above use: work that already EXISTS outranks work nobody has started.
   const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows });
   orders.push(...rowBranchOrders(readyRows, rowBranches, prs), ...incompleteRowOrders(readyRows)); // #2791, #3010
-  orders.push(...rowOrders(offerable), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog })), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
@@ -7285,7 +7403,7 @@ function main() {
     trunkRed: readTrunkRed(),
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay() }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
+    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay(), ...engineerShareReads(allOpen) }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
   const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const incident = holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required });
