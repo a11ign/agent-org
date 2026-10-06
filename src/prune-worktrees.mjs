@@ -82,7 +82,33 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.mjs";
-import { claimRefusal, recordRemoval } from "./worktree-removal.mjs";
+import { claimRefusal, recordRemoval, rowsClosed } from "./worktree-removal.mjs";
+
+/**
+ * #3850: HOW LONG A TREE WHOSE ROW HAS CLOSED MUST BE UNTOUCHED BEFORE ITS STAMP STOPS HOLDING IT. `heldByOwner` reads `.a11y-owner`,
+ * a COPY of a claim nobody releases, so a tree whose row closed and whose session ended stayed HELD for ever: the 2026-10-06 run
+ * refused 269 of 336 worktrees for that reason. The row's state is the fact and the stamp is the copy, so a CLOSED row plus this much
+ * git quiet is "the session is gone". SIX HOURS IS A CHOICE, NOT A MEASUREMENT: it is longer than the ten-minute window that guards
+ * a command (#220) and than the idle of a session between wakes that #2020 describes in hours, and short enough that a finished tree
+ * does not stand through a working day of new claims. The row being closed, not the clock, is what makes a tree finished.
+ */
+export const CLOSED_ROW_RELEASE_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * #3850: THE MOST TREES ONE RUN REMOVES. Deleting a tree is a `node_modules` unlink, and 336 of them at once is the I/O burst that
+ * helped hang the host on 2026-10-06 (#3846). A backlog drains over the hourly runs instead: 25 a run clears the 269 refused in
+ * about eleven, and the unit runs niced.
+ */
+export const MAX_REMOVALS_PER_RUN = 25;
+
+/**
+ * #3850: the pause between two removals in one run, so the unlinks do not arrive back to back. SHORT ON PURPOSE: the unit's `Nice=19` and
+ * `IOSchedulingClass=idle` are what keep a removal from competing with a session; this only stops twenty-five of them queueing as one burst.
+ */
+export const PAUSE_BETWEEN_REMOVALS_MS = 250;
+
+/** @type {(ms: number) => void} A synchronous sleep: the whole tool is synchronous, and the pause is the point of the run's shape. */
+const sleep = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 /** What the removal log names as the asker: this file's own CLI, run hourly by `a11ign-worktree-prune.service`. */
 const CALLER = "prune-worktrees.mjs";
@@ -715,6 +741,7 @@ export function heldByOwner(worktreePath, mainLine, { run = defaultRun, owner = 
  *   inconclusive: ReportedWorktree[],
  *   active: ReportedWorktree[],
  *   skippedPrimary: string | null,
+ *   unexamined: number,
  * }} PruneReport
  */
 
@@ -1017,62 +1044,110 @@ function claimThenRemove(reported, ignorable, { claim = claimRefusal, dryRun, ru
 }
 
 /**
+ * #3850: THE OWNER'S HOLD, UNLESS THE ROW HAS RELEASED IT. `heldByOwner` refuses a stamped tree whose branch has delivered nothing or
+ * which is detached; this lifts that refusal only when BOTH the tree has been quiet for `CLOSED_ROW_RELEASE_AGE_MS` and every row it
+ * names is CLOSED. The quiet is asked first because it is local and the row costs an API call; an unanswered quiet question keeps the
+ * hold, as does an unreadable row. Dirty and unmerged trees never get here -- `classify` has already refused them.
+ *
+ * @param {WorktreeEntry} entry
+ * @param {PruneContext} ctx
+ * @returns {{ refused: false } | { refused: true, reason: string }}
+ */
+function heldUnlessReleased(entry, ctx) {
+  const held = heldByOwner(entry.path, ctx.mainLine, { run: ctx.run });
+  if (!held.refused) return held;
+  const quiet = recentGitActivity(entry.path, { run: ctx.run, now: ctx.now, windowMs: CLOSED_ROW_RELEASE_AGE_MS });
+  if (quiet !== false) return held;
+  const row = ctx.rowsClosed(entry);
+  return row.closed ? { refused: false } : { refused: true, reason: `${held.reason}. ${row.reason}` };
+}
+
+/**
+ * @typedef {{
+ *   repoRoot: string, run: typeof defaultRun, now: number, dryRun: boolean, primaryPath: string | null,
+ *   mainLine: Set<string> | null, report: PruneReport, hash?: (file: string) => string,
+ *   rowsClosed: typeof rowsClosed, pause: () => void,
+ *   remove: (path: string, deps: { run: typeof defaultRun }) => void,
+ *   claim?: typeof claimRefusal, record?: typeof recordRemoval,
+ * }} PruneContext
+ */
+
+/**
+ * One non-primary tree: assess it, then put it in exactly one bucket of `ctx.report`, removing it when nothing refuses.
+ *
+ * @param {WorktreeEntry} entry
+ * @param {PruneContext} ctx
+ */
+function pruneEntry(entry, ctx) {
+  const { report, run } = ctx;
+  const reported = { path: entry.path, branch: entry.branch };
+  const assessment = assessWorktree(ctx.repoRoot, entry, { run, now: ctx.now, ignoreAuthority: ctx.primaryPath });
+  const verdict = classify(assessment);
+  if (verdict !== "remove") {
+    report[VERDICT_BUCKET[verdict]].push(reported);
+    return;
+  }
+  // #2020 BEFORE #1373, and only because it is the cheaper question and the more actionable answer --
+  // a tree that is both held and holding records reports the owner who is standing in it. Either
+  // refusal removes nothing, so the order decides which reason is printed and nothing else.
+  const stillHeld = heldUnlessReleased(entry, ctx);
+  if (stillHeld.refused) {
+    report.held.push({ ...reported, reason: stillHeld.reason });
+    return;
+  }
+  // #1373: merged and clean is a fact about what GIT tracks; the gitignored records go with the directory.
+  const held = unverifiedRecords(entry.path, ctx.primaryPath, { hash: ctx.hash });
+  if (held.refused) {
+    report.records.push({ ...reported, reason: held.reason });
+    return;
+  }
+  // #3850: the pause sits BEFORE every removal but the run's first, so a run that removes one tree waits for nothing.
+  if (!ctx.dryRun && report.removed.length > 0) ctx.pause();
+  const outcome = claimThenRemove(reported, assessment.ignorable,
+    { claim: ctx.claim, dryRun: ctx.dryRun, run, remove: ctx.remove, record: ctx.record });
+  if (outcome.into === "held") report.held.push({ ...reported, reason: outcome.reason });
+  else if (outcome.into === "dirty") report.dirty.push(reported);
+  else report.removed.push({ ...reported, cleared: assessment.ignorable });
+}
+
+/**
  * The whole flow: list, classify, remove the clean+merged, name the rest, never touch the primary.
  *
  * @param {string} repoRoot the repository whose `git worktree list` is authoritative
  * @param {{ run?: typeof defaultRun, remove?: (path: string, deps: { run: typeof defaultRun }) => void,
  *   now?: number, dryRun?: boolean, hash?: (file: string) => string, claim?: typeof claimRefusal,
- *   record?: typeof recordRemoval }} [deps] `dryRun` skips the removal
+ *   record?: typeof recordRemoval, rowsClosed?: typeof rowsClosed, maxRemovals?: number, pauseMs?: number,
+ *   pause?: (ms: number) => void }} [deps] `dryRun` skips the removal
  *   and nothing else -- same walk, same predicate, same buckets, so the listing is the tool's own answer
  *   rather than a second one. `hash` reads a `runs/` record's sha256 (#1373). `claim` reads the ROW's claim
- *   (#2782) and `record` writes the removal's log line.
+ *   (#2782) and `record` writes the removal's log line. `rowsClosed` reads whether the rows a HELD tree names
+ *   have closed (#3850). `maxRemovals` ends the walk once that many trees are removed (or, in a dry run, would
+ *   be) and counts the trees it did not reach in `unexamined`; it defaults to no limit, because the limit is
+ *   a property of a RUN and `main()` is the run. `pauseMs` is the wait between removals, also `main()`'s.
  * @returns {PruneReport}
  */
-export function pruneWorktrees(repoRoot, { run = defaultRun, remove, now = Date.now(), dryRun = false, hash, claim, record } = {}) {
+export function pruneWorktrees(repoRoot, deps = {}) {
+  const { run = defaultRun, remove, now = Date.now(), maxRemovals = Infinity, pauseMs = 0, pause = sleep } = deps;
   const porcelain = run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
   const entries = parseWorktreeList(porcelain);
   const primaryPath = entries.find((entry) => isPrimaryWorktree(entry.path))?.path ?? null;
   /** @type {PruneReport} */
   const report = {
     removed: [], records: [], held: [], dirty: [], cherryPicked: [], inconclusive: [], active: [],
-    skippedPrimary: null,
+    skippedPrimary: null, unexamined: 0,
   };
-  // #2020: one walk for the whole run, not one per worktree -- it is the same answer for every tree.
-  const mainLine = mainLineCommits(repoRoot, { run });
-  const doRemove = remove ?? ((path, { run: r }) => {
-    r("git", ["worktree", "remove", path], { cwd: repoRoot });
-  });
-
+  /** @type {PruneContext} */
+  const ctx = {
+    repoRoot, run, now, dryRun: deps.dryRun ?? false, primaryPath, report, hash: deps.hash, claim: deps.claim,
+    record: deps.record, rowsClosed: deps.rowsClosed ?? rowsClosed, pause: () => pause(pauseMs),
+    // #2020: one walk for the whole run, not one per worktree -- it is the same answer for every tree.
+    mainLine: mainLineCommits(repoRoot, { run }),
+    remove: remove ?? ((path, { run: r }) => { r("git", ["worktree", "remove", path], { cwd: repoRoot }); }),
+  };
   for (const entry of entries) {
-    if (isPrimaryWorktree(entry.path)) {
-      report.skippedPrimary = entry.path;
-      continue;
-    }
-    const reported = { path: entry.path, branch: entry.branch };
-    const assessment = assessWorktree(repoRoot, entry, { run, now, ignoreAuthority: primaryPath });
-    const verdict = classify(assessment);
-    if (verdict === "remove") {
-      // #2020 BEFORE #1373, and only because it is the cheaper question and the more actionable answer --
-      // a tree that is both held and holding records reports the owner who is standing in it. Either
-      // refusal removes nothing, so the order decides which reason is printed and nothing else.
-      const stillHeld = heldByOwner(entry.path, mainLine, { run });
-      if (stillHeld.refused) {
-        report.held.push({ ...reported, reason: stillHeld.reason });
-        continue;
-      }
-      // #1373: merged and clean is a fact about what GIT tracks; the gitignored records go with the directory.
-      const held = unverifiedRecords(entry.path, primaryPath, { hash });
-      if (held.refused) {
-        report.records.push({ ...reported, reason: held.reason });
-        continue;
-      }
-      const outcome = claimThenRemove(reported, assessment.ignorable, { claim, dryRun, run, remove: doRemove, record });
-      if (outcome.into === "held") report.held.push({ ...reported, reason: outcome.reason });
-      else if (outcome.into === "dirty") report.dirty.push(reported);
-      else report.removed.push({ ...reported, cleared: assessment.ignorable });
-    } else {
-      report[VERDICT_BUCKET[verdict]].push(reported);
-    }
+    if (isPrimaryWorktree(entry.path)) report.skippedPrimary = entry.path;
+    else if (report.removed.length >= maxRemovals) report.unexamined += 1;
+    else pruneEntry(entry, ctx);
   }
   return report;
 }
@@ -1108,13 +1183,17 @@ export function formatReport(report, dryRun = false) {
   }
   if (report.held.length > 0) {
     lines.push(`refused ${report.held.length} HELD worktree(s) (#2020) -- stamped by a session and carrying no `
-      + "commit of their own, or standing (detached, #2149), so the claim is open rather than finished; nothing removed:");
+      + "commit of their own, or standing (detached, #2149), and no closed row has released them (#3850), so the claim is open rather than finished; nothing removed:");
     for (const r of report.held) lines.push(`  ${r.path}  (${r.branch ?? "detached"}): ${r.reason}`);
   }
   if (report.records.length > 0) {
     lines.push(`refused ${report.records.length} worktree(s) holding ${RECORDS_DIR}/ records not verified in the `
       + "primary checkout (#1373) -- nothing removed:");
     for (const r of report.records) lines.push(`  ${r.path}  (${r.branch ?? "detached"}): ${r.reason}`);
+  }
+  if (report.unexamined > 0) {
+    lines.push(`stopped at the per-run removal limit (#3850): ${report.unexamined} worktree(s) not `
+      + "examined this run, left for the next one -- a backlog drains over several runs, never in one burst");
   }
   pushSection(lines, report.dirty,
     `refused ${report.dirty.length} DIRTY worktree(s) -- uncommitted or unmerged work, named, nothing removed:`);
@@ -1176,7 +1255,7 @@ async function main() {
   const positional = process.argv.slice(2).find((a) => !a.startsWith("--"));
   const repoRoot = positional ?? process.cwd();
   const root = statSync(repoRoot).isDirectory() ? repoRoot : process.cwd();
-  const report = pruneWorktrees(root, { dryRun });
+  const report = pruneWorktrees(root, { dryRun, maxRemovals: MAX_REMOVALS_PER_RUN, pauseMs: PAUSE_BETWEEN_REMOVALS_MS });
   process.stdout.write(formatReport(report, dryRun) + "\n");
   // #933: PRINTED ON EVERY RUN, INCLUDING `--apply`, and after the removals rather than instead of them.
   // The prune already refuses a dirty worktree; the gap this closes is that nobody hears the refusal, so
