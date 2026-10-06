@@ -2494,18 +2494,28 @@ function answerGivenOrder(row, claimant, given) {
  * a guess. NO ORDER FOR A CLAIMANT HERDR SAYS IS NOT LIVE (`liveWorkspaceLabels`), the same reading
  * `withoutEndedAnswerSessions` uses; when herdr will not say (`null`), the order is made, as there.
  *
+ * (#3566, slice 3) THE TIMELINES ARE ASKED TOGETHER (`readWithFirstWaveTogether`): the lane cost the SUM of its per-row reads, 11 calls and 11.9 s of a
+ * 46.6 s gate in one run at load 45.5. EVERY touched live row is read, even when `MAX_ROW_ORDERS_PER_TICK` would have stopped the old loop early,
+ * because a row's order count is known only after its timeline is read, so no smaller set is provably enough; the orders are still the first
+ * `MAX_ROW_ORDERS_PER_TICK`, in the order the rows came. herdr is asked ONCE, before the read, because the rehearsal runs the read twice.
+ *
  * @param {any[]} openRows @param {(args: string[]) => string} [run] @param {number} [nowMs]
- * @param {() => string[] | null} [agents]
+ * @param {() => string[] | null} [agents] @param {typeof runBatch | undefined} [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
  */
-export function answerGivenOrders(openRows, run = defaultRun, nowMs = Date.now(), agents = liveWorkspaceLabels) {
+export function answerGivenOrders(openRows, run = defaultRun, nowMs = Date.now(), agents = liveWorkspaceLabels, batch = run === defaultRun ? runBatch : undefined) {
   const touched = (openRows ?? []).filter((row) => sessionOf(row) !== null
     && nowMs - Date.parse(String(row.updatedAt)) <= ANSWER_GIVEN_WINDOW_MS);
   if (touched.length === 0) return [];
   const live = agents();
+  const askable = touched.filter((row) => live === null || live.includes(/** @type {string} */ (sessionOf(row))));
+  return readWithFirstWaveTogether((read) => answerGivenOrdersFromTimelines(askable, read, nowMs), run, batch);
+}
+
+/** @param {any[]} rows touched, claimed and live @param {(args: string[]) => string} run @param {number} nowMs */
+function answerGivenOrdersFromTimelines(rows, run, nowMs) {
   const orders = [];
-  for (const row of touched) {
+  for (const row of rows) {
     const claimant = /** @type {string} */ (sessionOf(row));
-    if (live !== null && !live.includes(claimant)) continue;
     const timeline = readRowTimeline(Number(row.number), run);
     for (const given of answersGiven(timeline, claimant, nowMs)) orders.push(answerGivenOrder(row, claimant, given));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) return orders.slice(0, MAX_ROW_ORDERS_PER_TICK);
