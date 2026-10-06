@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { loadavg, tmpdir } from "node:os";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalled, windowOf,
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
   fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts,
@@ -422,7 +423,7 @@ const SYSCTL_MARKER = join(tmpdir(), `a11y-1003-sysctl-ran.${process.pid}`);
 
 /** A `PATH` whose first entry holds a `sysctl` that records being run and fails. */
 function pathWithShoutingSysctl(): string {
-  const dir = mkdtempSync(join(tmpdir(), "a11y-1003-"));
+  const dir = tmpDir("a11y-1003-");
   writeFileSync(join(dir, "sysctl"), `#!/bin/sh
 touch ${SYSCTL_MARKER}
 echo "sysctl was run" >&2

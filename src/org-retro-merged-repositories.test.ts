@@ -13,12 +13,12 @@
  * Ten merges; sorted 5 10 15 20 25 30 40 50 60 90, so the median is (25 + 30) / 2 = 27.5, which prints as 28m. The primary alone is 2 merges and a median of 30.
  */
 import { test } from "node:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import * as retro from "./org-retro.mjs";
 import { parseProjectDeclaration } from "./project-config.mjs";
+import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const NOW = Date.parse("2026-10-05T00:22:00Z");
 const WINDOW = { since: NOW - 24 * 3_600_000, until: NOW };
@@ -136,7 +136,7 @@ test("the read pages past 200 and says so when it hits its limit: a full page is
 });
 
 test("the first reading after the change prints the old (primary only) and the new total once, then stops", () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "retro-3593-"));
+  const stateDir = tmpDir("retro-3593-");
   const yesterday = { date: "2026-10-04", numbers: { prsMerged: 47 } };
   const before = { status: "read" as const, entries: [yesterday], ioError: false, text: "" };
 

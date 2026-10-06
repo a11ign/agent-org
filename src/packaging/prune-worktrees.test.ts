@@ -35,11 +35,12 @@ import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, worktreeBranch,
 } from "../worktree-removal.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
 // named `agent/delivered-1948` would otherwise read the real #1948 over `gh`, and every removal would land in the real log.
 // The tests that ARE about either pass their own `claim` and `record` and read the log they pointed this at.
-process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "prune-removal-log-")), "worktree-removals");
+process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("prune-removal-log-"), "worktree-removals");
 const NOBODY_CLAIMS: () => { refused: false } = () => ({ refused: false });
 const pruneWorktrees = (root: string, deps: NonNullable<Parameters<typeof pruneWorktreesWithClaims>[1]> = {}) =>
   pruneWorktreesWithClaims(root, { claim: NOBODY_CLAIMS, ...deps });
@@ -940,7 +941,7 @@ test("#2020: a stamped tree whose delivery could not be determined is REFUSED, n
     assert.match((refusal as { reason: string }).reason, /could not be determined/);
     // The same collapse one step out: a `git rev-parse` that cannot answer.
     assert.equal(deliveredOwnCommit(held, new Set(["deadbeef"]), { run: () => { throw new Error("no"); } }), "unknown");
-    assert.equal(mainLineCommits(realpathSync(mkdtempSync(join(tmpdir(), "a11y-no-main-")))), null,
+    assert.equal(mainLineCommits(realpathSync(tmpDir("a11y-no-main-"))), null,
       "a repository with no origin/main answers null -- never an empty Set, which would read as 'nothing is "
       + "on main's line' and make every stamped tree look delivered");
   } finally { rmSync(root, { recursive: true, force: true }); }

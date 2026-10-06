@@ -8,12 +8,12 @@
 // nothing to point at and nothing is set.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const PROJECT = process.env.A11IGN_CHECKOUT ?? "/home/agent/repos/a11y-witness";
@@ -107,7 +107,7 @@ test("done-when 2, POSITIVE CONTROL: the short form in a pull request of another
 
 /** A `gh` that answers the closer's one pull-request read and records every other call. */
 function runCloser({ rowState }) {
-  const dir = mkdtempSync(join(tmpdir(), "close-rows-full-form-"));
+  const dir = tmpDir("close-rows-full-form-");
   const calls = join(dir, "calls.log");
   const pr = { merged: true, baseRefName: "main", mergedAt: "2026-10-02T14:00:00Z", headRefName: "agent/x-2995", body: "Closes a11ign/a11ign#2995",
     mergeCommit: { oid: "abc1234" }, closingIssuesReferences: { nodes: [

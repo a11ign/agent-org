@@ -23,10 +23,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, statSync,
+import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
   existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
@@ -41,6 +40,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 /**
  * The keys of a project that has NOT turned the chairman-messaging units on (#2901). The tests that pin "the units the tool ships" hand it as `declaredKeys`
@@ -333,7 +333,7 @@ test("#2783: lastModelIn reads the LAST assistant answer, ignores <synthetic>, a
 });
 
 const sessionsDir = (files: Record<string, string>) => {
-  const root = mkdtempSync(join(tmpdir(), "host-units-2783-"));
+  const root = tmpDir("host-units-2783-");
   for (const [rel, text] of Object.entries(files)) {
     mkdirSync(join(root, rel, ".."), { recursive: true });
     writeFileSync(join(root, rel), text);
@@ -507,7 +507,7 @@ test("#2458: the last declaration wins, as in systemd, and a cache in a differen
  * @returns {{ dir: string, git: (args: string[]) => string, pendingSha: string }}
  */
 const repoWithARetirement = () => {
-  const dir = mkdtempSync(join(tmpdir(), "host-units-retirement-"));
+  const dir = tmpDir("host-units-retirement-");
   const git = (args: string[]) =>
     // `sandboxGitEnv()` for the same reason the production spawn uses it: an inherited `GIT_DIR` from a
     // hook or a merge worktree would aim every one of these at somebody else's repository.
@@ -1610,7 +1610,7 @@ const trustingEvery = (paths: string[]) => paths.map((path) => `[projects."${pat
  * @returns the deps bag, and the installed unit's path so a test can rewrite it
  */
 const hostWithOneUnit = (installedSuffix: string) => {
-  const root = mkdtempSync(join(tmpdir(), "host-units-2184-"));
+  const root = tmpDir("host-units-2184-");
   const dirs = Object.fromEntries(["shipped", "installed", "bin", "repo", "workers", "leads"]
     .map((name) => [name, join(root, name)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
@@ -1831,7 +1831,7 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
 
 /** The wrapper AS IT INSTALLS (#2620: `host/gh.in` is a template), rendered once into a temp directory so it can be RUN. */
 const WRAPPER = (() => {
-  const rendered = join(mkdtempSync(join(tmpdir(), "gh-wrapper-render-")), "gh");
+  const rendered = join(tmpDirForFile("gh-wrapper-render-"), "gh");
   writeFileSync(rendered, shippedScriptText("gh") as string, { mode: 0o755 });
   return rendered;
 })();
@@ -1850,7 +1850,7 @@ const listedIds = (text: string) => text.split("\n").map((l) => l.trim()).filter
  * every "reached gh-real" assertion below, since a wrapper that exits before the stub also prints nothing.
  */
 const wrapperHost = ({ workers = true, leads = true, list = true } = {}) => {
-  const root = mkdtempSync(join(tmpdir(), "gh-wrapper-2332-"));
+  const root = tmpDir("gh-wrapper-2332-");
   const workersDir = join(root, "workers");
   const leadsDir = join(root, "leads");
   const marker = join(root, "reached");
@@ -1975,7 +1975,7 @@ test("#2332: the leads list renders EXACTLY the declared decision-holders, each 
 });
 
 const identityDeps = () => {
-  const root = mkdtempSync(join(tmpdir(), "host-identity-2332-"));
+  const root = tmpDir("host-identity-2332-");
   const where = { shippedDir: join(root, "shipped"), scriptDir: join(root, "bin"),
     workersDir: join(root, "workers"), leadsDir: join(root, "leads"), gitConfigPath: join(root, "gitconfig") };
   mkdirSync(where.shippedDir);
@@ -2142,7 +2142,7 @@ test("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cach
 test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOME: files match, notes are NOT findings", () => {
   // The real entry point, so `main`'s wiring (install writes the files; --json carries `notes` apart from
   // `findings`, which is what the gate wakes a session on) is exercised rather than assumed.
-  const home = mkdtempSync(join(tmpdir(), "host-e2e-2332-"));
+  const home = tmpDir("host-e2e-2332-");
   try {
     const bin = join(home, "stub-bin");
     mkdirSync(bin);
@@ -2326,7 +2326,7 @@ test("#3643: a shipped unit that declares no GH_CONFIG_DIR is a finding EVEN WHE
 
 /** A host whose `~/.config/gh` and two bot configs hold exactly the `hosts.yml` texts given (`null` writes nothing). */
 const ghHost = (files: { person: string | null, workers?: string | null, leads?: string | null }) => {
-  const root = mkdtempSync(join(tmpdir(), "host-units-3643-"));
+  const root = tmpDir("host-units-3643-");
   const dirs = { person: join(root, "home", ".config", "gh"), workers: join(root, "workers", "gh"), leads: join(root, "leads", "gh") };
   for (const [name, text] of Object.entries({ workers: "user: workers-bot\n", leads: "user: leads-bot\n", ...files })) {
     if (text === null) continue;
@@ -2514,7 +2514,7 @@ function rememberingSystemctl() {
 
 function withListenerHome(body: (home: { shippedDir: string, installedDir: string, install: (keys: Set<string>) => string[],
   deps: (keys: Set<string>) => Record<string, unknown>, systemctl: ReturnType<typeof rememberingSystemctl> }) => void) {
-  const root = mkdtempSync(join(tmpdir(), "host-units-3025-"));
+  const root = tmpDir("host-units-3025-");
   try {
     const shippedDir = join(root, "host");
     const installedDir = join(root, ".config/systemd/user");

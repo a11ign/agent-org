@@ -2,13 +2,13 @@
 // the records that matter: its ids are made up). Nothing here reads the home directory; the one directory tree a test reads is built under the temporary directory.
 // no-token: gh -- `ingestTranscripts` is the transcript half of a run: nothing here reaches GitHub, and the one directory tree read is built under the temporary directory
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { eventsForRow, readStore } from "./store.mjs";
 import { ingestTranscripts } from "./trace.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 
@@ -89,7 +89,7 @@ test("RESUME: a read from the offset, with the carry, gives the events of one re
 
 /** A tree in the shape Codex keeps: `<root>/<year>/<month>/<day>/rollout-*.jsonl`. */
 function sessionsTree(lines) {
-  const dir = mkdtempSync(join(tmpdir(), "codex-turns-"));
+  const dir = tmpDir("codex-turns-");
   const day = join(dir, "sessions", "2026", "10", "04");
   mkdirSync(day, { recursive: true });
   writeFileSync(join(day, "rollout-2026-10-04T20-09-06-sess-1.jsonl"), `${lines.join("\n")}\n`);

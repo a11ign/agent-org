@@ -3,8 +3,7 @@
 // The records are in the shapes measured on 2026-10-04: an `assistant` record per content block sharing one `message.id`, `usage.cache_creation` split by TTL, and a
 // `user` record wrapped in `<pasted_content` for a delivered order.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -14,6 +13,7 @@ import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, e
 import { aggregate, weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
 import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -197,7 +197,7 @@ test("SUBJECT: what a cause key names, and the cases it must NOT guess", () => {
 });
 
 test("STORE: append-only and idempotent; a second ingest adds nothing and rewrites nothing", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "trace-")), "events.ndjson");
+  const path = join(tmpDir("trace-"), "events.ndjson");
   const all = [...worker().events, ...orchestrator().events];
   const first = appendEvents(path, all);
   assert.deepEqual(first, { added: all.length, superseded: 0, skipped: 0 });
@@ -291,7 +291,7 @@ test("ARGS --html: the flag takes no value, needs --out, and leaves the other fl
 });
 
 test("--html writes the swimlane to the path, one file per row when a number names several, and prints where (#3512)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "trace-swimlane-"));
+  const dir = tmpDir("trace-swimlane-");
   const subject = (title) => ({ title, found: [{ id: "gh:a:filed", kind: "filed", source: "github", session: "github", at: at("2026-10-04T10:00:00Z"), row: 9001, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, actor: "product-manager" }] });
   const now = at("2026-10-04T12:00:00Z");
   const lines = [];
@@ -471,7 +471,7 @@ test("PRODUCT-MANAGER: a turn that WROTE to a row is on that row, whatever its w
 });
 
 test("STORE: a corrected copy of an event supersedes the stored one by being APPENDED; an identical copy adds nothing; readStore takes the last copy of an id", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "trace-supersede-")), "events.ndjson");
+  const path = join(tmpDir("trace-supersede-"), "events.ndjson");
   const before = readPm().events.find((event) => event.id === "turn:pm_1");
   const stale = { ...before, rows: undefined, touchedRows: undefined, row: null }; // the turn as stored before the attribution fix
   const store = openStore(path);
@@ -929,7 +929,7 @@ test("NO SEARCH (#3644): no source of src/trace/ reads the search API; the scan 
 });
 
 test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, keys the calls to the turns it just read, and a second run reads nothing; the report summarises the calls and prints none", () => {
-  const dir = mkdtempSync(join(tmpdir(), "trace-gh-ledger-"));
+  const dir = tmpDir("trace-gh-ledger-");
   mkdirSync(join(dir, "projects", "p"), { recursive: true });
   writeFileSync(join(dir, "projects", "p", "worker-9001.jsonl"), WORKER);
   const shell = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true";
@@ -962,12 +962,12 @@ test("DEFERRAL (#3510): a span is keyed by its cause key's pull request (subject
   assert.deepEqual(eventsForRow([event], { rows: [9001], prs: [9100] }), [event], "the pull request that closes the row carries it");
   assert.deepEqual(eventsForRow([event], { rows: [9001], prs: [] }), [], "a row alone does not reach a pull request's wait, as for every pull request event");
   assert.equal(eventsOfDeferrals([{ ...SPAN, key: "worker-9001/blocker-cleared/x" }], ROW_REPO)[0].row, 9001, "a key that names nothing falls back to the session's name, as a wake does");
-  const store = openStore(join(mkdtempSync(join(tmpdir(), "trace-deferral-id-")), "events.ndjson"));
+  const store = openStore(join(tmpDir("trace-deferral-id-"), "events.ndjson"));
   assert.equal(appendToStore(store, [event, ...eventsOfDeferrals([SPAN], ROW_REPO)]).added, 1, "the id is the key and the start: a line appended twice by a killed tick is one event");
 });
 
 test("DEFERRAL (#3510): the log is ingested INCREMENTALLY through the ingest state: a second run reads nothing, an appended span reads only the new bytes, and a bad line fails the file and moves nothing", () => {
-  const dir = mkdtempSync(join(tmpdir(), "trace-deferral-"));
+  const dir = tmpDir("trace-deferral-");
   const logFile = join(dir, DEFERRAL_LOG_FILE);
   const store = openStore(join(dir, "events.ndjson"));
   const state = { version: 2, firstRunAt: 0, firstRunSince: 0, storeBytes: 0, files: {} };
@@ -992,7 +992,7 @@ test("DEFERRAL (#3510): the log is ingested INCREMENTALLY through the ingest sta
 });
 
 test("DEFERRAL (#3510): through ingestTranscripts the same state holds the transcripts and the log, and the report prints the span the two events join and keeps naming what is unrecorded", () => {
-  const dir = mkdtempSync(join(tmpdir(), "trace-deferral-run-"));
+  const dir = tmpDir("trace-deferral-run-");
   mkdirSync(join(dir, "projects", "p"), { recursive: true });
   writeFileSync(join(dir, "projects", "p", "orchestrator.jsonl"), ORCHESTRATOR);
   const logFile = join(dir, DEFERRAL_LOG_FILE);

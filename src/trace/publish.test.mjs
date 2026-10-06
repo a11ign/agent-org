@@ -1,18 +1,18 @@
 // a11ign/a11ign#3515: the trace pages' publisher. Fixtures only: no `gh`, no `trace` child, no host directory; a temp directory is the output and a stub is the renderer.
 // no-token: gh -- `readHead` and the renderer are injected; the two `gh` seams (`readHead`, `recentClosedRows`) are exercised through a fake `gh` that records its arguments.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CLOSED_ROWS_MAX_PAGES, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, parseArgs, publish, readStamp, recentClosedRows, STAMP_FILE, whyRun } from "./publish.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const MINUTE = 60 * 1000;
 const T0 = Date.parse("2026-10-05T12:00:00Z");
 const HOUR = 60 * MINUTE;
 const repos = ["a11ign/a11ign", "a11ign/agent-org"];
 
-const scratch = () => mkdtempSync(join(tmpdir(), "trace-publish-"));
+const scratch = () => tmpDir("trace-publish-");
 /** A renderer that writes a recognisable page and counts its calls, so "does nothing" is a count and not an inference. */
 function renderer() {
   const calls = [];

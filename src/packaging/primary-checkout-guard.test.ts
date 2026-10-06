@@ -28,14 +28,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 import type { GitSandbox } from "../lib/git-sandbox.ts";
 import { updatePrimary } from "../update-primary.mjs";
 import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const PRE_COMMIT = join(HOME_CHECKOUT, "scripts/git-hooks/pre-commit");
 const POST_CHECKOUT = join(HOME_CHECKOUT, "scripts/git-hooks/post-checkout");
@@ -93,7 +93,7 @@ function currentBranch(sandbox: GitSandbox): string {
 
 /** A linked worktree off `sandbox`, on its own branch — torn down by the caller. */
 function addWorktree(sandbox: GitSandbox, branch: string): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "a11y-git-sandbox-wt-")));
+  const dir = realpathSync(tmpDir("a11y-git-sandbox-wt-"));
   rmSync(dir, { recursive: true, force: true }); // `git worktree add` must create the directory itself
   sandbox.run(["worktree", "add", "-b", branch, dir]);
   return dir;
@@ -121,7 +121,7 @@ test("pre-commit does NOT fire in a linked worktree (.git is a file there)", () 
   withGitSandbox((sandbox) => {
     sandbox.commit("init", ["--allow-empty"]);
     markPrimary(sandbox);
-    const wt = realpathSync(mkdtempSync(join(tmpdir(), "a11y-git-sandbox-wt-")));
+    const wt = realpathSync(tmpDir("a11y-git-sandbox-wt-"));
     rmSync(wt, { recursive: true, force: true });
     try {
       sandbox.run(["worktree", "add", "-b", "feature", wt]);

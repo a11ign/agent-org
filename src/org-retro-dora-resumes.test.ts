@@ -11,13 +11,13 @@
  * hung, one read before it and one read after, and a fourth left unread by the budget).
  */
 import { test } from "node:test";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import * as retro from "./org-retro.mjs";
 import { readRepository } from "./dora.mjs";
 import { parseProjectDeclaration } from "./project-config.mjs";
+import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 const FIRST = "a11ign/first";
 const HUNG = "a11ign/hung";
@@ -37,7 +37,7 @@ const REPOSITORIES = declaration.dora;
 
 /** A `gh` that answers every read with an empty world, and never returns for `HUNG`. `exec`, so the sleep IS the child and killing it ends it. */
 function installFakeGh() {
-  const bin = mkdtempSync(join(tmpdir(), "fake-gh-"));
+  const bin = tmpDirForFile("fake-gh-");
   const script = join(bin, "gh");
   writeFileSync(script, `#!/bin/sh
 case "$*" in *${HUNG}*) exec sleep 30;; esac
@@ -79,7 +79,7 @@ function tickWith(stateDir: string, now: number, seams: ReturnType<typeof counti
   return { orders, said, restReads };
 }
 const cacheOf = (dir: string) => JSON.parse(readFileSync(join(dir, retro.DORA_CACHE_FILE), "utf8"));
-const tmp = () => mkdtempSync(join(tmpdir(), "dora-resumes-"));
+const tmp = () => tmpDir("dora-resumes-");
 
 test("THE CONTROL: a repository whose read never returns ends at the bound, the others are kept, nothing is offered; the next call resumes and offers with it unknown", () => {
   assert.ok(REPOSITORIES.length >= 3, `the population is derived from the declaration and must be at least three, got ${REPOSITORIES.length}`);

@@ -15,14 +15,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   closesMismatchReport, findClosingPhrase, isRepoWideResolutionFault, recentClosesSiblings, refusal,
   mismatchVerdict, REPO_WIDE_WARNING,
 } from "../closes-mismatch-check.mjs";
 import type { ClosesDeclaration } from "../acceptance-commands.mjs";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "docs-only change" };
 const CLOSES = (numbers: number[]): ClosesDeclaration => ({ kind: "closes", numbers });
@@ -240,7 +240,7 @@ test("#2822 DONE-WHEN 2 POSITIVE CONTROLS: every other mismatch keeps exit 1 and
 const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.mjs", import.meta.url));
 
 function runCheck(ghAnswers: { own: number[]; open: unknown[] | "fail" }, body = "Closes #2810") {
-  const dir = mkdtempSync(join(tmpdir(), "closes-check-"));
+  const dir = tmpDir("closes-check-");
   const fake = join(dir, "gh");
   const open = ghAnswers.open === "fail" ? null : { data: { repository: { pullRequests: { nodes: ghAnswers.open } } } };
   const own = { data: { repository: { pullRequest: { closingIssuesReferences: {

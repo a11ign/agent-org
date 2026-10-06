@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callerScript, SESSION_SHELL, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.mjs";
+import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
 const NOW = "2026-10-04T14:00:00Z";
@@ -29,7 +30,7 @@ const GRAPHQL_BODY = `{"data":{"viewer":{"login":"x"}},"rateLimit":{"remaining":
  */
 const WRAPPER = (() => {
   const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
-  const rendered = join(mkdtempSync(join(tmpdir(), "gh-ledger-render-")), "gh");
+  const rendered = join(tmpDirForFile("gh-ledger-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;
 })();

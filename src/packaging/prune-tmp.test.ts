@@ -34,8 +34,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -44,10 +43,11 @@ import {
   processStrings, pruneTmp as pruneTmpWithClaims, removePath, selfSessions, sweepablePaths,
 } from "../prune-tmp.mjs";
 import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host. The tests that ARE about
 // either pass their own `claim` and `record` and read the log they pointed this at.
-process.env[REMOVAL_LOG_ENV] = join(mkdtempSync(join(tmpdir(), "removal-log-")), "worktree-removals");
+process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("removal-log-"), "worktree-removals");
 const pruneTmp = (root: string, deps: NonNullable<Parameters<typeof pruneTmpWithClaims>[1]> = {}) =>
   pruneTmpWithClaims(root, { claim: () => ({ refused: false }), ...deps });
 
@@ -64,12 +64,8 @@ const NOTHING_LIVE = {
   now: Date.now(), mtime: () => Date.now() - 100 * HOUR_MS,
 };
 
-/** A disposable tmp root, removed when the process exits. */
-function makeRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "prune-tmp-fixture-"));
-  process.on("exit", () => { try { rmSync(root, { recursive: true, force: true }); } catch { /* already gone */ } });
-  return root;
-}
+/** A disposable tmp root, removed after the test that made it (a `process.on("exit")` removal left 4,309 of them in `/tmp`, #3848). */
+const makeRoot = (): string => tmpDir("prune-tmp-fixture-");
 
 function scratchpad(root: string, session: string): string {
   const path = join(root, SCRATCHPAD_ROOT, PROJECT, session);
@@ -400,7 +396,7 @@ test("the delete re-checks containment itself, because no walk can hand it a pat
   // nothing any test could see, because `classifyEntry` refuses an outside path before the walk ever
   // reaches the delete. So the only line in the module that destroys anything is asked directly.
   const root = makeRoot();
-  const outside = mkdtempSync(join(tmpdir(), "prune-tmp-elsewhere-"));
+  const outside = tmpDir("prune-tmp-elsewhere-");
   try {
     let asked: string | null = null;
     const failure = removePath(outside, root, (target) => { asked = target; });
