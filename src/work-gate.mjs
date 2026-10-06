@@ -565,7 +565,8 @@ export const GH_READS = Object.freeze({
   // asking costs no call of its own. The comment bodies are NOT added to the unconditional 500-row read:
   // that would carry every comment on every open row through a 32MB buffer on every tick.
   conditionalOnClaimedRows: "issue list --label in-progress --json number,comments"
-    + " (readClaimedRowComments -- claimed-row-amended)",
+    + " (readClaimedRowComments -- claimed-row-amended); plus, only when a row comes back at the 100-comment cap, ONE batched"
+    + " api graphql for those rows' last 100 comments (#3821)",
   // #2470: ONE MORE READ, PAID BY THE SAME CONDITION (some row is claimed) and for the same reason it is one call and not
   // one per row: the newest merged pull requests, of which the claimed branches' are found by name. It bounds what a
   // release for a MERGED row can see to the newest 100 -- at this org's rate about a day -- and a merge older than that,
@@ -3325,6 +3326,12 @@ function amendedOrder({ row, session, markers }) {
  * `claimed-row-amended` is not evaluated this tick. The body and edge halves still are, because they ride
  * the read that has already happened.
  *
+ * #3821: `gh issue list --json comments` RETURNS AT MOST THE FIRST 100 COMMENTS OF A ROW, OLDEST FIRST, AND SAYS NOTHING ABOUT THE REST. On a row
+ * with more, the newest claim record is not in the page, `claimRecordOf` takes an OLD one for the newest, and a pull request merged since then reads as
+ * "merged after the claim": #3566 was released twice within two minutes of being claimed. A row that comes back AT the cap is therefore re-read from
+ * its END (`readNewestComments`), in ONE batched call for all such rows and none on a tick where no row is at the cap. A row whose end could not be
+ * read is LEFT OUT of the page: the claim-stall pass finds no claim record for it and SKIPS it, which costs a tick, where a release destroys a worktree's claim.
+ *
  * @param {(args: string[]) => string} [run]
  * @returns {any[] | null} `null` when refused, never `[]`
  */
@@ -3332,7 +3339,49 @@ export function readClaimedRowComments(run = defaultRun) {
   try {
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--label", CLAIM_LABEL,
       "--limit", "200", "--json", "number,comments"]));
-    return Array.isArray(parsed) ? parsed : null;
+    return Array.isArray(parsed) ? withNewestCommentsOfCappedRows(parsed, run) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What `gh issue list --json comments` returns of a row: its first this-many comments, whatever the row holds (#3821). */
+export const ISSUE_LIST_COMMENT_CAP = 100;
+
+/**
+ * `rows` with each capped row's comments replaced by its LAST `ISSUE_LIST_COMMENT_CAP`, oldest first -- the shape `issue list` gives, so no reader changes --
+ * and a capped row whose end could not be read dropped.
+ * @param {any[]} rows @param {(args: string[]) => string} run @returns {any[]}
+ */
+function withNewestCommentsOfCappedRows(rows, run) {
+  const capped = rows.filter((row) => (row?.comments?.length ?? 0) >= ISSUE_LIST_COMMENT_CAP);
+  if (capped.length === 0) return rows;
+  const newest = readNewestComments(capped.map((row) => Number(row.number)), run);
+  return rows.flatMap((row) => {
+    if (!capped.includes(row)) return [row];
+    const comments = newest?.get(Number(row.number));
+    if (comments !== undefined) return [{ ...row, comments }];
+    process.stderr.write(`claim-stall: #${row.number} has ${ISSUE_LIST_COMMENT_CAP} or more comments and its newest could not be read -- the row is NOT evaluated this tick.\n`);
+    return [];
+  });
+}
+
+/**
+ * The last `ISSUE_LIST_COMMENT_CAP` comments of each named row, in ONE GraphQL call (an aliased `issue(number:)` per row, so the cost is not a function of
+ * how many rows are capped), or `null` when the call was refused or its answer is not whole: `errors` beside `data` is refused too (#555), and a row the
+ * answer does not carry is left out of the map, never filled with `[]`.
+ * @param {number[]} numbers @param {(args: string[]) => string} run @returns {Map<number, any[]> | null}
+ */
+function readNewestComments(numbers, run) {
+  const [owner, name] = repoNow().split("/");
+  const fields = numbers.map((n) => `r${n}: issue(number: ${Number(n)}) { number comments(last: ${ISSUE_LIST_COMMENT_CAP}) { nodes { id body createdAt author { login } } } }`);
+  try {
+    const parsed = JSON.parse(run(["api", "graphql", "-f", `query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields.join(" ")} } }`,
+      "-F", `owner=${owner}`, "-F", `name=${name}`]));
+    const repository = parsed?.errors ? null : parsed?.data?.repository;
+    if (repository === null || typeof repository !== "object") return null;
+    const read = Object.values(repository).filter((issue) => Array.isArray(/** @type {any} */ (issue)?.comments?.nodes));
+    return new Map(read.map((/** @type {any} */ issue) => [Number(issue.number), issue.comments.nodes]));
   } catch {
     return null;
   }
