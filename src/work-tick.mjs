@@ -158,7 +158,7 @@ const round = (/** @type {number} */ ms) => Math.round(ms);
 export function createMeter({ clock = () => performance.now(), cpu = readCpu, uptimeMs = () => process.uptime() * MS_PER_SECOND,
   maxRssKb = () => process.resourceUsage().maxRSS } = {}) {
   const totalCpuMs = () => { const { selfMs, childrenMs } = cpu(); return selfMs + childrenMs; };
-  /** @type {Record<string, { wallMs: number, cpuMs: number }>} */
+  /** @type {Record<string, { wallMs: number, cpuMs?: number }>} */
   const phases = { startup: { wallMs: round(uptimeMs()), cpuMs: round(totalCpuMs()) } };
   return {
     /** @template T @param {string} name @param {() => T} step @returns {T} */
@@ -173,6 +173,14 @@ export function createMeter({ clock = () => performance.now(), cpu = readCpu, up
       }
       phases[name] = { wallMs: round(clock() - wallFrom), cpuMs: round(totalCpuMs() - cpuFrom) };
       return result;
+    },
+    /**
+     * A phase some OTHER process timed and said, so there is a wall and no CPU: the field is absent, because an unknown CPU is not zero. It sits inside
+     * the phase that relayed it, so it is read beside that one and never added to it.
+     * @param {string} name @param {number} wallMs
+     */
+    note(name, wallMs) {
+      phases[name] = { wallMs: round(wallMs) };
     },
     reading() {
       const { selfMs, childrenMs } = cpu();
@@ -330,6 +338,19 @@ function finish(code, run) {
   process.exit(code);
 }
 
+/** The gate's line about GitHub's status page (`holdForIncidentNow`): all three states say the call's wall, `N ms`, and a read that never got one says `wall not read`. */
+const GITHUB_STATUS_WALL = /^(?:github-status: operational \(call |github-status: UNKNOWN \(.*; |GITHUB INCIDENT: .* \(call )(\d+) ms\)/m;
+
+/**
+ * The wall of the gate's GitHub-status call, read from the stderr the tick relays (a11ign/a11ign#3730), so it is a phase of the line and nobody greps the
+ * journal for it. `undefined` when the line is absent or has no number: the tick must not fail, nor claim a zero, for a line it could not read.
+ * @param {string | null | undefined} gateStderr @returns {number | undefined}
+ */
+export function githubStatusWallMs(gateStderr) {
+  const wall = GITHUB_STATUS_WALL.exec(gateStderr ?? "")?.[1];
+  return wall === undefined ? undefined : Number(wall);
+}
+
 /**
  * The three tear-downs and the blocked-session report, each one a phase. BEFORE the quiet exit, deliberately, all four: each is an event that
  * produces no order, so a quiet gate is the tick on which it most needs doing.
@@ -380,6 +401,8 @@ function main() {
     finish(EXIT.CANNOT_ASK, run);
   }
   if (gate.stderr) process.stderr.write(gate.stderr);
+  const statusWallMs = githubStatusWallMs(gate.stderr);
+  if (statusWallMs !== undefined) meter.note("github-status", statusWallMs);
 
   // BEFORE THE QUIET EXIT, DELIBERATELY. A blocked session is most invisible precisely when the queue is
   // quiet -- there is no other output that tick, and nothing else looks at the roster.
