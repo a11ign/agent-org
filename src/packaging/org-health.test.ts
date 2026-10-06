@@ -61,7 +61,7 @@ const STALE = { behind: 4, ahead: 0, dirty: ["packages/agent-org/src/work-gate.m
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string };
 
 /** The facts every signal reads, every one CLEAR, so a test names only the one it moves. */
-const quiet = (over: Record<string, unknown> = {}) => ({ now: NOW, lastMergedAt: NOW - HOUR_MS, work: WORK, redPrs: [], refusals: {}, drift: CURRENT, primarySince: null, ...over });
+const quiet = (over: Record<string, unknown> = {}) => ({ now: NOW, lastMergedAt: NOW - HOUR_MS, work: WORK, redPrs: [], refusals: {}, drift: CURRENT, primarySince: null, autoOff: { refusal: null, readAt: NOW }, ...over });
 
 // --- the table's numbers, in one place ------------------------------------------------------------------------------
 
@@ -231,7 +231,7 @@ test("two tripped signals are TWO orders, each carrying the other, and unknowns 
   const facts = quiet({ lastMergedAt: NOW - 4 * HOUR_MS, drift: STALE, primarySince: NOW - 5 * HOUR_MS, refusals: null });
   const readings = orgHealthReadings(facts as never);
   assert.deepEqual(readings.map((r) => [r.signal, r.status]), [["no-merge-while-work-exists", "tripped"], ["red-pr-unattended", "clear"],
-    ["ready-row-refused", "unknown"], ["primary-not-at-main", "tripped"]]);
+    ["ready-row-refused", "unknown"], ["primary-not-at-main", "tripped"], ["fleet-auto-off-refusing", "clear"]]);
   const orders = orgHealthOrders(readings) as Order[];
   assert.deepEqual(orders.map((o) => o.subject), ["no-merge-while-work-exists", "primary-not-at-main"]);
   assert.match(orders[0].prompt, /ALSO TRIPPED \(1\): primary-not-at-main\./);
