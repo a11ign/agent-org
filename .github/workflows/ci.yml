@@ -154,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rstest-trace
-          path: project/**/.rstest/trace-*.summary.md
+          # `.rstest` is a hidden directory, which neither `**` nor the action's default reaches: the first run of this step matched no file, said so in a warning, and uploaded nothing.
+          path: project/packages/agent-org/.rstest/trace-*.summary.md
+          include-hidden-files: true
           if-no-files-found: warn
 
   # THE TYPECHECK (a11ign/a11ign#3551, toolchain row 4a of #3550). `tsc` ran nowhere in this repository: 217 of its 244 `.mjs` files carry `// @ts-check` and 226 files are
