@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
-  poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS }
+  poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS, SETTLE_TEST_CLOCK_ENV }
   from "../wake.mjs";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -343,7 +343,7 @@ function tick(transcript: string[], seed: Array<[number, string]> = []) {
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
       input: `${JSON.stringify(orderTo("worker-capture"))}\n`, encoding: "utf8",
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
-      env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST } });
+      env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     const prompts = existsSync(join(dir, "prompts")) ? readFileSync(join(dir, "prompts"), "utf8") : "";
     return { ...ran, ledger: existsSync(ledger) ? readFileSync(ledger, "utf8") : "", prompts };
   });

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   spawnableReviewer, endFinishedReviewers, reviewerPathsFrom, listingIsComplete, observeOpenReviewer,
   REVIEWER_DEAD_AFTER_TICKS,
+  SETTLE_TEST_CLOCK_ENV,
 } from "./wake.mjs";
 import { readReviewerRegistry } from "./work-gate.mjs";
 
@@ -143,7 +144,7 @@ test("#2465 THE TICK: a registered reviewer under an OPEN pr that herdr stops li
       writeFileSync(join(dir, "herdr"), `#!/bin/sh\ncase "$*" in\n  *'workspace list') printf '%s' '${workspaces(labels)}' ;;\n  *) : ;;\nesac\n`);
       chmodSync(join(dir, "herdr"), STUB_MODE);
       return spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
-        env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+        env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     };
 
     for (let i = 0; i < REVIEWER_DEAD_AFTER_TICKS - 1; i++) tick(["ceo", "orchestrator"]);
