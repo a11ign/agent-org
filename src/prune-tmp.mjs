@@ -474,11 +474,11 @@ function settledBecause(family) {
  * -- see this file's header for why a tool that cannot say what `board.json` is for does not offer to
  * remove it.
  *
- * @param {string} tmpRoot @returns {string[]}
+ * @param {string} tmpRoot @param {import("node:fs").Dirent[]} [top] `tmpRoot`'s own entries when the caller already read them @returns {string[]}
  */
-export function sweepablePaths(tmpRoot) {
-  const top = childNames(tmpRoot);
-  const review = top.filter((name) => familyOf(name).family === "review").map((name) => join(tmpRoot, name));
+export function sweepablePaths(tmpRoot, top = topEntries(tmpRoot) ?? []) {
+  const topNames = top.map((entry) => entry.name);
+  const review = topNames.filter((name) => familyOf(name).family === "review").map((name) => join(tmpRoot, name));
   const scratchRoot = join(tmpRoot, SCRATCHPAD_ROOT);
   const scratchpads = childNames(scratchRoot).flatMap((project) =>
     childNames(join(scratchRoot, project))
@@ -491,25 +491,30 @@ export function sweepablePaths(tmpRoot) {
  * The fixture directories directly under `tmpRoot`: a DIRECTORY (a file or a symlink with a fixture's name is not what the fixtures make)
  * whose name carries one of `FIXTURE_PREFIXES`. Names only, one `readdir` and no `stat`, because this is called over a `/tmp` of 120,000
  * entries every minute and the age is read lazily, for as many as the run can use.
- * @param {string} tmpRoot @returns {string[]}
+ * @param {string} tmpRoot @param {import("node:fs").Dirent[]} [top] @returns {string[]}
  */
-export function fixturePaths(tmpRoot) {
-  return directChildren(tmpRoot, (name) => familyOf(name).family === "fixture");
+export function fixturePaths(tmpRoot, top = topEntries(tmpRoot) ?? []) {
+  return directChildren(tmpRoot, top, (name) => familyOf(name).family === "fixture");
 }
 
-/** The trees an earlier run began removing and did not finish, which are the first thing the next run does. @param {string} tmpRoot @returns {string[]} */
-export function doomedPaths(tmpRoot) {
-  return directChildren(tmpRoot, (name) => name.startsWith(DOOMED_PREFIX));
+/** The trees an earlier run began removing and did not finish, which are the first thing the next run does. @param {string} tmpRoot @param {import("node:fs").Dirent[]} [top] @returns {string[]} */
+export function doomedPaths(tmpRoot, top = topEntries(tmpRoot) ?? []) {
+  return directChildren(tmpRoot, top, (name) => name.startsWith(DOOMED_PREFIX));
 }
 
-/** @param {string} tmpRoot @param {(name: string) => boolean} wanted @returns {string[]} */
-function directChildren(tmpRoot, wanted) {
-  try {
-    return readdirSync(tmpRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && wanted(entry.name)).map((entry) => join(tmpRoot, entry.name)).sort();
-  } catch {
-    return [];
-  }
+/** @param {string} tmpRoot @param {import("node:fs").Dirent[]} top @param {(name: string) => boolean} wanted @returns {string[]} */
+function directChildren(tmpRoot, top, wanted) {
+  return top.filter((entry) => entry.isDirectory() && wanted(entry.name)).map((entry) => join(tmpRoot, entry.name)).sort();
+}
+
+/**
+ * The entries directly under `tmpRoot`, read ONCE per run: the three lists above and the `tmp-entries:` reading all come from this one
+ * `readdir` of a directory that held 123,850 entries (#3846), so the count costs no second walk. `null` is a directory that could not be
+ * read, which is not the same claim as an empty one.
+ * @param {string} tmpRoot @returns {import("node:fs").Dirent[] | null}
+ */
+function topEntries(tmpRoot) {
+  try { return readdirSync(tmpRoot, { withFileTypes: true }); } catch { return null; }
 }
 
 /** @param {string} dir @returns {string[]} */
@@ -530,9 +535,9 @@ export function selfSessions(env) {
 }
 
 /**
- * @typedef {{ examined: number, candidates: number, removable: Verdict[], refused: Verdict[], removed: string[],
+ * @typedef {{ tmpEntries: number | "unknown", examined: number, candidates: number, removable: Verdict[], refused: Verdict[], removed: string[],
  *   partial: string[], failed: { path: string, reason: string }[] }} PruneReport
- * `candidates` is every path the walk found and `examined` the ones this run looked at, so the difference is what the run's budget left
+ * `tmpEntries` is how many entries the root held when the run began, read before any removal. `candidates` is every path the walk found and `examined` the ones this run looked at, so the difference is what the run's budget left
  * for the next one. `partial` is a tree whose removal began and was stopped at a leaf by the budget: it is neither removed nor failed.
  */
 
@@ -563,9 +568,11 @@ export function pruneTmp(tmpRoot, deps = {}) {
   const { dryRun = true, now = Date.now(), windowMs, fixtureWindowMs, env = process.env, run, procRoot,
     maxRemovals = MAX_REMOVALS_PER_RUN, maxExamined = MAX_EXAMINED_PER_RUN, families } = deps;
   const wanted = (/** @type {Family["family"]} */ family) => families === undefined || families.includes(family);
-  const queue = [...(wanted("doomed") ? doomedPaths(tmpRoot) : []),
-    ...sweepablePaths(tmpRoot).filter((path) => wanted(familyOf(relativeUnder(path, tmpRoot) ?? "").family)),
-    ...(wanted("fixture") ? fixturePaths(tmpRoot) : [])];
+  const topRead = topEntries(tmpRoot);
+  const top = topRead ?? [];
+  const queue = [...(wanted("doomed") ? doomedPaths(tmpRoot, top) : []),
+    ...sweepablePaths(tmpRoot, top).filter((path) => wanted(familyOf(relativeUnder(path, tmpRoot) ?? "").family)),
+    ...(wanted("fixture") ? fixturePaths(tmpRoot, top) : [])];
   const strings = processStrings(procRoot);
   /** @type {Set<number> | "unknown" | undefined} */
   let openPrs;
@@ -573,7 +580,7 @@ export function pruneTmp(tmpRoot, deps = {}) {
   const readOpenPrs = () => (openPrs ??= openPullRequests({ run }));
   const budget = { left: maxRemovals };
   /** @type {PruneReport} */
-  const report = { examined: 0, candidates: queue.length, removable: [], refused: [], removed: [], partial: [], failed: [] };
+  const report = { tmpEntries: topRead === null ? "unknown" : topRead.length, examined: 0, candidates: queue.length, removable: [], refused: [], removed: [], partial: [], failed: [] };
   for (const path of queue) {
     if (budget.left <= 0 || report.examined >= maxExamined) break;
     report.examined += 1;
@@ -726,7 +733,7 @@ function removeEntry(call, budget, pause) {
 }
 
 /**
- * What `main()` prints: the examined count first, then every removal and every refusal WITH ITS REASON.
+ * What `main()` prints: the `tmp-entries:` reading, then the examined count, then every removal and every refusal WITH ITS REASON.
  *
  * THE EXAMINED COUNT IS WHAT MAKES A ZERO MEAN SOMETHING (#933). "0 removable of 1,306 examined" and "0
  * removable" are different claims, and only the first can be seen to be wrong: a sweep that walked
@@ -739,6 +746,16 @@ function removeEntry(call, budget, pause) {
  * @param {PruneReport} report @param {boolean} dryRun @returns {string}
  */
 export function formatReport(report, dryRun = true) {
+  return `tmp-entries: ${report.tmpEntries}\n${reportBody(report, dryRun)}`;
+}
+
+/**
+ * The line `tmp-entries: <N>` comes first in EVERY report, nothing-to-remove included (#3868): a run that finds nothing is the one whose
+ * count is read hardest, and the user journal of the janitor's unit is the only record of what `/tmp` held on a given day (#3849's
+ * done-when 2). It is the count at the START of the run, so the next run reads what this one's removals left.
+ * @param {PruneReport} report @param {boolean} dryRun @returns {string}
+ */
+function reportBody(report, dryRun) {
   // WOULD REMOVE versus REMOVED, never the same word: a listing that says "removed" is indistinguishable
   // from a run that removed, and the dry run exists so a session can read the list one cycle before its
   // scratchpad disappears.
