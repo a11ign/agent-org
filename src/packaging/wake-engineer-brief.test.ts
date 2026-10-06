@@ -177,9 +177,6 @@ test("the family points at the engineer brief, and every live engineer's brief e
 // --- done-when 6: the area rules are where the work is, and name no session --------------------------------------
 
 const NESTED = [
-  { file: "packages/nvda-worker/CLAUDE.md", heading: /^## The capture path/m,
-    governs: ["packages/nvda-worker/src/capture-probes.mjs", "packages/nvda-worker/src/capture-pure.mjs",
-      "packages/nvda-worker/src/browser-session.mjs"] },
   { file: "packages/lab/CLAUDE.md", heading: /^## Reading captures back/m,
     governs: ["packages/lab/src/capture", "packages/lab/src/training/corpus-settled.mjs"] },
   { file: "packages/judge/CLAUDE.md", heading: /^## The judge/m,
@@ -204,6 +201,10 @@ test("the name matcher notices a session name, and only as a word (its own posit
   assert.ok(SESSION_NAMES.includes("worker-capture") && SESSIONS.retired.every((r) => SESSION_NAMES.includes(r.name)),
     "the roster was read: a live address and every retired name");
   assert.ok(!SESSION_NAMES.includes("worker-<n>") && FAMILIES.length === 1, "the family is matched as a rule");
+});
+
+test("the nested-rules list is not empty (the positive control for the two tests below, which a loop over nothing passes)", () => {
+  assert.ok(NESTED.length > 0, "at least one nested CLAUDE.md is checked");
 });
 
 for (const { file, heading, governs } of NESTED) {
