@@ -29,6 +29,8 @@ const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = MS_PER_SECOND * SECONDS_PER_MINUTE;
 const MINUTES_PER_HOUR = 60;
 const GIT_TIMEOUT_MS = 30_000;
+/** A merge_group run's log is read whole: measured 2026-10-06, 5.0 MB (49,410 lines) for the host repository, where `execFileSync`'s default 1 MiB ended the read in `ENOBUFS` and the reading in UNREAD. Read once per run, then memoised. */
+const GH_MAX_BUFFER = 64 * 1024 * 1024;
 /** What a reader cannot say is printed before what it can: a cap must never push an unread runner off the page. */
 const PRINT_ORDER = ["unread", "unknown", "returned", "behind"];
 /** The report names this many runners and counts the rest: a hundred worktrees on one stale copy is one finding, not a hundred lines. */
@@ -76,9 +78,9 @@ export const shippedReleaseCycleMs = (read = (path) => readFileSync(path, "utf8"
  *  - `{ kind: "tool", runner, version, commit? }` -- `version` is the release tag the checkout sits at, or `null` for "at no release" (then `commit` says where)
  *  - `{ kind: "worktree", runner, resolved, declared }` -- `resolved` is the `agent-org` version `node_modules` resolves to, or `null` for none; `declared` is whether the project's `main`
  *    still depends on it (after the removal row it does not, and a resolved copy is then a copy that RETURNED)
- *  - `{ kind: "ci", runner, version }` -- `null` is a run that names no version
+ *  - `{ kind: "ci", runner, version, resolvesNewest? }` -- `null` is a run that names no version; `resolvesNewest` is a run whose resolver cloned the newest stable tag at run time (#3746)
  *  - any of them with `unreadable: <why>` instead, which is NAMED and never counted as agreeing
- * @typedef {{ kind: "tool" | "worktree" | "ci", runner: string, version?: string | null, commit?: string, resolved?: string | null, declared?: boolean, unreadable?: string }} RunnerFact
+ * @typedef {{ kind: "tool" | "worktree" | "ci", runner: string, version?: string | null, commit?: string, resolved?: string | null, declared?: boolean, resolvesNewest?: boolean, unreadable?: string }} RunnerFact
  */
 
 /**
@@ -122,6 +124,7 @@ function readingOf(fact, { newest, stale }) {
   }
   const version = fact.kind === "worktree" ? fact.resolved ?? null : fact.version ?? null;
   if (version === null && fact.kind !== "tool") return { ...base, version, verdict: "unknown", detail: "UNKNOWN -- the run names no version" };
+  if (fact.resolvesNewest === true) return { ...base, version, verdict: "current", detail: `${version} was the newest stable tag when the run took it, and every run takes the newest` };
   if (version !== null && !isReleaseTag(asTag(version))) return { ...base, version, verdict: "unknown", detail: `UNKNOWN -- \`${version}\` is not a release version` };
   if (version !== null && compareReleaseTags(asTag(version), newest) === 0) return { ...base, version, verdict: "current", detail: `${version} is the newest` };
   if (stale === null) return { ...base, version, verdict: "unknown", detail: `UNKNOWN -- differs from ${newest}, but when ${newest} was cut could not be read` };
@@ -224,7 +227,7 @@ function tagCutAt(tag, { git, gh, repo }) {
 }
 
 /** @param {string[]} args @returns {string} */
-const defaultGh = (args) => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
+const defaultGh = (args) => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
 
 /**
  * READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit.
@@ -278,8 +281,14 @@ export function readWorktree(path, { declared = true, read = (file) => readFileS
   }
 }
 
-/** What the removal row's (#3534) resolver step prints, which the detector reads: `agent-org resolved vX.Y.Z`. */
-export const RESOLVER_LINE = /^.*\bagent-org resolved (v\d+\.\d+\.\d+)\b/m;
+/**
+ * What a CI resolver step prints, which the detector reads. Two forms: `agent-org resolved vX.Y.Z` (a tag the project named) and, since #3534, the notice `scripts/agent-org-newest-tag.mjs`
+ * emits, which a log shows as `##[notice]resolved vX.Y.Z, the newest stable of N tags, into <dir>` (the `title=agent-org` is dropped from the log). THE SECOND GROUP IS WHAT THE NOTICE MEANS:
+ * the tag was the newest at the run's own time, so a release cut after the run does not make that CI "behind" (the next run takes it).
+ */
+export const RESOLVER_LINE = /^.*(?:\bagent-org resolved|##\[notice\]resolved) (v\d+\.\d+\.\d+)(, the newest stable of \d+ tags)?\b/m;
+/** A memo value for a run whose resolver took the newest tag at run time: the tag, then this. A bare tag (every memo written before #3746) is a pinned one. */
+const NEWEST_AT_RUN = " newest";
 
 /** The `agent-org` entry of a pnpm lockfile, as the commit its tarball names, or `null` when it has none. @param {string} lockfile @returns {string | null} */
 export const lockedCommit = (lockfile) => /agent-org\/tar\.gz\/([0-9a-f]{40})/.exec(lockfile)?.[1] ?? null;
@@ -308,19 +317,21 @@ export function memoFile(path) {
 }
 
 /**
- * READING 3, THE LAST COMPLETED `ci.yml` RUN ON `main`: while the project pins the tool, the version its commit's LOCKFILE names (the tarball's commit, read as the `version` in the tool's own
- * `package.json` at that commit); once it holds no entry, the tag the resolver step printed in the run's log ({@link RESOLVER_LINE}). A run that names no version is `version: null`, which the
- * comparison reports UNKNOWN: measured 2026-10-04, `ci.yml` on `main` last completed 2026-09-18 (push, failure) at a commit with no `pnpm-lock.yaml` and its log carries no resolver line.
+ * READING 3, THE LAST COMPLETED `ci.yml` RUN THAT GATES `main`: the newest completed `merge_group` run (a merge queue's run is the one that decides a merge, and it lives on a
+ * `gh-readonly-queue/...` branch, so `branch=main` never returns it), else the newest completed run on `main` for a repository with no queue. #3746, measured 2026-10-06: the host repository's
+ * `ci.yml` last ran on a `push` to `main` on 2026-09-18 and on `merge_group` since, so the `branch=main` question answered that one failed run for ever and no event could change it.
+ * Its version is what its commit's LOCKFILE names while the project pins the tool (the tarball's commit, read as the `version` in the tool's own `package.json` at that commit); once it
+ * holds no entry, the tag the resolver step printed in the run's log ({@link RESOLVER_LINE}). A run that names no version is `version: null`, which the comparison reports UNKNOWN.
  * @param {{ checkout: string, tool: string, repo: string }} where
  * @param {{ gh?: (args: string[]) => string, git?: (args: string[]) => string, toolGit?: (args: string[]) => string, memo?: RunMemo }} [io] @returns {RunnerFact}
  */
 export function readLastCiRun({ checkout, tool, repo }, { gh = defaultGh, git = quietGit(checkout), toolGit = quietGit(tool), memo } = {}) {
   try {
-    const run = JSON.parse(gh(["api", `repos/${repo}/actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=1`])).workflow_runs?.[0];
+    const run = gatingRun({ gh, repo });
     if (run === undefined) return { kind: "ci", runner: `last completed ci.yml run on ${repo} main`, unreadable: "no completed run was returned" };
-    const runner = `last completed ci.yml run on main (#${run.id}, ${String(run.head_sha).slice(0, 7)}, ${String(run.created_at).slice(0, 10)})`;
+    const runner = `last completed ci.yml ${run.event} run (#${run.id}, ${String(run.head_sha).slice(0, 7)}, ${String(run.created_at).slice(0, 10)})`;
     try {
-      return { kind: "ci", runner, version: ciVersion({ run, repo }, { gh, git, toolGit, memo }) };
+      return { kind: "ci", runner, ...ciVersion({ run, repo }, { gh, git, toolGit, memo }) };
     } catch (err) {
       return { kind: "ci", runner, unreadable: why(err) };
     }
@@ -329,20 +340,33 @@ export function readLastCiRun({ checkout, tool, repo }, { gh = defaultGh, git = 
   }
 }
 
+/** The newest completed `ci.yml` run that gates `main`, or `undefined` when neither question returns one. @param {{ gh: (args: string[]) => string, repo: string }} io @returns {{ id: number, head_sha: string, created_at: string, event: string } | undefined} */
+function gatingRun({ gh, repo }) {
+  const newest = (/** @type {string} */ filter) => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/ci.yml/runs?${filter}&status=completed&per_page=1`])).workflow_runs?.[0];
+  return newest("event=merge_group") ?? newest("branch=main");
+}
+
 /**
  * The version a run ran, or `null`. The lockfile at the run's commit answers while the project still pins the tool (a commit with none, or one this checkout does not hold, simply has no entry);
- * when it holds no entry the log's resolver line does.
+ * when it holds no entry the log's resolver line does, and says whether it took the newest tag at run time.
  * @param {{ run: { id: number, head_sha: string }, repo: string }} subject @param {{ gh: (args: string[]) => string, git: (args: string[]) => string, toolGit: (args: string[]) => string, memo?: RunMemo }} io
- * @returns {string | null}
+ * @returns {{ version: string | null, resolvesNewest?: boolean }}
  */
 function ciVersion({ run, repo }, { gh, git, toolGit, memo }) {
   const commit = lockedCommit(lockfileAt(run.head_sha, git));
-  if (commit !== null) return JSON.parse(toolGit(["show", `${commit}:package.json`])).version ?? null;
+  if (commit !== null) return { version: JSON.parse(toolGit(["show", `${commit}:package.json`])).version ?? null };
   const memoized = memo?.get(run.id);
-  if (memoized !== undefined) return memoized;
-  const version = RESOLVER_LINE.exec(logOf(run.id, { gh, repo }))?.[1] ?? null;
-  memo?.set(run.id, version);
-  return version;
+  if (memoized !== undefined) return fromMemo(memoized);
+  const found = RESOLVER_LINE.exec(logOf(run.id, { gh, repo }));
+  const resolved = { version: found?.[1] ?? null, resolvesNewest: found?.[2] !== undefined };
+  memo?.set(run.id, resolved.version !== null && resolved.resolvesNewest ? `${resolved.version}${NEWEST_AT_RUN}` : resolved.version);
+  return resolved;
+}
+
+/** @param {string | null} memoized @returns {{ version: string | null, resolvesNewest?: boolean }} */
+function fromMemo(memoized) {
+  if (memoized !== null && memoized.endsWith(NEWEST_AT_RUN)) return { version: memoized.slice(0, -NEWEST_AT_RUN.length), resolvesNewest: true };
+  return { version: memoized };
 }
 
 /** A run's log, or "" when GitHub says it has none (expired, or never kept): that is an ANSWER about the run, where any other refusal is rethrown. @param {number} id @param {{ gh: (args: string[]) => string, repo: string }} io @returns {string} */

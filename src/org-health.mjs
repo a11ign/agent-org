@@ -550,7 +550,7 @@ export function toolVersionReading({ agreement }) {
   if (result.signals.length === 0) {
     const unsaid = result.readings.filter((r) => r.verdict === "unknown" || r.verdict === "unread");
     if (unsaid.length === 0) return clear(SIGNALS.TOOL_VERSION);
-    return unknown(SIGNALS.TOOL_VERSION, `no runner is behind ${result.newest}, but ${unsaid.length} could not be read: ${unsaid.slice(0, MAX_NAMED).map((r) => `${r.runner} (${r.detail})`).join("; ")}`);
+    return unknown(SIGNALS.TOOL_VERSION, `no runner is behind the newest release, but ${unsaid.length} could not be read: ${unsaid.slice(0, MAX_NAMED).map((r) => `${r.runner} (${r.detail})`).join("; ")}`);
   }
   const named = result.signals.slice(0, MAX_NAMED).map((s) => `${s.kind} ${s.runner} runs ${s.version ?? "no release"}`).join("; ");
   const more = result.signals.length > MAX_NAMED ? `; and ${result.signals.length - MAX_NAMED} more` : "";
