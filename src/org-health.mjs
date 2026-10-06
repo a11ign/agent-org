@@ -92,13 +92,23 @@ export const ORDER_STALL_MINUTES = 15;
  */
 export const AUTO_OFF_REFUSAL_MINUTES = 15;
 /**
- * HOW OLD THE REFUSAL RECORD'S LAST TICK MAY BE BEFORE IT IS NOT BELIEVED: FIVE MINUTES. The timer ticks every 10 s and writes the record each time, so a refusal
- * last written longer ago than this is a timer that has STOPPED (two of this gate's own ticks, {@link MINUTES_PER_TICK}), and a stopped timer cannot be said to
- * still be refusing. It is a stated unknown, never a clear and never a trip.
+ * HOW OLD THE REFUSAL RECORD'S LAST TICK MAY BE, AT THE MOMENT THE MIRROR READ IT, BEFORE IT IS NOT BELIEVED: FIVE MINUTES. The timer ticks every 10 s and writes the
+ * record each time, so a refusal last written longer than this before `readAt` is a timer that had STOPPED (two of this gate's own ticks, {@link MINUTES_PER_TICK}),
+ * and a stopped timer cannot be said to still be refusing. It is judged against `readAt`, NOT the tick's clock: the mirror is up to an hour old by design. It is a
+ * stated unknown, never a clear and never a trip.
  */
 export const AUTO_OFF_RECORD_STALE_MINUTES = 5;
-/** Where `fleet-auto-off.mjs` keeps its state, relative to the checkout that runs it (`DEFAULT_STATE_PATH` there). */
-const AUTO_OFF_STATE_PATH = "runs/fleet-auto-off-state.json";
+/**
+ * HOW OLD THE MIRROR MAY BE BEFORE IT IS NOT BELIEVED: TWO HOURS (product-manager's ruling on #3853). `fleet-watch` rewrites it after each hourly read and writes
+ * NOTHING when the control plane could not be reached, so a mirror older than two hourly runs is a watcher that did not look, which is not the same as a fleet
+ * that is not refusing. It is a stated unknown.
+ */
+export const AUTO_OFF_MIRROR_STALE_MINUTES = 120;
+/**
+ * Where `fleet-watch.mjs` mirrors the control plane's auto-off record for this tick to read (#3860), relative to the checkout the tick serves. The record itself
+ * (`runs/fleet-auto-off-state.json`) lives under the control plane's root-owned checkout, and the tick does NOT ssh to it (#3566's budget; #3843, #3737).
+ */
+export const AUTO_OFF_MIRROR_PATH = "runs/fleet-auto-off-mirror.json";
 /**
  * A POOL BELOW A FIFTH OF ITS LIMIT IS RAISED (#3448): 1,000 of 5,000 GraphQL points. THE REASON IS THE BURN RATE, NOT A PERCENTILE: `a11ign-ai-leads`
  * spent a whole window in the hour 2026-10-04 11:57Z-12:57Z (the chairman's read, #3448), about 83 points a minute, so a fifth is about twelve minutes of
@@ -522,8 +532,9 @@ export function panePromptReading({ now, panes }) {
  * @typedef {{ reason: string, detail: string, at: number, since: number | null }} AutoOffRefusal
  * The refusal `fleet-auto-off.mjs` keeps in its state file. `at` is the LAST tick that refused (rewritten every ten seconds) and `since` is the FIRST tick of the
  * unbroken run, `null` when the record carries none: a tick that proceeds, or has nothing to power off, writes `refusal: null`, which is what ends a run.
- * @typedef {{ unreadable: string } | { refusal: AutoOffRefusal | null }} AutoOffFact
- * What the state file said, or WHY it could not be read. `refusal: null` is a file that was read and records no refusal, which is not the same as `unreadable`.
+ * @typedef {{ unreadable: string } | { refusal: AutoOffRefusal | null, readAt: number }} AutoOffFact
+ * What the mirror said, or WHY it could not be read. `readAt` is when `fleet-watch` read the record off the control plane (epoch ms), NOT when this tick ran.
+ * `refusal: null` is a mirror that was read and records no refusal, which is not the same as `unreadable`.
  */
 
 /**
@@ -532,8 +543,9 @@ export function panePromptReading({ now, panes }) {
  * `at` is the latest tick and is seconds old for as long as the refusal stands, so an age taken from it is never over. A record with no `since` is therefore an
  * UNKNOWN that says so, never a fallback to `at`, which would read every standing refusal as brand new.
  *
- * AN UNKNOWN, NEVER A CLEAR, for a record that could not be read, that does not parse, whose last tick is older than `AUTO_OFF_RECORD_STALE_MINUTES` (the timer
- * stopped), or that is inconsistent (`since` after `at`). STRICTLY OVER, as {@link orderStallReading} is. Keyed on `since`, so one unbroken refusal is one signal
+ * AN UNKNOWN, NEVER A CLEAR, for a mirror that could not be read, that does not parse, that was read longer ago than `AUTO_OFF_MIRROR_STALE_MINUTES` (a watcher
+ * that did not look), whose last tick is older than `AUTO_OFF_RECORD_STALE_MINUTES` before `readAt` (the timer had stopped), or that is inconsistent (`since` after
+ * `at`). STRICTLY OVER, as {@link orderStallReading} is. Keyed on `since`, so one unbroken refusal is one signal
  * however long it lasts and however often its reason changes; a tick that proceeds ends the run and the next refusal is a new one.
  * @param {{ now: number, autoOff: AutoOffFact }} input
  * @returns {Reading}
@@ -541,10 +553,13 @@ export function panePromptReading({ now, panes }) {
 export function autoOffRefusalReading({ now, autoOff }) {
   const signal = SIGNALS.AUTO_OFF_REFUSING;
   if ("unreadable" in autoOff) return unknown(signal, autoOff.unreadable);
-  const { refusal } = autoOff;
+  const { refusal, readAt } = autoOff;
+  if (now - readAt > AUTO_OFF_MIRROR_STALE_MINUTES * MS_PER_MINUTE) {
+    return unknown(signal, `the auto-off mirror was last read off the control plane ${ageText(readAt, now)} ago (limit ${AUTO_OFF_MIRROR_STALE_MINUTES} min), so whether fleet auto-off is refusing is not known`);
+  }
   if (refusal === null) return clear(signal);
-  if (now - refusal.at > AUTO_OFF_RECORD_STALE_MINUTES * MS_PER_MINUTE) {
-    return unknown(signal, `the record's last refusal (${refusal.reason}) was written ${ageText(refusal.at, now)} ago, so the timer has stopped and whether it still refuses is not known`);
+  if (readAt - refusal.at > AUTO_OFF_RECORD_STALE_MINUTES * MS_PER_MINUTE) {
+    return unknown(signal, `the record's last refusal (${refusal.reason}) was written ${ageText(refusal.at, readAt)} before the mirror read it, so the timer had stopped and whether it still refuses is not known`);
   }
   if (refusal.since === null) return unknown(signal, `the record names a refusal (${refusal.reason}) but carries no \`since\`, so how long it has stood is not known`);
   if (refusal.since > refusal.at) return unknown(signal, `the record's refusal began (${isoOf(refusal.since)}) after its last tick (${isoOf(refusal.at)}), so its age is not known`);
@@ -554,43 +569,45 @@ export function autoOffRefusalReading({ now, autoOff }) {
     detail: `fleet auto-off has refused to power workers off for ${ageText(refusal.since, now)} (\`${refusal.reason}\`): ${refusal.detail.slice(0, MAX_QUOTED_CHARS)}` };
 }
 
+/** @param {unknown} value @returns {value is Record<string, any>} */
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 /** @param {unknown} value @returns {value is number} */
 const isTime = (value) => typeof value === "number" && Number.isFinite(value);
 
 /**
- * THE REFUSAL RECORD, from the state file as text. Anything that is not a refusal this reading can believe is `unreadable` with the reason, never a `null` refusal:
- * absent and malformed are different from "refused nothing".
+ * THE REFUSAL RECORD, from the mirror file as text: `{ readAt, record }`, `record` being the control plane's state file verbatim (`{}` when it has none). Anything
+ * that is not a mirror this reading can believe is `unreadable` with the reason, never a `null` refusal: absent and malformed are different from "refused nothing".
  * @param {string | null} text `null` for a file that could not be read
  * @param {string} path only for the sentence
  * @returns {AutoOffFact}
  */
-export function parseAutoOffState(text, path) {
+export function parseAutoOffMirror(text, path) {
   if (text === null) return { unreadable: `\`${path}\` could not be read, so whether fleet auto-off is refusing is not known` };
-  let state;
+  let mirror;
   try {
-    state = JSON.parse(text);
+    mirror = JSON.parse(text);
   } catch (err) {
     return { unreadable: `\`${path}\` is not JSON (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)})` };
   }
-  if (state === null || typeof state !== "object" || Array.isArray(state)) return { unreadable: `\`${path}\` is not an object` };
-  const refusal = state.refusal ?? null;
-  if (refusal === null) return { refusal: null };
+  if (!isObject(mirror) || !isTime(mirror.readAt) || !isObject(mirror.record)) return { unreadable: `\`${path}\` is not \`{ readAt, record }\`` };
+  const refusal = mirror.record.refusal ?? null;
+  if (refusal === null) return { refusal: null, readAt: mirror.readAt };
   if (typeof refusal.reason !== "string" || typeof refusal.detail !== "string" || !isTime(refusal.at) || !(refusal.since === undefined || isTime(refusal.since))) {
     return { unreadable: `\`${path}\` holds a refusal without a reason, a detail and a time` };
   }
-  return { refusal: { reason: refusal.reason, detail: refusal.detail, at: refusal.at, since: refusal.since ?? null } };
+  return { refusal: { reason: refusal.reason, detail: refusal.detail, at: refusal.at, since: refusal.since ?? null }, readAt: mirror.readAt };
 }
 
 /**
- * THE FLEET'S REFUSAL RECORD, read from the checkout the tick serves (`runs/fleet-auto-off-state.json`, the path `fleet-auto-off.mjs` writes). NEVER THROWS. The
- * unit that writes it runs where the fleet is driven, so a checkout that is not that machine holds a copy no tick keeps current: its last refusal ages past
- * `AUTO_OFF_RECORD_STALE_MINUTES` and the reading says so, which is the answer and not a defect of the reader.
+ * THE FLEET'S REFUSAL RECORD, as `fleet-watch` mirrored it (`AUTO_OFF_MIRROR_PATH`) from the control plane. NEVER THROWS, and never ssh: the file is read off this
+ * checkout like any other. A checkout `fleet-watch` does not run in holds no mirror, or one nobody keeps current, and the reading says so: that is the answer, not a
+ * defect of the reader.
  * @param {{ root?: string, read?: (path: string) => string }} [where]
  * @returns {AutoOffFact}
  */
 export function readAutoOffRefusal({ root = DEFAULT_ROOT, read = (path) => readFileSync(path, "utf8") } = {}) {
-  const path = resolve(root, AUTO_OFF_STATE_PATH);
-  return parseAutoOffState(readOrNull(read, path), path);
+  const path = resolve(root, AUTO_OFF_MIRROR_PATH);
+  return parseAutoOffMirror(readOrNull(read, path), path);
 }
 
 /**

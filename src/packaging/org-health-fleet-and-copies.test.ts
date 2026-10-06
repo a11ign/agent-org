@@ -228,7 +228,7 @@ test("an OMITTED fleet fact is silent (the caller does not ask), a NULL one is a
 });
 
 test("the tick reads the copies itself when none are given: a drifted pair is offered, a refusal is said, and a tree with no original is left out", () => {
-  const facts = { now: NOW, lastMergedAt: NOW - HOUR_MS, work: null, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] as string[] }, primarySince: null, autoOff: { refusal: null } };
+  const facts = { now: NOW, lastMergedAt: NOW - HOUR_MS, work: null, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] as string[] }, primarySince: null, autoOff: { refusal: null, readAt: NOW } };
   const drifted = orgHealthTick(facts as never, { log: () => {}, readCopies: () => [pairOf({ originalText: "one\nTWO\nthree\n" })] });
   assert.deepEqual(drifted.map((o) => o.subject), [SIGNALS.COPIES]);
   const said: string[] = [];

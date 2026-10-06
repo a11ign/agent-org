@@ -61,7 +61,7 @@ const STALE = { behind: 4, ahead: 0, dirty: ["packages/agent-org/src/work-gate.m
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string };
 
 /** The facts every signal reads, every one CLEAR, so a test names only the one it moves. */
-const quiet = (over: Record<string, unknown> = {}) => ({ now: NOW, lastMergedAt: NOW - HOUR_MS, work: WORK, redPrs: [], refusals: {}, drift: CURRENT, primarySince: null, autoOff: { refusal: null }, ...over });
+const quiet = (over: Record<string, unknown> = {}) => ({ now: NOW, lastMergedAt: NOW - HOUR_MS, work: WORK, redPrs: [], refusals: {}, drift: CURRENT, primarySince: null, autoOff: { refusal: null, readAt: NOW }, ...over });
 
 // --- the table's numbers, in one place ------------------------------------------------------------------------------
 
