@@ -173,6 +173,16 @@ test("#3497: the tick's version banner repeating 30 ticks is NOT offered, in bot
   }
 });
 
+test("a11ign/a11ign#3723: the gate's `github-status: operational` reading repeating 30 ticks is NOT offered, whatever the call cost; its UNKNOWN and INCIDENT forms still are", () => {
+  const allow = loadAllowlist();
+  const operational = (i: number) => [`github-status: operational (call ${100 + i} ms).`];
+  assert.equal(repeatingLines({ ticks: ticksOf(run(30, operational)), allow: [] }).length, 1, "POSITIVE CONTROL: unlisted, the same 30 ticks ARE offered");
+  assert.deepEqual(repeatingLines({ ticks: ticksOf(run(30, operational)), allow }), [], "listed, they are not");
+  for (const fault of ["github-status: UNKNOWN (status page unreadable; 40 ms) -- nothing is held, the gate reads as it always did.", "GITHUB INCIDENT: Actions degraded (call 90 ms); holding 1 runner-start order(s) #12."]) {
+    assert.equal(repeatingLines({ ticks: ticksOf(run(30, () => [fault])), allow }).length, 1, `${fault.slice(0, 30)} still offered`);
+  }
+});
+
 // --- #3029: the lines `wake.mjs` writes for a refusal, run through the detector as the journal would hold them ------
 
 /** The stderr lines `finishTick` writes for these refusals at this wait, which is what the journal carries. */
