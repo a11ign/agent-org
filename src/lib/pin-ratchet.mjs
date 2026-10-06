@@ -27,6 +27,7 @@ import { sandboxGitEnv } from "./git-env.mjs";
 
 /** @typedef {{ name: string, reason: string }} Declaration */
 /** @typedef {{ ref: string } | { unreadable: string }} Base */
+/** @typedef {(root: string, base: { changed: Set<string> | null }) => string[]} Scan */
 
 const MERGE_GROUP = "merge_group";
 /** The checkout a laid-out copy of the tool came from, for the one reader that needs a repository (`judgePin`). */
@@ -58,16 +59,36 @@ export function resolveBase(repo, env = process.env) {
 }
 
 /**
+ * (#3549) THE PATHS THIS CHANGE TOUCHES, so a scan of the base can re-read only those. Repository-relative; the live tree against `ref` (committed and
+ * uncommitted tracked edits) plus every untracked file. `null` when the answer is not a plain set of edits and additions: a DELETION or a rename
+ * removes a file the base held and the live tree no longer shows, so "no visited file was touched" no longer proves a base entry unchanged, and the
+ * caller must scan the whole base. Never a guess: when git cannot say, it is `null` too.
+ * @param {string} repo @param {string} ref
+ * @returns {Set<string> | null}
+ */
+export function changedSince(repo, ref) {
+  try {
+    const rows = git(repo, ["diff", "--name-status", "--no-renames", ref]).split("\n").filter(Boolean);
+    if (rows.some((row) => row.startsWith("D"))) return null;
+    const untracked = git(repo, ["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean);
+    return new Set([...rows.map((row) => row.split("\t")[1]), ...untracked]);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `scan` run over `paths` as they were at `ref`, extracted into a throwaway directory (so the SAME scan that reads the live tree reads the base).
- * @param {{ repo: string, ref: string, paths: string[], scan: (root: string) => string[] }} at
+ * `changed` is handed to `scan` untouched, for a scan that can reuse what it already answered about the live tree (`changedSince`).
+ * @param {{ repo: string, ref: string, paths: string[], scan: Scan, changed?: Set<string> | null }} at
  * @returns {string[]}
  */
-export function scanAtBase({ repo, ref, paths, scan }) {
+export function scanAtBase({ repo, ref, paths, scan, changed = null }) {
   const root = mkdtempSync(join(tmpdir(), "pin-ratchet-"));
   try {
     const archive = execFileSync("git", ["archive", ref, ...paths], { cwd: repo, env: sandboxGitEnv(), maxBuffer: ARCHIVE_BUFFER_BYTES });
     execFileSync("tar", ["-x", "-C", root], { input: archive });
-    return scan(root);
+    return scan(root, { changed });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -86,8 +107,9 @@ export function undeclaredGrowth({ current, base, declared }) {
 
 /**
  * The whole ratchet for one pinned population.
- * @param {{ repo: string, paths: string[], scan: (root: string) => string[], current: string[], declared: Declaration[], env?: NodeJS.ProcessEnv }} pin
- *   `scan(root)` lists the population under a tree laid out as `repo` is (`root/<path>`); `current` is what the live tree holds. `repo` is
+ * @param {{ repo: string, paths: string[], scan: Scan, current: string[], declared: Declaration[], env?: NodeJS.ProcessEnv }} pin
+ *   `scan(root, { changed })` lists the population under a tree laid out as `repo` is (`root/<path>`); `changed` is `changedSince` the base (`null`:
+ *   scan everything), which a scan may ignore; `current` is what the live tree holds. `repo` is
  *   the tool's directory; `env[TOOL_REPO_ENV]`, where set, replaces it as the repository the base is read from.
  * @returns {{ undeclared: string[], judged: string }} `judged` says WHICH form ran, for the assertion message
  */
@@ -95,6 +117,6 @@ export function judgePin({ repo, paths, scan, current, declared, env = process.e
   const repository = env[TOOL_REPO_ENV] || repo;
   const base = resolveBase(repository, env);
   if ("unreadable" in base) return { undeclared: undeclaredGrowth({ current, base: null, declared }), judged: `strictly, with nothing grandfathered (${base.unreadable})` };
-  const atBase = scanAtBase({ repo: repository, ref: base.ref, paths, scan });
+  const atBase = scanAtBase({ repo: repository, ref: base.ref, paths, scan, changed: changedSince(repository, base.ref) });
   return { undeclared: undeclaredGrowth({ current, base: atBase, declared }), judged: `as a ratchet against ${base.ref.slice(0, 9)}` };
 }
