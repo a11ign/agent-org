@@ -316,10 +316,19 @@ test("#2324: the open-PR list is read ONCE per tick however many rows are asked,
 //
 // `spawnClaimability`'s default `run` is the wake's own `gh`, and only that one is handed the gate's batch: a test's fake `run` stands for `gh` and
 // must see its calls one at a time (every test above). So the overlap can only be SEEN through a real `gh` on PATH, which here is a stub that
-// stamps when each `pr list` started and ended. The control is the stamps, not the wall: sequential reads have the second start after the first end.
-const STUB_PAUSE_MS = 400;
+// stamps when each `pr list` started and ended.
+//
+// THE STUB MAKES THE OVERLAP A CONDITION, NOT A MARGIN (#3861). It used to pause 100 ms or 400 ms and the test asserted that every read had STARTED
+// before any ENDED, which held only while the slowest `node` start-up fell inside the fast read's 100 ms: at host load 24 to 33 it did not, and the
+// test went red on correct code (4 of 6 runs). Now no read answers until every declared repository's read has stamped its start, and the first
+// repository's read (which must finish LAST, so a merge in finishing order would differ from the repositories' own order) also waits for every other
+// read's end. A reader that reads one by one can never satisfy that wait, so it runs out the give-up and the stamps show it; a reader that reads
+// together satisfies it however slowly the scheduler starts the processes. The give-up is long so a loaded host cannot trip it, and it is spent
+// only by the failure the test exists to catch.
+const STUB_GIVE_UP_MS = 15_000;
+const STUB_POLL_MS = 5;
 const STUB_GH = `#!${process.execPath}
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 const json = args[args.indexOf("--json") + 1];
 const send = (value) => process.stdout.write(JSON.stringify(value));
@@ -327,26 +336,31 @@ if (args[0] === "issue" && json === "blockedBy") send({ blockedBy: { nodes: [] }
 else if (args[0] === "issue" && json === "body") send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.mjs\\n\`\`\`\\n" });
 else if (args[0] === "pr" && args[1] === "list") {
   const repo = args[args.indexOf("--repo") + 1];
+  const giveUp = Date.now() + ${STUB_GIVE_UP_MS};
   const stamp = (what) => appendFileSync(process.env.STUB_LOG, what + " " + repo + " " + Date.now() + "\\n");
-  stamp("start");
-  setTimeout(() => {
+  const stamped = (what) => readFileSync(process.env.STUB_LOG, "utf8").split("\\n").filter((line) => line.startsWith(what + " ")).length;
+  const until = (what, count, then) => (stamped(what) >= count || Date.now() > giveUp ? then() : setTimeout(until, ${STUB_POLL_MS}, what, count, then));
+  const others = Number(process.env.STUB_EXPECT) - 1;
+  const slow = repo === process.env.STUB_SLOW;
+  const answer = () => {
     stamp("end");
     if (repo === process.env.STUB_REFUSE) { process.stderr.write("gh: HTTP 502\\n"); process.exit(1); }
-    const first = repo === process.env.STUB_SLOW;
-    send([{ number: first ? 2300 : 2301, changedFiles: 1, files: [{ path: "packages/agent-org/src/wake.mjs" }], body: "" }]);
-  }, repo === process.env.STUB_SLOW ? ${STUB_PAUSE_MS} : ${STUB_PAUSE_MS / 4});
+    send([{ number: slow ? 2300 : 2301, changedFiles: 1, files: [{ path: "packages/agent-org/src/wake.mjs" }], body: "" }]);
+  };
+  stamp("start");
+  until("start", others + 1, () => (slow ? until("end", others, answer) : answer()));
 } else { process.stderr.write("unexpected gh call: " + args.join(" ")); process.exit(2); }
 `;
 
 /** Runs `spawnClaimability()` with its DEFAULT `run` against the stub; returns the verdict, what was said, and the stamped starts and ends. */
 function readThroughStubGh(refuse: string | null) {
   const dir = mkdtempSync(join(tmpdir(), "wake-open-prs-"));
-  const saved = { PATH: process.env.PATH, STUB_LOG: process.env.STUB_LOG, STUB_SLOW: process.env.STUB_SLOW, STUB_REFUSE: process.env.STUB_REFUSE };
+  const saved = { PATH: process.env.PATH, STUB_LOG: process.env.STUB_LOG, STUB_EXPECT: process.env.STUB_EXPECT, STUB_SLOW: process.env.STUB_SLOW, STUB_REFUSE: process.env.STUB_REFUSE };
   try {
     writeFileSync(join(dir, "gh"), STUB_GH);
     chmodSync(join(dir, "gh"), 0o755);
     const repos = homeProjectDeclaration().code.map(({ repo }) => repo);
-    Object.assign(process.env, { PATH: `${dir}:${saved.PATH ?? ""}`, STUB_LOG: join(dir, "stamps"), STUB_SLOW: repos[0], STUB_REFUSE: refuse ?? "" });
+    Object.assign(process.env, { PATH: `${dir}:${saved.PATH ?? ""}`, STUB_LOG: join(dir, "stamps"), STUB_EXPECT: String(repos.length), STUB_SLOW: repos[0], STUB_REFUSE: refuse ?? "" });
     const said: string[] = [];
     const verdict = spawnClaimability({ warn: (line) => said.push(line) })({ causeKey: "engineers/ready-row-unclaimed/2131" });
     const stamps = readFileSync(join(dir, "stamps"), "utf8").trim().split("\n").map((l) => l.split(" "))
@@ -364,7 +378,9 @@ test("#3566 (9b): the wake's open-pull-request reads of every declared repositor
   const starts = stamps.filter((s) => s.what === "start").map((s) => s.at);
   const ends = stamps.filter((s) => s.what === "end").map((s) => s.at);
   assert.equal(starts.length, repos.length, "every declared repository was read, once");
-  assert.ok(Math.max(...starts) < Math.min(...ends), `every read started before any finished (starts ${starts}, ends ${ends})`);
+  // `<=`, not `<`: the barrier lets a read end the moment the last one has started, and the stamps are whole milliseconds, so they may tie. A read
+  // that waited for another to FINISH before it began is a give-up (15 s) later, which no tie can hide.
+  assert.ok(Math.max(...starts) <= Math.min(...ends), `every read started before any finished (starts ${starts}, ends ${ends})`);
   // The first repository's read finishes LAST, so a merge in the order the reads finish would name #2301; the repositories' own order names #2300.
   assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
 });
