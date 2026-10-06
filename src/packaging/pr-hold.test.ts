@@ -257,12 +257,20 @@ if (args[0] === "pr" && args[1] === "comment") {
   fs.writeFileSync(statePath, JSON.stringify(state));
   process.exit(0);
 }
+if (args[0] === "label" && args[1] === "create") {
+  if (state.failCreate) { process.stderr.write("simulated: label create is forbidden\\n"); process.exit(1); }
+  state.repoLabels = (state.repoLabels || []).concat([args[2]]);
+  state.descriptions = Object.assign({}, state.descriptions, { [args[2]]: flag("--description") });
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  process.exit(0);
+}
 if (args[0] === "pr" && args[1] === "edit") {
   const remove = flag("--remove-label");
   const add = flag("--add-label");
   if (remove !== null && state.failRemoveOf === remove) { process.stderr.write("simulated: removing " + remove + " failed\\n"); process.exit(1); }
   if (remove !== null) state.labels = state.labels.filter((label) => label !== remove);
   if (add !== null && state.failAdd) { process.stderr.write("simulated: API rate limit already exceeded\\n"); process.exit(1); }
+  if (add !== null && state.repoLabels && !state.repoLabels.includes(add)) { process.stderr.write("'" + add + "' not found\\n"); process.exit(1); }
   if (add !== null) state.labels.push(add);
   fs.writeFileSync(statePath, JSON.stringify(state));
   process.exit(0);
@@ -270,8 +278,11 @@ if (args[0] === "pr" && args[1] === "edit") {
 process.exit(1);
 `;
 
+/** `repoLabels`, when given, is the set of labels the repository HAS: `pr edit --add-label` of any other answers "not found", as `gh` does. */
+type HoldStubState = { labels: string[], failAdd?: boolean, failRemoveOf?: string, repoLabels?: string[], failCreate?: boolean };
+
 /** Runs `pr-hold.mjs` for PR 9001 with the stub first on PATH and no token in the environment. */
-function withStubbedHold(state: { labels: string[], failAdd?: boolean, failRemoveOf?: string }, ...argv: string[]) {
+function withStubbedHold(state: HoldStubState, ...argv: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "pr-hold-1481-"));
   try {
     writeFileSync(join(dir, "state.json"), JSON.stringify(state));
@@ -281,9 +292,11 @@ function withStubbedHold(state: { labels: string[], failAdd?: boolean, failRemov
       { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "",
         // Without the host's declaration the CLI refuses before it ever calls `gh`, so the stub's argv.log is never written: a tool checkout has no project beside it.
         ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) } });
-    const after = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as { labels: string[]; comments?: string[] };
+    const after = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as
+      { labels: string[]; comments?: string[]; repoLabels?: string[]; descriptions?: Record<string, string> };
     const calls = readFileSync(join(dir, "argv.log"), "utf8").split("\n").filter(Boolean);
-    return { status: r.status, stdout: r.stdout, stderr: r.stderr, labels: after.labels, comments: after.comments ?? [], calls };
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, labels: after.labels, comments: after.comments ?? [], calls,
+      repoLabels: after.repoLabels ?? [], descriptions: after.descriptions ?? {} };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -341,4 +354,53 @@ test("#2996: a take records WHY as a marker comment, `--until` as a readable `Wa
 test("#1481: the header documents exit 3, DISPLACED_NOT_HELD", () => {
   const header = readFileSync(PR_HOLD_CLI, "utf8").split("import ")[0];
   assert.match(header, /^ \*\s+3\s+DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold/m);
+});
+
+// --- #3862: the FIRST hold by a session adds a label the repository does not have yet. `gh pr edit --add-label`
+// answers `'hold:<session>' not found` and the take died with a Node stack, so every new session created its
+// label by hand. The stub's `repoLabels` is what makes "not found" happen. ---
+
+const createCalls = (calls: string[]) => calls.filter((c) => c.startsWith("label create"));
+
+test("#3862 ACCEPTANCE: the first hold by a session CREATES its label, with the description the hand-made ones carry, and holds the PR", () => {
+  const r = withStubbedHold({ labels: [], repoLabels: ["lane:any"] }, "--session=worker-new");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.labels, ["hold:worker-new"], "read from the stub's state: the label LANDED on the PR");
+  assert.equal(createCalls(r.calls).length, 1, JSON.stringify(r.calls));
+  assert.match(createCalls(r.calls)[0], /^label create hold:worker-new .*--repo \S+/, "the repository is named, not inferred from a cwd");
+  assert.equal(r.descriptions["hold:worker-new"], "This PR is HELD by worker-new and must not merge.");
+  assert.deepEqual(r.repoLabels, ["lane:any", "hold:worker-new"]);
+});
+
+test("#3862: the SECOND take by the same session does not create the label again", () => {
+  const first = withStubbedHold({ labels: [], repoLabels: [] }, "--session=worker-new");
+  assert.equal(first.status, 0, first.stderr);
+  const released = withStubbedHold({ labels: first.labels, repoLabels: first.repoLabels }, "--session=worker-new", "--release");
+  assert.equal(released.status, 0, released.stderr);
+  const second = withStubbedHold({ labels: released.labels, repoLabels: released.repoLabels }, "--session=worker-new");
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(second.labels, ["hold:worker-new"]);
+  assert.deepEqual(createCalls(second.calls), [], "the label exists, so nothing is created");
+});
+
+test("#3862 CONTROL: a label that already exists is added with no create call", () => {
+  const r = withStubbedHold({ labels: [], repoLabels: ["hold:worker-old"] }, "--session=worker-old");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(createCalls(r.calls), []);
+});
+
+test("#3862: a `gh` failure that is NOT 'not found' is still raised, and nothing is created", () => {
+  const r = withStubbedHold({ labels: [], repoLabels: [], failAdd: true }, "--session=worker-new");
+  assert.equal(r.status, 1, "REFUSED-nothing-done, as before");
+  assert.match(r.stderr, /simulated: API rate limit already exceeded/);
+  assert.deepEqual(createCalls(r.calls), [], "a rate limit is not a missing label");
+  assert.deepEqual(r.labels, []);
+});
+
+test("#3862: a create that FAILS is raised, and the add is not retried into a second 'not found'", () => {
+  const r = withStubbedHold({ labels: [], repoLabels: [], failCreate: true }, "--session=worker-new");
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /simulated: label create is forbidden/);
+  assert.equal(r.calls.filter((c) => c.includes("--add-label hold:worker-new")).length, 1, JSON.stringify(r.calls));
+  assert.deepEqual(r.labels, []);
 });
