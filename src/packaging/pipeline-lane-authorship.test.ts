@@ -30,6 +30,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
 import { laneLabelsFor } from "../row-file.mjs";
 import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN } from "../lane-ownership.mjs";
 import { runArmPr, EXIT } from "../arm-pr.mjs";
@@ -271,7 +272,7 @@ esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
     const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile,
-      GITHUB_REPOSITORY: "a11ign/a11ign", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
+      GITHUB_REPOSITORY: "a11ign/a11ign", [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, merged: calls.some((c) => c.startsWith("pr merge")) };
   } finally {

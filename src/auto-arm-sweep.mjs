@@ -245,10 +245,27 @@ function retryRead({ number, repo, label, reads, waitMs, read, sleep, log }) {
       log(`SWEEP: #${number} ${label} read ${attempt}/${reads} FAILED -- `
         + `${cause instanceof Error ? cause.message : cause}`);
     }
-    if (attempt < reads) sleep(waitMs);
+    if (attempt < reads) sleep(waitBetweenReads(waitMs));
   }
   return false;
 }
+
+/**
+ * THE WAIT A TEST MAY SHORTEN, AND NOTHING ELSE MAY (#3768). The three process-form tests spawn the whole sweep against
+ * a fake `gh` that never changes its answer, so no injected `sleep` reaches them and each read used to exhaust its
+ * retries in real time (33 waits of 2 s, measured). They set this variable to `0` in the SPAWNED sweep's environment.
+ * Production leaves it unset, and no unit file, workflow or script sets it (`sweep-wait-override.test.ts` reads them),
+ * so an unset or unreadable value is the real wait: a value that is not a whole number of milliseconds is ignored
+ * rather than guessed at, because a typo must not turn the race window into zero.
+ * @param {number} realMs @param {NodeJS.ProcessEnv} [env]
+ */
+export function waitBetweenReads(realMs, env = process.env) {
+  const given = env[SWEEP_WAIT_ENV];
+  return given !== undefined && /^\d+$/.test(given) ? Number(given) : realMs;
+}
+
+/** The variable `waitBetweenReads` honours; only the tests that spawn the sweep set it. */
+export const SWEEP_WAIT_ENV = "AGENT_ORG_SWEEP_WAIT_MS";
 
 /**
  * THE BOUND ON THAT RE-READ (#1306), named because neither number explains itself. The measured failures sat

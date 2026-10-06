@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runArmPr, EXIT } from "../arm-pr.mjs";
-import { refusalBeforeArming } from "../auto-arm-sweep.mjs";
+import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
 import { ejectionVerdict, queueEjectionOf } from "../pr-armed-state.mjs";
 
 const COMMIT = { __typename: "PullRequestCommit" };
@@ -165,7 +165,7 @@ esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
     const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env,
-      GITHUB_REPOSITORY: REPO, PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
+      GITHUB_REPOSITORY: REPO, [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, status: run.status, merged: calls.some((c) => c.startsWith("pr merge")) };
   } finally {
