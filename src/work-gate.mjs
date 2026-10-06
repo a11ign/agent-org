@@ -4173,17 +4173,19 @@ function touchesOwnedLanePath(files, lane) {
  * this cause inherits the same guarantee: it can be silent about a PR the gate cannot see the whole of, but
  * it can never fire on a partial list and miss the path that mattered.
  *
- * @param {any[]} prs @param {{number: number, files: string[]}[]} prFiles
+ * @param {any[]} prs @param {{number: number, files: string[], repoKey?: string}[]} prFiles
  * @returns {{number: number, repoKey?: string, session: string | null}[]} ascending by PR number
  */
 export function pipelineCodeownerReviewMissing(prs, prFiles) {
   const lane = pipelineLane();
   const login = lane && /** @type {Record<string, string>} */ (ROLE_LOGIN)[lane.owner];
   if (!login) return [];
-  const filesByNumber = new Map(prFiles.map((p) => [Number(p.number), p.files]));
+  // #3720: KEYED BY REPOSITORY AND NUMBER. Two repositories' open PRs share a number (`lab#3`, `toolchain#3`), and a number-only map let the
+  // later one's files stand for both: a PR touching no owned path was named, and one touching an owned path could go unnamed.
+  const filesByRef = new Map(prFiles.map((p) => [subjectRef(p.repoKey, p.number), p.files]));
   return prs
     .filter((pr) => pr.author?.login !== login)
-    .filter((pr) => touchesOwnedLanePath(filesByNumber.get(Number(pr.number)) ?? [], lane))
+    .filter((pr) => touchesOwnedLanePath(filesByRef.get(subjectRef(pr.repoKey, pr.number)) ?? [], lane))
     .filter((pr) => !(pr.reviews ?? []).some(
       (/** @type {any} */ r) => r?.state === "APPROVED" && r?.author?.login === login))
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), session: sessionOf(pr) }))
