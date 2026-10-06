@@ -19,6 +19,10 @@
       "reason": "the tick's version banner (a11ign/a11ign#3443): update-tool.mjs prints `agent-org vX.Y.Z (<sha>)` and work-tick.mjs prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (a11ign/a11ign#3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
     },
     {
+      "pattern": "^github-status: operational \\(call N ms\\)\\.$",
+      "reason": "the gate's reading of githubstatus.com, written on EVERY tick (work-gate.mjs `holdForIncidentNow`, a11ign/a11ign#3723) so the cost of the call is in the journal: the CLEAR state, the one it is in whenever GitHub has no incident. It is a position reading, the twin of the version banner, and 30 consecutive ticks of it were offered to orchestrator on 2026-10-06. The other two states print different lines, `github-status: UNKNOWN (...)` (the status page could not be read) and `GITHUB INCIDENT: ...` (a runner outage is holding orders), and neither is allowlisted."
+    },
+    {
       "pattern": "^primary checkout detached at origin/main \\(H\\)$",
       "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
     },
