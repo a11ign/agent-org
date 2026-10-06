@@ -14,7 +14,8 @@ import { execFileSync } from "node:child_process";
 import { isPrimaryWorktree } from "./prune-worktrees.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { pathToFileURL } from "node:url";
-import { realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
 import { changedFiles } from "./lib/changed-files.mjs";
@@ -119,7 +120,7 @@ changed = (range, pathspec) => changedFiles(range, { repoRoot: root, pathspec })
   // INSTALL BEFORE BUILD: the build compiles against `node_modules`, so building first would compile the
   // new source against the old dependencies and fail on exactly the module the install was about to add.
   if (lockfileMoved(changed, before, sha)) installAt(root, runAt);
-  buildAt(root, runAt);
+  buildUnlessCurrent(root, runAt, { before, sha });
   return sha;
 }
 
@@ -240,6 +241,73 @@ function buildAt(root, runAt) {
       + "worktree resolves THIS checkout's dist, so they are now compiling against a source this dist "
       + "does not match. Fix the build here before trusting a cross-package import anywhere.", { cause: error });
   }
+}
+
+/**
+ * Where the last SUCCESSFUL build of the primary is recorded, inside `.git`: not a tracked file, nowhere the
+ * primary's `git status` looks, and a path no worktree can mistake for its own (a worktree's `.git` is a file).
+ */
+const BUILD_STAMP = join(".git", "primary-build-stamp.json");
+
+/**
+ * THE `dist` DIRECTORIES THE BUILD LEFT, which is what a skip must be able to SEE: a stamp says a build
+ * once succeeded, and cannot see a `dist` somebody deleted. A package whose `dist` is missing or empty is
+ * left out, so a stamp written when no output existed names nothing and never licenses a skip.
+ *
+ * @param {string} root @returns {string[]}
+ */
+function builtOutputs(root) {
+  const packages = join(root, "packages");
+  if (!existsSync(packages)) return [];
+  return readdirSync(packages, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join("packages", entry.name, "dist"))
+    .filter((dist) => existsSync(join(root, dist)) && readdirSync(join(root, dist)).length > 0);
+}
+
+/**
+ * @param {string} root @returns {{ sha?: unknown, outputs?: unknown } | null} null when there is no stamp, or one that does not parse:
+ * either way the answer is to build, which is the safe direction, so an unreadable stamp is a rebuild and not an error.
+ */
+function readBuildStamp(root) {
+  if (!existsSync(join(root, BUILD_STAMP))) return null;
+  try {
+    return JSON.parse(readFileSync(join(root, BUILD_STAMP), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A BUILD IS CURRENT only when the last SUCCESSFUL build was of THIS sha AND every `dist` it left is still
+ * there. Neither alone will do: the sha alone would trust a `dist` somebody deleted, and the outputs alone
+ * would trust a `dist` built from other source.
+ *
+ * @param {string} root @param {string} sha
+ */
+function buildIsCurrent(root, sha) {
+  const stamp = readBuildStamp(root);
+  if (stamp === null || stamp.sha !== sha || !Array.isArray(stamp.outputs) || stamp.outputs.length === 0) return false;
+  return stamp.outputs.every((dist) => typeof dist === "string" && existsSync(join(root, dist)) && readdirSync(join(root, dist)).length > 0);
+}
+
+/**
+ * SKIP THE REBUILD WHEN NOTHING MOVED -- #3566. `work:tick` runs this before every tick, 30 a hour, and the
+ * build was unconditional: measured 11.6 to 12.4 s of wall and 27.6 to 29.9 s of CPU for a build that changed
+ * nothing, which is most of the tick's `prestartMs` and CPU the `tick-cost` line cannot see (`ExecStartPre` is
+ * outside the tick process).
+ *
+ * THE SKIP NEEDS ALL THREE: HEAD did not move, the last successful build was of this sha, and its output is
+ * still on disk. The stamp is written only AFTER a build returns, so a FAILED build leaves none for this sha
+ * and is retried on every tick exactly as before -- HEAD staying put after a failure must never turn a loud
+ * failure into a silent stale `dist`, which is what `buildAt` forbids.
+ *
+ * @param {string} root @param {(root: string, argv: string[]) => void} runAt @param {{ before: string, sha: string }} moved
+ */
+function buildUnlessCurrent(root, runAt, { before, sha }) {
+  if (before === sha && buildIsCurrent(root, sha)) return;
+  buildAt(root, runAt);
+  writeFileSync(join(root, BUILD_STAMP), JSON.stringify({ sha, outputs: builtOutputs(root) }));
 }
 
 /**

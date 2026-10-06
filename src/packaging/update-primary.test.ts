@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { tmpdir } from "node:os";
@@ -405,4 +405,119 @@ test("#2781 done-when 3: the `-` on ExecStartPre may stay ONLY while the gate re
     assert.match(gate, /cause: "primary-stale"/);
     assert.match(unit, /primary-stale/, "and the unit says where its failure is reported");
   }
+});
+
+/**
+ * #3566 -- THE BUILD RAN ON EVERY TICK, WHETHER OR NOT THE PRIMARY MOVED.
+ *
+ * Measured 2026-10-06 on a scratch clone at an idle host: `pnpm run build` with nothing changed took 11.6 to
+ * 12.4 s of wall and 27.6 to 29.9 s of CPU, run by the `work-tick` unit's `ExecStartPre` 30 times an hour.
+ * The skip needs all three of: HEAD unmoved, the last SUCCESSFUL build was of this sha, its output still there.
+ */
+const SHA = "abc123";
+const STAMP = join(".git", "primary-build-stamp.json");
+
+/** A primary checkout holding one built package (`packages/cli/dist`), unless `dist: false`. */
+function primaryWithDist({ dist = true } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "a11y-primary-skip-"));
+  mkdirSync(join(root, ".git"));
+  if (dist) {
+    mkdirSync(join(root, "packages", "cli", "dist"), { recursive: true });
+    writeFileSync(join(root, "packages", "cli", "dist", "index.js"), "x");
+  }
+  return root;
+}
+
+/** A `run` that answers `before` to the first `rev-parse HEAD` (the checkout before the move) and `SHA` to everything else. */
+function gitAnswering(before: string) {
+  let heads = 0;
+  return (args: string[]) => (args[0] === "rev-parse" && args[1] === "HEAD" && heads++ === 0 ? `${before}\n` : `${SHA}\n`);
+}
+
+/** One tick of `primary:update` at `root`, returning how many builds it ran and how many it was asked for. */
+function tick(root: string, { before = SHA, failBuild = false } = {}) {
+  let builds = 0;
+  const attempt = () => {
+    updatePrimary(root, gitAnswering(before), () => { builds += 1; if (failBuild) throw new Error("boom"); }, () => []);
+  };
+  if (failBuild) assert.throws(attempt, /primary moved, but `pnpm run build` failed/);
+  else attempt();
+  return builds;
+}
+
+test("#3566 ACCEPTANCE: a second update at the SAME sha does not build again", () => {
+  const root = primaryWithDist();
+  try {
+    assert.equal(tick(root), 1, "the first tick at a sha builds: nothing is recorded yet");
+    assert.equal(tick(root), 0, "the second changed nothing, and 12 s of wall and 28 s of CPU were the price of finding out");
+    assert.equal(tick(root), 0, "and so is the third");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: a FAILED build leaves no stamp, so the next tick builds again -- a loud failure never goes quiet", () => {
+  const root = primaryWithDist();
+  try {
+    assert.equal(tick(root, { failBuild: true }), 1);
+    assert.ok(!existsSync(join(root, STAMP)), "no stamp for a build that did not succeed");
+    assert.equal(tick(root), 1, "HEAD is already at the target, and the build is still retried");
+    assert.equal(tick(root), 0, "and once it has succeeded, it is not");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: a MOVED sha builds, and the stamp follows it", () => {
+  const root = primaryWithDist();
+  try {
+    assert.equal(tick(root), 1);
+    assert.equal(tick(root, { before: "old999" }), 1, "HEAD moved: the source is not the one the stamp names");
+    assert.equal(tick(root), 0, "the stamp now names the new sha");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: a stamp for ANOTHER sha does not license a skip", () => {
+  const root = primaryWithDist();
+  try {
+    writeFileSync(join(root, STAMP), JSON.stringify({ sha: "someone-else", outputs: [join("packages", "cli", "dist")] }));
+    assert.equal(tick(root), 1);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: a stamp that names the sha but whose `dist` is GONE builds -- a stamp cannot see a deleted output", () => {
+  const root = primaryWithDist();
+  try {
+    assert.equal(tick(root), 1);
+    rmSync(join(root, "packages", "cli", "dist"), { recursive: true });
+    assert.equal(tick(root), 1, "stamp present, output missing: the silent-stale case `buildAt` forbids");
+    mkdirSync(join(root, "packages", "cli", "dist"), { recursive: true });
+    assert.equal(tick(root), 1, "an EMPTY dist is a missing one");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: a build that left NO output records none, and never licenses a skip", () => {
+  const root = primaryWithDist({ dist: false });
+  try {
+    assert.equal(tick(root), 1);
+    assert.equal(tick(root), 1, "nothing to see, so nothing to trust");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 CONTROL: an unreadable or unusable stamp builds, and is replaced by a good one", () => {
+  const root = primaryWithDist();
+  try {
+    for (const junk of ["not json", "null", JSON.stringify({ sha: SHA }), JSON.stringify({ sha: SHA, outputs: [7] })]) {
+      writeFileSync(join(root, STAMP), junk);
+      assert.equal(tick(root), 1, `stamp ${junk}`);
+    }
+    assert.equal(tick(root), 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#3566 the stamp lives inside .git: it is not a tracked file and `git status` cannot report it", () => {
+  const root = primaryWithDist();
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: root, env: sandboxGitEnv() });
+    tick(root);
+    assert.ok(existsSync(join(root, STAMP)));
+    assert.equal(execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: root, env: sandboxGitEnv(), encoding: "utf8" })
+      .split("\n").filter((line) => line.includes("primary-build-stamp")).length, 0);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
