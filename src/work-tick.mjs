@@ -31,7 +31,7 @@ import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
 import { clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, slowThresholdSeconds, slowTickOrders, tickMarkerPath,
   writeStartMarker } from "./work-tick-health.mjs";
-import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, summariseCensus } from "./lib/spawn-census.mjs";
+import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, setCensusPhase, summariseCensus } from "./lib/spawn-census.mjs";
 
 // Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
 export { childrenCpuMs };
@@ -164,7 +164,13 @@ export function createMeter({ clock = () => performance.now(), cpu = readCpu, up
     /** @template T @param {string} name @param {() => T} step @returns {T} */
     phase(name, step) {
       const [wallFrom, cpuFrom] = [clock(), totalCpuMs()];
-      const result = step();
+      setCensusPhase(name);
+      /** @type {T} */ let result;
+      try {
+        result = step();
+      } finally {
+        setCensusPhase(undefined);
+      }
       phases[name] = { wallMs: round(clock() - wallFrom), cpuMs: round(totalCpuMs() - cpuFrom) };
       return result;
     },
@@ -248,8 +254,8 @@ function startRun(ledgerPath, wakeArgs) {
  */
 function tickCostLine(exit, run) {
   const reading = run.meter.reading();
-  const { commands, ghRepos, subcommands, slowest, hottest } = summariseCensus(readCensus(run.censusPath));
-  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, ghRepos, subcommands, slowest, hottest };
+  const { commands, ghRepos, subcommands, phaseCalls, slowest, hottest } = summariseCensus(readCensus(run.censusPath));
+  return { v: 1, at: Date.now(), exit, load1: loadavg()[0], ...reading, ...readUnitFacts(), wakes: run.wakes, spawns: commands, ghRepos, subcommands, phaseCalls, slowest, hottest };
 }
 
 /**

@@ -120,6 +120,29 @@ export function describeSpawn(file, argv, options) {
   return { cmd, line: [cmd, ...words.map(tail)].join(" ").slice(0, LINE_CHARS), ...(repo === undefined ? {} : { repo }), ...(sub === undefined ? {} : { sub }) };
 }
 
+/**
+ * The phase the tick is in, kept on `globalThis` for the reason the install mark is: this file can be loaded twice under two URLs, and the setter
+ * the tick calls must be the one the patched spawns read. Only this process's own spawns see it; a child's census (the gate's, the wake's) is another
+ * process and records no phase.
+ */
+const PHASE = Symbol.for("agent-org.spawn-census.phase");
+
+/** @param {string | undefined} name the phase now running, or `undefined` when none is */
+export function setCensusPhase(name) {
+  /** @type {any} */ (globalThis)[PHASE] = name;
+}
+
+/** @returns {string | undefined} */
+export function currentCensusPhase() {
+  return /** @type {any} */ (globalThis)[PHASE];
+}
+
+/** The phase field of a record: absent outside every phase, so an unattributed call is never filed under an empty name. @returns {{ phase?: string }} */
+function phaseField() {
+  const phase = currentCensusPhase();
+  return phase === undefined ? {} : { phase };
+}
+
 /** @param {string} path @param {object} entry */
 function appendRecord(path, entry) {
   try {
@@ -135,7 +158,7 @@ function appendRecord(path, entry) {
  */
 function countedBefore(path, original) {
   return function (/** @type {any[]} */ ...args) {
-    appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: null, pid: process.pid });
+    appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ...phaseField(), ms: null, pid: process.pid });
     // @ts-ignore -- `this` is whatever the caller bound, passed through untouched
     return original.apply(this, args);
   };
@@ -177,7 +200,7 @@ export function installSpawnCensus(path) {
         // The caller is blocked until the child is reaped, so the move in `cutime + cstime` is that child's CPU and its descendants' -- a record's
         // `cpuMs` is INCLUSIVE, as its `ms` is. `null` when `/proc` was unreadable: an unknown CPU is not zero.
         const cpuMs = Math.round(childrenCpuMs() - cpuBefore);
-        appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ms: Math.round(performance.now() - started), cpuMs: Number.isNaN(cpuMs) ? null : cpuMs, pid: process.pid });
+        appendRecord(path, { ...describeSpawn(args[0], args[1], args[2]), ...phaseField(), ms: Math.round(performance.now() - started), cpuMs: Number.isNaN(cpuMs) ? null : cpuMs, pid: process.pid });
       }
     };
   }
@@ -215,20 +238,21 @@ export function readCensus(path) {
 }
 
 /**
- * Per `<program> <subcommand>`: how many were started and their wall, the `SUBCOMMANDS_KEPT` slowest by wall, the rest summed into `other`.
- * A record with no `sub` (a `node`, or a record from before the field) is left out, not counted under an empty name.
+ * Per name: how many were started and their wall, the `SUBCOMMANDS_KEPT` slowest by wall, the rest summed into `other`.
  * @param {{ cmd: string, sub?: string, ms: number | null }[]} records
+ * @param {(record: { cmd: string, sub?: string }) => string | undefined} nameOf `undefined` leaves a record out rather than counting it under an empty name
  * @returns {Record<string, { n: number, wallMs: number }>}
  */
-function summariseSubcommands(records) {
+function summariseNamed(records, nameOf) {
   /** @type {Map<string, { n: number, wallMs: number }>} */
   const totals = new Map();
-  for (const { cmd, sub, ms } of records) {
-    if (sub === undefined) continue;
-    const entry = totals.get(`${cmd} ${sub}`) ?? { n: 0, wallMs: 0 };
+  for (const record of records) {
+    const name = nameOf(record);
+    if (name === undefined) continue;
+    const entry = totals.get(name) ?? { n: 0, wallMs: 0 };
     entry.n += 1;
-    entry.wallMs += ms ?? 0;
-    totals.set(`${cmd} ${sub}`, entry);
+    entry.wallMs += record.ms ?? 0;
+    totals.set(name, entry);
   }
   const ranked = [...totals].sort(([, a], [, b]) => b.wallMs - a.wallMs || b.n - a.n);
   const named = Object.fromEntries(ranked.slice(0, SUBCOMMANDS_KEPT));
@@ -237,16 +261,33 @@ function summariseSubcommands(records) {
   return { ...named, other: { n: rest.reduce((sum, [, e]) => sum + e.n, 0), wallMs: rest.reduce((sum, [, e]) => sum + e.wallMs, 0) } };
 }
 
+/** `<program> <subcommand>`; a record with no `sub` (a `node`, or a record from before the field) is left out. @param {{ cmd: string, sub?: string }} record */
+const bySubcommand = ({ cmd, sub }) => (sub === undefined ? undefined : `${cmd} ${sub}`);
+
+/** `<program> <subcommand>`, or the program alone when it has none (`systemctl`, `ps`): inside one phase every call is wanted. @param {{ cmd: string, sub?: string }} record */
+const bySubcommandOrProgram = ({ cmd, sub }) => (sub === undefined ? cmd : `${cmd} ${sub}`);
+
+/**
+ * The same split, per phase, for the calls this process started while a phase was running: which of a phase's calls its wall went to.
+ * @param {{ cmd: string, sub?: string, ms: number | null, phase?: string }[]} records
+ * @returns {Record<string, Record<string, { n: number, wallMs: number }>>}
+ */
+function summarisePhases(records) {
+  const phases = [...new Set(records.flatMap(({ phase }) => (phase === undefined ? [] : [phase])))];
+  return Object.fromEntries(phases.map((phase) => [phase, summariseNamed(records.filter((record) => record.phase === phase), bySubcommandOrProgram)]));
+}
+
 /**
  * The reading the cost line carries: per command, how many were started and how long the timed ones took (an asynchronous spawn adds to the count
  * and not to the wall), and the slowest command lines by wall.
  * `ghRepos` is the same count for the `gh` calls aimed by `GH_REPO`, per repository: how many reads each repository took in one tick.
  * `subcommands` is the same count per `gh pr list`, `git rev-parse`, `herdr agent list`: which of a command's calls the wall went to.
+ * `phaseCalls` is that split per tick phase (`tearDownSpares`, ...), for the calls the tick's OWN process started inside one: a child's calls are in no phase.
  * `hottest` is the same cut by CPU, the other half of the row's question (wall far above CPU is waiting, CPU near wall is work): a timed spawn's
  * `cpuMs` is inclusive of its descendants, so a `node` that starts `gh` is listed with the `gh`'s CPU in it.
  * @param {{ cmd: string, line: string, ms: number | null, cpuMs?: number | null, repo?: string, sub?: string }[]} records
  * @returns {{ commands: Record<string, { n: number, wallMs: number }>, ghRepos: Record<string, { n: number, wallMs: number }>,
- *   subcommands: Record<string, { n: number, wallMs: number }>,
+ *   subcommands: Record<string, { n: number, wallMs: number }>, phaseCalls: Record<string, Record<string, { n: number, wallMs: number }>>,
  *   slowest: { line: string, ms: number }[], hottest: { line: string, cpuMs: number, ms: number }[] }}
  */
 export function summariseCensus(records) {
@@ -266,7 +307,7 @@ export function summariseCensus(records) {
   const hottest = records.filter((r) => typeof r.cpuMs === "number" && r.ms !== null)
     .map((r) => ({ line: r.line, cpuMs: /** @type {number} */ (r.cpuMs), ms: /** @type {number} */ (r.ms) }))
     .sort((a, b) => b.cpuMs - a.cpuMs).slice(0, SLOWEST_KEPT);
-  return { commands, ghRepos, subcommands: summariseSubcommands(records), slowest, hottest };
+  return { commands, ghRepos, subcommands: summariseNamed(records, bySubcommand), phaseCalls: summarisePhases(records), slowest, hottest };
 }
 
 if (process.env[CENSUS_ENV]) installSpawnCensus(process.env[CENSUS_ENV]);
