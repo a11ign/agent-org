@@ -1280,6 +1280,90 @@ function gitRefExists(args, absentStatus, what, run) {
 }
 
 /**
+ * #3745: WHAT A LOCAL BRANCH OF THE CLAIM'S NAME HOLDS, so a leftover that holds nothing is not a collision. A multi-slice row leaves
+ * its first slice's branch behind after the PR merges (origin deletes its copy, the local one stays), and the next claim for the row
+ * derives the same name: #3566 was offered and refused on 93 ticks in 24 hours. THE TEST IS THE LOSS THE REFUSAL GUARDS AGAINST: the
+ * tip is an ancestor of `origin/main` (so recreating the name loses no commit) and NO worktree holds the branch (so no tree is
+ * standing on it). Either reading that is not `yes` refuses, and one git cannot answer is not `yes`: "could not ask" is never "free".
+ * `origin/main` is the ref as this clone last fetched it, which can only be BEHIND origin, so a stale one refuses a branch that is
+ * in fact merged and never frees one that is not.
+ * @param {string} branch @param {typeof defaultRun} run
+ * @returns {{ exists: false } | { exists: true, free: true, tip: string } | { exists: true, free: false, why: string }}
+ */
+function localBranchReading(branch, run) {
+  const tip = localBranchTip(branch, run);
+  if (tip === null) return { exists: false };
+  const holder = worktreeHolding(branch, run);
+  const merged = mergedIntoMain(branch, run);
+  const standing = merged.merged ? "merged into origin/main" : merged.why;
+  if (holder.held) return { exists: true, free: false, why: `${standing}, and held by the worktree ${holder.path ?? holder.why}` };
+  if (!merged.merged) return { exists: true, free: false, why: standing };
+  return { exists: true, free: true, tip };
+}
+
+/**
+ * The tip of `refs/heads/<branch>`, or `null` when there is no such branch. Any other failure throws: creating a branch on a guess is
+ * how #1432 started.
+ * @param {string} branch @param {typeof defaultRun} run
+ * @returns {string | null}
+ */
+function localBranchTip(branch, run) {
+  try {
+    return String(run("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).trim();
+  } catch (cause) {
+    if (exitStatusOf(cause) === 1) return null;
+    throw new Error(`row-claim: could not ask git whether branch ${branch} locally exists -- refusing to create it on a guess. `
+      + `${/** @type {Error} */ (cause).message}`, { cause });
+  }
+}
+
+/**
+ * Is the tip of the local `branch` an ancestor of `origin/main`? A "no" counts the commits it is ahead by; a git failure is its own
+ * answer ("NOT known to be merged"), never a "yes".
+ * @param {string} branch @param {typeof defaultRun} run
+ * @returns {{ merged: true } | { merged: false, why: string }}
+ */
+function mergedIntoMain(branch, run) {
+  try {
+    run("git", ["merge-base", "--is-ancestor", `refs/heads/${branch}`, "origin/main"]);
+    return { merged: true };
+  } catch (cause) {
+    if (exitStatusOf(cause) !== 1) {
+      return { merged: false, why: `NOT known to be merged into origin/main (git could not say: ${/** @type {Error} */ (cause).message.split("\n")[0]})` };
+    }
+  }
+  try {
+    const ahead = String(run("git", ["rev-list", "--count", `origin/main..refs/heads/${branch}`])).trim();
+    return { merged: false, why: `NOT merged into origin/main, ${ahead} commit(s) ahead` };
+  } catch {
+    return { merged: false, why: "NOT merged into origin/main (the commits ahead could not be counted)" };
+  }
+}
+
+/**
+ * The worktree whose HEAD is `refs/heads/<branch>` (`git worktree list --porcelain`, the main one included). A listing git cannot give
+ * is `held` with no path, never "not held".
+ * @param {string} branch @param {typeof defaultRun} run
+ * @returns {{ held: false } | { held: true, path?: string, why: string }}
+ */
+function worktreeHolding(branch, run) {
+  /** @type {string} */
+  let listing;
+  try {
+    listing = String(run("git", ["worktree", "list", "--porcelain"]));
+  } catch (cause) {
+    return { held: true, why: `(git could not list the worktrees: ${/** @type {Error} */ (cause).message.split("\n")[0]})` };
+  }
+  for (const entry of listing.split(/\n\n+/)) {
+    const lines = entry.split("\n");
+    if (!lines.includes(`branch refs/heads/${branch}`)) continue;
+    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+    return { held: true, path, why: "(a worktree)" };
+  }
+  return { held: false };
+}
+
+/**
  * Who a branch belongs to, as far as the tracker records: the claim record of the row its trailing number names.
  * A read that fails SAYS so; it is never turned into an owner or into "nobody".
  * @param {string} branch @param {typeof defaultRun} run
@@ -1373,8 +1457,9 @@ export function worktreeTargetReason({ branch, worktree, issueNumber, adopt, myS
       + "Refusing before any write: a claim that went on would act inside a tree it did not create."
       + ownTreeRemedy({ worktree, branch, who, mySession }, run);
   }
-  if (gitRefExists(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], 1, `branch ${branch} locally`, run)) {
-    return `--branch=${branch} ALREADY EXISTS locally (${branchOwnerText(branch, run)}). Refusing before any write.`;
+  const local = localBranchReading(branch, run);
+  if (local.exists && !local.free) {
+    return `--branch=${branch} ALREADY EXISTS locally (${branchOwnerText(branch, run)}), ${local.why}. Refusing before any write.`;
   }
   if (gitRefExists(["ls-remote", "--exit-code", "--heads", "origin", branch], 2, `branch ${branch} on origin`, run)) {
     return `--branch=${branch} ALREADY EXISTS on origin (${branchOwnerText(branch, run)}). Refusing before any write.`;
@@ -1616,14 +1701,33 @@ export function claimWithWorktree(issueNumber, mySession, { branch, worktree, ad
   const landed = [];
   return withLandedWrites(issueNumber, landed, () => {
     run("git", ["fetch", "--quiet", "origin"]);
-    run("git", ["worktree", "add", "-b", branch, worktree, "origin/main"]);
-    landed.push(`created worktree ${worktree} on new branch ${branch} from origin/main`);
+    const replaced = replacedMergedTip(branch, run);
+    run("git", ["worktree", "add", replaced ? "-B" : "-b", branch, worktree, "origin/main"]);
+    landed.push(`created worktree ${worktree} on ${replaced ? "recreated" : "new"} branch ${branch} from origin/main`);
     stamp(worktree, mySession);
     landed.push(`stamped ${worktree} as ${mySession}'s`);
     const result = claim(issueNumber, mySession, { run, ...claimDeps, branch, worktree });
-    if (result.claimed) return result;
+    if (result.claimed) return replaced ? { ...result, replacedTip: replaced } : result;
     return { claimed: false, reason: `${result.reason} -- and ${undoCreatedWorktree({ branch, worktree }, run)}` };
   });
+}
+
+/**
+ * #3745: the tip a leftover local branch of the claim's name held, when the claim is about to recreate the name over it -- `null` for
+ * the ordinary case of no such branch. `worktreeTargetReason` has already let it through (merged, held by no worktree), and this
+ * ASKS AGAIN after the fetch, because the fetch is what moves `origin/main` and a branch force-pushed away from main would make the
+ * first answer wrong. Throws, before anything is written, if the old tip is not an ancestor of `origin/main`: recreating the name
+ * must leave the old tip reachable from main, or it would be the loss the refusal exists to prevent.
+ * @param {string} branch @param {typeof defaultRun} run
+ * @returns {string | null}
+ */
+function replacedMergedTip(branch, run) {
+  const tip = localBranchTip(branch, run);
+  if (tip === null) return null;
+  const reading = localBranchReading(branch, run);
+  if (reading.exists && reading.free) return tip;
+  throw new Error(`row-claim: --branch=${branch} exists locally and is not free to recreate after the fetch: `
+    + `${reading.exists ? reading.why : "it vanished"}. Nothing was written.`);
 }
 
 /**
@@ -2285,10 +2389,10 @@ function renderTrackerStatus(tracker, { issueNumber, title, status, body, record
  * @param {"dispatch" | "claim"} mode
  * @param {number} issueNumber
  * @param {string} mySession
- * @param {{ branch?: string, worktree?: string, adopt?: string }} record
+ * @param {{ branch?: string, worktree?: string, adopt?: string, replacedTip?: string }} record
  * @returns {string}
  */
-function claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt }) {
+export function claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt, replacedTip }) {
   const label = mode === "dispatch" ? "DISPATCHED" : "STARTED";
   const startedSuffix = mode === "claim" ? ` / ${STARTED_LABEL}` : "";
   // #987: `branch <name>`, not `branch:<name>` -- the colon form named a LABEL, and this claim no longer
@@ -2296,8 +2400,10 @@ function claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt })
   // reader to go looking for a label that is not there.
   const branchSuffix = mode === "claim" && branch ? ` / branch ${branch}` : "";
   const worktreeSuffix = mode === "claim" && worktree ? ` / worktree ${worktree}${adopt ? ` (ADOPTED from ${adopt}, work kept)` : ""}` : "";
+  // #3745: the leftover branch's tip, so a reader can find what the name held; it is an ancestor of origin/main by construction.
+  const replacedSuffix = replacedTip ? ` (recreated over a leftover branch merged into origin/main, old tip ${replacedTip})` : "";
   return `${label} -- #${issueNumber} is now ${CLAIM_LABEL} / session:${mySession}`
-    + `${startedSuffix}${branchSuffix}${worktreeSuffix}`;
+    + `${startedSuffix}${branchSuffix}${worktreeSuffix}${replacedSuffix}`;
 }
 
 /**
@@ -2464,7 +2570,8 @@ function runDispatchOrClaim(mode, issueNumber, rest) {
   try {
     const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
     if (result.claimed) {
-      const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt });
+      const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt,
+        replacedTip: /** @type {{ replacedTip?: string }} */ (result).replacedTip });
       if (result.statusMoved) {
         process.stdout.write(`${claimLine}\n`);
         process.exitCode = 0;
