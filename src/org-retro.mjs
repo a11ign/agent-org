@@ -21,7 +21,7 @@
 // EVERY READ CAN BE REFUSED, AND A REFUSED READ IS `unknown`, NEVER 0 (#1286). A retrospective that printed "0 red PRs" because
 // the PR list could not be read would be the org's own health reported as good by an absence, which is the defect it exists to find.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.mjs";
@@ -33,7 +33,7 @@ import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLi
 import { claudeTurns, codexTurns, transcriptFiles } from "./token-audit.mjs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
-import { readDora, renderDora, doraNumbers, doraDeclarations } from "./dora.mjs";
+import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, doraNumbers, doraDeclarations } from "./dora.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 
 /** The cause this file feeds (`cause-declaration.mjs` declares it), addressed to `ceo`. */
@@ -45,7 +45,8 @@ export const UNKNOWN = "unknown";
 /** The window every number covers. */
 export const WINDOW_MS = 24 * 60 * 60 * 1000;
 
-const MS_PER_MINUTE = 60 * 1000;
+const MS_PER_SECOND = 1000;
+const MS_PER_MINUTE = 60 * MS_PER_SECOND;
 const MINUTES_PER_HOUR = 60;
 
 /**
@@ -627,9 +628,9 @@ export function retrospectiveOrder(date, reportText) {
 /** @param {string[]} args @returns {any[] | null} */
 function ghJson(args) {
   try {
-    return JSON.parse(execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }));
+    return JSON.parse(execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], timeout: READ_TIMEOUT_MS }));
   } catch {
-    return null; // a refused read is `unknown` in the report, which says so; the cause is not narrated per read
+    return null; // a refused read is `unknown` in the report, which says so; the cause is not narrated per read, and a hung one is refused at the bound (#3736)
   }
 }
 
@@ -658,6 +659,60 @@ export function cachedDora({ stateDir, now, read = readDeclaredDora }) {
   const report = read(now);
   if (report) attemptDora(() => writeFileSync(path, JSON.stringify({ date, report })));
   return report;
+}
+
+/**
+ * The wall the DORA read may spend in ONE tick before it stops BETWEEN repositories (#3736). Derived from `tick-cost.jsonl`: a tick without the DORA read has a gate phase of
+ * 22 to 24 s and the wake after it up to 46 s, against `TimeoutStartSec=600`, and one repository's read is itself bounded (`REPOSITORY_BUDGET_MS`, 240 s). So the worst tick is about
+ * 24 + 60 + 240 + 46 = 370 s, with 230 s to spare, and a healthy one reads two or three repositories and leaves the rest to the next tick (every 2 minutes).
+ * MEASURED 2026-10-06 (a cold cache, real `gh`, eight repositories): tick 1 read two (263 s: the budget is checked BETWEEN repositories, so one started at 59 s runs to its own end), tick 2 read the other six in 17 s.
+ * At least ONE repository is read per tick whatever this is, so a budget below one repository's read still makes progress.
+ */
+export const DORA_TICK_BUDGET_MS = 60 * 1000;
+
+/**
+ * What the cache holds for `date`: the `now` the first repository was read at, and each repository's reading by name. The old shape (`{ date, report }`) has no
+ * `readings`, so it reads as a miss, as does a file that cannot be read or parses to anything else.
+ * @param {string} path @param {string} date @returns {{ now: number | null, readings: Record<string, any> }}
+ */
+function keptReadings(path, date) {
+  const kept = attemptDora(() => JSON.parse(readFileSync(path, "utf8")));
+  const usable = kept?.date === date && Number.isFinite(kept.now) && kept.readings !== null && typeof kept.readings === "object";
+  return usable ? { now: kept.now, readings: kept.readings } : { now: null, readings: {} };
+}
+
+/** Written to a sibling and renamed, so a tick killed mid-write leaves the readings it had. A cache that cannot be written is a miss, never an error. */
+function keepReadings(/** @type {string} */ path, /** @type {object} */ content) {
+  attemptDora(() => {
+    writeFileSync(`${path}.tmp`, JSON.stringify(content));
+    renameSync(`${path}.tmp`, path);
+  });
+}
+
+/**
+ * THE DORA READING FOR `now`'s UTC DATE, kept AS IT IS READ (#3736). Each repository's reading is written the moment it is taken, so a tick killed or out of budget leaves the
+ * repositories it finished, and the next call resumes at the first unread one. Every repository is read at the SAME `now` (the first one's, kept with the readings), so a report
+ * assembled over several ticks measures one window. A repository whose read is refused is `unknown` in the cache, never missing from it.
+ * `complete` is true only when EVERY declared repository has a reading: there is no partial report to offer.
+ * @param {{ stateDir: string, now: number, repositories?: Parameters<typeof readRepository>[0]["repository"][], readOne?: typeof readRepository, budgetMs?: number, clock?: () => number }} input
+ * @returns {{ complete: true, report: ReturnType<typeof doraReport> } | { complete: false, read: number, of: number, readThisTick: number, elapsedMs: number }}
+ */
+export function resumableDora({ stateDir, now, repositories = homeProjectDeclaration().dora, readOne = readRepository, budgetMs = DORA_TICK_BUDGET_MS, clock = Date.now }) {
+  const path = join(stateDir, DORA_CACHE_FILE);
+  const kept = keptReadings(path, utcDate(now));
+  const readAt = kept.now ?? now;
+  const began = clock();
+  let readThisTick = 0;
+  for (const repository of repositories) {
+    if (Object.hasOwn(kept.readings, repository.repo)) continue;
+    if (readThisTick > 0 && clock() - began >= budgetMs) break;
+    kept.readings[repository.repo] = readOne({ repository, now: readAt });
+    readThisTick += 1;
+    keepReadings(path, { date: utcDate(now), now: readAt, readings: kept.readings });
+  }
+  const read = repositories.filter((repository) => Object.hasOwn(kept.readings, repository.repo)).length;
+  if (read < repositories.length) return { complete: false, read, of: repositories.length, readThisTick, elapsedMs: clock() - began };
+  return { complete: true, report: doraReport({ readings: repositories.map((repository) => kept.readings[repository.repo]), now: readAt }) };
 }
 
 /** @param {string} path @returns {string | null} */
@@ -746,21 +801,39 @@ export function recordReading({ stateDir, date, numbers, mergedRepositories }) {
 }
 
 /**
+ * The gate's read: DORA FIRST, because it is the long one and the only one that resumes, and the others (merged lists, journal, transcripts) are not worth making on a tick
+ * that cannot offer the report. `{ doraPending }` is how it says so. `dora` and `readRest` are the seams a test supplies.
+ * @param {{ now: number, stateDir: string }} where
+ * @param {{ dora?: Partial<Parameters<typeof resumableDora>[0]>, readRest?: (where: Parameters<typeof readAll>[0]) => ReturnType<typeof readAll> }} [seams]
+ */
+export function readWhenDoraIsRead(where, { dora = {}, readRest = readAll } = {}) {
+  const progress = resumableDora({ stateDir: where.stateDir, now: where.now, ...dora });
+  return progress.complete ? readRest({ ...where, readDoraReport: () => progress.report }) : { doraPending: progress };
+}
+
+/**
  * THE GATE'S WHOLE CONTACT WITH THIS FILE: the retrospective's order if today's is still owed, else none. NEVER THROWS: a broken
  * report must not stop the orders behind it, and it says so on stderr rather than offering a half-built one. The ledger is read
  * BEFORE the report, so a day already delivered costs one file read and not the day of PR, journal and transcript reads.
  * THE ONLY WRITER OF THE READINGS FILE (`main` below never writes): offering the retrospective IS recording today's reading.
- * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0], readLedger?: (stateDir: string) => string | null,
+ * A TICK THAT HAS NOT YET READ EVERY DECLARED REPOSITORY offers nothing and says how many it has (#3736): `read` answers `{ doraPending }` and the other reads are not made.
+ * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0] | { doraPending: Extract<ReturnType<typeof resumableDora>, { complete: false }> }, readLedger?: (stateDir: string) => string | null,
  *   record?: typeof recordReading }} [seams]
  * @returns {ReturnType<typeof retrospectiveOrder>[]}
  */
 export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(""), log = (line) => process.stderr.write(line),
-  read = (where) => readAll({ ...where, readDoraReport: (at) => cachedDora({ stateDir: where.stateDir, now: at }) }),
+  read = (where) => readWhenDoraIsRead(where),
   readLedger = (dir) => readText(`${dir}/wake-ledger`), record = recordReading } = {}) {
   try {
     const date = retrospectiveDue(now, readLedger(stateDir));
     if (date === null) return [];
-    const report = buildReport(read({ now, stateDir }), now);
+    const inputs = read({ now, stateDir });
+    if ("doraPending" in inputs) {
+      const { read: done, of, readThisTick, elapsedMs } = inputs.doraPending;
+      log(`org-retro: the DORA read has ${done} of ${of} repositories (${readThisTick} read this tick, ${Math.round(elapsedMs / MS_PER_SECOND)} s); no org-retrospective order until every declared repository is read.\n`);
+      return [];
+    }
+    const report = buildReport(inputs, now);
     const text = renderReport(report);
     keepReading(record, { stateDir, date, numbers: report.numbers, mergedRepositories: report.mergedRepositories?.map((r) => r.repo) }, log);
     return [retrospectiveOrder(date, text)];

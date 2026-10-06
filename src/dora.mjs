@@ -56,6 +56,16 @@ const SHA_LENGTH = 40;
 /** An npm registry document for a long-lived package is large. */
 const MAX_BUFFER = 256 * 1024 * 1024;
 const READ_TIMEOUT_SECONDS = 60;
+/**
+ * The longest ONE child (`gh`, `curl`) may run. Measured 2026-10-06: the merged-PR list of the biggest repository takes 28 s and the other calls 2 to 5 s, so 90 s is
+ * three times the slowest read that succeeds, and a hung child ends here and says which call it was rather than holding the tick until `TimeoutStartSec`.
+ */
+export const READ_TIMEOUT_MS = 90 * 1000;
+/**
+ * The longest ONE repository's read may take in total, every child counted. A repository of 52 releases is 52 `commits/<tag>` lookups and a `compare` each at 2 to 5 s,
+ * so about 3 minutes when healthy; this is that plus a margin, and past it the remaining children are not started and the repository is `unknown` with the call that ran out.
+ */
+export const REPOSITORY_BUDGET_MS = 240 * 1000;
 const HTTP_OK = "200";
 const HTTP_NOT_FOUND = "404";
 /** The attestation predicate that names the build's source; the registry also serves a `publish` attestation beside it, which names no commit. */
@@ -343,20 +353,46 @@ export function measureRepository(repository, readers, now) {
   };
 }
 
+/** @param {Repository} repository @param {Readers} readers @param {number} now @returns {ReturnType<typeof measureRepository>} */
+function measureOrUnknown(repository, readers, now) {
+  try {
+    return measureRepository(repository, readers, now);
+  } catch (/** @type {any} */ err) {
+    return unknownRepository(repository, `the measurement failed (${String(err?.message ?? err).split("\n")[0]})`);
+  }
+}
+
+/**
+ * ONE repository's reading, the unit the gate keeps as it goes (#3736). NEVER THROWS: a repository whose measure throws is `unknown` with the first line of why.
+ * Every child it starts is bounded (`timeoutMs` each, `repositoryMs` for the repository), and an `unknown` that a bound caused names the call that hit it.
+ * @param {{ repository: Repository, readers?: Readers, now: number, limits?: { timeoutMs?: number, repositoryMs?: number } }} input
+ */
+export function readRepository({ repository, readers = githubReaders, now, limits = {} }) {
+  const outer = readLimits;
+  readLimits = { timeoutMs: limits.timeoutMs ?? READ_TIMEOUT_MS, deadlineAt: Date.now() + (limits.repositoryMs ?? REPOSITORY_BUDGET_MS), timedOut: [] };
+  try {
+    const reading = measureOrUnknown(repository, readers, now);
+    const [first] = readLimits.timedOut;
+    return reading.status === "unknown" && first !== undefined ? { ...reading, reason: `${reading.reason} (${first} hit its time limit)` } : reading;
+  } finally {
+    readLimits = outer;
+  }
+}
+
+/**
+ * The report of readings already taken, in the order the repositories are declared. THE ONE PLACE a report is assembled, so a resumed read and a whole one agree.
+ * @param {{ readings: ReturnType<typeof measureRepository>[], now: number }} input
+ */
+export function doraReport({ readings, now }) {
+  return { date: utcDate(now), now, repositories: readings };
+}
+
 /**
  * THE FUNCTION: the four metrics for every declared repository, so all of them are on the page every day and an empty one is visible as empty.
- * NEVER THROWS: a repository whose measure throws is `unknown` with the first line of why.
  * @param {{ repositories: Repository[], readers: Readers, now: number }} input
  */
 export function dora({ repositories, readers, now }) {
-  const results = repositories.map((repository) => {
-    try {
-      return measureRepository(repository, readers, now);
-    } catch (/** @type {any} */ err) {
-      return unknownRepository(repository, `the measurement failed (${String(err?.message ?? err).split("\n")[0]})`);
-    }
-  });
-  return { date: utcDate(now), now, repositories: results };
+  return doraReport({ readings: repositories.map((repository) => readRepository({ repository, readers, now })), now });
 }
 
 /** @typedef {ReturnType<typeof dora>} DoraReport */
@@ -494,9 +530,31 @@ export function renderDora(report) {
 // ---------------------------------------------------------------------------------------------------------------------
 // The READS. Each returns `null` for a refused one; everything above is pure.
 
+/**
+ * THE LIMITS THE CHILDREN RUN UNDER, for the repository being read. Module state because the readers are plain functions that call `run`, and the read is
+ * synchronous, so one repository is read at a time (`readRepository` sets it and puts it back). `timedOut` names the calls that hit a limit, for the repository's reason.
+ * @type {{ timeoutMs: number, deadlineAt: number, timedOut: string[] }}
+ */
+let readLimits = { timeoutMs: READ_TIMEOUT_MS, deadlineAt: Infinity, timedOut: [] };
+
+/** @param {string} command @param {string[]} args @returns {string} the call as a person would name it: the command and the first two words that are not flags */
+const callName = (command, args) => [command, ...args.filter((arg) => !arg.startsWith("-")).slice(0, 2)].join(" ");
+
 /** @param {string} command @param {string[]} args @returns {string} */
 function run(command, args) {
-  return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"] });
+  const timeout = Math.min(readLimits.timeoutMs, readLimits.deadlineAt - Date.now());
+  const call = callName(command, args);
+  if (timeout <= 0) {
+    readLimits.timedOut.push(call);
+    throw new Error(`${call} was not started: this repository's read budget is spent`);
+  }
+  try {
+    return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout });
+  } catch (/** @type {any} */ err) {
+    if (err?.code !== "ETIMEDOUT") throw err;
+    readLimits.timedOut.push(call);
+    throw new Error(`${call} timed out after ${Math.round(timeout / 1000)} s`, { cause: err });
+  }
 }
 
 /** @param {string[]} args @returns {any} */
