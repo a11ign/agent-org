@@ -33,7 +33,7 @@ import {
 import { stampWorktree } from "../worktree-owner.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
-  claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, worktreeBranch,
+  claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
 } from "../worktree-removal.mjs";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
@@ -1313,6 +1313,29 @@ test("rowCandidates reads the row off every spelling this repo has used, and off
   assert.deepEqual(rowCandidates({ path: "/r/wt-2623", branch: null }), [2623], "a detached tree still has its directory");
   assert.deepEqual(rowCandidates({ path: "/r/role-engineer", branch: "dispatcher/merge" }), [],
     "a standing tree names no row, so there is no claim to read");
+});
+
+test("#3850: rowsClosed is true only when EVERY row the tree names is CLOSED, whatever labels the closed row kept", () => {
+  const closed = fakeRowsGh({ 20: { state: "CLOSED", labels: ["session:worker-20"] }, 21: { state: "CLOSED", labels: [] } });
+  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: null }, { gh: closed.gh }), { closed: true },
+    "a closed row's leftover session label is the debris this release exists for");
+  assert.deepEqual(rowsClosed({ path: "/r/wt-20", branch: "agent/other-21" }, { gh: closed.gh }), { closed: true });
+  assert.deepEqual(closed.asked.sort(), [20, 20, 21], "and each row is read");
+});
+
+test("#3850: rowsClosed is FALSE for an open row, a row that cannot be read, and a tree that names no row", () => {
+  const rows = fakeRowsGh({ 30: { state: "CLOSED", labels: [] }, 31: { labels: [] } });
+  const open = rowsClosed({ path: "/r/wt-30", branch: "agent/other-31" }, { gh: rows.gh });
+  assert.equal(open.closed, false);
+  assert.match((open as { reason: string }).reason, /row #31 is open/, "one open row among closed ones keeps the tree");
+  const unreadable = rowsClosed({ path: "/r/wt-32", branch: null }, { gh: rows.gh });
+  assert.equal(unreadable.closed, false);
+  assert.match((unreadable as { reason: string }).reason, /row #32 could not be read/, "could not ask is never closed");
+  const none = fakeRowsGh({});
+  const standing = rowsClosed({ path: "/r/role-engineer", branch: "dispatcher/merge" }, { gh: none.gh });
+  assert.equal(standing.closed, false);
+  assert.match((standing as { reason: string }).reason, /names no row/);
+  assert.deepEqual(none.asked, [], "a tree naming no row costs no API call");
 });
 
 test("claimRefusal REFUSES a tree whose open row carries a session label -- the copy in .a11y-owner is not consulted", () => {

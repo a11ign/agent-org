@@ -137,6 +137,31 @@ export function claimRefusal(tree, { gh = defaultGh, except } = {}) {
 }
 
 /**
+ * #3850: have EVERY row this tree could belong to CLOSED? The question `claimRefusal` cannot answer, because it reads an open
+ * row nobody claims and a closed row both as `refused: false`; a tree whose stamp outlived its claim is released only by the
+ * second. A tree naming no row has nothing to read, so it is NOT closed -- absence of a row is never "the row finished".
+ * Every candidate must be closed (a trailing number in a branch name need not be a row), and a row that cannot be read is not
+ * closed: the tristate every remover here keeps.
+ *
+ * @param {{ path: string, branch?: string | null }} tree
+ * @param {{ gh?: Gh }} [deps]
+ * @returns {{ closed: true } | { closed: false, reason: string }}
+ */
+export function rowsClosed(tree, { gh = defaultGh } = {}) {
+  const rows = rowCandidates(tree);
+  if (rows.length === 0) return { closed: false, reason: `${tree.path} names no row, so no closed row releases it (#3850)` };
+  for (const row of rows) {
+    try {
+      const { state } = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO, "--json", "state"]));
+      if (state !== "CLOSED") return { closed: false, reason: `row #${row} is ${String(state).toLowerCase()}, so the stamp is not stale (#3850)` };
+    } catch (cause) {
+      return { closed: false, reason: `row #${row} could not be read (${/** @type {Error} */ (cause).message}) -- not treated as closed (#3850)` };
+    }
+  }
+  return { closed: true };
+}
+
+/**
  * Every directory at or under `dir` that IS a worktree (its `.git` is a file), for a remover that deletes a whole directory
  * and so can take worktrees with it: `prune-tmp.mjs` removes scratchpads recursively.
  * @param {string} dir @param {number} [depth] @returns {string[]}

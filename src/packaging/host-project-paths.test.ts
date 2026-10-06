@@ -110,7 +110,8 @@ const TODAYS_TEXT = {
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.
   // #2892 MOVED IT AGAIN, deliberately: `ExecStart` runs `%h/.local/bin/pnpm` instead of `/usr/bin/npm`. Same staleness, same remedy.
-  "a11ign-worktree-prune.service": "c88a8bb1f9fb44cad7b312d6064fe334cb58c607d2bce59572887536ebc4809a",
+  // #3850 MOVED IT AGAIN, deliberately: the unit runs under `Nice=19` and `IOSchedulingClass=idle`. Same staleness, same remedy.
+  "a11ign-worktree-prune.service": "e52248f5bd5ff80136bc703b38b5cc411f82bd8d2532dd3c3bc1701ab8adfcd9",
   "a11ign-worktree-prune.timer": "ecae95090a7608f86b01df84f5b79eeeb76beec48a28310b90c7c7e1d2b766eb",
   "a11ign-board-report.service": "3e7791d9f24ae9aa3519898259f1ea68c1f8b4cd721f97b62916c9f81835b0c1",
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",

@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`worktrees:prune` releases a HELD tree whose row has closed, and a run removes a bounded number (a11ign/a11ign#3850, found in #3846). A stamped tree that `heldByOwner` refuses (no commit of its own, or detached) is now removable when every row it names is CLOSED (`rowsClosed`, read over `gh` only for such a tree) and git has not touched it for `CLOSED_ROW_RELEASE_AGE_MS` (six hours), with the same dirty, unmerged and `runs/`-record refusals as before: the 2026-10-06 run refused 269 of 336 worktrees because `.a11y-owner` is a copy of a claim nobody releases. One run removes at most `MAX_REMOVALS_PER_RUN` (25) trees with `PAUSE_BETWEEN_REMOVALS_MS` (250) between them, stops walking there, and the report says how many worktrees it did not examine; `worktree-prune.service` now runs under `Nice=19` and `IOSchedulingClass=idle`. No cap on live worktrees is added to `row-claim claim`: 356 worktrees against 7 open claimed rows, measured 2026-10-06, is a backlog of finished trees, and a claim-time cap would stop every claim until this prune drained it.

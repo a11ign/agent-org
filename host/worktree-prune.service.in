@@ -53,6 +53,13 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 # `gh` wrapper falls back to a PERSON's stored credentials (#1974).
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
+# `nice -n 19` AND `ionice -c3`, AS THE SYSTEMD DIRECTIVES RATHER THAN A WRAPPER (platform first, #3021; #3850, incident #3846): the unit
+# that deletes `node_modules` trees by the hundred now gets the CPU and the disk only when nothing else wants them, as `tmp-prune.service` does.
+# THE OTHER HALF OF "SMALL" IS IN THE TOOL, NOT THE UNIT: a run removes at most `MAX_REMOVALS_PER_RUN` trees with a pause between them, so a backlog
+# (269 refused as HELD on 2026-10-06, released by a CLOSED row since #3850) drains over the hourly runs instead of arriving as one burst.
+Nice=19
+IOSchedulingClass=idle
+
 # `--apply` OR THIS UNIT IS A REPORT NOBODY READS. The bare script is deliberately a DRY RUN, and for a
 # measured reason: on 2026-09-09 a session ran the bare prune script to READ the breakdown before
 # writing a row about worktree accounting, and removed three other sessions' trees. So the flag that makes
