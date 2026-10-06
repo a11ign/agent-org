@@ -225,8 +225,20 @@ export function inRepo(repo, read) {
 export const repoNow = () => activeRepo ?? REPO;
 
 /** @param {string[]} args @param {string} [repo] the repository to aim at; the ambient one when omitted */
-export const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args,
-  { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
+export const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args, ghOptions(repo));
+
+/** @param {string | undefined} repo @returns {import("node:child_process").ExecFileSyncOptionsWithStringEncoding} */
+const ghOptions = (repo) =>
+  ({ encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
+
+/** `defaultRun` with `gh`'s stderr CAPTURED on the error instead of inherited: for a read whose refusal is an answer the caller handles (#3724). */
+const capturedRun = (/** @type {string[]} */ args, repo = activeRepo) => execFileSync("gh", args, { ...ghOptions(repo), stdio: "pipe" });
+
+/**
+ * The reader a refusal-handling read asks through: the default one is swapped for the capturing one, and a test's `run` stands for `gh` as it is.
+ * @param {(args: string[]) => string} run
+ */
+const capturingStderr = (run) => (run === defaultRun ? capturedRun : run);
 
 /** The most `gh` calls one batch has in flight: the other repositories number single digits, and GitHub answers a burst with a secondary limit. */
 export const BATCH_MAX_CALLS = 16;
@@ -4373,6 +4385,43 @@ export function reviewableHead(pr, required = null) {
   return String(pr.headRefOid ?? "") || null;
 }
 
+/** The statuses GitHub gives a commit or compare path for "this sha resolves to nothing in this repository" (a head force-pushed away, or mistyped). */
+const SHA_RESOLVES_TO_NOTHING = [404, 422];
+
+/** What each refusal already told this tick, so a fault met on every head of a pull request is one line. */
+const refusalsTold = new Set();
+
+/** @param {any} error @returns {number | null} the HTTP status `gh` printed (`gh: Not Found (HTTP 404)`), or null when it printed none */
+function refusalStatus(error) {
+  const found = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
+  return found ? Number(found[1]) : null;
+}
+
+/**
+ * #3724: WHAT A HANDLED, REFUSED READ SAYS. The reader returns `null` for the refusal, which is right; this decides what the journal hears.
+ *
+ * A STALE EVIDENCE HEAD SAYS NOTHING. A sha named in a review that was force-pushed away (or mistyped) resolves to nothing, 404 or 422 on a
+ * commit or compare path: the review's text is the author's, the pull request is intact, and the question falls back to the head alone. Silence
+ * is not "could not determine" here: the status says the sha is not in the repository, and the repository was just read for its pull request.
+ *
+ * ANYTHING ELSE IS A FAULT AND STAYS VISIBLE (403, 5xx, a timeout, a 404 of a pull request), ONCE PER TICK per repository, path and status
+ * -- the path elides the sha, so a fault met on every head is one line. Before this, `gh`'s own stderr was inherited and a bare
+ * `gh: Not Found (HTTP 404)` repeated for 30 ticks naming no repository, pull request or sha.
+ *
+ * @param {any} error @param {{ path: string, ofASha: boolean }} read
+ * @param {(line: string) => void} [log]
+ */
+export function noteRefusedRead(error, { path, ofASha }, log = (line) => process.stderr.write(line)) {
+  const status = refusalStatus(error);
+  if (ofASha && status !== null && SHA_RESOLVES_TO_NOTHING.includes(status)) return;
+  const answered = status === null ? String(error?.code ?? "no HTTP status") : `HTTP ${status}`;
+  const key = `${repoNow()} ${path} ${answered}`;
+  if (refusalsTold.has(key)) return;
+  refusalsTold.add(key);
+  log(`REFUSED READ in ${repoNow()}: \`gh api ${path}\` answered ${answered}. The pull request is read without it (the patch is not known); `
+    + "this is a fault of the read, not a stale head, and is told once per tick.\n");
+}
+
 /**
  * #3045: THE PATCH ID OF ONE HEAD -- what the pull request changes relative to its base, hashed -- or `null` when the read was refused.
  *
@@ -4387,8 +4436,9 @@ export function reviewableHead(pr, required = null) {
  */
 export function readPatchId(head, base, run = defaultRun) {
   try {
-    return patchIdOfDiff(run(["api", "-H", "Accept: application/vnd.github.diff", `repos/${repoNow()}/compare/${base}...${head}`]));
-  } catch {
+    return patchIdOfDiff(capturingStderr(run)(["api", "-H", "Accept: application/vnd.github.diff", `repos/${repoNow()}/compare/${base}...${head}`]));
+  } catch (error) {
+    noteRefusedRead(error, { path: `repos/${repoNow()}/compare/${base}...<sha>`, ofASha: true });
     return null;
   }
 }
@@ -4402,11 +4452,13 @@ export function readPatchId(head, base, run = defaultRun) {
  */
 export function readCommitShas(number, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq", ".[].sha"]);
+    const out = capturingStderr(run)(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq", ".[].sha"]);
     const shas = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
     return shas.length > 0 ? shas : null;
-  } catch {
+  } catch (error) {
     // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED: the gate then reads the current head alone. Never an empty list, which would claim "no commits".
+    // The path is of a pull request and not of a sha, so even a 404 is a fault here and is told.
+    noteRefusedRead(error, { path: `repos/${repoNow()}/pulls/${number}/commits`, ofASha: false });
     return null;
   }
 }
@@ -4468,10 +4520,11 @@ export function withPatchIds(prs, run = defaultRun, required = null) {
  */
 export function readFailingChecks(commit, run = defaultRun) {
   try {
-    const out = run(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate",
+    const out = capturingStderr(run)(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate",
       "--jq", '.check_runs[] | select(.conclusion == "failure") | .name']);
     return [...new Set(out.split("\n").map((l) => l.trim()).filter((l) => l !== ""))];
-  } catch {
+  } catch (error) {
+    noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });
     return null;
   }
 }
