@@ -1,0 +1,20 @@
+[Unit]
+Description=a11ign: run the /tmp fixture janitor every minute (#3849)
+
+# `enable --now` RUNS ONE PASS AT INSTALL TIME BECAUSE OF THIS LINE, the contract @@prefix@@worktree-prune.timer measures. Wanted here: the first
+# pass is the first batch of the clear.
+Requires=@@prefix@@tmp-prune.service
+
+[Timer]
+# EVERY MINUTE, AFTER THE PREVIOUS RUN ENDS (`OnUnitInactiveSec`, not `OnUnitActiveSec`): a run that overran would otherwise be started again beside
+# itself. Chosen from the batch, not by feel: 300 removals a minute is ~430k entries a day, which clears 121k directories (and what is inside them)
+# in a few days WITHOUT any one run being large, and a steady-state pile of a few hundred a day costs a run that finds nothing and says so.
+# `OnActiveSec` starts the chain: a monotonic timer that never fires first never fires at all.
+OnActiveSec=1min
+OnUnitInactiveSec=1min
+
+# NO `Persistent=`: it has effect only on `OnCalendar` timers (systemd.timer(5)), and a missed minute is not worth a catch-up.
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

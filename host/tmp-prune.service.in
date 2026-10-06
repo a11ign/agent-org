@@ -1,0 +1,40 @@
+[Unit]
+# THE JANITOR'S CLOCK -- #3849, class fix 1a of the 2026-10-06 host-hang incident (#3846). `prune-tmp.mjs` has existed since #2166 and NOTHING RAN IT:
+# `/tmp` reached 121,411 entries and 14 GB of test fixtures, and the kernel's soft lockup at 14:09:00Z was an `rmdir` over a directory that size. This
+# unit is the wiring that file's own header said was missing, and it is the SAME code that clears the existing pile: its first runs ARE the gentle clear.
+Description=a11ign: remove old test fixtures from /tmp in small niced batches (prune-tmp --apply --fixtures-only)
+
+[Service]
+Type=oneshot
+
+WorkingDirectory=@@checkout@@
+
+# SAME REASON @@prefix@@worktree-prune.service DECLARES THEM: a systemd unit gets no login shell's PATH or HOME.
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
+
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp (#2458): the very directory this unit is emptying must not be where its own node process writes.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# DECLARED BECAUSE `prune-tmp.mjs` CAN REACH A `gh` SPAWN (the review family's open-pull-request read), and `host-units.mjs` refuses a unit that
+# reaches one and names no account (#1974). THIS UNIT NEVER TAKES THAT PATH: `--fixtures-only` below walks no review leftover, so the line costs no pool.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# `nice -n 19` AND `ionice -c3`, AS THE SYSTEMD DIRECTIVES RATHER THAN A WRAPPER (platform first, #3021): `Nice=19` is the first and
+# `IOSchedulingClass=idle` is class 3. The janitor therefore only gets the disk when nothing else wants it, which is what the incident asks of anything
+# that deletes in bulk on a host that also drives sixteen workers.
+Nice=19
+IOSchedulingClass=idle
+
+# `--apply` OR THIS UNIT IS A REPORT NOBODY READS, and `--fixtures-only` BECAUSE THE OTHER TWO FAMILIES STILL WAIT FOR #2166's ANNOUNCED CYCLE: a
+# scratchpad can be a live session's, a test fixture cannot be anyone's current work. ONE RUN REMOVES AT MOST `MAX_REMOVALS_PER_RUN` ENTRIES, one call
+# each with a pause after it, and never a whole tree at once; what a run cannot finish is renamed `.prune-tmp-doomed-*`, which the next run finishes
+# first, so a run killed mid-batch (`TimeoutStartSec`, a reboot, an OOM) leaves a state the next one completes.
+ExecStart=/usr/bin/node packages/agent-org/src/prune-tmp.mjs --apply --fixtures-only
+
+# A RUN IS ~300 REMOVALS AND 20 ms PAUSES, SO ABOUT TEN SECONDS. This bound is for a hung disk, not a slow run, and it must be shorter than the
+# timer's interval so a stuck run cannot stack on the next.
+TimeoutStartSec=50
+
+# NO `[Install]`, FOR THE REASON @@prefix@@worktree-prune.service GIVES: the timer is the only thing that may start this, and boot is not a moment
+# to begin deleting while the sessions come back up.
