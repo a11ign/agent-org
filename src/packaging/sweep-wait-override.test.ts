@@ -20,9 +20,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { confirmArmed, mergedMeanwhile, waitBetweenReads, SWEEP_WAIT_ENV, CONFIRM_ARMED_READS, CONFIRM_ARMED_WAIT_MS,
   MERGED_MEANWHILE_READS, MERGED_MEANWHILE_WAIT_MS } from "../auto-arm-sweep.mjs";
-import { SHIPPED_DIR, PROJECT_UNITS_DIR } from "../host-units.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
+/** Read from the paths, not through `host-units.mjs`, which wants git history that the acceptance job does not have. */
+const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
+const PROJECT_UNITS_DIR = join(HOME_CHECKOUT, ".agent-org/units");
 const WORKFLOWS = fileURLToPath(new URL("../../.github/workflows/", import.meta.url));
 
 /** Drives a re-read that never succeeds and returns what the sweep slept between reads. */
