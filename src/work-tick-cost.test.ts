@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
-import { CENSUS_ENV, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
+import { CENSUS_ENV, currentCensusPhase, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { readElsewherePrs } from "./work-gate.mjs";
 import { claimRow } from "./row-claim.mjs";
@@ -242,6 +242,62 @@ test("#3566: the summary counts and times each subcommand, keeps the 10 slowest,
   assert.equal(Object.keys(folded).length, 11, "10 kept and one `other`");
   assert.deepEqual(folded.other, { n: 3, wallMs: 100 + 200 + 300 }, "the three cheapest are the ones folded");
   assert.equal(Object.values(folded).reduce((sum, e) => sum + e.n, 0), 13, "no call is lost by folding");
+});
+
+test("#3566 slice 7: the summary splits the calls by the PHASE that started them, names a command with no subcommand by itself, and leaves an unattributed call out", () => {
+  const records = [
+    { cmd: "gh", sub: "issue list", line: "", ms: 900, phase: "tearDownSpares" }, { cmd: "gh", sub: "issue list", line: "", ms: 300, phase: "tearDownSpares" },
+    { cmd: "systemctl", line: "", ms: 8, phase: "tearDownSpares" }, { cmd: "herdr", sub: "org agent", line: "", ms: 40, phase: "tearDownReviewers" },
+    { cmd: "gh", sub: "pr list", line: "", ms: 700 }, { cmd: "node", line: "", ms: 5000 },
+  ];
+  const { phaseCalls, subcommands } = summariseCensus(records);
+  assert.deepEqual(phaseCalls, {
+    tearDownSpares: { "gh issue list": { n: 2, wallMs: 1200 }, systemctl: { n: 1, wallMs: 8 } },
+    tearDownReviewers: { "herdr org agent": { n: 1, wallMs: 40 } },
+  }, "a call made outside every phase (the gate's children, the wake's) is in no phase's split, never under an empty name");
+  assert.equal(subcommands["gh pr list"].n, 1, "the whole-tick figure still counts every call, attributed or not");
+  assert.deepEqual(summariseCensus([{ cmd: "gh", sub: "pr list", line: "", ms: 1 }]).phaseCalls, {}, "records from before the field give an empty split, not a throw");
+});
+
+test("#3566 slice 7: a phase's split keeps its 10 slowest and folds the rest into `other` so the total still adds up", () => {
+  const many = Array.from({ length: 13 }, (_, i) => ({ cmd: "gh", sub: `api route-${i}`, line: "", ms: 100 * (i + 1), phase: "wake" }));
+  const split = summariseCensus(many).phaseCalls.wake;
+  assert.equal(Object.keys(split).length, 11, "10 kept and one `other`");
+  assert.equal(Object.values(split).reduce((sum, e) => sum + e.n, 0), 13, "no call is lost by folding");
+});
+
+test("#3566 slice 7: the meter names the phase while its step runs, clears it after, and clears it when the step THROWS", () => {
+  const meter = createMeter({ ...scripted({ wall: [0, 1, 1, 2, 2, 3], cpu: [0, 0, 0, 0, 0, 0] }), uptimeMs: () => 0, maxRssKb: () => 0 });
+  assert.equal(currentCensusPhase(), undefined);
+  assert.equal(meter.phase("gate", () => currentCensusPhase()), "gate");
+  assert.equal(currentCensusPhase(), undefined, "a finished phase leaves no name behind");
+  assert.throws(() => meter.phase("wake", () => { throw new Error("boom"); }), /boom/);
+  assert.equal(currentCensusPhase(), undefined, "a throwing phase cannot leave a stale name for the spawns after it");
+});
+
+test("#3566 slice 7: a REAL in-process spawn is recorded with the phase set when it started, and one after the phase with none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "census-phase-"));
+  try {
+    const census = join(dir, "census.jsonl");
+    const driver = join(dir, "driver.mjs");
+    const module = new URL("./lib/spawn-census.mjs", import.meta.url).href;
+    writeFileSync(driver, `import { spawnSync } from "node:child_process";\nimport { installSpawnCensus, setCensusPhase } from ${JSON.stringify(module)};\n`
+      + `installSpawnCensus(${JSON.stringify(census)});\nsetCensusPhase("tearDownSpares");\nspawnSync("git", ["--version"]);\nsetCensusPhase(undefined);\nspawnSync("git", ["--version"]);\n`);
+    const ran = spawnSync(process.execPath, [driver], { env: sandboxGitEnv({}), encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(records.map((record: { phase?: string }) => record.phase), ["tearDownSpares", undefined]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#3566 slice 7 CONTROL: a quiet tick's line carries `phaseCalls`, and every phase in it is a phase the line also timed", () => {
+  const { lines } = runTick({ gate: "process.exit(0);" });
+  const { phaseCalls, phases } = lines[0];
+  assert.equal(typeof phaseCalls, "object", JSON.stringify(lines[0]));
+  for (const name of Object.keys(phaseCalls)) assert.ok(name in phases, `${name} is attributed to a phase the line does not have`);
+  assert.deepEqual(Object.keys(phaseCalls.gate), ["node"], "the tick started the gate (one node) inside its phase; the gate's OWN children are another process, counted whole-tick");
 });
 
 test("#3566: a REAL git spawn through the preload leaves a record with its subcommand", () => {
