@@ -1,8 +1,9 @@
 // COPIED FROM `packages/guards/src/isolation-gate.mjs` at 2cd67ad44 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 2 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
 // - its import of cli-flags.mjs, now the tool's own copy beside it
 // - its import of npm-cli-executable.mjs, now the tool's own copy beside it
+// - `REPO_ROOT`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#3830)
 // ==== end of copy header ====
 // @ts-check
 // command: prove a published package installs and works standalone, by actually installing and running it
@@ -75,6 +76,7 @@ import { refuseUnknownFlags } from "./cli-flags.mjs";
 // STAYS npm for the consumer half (`no-npm-spawn.test.ts` pins this file by name; the header's "Two package managers, on purpose" says why):
 // the tarballs are installed as `npm install a11ign` would, outside any workspace.
 import { npmCliInvocation, pnpmCliInvocation } from "./npm-cli-executable.mjs";
+import { HOME_CHECKOUT } from "../project-config.mjs";
 
 export const SMOKE = "isolation-smoke.mjs";
 
@@ -560,7 +562,7 @@ export function checkIsolation(packageDir) {
   }
 }
 
-const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const REPO_ROOT = HOME_CHECKOUT;
 
 /** Where the one declaration of the layers lives, relative to a repository root. */
 const LAYERS_JSON = "packages/control/layers.json";
