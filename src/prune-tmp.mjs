@@ -13,7 +13,14 @@
 // 1,009 session scratchpads totalling 6,931 MB. A leak measured by one spelling is not the same thing as
 // a leak (#2146's lesson, arriving through a different door).
 //
-// TWO FAMILIES ARE CLASSIFIED, AND EVERYTHING ELSE IS NAMED AS UNRECOGNISED RATHER THAN GUESSED AT:
+// A THIRD FAMILY IS THE ONE THAT FILLED THE DISK, AND A TIMER NOW RUNS THIS (#3849, incident #3846). On 2026-10-06 `/tmp` held
+// 121,411 entries, all but a few thousand of them test fixtures that were made and never removed, and the host's soft lockup
+// was an `rmdir` over a directory that size. So the sweep is now a JANITOR, not a report: `tmp-prune.timer` runs it every minute
+// as `Nice=19` / `IOSchedulingClass=idle`, and it does a SMALL amount of work per run -- `MAX_REMOVALS_PER_RUN` filesystem
+// entries, a pause after each, and never one `rm -r` of a tree. The pile is cleared by that same code over its first runs, not
+// by a one-off script, so what removes 121k entries gently is what keeps it from growing back.
+//
+// TWO FAMILIES WERE CLASSIFIED FIRST, AND EVERYTHING ELSE IS NAMED AS UNRECOGNISED RATHER THAN GUESSED AT:
 //   - REVIEW LEFTOVERS, direct children of `/tmp`, carrying a pull request number in the name under six
 //     observed spellings (`rv<n>…`, `rv-<n>…`, `rv2-<n>…`, `review-base-<n>`, `reviewer-source-<n>`,
 //     `npm-cache-<n>`, `npm-cache-rv2-<n>`). Removable only when that pull request is CLOSED.
@@ -59,8 +66,8 @@
 // `classifyEntry` on a NAMED path and quoting its reason, never by watching a total, and the CLI prints
 // the reason beside every path for the same reason.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, lstatSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.mjs` records:
 // files in this package run before `pnpm install`, where a package specifier dies.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
@@ -100,6 +107,45 @@ export const SCRATCHPAD_ROOT = "claude-1000";
 /** `<root>/<project>/<uuid>`: the depth at which a scratchpad belongs to ONE session. */
 const SCRATCHPAD_DEPTH = 3;
 
+/**
+ * THE BUDGET OF ONE RUN, counted in filesystem removals (a file, or a directory once it is empty). Three hundred is "a few hundred"
+ * (chairman, 2026-10-06): small enough that one run cannot hold a directory's dentry lock for the 26 s the lockup began with, and
+ * large enough that a one-minute timer clears ~430k entries a day. A tree that does not fit in what is left of the budget is
+ * stopped at a leaf and finished by the next run.
+ */
+export const MAX_REMOVALS_PER_RUN = 300;
+
+/** The pause after EACH removal, so the kernel's dentry work is spread over the run instead of arriving as one burst. */
+export const PAUSE_BETWEEN_REMOVALS_MS = 20;
+
+/** The most paths one run will look at, so a `/tmp` of young fixtures costs a bounded number of `stat` calls, not 120,000. */
+export const MAX_EXAMINED_PER_RUN = 10 * MAX_REMOVALS_PER_RUN;
+
+/** How many refusals of the fixture family are printed one by one; the rest are tallied by reason (a run can refuse thousands). */
+const FIXTURE_REFUSALS_PRINTED = 10;
+
+/** How long a fixture directory must have been untouched. One hour: a test run is minutes, and the HELD check covers a slow one. */
+export const FIXTURE_WINDOW_MS = MS_PER_HOUR;
+
+/**
+ * The directory-name prefixes the repository's own test fixtures make directly under `/tmp` (`mkdtemp(join(tmpdir(), "<prefix>"))`),
+ * each read off the host's measured pile on 2026-10-06 AND found in a test file of this repository, so a name here is a fixture and
+ * not a guess. The first seven are the ones #3848 names; the rest are the next largest on that day. A fixture family not listed is
+ * UNRECOGNISED and left alone: the private TMPDIR of #3854 is what stops the long tail, this list is only what clears the pile.
+ */
+export const FIXTURE_PREFIXES = [
+  "verify-stamp-test-", "pr-review-verdict-", "host-units-", "ingest-state-", "closes-check-", "trace-weekly-", "prune-tmp-fixture-",
+  "org-retro-", "watch-cli-", "gh-wrapper-render-", "gh-calls-", "trace-publish-", "close-rows-full-form-", "removal-log-",
+  "review-removal-log-", "dora-resumes-",
+];
+
+/**
+ * The name a fixture directory is RENAMED to before its removal starts. A rename is one atomic call, and what it buys is a STATE:
+ * a tree half-removed by a run that was killed, or that spent its budget, no longer looks young (removing its children refreshed its
+ * mtime) and no longer carries a fixture name, so the next run finds it by this prefix alone and finishes it, whatever its age.
+ */
+export const DOOMED_PREFIX = ".prune-tmp-doomed-";
+
 /** A session uuid, as the scratchpad directories spell it. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -119,6 +165,8 @@ export const REVIEW_PREFIXES = [
 /**
  * @typedef {{ family: "review", pr: number }
  *   | { family: "scratchpad", session: string, project: string }
+ *   | { family: "fixture", prefix: string }
+ *   | { family: "doomed" }
  *   | { family: "unknown" }} Family
  */
 
@@ -138,8 +186,11 @@ export function familyOf(relativePath) {
     return { family: "scratchpad", session: parts[2], project: parts[1] };
   }
   if (parts.length !== 1) return { family: "unknown" };
+  if (parts[0].startsWith(DOOMED_PREFIX)) return { family: "doomed" };
   const pr = reviewPullRequest(parts[0]);
-  return pr === null ? { family: "unknown" } : { family: "review", pr };
+  if (pr !== null) return { family: "review", pr };
+  const prefix = FIXTURE_PREFIXES.find((candidate) => parts[0].startsWith(candidate) && parts[0].length > candidate.length);
+  return prefix === undefined ? { family: "unknown" } : { family: "fixture", prefix };
 }
 
 /**
@@ -315,7 +366,7 @@ function childPaths(dir) {
 
 /**
  * @typedef {{ openPrs: Set<number> | "unknown", held: Set<string> | "unknown", selfSessions: Set<string>,
- *   now: number, windowMs?: number, mtime?: (path: string) => number | "unknown" }} Authorities
+ *   now: number, windowMs?: number, fixtureWindowMs?: number, mtime?: (path: string) => number | "unknown" }} Authorities
  */
 
 /**
@@ -391,19 +442,31 @@ function reviewVerdict(path, family, { openPrs }) {
 
 /** The last authority, and the only one that can see a live session holding nothing open.
  * @param {string} path @param {Family} family @param {Authorities} authorities @returns {Verdict} */
-function activityVerdict(path, family, { now, windowMs = ACTIVITY_WINDOW_MS, mtime = newestMtimeMs }) {
+function activityVerdict(path, family, { now, windowMs = ACTIVITY_WINDOW_MS, fixtureWindowMs = FIXTURE_WINDOW_MS, mtime = newestMtimeMs }) {
+  // A tree this tool already began removing is finished at any age: the rename that marked it came AFTER the age check.
+  if (family.family === "doomed") {
+    return { path, family: family.family, verdict: "remove", reason: "a removal this tool began and did not finish" };
+  }
   const newest = mtime(path);
   if (newest === "unknown") {
     return refuse(path, family.family, "its newest write time could not be read, so it is not known to be cold");
   }
   const ageMs = now - newest;
   const hours = (/** @type {number} */ ms) => (ms / MS_PER_HOUR).toFixed(1);
-  if (ageMs < windowMs) {
-    return refuse(path, family.family,
-      `written ${hours(ageMs)}h ago, inside the ${hours(windowMs)}h window -- a session may still be using it`);
+  const window = family.family === "fixture" ? fixtureWindowMs : windowMs;
+  if (ageMs < window) {
+    // A fixed sentence for a fixture, so thousands of young ones tally as ONE reason in the report rather than thousands of lines.
+    return refuse(path, family.family, family.family === "fixture"
+      ? `a test fixture written less than ${hours(window)}h ago, so a test may still be using it`
+      : `written ${hours(ageMs)}h ago, inside the ${hours(window)}h window -- a session may still be using it`);
   }
-  const settled = family.family === "review" ? `pull request #${family.pr} is closed` : "no live session claims it";
-  return { path, family: family.family, verdict: "remove", reason: `${settled}, and nothing has written here for ${hours(ageMs)}h` };
+  return { path, family: family.family, verdict: "remove", reason: `${settledBecause(family)}, and nothing has written here for ${hours(ageMs)}h` };
+}
+
+/** @param {Family} family @returns {string} */
+function settledBecause(family) {
+  if (family.family === "review") return `pull request #${family.pr} is closed`;
+  return family.family === "fixture" ? `a ${family.prefix}* test fixture no process holds` : "no live session claims it";
 }
 
 /**
@@ -424,6 +487,31 @@ export function sweepablePaths(tmpRoot) {
   return [...review, ...scratchpads].sort();
 }
 
+/**
+ * The fixture directories directly under `tmpRoot`: a DIRECTORY (a file or a symlink with a fixture's name is not what the fixtures make)
+ * whose name carries one of `FIXTURE_PREFIXES`. Names only, one `readdir` and no `stat`, because this is called over a `/tmp` of 120,000
+ * entries every minute and the age is read lazily, for as many as the run can use.
+ * @param {string} tmpRoot @returns {string[]}
+ */
+export function fixturePaths(tmpRoot) {
+  return directChildren(tmpRoot, (name) => familyOf(name).family === "fixture");
+}
+
+/** The trees an earlier run began removing and did not finish, which are the first thing the next run does. @param {string} tmpRoot @returns {string[]} */
+export function doomedPaths(tmpRoot) {
+  return directChildren(tmpRoot, (name) => name.startsWith(DOOMED_PREFIX));
+}
+
+/** @param {string} tmpRoot @param {(name: string) => boolean} wanted @returns {string[]} */
+function directChildren(tmpRoot, wanted) {
+  try {
+    return readdirSync(tmpRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && wanted(entry.name)).map((entry) => join(tmpRoot, entry.name)).sort();
+  } catch {
+    return [];
+  }
+}
+
 /** @param {string} dir @returns {string[]} */
 function childNames(dir) {
   try { return readdirSync(dir); } catch { return []; }
@@ -442,49 +530,84 @@ export function selfSessions(env) {
 }
 
 /**
- * @typedef {{ examined: number, removable: Verdict[], refused: Verdict[], removed: string[],
- *   failed: { path: string, reason: string }[] }} PruneReport
+ * @typedef {{ examined: number, candidates: number, removable: Verdict[], refused: Verdict[], removed: string[],
+ *   partial: string[], failed: { path: string, reason: string }[] }} PruneReport
+ * `candidates` is every path the walk found and `examined` the ones this run looked at, so the difference is what the run's budget left
+ * for the next one. `partial` is a tree whose removal began and was stopped at a leaf by the budget: it is neither removed nor failed.
  */
 
+/** @type {(ms: number) => void} A synchronous sleep: the whole tool is synchronous, and the pause is the point of the run's shape. */
+const sleep = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
 /**
- * The whole flow: walk the two families, classify each path, and -- only under `--apply` -- remove the
- * ones every authority called dead.
+ * The whole flow: walk the families, classify each path, and -- only under `--apply` -- remove the ones every authority called dead,
+ * until the run's budget is spent.
  *
  * `dryRun` SKIPS THE REMOVAL AND NOTHING ELSE. Same walk, same classifier, same reasons, so the listing
  * is this tool's own answer rather than a second implementation of it -- the shape `prune-worktrees.mjs`
  * records a hand-rolled re-implementation getting wrong on 99 of 114 worktrees.
  *
+ * THE ORDER IS THE STATE MACHINE: trees an earlier run began removing first (a killed run leaves exactly that), then the two
+ * original families, then the fixtures. A dry run spends one unit of budget per path it would remove, so its listing is the size of one run.
+ *
  * @param {string} tmpRoot
- * @param {{ dryRun?: boolean, now?: number, windowMs?: number, env?: NodeJS.ProcessEnv,
- *   run?: typeof defaultRun, procRoot?: string, remove?: (path: string) => void,
- *   claim?: typeof claimRefusal, record?: typeof recordRemoval }} [deps] `claim` and `record` are #2782's: the ROW's claim
- *   on any worktree inside a path, and the removal's log line
+ * @param {{ dryRun?: boolean, now?: number, windowMs?: number, fixtureWindowMs?: number, env?: NodeJS.ProcessEnv,
+ *   run?: typeof defaultRun, procRoot?: string, remove?: (path: string) => void | boolean,
+ *   claim?: typeof claimRefusal, record?: typeof recordRemoval, pause?: (ms: number) => void,
+ *   maxRemovals?: number, maxExamined?: number, families?: Family["family"][] }} [deps] `claim` and `record` are #2782's: the ROW's claim
+ *   on any worktree inside a path, and the removal's log line. `families` narrows the walk (the timer passes the fixtures and the
+ *   unfinished trees only); `remove` returns `false` for "stopped before the end", and anything else is "finished".
  * @returns {PruneReport}
  */
 export function pruneTmp(tmpRoot, deps = {}) {
-  const { dryRun = true, now = Date.now(), windowMs, env = process.env, run, procRoot, remove,
-    claim = claimRefusal, record = recordRemoval } = deps;
-  const paths = sweepablePaths(tmpRoot);
-  /** @type {Authorities} */
-  const authorities = {
-    openPrs: openPullRequests({ run }), held: heldEntries(paths, processStrings(procRoot)),
-    selfSessions: selfSessions(env), now, windowMs,
-  };
+  const { dryRun = true, now = Date.now(), windowMs, fixtureWindowMs, env = process.env, run, procRoot,
+    maxRemovals = MAX_REMOVALS_PER_RUN, maxExamined = MAX_EXAMINED_PER_RUN, families } = deps;
+  const wanted = (/** @type {Family["family"]} */ family) => families === undefined || families.includes(family);
+  const queue = [...(wanted("doomed") ? doomedPaths(tmpRoot) : []),
+    ...sweepablePaths(tmpRoot).filter((path) => wanted(familyOf(relativeUnder(path, tmpRoot) ?? "").family)),
+    ...(wanted("fixture") ? fixturePaths(tmpRoot) : [])];
+  const strings = processStrings(procRoot);
+  /** @type {Set<number> | "unknown" | undefined} */
+  let openPrs;
+  // The pull request list is read only when a review leftover is reached: a timer that sweeps fixtures must not spend the GraphQL pool every minute.
+  const readOpenPrs = () => (openPrs ??= openPullRequests({ run }));
+  const budget = { left: maxRemovals };
   /** @type {PruneReport} */
-  const report = { examined: paths.length, removable: [], refused: [], removed: [], failed: [] };
-  for (const path of paths) {
-    const verdict = classifyEntry(path, tmpRoot, authorities);
-    if (verdict.verdict === "refuse") { report.refused.push(verdict); continue; }
-    // #2782: a whole directory goes, and any worktree inside it goes too -- so the ROW of each is read first, in the dry run
-    // as well, because the listing is this tool's own answer and a path it lists as removable must be one `--apply` removes.
-    const claimed = claimOnTrees(path, claim);
-    if (claimed.refused) { report.refused.push({ ...verdict, verdict: "refuse", reason: claimed.reason }); continue; }
-    report.removable.push(verdict);
-    if (dryRun) continue;
-    const failure = removeRecorded(path, tmpRoot, { remove, record });
-    if (failure === null) report.removed.push(path); else report.failed.push({ path, reason: failure });
+  const report = { examined: 0, candidates: queue.length, removable: [], refused: [], removed: [], partial: [], failed: [] };
+  for (const path of queue) {
+    if (budget.left <= 0 || report.examined >= maxExamined) break;
+    report.examined += 1;
+    const family = familyOf(relativeUnder(path, tmpRoot) ?? "").family;
+    /** @type {Authorities} */
+    const authorities = { openPrs: family === "review" ? readOpenPrs() : new Set(), held: heldEntries([path], strings),
+      selfSessions: selfSessions(env), now, windowMs, fixtureWindowMs };
+    sweepOne(path, { tmpRoot, authorities, budget, report, deps });
   }
   return report;
+}
+
+/**
+ * One path's turn: classify it, then (under `--apply`) remove it, putting the outcome in `report`.
+ * @param {string} path
+ * @param {{ tmpRoot: string, authorities: Authorities, budget: { left: number }, report: PruneReport, deps: Parameters<typeof pruneTmp>[1] & {} }} context
+ */
+function sweepOne(path, { tmpRoot, authorities, budget, report, deps }) {
+  const { dryRun = true, remove, claim = claimRefusal, record = recordRemoval, pause = sleep } = deps;
+  const verdict = classifyEntry(path, tmpRoot, authorities);
+  if (verdict.verdict === "refuse") { report.refused.push(verdict); return; }
+  // #2782: a whole directory goes, and any worktree inside it goes too -- so the ROW of each is read first, in the dry run
+  // as well, because the listing is this tool's own answer and a path it lists as removable must be one `--apply` removes.
+  const claimed = claimOnTrees(path, claim);
+  if (claimed.refused) { report.refused.push({ ...verdict, verdict: "refuse", reason: claimed.reason }); return; }
+  report.removable.push(verdict);
+  if (dryRun) { budget.left -= 1; return; }
+  const remover = remove ?? ((target) => removeFromLeaves(target, budget, pause));
+  const outcome = removeRecorded(path, tmpRoot, { remove: remover, record, family: verdict.family });
+  if (outcome.failure !== null) report.failed.push({ path, reason: outcome.failure });
+  else if (outcome.finished) report.removed.push(path);
+  else report.partial.push(outcome.path);
+  // A remover that was handed in does not spend the budget itself, so a run over one still stops after `maxRemovals` paths.
+  if (remove !== undefined) budget.left -= 1;
 }
 
 /**
@@ -502,23 +625,28 @@ function claimOnTrees(path, claim) {
 
 /**
  * #2782: {@link removePath} with its line -- `removing` BEFORE the delete, `removed` or `failed` after -- naming every worktree
- * inside the path and what its owner file read. A line that cannot be written is a removal that does not happen.
+ * inside the path and what its owner file read. A line that cannot be written is a removal that does not happen. A fixture is
+ * RENAMED to `DOOMED_PREFIX` first (see there), and `path` in the answer is where the tree stands now.
  * @param {string} path @param {string} tmpRoot
- * @param {{ remove?: (path: string) => void, record: typeof recordRemoval }} deps
- * @returns {string | null} the failure, or `null` on success
+ * @param {{ remove: (path: string) => void | boolean, record: typeof recordRemoval, family: Family["family"] }} deps
+ * @returns {{ failure: string | null, finished: boolean, path: string }}
  */
-function removeRecorded(path, tmpRoot, { remove, record }) {
+function removeRecorded(path, tmpRoot, { remove, record, family }) {
   const trees = nestedWorktrees(path);
   const line = { path, caller: CALLER, reason: "a classified leftover no live session claims",
     detail: trees.length > 0 ? `holds worktree(s): ${trees.join(", ")}` : undefined };
   try {
     record({ ...line, event: "removing", owner: trees.map((tree) => `${tree}=${worktreeOwner(tree)}`).join(" ") || null });
   } catch (cause) {
-    return `the removal log could not be written, so nothing was removed (#2782): ${/** @type {Error} */ (cause).message}`;
+    return { failure: `the removal log could not be written, so nothing was removed (#2782): ${/** @type {Error} */ (cause).message}`,
+      finished: false, path };
   }
-  const failure = removePath(path, tmpRoot, remove);
-  record({ ...line, event: failure === null ? "removed" : "failed", detail: failure ?? line.detail });
-  return failure;
+  const outcome = removeContained(path, tmpRoot, remove, family === "fixture");
+  // `partial` is not a log event: the tree is still there, and the next run writes its own `removing` for it.
+  if (outcome.failure !== null || outcome.finished) {
+    record({ ...line, event: outcome.failure === null ? "removed" : "failed", detail: outcome.failure ?? line.detail });
+  }
+  return outcome;
 }
 
 /**
@@ -532,20 +660,69 @@ function removeRecorded(path, tmpRoot, { remove, record }) {
  * it was mutated away (2026-09-23, the one survivor of fifteen), and that is the fact that put this line
  * here rather than a belief that it is obviously correct.
  *
- * @param {string} path @param {string} tmpRoot @param {((path: string) => void) | undefined} [remove]
+ * @param {string} path @param {string} tmpRoot @param {((path: string) => void | boolean) | undefined} [remove]
  * @returns {string | null} the failure, or `null` on success
  */
 export function removePath(path, tmpRoot, remove) {
-  if (relativeUnder(path, tmpRoot) === null) return `refused at the delete: ${path} is not under ${tmpRoot}`;
+  return removeContained(path, tmpRoot, remove, false).failure;
+}
+
+/**
+ * {@link removePath}'s body, answering whether the tree is gone and where it now stands as well.
+ * @param {string} path @param {string} tmpRoot @param {((path: string) => void | boolean) | undefined} remove
+ * @param {boolean} rename whether to rename the tree to `DOOMED_PREFIX` first
+ * @returns {{ failure: string | null, finished: boolean, path: string }}
+ */
+function removeContained(path, tmpRoot, remove, rename) {
+  if (relativeUnder(path, tmpRoot) === null) {
+    return { failure: `refused at the delete: ${path} is not under ${tmpRoot}`, finished: false, path };
+  }
+  let target = path;
   try {
-    // `rmSync` unlinks a symlink rather than following it, which matters here: a worktree's
+    if (rename) target = markDoomed(path);
+    // `remove` walks a tree from its leaves and unlinks a symlink rather than following it, which matters here: a worktree's
     // `node_modules` is a SYMLINK into the primary checkout, and a recursive delete that followed one
     // would empty the primary (`prune-worktrees.mjs`, #2012, reproduced with content behind the link).
-    (remove ?? ((target) => rmSync(target, { recursive: true, force: true })))(path);
-    return null;
+    const finished = (remove ?? ((entry) => removeFromLeaves(entry, { left: Infinity }, () => {})))(target) !== false;
+    return { failure: null, finished, path: target };
   } catch (error) {
-    return /** @type {Error} */ (error).message;
+    return { failure: /** @type {Error} */ (error).message, finished: false, path: target };
   }
+}
+
+/** One atomic rename, which is what makes a half-removed tree findable. @param {string} path @returns {string} where it now stands */
+function markDoomed(path) {
+  const doomed = join(dirname(path), DOOMED_PREFIX + basename(path));
+  renameSync(path, doomed);
+  return doomed;
+}
+
+/**
+ * Removes `path` from its leaves, ONE ENTRY PER CALL -- never a recursive delete of the whole tree, because the incident (#3846) was
+ * a single `rmdir` over a very large tree that held a CPU for 26 s. Each removal takes one unit of `budget` and is followed by a pause;
+ * when the budget is spent the walk stops at a leaf and answers `false`, and what is left is a smaller tree for the next run.
+ *
+ * @param {string} path @param {{ left: number }} budget @param {(ms: number) => void} pause
+ * @returns {boolean} whether the tree is gone
+ */
+export function removeFromLeaves(path, budget, pause) {
+  if (!lstatSync(path).isDirectory()) return removeEntry(() => unlinkSync(path), budget, pause);
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    // `isDirectory` on a Dirent is false for a symlink, so a link is unlinked and never walked.
+    const done = entry.isDirectory() ? removeFromLeaves(child, budget, pause) : removeEntry(() => unlinkSync(child), budget, pause);
+    if (!done) return false;
+  }
+  return removeEntry(() => rmdirSync(path), budget, pause);
+}
+
+/** One removal call, or `false` when the budget has none left. @param {() => void} call @param {{ left: number }} budget @param {(ms: number) => void} pause */
+function removeEntry(call, budget, pause) {
+  if (budget.left <= 0) return false;
+  budget.left -= 1;
+  call();
+  pause(PAUSE_BETWEEN_REMOVALS_MS);
+  return true;
 }
 
 /**
@@ -565,31 +742,64 @@ export function formatReport(report, dryRun = true) {
   // WOULD REMOVE versus REMOVED, never the same word: a listing that says "removed" is indistinguishable
   // from a run that removed, and the dry run exists so a session can read the list one cycle before its
   // scratchpad disappears.
+  if (report.candidates === 0) {
+    return `nothing to remove: 0 classified path(s) found${dryRun ? " (a dry run)" : ""} -- nothing was removed`;
+  }
   const lines = [dryRun
     ? `WOULD REMOVE ${report.removable.length} of ${report.examined} classified path(s) -- nothing has been `
       + "removed; pass --apply, and announce the list one cycle first so no session loses its scratchpad:"
     : `removed ${report.removed.length} of ${report.examined} classified path(s):`];
   for (const entry of report.removable) lines.push(`  ${entry.path}  [${entry.family}] -- ${entry.reason}`);
+  if (report.partial.length > 0) {
+    lines.push(`${report.partial.length} tree(s) stopped at the run's budget and are partly removed; the next run finishes them:`);
+    for (const path of report.partial) lines.push(`  ${path}`);
+  }
   if (report.failed.length > 0) {
     lines.push(`${report.failed.length} path(s) could NOT be removed and are still there:`);
     for (const entry of report.failed) lines.push(`  ${entry.path} -- ${entry.reason}`);
   }
   lines.push(`refused ${report.refused.length} path(s), each with its reason -- nothing here was removed:`);
-  for (const entry of report.refused) lines.push(`  ${entry.path}  [${entry.family}] -- ${entry.reason}`);
+  lines.push(...refusalLines(report.refused));
+  const deferred = report.candidates - report.examined;
+  if (deferred > 0) lines.push(`${deferred} more classified path(s) were not looked at: one run is bounded (${MAX_REMOVALS_PER_RUN} removals), and the next run takes them.`);
   return lines.join("\n");
 }
 
+/**
+ * Every refusal with its reason, except that a fixture refusal past the first few is TALLIED BY REASON: a run over a busy `/tmp` refuses
+ * thousands of young fixtures, and a thousand identical lines hide the one that is not. The tally still names the reason and the count.
+ * @param {Verdict[]} refused @returns {string[]}
+ */
+function refusalLines(refused) {
+  const lines = [];
+  /** @type {Map<string, number>} */
+  const tally = new Map();
+  let printed = 0;
+  for (const entry of refused) {
+    if (entry.family === "fixture" && printed >= FIXTURE_REFUSALS_PRINTED) {
+      tally.set(entry.reason, (tally.get(entry.reason) ?? 0) + 1);
+      continue;
+    }
+    if (entry.family === "fixture") printed += 1;
+    lines.push(`  ${entry.path}  [${entry.family}] -- ${entry.reason}`);
+  }
+  for (const [reason, count] of tally) lines.push(`  ...and ${count} more [fixture] -- ${reason}`);
+  return lines;
+}
+
 async function main() {
-  refuseUnknownFlags(["--apply", "--tmp"],
+  refuseUnknownFlags(["--apply", "--tmp", "--fixtures-only"],
     { entry: import.meta.url, command: "node packages/agent-org/src/prune-tmp.mjs" });
   // THE DEFAULT IS THE LISTING, for the reason `prune-worktrees.mjs` paid for: a command whose name reads
   // as a report, on a host with eight live sessions, is one somebody runs to LOOK. There is deliberately
-  // no timer installed for `--apply` -- #2166 puts that decision one cycle after the named list, which is
-  // the precedent #2012/#2146 set.
+  // no timer for the REVIEW and SCRATCHPAD families -- #2166 puts that decision one cycle after the named list, which is
+  // the precedent #2012/#2146 set. The timer (#3849) passes `--fixtures-only`: a test fixture is made by this repository's own tests,
+  // so nobody's current work lives in one, and that is the one family it may remove unannounced.
   const dryRun = !process.argv.includes("--apply");
   const tmpRoot = process.argv.find((a) => a.startsWith("--tmp="))?.slice("--tmp=".length) ?? "/tmp";
   if (!existsSync(tmpRoot)) throw new Error(`prune-tmp: ${tmpRoot} does not exist -- nothing was read or written`);
-  process.stdout.write(formatReport(pruneTmp(tmpRoot, { dryRun }), dryRun) + "\n");
+  const families = process.argv.includes("--fixtures-only") ? /** @type {Family["family"][]} */ (["fixture", "doomed"]) : undefined;
+  process.stdout.write(formatReport(pruneTmp(tmpRoot, { dryRun, families }), dryRun) + "\n");
 }
 
 import { pathToFileURL } from "node:url";

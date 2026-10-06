@@ -1,0 +1,15 @@
+# THE PRIVATE TMP ROOT'S AGE-OUT -- #3849 (#3854 and #3855 create `~/.cache/a11ign/tmp/run-<id>` per run and remove it at the end of the run; this is what
+# removes one a killed run left). `systemd-tmpfiles-clean.timer` ships as a USER unit on this host, so this is `systemd --user` and needs no sudo.
+#
+# `e` ADJUSTS AND AGES THE DIRECTORY'S CONTENTS WITHOUT CREATING IT (a missing root is not an error), and applied to the ROOT -- not to a `run-*` glob
+# -- so that the `run-*` directories THEMSELVES age out: measured, an `e` on the glob cleans only what is inside each match and leaves the matched
+# directory standing. Everything under the root is a run's, so there is nothing else for the rule to reach.
+#
+# `mM:1d` AGES BY MODIFICATION TIME ALONE, files (`m`) AND directories (`M`). The default also reads ctime, which a `chmod` or a rename sets to now,
+# so a run directory would read young for a day after anything touched it, and a test cannot back-date a ctime. For a DIRECTORY the default reads
+# atime too, and the cleaner's own `readdir` refreshes it, so an emptied `run-*` directory was never removed: measured, only `files` went and the
+# skeleton stood for ever. With `M` the whole old run goes in ONE pass and a young one is not touched. A run's files are not written after the run
+# ends, so mtime is the honest age.
+#
+# Type Path                          Mode UID GID Age
+e %h/.cache/a11ign/tmp - - - mM:1d

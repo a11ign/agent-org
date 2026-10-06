@@ -853,7 +853,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1280,6 +1280,8 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.mjs --arm` creates the
     // marker (no marker, nothing read, exit 0), which the unit's own comments say; that is why a fifth entry here is a decision made and not one missed.
     "a11ign-shadow-window.timer",
+    // a11ign/a11ign#3849: the /tmp janitor's timer. Its service runs once at `host:install`, and that run IS wanted: it is the first batch of the clear, bounded to one run's budget.
+    "a11ign-tmp-prune.timer",
     // a11ign/a11ign#3515: the trace pages' timer. Its service runs once at `host:install` and DECIDES whether anything moved: a first install publishes, a re-install on an unmoved head does nothing.
     "a11ign-trace-publish.timer",
     "a11ign-work-tick.timer",

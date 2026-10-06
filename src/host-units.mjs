@@ -97,6 +97,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
   // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.mjs`, which decides whether a head has moved; the timer is only a clock.
   "trace-publish.service.in", "trace-publish.timer.in",
+  // a11ign/a11ign#3849: the /tmp fixture janitor's pair, and the user-level tmpfiles rule that ages the private tmp root out (not a unit: `installTmpfiles` copies it).
+  "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
 ]);
 
 /**
@@ -354,6 +356,10 @@ const OTHER_TOOL_FORMS = Object.freeze({
   "trace-weekly.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/trace-weekly-post\.sh$/m,
       "Environment=AGENT_ORG_PROJECT=$CHECKOUT/.agent-org/project.json\nExecStart=/usr/bin/bash host/trace-weekly-post.sh"],
+  ],
+  // THE /TMP FIXTURE JANITOR (a11ign/a11ign#3849): run from the tool's checkout, like the prune above it.
+  "tmp-prune.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/prune-tmp\.mjs --apply --fixtures-only$/m, "ExecStart=/usr/bin/node src/prune-tmp.mjs --apply --fixtures-only"],
   ],
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [
@@ -2423,6 +2429,31 @@ function refuseUnitsWithoutHostVariable(deps) {
   throw new Error(`cannot install: ${refused.map((f) => `${f.unit}: ${f.problem}`).join("; ")} -- ${refused[0].detail}`);
 }
 
+/** Where `systemd-tmpfiles --user` reads its rules from, which is what `systemd-tmpfiles-clean.timer` (a USER unit on this host) runs over. */
+export const USER_TMPFILES_DIR = `${process.env.HOME ?? ""}/.config/user-tmpfiles.d`;
+
+/** The shipped `*.tmpfiles.conf.in` files: the name without that suffix is the name the rule is installed under, as `<name>.conf`. */
+const TMPFILES_SUFFIX = `.tmpfiles.conf${TEMPLATE_SUFFIX}`;
+
+/**
+ * Copies each shipped tmpfiles rule into the user's rule directory (a11ign/a11ign#3849). VERBATIM, never rendered: the rule says `%h`, which
+ * systemd expands, so there is no host value to fill in and the installed bytes are the shipped bytes. Idempotent, like the units beside it.
+ * @param {ShippedDeps & { tmpfilesDir?: string, write?: typeof writeFileSync, mkdir?: typeof mkdirSync, out?: (line: string) => void }} deps
+ * @returns {string[]} the rule files it wrote
+ */
+export function installTmpfiles(deps = {}) {
+  const { shippedDir = SHIPPED_DIR, readDir = readdirSync, tmpfilesDir = USER_TMPFILES_DIR, write = writeFileSync, mkdir = mkdirSync,
+    read = readFileSync, out = (l) => process.stdout.write(l) } = deps;
+  const rules = namesIn(shippedDir, readDir).filter((name) => name.endsWith(TMPFILES_SUFFIX));
+  if (rules.length > 0) mkdir(tmpfilesDir, { recursive: true });
+  return rules.map((rule) => {
+    const installed = `${rule.slice(0, -TMPFILES_SUFFIX.length)}.conf`;
+    write(join(tmpfilesDir, installed), read(join(shippedDir, rule), "utf8"));
+    out(`installed ${installed} (user tmpfiles rule)\n`);
+    return installed;
+  });
+}
+
 /**
  * WRITTEN, NOT COPIED (#2620): three of the units are rendered from templates, so there is no file to copy, and one path for every unit
  * means the installed bytes are always the ones `unitState` compared.
@@ -2464,6 +2495,7 @@ export function hostUnitsInstall(deps = {}) {
   const units = shippedUnitNames(deps);
   mkdir(installedDir, { recursive: true });
   writeShippedUnits(units, deps);
+  installTmpfiles(deps);
   // REMOVED BEFORE THE RELOAD, so systemd never re-reads a unit that is on its way out. `disable --now`
   // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
