@@ -5367,7 +5367,7 @@ export function spareDecision({ status, instance, held, now, claimBoundMs = SPAR
 /**
  * @typedef {{ path: string, clean: boolean | "unknown", merge: "merged" | "not-merged" | "unknown" }} SpareWorktree
  * @typedef {{ role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[],
- *   released?: "stalled" | "blocked" | "merged" | "gone" }} SpareCycle
+ *   released?: "stalled" | "blocked" | "merged" | "gone" | "closed" }} SpareCycle
  *   `rows` is EVERY row the instance held, oldest first (#2407), and its ABSENCE is what marks a legacy line: one
  *   written before the field existed, which {@link consecutiveClean} counts for nothing. `released` (#2470, #2747)
  *   marks a line the GATE wrote when it took a claim back from a stalled, blocked, merged or gone holder: see {@link isReleaseLine}
@@ -6365,6 +6365,7 @@ export function keptClaimsPath(ledgerPath) {
  *   host: { worktreesDir: string, primary: string, exists: (path: string) => boolean }, env: Record<string, string>,
  *   gh: (args: string[]) => string, warn: (line: string) => void,
  *   cycle: (cycle: SpareCycle) => void, dropInstance: (role: string) => SpareInstance | undefined,
+ *   keepInstance: (role: string, row: number) => SpareInstance,
  *   remember: (row: number, kept: KeptClaim | null) => void,
  * }} ReleaseDeps
  * @typedef {import("./claim-stall.mjs").ReleaseRequest} ReleaseRequest
@@ -6380,7 +6381,7 @@ export function keptClaimsPath(ledgerPath) {
  * A BLOCKED or MERGED release is REFUSED when the holder now holds work: those two are decided on "the holder holds nothing", and it
  * may have started something since the gate looked. A STALLED release keeps whatever it finds -- unreadable included -- and so does a
  * GONE one (#2747): a session confirmed absent from herdr's own listing is not coming back to finish anything it holds, so there is no
- * "since the gate looked" to be fair to.
+ * "since the gate looked" to be fair to. A CLOSED one (#3535) keeps what it finds too: the row is over, whatever the holder built is kept and not decided on.
  *
  * @param {ReleaseRequest} request @param {ReleaseDeps} deps
  * @returns {{ keep: boolean, work: ReturnType<typeof workAtRisk>, onOrigin: boolean, restored?: boolean } | { refusal: string }}
@@ -6397,7 +6398,7 @@ function releasePlan(request, deps) {
   const merged = request.why === "merged" && request.mergedPrRepoKey !== undefined
     ? { repoKey: request.mergedPrRepoKey, head: request.mergedPrHead, claimant: { row: request.row, branch: request.branch, session: request.session } } : undefined;
   const work = holderWorkAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo, ...(merged === undefined ? {} : { merged }) });
-  if (request.why !== "stalled" && request.why !== "gone" && work.state !== "none") {
+  if (request.why !== "stalled" && request.why !== "gone" && request.why !== "closed" && work.state !== "none") {
     return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed${work.why === undefined ? "" : `; ${work.why}`}) -- not released` };
   }
   const onOrigin = request.branch !== null
@@ -6441,11 +6442,32 @@ function closeHolder(session, deps) {
   }
 }
 
+/**
+ * #3535: STOP A CLOSED ROW'S INSTANCE MID-TURN, with Escape and NO PROMPT -- a prompt is a wake that re-reads the instance's whole context (#3452) and the
+ * instance has nothing left to do. The workspace is NOT closed here: once the turn stops, the instance holds no open row and `spareDecision` ends it as it ends
+ * any finished one, so this adds no second way to end an instance. `kept` when nothing was asked of it (an order without `interrupt`, or a seat that is not a
+ * spare), `interrupted` when the stop was sent, `failed` when herdr refused -- and that is NOT a release, retried next tick with nothing changed.
+ * @param {ReleaseRequest} request @param {ReleaseDeps} deps @returns {"interrupted" | "kept" | "failed"}
+ */
+function interruptHolder(request, deps) {
+  if (request.interrupt !== true || !deps.isSpare(request.session)) return "kept";
+  try {
+    deps.run(["--session", "org", "agent", "send-keys", request.session, "esc"]);
+    return "interrupted";
+  } catch (err) {
+    deps.warn(`release: "${request.session}" could not be interrupted (${firstLine(err)}) -- retried next tick.`);
+    return "failed";
+  }
+}
+
 /** @param {ReleaseRequest} request @returns {string} the sentence the release comment opens with */
 function releaseHeadline(request) {
   if (request.why === "merged") return `${mergedPrMention(request)} MERGED and this row stayed open, so the work landed and the holder has nothing left on it`;
   if (request.why === "blocked") {
     return `this row carries an open \`blockedBy\` edge on ${(request.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing built`;
+  }
+  if (request.why === "closed") {
+    return `this row was CLOSED while it still carried the claim${request.interrupt === true ? `, and \`${request.session}\` was mid-turn on it, so its turn was interrupted (#3535)` : " (#3535)"}`;
   }
   if (request.why === "gone") return `\`${request.session}\` no longer exists in herdr's own workspace listing (#2747), not merely quiet`;
   return `nothing on this row moved for ${request.idleMinutes} minutes (no commit, push, pull request, changed file or row comment) and the nudge was not answered`;
@@ -6475,7 +6497,9 @@ function releaseComment(request, plan) {
     ? `The worktree \`${request.worktree}\` on \`${request.branch}\` was KEPT with everything in it (${plan.work.dirty} changed file(s), `
       + `${plan.work.unpushed} commit(s) not on any remote): the next instance for this row starts in it and continues, and nothing was removed.`
     : "Nothing was left on this host worth keeping, so no worktree was kept.";
-  const next = request.why === "merged"
+  const next = request.why === "closed"
+    ? "The row is CLOSED, so it is NOT back in the pool and nothing was restored; a per-row instance holding no open row is ended by the gate once it is between turns."
+    : request.why === "merged"
     ? `\`${ANSWER_PREFIX}${request.answer}\` is set: whether the row is finished, or needs re-scoping, is theirs to rule. If more work is needed a fresh \`worker-<row>\` is started.`
     : plan.restored === false ? notInThePool(request)
       : plan.onOrigin
@@ -6516,14 +6540,16 @@ function settleRelease(request, plan, deps) {
  */
 function recordReleaseCycle(request, deps, kept) {
   if (!deps.isSpare(request.session)) return;
-  const instance = deps.dropInstance(request.session);
+  // A CLOSED ROW'S INSTANCE IS STILL RUNNING (#3535): its registry entry stays, with the row in it, so `spareDecision` ends it as a finished one (it holds no
+  // open row) and not as one that "never claimed" -- a row closed within one tick of its claim was never seen held, so nothing else has recorded it.
+  const instance = request.why === "closed" ? deps.keepInstance(request.session, request.row) : deps.dropInstance(request.session);
   const rows = [...new Set([...(instance?.rows ?? []), request.row])];
   deps.cycle({ role: request.session, row: request.row, at: deps.now, rows, clean: false, released: request.why,
     why: `claim on #${request.row} released (${request.why}); ${kept ? "worktree and unpushed work kept" : "nothing kept"}` });
 }
 
 /**
- * PERFORM ONE RELEASE. Refuses BEFORE any write when the fresh read of the holder's tree disagrees with the gate's (blocked and merged
+ * PERFORM ONE RELEASE (a CLOSED row's, #3535, interrupts a working instance and leaves its workspace for `spareDecision`). Refuses BEFORE any write when the fresh read of the holder's tree disagrees with the gate's (blocked and merged
  * only); ends a spare's workspace FIRST -- so nothing it does can race the read -- then takes the claim back with `row-claim decline`, run
  * AS THE HOLDER (decline releases only its own session's claim) from the holder's launch worktree; then comments, records and cleans.
  *
@@ -6542,9 +6568,9 @@ function recordReleaseCycle(request, deps, kept) {
 export function performRelease(request, deps) {
   const plan = releasePlan(request, deps);
   if ("refusal" in plan) return { released: false, why: plan.refusal };
-  const closed = closeHolder(request.session, deps);
+  const closed = request.why === "closed" ? interruptHolder(request, deps) : closeHolder(request.session, deps);
   if (closed === "failed") {
-    return { released: false, why: `${request.session}'s workspace could not be closed -- nothing was changed` };
+    return { released: false, why: `${request.session}${request.why === "closed" ? " could not be interrupted" : "'s workspace could not be closed"} -- nothing was changed` };
   }
   const confirmedGone = closed === "closed" || closed === "absent";
   const launch = launchWorktree(request.session, { exec: deps.exec, exists: deps.host.exists,
@@ -6588,6 +6614,13 @@ export function performClaimReleases(requests, agents, { ledgerPath, host, now =
           delete registry[role];
           writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
           return gone;
+        },
+        keepInstance: (role, row) => {
+          const registry = readSpareRegistry(paths.registry);
+          const before = registry[role] ?? { spawnedAt: now, rows: [] };
+          registry[role] = { spawnedAt: before.spawnedAt, rows: [...new Set([...before.rows, row])] };
+          writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
+          return registry[role];
         },
         remember: (row, kept) => {
           const all = readKeptClaims(keptPath);

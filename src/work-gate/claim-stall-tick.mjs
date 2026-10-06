@@ -12,9 +12,10 @@
 // `work-gate.mjs` re-exports every name this file exports that it exported before.
 import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers, withChecksPending, readMergedPrs,
   readElsewherePrs } from "../work-gate.mjs";
+import { familyNumber } from "../arm-pr.mjs";
 import { CLAIM_LABEL } from "../claim-labels.mjs";
 import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_STATE_FILE, nextStallState,
-  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey } from "../claim-stall.mjs";
+  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders } from "../claim-stall.mjs";
 import { readAgents } from "../herdr-agents.mjs";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
 import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.mjs";
@@ -260,4 +261,19 @@ export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTi
   const anyClaimed = rows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
   return tick({ rows, claimedComments, openPrs: prs, mergedPrs: anyClaimed ? merged() : null, ...(anyClaimed ? { elsewhere: elsewhere() } : {}),
     ...(onFacts === undefined ? {} : { onFacts }) });
+}
+
+/**
+ * #3535: A CLOSED ROW'S CLAIM, as orders -- the release, and for a `worker-<n>` caught mid-turn the interrupt that rides it. The read was made by the gate's
+ * follow-ups wave (`closedClaimsWhenWorkerListed`), with herdr's listing it was decided from, so this makes NO call: `null` is "not asked" (herdr listed no
+ * per-row instance) and yields nothing, and `{ rows: null }` is said as unread by `closedClaimOrders`, never read as "no closed claim".
+ * The per-row instance is `worker-<n>`, the roster's own family (`familyNumber`): a standing seat is released and never interrupted by this cause.
+ * @param {{ rows: import("../claim-stall.mjs").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null} closed
+ * @param {{ repo?: string, isInstance?: (session: string) => boolean, log?: (line: string) => void }} [deps]
+ * @returns {import("../claim-stall.mjs").StallOrder[]}
+ */
+export function closedClaimsNow(closed, { repo = REPO_CHECKOUT, isInstance = (session) => familyNumber(session) !== null,
+  log = (line) => process.stderr.write(line) } = {}) {
+  if (closed === null) return [];
+  return closedClaimOrders({ ...closed, repo, isInstance, log });
 }

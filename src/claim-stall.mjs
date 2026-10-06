@@ -26,7 +26,7 @@ import { dirname, resolve } from "node:path";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records the incident).
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
-import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 // #3076: how a person is told a pull request's number -- `#38`, or `agent-org#38` for another tracked repository. A pure leaf, like the imports above.
 import { subjectMention } from "./review-attribution.mjs";
 // #2747: THE SAME "IS THIS LISTING THE WHOLE ORG" CHECK `wake.mjs`'s REVIEWER TEARDOWN USES (#2465) -- a leaf, so
@@ -444,9 +444,9 @@ export function holderWorkAtRisk(io, { merged, ...home }) {
  *   | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean }
  *   | { kind: "idle-watch", since: number }
  *   | { kind: "vacating", since: number }
- *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone", lastMoveAt: number | null, idleMs: number | null,
+ *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed", lastMoveAt: number | null, idleMs: number | null,
  *       nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[],
- *       openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean }
+ *       openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean }
  *   | { kind: "holding", why: string, expected?: boolean }} Reading
  */
 
@@ -883,9 +883,10 @@ export function writeStallState(path, state, writer = writeFileSync) {
 const minutes = (ms) => Math.round(ms / MINUTE_MS);
 
 /**
- * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone", branch: string | null,
+ * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone" | "closed", branch: string | null,
  *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
- *   mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string }} ReleaseRequest
+ *   mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string,
+ *   interrupt?: boolean }} ReleaseRequest `interrupt` (#3535) is a closed row's per-row instance caught mid-turn: the performer stops it, with no prompt
  * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
  *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
  */
@@ -990,12 +991,13 @@ export function openPrMentions(release) {
 /**
  * The release, as an order `wake.mjs` PERFORMS. It carries every fact the performer needs and the prompt is only what a
  * log line says: a release is not a question, and no session is asked anything.
- * @param {ClaimFacts} facts @param {Extract<Reading, { kind: "release" }>} reading @returns {StallOrder}
+ * @param {Pick<ClaimFacts, "row" | "session" | "branch" | "worktree">} facts @param {Extract<Reading, { kind: "release" }>} reading @returns {StallOrder}
  */
 function releaseOrder(facts, reading) {
   /** @type {ReleaseRequest} */
   const release = { row: facts.row, session: facts.session, why: reading.why, branch: facts.branch, worktree: facts.worktree,
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
+    ...(reading.interrupt === true ? { interrupt: true } : {}),
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
     ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager",
       ...(reading.mergedPrRepoKey === undefined ? {} : { mergedPrRepoKey: reading.mergedPrRepoKey }),
@@ -1005,6 +1007,7 @@ function releaseOrder(facts, reading) {
       ...(reading.openPrRepoKeys === undefined ? {} : { openPrRepoKeys: reading.openPrRepoKeys }) }) };
   const said = reading.why === "stalled" && reading.idle ? `idle with no wait field and nothing moved for ${release.idleMinutes} minutes, and the nudge was not answered`
     : reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
+    : reading.why === "closed" ? `#${facts.row} is CLOSED${reading.interrupt === true ? ` while ${facts.session} is mid-turn on it, so the instance is interrupted` : ""}`
     : reading.why === "blocked" ? `blocked by ${(reading.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing`
     : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing${release.openPrs === undefined ? ""
       : `, and ${openPrMentions(release)} is still open (the row is held for product-manager, not returned to the pool)`}`
@@ -1036,6 +1039,74 @@ export function claimStalledOrders(readings, now) {
     } else if (reading.kind === "release") orders.push(releaseOrder(facts, reading));
   }
   return orders;
+}
+
+// --- A CLOSED ROW'S CLAIM (#3535) -----------------------------------------------------------------------------------------
+
+/**
+ * @typedef {{ number: number, title?: string, labels?: ({ name?: string } | string)[], comments?: RowComment[],
+ *   closedByPullRequestsReferences?: unknown[] }} ClosedClaimedRow a CLOSED row that still carries the claim label, as `gh issue list --state closed --label in-progress` returns it
+ */
+
+/**
+ * THE ORDERS FOR CLAIMS THAT OUTLIVED THEIR ROW: a row CLOSED (not planned, or superseded by hand) while it still carries `in-progress` and a
+ * `session:` label. Measured on #3530: closed 51 seconds after the claim, labels taken off by hand 14 min 8 s later, the instance still building.
+ *
+ * NOTHING ELSE CAN SEE ONE. `claimStallTick` evaluates the OPEN claimed rows, a closed row is in none of them, and `spareDecision` ends an
+ * instance only BETWEEN turns, which is right for a row that is open (forcing a delivery wipes the work it interrupts, #1966) and wrong for one that no longer exists.
+ *
+ * A ROW CLOSED BY ITS OWN PULL REQUEST IS NOT THIS RELEASE'S: GitHub's `closedByPullRequestsReferences` is non-empty, the merge's own sweep takes the labels
+ * off, and a claimant whose pull request merged is ended by the rule that says so. It is SAID on `log`, never silently skipped.
+ *
+ * THE INTERRUPT IS DECIDED HERE, FROM THE READING OF HERDR: the holder is a per-row instance (`isInstance`) AND `working`. A standing seat is
+ * released and never interrupted, and an idle instance has nothing to interrupt. `agents === null` (herdr could not be asked) is NOT "idle": the release
+ * still happens, because the row's state is what decides it, and it is said that the instance's state was unread.
+ *
+ * `rows === null` is a refused read -- reported as UNREAD, never as "no closed claim" and never as one found.
+ * @param {{ rows: ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null, repo: string,
+ *   isInstance: (session: string) => boolean, log?: (line: string) => void }} args
+ * @returns {StallOrder[]}
+ */
+export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => {} }) {
+  if (rows === null) {
+    log(`claim-stall: the closed rows still carrying a claim were NOT read this tick${agents === null ? " (herdr could not be asked, so whether a per-row instance exists is unknown)" : ""} -- a closed row's claim was NOT evaluated.\n`);
+    return [];
+  }
+  /** @type {StallOrder[]} */
+  const orders = [];
+  for (const row of rows) {
+    const order = closedClaimOrder(row, { agents, repo, isInstance, log });
+    if (order !== null) orders.push(order);
+  }
+  return orders;
+}
+
+/**
+ * ONE closed row's release order, or `null` with the reason said on `log`.
+ * @param {ClosedClaimedRow} row
+ * @param {{ agents: { label: string, status: string }[] | null, repo: string, isInstance: (session: string) => boolean, log: (line: string) => void }} ctx
+ * @returns {StallOrder | null}
+ */
+function closedClaimOrder(row, { agents, repo, isInstance, log }) {
+  if ((row.closedByPullRequestsReferences ?? []).length > 0) {
+    log(`claim-stall: #${row.number} was closed by its own pull request -- the merge's settle owns its labels, not a closed release.\n`);
+    return null;
+  }
+  const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l.name ?? "")));
+  const sessions = names.filter((n) => n.startsWith(SESSION_PREFIX));
+  if (sessions.length !== 1) {
+    log(`claim-stall: closed #${row.number} carries ${sessions.length} session labels -- its claim was not released.\n`);
+    return null;
+  }
+  const session = sessions[0].slice(SESSION_PREFIX.length);
+  const record = claimRecordOf(row.comments ?? []);
+  const worktree = record?.worktree ?? null;
+  const holder = agents?.find((a) => a.label === session);
+  if (agents === null) log(`claim-stall: closed #${row.number}: herdr's state of ${session} was not read, so no interrupt is ordered.\n`);
+  return releaseOrder({ row: row.number, session, branch: record?.branch ?? null,
+    worktree: worktree === null ? null : resolve(repo, worktree) },
+  { kind: "release", why: "closed", lastMoveAt: null, idleMs: null, nudgedAt: null,
+    ...(isInstance(session) && holder?.status === "working" ? { interrupt: true } : {}) });
 }
 
 // --- THE HOST EVENTS ------------------------------------------------------------------------------------------------
