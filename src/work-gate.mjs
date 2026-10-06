@@ -6976,6 +6976,19 @@ export function readTrackerLanes(run = defaultRun, batch = run === defaultRun ? 
 }
 
 /**
+ * (#3566, slice 6) THE TRACKER LANES AND THE OTHER REPOSITORIES' LISTS, ONE WAVE. `readTrackerLanes` and `readOtherScopes` each made their first reads
+ * together, but one after the other: a gate run with its spawns traced showed the tracker's three calls as one batch (1.7 s) and the other repositories'
+ * seven as the next (1.3 s), neither needing the other's answer. Asked here, the calls of both go out as one batch and cost the slowest. The readers
+ * are called with the rehearsal's own `run`, so they make no batch of their own, and only WHEN the waiting happens moves. It is asked AFTER the outage
+ * check, as slice 5 asks the tracker lanes (an outage tick must not ask more refused questions), and so `readPrs` and `readReadyRows`, which that check
+ * reads, stay outside it.
+ * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
+ */
+export function readLanesAfterOutageCheck(run = defaultRun, batch = run === defaultRun ? runBatch : undefined) {
+  return readWithFirstWaveTogether((read) => ({ ...readTrackerLanes(read), otherScopes: readOtherScopes(read) }), run, batch);
+}
+
+/**
  * (#3566, slice 5) THE READS THAT NEED THE OPEN ROWS IN HAND, ASKED TOGETHER: the claimed rows' comments, the label list that opens the closed-answer
  * read, and the recently-closed rows. Each stays CONDITIONAL on the rows exactly as before (`claimedRowCommentsWhenHeld`, `closingsWhenRowsCleared`
  * decide from `allOpen`, so a quiet tracker asks for nothing extra: the rehearsal asks only what the rows in hand ask for). The closed-answer
@@ -7008,8 +7021,8 @@ function main() {
   }
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
-  // #3566: this one, `needs:chairman` and the open rows (read below, as `openRowsRead`) are asked TOGETHER.
-  const { promotableRows, chairmanBlocked, openRowsRead } = readTrackerLanes();
+  // #3566: this one, `needs:chairman` and the open rows (`openRowsRead`) are asked TOGETHER, and with the other repositories' lists (slice 6).
+  const { promotableRows, chairmanBlocked, openRowsRead, otherScopes } = readLanesAfterOutageCheck(); // #3095: `otherScopes` is read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
   const unreadChairmanRows = chairmanReadsRefused(chairmanBlocked ?? []); // #3390: said, not skipped -- an unread row is not an unanswered one
   if (unreadChairmanRows.length > 0) process.stderr.write(`chairman-answered: could not read the timeline of ${unreadChairmanRows.map((n) => `#${n}`).join(", ")}; those rows are NOT checked this tick\n`);
   // ONE COALESCE PER REFUSED LANE, NAMED. `prs ?? []` was written three times and `readyRows ?? []` twice;
@@ -7017,7 +7030,6 @@ function main() {
   // a lane that could not be read, already reported as PARTIAL below, never a lane that is empty.
   const openPrs = prs ?? [];
   const rows = readyRows ?? [];
-  const otherScopes = readOtherScopes(); // #3095: read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
   const prFiles = comparablePrFiles([...openPrs, ...pullRequestsOfOthers(otherScopes)]);
   const drain = draining();
   // ONE READ, THREE CAUSES -- and the refusal is kept BESIDE the coalesced list rather than instead of

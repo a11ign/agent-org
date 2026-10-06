@@ -140,7 +140,7 @@ test("a refusal in wave 3 is that read's null, beside the others' answers", () =
 test("THE WIRING: main reads the tracker lanes and the follow-ups through the two waves, and no longer one by one", () => {
   const source = readFileSync(new URL("./work-gate.mjs", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("\nfunction main()"));
-  assert.match(main, /readTrackerLanes\(\)/);
+  assert.match(main, /readLanesAfterOutageCheck\(\)/); // slice 6: the tracker lanes ride the one wave with the other repositories' lists
   assert.match(main, /readOpenRowFollowUps\(allOpen\)/);
   assert.doesNotMatch(main, /\breadPromotableRows\(\)|\breadChairmanBlocked\(\)|\breadOpenRows\(\)|\bclaimedRowCommentsWhenHeld\(|\bclosingsWhenRowsCleared\(|\bclosedAnswerRows\(\)/);
 });

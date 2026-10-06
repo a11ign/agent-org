@@ -2215,8 +2215,8 @@ test("main hands the switch the UN-COALESCED read, not the `?? []` one", () => {
   const calls = [...source.matchAll(/deadMansSwitch\(\{[^}]*\}\)/g)].map(([text]) => text);
   const name = calls.map((c) => c.match(/openRows:\s*(\w+)/)?.[1]).find(Boolean) ?? "";
   assert.ok(name, `main must pass openRows into the switch; found ${JSON.stringify(calls)}`);
-  // #3566 slice 5: the raw read now arrives through `readTrackerLanes` (the three tracker lists asked together); it is still taken RAW, by name.
-  assert.match(source, new RegExp(`const \\{[^}]*\\b${name}\\b[^}]*\\} = readTrackerLanes\\(\\);`),
+  // #3566 slices 5 and 6: the raw read now arrives through `readLanesAfterOutageCheck` (the tracker lists and the other repositories' asked together); it is still taken RAW, by name.
+  assert.match(source, new RegExp(`const \\{[^}]*\\b${name}\\b[^}]*\\} = readLanesAfterOutageCheck\\(\\);`),
     `${name} must be the raw read -- a \`?? []\` here reads a gh outage as a healthy silent org (#1286)`);
   assert.match(source, /openRowsRead: readOpenRows\(read\),/,
     "the wave hands back readOpenRows' own answer, `null` for a refusal, never coalesced inside it");
