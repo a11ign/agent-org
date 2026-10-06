@@ -312,6 +312,70 @@ test("#2324: the open-PR list is read ONCE per tick however many rows are asked,
   assert.equal(none.calls.filter((c) => c === "pr list").length, 0, "no Region to compare, so the expensive read is skipped");
 });
 
+// --- #3566, slice 9b: THE WAKE'S OPEN-PR READ GOES OUT TOGETHER, AND ONLY WHEN IT IS THE REAL `gh` ---
+//
+// `spawnClaimability`'s default `run` is the wake's own `gh`, and only that one is handed the gate's batch: a test's fake `run` stands for `gh` and
+// must see its calls one at a time (every test above). So the overlap can only be SEEN through a real `gh` on PATH, which here is a stub that
+// stamps when each `pr list` started and ended. The control is the stamps, not the wall: sequential reads have the second start after the first end.
+const STUB_PAUSE_MS = 400;
+const STUB_GH = `#!${process.execPath}
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+const json = args[args.indexOf("--json") + 1];
+const send = (value) => process.stdout.write(JSON.stringify(value));
+if (args[0] === "issue" && json === "blockedBy") send({ blockedBy: { nodes: [] } });
+else if (args[0] === "issue" && json === "body") send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.mjs\\n\`\`\`\\n" });
+else if (args[0] === "pr" && args[1] === "list") {
+  const repo = args[args.indexOf("--repo") + 1];
+  const stamp = (what) => appendFileSync(process.env.STUB_LOG, what + " " + repo + " " + Date.now() + "\\n");
+  stamp("start");
+  setTimeout(() => {
+    stamp("end");
+    if (repo === process.env.STUB_REFUSE) { process.stderr.write("gh: HTTP 502\\n"); process.exit(1); }
+    const first = repo === process.env.STUB_SLOW;
+    send([{ number: first ? 2300 : 2301, changedFiles: 1, files: [{ path: "packages/agent-org/src/wake.mjs" }], body: "" }]);
+  }, repo === process.env.STUB_SLOW ? ${STUB_PAUSE_MS} : ${STUB_PAUSE_MS / 4});
+} else { process.stderr.write("unexpected gh call: " + args.join(" ")); process.exit(2); }
+`;
+
+/** Runs `spawnClaimability()` with its DEFAULT `run` against the stub; returns the verdict, what was said, and the stamped starts and ends. */
+function readThroughStubGh(refuse: string | null) {
+  const dir = mkdtempSync(join(tmpdir(), "wake-open-prs-"));
+  const saved = { PATH: process.env.PATH, STUB_LOG: process.env.STUB_LOG, STUB_SLOW: process.env.STUB_SLOW, STUB_REFUSE: process.env.STUB_REFUSE };
+  try {
+    writeFileSync(join(dir, "gh"), STUB_GH);
+    chmodSync(join(dir, "gh"), 0o755);
+    const repos = homeProjectDeclaration().code.map(({ repo }) => repo);
+    Object.assign(process.env, { PATH: `${dir}:${saved.PATH ?? ""}`, STUB_LOG: join(dir, "stamps"), STUB_SLOW: repos[0], STUB_REFUSE: refuse ?? "" });
+    const said: string[] = [];
+    const verdict = spawnClaimability({ warn: (line) => said.push(line) })({ causeKey: "engineers/ready-row-unclaimed/2131" });
+    const stamps = readFileSync(join(dir, "stamps"), "utf8").trim().split("\n").map((l) => l.split(" "))
+      .map(([what, repo, at]) => ({ what, repo, at: Number(at) }));
+    return { verdict, said, stamps, repos };
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#3566 (9b): the wake's open-pull-request reads of every declared repository are IN FLIGHT TOGETHER, and the answer is the one read one by one gave", () => {
+  const { verdict, stamps, repos } = readThroughStubGh(null);
+  assert.ok(repos.length >= 2, "POSITIVE CONTROL: with one repository there is nothing to overlap");
+  const starts = stamps.filter((s) => s.what === "start").map((s) => s.at);
+  const ends = stamps.filter((s) => s.what === "end").map((s) => s.at);
+  assert.equal(starts.length, repos.length, "every declared repository was read, once");
+  assert.ok(Math.max(...starts) < Math.min(...ends), `every read started before any finished (starts ${starts}, ends ${ends})`);
+  // The first repository's read finishes LAST, so a merge in the order the reads finish would name #2301; the repositories' own order names #2300.
+  assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
+});
+
+test("#3566 (9b): one refused repository still leaves the read INCONCLUSIVE with its own line, and the row is offered a spawn", () => {
+  const { verdict, said, repos } = readThroughStubGh("a11ign/agent-org");
+  assert.equal(verdict, null, "fail OPEN, as before");
+  assert.ok(said.some((line) => line.startsWith(`row-claim: could not read ${repos[1]}'s open pull requests`)), `the refused repository is named: ${said.join(" | ")}`);
+  assert.ok(said.some((line) => /^wake: could not read the open pull requests -- offering #2131 a spawn anyway \(B4 fails open\)\.$/.test(line)));
+});
+
 test("#2324: a lookup that CANNOT ASK offers the row and SAYS SO, as the claim's own checks do", () => {
   const gh = claimGh({ edge: "NONE", prFiles: null });
   const said: string[] = [];
