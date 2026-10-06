@@ -38,7 +38,20 @@ jobs:
           FALLBACK_TOKEN: ${{ github.token }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          # THE LABELS COME THROUGH `env:`, NEVER INTERPOLATED INTO THE SCRIPT: a label name is typed by whoever can label, and `${{ }}` inside `run:` is
+          # pasted into the shell as text.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # MIRRORS `HOLD_PREFIX` in src/pr-hold-state.mjs, which `armabilityOf` reads for `arm-pr.mjs` and `auto-arm-sweep.mjs`. This job runs on
+          # `actions/checkout` alone and must stay that way, so it cannot import the predicate; `auto-arm-workflow-honours-hold.test.ts` fails if the two drift.
+          HOLD_PREFIX: "hold:"
         run: |
+          # A HOLD IS A PREFIX, NOT A SUBSTRING (`on-hold` and `holdout` do not hold). A refusal is a DONE and exits 0, as in `arm-pr.mjs`: red here would
+          # read as a failed arm when the PR is exactly as it was asked to be (a11ign/a11ign#3867).
+          holders=$(printf '%s' "$PR_LABELS" | jq -r --arg prefix "$HOLD_PREFIX" '[.[] | select(startswith($prefix))] | join(", ")')
+          if [ -n "$holders" ]; then
+            echo "AUTO-ARM: not arming #${PULL_REQUEST} in ${REPOSITORY}: held by ${holders} (armabilityOf, src/pr-hold-state.mjs: a ${HOLD_PREFIX} label IS the hold)"
+            exit 0
+          fi
           if [ -n "$A11IGN_BOT_TOKEN" ]; then
             export GH_TOKEN="$A11IGN_BOT_TOKEN"
             token_name=A11IGN_BOT_TOKEN
