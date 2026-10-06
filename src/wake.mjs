@@ -40,7 +40,8 @@ import { createHash } from "node:crypto";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { profileFor, agentArgs } from "./worker-profile.mjs";
-import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf }
+import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
+  readWithFirstWaveTogether, runBatch }
   from "./work-gate.mjs";
 import { reviewerInstance, subjectMention } from "./review-attribution.mjs";
 // A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
@@ -5762,7 +5763,7 @@ export function spawnClaimability({ run = defaultGh,
     if (blocked) return `#${row} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`;
     const mine = lookupMyRegionFiles(row, { run });
     if (mine === null || mine.length === 0) return null;
-    openPrs ??= lookupOpenPrFiles({ run, log: warn });
+    openPrs ??= /** @type {ReturnType<typeof lookupOpenPrFiles>} */ (readWithFirstWaveTogether((r) => lookupOpenPrFiles({ run: r, log: warn }), run, run === defaultGh ? runBatch : undefined));
     if (openPrs === null) {
       warn(`wake: could not read the open pull requests -- offering #${row} a spawn anyway (B4 fails open).`);
       return null;
