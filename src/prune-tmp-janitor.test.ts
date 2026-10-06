@@ -252,7 +252,8 @@ test("#3849: --fixtures-only walks neither the review nor the scratchpad family"
 test("#3849: the CLI over a fixture root, dry by default and removing under --apply", () => {
   const root = fresh("cli");
   const dir = fixture(root, "watch-cli-cli1", { hoursOld: 6 });
-  const env = { ...process.env, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST ?? hostFile() };
+  // The CLI finds its project as this file's own imports did: `AGENT_ORG_HOST`, or the monorepo layout on a CI runner (which has no variable).
+  const env = process.env;
   const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 1/);
@@ -262,15 +263,6 @@ test("#3849: the CLI over a fixture root, dry by default and removing under --ap
   assert.match(applied.stdout, /removed 1 of 1/);
   assert.equal(existsSync(dir), false);
 });
-
-/** A host declaration the CLI's checkout resolution accepts, for a run with no `AGENT_ORG_HOST` of its own. */
-function hostFile(): string {
-  const checkout = fresh("checkout");
-  mkdirSync(join(checkout, ".agent-org"));
-  const declaration = join(checkout, ".agent-org", "project.json");
-  writeFileSync(declaration, readFileSync(fileURLToPath(new URL("../.agent-org/project.json", import.meta.url)), "utf8"));
-  return join(checkout, ".agent-org", "host.json");
-}
 
 // --- THE UNITS ------------------------------------------------------------------------------------------------------------------------
 
