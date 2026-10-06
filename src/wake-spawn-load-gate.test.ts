@@ -11,8 +11,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.mjs";
+import { CLEAR_SETTLE_MS, deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.mjs";
 import { startedPanes } from "./packaging/started-pane.ts";
+
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
+  settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
 
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
 const reading = (load: number, cores = 16) => () => ({ load, cores });
@@ -49,7 +54,7 @@ function recordingHerdr() {
     }
     return "{}";
   };
-  return { run, started: () => calls.filter((c) => c.includes("agent start")) };
+  return { run, started: () => calls.filter((c) => c.includes("agent start")), said: (verb: string) => calls.filter((c) => c.includes(verb)) };
 }
 
 const BUSY = agents({ ceo: "working" });
@@ -124,4 +129,13 @@ test("#3560: a free engineer taking a row is untouched at load 98", () => {
 
 test("#3560: MAX_SPAWNS_PER_TICK still reads 1", () => {
   assert.equal(MAX_SPAWNS_PER_TICK, 1);
+});
+
+test("#3549 THE WRAPPER DOES NOT WAIT THE SETTLE: a standing seat is still cleared, and the delivery returns in less than the settle it would have slept", () => {
+  const herdr = recordingHerdr();
+  const began = Date.now();
+  deliver([promptToCeo], agents({ ceo: "idle" }), [], { run: herdr.run, hostLoad: reading(98) });
+  const elapsed = Date.now() - began;
+  assert.equal(herdr.said("/clear").length, 1, "the order was preceded by a /clear (no clock on record: every unreadable fact is a clear), so there was a settle to skip");
+  assert.ok(elapsed < CLEAR_SETTLE_MS, `the wrapper returned in ${elapsed} ms; the real settle is ${CLEAR_SETTLE_MS} ms`);
 });

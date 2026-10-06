@@ -14,10 +14,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
+import { COMPACT_THRESHOLD_TOKENS, deliver as settlingDeliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
   endFinishedSpares, readSpareCycles, consecutiveClean, route }
   from "../wake.mjs";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
@@ -27,6 +27,13 @@ import { labelAfterCreate } from "../pr-open.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.mjs";
 import { startedPanes } from "./started-pane.ts";
+/** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
+const noSettle = () => {};
+/** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the
+ * host's real `~/.claude/projects`, so the verdict would depend on who has been working on the host (#3549). */
+const NO_TRANSCRIPTS = join(tmpdir(), "a11y-3549-no-transcripts");
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
+  settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle, contextRoot: NO_TRANSCRIPTS });
 
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -303,4 +310,38 @@ test("#2403 (3) POSITIVE CONTROL: a standing engineer and a number below the fam
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+/** #3549: a transcript under `$HOME/.claude/projects` that says `worker-12`'s last turn read more than the compact threshold. */
+function overThresholdHome(): string {
+  const home = mkdtempSync(join(tmpdir(), "a11y-3549-home-"));
+  mkdirSync(join(home, ".claude", "projects", "p"), { recursive: true });
+  writeFileSync(join(home, ".claude", "projects", "p", "t.jsonl"), `${[
+    JSON.stringify({ type: "user", message: { role: "user", content: "You are `worker-12`, an org session in this repository." } }),
+    JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5",
+      usage: { input_tokens: 5, cache_read_input_tokens: COMPACT_THRESHOLD_TOKENS + 1, cache_creation_input_tokens: 0, output_tokens: 12 } } }),
+  ].join("\n")}\n`);
+  return home;
+}
+
+/** Whether `deliverTo` made herdr see a `/compact` while `$HOME` holds that transcript. */
+function compactsFromHostTranscript(deliverTo: (run: (args: string[]) => string) => unknown): boolean {
+  const home = overThresholdHome();
+  const realHome = process.env.HOME;
+  process.env.HOME = home;
+  const calls: string[] = [];
+  try {
+    deliverTo((args) => { calls.push(args.join(" ")); return "{}"; });
+  } finally {
+    process.env.HOME = realHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+  return calls.some((call) => call.includes("/compact"));
+}
+
+
+test("#3549 THE WRAPPER DOES NOT READ THE HOST'S TRANSCRIPTS: an over-threshold transcript under $HOME is not acted on, and IS through the default", () => {
+  assert.equal(compactsFromHostTranscript((run) => deliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-12": "idle" }), REAL_ROSTER, { run })), false, "the wrapper's empty root: nothing to compact");
+  assert.equal(compactsFromHostTranscript((run) => settlingDeliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-12": "idle" }), REAL_ROSTER, { run, sleep: noSettle })), true,
+    "POSITIVE CONTROL: the default root WOULD have read it, so the line above is the wrapper's doing and not an unreadable fixture");
 });
