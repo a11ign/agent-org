@@ -184,3 +184,85 @@ test("#3558 (h): a stale scope that is a LINK into the primary is unlinked, neve
     rmSync(w.dir, { recursive: true, force: true });
   }
 });
+
+// --- THE ROOT'S REGISTRY `@a11ign/*` (#3816) ---------------------------------------------------------------------------------------------
+//
+// Since the split `@a11ign/screenreader-fleet` and `@a11ign/toolchain` are the REGISTRY's: in the tick's checkout they are links into `.pnpm`, outside
+// `packages/`. The root linked third-party entries, skipped the `@a11ign` directory whole, and `removeStaleLinks` then deleted every entry of the tree's
+// scope that was not a workspace package, so a reviewer of a PR importing one died at ERR_MODULE_NOT_FOUND before its Acceptance ran (#3806, #3834).
+
+/** The root scope of the tick's checkout: `registry-pkg` is the store's, `ws-pkg` is its own workspace package, by the relative link pnpm writes. */
+function rootScopeWorld() {
+  const w = world();
+  writePackage(w.primary, "ws-pkg", "@a11ign/ws-pkg");
+  writePackage(w.tree, "ws-pkg", "@a11ign/ws-pkg");
+  writeFileSync(join(w.tree, "packages", "ws-pkg", "marker"), w.tree);
+  writeFileSync(join(w.primary, "packages", "ws-pkg", "marker"), w.primary);
+  const store = join(w.primary, "node_modules", ".pnpm", "@a11ign+registry-pkg@1.0.0", "node_modules", "@a11ign", "registry-pkg");
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(store, "marker"), "the store's");
+  mkdirSync(join(w.primary, "node_modules", "@a11ign"), { recursive: true });
+  symlinkSync("../.pnpm/@a11ign+registry-pkg@1.0.0/node_modules/@a11ign/registry-pkg", join(w.primary, "node_modules", "@a11ign", "registry-pkg"));
+  symlinkSync("../../packages/ws-pkg", join(w.primary, "node_modules", "@a11ign", "ws-pkg"));
+  return { ...w, scope: join(w.tree, "node_modules", "@a11ign"), store };
+}
+
+/** Run `body` on a fresh root-scope world that has been linked once, and always remove it. */
+function rootScopeLinked(body: (w: ReturnType<typeof rootScopeWorld>) => void) {
+  const w = rootScopeWorld();
+  try {
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    body(w);
+  } finally {
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+}
+
+test("#3816 (a): the root's registry `@a11ign/*` entry is linked to the store, and a workspace one to the TREE's package", () => {
+  rootScopeLinked((w) => {
+    assert.equal(realpathSync(join(w.scope, "registry-pkg")), realpathSync(w.store), "the registry's entry leads where the tick's does");
+    assert.equal(readFileSync(join(w.scope, "registry-pkg", "marker"), "utf8"), "the store's");
+    assert.equal(readFileSync(join(w.scope, "ws-pkg", "marker"), "utf8"), w.tree, "a workspace entry is THIS tree's source, never the tick's (#2181)");
+    assert.equal(lstatSync(w.scope).isDirectory() && !lstatSync(w.scope).isSymbolicLink(), true, "a REAL scope directory: a link would be written through");
+  });
+});
+
+test("#3816 (b): a registry entry the tick's checkout no longer holds is unlinked, and a second run writes nothing", () => {
+  rootScopeLinked((w) => {
+    const writes: string[] = [];
+    const counting = { ...realFs,
+      symlinkSync: (...a: Parameters<typeof symlinkSync>) => { writes.push(`symlink ${a[1]}`); return symlinkSync(...a); },
+      rmSync: (...a: Parameters<typeof rmSync>) => { writes.push(`rm ${a[0]}`); return rmSync(...a); } };
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: counting as never }) ?? null, null);
+    assert.deepEqual(writes, [], "it runs on every head-changing push: a right tree is left alone");
+
+    assert.equal(existsSync(join(w.scope, "registry-pkg", "marker")), true, "POSITIVE CONTROL: it was linked, so its absence below is the removal and not never having been there");
+    rmSync(join(w.primary, "node_modules", "@a11ign", "registry-pkg"));
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    assert.equal(gone(join(w.scope, "registry-pkg")), true, "a dependency the tick no longer has is not left for the reviewed code to import");
+    assert.equal(existsSync(join(w.scope, "ws-pkg", "marker")), true, "CONTROL: the workspace link is still there");
+  });
+});
+
+test("#3816 (c): a package the tree declares wins over a registry entry of the same name", () => {
+  const w = rootScopeWorld();
+  try {
+    writePackage(w.tree, "registry-pkg", "@a11ign/registry-pkg");
+    writeFileSync(join(w.tree, "packages", "registry-pkg", "marker"), w.tree);
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    assert.equal(readFileSync(join(w.scope, "registry-pkg", "marker"), "utf8"), w.tree, "the PR moved it into the workspace: the tree's source is what is reviewed");
+  } finally {
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});
+
+test("#3816 (d): a tick checkout with no root `@a11ign` scope still links, and leaves the tree's scope with only its workspace packages", () => {
+  const w = world();
+  try {
+    assert.equal(existsSync(join(w.primary, "node_modules", "@a11ign")), false, "the fixture: no scope at the root");
+    assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: realFs as never }) ?? null, null);
+    assert.deepEqual(readdirSync(join(w.tree, "node_modules", "@a11ign")).sort(), ["docs", "evidence", "lab"]);
+  } finally {
+    rmSync(w.dir, { recursive: true, force: true });
+  }
+});

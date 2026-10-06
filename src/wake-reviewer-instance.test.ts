@@ -445,9 +445,11 @@ function depsWorld() {
   const dir = mkdtempSync(join(tmpdir(), "wake-rv-deps-"));
   const primary = join(dir, "primary");
   const tree = join(dir, "reviews", "reviewer-7");
-  for (const d of ["node_modules/left-pad", "node_modules/@a11ign/a", "node_modules/.bin", "node_modules/.cache/rstest", ".venv"]) {
+  for (const d of ["node_modules/left-pad", "node_modules/@a11ign", "packages/a", "node_modules/.bin", "node_modules/.cache/rstest", ".venv"]) {
     mkdirSync(join(primary, d), { recursive: true });
   }
+  // The live shape (#3816): pnpm links a workspace package into the root scope by a RELATIVE link into `packages/`, which is what tells it from the registry's.
+  symlinkSync("../../packages/a", join(primary, "node_modules", "@a11ign", "a"));
   writeFileSync(join(primary, "node_modules", ".package-lock.json"), "{}");
   for (const p of ["a", "b"]) writePackage(tree, p, `@a11ign/${p}`);
   return { dir, primary, tree, modules: join(tree, "node_modules") };
@@ -511,7 +513,7 @@ test("#2498 (1c): `linkReviewDependencies` builds the HYBRID `node_modules` -- t
     assert.equal(readlinkSync(join(w.modules, "@a11ign", "a")), join(w.tree, "packages", "a"),
       "to the review tree's source, which `assert-glob-not-empty --run` requires (#2378), and not the primary's `@a11ign/a`");
     assert.equal(readlinkSync(join(w.tree, ".venv")), join(w.primary, ".venv"), "and the Python leg's environment");
-    assert.equal(lstatSync(join(w.primary, "node_modules", "@a11ign", "a")).isDirectory(), true, "nothing was written into the primary");
+    assert.equal(readlinkSync(join(w.primary, "node_modules", "@a11ign", "a")), "../../packages/a", "nothing was written into the primary");
     assert.equal(existsSync(join(w.primary, "node_modules", ".cache", "rstest")), true);
   } finally {
     removeSync(w.dir, { recursive: true, force: true });
