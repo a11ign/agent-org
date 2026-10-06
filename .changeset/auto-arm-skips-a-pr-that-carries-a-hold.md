@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`auto-arm.yml`'s per-PR `arm` job no longer arms a pull request that carries a `hold:` label (a11ign/a11ign#3867). The job armed on the event alone, so a hold stopped `arm-pr.mjs` and `auto-arm-sweep.mjs` (both read `armabilityOf`) and did not stop the path that fires first: a11ign/agent-org#311 was marked ready with `hold:worker-3853` on it and armed eight seconds later. The step now reads the event's labels through `env:` (never interpolated into the script), prints one `AUTO-ARM: not arming` line naming the holders and `armabilityOf`, and exits 0, since a refusal is a done. The prefix is a `HOLD_PREFIX` env literal mirroring `pr-hold-state.mjs` (the job runs on `actions/checkout` alone and cannot import it), and `auto-arm-workflow-honours-hold.test.ts` runs the step's own script with a recording `gh` and fails if the two prefixes drift. A label that merely contains `hold` (`on-hold`, `holdout`) does not hold. Lifting a hold still arms nothing (`unlabeled` fires no arm).
