@@ -191,10 +191,40 @@ test("#3849: a run over an empty /tmp removes nothing and says so", () => {
   const report = run(root);
   assert.equal(report.removed.length, 0);
   assert.equal(report.candidates, 0);
-  assert.match(formatReport(report, false), /^nothing to remove: 0 classified path\(s\) found/);
+  assert.match(formatReport(report, false), /^tmp-entries: 0\nnothing to remove: 0 classified path\(s\) found/);
   // The control for "says so": a root WITH a removable fixture does not print that sentence.
   fixture(root, "ingest-state-one", { hoursOld: 5 });
   assert.doesNotMatch(formatReport(run(root), false), /nothing to remove/);
+});
+
+test("#3868: every report begins with ONE `tmp-entries: <N>` line, the count of the root's own entries, in a dry run, an applied run and an empty one", () => {
+  const root = fresh("count");
+  for (let i = 0; i < 7; i += 1) fixture(root, i < 3 ? `trace-weekly-${i}` : `unclassified-${i}`);
+  const first = (text: string) => text.split("\n")[0];
+  const dry = run(root, { dryRun: true });
+  assert.equal(first(formatReport(dry, true)), "tmp-entries: 7");
+  assert.equal(readdirSync(root).length, 7, "the dry run removed nothing");
+  assert.equal(first(formatReport(run(root), false)), "tmp-entries: 7", "an applied run reads the root as it began");
+  assert.equal(readdirSync(root).length, 4, "and removes the 3 it classified");
+  const next = formatReport(run(root), false);
+  assert.equal(first(next), "tmp-entries: 4", "the next run reads what the last one left");
+  assert.equal(next.match(/^tmp-entries:/gm)?.length, 1, "ONE line");
+  assert.match(next, /^tmp-entries: 4\nnothing to remove/, "the nothing-to-remove report carries it too");
+});
+
+test("#3868: a run over an empty directory reads `tmp-entries: 0`, and one that cannot be read says `unknown` rather than 0", () => {
+  assert.match(formatReport(run(fresh("zero")), false), /^tmp-entries: 0\n/);
+  assert.match(formatReport(run(join(BASE, "no-such-root")), false), /^tmp-entries: unknown\n/);
+});
+
+test("#3868: the CLI prints the count on its first line", () => {
+  const root = fresh("cli-count");
+  fixture(root, "watch-cli-cnt1", { hoursOld: 6 });
+  mkdirSync(join(root, "other"));
+  const env = { ...process.env, AGENT_ORG_HOST: HOST };
+  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.stdout.split("\n")[0], "tmp-entries: 2");
 });
 
 test("#3849: a pause follows every removal, and never fewer", () => {
