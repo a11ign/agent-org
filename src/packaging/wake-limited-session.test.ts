@@ -20,14 +20,18 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
+import { COMPACT_THRESHOLD_TOKENS, limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
   poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS }
   from "../wake.mjs";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
-const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
+/** A transcript root that holds nothing. A per-row instance's order reads the instance's own transcripts to decide `/compact` (#2688), and the default root
+ * is the host's real `~/.claude/projects` (3.5 GB on this one): seconds of reading per delivery, and a verdict that depends on who has been working on the host. */
+const NO_TRANSCRIPTS = join(tmpdir(), "a11y-3549-no-transcripts");
+const deliver: typeof settlingDeliver = (orders, agents, roster, deps) =>
+  settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle, contextRoot: NO_TRANSCRIPTS });
 const deliverHandoffs: typeof settlingDeliverHandoffs = (handoffs, agents, roster, deps) =>
-  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle });
+  settlingDeliverHandoffs(handoffs, agents, roster, { ...deps, sleep: noSettle, contextRoot: NO_TRANSCRIPTS });
 
 
 const HOUR = 3_600_000;
@@ -187,6 +191,35 @@ function outage(dir: string, home: string, now: number, seat = "worker-capture")
   }
   return { ...seen, herdr, ledger: existsSync(ledger) ? readFileSync(ledger, "utf8") : "" };
 }
+
+/** #3549: a transcript under `$HOME/.claude/projects` that says `label`'s last turn read more than the compact threshold. */
+function overThresholdHome(dir: string, label: string): string {
+  const projects = join(dir, ".claude", "projects", "p");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(join(projects, "t.jsonl"), `${[
+    JSON.stringify({ type: "user", message: { role: "user", content: `You are \`${label}\`, an org session in this repository.` } }),
+    JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5",
+      usage: { input_tokens: 5, cache_read_input_tokens: COMPACT_THRESHOLD_TOKENS + 1, cache_creation_input_tokens: 0, output_tokens: 12 } } }),
+  ].join("\n")}\n`);
+  return dir;
+}
+
+test("#3549 THE WRAPPERS DO NOT READ THE HOST'S TRANSCRIPTS: an over-threshold transcript under $HOME is not acted on, and IS when the root is the default", () => scratch((dir) => {
+  const realHome = process.env.HOME;
+  process.env.HOME = overThresholdHome(dir, "worker-2500");
+  try {
+    const sendTo = (send: typeof settlingDeliver, extra: object) => {
+      const herdr = herdrRun({});
+      send([orderTo("worker-2500")], [{ label: "worker-2500", status: "idle" }], [], { run: herdr.run, record: () => {}, ...extra });
+      return herdr.calls.some((call) => call.includes("/compact"));
+    };
+    assert.equal(sendTo(deliver, {}), false, "the wrapper's empty root: nothing to compact");
+    assert.equal(sendTo(settlingDeliver, { sleep: noSettle }), true,
+      "POSITIVE CONTROL: the default root WOULD have read it, so the line above is the wrapper's doing and not an unreadable fixture");
+  } finally {
+    process.env.HOME = realHome;
+  }
+}));
 
 test("SIX DELIVERIES to a HEALTHY session reach the cap -- the control the outage run is read against", () => scratch((dir) => {
   const home = homeWith(dir, [say("assistant", "Row claimed.", WRITTEN)]);
