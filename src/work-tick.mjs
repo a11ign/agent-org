@@ -27,6 +27,7 @@ import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
 import { clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, slowThresholdSeconds, slowTickOrders, tickMarkerPath,
@@ -328,14 +329,42 @@ function reportIfSlow(line, run) {
  */
 function finish(code, run) {
   if (code !== EXIT.CRASH) {
+    const at = Date.now();
     try {
-      writeCompletion(run.recordPath, { at: Date.now(), exit: code });
+      writeCompletion(run.recordPath, { at, exit: code });
     } catch (err) {
       process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
     }
+    writeHeartbeat(at);
     reportIfSlow(recordCost(code, run), run);
   }
   process.exit(code);
+}
+
+/** The one GitHub object the last completion lives in (a11ign/a11ign#3880): a variable of the project's tracker repository (the declaration's first), because it is ONE value overwritten in place, where a comment stream grows. */
+export const HEARTBEAT_VARIABLE = "GATE_LAST_TICK";
+const HEARTBEAT_TIMEOUT_MS = 30_000;
+
+/**
+ * THE COMPLETION, WHERE SOMETHING OFF THIS HOST CAN READ IT (#3851, incident #3846 1c). `work-tick-completion.json` is a file on a machine that may be
+ * frozen, so the control plane could not read it without an ssh into that machine. The value is the same epoch milliseconds the file holds, written
+ * AFTER the file because the file is what `incident:gate-crash` reads on this host, and only from `finish`, so it means what the file means: a tick
+ * that reached the end, not a tick that started.
+ *
+ * A write that fails is said on stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome
+ * that counts. The variable must already exist (`gh api -X POST repos/<repo>/actions/variables`); a missing one fails here and says so.
+ * @param {number} at epoch milliseconds @param {(file: string, args: string[], options: object) => unknown} [run] @returns {void}
+ */
+export function writeHeartbeat(at, run = execFileSync) {
+  let repo = "the tracker";
+  try {
+    repo = homeProjectDeclaration().tracker[0].repo;
+    run("gh", ["api", "-X", "PATCH", `repos/${repo}/actions/variables/${HEARTBEAT_VARIABLE}`, "-f", `value=${at}`],
+      { stdio: ["ignore", "ignore", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS });
+  } catch (err) {
+    const said = String(/** @type {any} */ (err)?.stderr ?? "").trim() || String(/** @type {any} */ (err)?.message ?? err);
+    process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${said}. A reader off this host will see the previous value.\n`);
+  }
 }
 
 /** The gate's line about GitHub's status page (`holdForIncidentNow`): all three states say the call's wall, `N ms`, and a read that never got one says `wall not read`. */
