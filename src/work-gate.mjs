@@ -139,8 +139,10 @@ import { withPrOwners } from "./work-gate/pr-owners.mjs";
 import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.mjs";
 // #2898: THE CLAIM-STALL TICK lives in `work-gate/claim-stall-tick.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { stallOrdersOrNone, claimStallsNow } from "./work-gate/claim-stall-tick.mjs";
-export { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.mjs";
+import { stallOrdersOrNone, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.mjs";
+import { readAgents } from "./herdr-agents.mjs";
+import { familyNumber } from "./arm-pr.mjs";
+export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.mjs";
 export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
   rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.mjs";
 export { withClosingRowOwners, withNamedOwners, withPrOwners, withEndedLabels } from "./work-gate/pr-owners.mjs";
@@ -507,6 +509,10 @@ export const GH_READS = Object.freeze({
     // #2936: ONE REST CALL on the core pool -- the 20 newest-updated closed pull requests, of which the latest `merged_at` is the last merge.
     "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
+  // #3535: ONE GRAPHQL CALL, ONLY WHEN HERDR LISTS AT LEAST ONE `worker-<n>`, for THOSE rows' numbers (one aliased `issue(number: n)` each, state, labels and comments), asked with the
+  // follow-ups' wave (`readOpenRowFollowUps`) so its wall time overlaps theirs. A row CLOSED while it still carries the claim is in none of the open lists above, and the instance
+  // holding it is only ever visible in herdr; an org running no per-row instance pays nothing. NOT `issue list --state closed --label in-progress`: 264 rows today, none a live claim.
+  conditionalOnListedWorker: "api graphql repository { issue(number: <each listed worker-<n>>) { state labels comments } } (readClosedClaimedRows -- a closed row's claim)",
   // #3390: TWO REST CALLS PER ROW LABELLED `needs:chairman` (its `labeled` events, and its comments), and NONE when nothing carries the label.
   conditionalOnChairmanLabelledRow: "api repos/{owner}/{repo}/issues/{n}/events and /comments (withChairmanEventTimes -- chairman-answered)",
   // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
@@ -3382,6 +3388,38 @@ function readNewestComments(numbers, run) {
     if (repository === null || typeof repository !== "object") return null;
     const read = Object.values(repository).filter((issue) => Array.isArray(/** @type {any} */ (issue)?.comments?.nodes));
     return new Map(read.map((/** @type {any} */ issue) => [Number(issue.number), issue.comments.nodes]));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #3535: THE LISTED WORKERS' OWN ROWS, in ONE call, of which the CLOSED ones still carrying the claim label are returned, with the comments the claim record is
+ * read from and the pull requests that closed each. Nothing else can see them: every other row read here is of OPEN rows.
+ *
+ * ASKED BY NUMBER AND NOT BY LABEL, AND THE REASON IS MEASURED (2026-10-06): `issue list --state closed --label in-progress` returned 264 rows, 178 closed by their own
+ * pull request and 86 by hand since 2026-09-23, none of them a live claim, and cost 5.6 s of wall with their comments. Acting on that list would release 264 rows
+ * that nobody holds. A per-row instance `worker-<n>` holds row `n`, so asking for the rows of the instances herdr LISTS is bounded by the live holders and
+ * is exactly the population whose instance can still be stopped.
+ *
+ * `null` FOR A REFUSAL, NEVER `[]` (#1286): an unread list is not "no closed claim", and `closedClaimOrders` says it was unread.
+ * @param {number[]} numbers the rows of the listed per-row instances @param {(args: string[]) => string} [run]
+ * @returns {import("./claim-stall.mjs").ClosedClaimedRow[] | null}
+ */
+export function readClosedClaimedRows(numbers, run = defaultRun) {
+  const [owner, name] = repoNow().split("/");
+  const row = "number state closedByPullRequestsReferences(first: 5) { nodes { number headRefName title } } labels(first: 50) { nodes { name } }"
+    + " comments(last: 100) { nodes { body createdAt author { login } } }";
+  const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${numbers.map((n) => `r${n}: issue(number: ${n}) { ${row} }`).join(" ")} } }`;
+  try {
+    const repository = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`]))?.data?.repository;
+    if (repository === null || typeof repository !== "object") return null;
+    /** @type {any[]} */
+    const issues = Object.values(repository);
+    return issues
+      .filter((issue) => issue !== null && issue.state === "CLOSED" && issue.labels.nodes.some((/** @type {{ name: string }} */ l) => l.name === CLAIM_LABEL))
+      .map((issue) => ({ number: issue.number, labels: issue.labels.nodes, comments: issue.comments.nodes,
+        closedByPullRequestsReferences: issue.closedByPullRequestsReferences.nodes }));
   } catch {
     return null;
   }
@@ -6732,6 +6770,16 @@ function claimStallsWithFacts(rows, claimedComments, prs, otherScopes) {
 }
 
 /**
+ * #3535: A CLOSED ROW'S CLAIM RIDES THE SAME ORDERS as the open claims': the release (and the interrupt) is one more `claim-stalled` order. The read was made with the
+ * follow-ups (`closedClaimsWhenWorkerListed`), so this costs no call; `claimFacts` is untouched, because it describes the OPEN claims the blocker-cleared reading is about.
+ * @param {ReturnType<typeof claimStallsWithFacts>} stalls @param {ReturnType<typeof closedClaimsWhenWorkerListed>} closedClaims
+ * @returns {ReturnType<typeof claimStallsWithFacts>}
+ */
+function withClosedClaims(stalls, closedClaims) {
+  return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims, { trackerRepo: repoNow() })] };
+}
+
+/**
  * The open pull requests whose required check has settled red AND which `pr-checks-failing` is already ordering this tick, as
  * `org-health.mjs` reads them. THE ORDERS ARE CONSUMED RATHER THAN THE PREDICATE REPEATED: `failingChecksOrder` also excuses a
  * red made only of a superseded run, and a second copy of those exclusions is how a PR is called red by one cause and healthy by
@@ -7038,18 +7086,43 @@ export function readLanesAfterOutageCheck(run = defaultRun, batch = run === defa
 }
 
 /**
+ * #3535: A CLOSED ROW'S CLAIM, ASKED ONLY WHEN HERDR LISTS A PER-ROW INSTANCE, FOR THOSE INSTANCES' ROWS. The row that closed is in none of the open lists, and the thing
+ * to stop is a `worker-<n>` that only herdr can see. So herdr is read FIRST (a local spawn, once) and the `gh` call is made only when it lists one: a tick of an org
+ * running no instance pays no call, and the others pay one, asked inside the follow-ups' wave so its wall time overlaps theirs (`GH_READS.conditionalOnListedWorker`).
+ *
+ * THREE ANSWERS, NEVER TWO: `null` is NOT ASKED (herdr listed no instance), `{ rows: null }` is ASKED OR NEEDED AND UNREAD (the call was refused, or herdr could not
+ * be read, so whether an instance exists is unknown), and `{ rows }` is the closed rows read. The listing rides along because the interrupt is decided from it.
+ * @param {{ label: string, status: string }[] | null} agents herdr's own listing, or `null` when herdr could not be asked
+ * @param {(args: string[]) => string} [run]
+ * @returns {{ rows: import("./claim-stall.mjs").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null}
+ */
+export function closedClaimsWhenWorkerListed(agents, run = defaultRun) {
+  if (agents === null) return { rows: null, agents };
+  const numbers = agents.flatMap((a) => familyNumber(a.label) ?? []);
+  if (numbers.length === 0) return null;
+  return { rows: readClosedClaimedRows(numbers, run), agents };
+}
+
+/**
  * (#3566, slice 5) THE READS THAT NEED THE OPEN ROWS IN HAND, ASKED TOGETHER: the claimed rows' comments, the label list that opens the closed-answer
- * read, and the recently-closed rows. Each stays CONDITIONAL on the rows exactly as before (`claimedRowCommentsWhenHeld`, `closingsWhenRowsCleared`
+ * read, the recently-closed rows, and (#3535) the closed rows still carrying a claim. Each stays CONDITIONAL on the rows exactly as before (`claimedRowCommentsWhenHeld`, `closingsWhenRowsCleared`
  * decide from `allOpen`, so a quiet tracker asks for nothing extra: the rehearsal asks only what the rows in hand ask for). The closed-answer
  * read's two searches are built from its label list's answer, so only the label list joins the batch and the searches follow one at a time.
  * `null` is each read's own refusal (#1286), and `closedRows` is raw, for `closedAnswerRows` to say.
+ *
+ * `listWorkspaces` is herdr's listing, read ONCE and before the rehearsal (which runs `read` twice, so a spawn inside it would be two). It defaults to the live
+ * listing only for the live `gh`, as `batch` does: a test's `run` stands for `gh` alone and must not spawn `herdr`.
  * @param {any[]} allOpen @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
+ * @param {typeof readAgents | undefined} [listWorkspaces]
  */
-export function readOpenRowFollowUps(allOpen, run = defaultRun, batch = run === defaultRun ? runBatch : undefined) {
+export function readOpenRowFollowUps(allOpen, run = defaultRun, batch = run === defaultRun ? runBatch : undefined,
+  listWorkspaces = run === defaultRun ? readAgents : undefined) {
+  const agents = listWorkspaces === undefined ? [] : listWorkspaces();
   return readWithFirstWaveTogether((read) => ({
     claimedComments: claimedRowCommentsWhenHeld(allOpen, read),
     closedRows: readClosedAnswerRows(read),
     closings: closingsWhenRowsCleared(allOpen, read),
+    closedClaims: closedClaimsWhenWorkerListed(agents, read),
   }), run, batch);
 }
 
@@ -7086,7 +7159,7 @@ function main() {
   // there; the dead man's switch needs to tell "refused" from "empty", so it is handed the raw result.
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
   const allOpen = openRowsRead ?? [];
-  const { claimedComments, closedRows, closings } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
+  const { claimedComments, closedRows, closings, closedClaims } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches();
@@ -7108,7 +7181,7 @@ function main() {
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
     claimedComments: claimedComments ?? [],
     // #2470: the SAME comments, read once, and the raw `null` kept for the reader that must tell "refused" from "none".
-    ...claimStallsWithFacts(openRowsRead, claimedComments, prs, otherScopes), // #3451: the orders AND the facts they were built from
+    ...withClosedClaims(claimStallsWithFacts(openRowsRead, claimedComments, prs, otherScopes), closedClaims), // #3451: the orders AND the facts they were built from
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.

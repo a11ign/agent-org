@@ -1148,6 +1148,7 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
       return JSON.stringify({ labels: (o.labels ?? ["in-progress", "session:worker-7"]).map((name) => ({ name })) });
     },
     cycle: (c) => { cycles.push(c); }, dropInstance: (r: string) => { dropped.push(r); return { spawnedAt: 1, rows: [2407] }; },
+    keepInstance: (_r: string, row: number) => ({ spawnedAt: 1, rows: [row] }),
     remember: (row: number, k: unknown) => { if (k === null) delete kept[row]; else kept[row] = k; },
   };
   const decline = () => execs.find((e) => ROW_CLAIM_MJS.test(e.args[0] ?? "") && e.args[1] === "decline");
