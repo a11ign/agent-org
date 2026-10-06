@@ -72,9 +72,9 @@ const host = () => {
 test("#3466: a `gh api graphql` call appends ONE line naming account, resource, cost, status and the CALLER", () => {
   const h = host();
   try {
-    const caller = join(h.root, "fake-caller.sh");
-    writeFileSync(caller, `#!/bin/sh\nsh "${WRAPPER}" api graphql -f query='{rateLimit{cost}}'\n`);
-    const r = spawnSync("sh", [caller], { encoding: "utf8", env: h.env({ HERDR_WORKSPACE_ID: "w3" }) });
+    writeFileSync(join(h.root, "fake-caller.sh"), `#!/bin/sh\nsh "${WRAPPER}" api graphql -f query='{rateLimit{cost}}'\n`);
+    // A SHORT path, from inside its directory: the ledger keeps the first 160 characters of the parent's cmdline, so an absolute path under a long TMPDIR would cut the script's name away.
+    const r = spawnSync("sh", ["fake-caller.sh"], { cwd: h.root, encoding: "utf8", env: h.env({ HERDR_WORKSPACE_ID: "w3" }) });
     assert.equal(r.stdout, `args=api graphql -f query={rateLimit{cost}}\n${GRAPHQL_BODY}`, "POSITIVE CONTROL: the stub ran and its output came through");
     assert.equal(h.lines().length, 1, "one call, one line");
     const entry = parseLine(h.lines()[0]);
