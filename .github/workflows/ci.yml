@@ -116,7 +116,8 @@ jobs:
           rstest=node_modules/.bin/rstest
           config=packages/agent-org/scripts/rstest/rstest.config.mjs # in-project
           unconverted=$(node -e 'import(process.argv[1]).then((m) => console.log(m.NOT_YET_CONVERTED.join("\n")))' "$PWD/$config" | sort)
-          converted=$($rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
+          # NO_COLOR: with CI set rstest colours the list even into a pipe (the path's directory dim, the name cyan), and an escape code in front of `src/` matches nothing.
+          converted=$(NO_COLOR=1 $rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
           ondisk=$(cd packages/agent-org && find src -name '*.test.ts' -o -name '*.test.mjs' | sort) # in-project
           echo "on disk: $(echo "$ondisk" | wc -l); rstest: $(echo "$converted" | wc -l); node --test (NOT_YET_CONVERTED): $(echo "$unconverted" | wc -l)"
           missing=$(comm -23 <(echo "$ondisk") <(printf '%s\n%s\n' "$converted" "$unconverted" | sort -u))
