@@ -3408,7 +3408,7 @@ function readNewestComments(numbers, run) {
  */
 export function readClosedClaimedRows(numbers, run = defaultRun) {
   const [owner, name] = repoNow().split("/");
-  const row = "number state closedByPullRequestsReferences(first: 5) { nodes { number } } labels(first: 50) { nodes { name } }"
+  const row = "number state closedByPullRequestsReferences(first: 5) { nodes { number headRefName title } } labels(first: 50) { nodes { name } }"
     + " comments(last: 100) { nodes { body createdAt author { login } } }";
   const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${numbers.map((n) => `r${n}: issue(number: ${n}) { ${row} }`).join(" ")} } }`;
   try {
@@ -6776,7 +6776,7 @@ function claimStallsWithFacts(rows, claimedComments, prs, otherScopes) {
  * @returns {ReturnType<typeof claimStallsWithFacts>}
  */
 function withClosedClaims(stalls, closedClaims) {
-  return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims)] };
+  return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims, { trackerRepo: repoNow() })] };
 }
 
 /**

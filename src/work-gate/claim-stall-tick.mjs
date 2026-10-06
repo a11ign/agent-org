@@ -269,11 +269,11 @@ export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTi
  * per-row instance) and yields nothing, and `{ rows: null }` is said as unread by `closedClaimOrders`, never read as "no closed claim".
  * The per-row instance is `worker-<n>`, the roster's own family (`familyNumber`): a standing seat is released and never interrupted by this cause.
  * @param {{ rows: import("../claim-stall.mjs").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null} closed
- * @param {{ repo?: string, isInstance?: (session: string) => boolean, log?: (line: string) => void }} [deps]
+ * @param {{ repo?: string, isInstance?: (session: string) => boolean, log?: (line: string) => void, trackerRepo?: string }} [deps]
  * @returns {import("../claim-stall.mjs").StallOrder[]}
  */
 export function closedClaimsNow(closed, { repo = REPO_CHECKOUT, isInstance = (session) => familyNumber(session) !== null,
-  log = (line) => process.stderr.write(line) } = {}) {
+  log = (line) => process.stderr.write(line), trackerRepo } = {}) {
   if (closed === null) return [];
-  return closedClaimOrders({ ...closed, repo, isInstance, log });
+  return closedClaimOrders({ ...closed, repo, isInstance, log, trackerRepo });
 }

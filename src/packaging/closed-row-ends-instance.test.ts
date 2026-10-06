@@ -103,10 +103,30 @@ test("#3535 herdr that cannot be asked is NOT idle: the release still happens, n
 });
 
 test("#3535 a row closed by its OWN merged pull request keeps the merged release it has: no closed order, and it is said", () => {
-  const byPr = closedRow("worker-3535", { closedByPullRequestsReferences: [{ number: 3709 }] });
+  const byPr = closedRow("worker-3535", { closedByPullRequestsReferences: [{ number: 313, headRefName: BRANCH, title: "A closed row ends its instance (a11ign/a11ign#3535)" }] });
   const { orders, log } = closedTick([byPr], [{ label: "worker-3535", status: "working" }]);
   assert.deepEqual(orders, []);
-  assert.match(log.join(""), /closed by its own pull request/);
+  assert.match(log.join(""), /closed by its own pull request \(#313\)/);
+});
+
+test("#3535 (review of #313) a row closed by SOMEBODY ELSE'S pull request still releases, and interrupts the working instance", () => {
+  const elsewhere = { number: 3709, headRefName: "agent/some-other-work-3600", title: "Another row's work (a11ign/a11ign#3600)" };
+  const byOther = closedRow("worker-3535", { closedByPullRequestsReferences: [elsewhere] });
+  const { orders, log } = closedTick([byOther], [{ label: "worker-3535", status: "working" }]);
+  assert.deepEqual([orders.length, orders[0]?.release?.why, orders[0]?.release?.interrupt], [1, "closed", true]);
+  assert.doesNotMatch(log.join(""), /closed by its own pull request/);
+});
+
+test("#3535 (review of #313) the claimant's pull request among several closing references is still its own: the merged release keeps it", () => {
+  const refs = [{ number: 3709, headRefName: "agent/some-other-work-3600", title: "x" }, { number: 313, headRefName: BRANCH, title: "y" }];
+  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: refs })], [{ label: "worker-3535", status: "working" }]).orders, []);
+  const bySuffix = [{ number: 5, headRefName: "agent/renamed-branch-3535", title: "z" }];
+  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: bySuffix })], null).orders, [], "the row-suffix rung, as the merged release reads it");
+});
+
+test("#3535 (review of #313) a closing reference that names no head and no title cannot be called the claimant's: the release happens", () => {
+  const bare = closedRow("worker-3535", { closedByPullRequestsReferences: [{ number: 3709 }] });
+  assert.equal(closedTick([bare], [{ label: "worker-3535", status: "working" }]).orders.length, 1);
 });
 
 // --- THE PERFORMER ----------------------------------------------------------------------------------------------------------
@@ -203,6 +223,7 @@ test("#3535 (5) CONTROL: herdr lists worker-<n>: the SAME read IS made, ONCE, fo
   assert.equal(asked.length, 1, "exactly one call for every listed instance's row");
   const query = asked[0].args.find((a) => a.startsWith("query="))!;
   assert.deepEqual([...query.matchAll(/issue\(number: (\d+)\)/g)].map((m) => m[1]), ["3535", "3600"], "the listed workers' rows, and no other row");
+  assert.match(query, /closedByPullRequestsReferences\([^)]*\) \{ nodes \{ number headRefName title \}/, "each closing pull request with the head and title that say whose it is");
   assert.deepEqual(got.closedClaims?.rows?.map((r) => r.number), [3535], "only the CLOSED row that still carries the claim: worker-3600's row is open");
   assert.deepEqual(got.closedClaims?.agents, agents, "with the listing the interrupt is decided from");
   assert.ok(batches.some((b) => b.some((c) => isClosedClaimRead(c.args))), "asked together with the other follow-ups, not after them");
@@ -219,7 +240,7 @@ test("#3535 (5) the shape the decision reads: labels, the claim record's comment
   const [row] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }], () => graphql(issue(3535, "CLOSED", CLAIM)))!.rows!;
   const { orders } = closedTick([row], [{ label: "worker-3535", status: "working" }]);
   assert.deepEqual([orders[0].release?.branch, orders[0].release?.interrupt], [BRANCH, true], "the claim record is found in the comments as the read returns them");
-  const byPr = { ...issue(3535, "CLOSED", CLAIM), closedByPullRequestsReferences: { nodes: [{ number: 3709 }] } };
+  const byPr = { ...issue(3535, "CLOSED", CLAIM), closedByPullRequestsReferences: { nodes: [{ number: 313, headRefName: BRANCH, title: "t" }] } };
   const [merged] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }], () => graphql(byPr))!.rows!;
   assert.deepEqual(closedTick([merged], [{ label: "worker-3535", status: "working" }]).orders, [], "a row closed by its own pull request is left to the merged release");
 });
@@ -243,5 +264,5 @@ test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders:
   const main = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
   assert.match(main, /const \{[^}]*\bclosedClaims\b[^}]*\} = readOpenRowFollowUps\(allOpen\)/, "read in the follow-ups' wave");
   assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes\), closedClaims\)/, "and handed to the orders");
-  assert.match(main, /\.\.\.closedClaimsNow\(closedClaims\)/, "which turns them into orders beside the open claims' own");
+  assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\) \}\)/, "which turns them into orders beside the open claims' own");
 });

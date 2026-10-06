@@ -1044,8 +1044,9 @@ export function claimStalledOrders(readings, now) {
 // --- A CLOSED ROW'S CLAIM (#3535) -----------------------------------------------------------------------------------------
 
 /**
+ * @typedef {{ number: number, headRefName?: string, title?: string }} ClosingPr a pull request GitHub says closed the row: ANY of them, in any tracked repository
  * @typedef {{ number: number, title?: string, labels?: ({ name?: string } | string)[], comments?: RowComment[],
- *   closedByPullRequestsReferences?: unknown[] }} ClosedClaimedRow a CLOSED row that still carries the claim label, as `gh issue list --state closed --label in-progress` returns it
+ *   closedByPullRequestsReferences?: ClosingPr[] }} ClosedClaimedRow a CLOSED row that still carries the claim label, as `gh issue list --state closed --label in-progress` returns it
  */
 
 /**
@@ -1055,8 +1056,10 @@ export function claimStalledOrders(readings, now) {
  * NOTHING ELSE CAN SEE ONE. `claimStallTick` evaluates the OPEN claimed rows, a closed row is in none of them, and `spareDecision` ends an
  * instance only BETWEEN turns, which is right for a row that is open (forcing a delivery wipes the work it interrupts, #1966) and wrong for one that no longer exists.
  *
- * A ROW CLOSED BY ITS OWN PULL REQUEST IS NOT THIS RELEASE'S: GitHub's `closedByPullRequestsReferences` is non-empty, the merge's own sweep takes the labels
- * off, and a claimant whose pull request merged is ended by the rule that says so. It is SAID on `log`, never silently skipped.
+ * A ROW CLOSED BY ITS OWN PULL REQUEST IS NOT THIS RELEASE'S: one of `closedByPullRequestsReferences` is the CLAIMANT'S (`ownsPr`: the claimed branch, the row
+ * suffix or the title's reference, the same rungs the merged release uses), the merge's own sweep takes the labels off, and a claimant whose pull request merged is
+ * ended by the rule that says so. It is SAID on `log`, never silently skipped. A closing reference that is NOT the claimant's -- somebody else's pull request, in
+ * this repository or the other -- closed a row whose holder is still building, and that is exactly this release's case (review of #313, 2026-10-06).
  *
  * THE INTERRUPT IS DECIDED HERE, FROM THE READING OF HERDR: the holder is a per-row instance (`isInstance`) AND `working`. A standing seat is
  * released and never interrupted, and an idle instance has nothing to interrupt. `agents === null` (herdr could not be asked) is NOT "idle": the release
@@ -1064,10 +1067,10 @@ export function claimStalledOrders(readings, now) {
  *
  * `rows === null` is a refused read -- reported as UNREAD, never as "no closed claim" and never as one found.
  * @param {{ rows: ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null, repo: string,
- *   isInstance: (session: string) => boolean, log?: (line: string) => void }} args
+ *   isInstance: (session: string) => boolean, log?: (line: string) => void, trackerRepo?: string }} args
  * @returns {StallOrder[]}
  */
-export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => {} }) {
+export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => {}, trackerRepo }) {
   if (rows === null) {
     log(`claim-stall: the closed rows still carrying a claim were NOT read this tick${agents === null ? " (herdr could not be asked, so whether a per-row instance exists is unknown)" : ""} -- a closed row's claim was NOT evaluated.\n`);
     return [];
@@ -1075,7 +1078,7 @@ export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => 
   /** @type {StallOrder[]} */
   const orders = [];
   for (const row of rows) {
-    const order = closedClaimOrder(row, { agents, repo, isInstance, log });
+    const order = closedClaimOrder(row, { agents, repo, isInstance, log, trackerRepo });
     if (order !== null) orders.push(order);
   }
   return orders;
@@ -1084,14 +1087,10 @@ export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => 
 /**
  * ONE closed row's release order, or `null` with the reason said on `log`.
  * @param {ClosedClaimedRow} row
- * @param {{ agents: { label: string, status: string }[] | null, repo: string, isInstance: (session: string) => boolean, log: (line: string) => void }} ctx
+ * @param {{ agents: { label: string, status: string }[] | null, repo: string, isInstance: (session: string) => boolean, log: (line: string) => void, trackerRepo?: string }} ctx
  * @returns {StallOrder | null}
  */
-function closedClaimOrder(row, { agents, repo, isInstance, log }) {
-  if ((row.closedByPullRequestsReferences ?? []).length > 0) {
-    log(`claim-stall: #${row.number} was closed by its own pull request -- the merge's settle owns its labels, not a closed release.\n`);
-    return null;
-  }
+function closedClaimOrder(row, { agents, repo, isInstance, log, trackerRepo }) {
   const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l.name ?? "")));
   const sessions = names.filter((n) => n.startsWith(SESSION_PREFIX));
   if (sessions.length !== 1) {
@@ -1100,6 +1099,12 @@ function closedClaimOrder(row, { agents, repo, isInstance, log }) {
   }
   const session = sessions[0].slice(SESSION_PREFIX.length);
   const record = claimRecordOf(row.comments ?? []);
+  const claimant = { row: row.number, branch: record?.branch ?? null, session, ...(trackerRepo === undefined ? {} : { trackerRepo }) };
+  const own = (row.closedByPullRequestsReferences ?? []).find((pr) => ownsPr(claimant, pr) !== null);
+  if (own !== undefined) {
+    log(`claim-stall: #${row.number} was closed by its own pull request (#${own.number}) -- the merge's settle owns its labels, not a closed release.\n`);
+    return null;
+  }
   const worktree = record?.worktree ?? null;
   const holder = agents?.find((a) => a.label === session);
   if (agents === null) log(`claim-stall: closed #${row.number}: herdr's state of ${session} was not read, so no interrupt is ordered.\n`);
