@@ -29,7 +29,7 @@ const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = MS_PER_SECOND * SECONDS_PER_MINUTE;
 const MINUTES_PER_HOUR = 60;
 const GIT_TIMEOUT_MS = 30_000;
-/** A merge_group run's log is read whole: measured 2026-10-06, 5.0 MB (49,410 lines) for `a11ign/a11ign`, where `execFileSync`'s default 1 MiB ended the read in `ENOBUFS` and the reading in UNREAD. Read once per run, then memoised. */
+/** A merge_group run's log is read whole: measured 2026-10-06, 5.0 MB (49,410 lines) for the host repository, where `execFileSync`'s default 1 MiB ended the read in `ENOBUFS` and the reading in UNREAD. Read once per run, then memoised. */
 const GH_MAX_BUFFER = 64 * 1024 * 1024;
 /** What a reader cannot say is printed before what it can: a cap must never push an unread runner off the page. */
 const PRINT_ORDER = ["unread", "unknown", "returned", "behind"];
@@ -318,7 +318,7 @@ export function memoFile(path) {
 
 /**
  * READING 3, THE LAST COMPLETED `ci.yml` RUN THAT GATES `main`: the newest completed `merge_group` run (a merge queue's run is the one that decides a merge, and it lives on a
- * `gh-readonly-queue/...` branch, so `branch=main` never returns it), else the newest completed run on `main` for a repository with no queue. #3746, measured 2026-10-06: `a11ign/a11ign`'s
+ * `gh-readonly-queue/...` branch, so `branch=main` never returns it), else the newest completed run on `main` for a repository with no queue. #3746, measured 2026-10-06: the host repository's
  * `ci.yml` last ran on a `push` to `main` on 2026-09-18 and on `merge_group` since, so the `branch=main` question answered that one failed run for ever and no event could change it.
  * Its version is what its commit's LOCKFILE names while the project pins the tool (the tarball's commit, read as the `version` in the tool's own `package.json` at that commit); once it
  * holds no entry, the tag the resolver step printed in the run's log ({@link RESOLVER_LINE}). A run that names no version is `version: null`, which the comparison reports UNKNOWN.
