@@ -4427,12 +4427,33 @@ export const CLEAR_TIMEOUT_MS = 30_000;
 export const CLEAR_SETTLE_MS = 5_000;
 
 /**
- * Block for `ms`. Synchronous on purpose: `deliver` is synchronous, and making it async to hold a
- * five-second pause would turn every caller and every test async for one `sleep`.
+ * THE SETTLE'S TEST CLOCK (#3769): a test that spawns the tick as a PROCESS cannot inject `sleep`, so each one paid the real
+ * {@link CLEAR_SETTLE_MS} (eleven tests, about 40 s of wall). The spawning test sets this variable to a number of milliseconds and
+ * the tick's blocking sleep waits that long instead.
+ *
+ * ABSENT IN PRODUCTION, AND IT CAN ONLY SHORTEN: no unit file names it (`wake-settle-test-clock.test.ts` reads them all), and a
+ * value above the real settle is ignored, so a stray export on a host cannot make the tick slower. The default is still the real
+ * five seconds, which the two `THE DEFAULT IS REAL` tests in `wake-clear-settle.test.ts` measure.
+ */
+export const SETTLE_TEST_CLOCK_ENV = "AGENT_ORG_TEST_SETTLE_MS";
+
+/**
+ * The wait to actually perform for a settle of `ms`: the test clock's value when one is set to a whole number of milliseconds,
+ * else `ms`. Anything that is not a plain non-negative integer is ignored, so a typo waits the real time rather than none.
+ * @param {number} ms @param {NodeJS.ProcessEnv} env
+ */
+export function settleWaitMs(ms, env = process.env) {
+  const set = env[SETTLE_TEST_CLOCK_ENV];
+  return set !== undefined && /^\d+$/.test(set) ? Math.min(ms, Number(set)) : ms;
+}
+
+/**
+ * Block for `ms` (or what {@link settleWaitMs} makes of it). Synchronous on purpose: `deliver` is synchronous, and making it async
+ * to hold a five-second pause would turn every caller and every test async for one `sleep`.
  * @param {number} ms
  */
 function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, settleWaitMs(ms));
 }
 
 /** `/clear`'s refusal is reported inside a longer sentence, so it quotes less of the failure. */

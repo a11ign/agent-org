@@ -21,7 +21,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -35,7 +35,7 @@ import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
 import { isLiveSession } from "../arm-pr.mjs";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
-  RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck }
+  RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck, SETTLE_TEST_CLOCK_ENV, settleWaitMs }
   from "../wake.mjs";
 import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom }
   from "../wake.mjs";
@@ -1850,7 +1850,7 @@ function runTick({ queued, stdin = "", herdr = "working" as string | null }:
     writeFileSync(handoffQueuePath(ledger), queued.map((h) => JSON.stringify(h)).join("\n") + "\n");
     return spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
       input: stdin, encoding: "utf8",
-      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -2091,7 +2091,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
     const ran = spawnSync(process.execPath, [entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
       input: `${order}\n`, encoding: "utf8",
-      env: { ...process.env, ...copyEnv, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, ...copyEnv, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
     let written = "";
     try { written = readFileSync(ledger, "utf8"); } catch { written = ""; }
@@ -2126,4 +2126,38 @@ test("#2324: THE TICK with the drain in force (no ledger line) refuses a standin
     `main must hand the router the drain; got ${ran.stderr}`);
   assert.equal(ran.status, 1);
   assert.equal(written, "", "the row stays offered");
+});
+
+// --- #3769: THE SPAWNED TICK SETTLES ON A TEST CLOCK, AND NOTHING IN PRODUCTION SETS IT ---
+
+const HOST_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
+const namesTheClock = (text: string) => text.includes(SETTLE_TEST_CLOCK_ENV);
+
+test("#3769 (1): the settle waits what it always did unless a test clock is set -- and the clock can only SHORTEN it", () => {
+  assert.equal(settleWaitMs(CLEAR_SETTLE_MS, {}), CLEAR_SETTLE_MS, "no variable: the real five seconds");
+  assert.equal(settleWaitMs(CLEAR_SETTLE_MS, { [SETTLE_TEST_CLOCK_ENV]: "0" }), 0);
+  assert.equal(settleWaitMs(CLEAR_SETTLE_MS, { [SETTLE_TEST_CLOCK_ENV]: "250" }), 250);
+  assert.equal(settleWaitMs(CLEAR_SETTLE_MS, { [SETTLE_TEST_CLOCK_ENV]: "60000" }), CLEAR_SETTLE_MS, "a stray large value never slows the tick");
+  for (const typo of ["", "fast", "-1", "1.5", "5s", " 0"]) {
+    assert.equal(settleWaitMs(CLEAR_SETTLE_MS, { [SETTLE_TEST_CLOCK_ENV]: typo }), CLEAR_SETTLE_MS, `"${typo}" is ignored, so a typo waits the real time`);
+  }
+});
+
+test("#3769 (2): in a PROCESS, the clock reaches the real blocking sleep: `clearContext` with no injected sleep returns at once", () => {
+  const wake = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+  const probe = `import(${JSON.stringify(wake)}).then(({ clearContext, CLEAR_SETTLE_MS }) => {`
+    + " const at = Date.now(); const refused = clearContext(() => '', 'probe');"
+    + " console.log(JSON.stringify({ refused, ms: Date.now() - at, real: CLEAR_SETTLE_MS })); });";
+  const ran = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8", env: { ...process.env, [SETTLE_TEST_CLOCK_ENV]: "0" } });
+  const { refused, ms, real } = JSON.parse(ran.stdout);
+  assert.equal(refused, null, `the command landed; got ${ran.stderr}`);
+  assert.ok(ms < real / 2, `with the clock at 0 the settle took ${ms} ms against a real ${real}`);
+});
+
+test("#3769 (3): nothing under the host's unit files sets the test clock (the positive control is the scan itself)", () => {
+  const files = readdirSync(HOST_DIR, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => entry.name);
+  assert.ok(files.some((name) => name === "work-tick.service.in"), `the scan must reach the tick's unit; it read ${files.join(", ")}`);
+  assert.ok(namesTheClock(`Environment=${SETTLE_TEST_CLOCK_ENV}=0`), "the marker recognises a unit that DID set it");
+  const offenders = files.filter((name) => namesTheClock(readFileSync(join(HOST_DIR, name), "utf8")));
+  assert.deepEqual(offenders, [], "a unit that sets the test clock would make the production tick settle in no time");
 });

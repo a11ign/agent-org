@@ -27,6 +27,7 @@ import { profileFor } from "./worker-profile.mjs";
 const BLOCK = 4096;
 const TOTAL = 1000;
 const GATE_ENTRY = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
+import { SETTLE_TEST_CLOCK_ENV } from "./wake.mjs";
 const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
 const STUB_MODE = 0o755;
 const READ_ONLY = 0o444;
@@ -251,7 +252,7 @@ function wakeProcess(lock: "none" | "wake-emitted" | "wake-ledger") {
     }
     writeFileSync(herdrLog, "");
     const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], { encoding: "utf8",
-      input: `${JSON.stringify(ORDER)}\n`, env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+      input: `${JSON.stringify(ORDER)}\n`, env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     const prompts = readFileSync(herdrLog, "utf8").split("\n").filter((l) => l.includes("agent prompt ceo") && !l.includes("/clear"));
     return { ran, prompts: prompts.length };
   } finally {
