@@ -317,10 +317,34 @@ function readsOnce(run) {
  * #883: EXPORTED, not module-private -- `row-file.mjs` needs the identical creation for the `lane:<owner>`
  * labels it derives, and a second copy of "create a label idempotently before adding it" is the same
  * fact-stated-twice shape #749 itself exists to name. Behaviour is unchanged for every existing caller.
- * @param {string[]} labels @param {{ run?: typeof defaultRun }} [deps]
+ * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
  */
-export function ensureLabelsExist(labels, { run = defaultRun } = {}) {
-  for (const label of labels) run("gh", ["label", "create", label, "--repo", REPO, "--force"]);
+export function ensureLabelsExist(labels, { run = defaultRun, batch } = {}) {
+  const create = (/** @type {string} */ label) => ["label", "create", label, "--repo", REPO, "--force"];
+  if (batch !== undefined && labels.length > 1 && createdTogether(labels.map(create), batch)) return;
+  for (const label of labels) run("gh", create(label));
+}
+
+/**
+ * (#3566, slice 9) THE CLAIM'S LABEL CREATES WAIT TOGETHER: a real claim made four `label create --force` one after another, 3,168 ms of its 15,662 ms.
+ * Each creates-or-updates one label to the same colour and description every time, so none reads another's result and each is idempotent. The commands
+ * are the sequential ones' own.
+ *
+ * A REFUSED CREATE, OR A BATCH THAT COULD NOT RUN, IS SAID AND THEN ASKED AGAIN ONE AT A TIME: `--force` makes the repeat harmless, and the repeat is what
+ * throws the error the claim always threw, before any label of the row is written. `false` here means "nothing is known to have landed, ask them one by one".
+ * @param {string[][]} argvs @param {typeof runBatch} batch
+ * @returns {boolean} whether every create was answered
+ */
+function createdTogether(argvs, batch) {
+  try {
+    for (const args of argvs) assertNoLeakInArgv("gh", args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
+    const answers = batch(argvs.map((args) => ({ args, repo: undefined })));
+    if (answers.every((answer) => !("failed" in answer))) return true;
+    process.stderr.write("NOTE: a label create was refused in the batch, so the creates run one by one\n");
+  } catch (error) {
+    process.stderr.write(`NOTE: the label creates could not be batched, so they run one by one: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  return false;
 }
 
 /**
@@ -893,13 +917,13 @@ export function claimLabelSetArgs(issueNumber, labels) {
  * for any path outside `/private/tmp`). The two facts are written as a claim COMMENT instead, by
  * `writeRowLabels` after it knows it won the race.
  * @param {number} issueNumber
- * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[] }} args
+ * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[], labelBatch?: typeof runBatch }} args
  *   `landed` gains the write once it has succeeded (#1399)
  * @returns {{ refusal: string | null }} a refusal means NOTHING was written
  */
-function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed }) {
+function applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch }) {
   const claimLabels = [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, ...extraLabels];
-  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run });
+  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run, batch: labelBatch });
   const fresh = fetchLabels(issueNumber, { run });
   const decision = decideClaim(fresh.labels, mySession);
   if (!decision.proceed) {
@@ -1002,8 +1026,9 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
  *           worktree?: string, blockedBy?: string, drained?: readonly string[],
  *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, persistent?: boolean,
- *           batch?: typeof runBatch }} deps
- *   `batch` (#3566, slice 4) answers the pre-write reads together: absent, it is the real batch ONLY when `run` is the real `gh` -- a test's `run`
+ *           batch?: typeof runBatch, labelBatch?: typeof runBatch }} deps
+ *   `labelBatch` (#3566, slice 9) asks the four label creates BEFORE the claiming write together, with the same default as `batch`; the write itself and
+ *   its reads either side stay one at a time. `batch` (#3566, slice 4) answers the pre-write reads together: absent, it is the real batch ONLY when `run` is the real `gh` -- a test's `run`
  *   stands for `gh` and sees its calls one at a time. `persistent` (#3415) is whether the roster marks the asking session a persistent seat -- see {@link persistentNow};
  *   absent is not one. `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
  *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
@@ -1014,7 +1039,8 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
 function writeRowLabels(issueNumber, mySession, extraLabels,
   { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
     instance = { spare: false, rows: [] }, adoptedBranch, persistent = false,
-    batch = run === defaultRun ? runBatch : undefined } = {}) {
+    batch = run === defaultRun ? runBatch : undefined,
+    labelBatch = run === defaultRun ? runBatch : undefined } = {}) {
   const before = fetchLabels(issueNumber, { run });
   const decision = decideClaim(before.labels, mySession);
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
@@ -1042,7 +1068,7 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
   // `LANDED_WRITE_EXIT`. The checks above wrote nothing, so a throw from them still propagates as it did.
   return withLandedWrites(issueNumber, landed, () => {
-    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed });
+    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch });
     if (refusal) return { claimed: false, reason: refusal };
     return completeClaim(issueNumber,
       { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed });
