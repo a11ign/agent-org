@@ -16,6 +16,10 @@ on:
   pull_request:
     branches: [main]
     types: [opened, ready_for_review, reopened, synchronize]
+  # `token-reach` only: `arm` is kept off both of these by its `if`.
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
@@ -23,8 +27,9 @@ permissions:
 
 jobs:
   arm:
+    # `github.event.pull_request` is null on a push or a dispatch, and `null == false` is TRUE in an Actions expression, so the event name is checked first.
     # A fork's pull request gets no secrets and a read-only token, so arming it would only fail; a fork's change is armed by a maintainer.
-    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Enable auto-merge (merge commit)
@@ -44,3 +49,42 @@ jobs:
           fi
           echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with ${token_name}"
           gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+
+  token-reach:
+    # DOES `A11IGN_BOT_TOKEN` REACH THIS REPOSITORY ON THE WRITE SIDE? (a11ign/a11ign#3710, #3751). The job's NAME is a contract: a11ign's
+    # `layer-repository-protection.test.ts` reads the latest run of a job named `token-reach` in the workflow its code-repository table names as this
+    # repository's `tokenProbe` (this file), and its `token` cell for this repository reads CANNOT_TELL until one has run on `main`.
+    #
+    # The `if`, `permissions` and `steps` below are a11ign/a11ign's `token-reach` (release.yml at e701fbdfd) copied byte for byte, so the two can be
+    # diffed; its `run:` block is the instrument, measured there against four credentials on all eight repositories (read that job's comment for the
+    # measurements: a ref read is NOT the probe, because every code repository is public).
+    #
+    # RUNS ON a push to `main` (every merge) or a `workflow_dispatch` (`gh workflow run auto-arm.yml --ref main`), never on a pull request, whose
+    # fork runs hold no secret and would fail the probe for the wrong reason.
+    #
+    # IT GATES NOTHING: no job `needs` it, and `arm` keeps its documented GITHUB_TOKEN fallback, because stopping every arm for a token problem is
+    # worse than the degradation this reports. A reading at a moment, per run, never a standing certificate.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Probe the token's reach on the write side, failing with a TOKEN-REACH line that names the cause
+        env:
+          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          say() { echo "::error::TOKEN-REACH $repo: $1"; exit 1; }
+          [ -n "$A11IGN_BOT_TOKEN" ] || say "A11IGN_BOT_TOKEN is not set, so nothing here can push, open or arm a pull request with it"
+          status() { curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$@" || true; }
+          basic=$(printf 'x-access-token:%s' "$A11IGN_BOT_TOKEN" | base64 -w0)
+          push=$(status -H "Authorization: Basic $basic" "https://github.com/$repo.git/info/refs?service=git-receive-pack")
+          pulls=$(status -X POST -H "Authorization: Bearer $A11IGN_BOT_TOKEN" -d '{}' "https://api.github.com/repos/$repo/pulls")
+          if [ "$push/$pulls" = "200/422" ]; then
+            echo "TOKEN-REACH $repo: ok (push service 200; POST /pulls 422, authorised, nothing created)"
+            exit 0
+          fi
+          for s in "$push" "$pulls"; do
+            case "$s" in 000|5??) say "CANNOT_TELL the probe could not ask (push $push, pulls $pulls); this is not a reading of the token" ;; esac
+          done
+          [ "$push" = 200 ] || say "the token cannot push here: the push service answered HTTP $push (401: rejected, expired or revoked; 403 or 404: it does not reach this repository, or only reads it)"
+          say "the token pushes but cannot open or arm pull requests here: POST /pulls answered HTTP $pulls where 422 was wanted (403: it lacks pull-requests: write)"
