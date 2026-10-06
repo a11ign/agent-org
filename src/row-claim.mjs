@@ -74,6 +74,7 @@ import { gitCommonDir, appendJsonl } from "./merge-guard.mjs";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.mjs";
+import { readWithFirstWaveTogether, runBatch } from "./work-gate.mjs"; // #3566, slice 4: `wake.mjs` above already loads it, and it never loads this file
 import { readJsonObject, writeJsonObject } from "./claim-stall.mjs";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
@@ -930,40 +931,26 @@ export function persistentReason(mySession, persistent) {
 }
 
 /**
- * @param {number} issueNumber
- * @param {string} mySession
- * @param {string[]} extraLabels labels written alongside `in-progress` + `session:<name>` -- `[]` for a
- *   dispatch, `[STARTED_LABEL]` for a claim/start
- * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
- *           worktree?: string, blockedBy?: string, drained?: readonly string[],
- *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, persistent?: boolean }} deps
- *   `persistent` (#3415) is whether the roster marks the asking session a persistent seat -- see {@link persistentNow};
- *   absent is not one. `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
- *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
- *   (#2407) is what the asking session's instance holds or has held -- see {@link instanceNow}, and the same
- *   convention: absent is a standing engineer with no rows.
- * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
+ * (#3566, slice 4) EVERYTHING A CLAIM CHECKS BEFORE IT WRITES -- the template fields, the row's own `blockedBy` edge and, for a new row, B2/B4 -- moved
+ * out of `writeRowLabels` unchanged so it can be run twice by `readWithFirstWaveTogether`: once as a rehearsal against empty answers, to see which reads
+ * it makes first, and once against the real ones. IT WRITES NOTHING AND SAYS NOTHING on the rehearsal (every answer is empty, so no pull request is
+ * listed to be reported), which is what makes the second run safe. `preWrite` is the claim's read-once `run`.
+ * @param {{ issueNumber: number, mySession: string, before: { labels: string[] }, drained: readonly string[],
+ *           instance: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, blockedBy?: string }} claim
+ * @param {typeof defaultRun} preWrite
+ * @returns {{ refusal: { claimed: false, reason: string } | null, blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1] }}
  */
-function writeRowLabels(issueNumber, mySession, extraLabels,
-  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
-    instance = { spare: false, rows: [] }, adoptedBranch, persistent = false } = {}) {
-  const before = fetchLabels(issueNumber, { run });
-  const decision = decideClaim(before.labels, mySession);
-  if (!decision.proceed) return { claimed: false, reason: decision.reason };
-  const notEngineer = persistentReason(mySession, persistent);
-  if (notEngineer) return { claimed: false, reason: notEngineer };
-
+function preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy }, preWrite) {
   // #707: THE TEMPLATE FIELDS, checked on EVERY claim attempt -- unlike the session-eligibility block
   // below, this is a property of the ROW, not of who is claiming it or when they last touched it, so it
   // is not skipped on a resumed (`alreadyMine`) claim: a row dispatched before this check shipped, or by
   // a hand-claim (#673) that bypassed row-claim entirely, must still be caught the first time row-claim
   // itself acts on it, which may well be a "resume".
-  const preWrite = readsOnce(run);
   const ghRunForBody = (/** @type {string[]} */ args) => preWrite("gh", args);
   const body = lookupIssueBody(issueNumber, { run: ghRunForBody });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
-    if (templateReason) return { claimed: false, reason: templateReason };
+    if (templateReason) return { refusal: { claimed: false, reason: templateReason }, blockedByNote: null };
   }
 
   // #1886, PR #1891 NOT CONVINCED (reviewer, 576a678b): THE ROW'S OWN `blockedBy` EDGE, checked on EVERY
@@ -978,7 +965,7 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   // not.
   const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody });
   const blockedReason = blockedByEdgeReason(blockedRow);
-  if (blockedReason) return { claimed: false, reason: blockedReason };
+  if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null };
 
   // B2 (#476) + B4 (#462): SESSION ELIGIBILITY, not row ownership -- `decideClaim` above already answered
   // "is this row somebody else's"; these ask "should THIS session start ANY new row right now", which is
@@ -992,18 +979,62 @@ function writeRowLabels(issueNumber, mySession, extraLabels,
   if (!alreadyMine) {
     // #2324: A NEW ROW, which is the only kind a drained role is refused -- resuming its own is not one.
     const drain = drainReason(mySession, drained);
-    if (drain) return { claimed: false, reason: drain };
+    if (drain) return { refusal: { claimed: false, reason: drain }, blockedByNote: null };
     // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
     const oneRow = oneRowReason(mySession, issueNumber, instance);
-    if (oneRow) return { claimed: false, reason: oneRow };
+    if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null };
     const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
         { ghRun: ghRunForBody });
-      if (!eligibility.proceed) return { claimed: false, reason: eligibility.reason };
+      if (!eligibility.proceed) return { refusal: { claimed: false, reason: eligibility.reason }, blockedByNote: null };
       blockedByNote = eligibility.blockedByNote;
     }
   }
+  return { refusal: null, blockedByNote };
+}
+
+/**
+ * @param {number} issueNumber
+ * @param {string} mySession
+ * @param {string[]} extraLabels labels written alongside `in-progress` + `session:<name>` -- `[]` for a
+ *   dispatch, `[STARTED_LABEL]` for a claim/start
+ * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, branch?: string,
+ *           worktree?: string, blockedBy?: string, drained?: readonly string[],
+ *           instance?: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, persistent?: boolean,
+ *           batch?: typeof runBatch }} deps
+ *   `batch` (#3566, slice 4) answers the pre-write reads together: absent, it is the real batch ONLY when `run` is the real `gh` -- a test's `run`
+ *   stands for `gh` and sees its calls one at a time. `persistent` (#3415) is whether the roster marks the asking session a persistent seat -- see {@link persistentNow};
+ *   absent is not one. `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
+ *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
+ *   (#2407) is what the asking session's instance holds or has held -- see {@link instanceNow}, and the same
+ *   convention: absent is a standing engineer with no rows.
+ * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
+ */
+function writeRowLabels(issueNumber, mySession, extraLabels,
+  { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
+    instance = { spare: false, rows: [] }, adoptedBranch, persistent = false,
+    batch = run === defaultRun ? runBatch : undefined } = {}) {
+  const before = fetchLabels(issueNumber, { run });
+  const decision = decideClaim(before.labels, mySession);
+  if (!decision.proceed) return { claimed: false, reason: decision.reason };
+  const notEngineer = persistentReason(mySession, persistent);
+  if (notEngineer) return { claimed: false, reason: notEngineer };
+
+  // #3566, slice 4: THE CHECKS BELOW ONLY READ, so the reads they can be seen to make FIRST go out together (`readWithFirstWaveTogether`, the gate's
+  // seam): the claim waited for the SUM of a dozen `gh` round trips, and now waits for the slowest. The commands, their parsing and every verdict are
+  // the checks' own; a read the rehearsal could not foresee (the claimed rows' Regions wait for a Region that names a file) runs on its own as before.
+  // NOTHING FROM THE FIRST WRITE ON IS PART OF THIS: the labels above and the labels `applyClaimLabels` reads again stay fresh and sequential.
+  const checked = readWithFirstWaveTogether(
+    (together) => preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy },
+      readsOnce((cmd, args) => {
+        if (cmd !== "gh") return run(cmd, args);
+        assertNoLeakInArgv(cmd, args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
+        return together(args);
+      })),
+    (args) => run("gh", args), batch);
+  if (checked.refusal) return checked.refusal;
+  const { blockedByNote } = checked;
 
   const sessionLabel = `${SESSION_PREFIX}${mySession}`;
   /** @type {string[]} */
