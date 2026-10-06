@@ -18,15 +18,47 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  DOOMED_PREFIX, FIXTURE_PREFIXES, FIXTURE_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS,
-  classifyEntry, doomedPaths, familyOf, fixturePaths, formatReport, pruneTmp as pruneTmpWithClaims, removeFromLeaves,
-} from "./prune-tmp.mjs";
-import { installTmpfiles, toolForm } from "./host-units.mjs";
-import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
-
 const BASE = mkdtempSync(join(tmpdir(), "prune-tmp-janitor-"));
 after(() => { rmSync(BASE, { recursive: true, force: true }); });
+
+/** The smallest declaration the tool's modules read at import: a project of nobody's, so nothing here is a11ign's (`installed-layout.test.ts`'s). */
+const DECLARATION = {
+  schema: 1,
+  tracker: [{ key: "", repo: "acme/widgets", board: { owner: "acme", number: 1 } }],
+  code: [{ key: "", repo: "acme/widgets" }],
+  units: { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] },
+  vocabulary: {
+    labels: { backlog: "backlog", needsChairman: "needs:chairman", outOfRelease: "out-of-release", blocked: "blocked" },
+    prefixes: { lane: "lane:", session: "session:", answer: "answer:" },
+    milestones: { roadToVersionOne: "Road to one", outOfRelease: "Out of release" },
+    lanesFile: "lanes.json",
+    templateFields: { acceptance: "Acceptance", closes: "Closes", fleet: "Fleet" },
+    fleetQuestion: "Does it need the fleet?",
+    resources: [],
+  },
+};
+
+/**
+ * A host file naming a project that DECLARES one, made here so no run of this file depends on the layout it sits in (a CI runner holds the tool
+ * inside the project; a standalone checkout holds no declaration at all) or on a variable the caller happened to export. #3849's review.
+ */
+const HOST = (() => {
+  const project = join(BASE, "project");
+  mkdirSync(join(project, ".agent-org"), { recursive: true });
+  writeFileSync(join(project, ".agent-org", "project.json"), JSON.stringify(DECLARATION));
+  const host = join(BASE, "host.json");
+  writeFileSync(host, JSON.stringify({ schema: 1, primary: "p", projects: [{ id: "p", checkout: project }] }));
+  return host;
+})();
+// The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
+if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
+const {
+  DOOMED_PREFIX, FIXTURE_PREFIXES, FIXTURE_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS,
+  classifyEntry, doomedPaths, familyOf, fixturePaths, formatReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
+} = await import("./prune-tmp.mjs");
+const { installTmpfiles, toolForm } = await import("./host-units.mjs");
+const { REMOVAL_LOG_ENV } = await import("./worktree-removal.mjs");
+
 // #2782: every removal writes a line, and a fixture must not write the host's log.
 process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");
 
@@ -252,8 +284,7 @@ test("#3849: --fixtures-only walks neither the review nor the scratchpad family"
 test("#3849: the CLI over a fixture root, dry by default and removing under --apply", () => {
   const root = fresh("cli");
   const dir = fixture(root, "watch-cli-cli1", { hoursOld: 6 });
-  // The CLI finds its project as this file's own imports did: `AGENT_ORG_HOST`, or the monorepo layout on a CI runner (which has no variable).
-  const env = process.env;
+  const env = { ...process.env, AGENT_ORG_HOST: HOST };
   const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 1/);
