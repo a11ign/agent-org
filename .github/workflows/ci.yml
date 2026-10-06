@@ -12,8 +12,12 @@ name: ci
 # suite reads the project's real tree (its rules files, its `.agent-org/`, its git history) in ways a fixture would have to reproduce.
 #
 # WHAT `gate` CANNOT PROVE (decision 8's limit): it proves the tool against ONE project, a11ign, at the ref named below -- not against any other
-# project's declaration -- and the project moves on its own, so a red `gate` can be the project's change and not the pull request's. Pin
-# PROJECT_REF to a commit to separate the two.
+# project's declaration -- and the project moves on its own, so a red `gate` would be the project's change and not the pull request's: #3097 turned every pull request
+# here red for about 50 minutes that way (a11ign/a11ign#3886). PROJECT_REF is therefore a FULL COMMIT SHA, which separates the two.
+#
+# BUMPING `PROJECT_REF` IS A PULL REQUEST, and the only way the project's changes reach this repository's CI: Dependabot cannot read a commit pin, so
+# `src/ci-pins-the-project.test.ts` holds it to a full commit sha and nothing else. The order is fixed: the project bumps nothing, this repository bumps the pin when
+# it wants to read a newer project, and a red `gate` is this repository's own. `control` and `lab` pin `CORE_REF` the same way.
 #
 # THE TESTS' SIBLINGS COME FROM THE PROJECT: the tool's tests were extracted from the project's lab package (`project/packages/lab/src/packaging/`), where they sat beside helper
 # modules and fixtures that were not extracted. The job copies those siblings (never a test) from the project beside the tests, without overwriting
@@ -32,8 +36,9 @@ name: ci
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
 env:
-  # The project the tool is tested against. `main` follows the project; a commit hash holds it still.
-  PROJECT_REF: main
+  # a11ign/a11ign at the commit the tool's suite was last run against (9915703d6, 2026-10-06, the last one before the run of agent-org `7592fcc` at 20:23Z). A sha and never a branch:
+  # a branch moves under a pull request that did not touch it.
+  PROJECT_REF: 9915703d61d1e8e56968afe8574bf0b24927c076
 
 on:
   pull_request:
