@@ -101,6 +101,38 @@ test("#3266: a seat mid-turn keeps its own limit and wording (#3029, fifteen min
   assert.equal(refusalReport([busy, ALLOWED], at(35)).undelivered.length, 2, "past the half hour both are overdue");
 });
 
+// --- a gone author's order, reached through `routeWithFallback` (a11ign/a11ign#3814) ----------------------------------------------
+
+const TRUNK_KEY = "worker-3776/trunk-red/pr-3795/eae7806c";
+const GONE = `no workspace labelled "worker-3776"; and the fallback "engineers": `;
+const GONE_ALLOWED = `${TRUNK_KEY}: ${GONE}no engineer is idle and allowed to claim (worker-3566=${spentSeen([3566])}, worker-3749=working)`;
+
+test("#3814 DONE-WHEN: a gone author's order refused only because the fallback pool is full is a capacity wait, under the same half hour", () => {
+  const { busy, faults } = splitRefusals([GONE_ALLOWED]);
+  assert.deepEqual(faults, [], "the journal's own line is not a fault on its first tick");
+  assert.equal(busy.length, 1, "POSITIVE: it is a busy entry, not merely absent from the faults");
+  assert.equal(busy[0].key, TRUNK_KEY);
+  assert.equal(busy[0].limitFor, "a free engineer seat");
+  assert.equal(busy[0].limitMs, 30 * MINUTE);
+  const report = refusalReport([GONE_ALLOWED], at(7));
+  assert.equal(report.summary, null);
+  assert.match(report.deferred[0], /^worker-3776\/trunk-red\/pr-3795\/eae7806c: no workspace labelled "worker-3776"; and the fallback "engineers": no engineer is idle .*\(waiting 7 min; retried next tick\)$/);
+  const over = refusalReport([GONE_ALLOWED], at(31));
+  assert.match(over.undelivered[0], /\(deferred 31 min, over the 30-minute limit for a free engineer seat\)$/);
+});
+
+test("#3814 POSITIVE CONTROL: the same line with a seat idle, a `; no spawn:` tail, or a first half that is not an absent author stays a fault", () => {
+  const faulty = [
+    `${GONE_ALLOWED.replace("worker-3749=working", "worker-3749=idle")}`,
+    `${GONE_ALLOWED}; no spawn: all 6 engineer roles hold a process (worker-3749=working) and this order names no row`,
+    `${TRUNK_KEY}: "worker-3776" is working; and the fallback "engineers": no engineer is idle (worker-3749=working)`,
+    `${TRUNK_KEY}: no workspace labelled "worker-3776"; and the fallback "product-manager": no engineer is idle (worker-3749=working)`,
+  ];
+  const { busy, faults } = splitRefusals(faulty);
+  assert.equal(busy.length, 0, "none of them is a capacity wait");
+  assert.deepEqual(faults, faulty);
+});
+
 // --- the retro reads the same journal --------------------------------------------------------------------------------
 
 test("#3266 DONE-WHEN 3: `idleStats` counts a `ready-row-unclaimed` offer in both forms, so the idle-minutes figure is the same on the same journal", () => {
