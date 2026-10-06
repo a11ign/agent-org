@@ -9,7 +9,7 @@
  * Mutations, each confirmed to break its own tests: delete the `ask.post(...)` line in `escalateStuck` and "writes the question" goes red;
  * swap it to after `target.place` and the ordering test goes red; delete the `reaskCleared` call and the re-ask tests go red; make
  * `labelRemoval` ignore `REASK_AFTER_MS` and "inside the hour" goes red; make it treat a `labeled` last event as a removal and "is ON the row"
- * goes red; drop the marker check and "once" goes red; drop `ask` from `escalationMemory` and the production-wiring test goes red.
+ * goes red; drop the marker check and "once" goes red; ignore a pending comment (`commentAwaitsLabel` always false) and both retry tests go red; drop `ask` from `escalationMemory` and the production-wiring test goes red.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,9 +24,16 @@ type Memory = NonNullable<Parameters<typeof escalateStuck>[3]>;
 type Event = [string, string, string];
 type Comment = [number, string, string, boolean];
 
-/** One escalation against a fake row: `events` and `comments` are what `gh api` would print, one JSON array per line. */
-function escalate(stuck: string[], { memory = {}, events = [], comments = [], state = "idle", now = T0, failPost = false }: {
-  memory?: Memory; events?: Event[]; comments?: Comment[]; state?: string; now?: number; failPost?: boolean } = {}) {
+/** What the fake row remembers between ticks: its label events, and its comments with the body each was posted with. */
+type Row = { events: Event[]; comments: { id: number; login: string; at: string; body: string; marked: boolean }[] };
+
+/** A row holding `events` and `comments` as `gh api` would have printed them (`marked` is what the fixture says; a posted body is checked for the marker). */
+const rowOf = (events: Event[] = [], comments: Comment[] = []): Row =>
+  ({ events, comments: comments.map(([id, login, at, marked]) => ({ id, login, at, body: "", marked })) });
+
+/** One escalation against a fake row, which `row` lets a second tick share: a posted comment lands on it and a label edit that succeeds adds a `labeled` event. */
+function escalate(stuck: string[], { memory = {}, row = rowOf(), state = "idle", now = T0, failPost = false, failLabel = false }: {
+  memory?: Memory; row?: Row; state?: string; now?: number; failPost?: boolean; failLabel?: boolean } = {}) {
   const calls: string[][] = [];
   const posted: { row: number; body: string }[] = [];
   const order: string[] = [];
@@ -34,18 +41,26 @@ function escalate(stuck: string[], { memory = {}, events = [], comments = [], st
   const log: string[] = [];
   const run = (args: string[]) => {
     calls.push(args);
-    if (args[0] === "issue") order.push(`label:${args.join(" ")}`);
-    if (args[0] === "api" && args.some((a) => a.endsWith("/events"))) return events.map((e) => JSON.stringify(e)).join("\n");
-    if (args[0] === "api" && args.some((a) => a.endsWith("/comments"))) return comments.map((c) => JSON.stringify(c)).join("\n");
+    if (args[0] === "issue") {
+      if (failLabel) throw new Error("HTTP 502 from gh (label)");
+      order.push(`label:${args.join(" ")}`);
+      row.events.push(["labeled", "a11ign-ai-workers", new Date(now).toISOString()]);
+    }
+    if (args[0] === "api" && args.some((a) => a.endsWith("/events"))) return row.events.map((e) => JSON.stringify(e)).join("\n");
+    if (args[0] === "api" && args.some((a) => a.endsWith("/comments"))) {
+      const marker = JSON.parse(/contains\((".*")\)/.exec(args.join(" "))![1]);
+      return row.comments.map((c) => JSON.stringify([c.id, c.login, c.at, c.marked || c.body.includes(marker)])).join("\n");
+    }
     return "";
   };
-  const ask = { post: (row: number, body: string) => {
+  const ask = { post: (rowNumber: number, body: string) => {
     if (failPost) throw new Error("HTTP 502 from gh");
-    posted.push({ row, body }); order.push("comment");
+    posted.push({ row: rowNumber, body }); order.push("comment");
+    row.comments.push({ id: 7000 + row.comments.length, login: "a11ign-ai-workers", at: new Date(now).toISOString(), body, marked: false });
   }, stateOf: () => state, now: () => now };
   const labelled = escalateStuck(stuck, run, (l: string) => log.push(l), { ask, record: (k: string) => recorded.push(k), ...memory });
   const edits = calls.filter((c) => c[0] === "issue" && c[1] === "edit");
-  return { calls, edits, posted, order, recorded, labelled, log: log.join("") };
+  return { calls, edits, posted, order, recorded, labelled, row, log: log.join("") };
 }
 
 test("an escalation writes the question: the label call AND exactly one comment naming the cause, the deliveries and that nobody acted", () => {
@@ -74,7 +89,7 @@ test("a comment that fails is a COULD NOT ESCALATE with no label and no record, 
 });
 
 test("a key already escalated makes neither the label call nor a comment (positive control above)", () => {
-  const { edits, posted, log } = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, events: [["labeled", "a11ign-ai-workers", "2026-10-06T17:49:31Z"]] });
+  const { edits, posted, log } = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: rowOf([["labeled", "a11ign-ai-workers", "2026-10-06T17:49:31Z"]]) });
   assert.deepEqual([edits, posted], [[], []]);
   assert.match(log, /ALREADY ESCALATED #3289/);
 });
@@ -97,7 +112,7 @@ const answer = (at: number): Comment => [4242, REMOVED_BY, new Date(at).toISOStr
 
 /** The same escalated key, `minutesAgo` after its label was removed, with `comments` on the row. */
 function reask(minutesAgo: number, comments: Comment[] = [answer(T0 - minutesAgo * MIN - 4_000)], events: Event[] = [labelled, removedAt(minutesAgo)]) {
-  return escalate(STUCK, { memory: { escalated: new Set([KEY]) }, events, comments });
+  return escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: rowOf(events, comments) });
 }
 
 test("a label removed an hour ago with the cause still true is asked again: one comment with the elapsed time and the earlier answer's id, and the label back", () => {
@@ -127,9 +142,10 @@ test("inside the hour a removed label is still an answer: nothing is written (th
   assert.equal(REASK_AFTER_MS, 60 * MIN);
 });
 
-test("asked ONCE: a comment carrying the marker already on the row means nothing more is written", () => {
-  const marked: Comment = [9, "a11ign-ai-workers", new Date(T0 - 30 * MIN).toISOString(), true];
-  const { posted, edits } = reask(61, [answer(T0 - 61 * MIN - 4_000), marked]);
+test("asked ONCE: after a re-ask and its label, a second removal finds the marker older than itself and writes nothing more", () => {
+  const marked: Comment = [9, "a11ign-ai-workers", new Date(T0 - 170 * MIN).toISOString(), true];
+  const relabelled: Event = ["labeled", "a11ign-ai-workers", new Date(T0 - 169 * MIN).toISOString()];
+  const { posted, edits } = reask(61, [answer(T0 - 61 * MIN - 4_000), marked], [labelled, removedAt(200), relabelled, removedAt(61)]);
   assert.deepEqual([posted, edits], [[], []]);
 });
 
@@ -141,9 +157,37 @@ test("a label that is ON the row (its last event is `labeled`) is an open questi
 });
 
 test("a re-ask whose comment fails is logged and not hidden, and no label is added", () => {
-  const { edits, log } = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, events: [labelled, removedAt(61)], failPost: true });
+  const { edits, log } = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: rowOf([labelled, removedAt(61)]), failPost: true });
   assert.deepEqual(edits, []);
   assert.match(log, /COULD NOT ASK AGAIN #3289/);
+});
+
+test("a label that fails AFTER the comment landed is retried as the label alone: one comment across both ticks, then the label and the record (review of #328)", () => {
+  const first = escalate(STUCK, { failLabel: true });
+  assert.equal(first.posted.length, 1, "POSITIVE CONTROL: the comment landed on the first tick");
+  assert.match(first.log, /COULD NOT ESCALATE #3289: HTTP 502 from gh \(label\)/);
+  assert.deepEqual(first.recorded, [], "not recorded, so the retry is possible");
+
+  const retry = escalate(STUCK, { row: first.row, now: T0 + 2 * MIN });
+  assert.deepEqual(retry.posted, [], "the question is already on the row");
+  assert.deepEqual(retry.edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(retry.recorded, [KEY]);
+});
+
+test("a new run of the same cause is NOT mistaken for that pending comment: a marker older than the label's last event is answered history", () => {
+  const first = escalate(STUCK);
+  const later = escalate(STUCK, { row: first.row, now: T0 + 5 * MIN });
+  assert.equal(later.posted.length, 1, "the earlier comment was followed by its label, so this run asks afresh");
+});
+
+test("a re-ask whose label fails is retried as the label alone, with no second comment", () => {
+  const first = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: rowOf([labelled, removedAt(61)], [answer(T0 - 61 * MIN - 4_000)]), failLabel: true });
+  assert.equal(first.posted.length, 1, "POSITIVE CONTROL: the re-ask comment landed");
+  assert.match(first.log, /COULD NOT ASK AGAIN #3289/);
+  const retry = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: first.row });
+  assert.deepEqual(retry.posted, []);
+  assert.deepEqual(retry.edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]]);
+  assert.match(retry.log, /ASKED AGAIN #3289/);
 });
 
 test("PRODUCTION WIRING: the memory the tick hands escalateStuck carries the asker, so a real escalation is never label-only", () => {

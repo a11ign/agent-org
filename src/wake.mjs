@@ -4337,7 +4337,7 @@ export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stder
       continue;
     }
     try {
-      if (ask !== null && target.row !== null) ask.post(target.row, escalationComment(key, ask.stateOf(sessionOfKey(key))));
+      if (ask !== null && target.row !== null) askOnce({ row: target.row, key }, { run, ask });
       const row = target.place(run);
       if (row !== null) labelled.push(row);
       log(`ESCALATED ${ref} -> ${ESCALATION_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
@@ -4405,13 +4405,16 @@ const sessionOfKey = (key) => key.split("/")[0];
 /** The comment's marker for a cause's re-ask: its presence on the row is how "once" is read back, with no ledger line. @param {string} key */
 const reaskMarker = (key) => `<!-- stuck-reask: ${key} -->`;
 
+/** The first escalation's marker: with {@link commentAwaitsLabel}, how a retry after a failed label knows the question is already on the row. @param {string} key */
+const escalationMarker = (key) => `<!-- stuck-escalation: ${key} -->`;
+
 /**
  * The comment an escalation leaves on its row, so that whoever reads `answer:ceo` finds what is asked there (#3874).
  * @param {string} key @param {string} state the target session's state at this moment
  */
 function escalationComment(key, state) {
   const session = sessionOfKey(key);
-  return `**Stuck: the tick is asking \`ceo\` about this row.** The cause \`${key}\` was delivered ${MAX_DELIVERIES} times and is still true, and `
+  return `${escalationMarker(key)}\n**Stuck: the tick is asking \`ceo\` about this row.** The cause \`${key}\` was delivered ${MAX_DELIVERIES} times and is still true, and `
     + `no session has acted on it. \`${session}\` is ${state} as this is written.\n\n`
     + `\`ceo\` can answer it: say what should happen to this cause, then remove \`${ESCALATION_LABEL}\`. If the cause is still true `
     + `${REASK_AFTER_MS / 60_000} minutes after that, the tick asks once more.\n`;
@@ -4432,12 +4435,30 @@ export function sessionStateOf(session, run = defaultRun) {
 }
 
 /**
+ * Write the escalation's question UNLESS it is already on the row, unanswered by a label (#3874, review of #328). The comment goes first so a label never stands
+ * bare, which means a label that then FAILS leaves a comment and no ledger record, and the next tick retries: without this it posted the same question again
+ * every tick the label kept failing. The row is the state, so the retry reads it: a marker comment newer than the label's last event is a question
+ * that was written and not yet labelled, and only the label is owed.
+ * @param {{ row: number, key: string }} cause @param {{ run: (args: string[]) => string, ask: Asker }} how
+ */
+function askOnce({ row, key }, { run, ask }) {
+  const waiting = commentAwaitsLabel(rowComments(row, escalationMarker(key), run), lastLabelEvent(row, run));
+  if (!waiting) ask.post(row, escalationComment(key, ask.stateOf(sessionOfKey(key))));
+}
+
+/**
+ * Is there a marked comment written after the label's last event (or with no label event at all)? That is a question posted whose label never landed.
+ * @param {{ at: number, marked: boolean }[]} comments @param {{ at: number } | null} last
+ */
+const commentAwaitsLabel = (comments, last) => comments.some((c) => c.marked && (last === null || c.at > last.at));
+
+/**
  * Ask once more about a cause whose `answer:ceo` was REMOVED and which is still true an hour later (#3874). Removal is an answer, so an
  * unchanged cause stays quiet for that hour; after it, the answer has not changed what the cause measures, and silence for good is the
  * defect (#3289: 30 `STUCK` lines, 31 `ALREADY ESCALATED`, nobody asked). The row is the state, so nothing here touches the ledger: the label's last
  * event says when it came off, and a comment carrying {@link reaskMarker} says it was already re-asked. Two reads, the second only once the
- * first says it is due. FAILS LOUD and is retried next tick. A comment that lands before a label that does not leaves the marker without the
- * label, which is logged here and is a person's to fix: a retry would post the comment twice.
+ * first says it is due. FAILS LOUD and is retried next tick. A comment that lands before a label that does not is retried as the LABEL alone
+ * ({@link commentAwaitsLabel}: the marker is newer than the removal), never a second comment.
  * @param {{ row: number, key: string }} cause @param {{ run: (args: string[]) => string, log: (line: string) => void, ask: Asker }} how
  * @returns {boolean} whether the cause was asked again
  */
@@ -4445,10 +4466,11 @@ function reaskCleared({ row, key }, { run, log, ask }) {
   try {
     const removed = labelRemoval(row, run);
     if (removed === null || ask.now() - removed.at < REASK_AFTER_MS) return false;
-    const comments = rowComments(row, key, run);
-    if (comments.some((c) => c.marked)) return false;
+    const comments = rowComments(row, reaskMarker(key), run);
+    const waiting = commentAwaitsLabel(comments, removed);
+    if (!waiting && comments.some((c) => c.marked)) return false;
     const answer = comments.filter((c) => c.login === removed.by && c.at <= removed.at).pop();
-    ask.post(row, reaskComment({ key, removed, answer, elapsedMs: ask.now() - removed.at, state: ask.stateOf(sessionOfKey(key)) }));
+    if (!waiting) ask.post(row, reaskComment({ key, removed, answer, elapsedMs: ask.now() - removed.at, state: ask.stateOf(sessionOfKey(key)) }));
     run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]);
     log(`ASKED AGAIN #${row} -> ${ESCALATION_LABEL} (${key}: label removed ${Math.round((ask.now() - removed.at) / 60_000)} minutes ago, cause still true)\n`);
     return true;
@@ -4463,20 +4485,29 @@ function reaskCleared({ row, key }, { run, log, ask }) {
  * @param {number} row @param {(args: string[]) => string} run @returns {{ at: number, by: string } | null}
  */
 function labelRemoval(row, run) {
-  const events = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/events`, "--jq",
-    `.[] | select(.label.name == ${JSON.stringify(ESCALATION_LABEL)}) | [.event, .actor.login, .created_at] | @json`]);
-  const last = events.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l)).pop();
-  return last === undefined || last[0] !== "unlabeled" ? null : { at: Date.parse(last[2]), by: String(last[1]) };
+  const last = lastLabelEvent(row, run);
+  return last === null || last.event !== "unlabeled" ? null : { at: last.at, by: last.by };
 }
 
 /**
- * Every comment on the row as `{ id, login, at, marked }`, `marked` being "carries the re-ask marker for `key`".
- * @param {number} row @param {string} key @param {(args: string[]) => string} run
+ * The escalation label's last event on the row, `null` when it never had one.
+ * @param {number} row @param {(args: string[]) => string} run @returns {{ event: string, at: number, by: string } | null}
+ */
+function lastLabelEvent(row, run) {
+  const events = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/events`, "--jq",
+    `.[] | select(.label.name == ${JSON.stringify(ESCALATION_LABEL)}) | [.event, .actor.login, .created_at] | @json`]);
+  const last = events.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l)).pop();
+  return last === undefined ? null : { event: String(last[0]), at: Date.parse(last[2]), by: String(last[1]) };
+}
+
+/**
+ * Every comment on the row as `{ id, login, at, marked }`, `marked` being "carries `marker`".
+ * @param {number} row @param {string} marker @param {(args: string[]) => string} run
  * @returns {{ id: number, login: string, at: number, marked: boolean }[]}
  */
-function rowComments(row, key, run) {
+function rowComments(row, marker, run) {
   const lines = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/comments`, "--jq",
-    `.[] | [.id, .user.login, .created_at, (.body | contains(${JSON.stringify(reaskMarker(key))}))] | @json`]);
+    `.[] | [.id, .user.login, .created_at, (.body | contains(${JSON.stringify(marker)}))] | @json`]);
   return lines.split("\n").filter((l) => l.trim() !== "").map((l) => {
     const [id, login, at, marked] = JSON.parse(l);
     return { id, login, at: Date.parse(at), marked };
