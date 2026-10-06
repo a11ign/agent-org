@@ -643,7 +643,7 @@ export const GH_READS = Object.freeze({
   // per-blocker read would make the tick's cost a function of how many rows are waiting.
   // #3892: ONE `pr list --head <branch> --state all` PER BRANCH on `origin` carrying an UNCLAIMED READY row's number -- none for a tick with no such branch,
   // which is the ordinary tick. `ls-remote` cannot say whether a branch's pull request was closed on purpose, and a bulk `--state closed` page would miss an old one.
-  conditionalOnBranchedReadyRows: "pr list --head <branch> --state all --limit 20 --json number,state (readBranchPrs -- a closed-unmerged branch is a replacement, not unshipped work)",
+  conditionalOnBranchedReadyRows: "pr list --head <branch> --state all --limit 100 --json number,state (readBranchPrs -- a closed-unmerged branch is a replacement, not unshipped work; a full page is refused)",
   conditionalOnClearedRows: "issue list --state closed --limit 100 --search sort:updated-desc --json number,closedAt,updatedAt"
     + " (readRecentlyClosed -- unclaimed-blocker-cleared's and blocker-cleared's backoff)",
   // #2356: FOUR MORE REST CALLS, paid ONLY by a tick that found `main` red -- the run's jobs, the recheck
@@ -728,6 +728,9 @@ export function readRowBranches(run = defaultSpawn) {
   }
 }
 
+/** How many pull requests one branch's list is asked for. A page that comes back this full may have been CUT, and `gh` cuts the OLDEST -- the ones a merge hides behind. */
+const BRANCH_PRS_LIMIT = 100;
+
 /**
  * #3892: EVERY PULL REQUEST EVER OPENED FROM THESE BRANCHES, one `gh pr list --head` each, so {@link branchesToReplace} can tell a branch whose pull request was
  * CLOSED ON PURPOSE from one no pull request carries. `ls-remote` cannot (#2031), and `--state all` is what makes a closed one visible at all: the tick's own
@@ -735,6 +738,10 @@ export function readRowBranches(run = defaultSpawn) {
  *
  * `null` FOR ONE REFUSED READ, NEVER `[]` (#1286): a branch whose list could not be read is not a branch with no pull request, and the whole answer is `null`
  * so no row is released on a guess -- each stays shelved exactly as before, which is what the absent answer already means.
+ *
+ * A FULL PAGE IS A REFUSED READ TOO. `gh` cuts the list at its limit, newest first, so a branch with more pull requests than that can lose an OLD MERGED one
+ * and read as closed-only: the page is then not the branch's history, and "every pull request is closed" was never established. A page with room left is the
+ * whole list (the rule {@link OPEN_PRS_FIRST_PAGE} reads the open list by).
  * @param {readonly { branch: string }[]} branches
  * @param {(args: string[]) => string} [run]
  * @returns {{ branch: string, number: number, state: string }[] | null}
@@ -743,8 +750,8 @@ export function readBranchPrs(branches, run = defaultRun) {
   const found = [];
   for (const { branch } of branches) {
     try {
-      const parsed = JSON.parse(run(["pr", "list", "--head", branch, "--state", "all", "--limit", "20", "--json", "number,state"]));
-      if (!Array.isArray(parsed)) return null;
+      const parsed = JSON.parse(run(["pr", "list", "--head", branch, "--state", "all", "--limit", String(BRANCH_PRS_LIMIT), "--json", "number,state"]));
+      if (!Array.isArray(parsed) || parsed.length >= BRANCH_PRS_LIMIT) return null;
       found.push(...parsed.map((/** @type {{ number: number, state: string }} */ pr) => ({ branch, number: pr.number, state: String(pr.state) })));
     } catch {
       return null;

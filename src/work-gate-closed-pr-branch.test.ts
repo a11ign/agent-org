@@ -138,6 +138,28 @@ test("readBranchPrs asks one `pr list --head <branch> --state all` per branch, a
   assert.equal(readBranchPrs([{ branch: BRANCH }], () => { throw new Error("rate limited"); }), null);
 });
 
+test("readBranchPrs refuses a FULL page: `gh` cuts the oldest, so a merged pull request can hide beyond the limit (#3892 review)", () => {
+  let limit = 0;
+  const page = (size: number) => (args: string[]) => {
+    limit = Number(args[args.indexOf("--limit") + 1]);
+    // newest first, as `gh` returns them: the cut-off merged one is the OLDEST and is not in the page
+    return JSON.stringify(Array.from({ length: size }, (_, i) => ({ number: 5000 - i, state: "CLOSED" })));
+  };
+  assert.equal(readBranchPrs([{ branch: BRANCH }], page(1))?.length, 1);
+  assert.ok(limit > 1, "the page limit is read off the call itself");
+  // positive control: one short of the limit is the whole list and is read
+  assert.equal(readBranchPrs([{ branch: BRANCH }], page(limit - 1))?.length, limit - 1);
+  assert.equal(readBranchPrs([{ branch: BRANCH }], page(limit)), null, "a page exactly at the limit may have been cut");
+  assert.equal(readBranchPrs([{ branch: BRANCH }, { branch: "agent/other-3835" }], page(limit)), null);
+});
+
+test("a full page leaves the row SHELVED through the tick's reader, not offered", () => {
+  const full = () => JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ number: 5000 - i, state: "CLOSED" })));
+  assert.equal(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH), full), null);
+  const ok = () => JSON.stringify([{ number: 3834, state: "CLOSED" }]);
+  assert.deepEqual(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH), ok), [pr(BRANCH, 3834, "CLOSED")]);
+});
+
 test("readBranchPrsOfUnclaimed asks only about branches of UNCLAIMED ready rows, and nothing when there are none", () => {
   const asked: string[][] = [];
   const run = (args: string[]) => { asked.push(args); return "[]"; };
