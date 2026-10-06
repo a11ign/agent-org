@@ -224,15 +224,48 @@ export function inRepo(repo, read) {
 /** The repository a literal-path read (`repos/<repo>/...`) asks about: the scoped one, else the checkout's own. */
 export const repoNow = () => activeRepo ?? REPO;
 
+/**
+ * THE MOST ONE `gh` MAY TAKE before the gate cuts it (#3737). Without a bound a `gh` that never returned held the whole tick until `TimeoutStartSec=600`
+ * killed it, and `systemctlRun` and `herdrRun` already carry one. The same 30 s as `wake.mjs`'s `defaultGh`, so a `gh` is cut at one time wherever it runs.
+ *
+ * DERIVED, NOT TYPED, AND THE LEDGER HAS NO DURATION COLUMN (`host/gh` writes a call's end second, no more), so the slowest single call is read as the
+ * longest gap between consecutive `work-gate.mjs` calls inside one run, which holds a call's time and the gate's own between calls, so it can only overstate.
+ * Measured 2026-10-06 over the workers' and leads' ledgers (1,396 gate calls, 17:22Z to 19:27Z and from 00:35Z): within a run the gaps ran 0 to 10 s, and two
+ * gaps (28 s, 42 s) cannot be told from the quiet between two runs. So 10 s is the slowest call the ledger shows, 42 s the most it could be, and 30 s is three
+ * times the first and under the gate's own 40.6 s (measured 2026-10-05) for all of its 17 `pr list` reads.
+ */
+export const GH_READ_TIMEOUT_MS = 30_000;
+
+/** The two words a `gh` call is named by in the ledger and in a line: `pr list`, `api repos/o/r/issues`. A body, a query or a token is never among them. */
+const ghCallName = (/** @type {string[]} */ args) => args.slice(0, 2).join(" ");
+
+/**
+ * `gh`, run to completion or cut at `timeoutMs`. A call that hits the bound is TOLD (naming the subcommand) and then thrown as `execFileSync` throws it
+ * (`code: "ETIMEDOUT"`), which is a refusal every reader already turns into `null` for ITS lane and nobody else's: nothing new is thrown. `SIGKILL`, because a
+ * `gh` that has hung is not one that answers a polite request.
+ * @param {number} timeoutMs
+ * @param {{ stdio?: "pipe", log?: (line: string) => void }} [how] `stdio: "pipe"` captures `gh`'s stderr on the error instead of inheriting it; `log` is where the cut is told
+ */
+export const ghWithin = (timeoutMs, { stdio, log = (line) => process.stderr.write(line) } = {}) => (/** @type {string[]} */ args, repo = activeRepo) => {
+  try {
+    return execFileSync("gh", args, { ...ghOptions(repo), timeout: timeoutMs, killSignal: "SIGKILL", ...(stdio === undefined ? {} : { stdio }) });
+  } catch (error) {
+    if (/** @type {{ code?: string }} */ (error)?.code === "ETIMEDOUT") {
+      log(`GH CUT in ${repoNow()}: \`gh ${ghCallName(args)}\` ran past ${timeoutMs / 1000} s and was killed. That read is refused (null); the other reads go on.\n`);
+    }
+    throw error;
+  }
+};
+
 /** @param {string[]} args @param {string} [repo] the repository to aim at; the ambient one when omitted */
-export const defaultRun = (args, repo = activeRepo) => execFileSync("gh", args, ghOptions(repo));
+export const defaultRun = ghWithin(GH_READ_TIMEOUT_MS);
 
 /** @param {string | undefined} repo @returns {import("node:child_process").ExecFileSyncOptionsWithStringEncoding} */
 const ghOptions = (repo) =>
   ({ encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
 
 /** `defaultRun` with `gh`'s stderr CAPTURED on the error instead of inherited: for a read whose refusal is an answer the caller handles (#3724). */
-const capturedRun = (/** @type {string[]} */ args, repo = activeRepo) => execFileSync("gh", args, { ...ghOptions(repo), stdio: "pipe" });
+const capturedRun = ghWithin(GH_READ_TIMEOUT_MS, { stdio: "pipe" });
 
 /**
  * The reader a refusal-handling read asks through: the default one is swapped for the capturing one, and a test's `run` stands for `gh` as it is.
