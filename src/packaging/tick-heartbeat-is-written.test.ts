@@ -25,7 +25,7 @@ const TRACKER = homeProjectDeclaration().tracker[0].repo;
 const GATE_THROWS = 'throw new Error("gate blew up");\n';
 
 type Call = { argv: string[]; completionExisted: boolean };
-type Tick = { gate: string; wakeExit?: number; ghFails?: boolean; tickSource?: (original: string) => string };
+type Tick = { gate: string; wakeExit?: number; ghFails?: boolean; recordIsADirectory?: boolean; tickSource?: (original: string) => string };
 
 /** The `gh` stub: a node script (the shebang is the absolute `node`, since the PATH holds only this directory) that logs one JSON line per call. */
 function ghStub(log: string, completion: string, fails: boolean) {
@@ -35,7 +35,7 @@ function ghStub(log: string, completion: string, fails: boolean) {
     + (fails ? `process.stderr.write("gh: Resource not accessible (HTTP 403)\\n"); process.exit(1);\n` : "");
 }
 
-function runTick({ gate, wakeExit = 0, ghFails = false, tickSource = (original) => original }: Tick) {
+function runTick({ gate, wakeExit = 0, ghFails = false, recordIsADirectory = false, tickSource = (original) => original }: Tick) {
   const dir = mkdtempSync(join(tmpdir(), "tick-heartbeat-"));
   try {
     const src = join(dir, "src");
@@ -52,6 +52,7 @@ function runTick({ gate, wakeExit = 0, ghFails = false, tickSource = (original) 
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(${wakeExit});\n`);
     const ledger = join(dir, "ledger.jsonl");
     const record = completionPath(ledger);
+    if (recordIsADirectory) mkdirSync(record);
     const log = join(dir, "gh.log");
     writeFileSync(join(bin, "gh"), ghStub(log, record, ghFails));
     chmodSync(join(bin, "gh"), 0o755);
@@ -59,7 +60,7 @@ function runTick({ gate, wakeExit = 0, ghFails = false, tickSource = (original) 
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: bin },
     });
     const calls: Call[] = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
-    return { ran, calls, record: existsSync(record) ? readCompletion(record) : null };
+    return { ran, calls, record: !recordIsADirectory && existsSync(record) ? readCompletion(record) : null };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -101,6 +102,13 @@ test("#3880: a write that FAILS leaves the exit code unchanged and says one line
   assert.equal(lines.length, 1, ran.stderr);
   assert.ok(lines[0].includes(HEARTBEAT_VARIABLE) && lines[0].includes(TRACKER), lines[0]);
   assert.ok(lines[0].includes("HTTP 403"), "it carries gh's own reason");
+});
+
+test("#3880: a completion record that could NOT be written leaves the heartbeat alone -- the off-host reader sees the stale value the file's reader sees", () => {
+  const { ran, calls } = runTick({ gate: "process.exit(0);", recordIsADirectory: true });
+  assert.equal(ran.status, EXIT.QUIET, "the tick did its work");
+  assert.match(ran.stderr, /COMPLETION NOT RECORDED/);
+  assert.deepEqual(calls, []);
 });
 
 test("#3880: the unit-level `writeHeartbeat` never throws, whatever `gh` does", () => {

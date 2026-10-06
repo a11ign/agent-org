@@ -332,10 +332,10 @@ function finish(code, run) {
     const at = Date.now();
     try {
       writeCompletion(run.recordPath, { at, exit: code });
+      writeHeartbeat(at);
     } catch (err) {
       process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
     }
-    writeHeartbeat(at);
     reportIfSlow(recordCost(code, run), run);
   }
   process.exit(code);
@@ -348,7 +348,7 @@ const HEARTBEAT_TIMEOUT_MS = 30_000;
 /**
  * THE COMPLETION, WHERE SOMETHING OFF THIS HOST CAN READ IT (#3851, incident #3846 1c). `work-tick-completion.json` is a file on a machine that may be
  * frozen, so the control plane could not read it without an ssh into that machine. The value is the same epoch milliseconds the file holds, written
- * AFTER the file because the file is what `incident:gate-crash` reads on this host, and only from `finish`, so it means what the file means: a tick
+ * AFTER the file, and ONLY IF the file was written (a record that failed leaves the reader off this host with the stale value the file's reader has too), because the file is what `incident:gate-crash` reads on this host, and only from `finish`, so it means what the file means: a tick
  * that reached the end, not a tick that started.
  *
  * A write that fails is said on stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome
