@@ -4305,10 +4305,18 @@ export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
  * to the row, and nothing is recorded, so the same key escalates the tick after the session is back if it is still at
  * the cap. `engineers` is a pool, not a session, and is not asked.
  *
- * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null, repoOf?: (repoKey: string) => string | null}} [memory]
+ * THE LABEL CARRIES ITS QUESTION (#3874). `answer:ceo` set by the tick's own account with nothing written was read as the worker's question,
+ * answered by a guess, and the worker read the guess as an answer to a question it never asked (#3289, 63 minutes). So when `ask` is given the
+ * comment that says what is asked is written FIRST and the label second, one call site: a comment that fails is a `COULD NOT ESCALATE` with no
+ * label and no record, and the next tick tries again. `ask` is `null` only for a caller that opts out; `escalationMemory` always supplies it.
+ *
+ * AND A CLEARED CAUSE IS ASKED AGAIN, ONCE ({@link reaskCleared}): an `ALREADY ESCALATED` key whose label was removed an hour ago and is still true.
+ *
+ * @param {{escalated?: Set<string>, record?: (key: string) => void, unavailable?: (label: string) => string | null, repoOf?: (repoKey: string) => string | null,
+ *   ask?: Asker | null}} [memory]
  */
 export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stderr.write(l),
-  { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf } = {}) {
+  { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf, ask = null } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
@@ -4320,6 +4328,7 @@ export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stder
     const ref = target.ref;
     if (escalated.has(key)) {
       log(`ALREADY ESCALATED ${ref} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
+      if (ask !== null && target.row !== null) reaskCleared({ row: target.row, key }, { run, log, ask });
       continue;
     }
     const outage = outageOf(key, unavailable);
@@ -4328,6 +4337,7 @@ export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stder
       continue;
     }
     try {
+      if (ask !== null && target.row !== null) askOnce({ row: target.row, key }, { run, ask });
       const row = target.place(run);
       if (row !== null) labelled.push(row);
       log(`ESCALATED ${ref} -> ${ESCALATION_LABEL} (cause offered ${MAX_DELIVERIES}+ times, still true)\n`);
@@ -4346,19 +4356,20 @@ export function escalateStuck(stuck, run = guardedGh, log = (l) => process.stder
  * A keyed subject the project's declaration does not list is `null`: it is not the primary's and is not known to be anyone's.
  * `place` answers the row number it labelled or filed, or `null` when `gh` did not say.
  * @param {string} key @param {(repoKey: string) => string | null} repoOf
- * @returns {{ ref: string, place: (run: (args: string[]) => string) => number | null } | null}
+ * `row` is the primary's row number when the escalation is a LABEL on it, and `null` when it is a filed row (which carries its own body).
+ * @returns {{ ref: string, row: number | null, place: (run: (args: string[]) => string) => number | null } | null}
  */
 function escalationTargetOf(key, repoOf) {
   const subject = stuckSubjectOf(key);
   if (subject === null) return null;
   if (subject.repoKey === "") {
     const row = /** @type {number} */ (subject.number);
-    return { ref: `#${row}`, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
+    return { ref: `#${row}`, row, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
   }
   const repo = repoOf(subject.repoKey);
   if (repo === null) return null;
   const ref = subject.number === null ? `${subject.repoKey}@${subject.sha8}` : subjectMention({ repoKey: subject.repoKey, number: subject.number });
-  return { ref, place: (run) => fileRepositoryRow({ ref, repo, key }, run) };
+  return { ref, row: null, place: (run) => fileRepositoryRow({ ref, repo, key }, run) };
 }
 
 /**
@@ -4378,6 +4389,141 @@ function fileRepositoryRow({ ref, repo, key }, run) {
   const made = run(["issue", "create", "--title", title, "--body", body, "--label", ESCALATION_LABEL]);
   const number = /\/issues\/(\d+)\s*$/.exec(made);
   return number === null ? null : Number(number[1]);
+}
+
+/**
+ * What the escalation needs from outside: write a comment, and read the session's state. Injected so a test reaches neither `gh` nor herdr.
+ * @typedef {{ post: (row: number, body: string) => void, stateOf: (session: string) => string, now: () => number }} Asker
+ */
+
+/** How long a cleared cause that is still true waits before it is asked about once more (#3874). */
+export const REASK_AFTER_MS = 60 * 60_000;
+
+/** The session a cause key opens with; `engineers` is the pool and is no session. @param {string} key */
+const sessionOfKey = (key) => key.split("/")[0];
+
+/** The comment's marker for a cause's re-ask: its presence on the row is how "once" is read back, with no ledger line. @param {string} key */
+const reaskMarker = (key) => `<!-- stuck-reask: ${key} -->`;
+
+/** The first escalation's marker: with {@link commentAwaitsLabel}, how a retry after a failed label knows the question is already on the row. @param {string} key */
+const escalationMarker = (key) => `<!-- stuck-escalation: ${key} -->`;
+
+/**
+ * The comment an escalation leaves on its row, so that whoever reads `answer:ceo` finds what is asked there (#3874).
+ * @param {string} key @param {string} state the target session's state at this moment
+ */
+function escalationComment(key, state) {
+  const session = sessionOfKey(key);
+  return `${escalationMarker(key)}\n**Stuck: the tick is asking \`ceo\` about this row.** The cause \`${key}\` was delivered ${MAX_DELIVERIES} times and is still true, and `
+    + `no session has acted on it. \`${session}\` is ${state} as this is written.\n\n`
+    + `\`ceo\` can answer it: say what should happen to this cause, then remove \`${ESCALATION_LABEL}\`. If the cause is still true `
+    + `${REASK_AFTER_MS / 60_000} minutes after that, the tick asks once more.\n`;
+}
+
+/**
+ * The target session's state as herdr reports it, read the way {@link notReadyWhy} reads an agent, or why it could not be read. Never throws: the
+ * state is context in a comment and its absence must not stop the escalation.
+ * @param {string} session @param {(args: string[]) => string} [run]
+ */
+export function sessionStateOf(session, run = defaultRun) {
+  if (session === "engineers") return "a pool, not a session";
+  try {
+    return readAgent(run, session).status;
+  } catch (/** @type {any} */ err) {
+    return `unreadable (${herdrReason(err)})`;
+  }
+}
+
+/**
+ * Write the escalation's question UNLESS it is already on the row, unanswered by a label (#3874, review of #328). The comment goes first so a label never stands
+ * bare, which means a label that then FAILS leaves a comment and no ledger record, and the next tick retries: without this it posted the same question again
+ * every tick the label kept failing. The row is the state, so the retry reads it: a marker comment newer than the label's last event is a question
+ * that was written and not yet labelled, and only the label is owed.
+ * @param {{ row: number, key: string }} cause @param {{ run: (args: string[]) => string, ask: Asker }} how
+ */
+function askOnce({ row, key }, { run, ask }) {
+  const waiting = commentAwaitsLabel(rowComments(row, escalationMarker(key), run), lastLabelEvent(row, run));
+  if (!waiting) ask.post(row, escalationComment(key, ask.stateOf(sessionOfKey(key))));
+}
+
+/**
+ * Is there a marked comment written after the label's last event (or with no label event at all)? That is a question posted whose label never landed.
+ * @param {{ at: number, marked: boolean }[]} comments @param {{ at: number } | null} last
+ */
+const commentAwaitsLabel = (comments, last) => comments.some((c) => c.marked && (last === null || c.at > last.at));
+
+/**
+ * Ask once more about a cause whose `answer:ceo` was REMOVED and which is still true an hour later (#3874). Removal is an answer, so an
+ * unchanged cause stays quiet for that hour; after it, the answer has not changed what the cause measures, and silence for good is the
+ * defect (#3289: 30 `STUCK` lines, 31 `ALREADY ESCALATED`, nobody asked). The row is the state, so nothing here touches the ledger: the label's last
+ * event says when it came off, and a comment carrying {@link reaskMarker} says it was already re-asked. Two reads, the second only once the
+ * first says it is due. FAILS LOUD and is retried next tick. A comment that lands before a label that does not is retried as the LABEL alone
+ * ({@link commentAwaitsLabel}: the marker is newer than the removal), never a second comment.
+ * @param {{ row: number, key: string }} cause @param {{ run: (args: string[]) => string, log: (line: string) => void, ask: Asker }} how
+ * @returns {boolean} whether the cause was asked again
+ */
+function reaskCleared({ row, key }, { run, log, ask }) {
+  try {
+    const removed = labelRemoval(row, run);
+    if (removed === null || ask.now() - removed.at < REASK_AFTER_MS) return false;
+    const comments = rowComments(row, reaskMarker(key), run);
+    const waiting = commentAwaitsLabel(comments, removed);
+    if (!waiting && comments.some((c) => c.marked)) return false;
+    const answer = comments.filter((c) => c.login === removed.by && c.at <= removed.at).pop();
+    if (!waiting) ask.post(row, reaskComment({ key, removed, answer, elapsedMs: ask.now() - removed.at, state: ask.stateOf(sessionOfKey(key)) }));
+    run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]);
+    log(`ASKED AGAIN #${row} -> ${ESCALATION_LABEL} (${key}: label removed ${Math.round((ask.now() - removed.at) / 60_000)} minutes ago, cause still true)\n`);
+    return true;
+  } catch (/** @type {any} */ err) {
+    log(`COULD NOT ASK AGAIN #${row} (${key}): ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+    return false;
+  }
+}
+
+/**
+ * When the escalation label last came off the row and who took it off, or `null` when its last event is not a removal (it is on the row, or never was).
+ * @param {number} row @param {(args: string[]) => string} run @returns {{ at: number, by: string } | null}
+ */
+function labelRemoval(row, run) {
+  const last = lastLabelEvent(row, run);
+  return last === null || last.event !== "unlabeled" ? null : { at: last.at, by: last.by };
+}
+
+/**
+ * The escalation label's last event on the row, `null` when it never had one.
+ * @param {number} row @param {(args: string[]) => string} run @returns {{ event: string, at: number, by: string } | null}
+ */
+function lastLabelEvent(row, run) {
+  const events = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/events`, "--jq",
+    `.[] | select(.label.name == ${JSON.stringify(ESCALATION_LABEL)}) | [.event, .actor.login, .created_at] | @json`]);
+  const last = events.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l)).pop();
+  return last === undefined ? null : { event: String(last[0]), at: Date.parse(last[2]), by: String(last[1]) };
+}
+
+/**
+ * Every comment on the row as `{ id, login, at, marked }`, `marked` being "carries `marker`".
+ * @param {number} row @param {string} marker @param {(args: string[]) => string} run
+ * @returns {{ id: number, login: string, at: number, marked: boolean }[]}
+ */
+function rowComments(row, marker, run) {
+  const lines = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/comments`, "--jq",
+    `.[] | [.id, .user.login, .created_at, (.body | contains(${JSON.stringify(marker)}))] | @json`]);
+  return lines.split("\n").filter((l) => l.trim() !== "").map((l) => {
+    const [id, login, at, marked] = JSON.parse(l);
+    return { id, login, at: Date.parse(at), marked };
+  });
+}
+
+/**
+ * The re-ask: elapsed time, who removed the label and the comment they most likely answered with (their last before the removal), by id.
+ * @param {{ key: string, removed: { at: number, by: string }, answer?: { id: number }, elapsedMs: number, state: string }} ask
+ */
+function reaskComment({ key, removed, answer, elapsedMs, state }) {
+  const earlier = answer === undefined ? `no comment of theirs came before it` : `their earlier answer is comment ${answer.id}`;
+  return `${reaskMarker(key)}\n**Asked again: the cause is still true.** \`${ESCALATION_LABEL}\` was removed by @${removed.by} `
+    + `${Math.round(elapsedMs / 60_000)} minutes ago (${new Date(removed.at).toISOString()}); ${earlier}. `
+    + `The cause \`${key}\` was delivered ${MAX_DELIVERIES} times, no session has acted on it, and \`${sessionOfKey(key)}\` is ${state} now.\n\n`
+    + "If that answer was meant for this, say what happens next and remove the label again; this is asked once.\n";
 }
 
 /**
@@ -7133,8 +7279,10 @@ export function poolEngineerReason(eligibility, unavailable) {
  * `RESET` lines of this tick are written, so a cause that went away and came back escalates again.
  * @param {string} ledgerPath @param {(label: string) => string | null} unavailable
  */
-function escalationMemory(ledgerPath, unavailable) {
+export function escalationMemory(ledgerPath, unavailable) {
   return { escalated: escalatedKeys(ledgerPath), unavailable,
+    ask: { post: (/** @type {number} */ row, /** @type {string} */ body) => { guardedGh(["issue", "comment", String(row), "--body", body]); },
+      stateOf: sessionStateOf, now: Date.now },
     record: (/** @type {string} */ key) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
 }
 
