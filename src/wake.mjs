@@ -4013,12 +4013,19 @@ export const CAPACITY_WAIT_LIMIT_MS = 30 * 60 * 1000;
 const LOADED_SEAT = String.raw`[\w.-]+=(?:working|has held #\d+(?:, #\d+)*: one instance, one row \(#2407\))`;
 
 /**
- * `<causeKey>: no engineer is idle ... (<every seat LOADED>)`, which is `route`'s refusal for an engineer order when the roster is simply full, with
+ * What {@link routeWithFallback} puts BEFORE the pool's refusal when the order's own session is gone and it fell back to `engineers` (a11ign/a11ign#3814): a `trunk-red`
+ * order for a merged PR whose author has ended waited as a fault from its first tick, 30 ticks running, on a pool that was merely full. ONLY AN ABSENT AUTHOR AND ONLY
+ * THE `engineers` POOL: a first half that says the author is `working` is {@link BUSY_SEAT_REFUSAL}'s, and a fallback to any other seat is not a pool that frees itself.
+ */
+const GONE_AUTHOR_PREFIX = String.raw`(?:no workspace labelled "[^"]+"; and the fallback "engineers": )?`;
+
+/**
+ * `<causeKey>: [<GONE_AUTHOR_PREFIX>]no engineer is idle ... (<every seat LOADED>)`, which is `route`'s refusal for an engineer order when the roster is simply full, with
  * `targetFor`'s second half when this tick had already spent its one spawn. ANCHORED AT BOTH ENDS and demanding at least one seat, every one of them
  * loaded: an idle, drained, skipped-for-B2, `unknown`, `absent` or `blocked` seat is not capacity, and a `; no spawn: ...` tail is a failed claim, a
  * B4 overlap or a refused prompt, each a fault with a cause of its own that this must not hide.
  */
-const CAPACITY_REFUSAL = new RegExp(String.raw`^(\S+): (no engineer is idle(?: and allowed to claim)? \(${LOADED_SEAT}(?:, ${LOADED_SEAT})*\)`
+const CAPACITY_REFUSAL = new RegExp(String.raw`^(\S+): (${GONE_AUTHOR_PREFIX}no engineer is idle(?: and allowed to claim)? \(${LOADED_SEAT}(?:, ${LOADED_SEAT})*\)`
   + String.raw`(?:, and this tick has already started \d+ \(MAX_SPAWNS_PER_TICK is \d+\))?)$`);
 
 /**
