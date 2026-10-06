@@ -1,4 +1,4 @@
-// no-token: nothing here reaches a remote -- `gh` is handed a fixture that answers the workflow-runs query the way GitHub does (it filters by `branch`, `event` and `status`)
+// no-token: gh -- every `gh` call is the fixture handed to `readLastCiRun`, or a stub `gh` on PATH that answers from a file; nothing here reaches GitHub
 /**
  * #3746: A RUNNER READING THAT CANNOT CHANGE IS NOT A READING. `a11ign/a11ign`'s `ci.yml` has run on `pull_request` and `merge_group` since 2026-09-18 and on `push` to `main` never again, so
  * `?branch=main&status=completed&per_page=1` answered the 2026-09-18 push run for ever, whose log names no version: UNKNOWN on every release, with no event that could clear it. And the run
