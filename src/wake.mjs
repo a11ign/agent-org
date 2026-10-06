@@ -1421,9 +1421,23 @@ function linkThirdParty(fs, { primary, modules, packagesDirs }) {
   }
 }
 
-/** Remove what an earlier run linked and `wanted` no longer names: a package the PR removed or renamed, and an unscoped workspace link (the primary's or this tree's). @param {LinkFs} fs @param {{modules: string, scope: string, packagesDirs: string[]}} where @param {Map<string, string>} wanted */
-function removeStaleLinks(fs, { modules, scope, packagesDirs }, wanted) {
-  for (const stale of fs.readdirSync(scope).filter((entry) => !wanted.has(`@a11ign/${entry}`))) fs.rmSync(`${scope}/${stale}`, { recursive: true, force: true });
+/**
+ * The registry's `@a11ign/*` entries of the tick's root scope, linked to the tick's own (#3816): `@a11ign/screenreader-fleet` and `@a11ign/toolchain` lead into
+ * `.pnpm`, not `packages/`, so they are the store's like any third-party entry and a tree that lacks them dies at ERR_MODULE_NOT_FOUND before its Acceptance
+ * runs. An entry that leads into `packages/` is a workspace package and is the tree's to link by declared name ({@link declaredLinks}), so it is skipped here.
+ * Answers the names it linked as `@a11ign/<x>`, so {@link removeStaleLinks} keeps them. Reads the one directory the tick already holds.
+ * @param {LinkFs} fs @param {{primary: string, scope: string, packagesDirs: string[]}} where @returns {string[]}
+ */
+function linkRegistryScope(fs, { primary, scope, packagesDirs }) {
+  if (!fs.existsSync(`${primary}/@a11ign`)) return [];
+  const registry = fs.readdirSync(`${primary}/@a11ign`).filter((entry) => !entry.startsWith(".") && !pointsIntoPackages(fs, `${primary}/@a11ign/${entry}`, packagesDirs));
+  for (const entry of registry) relink(fs, `${primary}/@a11ign/${entry}`, `${scope}/${entry}`);
+  return registry.map((entry) => `@a11ign/${entry}`);
+}
+
+/** Remove what an earlier run linked and `wanted` no longer names: a package the PR removed or renamed, and an unscoped workspace link (the primary's or this tree's). `kept` is the root scope's registry entries ({@link linkRegistryScope}), which are not workspace packages and so not in `wanted`. @param {LinkFs} fs @param {{modules: string, scope: string, packagesDirs: string[]}} where @param {Map<string, string>} wanted @param {string[]} kept */
+function removeStaleLinks(fs, { modules, scope, packagesDirs }, wanted, kept) {
+  for (const stale of fs.readdirSync(scope).filter((entry) => !wanted.has(`@a11ign/${entry}`) && !kept.includes(`@a11ign/${entry}`))) fs.rmSync(`${scope}/${stale}`, { recursive: true, force: true });
   for (const entry of fs.readdirSync(modules)) {
     if (entry !== "@a11ign" && !wanted.has(entry) && pointsIntoPackages(fs, `${modules}/${entry}`, packagesDirs)) fs.rmSync(`${modules}/${entry}`, { force: true });
   }
@@ -1549,9 +1563,11 @@ export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
   try {
     fs.mkdirSync(where.scope, { recursive: true });
     linkThirdParty(fs, where);
+    const registry = linkRegistryScope(fs, where);
     const wanted = declaredLinks(fs, path);
+    // After the registry's, so a package the PR moved into the workspace is the tree's own source, not the store's.
     for (const [name, dir] of wanted) relink(fs, `${path}/packages/${dir}`, `${modules}/${name}`);
-    removeStaleLinks(fs, where, wanted);
+    removeStaleLinks(fs, where, wanted, registry);
     linkPackageModules(fs, { path, repoRoot, packagesDirs: where.packagesDirs });
     if (fs.existsSync(`${repoRoot}/.venv`)) relink(fs, `${repoRoot}/.venv`, `${path}/.venv`);
     return null;
