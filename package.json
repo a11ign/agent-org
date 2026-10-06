@@ -15,6 +15,8 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@a11ign/toolchain": "^0.1.2",
+    "@rstest/core": "^0.12.3",
     "@types/node": "^22.20.5",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
@@ -25,6 +27,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "rstest run --config scripts/rstest/rstest.config.mjs",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",
