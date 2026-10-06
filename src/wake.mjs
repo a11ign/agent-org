@@ -927,7 +927,7 @@ function whyNoSpawn(order, { memory, claimable }) {
  * a spawned session is told who it is by the same line that tells a standing one -- and a spawn whose
  * prompt is refused leaves a live, idle session the next tick routes to normally.
  *
- * @param {{session: string, causeKey: string, cause?: string, title?: string}} order
+ * @param {{session: string, causeKey: string, cause?: string, title?: string, replaces?: {branch: string}[]}} order
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, env?: Record<string, string>, drained?: readonly string[],
@@ -5264,7 +5264,7 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  * between the two re-wakes rather than losing the wake. Re-waking is visible and costs one turn; losing one
  * is invisible and costs however long until someone notices -- the 2026-09-08 shape.
  *
- * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, resume?: boolean, outageNow?: boolean}[]} orders
+ * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, replaces?: {branch: string}[], resume?: boolean, outageNow?: boolean}[]} orders
  *   `resume` (#2470) sends the prompt WITHOUT the `/clear` a standing seat is otherwise given first; `outageNow`
  *   (#2685) is `work-gate.mjs`'s reading that GitHub itself refused several of THIS TICK's own reads together
  * @param {{label: string, status: string}[]} agents
@@ -5987,13 +5987,13 @@ function layoutUnder(root) {
 /**
  * A row claimed for a spawn, and where. `adopted` (#2470) says the worktree was a RELEASED holder's, with its work still in it.
  * @typedef {{ row: number, branch: string, worktree: string, launchDir: string,
- *   adopted?: { from: string, dirty: number, unpushed: number } }} ClaimedRow
+ *   adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean } }} ClaimedRow
  */
 
 /**
  * The claim a spawn makes before it has a pane, and the release for a spawn that fails after it.
  * @typedef {{
- *   claim: (order: { causeKey: string, title?: string }, role: string, env: Record<string, string>)
+ *   claim: (order: { causeKey: string, title?: string, replaces?: { branch: string }[] }, role: string, env: Record<string, string>)
  *     => ClaimedRow | { refusal: string },
  *   release: (claimed: ClaimedRow, role: string, env: Record<string, string>) => string,
  * }} SpawnClaimer
@@ -6106,7 +6106,7 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       settle(role);
       const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
       if ("refusal" in launch) return launch;
-      const left = settleGoneKept(kept(row), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
+      const left = settleGoneKept(kept(row) ?? treeOfClosedPrBranch(order, { exec, primary, env }), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
       const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left, exists });
       const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
@@ -6121,6 +6121,37 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
   };
+}
+
+/**
+ * #3892: THE TREE A REPLACEMENT IS BUILT IN, when no release left a record of one. The gate offered the row for a branch whose pull request was CLOSED unmerged
+ * and says which branches (`order.replaces`); the previous holder's tree is on the host, still on that branch, and `--adopt` is the one claim #2014 leaves open for a
+ * branch that is on `origin`. A release that recorded no branch or worktree (#3505's: "No branch or worktree is recorded") left `kept` nothing to answer, so the
+ * spawn made a FRESH claim at `../wt-<row>` -- a path that already existed, or a branch #2014 refuses -- and was refused every tick.
+ *
+ * ONLY FOR AN ORDER THAT CARRIES `replaces`, and only a tree that is STAMPED (`.a11y-owner`) and READS: an unstamped tree is nobody's to adopt and a tree whose status cannot be read
+ * could hold work this would then hide, so each is `null`, and the claim goes on as it did and says its own refusal. `row-claim` still decides (it re-checks the stamp and the branch).
+ * @param {{ replaces?: { branch: string }[] }} order
+ * @param {{ exec: Exec, primary: string, env: Record<string, string> }} host
+ * @returns {KeptClaim | null}
+ */
+function treeOfClosedPrBranch(order, { exec, primary, env }) {
+  const wanted = (order.replaces ?? []).map(({ branch }) => branch);
+  if (wanted.length === 0) return null;
+  const listed = exec("git", ["worktree", "list", "--porcelain"], { cwd: primary, env });
+  if (listed.status !== 0) return null;
+  for (const block of listed.output.split("\n\n")) {
+    const worktree = /^worktree (.+)$/m.exec(block)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    if (worktree === undefined || branch === undefined || !wanted.includes(branch)) continue;
+    const from = worktreeOwner(worktree);
+    const status = exec("git", ["status", "--porcelain"], { cwd: worktree, env });
+    const ahead = exec("git", ["rev-list", "--count", `origin/${branch}..HEAD`], { cwd: worktree, env });
+    if (from === null || status.status !== 0 || ahead.status !== 0) continue;
+    return { worktree, branch, from, at: Date.now(), why: "its pull request was closed unmerged",
+      dirty: status.output.split("\n").filter((line) => line.trim() !== "").length, unpushed: Number(ahead.output.trim()) || 0, replaces: true };
+  }
+  return null;
 }
 
 /**
@@ -6177,7 +6208,7 @@ function claimTarget({ row, order, role, launchDir, worktreesDir, left, exists }
   const adopting = left !== null && exists(left.worktree) ? left : null;
   const branch = adopting?.branch ?? `agent/${slugOf(order.title)}-${row}`;
   const claimed = { row, branch, launchDir, worktree: adopting?.worktree ?? join(worktreesDir, `wt-${row}`),
-    ...(adopting === null ? {} : { adopted: { from: adopting.from, dirty: adopting.dirty, unpushed: adopting.unpushed } }) };
+    ...(adopting === null ? {} : { adopted: { from: adopting.from, dirty: adopting.dirty, unpushed: adopting.unpushed, replaces: adopting.replaces } }) };
   return { claimed, args: ["claim", String(row), `--session=${role}`, `--branch=${branch}`,
     `--worktree=${adopting?.worktree ?? `../wt-${row}`}`, ...(adopting === null ? [] : [`--adopt=${adopting.from}`])] };
 }
@@ -6224,7 +6255,12 @@ export function spawnedPrompt(order, claimed) {
  */
 function adoptedNote(claimed) {
   if (claimed.adopted === undefined) return "";
-  const { from, dirty, unpushed } = claimed.adopted;
+  const { from, dirty, unpushed, replaces } = claimed.adopted;
+  if (replaces) {
+    return `\n\nTHIS WORKTREE IS NOT EMPTY, AND ITS PULL REQUEST WAS CLOSED UNMERGED (#3892). It is \`${from}\`'s, on \`${claimed.branch}\`, which \`origin\` already holds; it has ${dirty} changed `
+      + `file(s) and ${unpushed} unpushed commit(s). READ THE ROW FIRST for why the pull request was closed, then \`git log origin/main..HEAD\`: the replacement is this work, `
+      + "brought up to date and opened with `agent-org pr:open` from this workspace. Do not delete or rename the branch.";
+  }
   return `\n\nTHIS WORKTREE IS NOT EMPTY. It is \`${from}\`'s, taken back when that claim stopped moving, and it holds ${dirty} changed `
     + `file(s) and ${unpushed} commit(s) that exist nowhere else. READ \`git status\` AND \`git log origin/main..HEAD\` FIRST and `
     + "continue what is there; do not redo it from the row. If it is wrong or finished, say so on the row and commit or push what is "
@@ -6520,7 +6556,7 @@ export function tearDownSpares(agents, ledgerPath, say = (line) => process.stder
 // refuses while it is dirty, so a stalled tree with 215 uncommitted lines could neither be released nor survive a release. Here the tree
 // is left in place with `--keep-worktree`, and the next instance for the row claims it IN PLACE (`spawnClaimer`, `--adopt`).
 
-/** A tree a release left behind, and whose it was -- what the respawn's claim adopts. @typedef {{ worktree: string, branch: string, from: string, at: number, why: string, dirty: number, unpushed: number }} KeptClaim */
+/** A tree a release left behind, and whose it was -- what the respawn's claim adopts. @typedef {{ worktree: string, branch: string, from: string, at: number, why: string, dirty: number, unpushed: number, replaces?: boolean }} KeptClaim */
 
 /** Where the kept-worktree records live: beside the wake ledger, with the org's other state. @param {string} ledgerPath */
 export function keptClaimsPath(ledgerPath) {

@@ -641,6 +641,9 @@ export const GH_READS = Object.freeze({
   // #2286, WIDENED BY #2741: ONE CALL FOR EVERY BLOCKER, paid only when some unclaimed row OR some
   // claimed one has a cleared blocker to ask about. `gh`'s `blockedBy` nodes carry no closing time, and a
   // per-blocker read would make the tick's cost a function of how many rows are waiting.
+  // #3892: ONE `pr list --head <branch> --state all` PER BRANCH on `origin` carrying an UNCLAIMED READY row's number -- none for a tick with no such branch,
+  // which is the ordinary tick. `ls-remote` cannot say whether a branch's pull request was closed on purpose, and a bulk `--state closed` page would miss an old one.
+  conditionalOnBranchedReadyRows: "pr list --head <branch> --state all --limit 100 --json number,state (readBranchPrs -- a closed-unmerged branch is a replacement, not unshipped work; a full page is refused)",
   conditionalOnClearedRows: "issue list --state closed --limit 100 --search sort:updated-desc --json number,closedAt,updatedAt"
     + " (readRecentlyClosed -- unclaimed-blocker-cleared's and blocker-cleared's backoff)",
   // #2356: FOUR MORE REST CALLS, paid ONLY by a tick that found `main` red -- the run's jobs, the recheck
@@ -723,6 +726,81 @@ export function readRowBranches(run = defaultSpawn) {
   } catch {
     return null;
   }
+}
+
+/** How many pull requests one branch's list is asked for. A page that comes back this full may have been CUT, and `gh` cuts the OLDEST -- the ones a merge hides behind. */
+const BRANCH_PRS_LIMIT = 100;
+
+/**
+ * #3892: EVERY PULL REQUEST EVER OPENED FROM THESE BRANCHES, one `gh pr list --head` each, so {@link branchesToReplace} can tell a branch whose pull request was
+ * CLOSED ON PURPOSE from one no pull request carries. `ls-remote` cannot (#2031), and `--state all` is what makes a closed one visible at all: the tick's own
+ * `pr list` is `--state open`.
+ *
+ * `null` FOR ONE REFUSED READ, NEVER `[]` (#1286): a branch whose list could not be read is not a branch with no pull request, and the whole answer is `null`
+ * so no row is released on a guess -- each stays shelved exactly as before, which is what the absent answer already means.
+ *
+ * A FULL PAGE IS A REFUSED READ TOO. `gh` cuts the list at its limit, newest first, so a branch with more pull requests than that can lose an OLD MERGED one
+ * and read as closed-only: the page is then not the branch's history, and "every pull request is closed" was never established. A page with room left is the
+ * whole list (the rule {@link OPEN_PRS_FIRST_PAGE} reads the open list by).
+ * @param {readonly { branch: string }[]} branches
+ * @param {(args: string[]) => string} [run]
+ * @returns {{ branch: string, number: number, state: string }[] | null}
+ */
+export function readBranchPrs(branches, run = defaultRun) {
+  const found = [];
+  for (const { branch } of branches) {
+    try {
+      const parsed = JSON.parse(run(["pr", "list", "--head", branch, "--state", "all", "--limit", String(BRANCH_PRS_LIMIT), "--json", "number,state"]));
+      if (!Array.isArray(parsed) || parsed.length >= BRANCH_PRS_LIMIT) return null;
+      found.push(...parsed.map((/** @type {{ number: number, state: string }} */ pr) => ({ branch, number: pr.number, state: String(pr.state) })));
+    } catch {
+      return null;
+    }
+  }
+  return found;
+}
+
+/**
+ * PURE. The ROWS whose every branch on `origin` has at least one pull request and ONLY closed-unmerged ones -- the branches a replacement may be built from
+ * (#3892), keyed by row number.
+ *
+ * A ROW IS REPLACEABLE ONLY WHEN NO BRANCH ON IT IS ANYTHING ELSE. A branch with no pull request is #2031's (nobody knows whether it is finished), one with
+ * an OPEN pull request is #3010's (`--adopt` it), and one with a MERGED pull request is landed work; each keeps the row shelved, and one such branch
+ * keeps it shelved whatever the others are. ABSENT `branchPrs` is "not asked or refused" and releases nothing.
+ * @param {{ branch: string, head: string, row: number }[] | null | undefined} rowBranches
+ * @param {{ branch: string, number: number, state: string }[] | null | undefined} branchPrs
+ * @returns {Map<number, { branch: string, head: string, prs: number[] }[]>}
+ */
+export function branchesToReplace(rowBranches, branchPrs) {
+  /** @type {Map<number, { branch: string, head: string, prs: number[] }[]>} */
+  const replaceable = new Map();
+  if (!Array.isArray(branchPrs)) return replaceable;
+  const closedOnly = (/** @type {{ branch: string }} */ { branch }) => {
+    const mine = branchPrs.filter((pr) => pr.branch === branch);
+    return mine.length > 0 && mine.every((pr) => pr.state === "CLOSED") ? mine.map((pr) => pr.number) : null;
+  };
+  /** @type {Map<number, { branch: string, head: string, row: number }[]>} */
+  const byRow = new Map();
+  for (const found of rowBranches ?? []) byRow.set(found.row, [...(byRow.get(found.row) ?? []), found]);
+  for (const [row, branches] of byRow) {
+    const closed = branches.map((found) => ({ found, prs: closedOnly(found) }));
+    if (closed.every(({ prs }) => prs !== null)) {
+      replaceable.set(row, closed.map(({ found, prs }) => ({ branch: found.branch, head: found.head, prs: /** @type {number[]} */ (prs) })));
+    }
+  }
+  return replaceable;
+}
+
+/**
+ * #3892: `readBranchPrs` for the branches the question is ABOUT -- those carrying an UNCLAIMED ready row's number -- and for no others, so a tick with none pays no call.
+ * A claimed row's branch is its holder's and nothing here releases it.
+ * @param {any[]} readyRows @param {{ branch: string, row: number }[] | null} rowBranches `null` (not asked) asks nothing
+ * @param {(args: string[]) => string} [run]
+ */
+export function readBranchPrsOfUnclaimed(readyRows, rowBranches, run = defaultRun) {
+  const unclaimed = new Set(readyRows.filter((row) => !labelsOf(row).includes(CLAIM_LABEL) && !sessionOf(row)).map((row) => Number(row.number)));
+  const asked = (rowBranches ?? []).filter(({ row }) => unclaimed.has(row));
+  return asked.length === 0 ? null : readBranchPrs(asked, run);
 }
 
 /**
@@ -1291,10 +1369,13 @@ const templateGapText = (missing) => `its body has no ${missing.map((f) => `\`##
  * @param {{ rootFiles?: Set<string>,
  *           openRows?: any[] | null,
  *           rowBranches?: { branch: string, head: string, row: number }[] | null,
+ *           branchPrs?: { branch: string, number: number, state: string }[] | null,
  *           clock?: {today?: string, nowMs?: number} }} [options]
  *        `rowBranches` is `readRowBranches()`. It DEFAULTS TO ABSENT, which is "not asked or refused":
  *        nothing is shelved for it and every row is offered exactly as it was before #2031, so a tick
  *        that cannot reach `origin` is never worse off than one from before this existed.
+ *        `branchPrs` (#3892) is `readBranchPrs()`: a row whose EVERY branch on `origin` has only CLOSED-unmerged pull requests is not shelved for the
+ *        branch (see {@link branchesToReplace}) and is offered, with the branches named by `rowOrders`. ABSENT, every such row is shelved as before.
  *        `openRows` (#2493) is every open row the gate read, for the `blockedBy` edges that say whether a HELD PR is
  *        waiting on the row asked about. ABSENT, no held PR is excluded and B4 refuses exactly as before.
  *        It is also where #3475 reads the rows already CLAIMED (`in-progress`), whose Regions hold their files before any pull request
@@ -1309,6 +1390,7 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
   const blocked = [];
   const { today = todayIso(), nowMs = Date.now() } = options?.clock ?? {};
   const onOrigin = branchIndex(options?.rowBranches);
+  const replaceable = branchesToReplace(options?.rowBranches, options?.branchPrs);
   const blockersOf = blockersFromRows(options?.openRows);
   const claimed = claimedRegionsOf(options?.openRows, options) ?? [];
   for (const row of readyRows) {
@@ -1337,8 +1419,10 @@ export function partitionUnclaimed(readyRows, prFiles, options) {
     // SHELVED RATHER THAN DROPPED, like every other reason here: the `SHELVED row #N:` line names the
     // branch and its sha, and `rowBranchOrders` sends somebody to read it. A row that vanishes silently
     // is the failure `blocked` already is.
+    // #3892: EXCEPT A BRANCH WHOSE PULL REQUEST WAS CLOSED UNMERGED. That is not unshipped work nobody has read (#2000) and the shelving's order cannot
+    // reach anyone able to act on it (`product-manager`'s login may be the refused one): the row goes on offer to the pool, whose order names the branch.
     const pushed = onOrigin.get(Number(row.number)) ?? [];
-    if (pushed.length > 0) {
+    if (pushed.length > 0 && !replaceable.has(Number(row.number))) {
       blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row), reason: branchesText(pushed) });
       continue;
     }
@@ -4927,6 +5011,23 @@ function engineerShareReads(openRows) {
 }
 
 /**
+ * #3892: WHAT A REPLACEMENT'S ORDER SAYS INSTEAD OF "claim it". The plain claim is refused for as long as the branch is on `origin` (#2014), so the
+ * order that offered it would end in a refusal the engineer then has to reason out. The branches, their shas and the pull requests that were closed are
+ * named; the claim is `--adopt`, which is the exit #2014 leaves, and which `row-claim` still checks (the tree must exist, stamped by the session named, on that branch).
+ * @param {{ number: number, repoKey?: string, repo?: string }} row
+ * @param {{ branch: string, head: string, prs: number[] }[]} branches
+ */
+function replacementSentence(row, branches) {
+  const named = branches.map(({ branch, head, prs }) => `\`${branch}\` at ${head.slice(0, 12)} (closed unmerged: ${prs.map((n) => `#${n}`).join(", ")})`).join("; ");
+  return `ITS BRANCH IS FINISHED WORK WHOSE PULL REQUEST WAS CLOSED UNMERGED, and a replacement has to be opened from your own workspace: origin holds ${named}. `
+    + `DO NOT delete or rename it, and read on the row why the pull request was closed before you build.\n`
+    + `A plain claim is refused for as long as the branch is on \`origin\` (#2014), so take the previous holder's worktree in place, from your own linked worktree: `
+    + `\`node packages/agent-org/src/row-claim.mjs claim ${row.number} --session=<you> --branch=${branches[0].branch} `
+    + "--worktree=<its path, from `git worktree list`> --adopt=<the session in its `.a11y-owner`>`, then open the pull request with `agent-org pr:open`."
+    + (row.repoKey === undefined || row.repoKey === "" ? "" : `\n${claimSentence(row)}`);
+}
+
+/**
  * One order per unclaimed Ready row, priority rows first then oldest first, capped.
  *
  * SPLIT OUT OF `decide` for the same reason `laneBacklogOrders` was: adding lane routing took that
@@ -4936,8 +5037,10 @@ function engineerShareReads(openRows) {
  * @param {any[]} unclaimed the unclaimed Ready rows `partitionUnclaimed` judged actually claimable --
  *   the CLAIM_LABEL filter and the B4 filter both live there now, because the caller needs the rows
  *   this one discards (a shelved row is reported, not forgotten)
+ * @param {Map<number, { branch: string, head: string, prs: number[] }[]>} [replacing] (#3892) `branchesToReplace`'s answer. A row in it is offered with the
+ *   branches named and the `--adopt` claim, and the order carries them as `replaces` for the spawner (`claimTarget`).
  */
-function rowOrders(unclaimed) {
+function rowOrders(unclaimed, replacing = new Map()) {
   const orders = [];
   // UNCLAIMED IS `ready` WITHOUT `in-progress`, and since 2026-09-18 also WITHOUT a B4 overlap against an
   // open PR -- both decided by `partitionUnclaimed`. This is still a CANDIDATE, not a grant:
@@ -4961,16 +5064,18 @@ function rowOrders(unclaimed) {
     // would have been offered to an engineer who may not act on it -- and 18 of the 49 open rows carry
     // that lane. `lane:any` and no lane are the pool, which is what "engineers" means here.
     const owner = laneOwnerOf(row);
+    const branches = replacing.get(Number(row.number));
     orders.push({
       session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
+      ...(branches === undefined ? {} : { replaces: branches.map(({ branch, head }) => ({ branch, head })) }),
       subject: `row-${subjectRef(row.repoKey, row.number)}`,
       // The spawner names the branch and the instance's first message from it (#2405).
       title: row.title ?? "",
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
       discriminator: subjectRef(row.repoKey, row.number),
-      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. ${claimSentence(row)}\n`
+      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. ${branches === undefined ? claimSentence(row) : replacementSentence(row, branches)}\n`
         // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
         // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
         // tooling will not run from the primary checkout at all. The first engineer woken by this
@@ -5160,12 +5265,15 @@ export function unclaimableRowOrders(offerable, streaks) {
  * @param {{ number: number, headRefName?: string, labels?: any[] }[]} [openPrs] the open pull requests the tick already
  *        read (#3010). A branch one of them is on is NOT unshipped, so its order names the PR and `--adopt` instead of
  *        advising "open its pull request". Absent is none, and the order is exactly what #2031 wrote.
+ * @param {{ branch: string, number: number, state: string }[] | null} [branchPrs] `readBranchPrs`'s answer (#3892). A row whose branches
+ *        are all closed-unmerged is OFFERED by `rowOrders` and gets no order here: asking `product-manager` to read a branch that was closed on purpose is the dead end this fixes.
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function rowBranchOrders(readyRows, rowBranches = null, openPrs = []) {
+export function rowBranchOrders(readyRows, rowBranches = null, openPrs = [], branchPrs = null) {
   if (!Array.isArray(rowBranches)) return [];
   const byRow = branchIndex(rowBranches);
+  const replaceable = branchesToReplace(rowBranches, branchPrs);
   const orders = [];
   // OLDEST FIRST AND CAPPED, `rowOrders`'s shape: a queue that hands out its newest rows first starves
   // its oldest, and the number is a row number, so ascending IS oldest.
@@ -5177,7 +5285,7 @@ export function rowBranchOrders(readyRows, rowBranches = null, openPrs = []) {
     // `row-claim.mjs` and a row carrying either is not a fresh start.
     if (sessionOf(row) || labelsOf(row).includes(CLAIM_LABEL)) continue;
     const pushed = byRow.get(Number(row.number)) ?? [];
-    if (pushed.length === 0) continue;
+    if (pushed.length === 0 || replaceable.has(Number(row.number))) continue;
     orders.push(unshippedOrder({ row, pushed, openPr: openPrOnBranch(pushed, openPrs) }));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) break;
   }
@@ -5994,6 +6102,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           key?: string, repo?: string, openRows?: any[], unarmed?: number[] | null,
  *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
  *           rowBranches?: {branch: string, head: string, row: number}[] | null,
+ *           branchPrs?: {branch: string, number: number, state: string}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
  *           primaryDrift?: import("./update-primary.mjs").PrimaryDrift | null,
  *           closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null, trunkRed?: ReturnType<typeof readTrunkRed>,
@@ -6040,6 +6149,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `trunkRed` is `readTrunkRed()` -- the facts about a red `main`, or `null` when it is green or the
  *        read was refused. OMITTED AND `null` MEAN THE SAME THING and it carries no `= null` default, for
  *        `rowBranches`'s reason: `decide` sits exactly on its limit of 15.
+ *        `branchPrs` is `readBranchPrsOfUnclaimed()` (#3892): the pull requests on those branches, so a row whose branches were all closed unmerged is
+ *        offered rather than shelved. OMITTED AND `null` MEAN THE SAME, "not asked or refused": the row stays shelved. No `= null` default, for `rowBranches`'s reason.
  *        `baseTip` is `readBaseTip()` -- `main`'s tip commit, read only on a red tick (#2117). It carries no
  *        `= null` default for `rowBranches`'s reason, and OMITTED AND `null` MEAN THE SAME THING: the
  *        `pr-checks-failing` prompt says whether `main` moved is UNKNOWN. IT CHANGES ONLY THOSE WORDS.
@@ -6071,7 +6182,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog }) {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -6095,9 +6206,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
   // causes above use: work that already EXISTS outranks work nobody has started.
-  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows });
-  orders.push(...rowBranchOrders(readyRows, rowBranches, prs), ...incompleteRowOrders(readyRows)); // #2791, #3010
-  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog })), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows });
+  orders.push(...rowBranchOrders(readyRows, rowBranches, prs, branchPrs), ...incompleteRowOrders(readyRows)); // #2791, #3010, #3892
+  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog }), branchesToReplace(rowBranches, branchPrs)), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
@@ -7462,7 +7573,7 @@ function main() {
   const strippedClosedClaims = stripClosedClaims(closedClaimLabels); // #3883: the closed rows whose holder herdr does not list lose their claim labels, in the tick that read them
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
-  const rowBranches = readRowBranches();
+  const rowBranches = readRowBranches(), branchPrs = readBranchPrsOfUnclaimed(rows, rowBranches); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
   /** @type {import("./org-health.mjs").PoolReading[]} */
   const pools = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
@@ -7485,7 +7596,7 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: armingSplit === null ? null : armingSplit.unarmed, rowBranches, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, openRows: allOpen }),
+    unarmed: armingSplit === null ? null : armingSplit.unarmed, rowBranches, branchPrs, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen }),
     // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
     // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
     // is what lets the detection exist at all.
@@ -7515,7 +7626,7 @@ function main() {
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
-  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, openRows: allOpen }).blocked,
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen }).blocked,
     ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
 
   const unread = unreadLanes({ prs, readyRows, others });
