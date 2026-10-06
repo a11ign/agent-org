@@ -36,7 +36,7 @@ const commentsOf = (total: number, claimsAt: number[]) => Array.from({ length: t
 const MERGED = [{ number: 302, headRefName: BRANCH, mergedAt: at(60), title: "the work", labels: [] }];
 
 /** A `gh` that answers like the real one: `issue list` the FIRST 100 comments of each row, GraphQL the LAST 100 of the rows it is asked about. */
-function gh(rows: Record<number, object[]>, { graphql = "answer" }: { graphql?: "answer" | "refuse" | "errors" } = {}) {
+function fakeGh(rows: Record<number, object[]>, { graphql = "answer" }: { graphql?: "answer" | "refuse" | "errors" } = {}) {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
@@ -75,7 +75,7 @@ test("#3821 RED: the first 100 comments of the 112-comment row release a claim m
 });
 
 test("#3821 the 112-comment row: the claim made at the 108th is HELD, because the gate now reads the newest 100", () => {
-  const { run } = gh(ROW_112);
+  const { run } = fakeGh(ROW_112);
   const page = readClaimedRowComments(run)!;
   assert.equal(page[0].comments.length, ISSUE_LIST_COMMENT_CAP);
   assert.equal(page[0].comments.at(-1).body, "comment 112", "the NEWEST comment is in the page, oldest first as `issue list` gives them");
@@ -84,7 +84,7 @@ test("#3821 the 112-comment row: the claim made at the 108th is HELD, because th
 
 test("#3821 the same fixture with 99 comments is HELD before and after (the control for the cap itself), and makes no second call", () => {
   const rows = { [ROW]: commentsOf(99, [10, 98]) };
-  const { run, graphqlCalls } = gh(rows);
+  const { run, graphqlCalls } = fakeGh(rows);
   assert.equal(verdictOn(oldPage(rows)).verdict, "held");
   assert.equal(verdictOn(readClaimedRowComments(run)!).verdict, "held");
   assert.equal(graphqlCalls().length, 0, "a row under the cap is read whole, so a healthy tick pays nothing beyond the one `issue list`");
@@ -93,14 +93,14 @@ test("#3821 the same fixture with 99 comments is HELD before and after (the cont
 test("#3821 a live claim that PRECEDES the merge is released by BOTH readings (the control that 'held' is not what every row with a merged pull request gets)", () => {
   const rows = { [ROW]: commentsOf(112, [10, 40]) };
   assert.equal(verdictOn(oldPage(rows)).verdict, "released");
-  assert.equal(verdictOn(readClaimedRowComments(gh(rows).run)!).verdict, "released", "the claim at the 40th is in the newest 100, and the merge at the 60th is after it");
+  assert.equal(verdictOn(readClaimedRowComments(fakeGh(rows).run)!).verdict, "released", "the claim at the 40th is in the newest 100, and the merge at the 60th is after it");
 });
 
 // --- Done-when 2: a row whose end cannot be read is never released --------------------------------------------------------------------------
 
 test("#3821 a refused or erroring GraphQL read leaves the capped row OUT of the page, and the claim-stall pass SKIPS it, never releases it", () => {
   for (const graphql of ["refuse", "errors"] as const) {
-    const page = readClaimedRowComments(gh({ ...ROW_112, 77: commentsOf(3, [1]) }, { graphql }).run)!;
+    const page = readClaimedRowComments(fakeGh({ ...ROW_112, 77: commentsOf(3, [1]) }, { graphql }).run)!;
     assert.deepEqual(page.map((r) => r.number), [77], `${graphql}: the capped row is dropped and the short row is kept`);
     assert.equal(verdictOn(page).verdict, "skip", `${graphql}: a row the page does not carry is not evaluated`);
   }
@@ -113,7 +113,7 @@ test("#3821 a refused `issue list` is still `null`, never `[]` (#1286)", () => {
 // --- Done-when 1: the cost is one call for every capped row, never one per row ---------------------------------------------------------
 
 test("#3821 two capped rows cost ONE GraphQL call, and it asks for those rows only", () => {
-  const { run, graphqlCalls } = gh({ ...ROW_112, 3600: commentsOf(150, [140]), 77: commentsOf(3, [1]) });
+  const { run, graphqlCalls } = fakeGh({ ...ROW_112, 3600: commentsOf(150, [140]), 77: commentsOf(3, [1]) });
   const page = readClaimedRowComments(run)!;
   assert.equal(graphqlCalls().length, 1);
   const query = String(graphqlCalls()[0].find((a) => a.startsWith("query=")));
