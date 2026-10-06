@@ -28,7 +28,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -205,13 +205,31 @@ const TSX_CACHE = /^tsx-\d+$/;
 /** What a run left in `dir`: the names, sorted, so a failure says which prefix leaked. */
 const leftIn = (dir: string) => readdirSync(dir).filter((name) => !TSX_CACHE.test(name)).sort();
 
+/**
+ * The environment the fixed files run in. They import tool modules that REFUSE at import when `AGENT_ORG_HOST` names no project (#3233), so a checkout
+ * whose caller exports none -- a reviewer's, or the bare Acceptance command -- failed the live reading on `ingest-state.test.mjs` and not on a leak.
+ * The caller's own declaration wins; otherwise the recorded org-health project (the one `clock-feed.test.mjs` runs against) is declared in `scratch`.
+ */
+function envWithHost(scratch: string, own: string): NodeJS.ProcessEnv {
+  const env = { ...process.env, TMPDIR: own };
+  if (process.env.AGENT_ORG_HOST) return env;
+  const project = join(scratch, "project");
+  cpSync(join(SRC, "packaging/fixtures/org-health/project"), project, { recursive: true });
+  const hostFile = join(scratch, "host.json");
+  writeFileSync(hostFile, JSON.stringify({ schema: 1, home: scratch, binDir: join(scratch, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: project }],
+    gh: { workers: join(scratch, "workers"), leads: join(scratch, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+  return { ...env, AGENT_ORG_HOST: hostFile };
+}
+
 function runUnderOwnTmp(args: string[]): { left: string[], status: number | null, output: string } {
   const own = mkdtempSync(join(tmpdir(), "tmp-fixtures-live-"));
+  const scratch = mkdtempSync(join(tmpdir(), "tmp-fixtures-host-"));
   try {
-    const run = spawnSync(process.execPath, args, { cwd: TOOL_ROOT, env: { ...process.env, TMPDIR: own }, encoding: "utf8" });
+    const run = spawnSync(process.execPath, args, { cwd: TOOL_ROOT, env: envWithHost(scratch, own), encoding: "utf8" });
     return { left: leftIn(own), status: run.status, output: `${run.stdout}${run.stderr}` };
   } finally {
     rmSync(own, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
