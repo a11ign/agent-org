@@ -106,8 +106,8 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // graph; a cycle back through ready-label-audit.mjs) but the accumulation was itself the fact-stated-twice
 // shape this repo names as its own most expensive recurring defect -- three copies of four literals is
 // worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
-import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.mjs";
-import { SESSION_PREFIX } from "./project-vocabulary.mjs";
+import { CLAIM_LABEL } from "./claim-labels.mjs";
+import { labelsToStrip, stripClaimLabelsVia } from "./claim-label-strip.mjs";
 import { REPO } from "./project-identity.mjs";
 // #2202: `waiting-condition.mjs` imports NOTHING, so it is import-safe under this header's no-`pnpm install`/no-build
 // constraint for the same reason `claim-labels.mjs` is: it cannot be part of a cycle.
@@ -230,35 +230,8 @@ export function declaredRowsFromBody(body) {
   return [...new Set(numbers)];
 }
 
-/**
- * #754: which of a row's CURRENT labels a merge-driven close must strip, IN THE SAME ACT as the close --
- * `ready` (it is no longer pickable), `in-progress`/`started` and any `session:*` (the claim is over), so
- * `audit`'s recurring DEBRIS finding -- *"a closed row still carries a pickable/claimed label"* -- stops
- * being PRODUCED by this path rather than being cleared by hand each hour.
- *
- * `answer:<session>` IS DELIBERATELY NEVER IN IT EITHER, AND IT IS THE OPPOSITE REASON (#2202). `was-ready`
- * is kept because it is a record; `answer:*` is kept because it is a LIVE DEBT -- the only machine-readable
- * "a named session still owes an answer here". Stripping it on close would erase the question in the same
- * act that ends the wake, so the row would read as answered when it was merely closed; that is the exact
- * silence this row (#2202) exists to end. The gate's closed-row read (`readClosedAnswerRows`) keeps waking
- * the session, and the session clears the label by answering. The price, stated: a closed row can wear a
- * live `answer:` label, and that is what it MEANS now, not debris -- `audit`'s DEBRIS finding is about
- * claim labels, which are on this list.
- *
- * `was-ready` is DELIBERATELY NEVER in this list. It is a record of what the row WAS, not a claim on it
- * (#703 still carries it correctly, and this must not change that) -- the same distinction
- * `declineRemoveLabels` in `row-claim.mjs` draws for the identical label on a different path.
- *
- * Safe on a row missing any of these: the caller strips only what `currentLabels` actually contains, and
- * `gh issue edit --remove-label` is itself a harmless no-op on a label a row does not carry.
- *
- * @param {string[]} currentLabels
- * @returns {string[]}
- */
-export function labelsToStrip(currentLabels) {
-  return currentLabels.filter((label) => label === READY_LABEL || label === CLAIM_LABEL
-    || label === STARTED_LABEL || label.startsWith(SESSION_PREFIX));
-}
+// #3883: `labelsToStrip` and the strip itself live in `claim-label-strip.mjs`, a leaf the work gate can import; re-exported so every caller here is unchanged.
+export { labelsToStrip };
 
 /**
  * #2036: THE ROW A MERGED PR WAS BUILT FOR, READ OFF ITS BRANCH NAME. `agent/worktree-prune-unit-2000`
@@ -520,15 +493,7 @@ function closeOneRow(n, { prNumber, sha, repo, owedBy = [], basis = "github" }) 
  *   never reusing `CLOSE-ROWS:` itself: which path did the work is a fact about the pipeline's health.
  */
 export function stripClaimLabels(n, labels, repo, logPrefix = "CLOSE-ROWS") {
-  const toStrip = labelsToStrip(labels);
-  if (toStrip.length === 0) return;
-  try {
-    gh(["issue", "edit", String(n), "--repo", repo, ...toStrip.flatMap((l) => ["--remove-label", l])]);
-    console.log(`${logPrefix}: #${n} stripped ${toStrip.join(", ")}.`);
-  } catch (cause) {
-    console.log(`${logPrefix}: #${n} closed but COULD NOT STRIP ${toStrip.join(", ")} -- `
-      + `${cause instanceof Error ? cause.message : cause}`);
-  }
+  stripClaimLabelsVia(n, labels, repo, { gh, say: (line) => console.log(line), logPrefix });
 }
 
 /**

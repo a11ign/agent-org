@@ -12,7 +12,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorkerListed, readOpenRowFollowUps, GH_READS } from "../work-gate.mjs";
+import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorkerListed, readOpenRowFollowUps, GH_READS,
+  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims } from "../work-gate.mjs";
+import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.mjs";
+import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.mjs";
 import { performRelease } from "../wake.mjs";
 import { claimRecordComment } from "../row-claim.mjs";
 
@@ -265,4 +268,101 @@ test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders:
   assert.match(main, /const \{[^}]*\bclosedClaims\b[^}]*\} = readOpenRowFollowUps\(allOpen\)/, "read in the follow-ups' wave");
   assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes\), closedClaims\)/, "and handed to the orders");
   assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\) \}\)/, "which turns them into orders beside the open claims' own");
+});
+
+// --- #3883: THE LABELS OF A CLOSED ROW WHOSE HOLDER IS NOT LISTED ----------------------------------------------------------------------------------------
+
+/** The org as herdr lists it: both standing panes (a COMPLETE listing) and whatever else is passed. */
+const org = (...others: string[]): Agent[] => ["ceo", "orchestrator", ...others].map((label) => ({ label, status: "idle" }));
+const stale = (number: number, ...names: string[]) => ({ number, labels: names.map((name) => ({ name })) });
+const DEBRIS = ["in-progress", "started", "session:worker-9", "was-ready", "answer:ceo"];
+
+/** One tick's act: the `gh issue edit` calls it made, what it said on its log, and how many rows it reports stripped. */
+function stripTick(asked: Parameters<typeof stripClosedClaims>[0]) {
+  const edits: string[][] = [];
+  const said: string[] = [];
+  const stripped = stripClosedClaims(asked, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign" });
+  return { edits, said, stripped };
+}
+const removed = (args: string[]) => args.flatMap((a, i) => (args[i - 1] === "--remove-label" ? [a] : []));
+
+test("#3883 (1) a CLOSED row whose `session:` holder herdr does NOT list loses in-progress, started and session:*, and keeps was-ready and answer:*", () => {
+  const { edits, stripped } = stripTick({ rows: [stale(3866, ...DEBRIS)], agents: org("worker-1") });
+  assert.equal(edits.length, 1, "one edit for the row");
+  assert.deepEqual(edits[0].slice(0, 5), ["issue", "edit", "3866", "--repo", "a11ign/a11ign"]);
+  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:worker-9"], "the close path's own list: `answer:*` is a live debt and `was-ready` a record");
+  assert.equal(stripped, 1);
+});
+
+test("#3883 (2) a closed row whose holder IS listed (in any status) is LEFT ALONE and NAMED on the log", () => {
+  const agents = [...org(), { label: "worker-9", status: "blocked" }];
+  const { edits, said, stripped } = stripTick({ rows: [stale(3000, "in-progress", "session:worker-9")], agents });
+  assert.deepEqual([edits, stripped], [[], 0], "nothing edited");
+  assert.ok(said.some((l) => /#3000 keeps its claim labels: worker-9 is listed/.test(l)), `named: ${said.join("|")}`);
+});
+
+test("#3883 (3) both in ONE tick, and a row with `in-progress` but NO `session:` label has no holder to be listed: it is stripped", () => {
+  const rows = [stale(1, "in-progress", "session:orchestrator"), stale(2, "in-progress", "session:worker-9"), stale(3, "in-progress", "started")];
+  const { edits, stripped } = stripTick({ rows, agents: org() });
+  assert.deepEqual(edits.map((e) => e[2]), ["2", "3"], "the listed seat's row (#1) is untouched; the unlisted holder's and the holderless row go");
+  assert.equal(stripped, 2);
+  assert.deepEqual(closedClaimDebris(rows, org()).kept, [{ number: 1, holders: ["orchestrator"] }]);
+});
+
+test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absence of a listing is not an unlisted holder", () => {
+  const notAsked = stripTick(null);
+  const unread = stripTick({ rows: null, agents: org() });
+  for (const t of [notAsked, unread]) assert.deepEqual([t.edits, t.stripped], [[], 0]);
+  assert.match(notAsked.said.join(), /NOT read.*listing was missing or incomplete/);
+  assert.match(unread.said.join(), /NOT read.*refused/);
+});
+
+test("#3883 (5) a failed edit is said, counted as NOT stripped, and does not stop the next row", () => {
+  const said: string[] = [];
+  const gh = (args: string[]) => { if (args[2] === "7") throw new Error("HTTP 502"); return ""; };
+  const stripped = stripClosedClaims({ rows: [stale(7, "in-progress"), stale(8, "in-progress")], agents: org() }, { gh, say: (l) => { said.push(l); }, repo: "r/r" });
+  assert.equal(stripped, 1);
+  assert.ok(said.some((l) => /#7 closed but COULD NOT STRIP in-progress -- HTTP 502/.test(l)));
+  assert.ok(said.some((l) => /#8 stripped in-progress/.test(l)));
+});
+
+test("#3883 (6) the read: asked once, labels only, closed + in-progress, and ONLY with a COMPLETE listing (a partial listing reads every live holder as absent)", () => {
+  const seen: string[][] = [];
+  const run = (args: string[]) => { seen.push(args); return JSON.stringify([stale(1, "in-progress")]); };
+  assert.equal(closedClaimLabelsWhenListed(null, run), null);
+  assert.equal(closedClaimLabelsWhenListed([{ label: "worker-9", status: "idle" }], run), null, "neither standing pane listed");
+  assert.equal(seen.length, 0, "no call made for either");
+  const asked = closedClaimLabelsWhenListed(org(), run)!;
+  assert.deepEqual(asked.rows, [stale(1, "in-progress")]);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].slice(0, 6), ["issue", "list", "--state", "closed", "--label", "in-progress"]);
+  assert.equal(seen[0][seen[0].indexOf("--json") + 1], "number,labels", "no comments: the page is the debris and nothing else");
+  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => { throw new Error("502"); })?.rows, null, "a refusal is null, never []");
+  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => "{}")?.rows, null);
+});
+
+test("#3883 (7) the follow-ups' wave makes the read once, from the SAME listing it hands #3535 (a second herdr read would be a second answer)", () => {
+  const { batches } = followUps(org("worker-3535"), (args) => (args.includes("number,labels") ? JSON.stringify([stale(5, "in-progress")]) : "[]"));
+  const asked = batches.flat().filter((c) => c.args.includes("--state") && c.args.includes("closed") && c.args.includes("in-progress") && c.args.includes("number,labels"));
+  assert.equal(asked.length, 1);
+  const calls: Call[] = [];
+  const got = readOpenRowFollowUps(OPEN_ROWS, ((args: string[]) => { calls.push({ args, repo: undefined }); return "[]"; }) as never, undefined as never, undefined as never) as { closedClaimLabels: unknown };
+  assert.equal(got.closedClaimLabels, null, "a test's `gh` stub carries no herdr listing: not asked, so not 'unlisted'");
+});
+
+test("#3883 (8) ONE COPY: the gate strips through the leaf, the close path re-exports it, and the gate does not import the close path", () => {
+  assert.equal(labelsToStripOfCloser, labelsToStripOfLeaf);
+  const said: string[] = [];
+  assert.equal(stripClaimLabelsVia(1, ["answer:x", "was-ready"], "r/r", { gh: () => { throw new Error("must not be called"); }, say: (l) => { said.push(l); } }), "nothing");
+  assert.equal(stripClaimLabelsVia(1, ["in-progress"], "r/r", { gh: () => "", say: (l) => { said.push(l); }, logPrefix: "SWEEP" }), "stripped");
+  assert.match(said[0], /^SWEEP: #1 stripped in-progress\.$/);
+  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(gate, /from "\.\/close-rows-for-merged-pr\.mjs"/, "its import closure must stay loadable with no roles dir (#2174)");
+  assert.match(gate, /import \{ stripClaimLabelsVia \} from "\.\/claim-label-strip\.mjs"/);
+  assert.match(gate, /const strippedClosedClaims = stripClosedClaims\(closedClaimLabels\)/, "and main acts on what the wave read");
+});
+
+test("#3883 (9) the read is counted in GH_READS", () => {
+  assert.match(GH_READS.conditionalOnCompleteHerdrListing, /readClosedClaimLabelRows/);
+  assert.match(GH_READS.conditionalOnCompleteHerdrListing, /--state closed --label in-progress/);
 });
