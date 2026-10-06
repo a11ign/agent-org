@@ -309,6 +309,44 @@ test("#3883 (3) both in ONE tick, and a row with `in-progress` but NO `session:`
   assert.deepEqual(closedClaimDebris(rows, org()).kept, [{ number: 1, holders: ["orchestrator"] }]);
 });
 
+// --- #3900: A STANDING SEAT IS ALWAYS LISTED, SO ITS HOLD ON A CLOSED ROW ENDS A DAY AFTER THE CLOSE --------------------------------------------------------
+
+const TICK = Date.parse("2026-10-07T12:00:00Z");
+const closedAgo = (hours: number) => new Date(TICK - hours * 3600_000).toISOString();
+const closed = (number: number, holder: string, closedAt: string | undefined) => ({ ...stale(number, "in-progress", "started", `session:${holder}`), closedAt });
+const tick = (rows: ReturnType<typeof closed>[]) => {
+  const edits: string[][] = [];
+  const said: string[] = [];
+  const stripped = stripClosedClaims({ rows, agents: org("worker-3900") },
+    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
+  return { edits, said, stripped };
+};
+
+test("#3900 (1) a standing seat's row closed 3 days ago is STRIPPED, said once as stripped and never as the keeps line", () => {
+  const { edits, said, stripped } = tick([closed(3164, "ceo", closedAgo(72))]);
+  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:ceo"]);
+  assert.equal(stripped, 1);
+  assert.ok(said.some((l) => /#3164 stripped/.test(l)), said.join("|"));
+  assert.ok(!said.some((l) => /keeps its claim labels/.test(l)), "the repeating line is gone");
+});
+
+test("#3900 (2) the same seat's row closed 1 hour ago is KEPT and named", () => {
+  const { edits, said, stripped } = tick([closed(3164, "ceo", closedAgo(1))]);
+  assert.deepEqual([edits, stripped], [[], 0]);
+  assert.ok(said.some((l) => /#3164 keeps its claim labels: ceo is listed/.test(l)), said.join("|"));
+});
+
+test("#3900 (3) a LISTED worker's row closed 3 days ago is KEPT: the grace is for standing seats only", () => {
+  const { edits, said, stripped } = tick([closed(3900, "worker-3900", closedAgo(72))]);
+  assert.deepEqual([edits, stripped], [[], 0]);
+  assert.ok(said.some((l) => /#3900 keeps its claim labels: worker-3900 is listed/.test(l)), said.join("|"));
+});
+
+test("#3900 (4) a missing or unparseable `closedAt` is KEPT: fail toward not stripping a label", () => {
+  const { edits, stripped } = tick([closed(1, "ceo", undefined), closed(2, "orchestrator", "not a date")]);
+  assert.deepEqual([edits, stripped], [[], 0]);
+});
+
 test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absence of a listing is not an unlisted holder", () => {
   const notAsked = stripTick(null);
   const unread = stripTick({ rows: null, agents: org() });
@@ -336,14 +374,14 @@ test("#3883 (6) the read: asked once, labels only, closed + in-progress, and ONL
   assert.deepEqual(asked.rows, [stale(1, "in-progress")]);
   assert.equal(seen.length, 1);
   assert.deepEqual(seen[0].slice(0, 6), ["issue", "list", "--state", "closed", "--label", "in-progress"]);
-  assert.equal(seen[0][seen[0].indexOf("--json") + 1], "number,labels", "no comments: the page is the debris and nothing else");
+  assert.equal(seen[0][seen[0].indexOf("--json") + 1], "number,labels,closedAt", "no comments: the page is the debris and nothing else");
   assert.deepEqual(closedClaimLabelsWhenListed(org(), () => { throw new Error("502"); })?.rows, null, "a refusal is null, never []");
   assert.deepEqual(closedClaimLabelsWhenListed(org(), () => "{}")?.rows, null);
 });
 
 test("#3883 (7) the follow-ups' wave makes the read once, from the SAME listing it hands #3535 (a second herdr read would be a second answer)", () => {
-  const { batches } = followUps(org("worker-3535"), (args) => (args.includes("number,labels") ? JSON.stringify([stale(5, "in-progress")]) : "[]"));
-  const asked = batches.flat().filter((c) => c.args.includes("--state") && c.args.includes("closed") && c.args.includes("in-progress") && c.args.includes("number,labels"));
+  const { batches } = followUps(org("worker-3535"), (args) => (args.includes("number,labels,closedAt") ? JSON.stringify([stale(5, "in-progress")]) : "[]"));
+  const asked = batches.flat().filter((c) => c.args.includes("--state") && c.args.includes("closed") && c.args.includes("in-progress") && c.args.includes("number,labels,closedAt"));
   assert.equal(asked.length, 1);
   const calls: Call[] = [];
   const got = readOpenRowFollowUps(OPEN_ROWS, ((args: string[]) => { calls.push({ args, repo: undefined }); return "[]"; }) as never, undefined as never, undefined as never) as { closedClaimLabels: unknown };
