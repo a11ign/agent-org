@@ -276,6 +276,8 @@ const capturingStderr = (run) => (run === defaultRun ? capturedRun : run);
 /** The most `gh` calls one batch has in flight: the other repositories number single digits, and GitHub answers a burst with a secondary limit. */
 export const BATCH_MAX_CALLS = 16;
 const BATCH_MAX_BUFFER = 256 * 1024 * 1024;
+/** How long past a call's own bound the batch's outer wait is held, so the worker reports a call it cut before `execFileSync` kills the worker itself. */
+export const BATCH_OUTER_GRACE_MS = 5_000;
 
 /**
  * The `node` one batch runs: each call through ASYNC `execFile` so they wait together, answers printed as one JSON list in the order asked. `GH_REPO`
@@ -284,9 +286,11 @@ const BATCH_MAX_BUFFER = 256 * 1024 * 1024;
 const BATCH_WORKER = `
 const { execFile } = require("node:child_process");
 const one = ({ args, repo }) => new Promise((done) => execFile("gh", args,
-  { encoding: "utf8", maxBuffer: ${BATCH_MAX_BUFFER}, env: repo === undefined ? process.env : { ...process.env, GH_REPO: repo } },
+  { encoding: "utf8", maxBuffer: ${BATCH_MAX_BUFFER}, timeout: Number(process.argv[2]), killSignal: "SIGKILL",
+    env: repo === undefined ? process.env : { ...process.env, GH_REPO: repo } },
   (error, stdout, stderr) => done(error === null ? { stdout }
-    : { failed: true, stdout, stderr, status: typeof error.code === "number" ? error.code : null, code: typeof error.code === "string" ? error.code : undefined })));
+    : { failed: true, stdout, stderr, status: typeof error.code === "number" ? error.code : null,
+        code: error.killed ? "ETIMEDOUT" : typeof error.code === "string" ? error.code : undefined })));
 Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdout.write(JSON.stringify(answers)));
 `;
 
@@ -294,16 +298,21 @@ Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdo
  * (#3566, slice 2) `gh` CALLS ASKED TOGETHER WAIT TOGETHER. The gate is synchronous, so each of the eight repositories' reads waited for the one before it:
  * 17 `pr list` calls were 10.5 s of a 40.6 s gate, measured 2026-10-05 with a timing shim on PATH. ONE synchronous spawn of a `node` that starts the
  * calls at once costs the slowest of them instead of their sum, and the tick keeps its shape: no reader becomes asynchronous.
+ *
+ * (#3843) EACH CALL IS CUT AT `callMs`, THE BOUND `defaultRun` GIVES A `gh` ON ITS OWN. A cut call answers as a refused one (`failed`, `status: null`,
+ * `code: "ETIMEDOUT"`, as `ghWithin` throws it), so every caller's fail-open verdict stands and the other calls' answers are intact. The worker's own wait
+ * is `BATCH_OUTER_GRACE_MS` longer, so it reports the call it cut before it is killed; if it is killed anyway, `runBatch` throws and the caller runs its calls one by one.
  * @param {{ args: string[], repo: string | undefined }[]} calls
  * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [callMs] the bound on each call
  * @returns {({ stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string })[]} one answer per call, in order
  */
-export function runBatch(calls, env = process.env) {
+export function runBatch(calls, env = process.env, callMs = GH_READ_TIMEOUT_MS) {
   const answers = [];
   for (let from = 0; from < calls.length; from += BATCH_MAX_CALLS) {
     const chunk = calls.slice(from, from + BATCH_MAX_CALLS);
-    answers.push(...JSON.parse(execFileSync(process.execPath, ["-e", BATCH_WORKER, JSON.stringify(chunk)],
-      { encoding: "utf8", maxBuffer: BATCH_MAX_BUFFER, env })));
+    answers.push(...JSON.parse(execFileSync(process.execPath, ["-e", BATCH_WORKER, JSON.stringify(chunk), String(callMs)],
+      { encoding: "utf8", maxBuffer: BATCH_MAX_BUFFER, env, timeout: callMs + BATCH_OUTER_GRACE_MS, killSignal: "SIGKILL" })));
   }
   return answers;
 }
