@@ -334,7 +334,7 @@ describe("the vocabulary is closed", () => {
   test("a refusal for an unknown kind lists the kinds that exist", async () => {
     const { reply } = harness();
     const result = /** @type {any} */ (await reply.send("{{weather:1.state}}"));
-    assert.match(result.problems[0].reason, /issue, pr, run, ready, last-merge, unit, comment/);
+    assert.match(result.problems[0].reason, /issue, pr, run, ready, open, last-merge, unit, comment/);
   });
 
   test("a unit name with dots parses (the field is the LAST segment)", () => {

@@ -3,7 +3,7 @@
 // about the organisation is whatever one of these placeholders resolves to: each is RE-READ from its source at the moment of sending, so the
 // words are a reading and never a memory. `reply.mjs` is the sender; this file is the vocabulary, the parser and the reads.
 //
-//   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.status|conclusion}}   {{ready.count}}   {{last-merge.age}}
+//   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.status|conclusion}}   {{ready.count}}   {{open.count}}   {{last-merge.age}}
 //   {{unit:NAME.state}}               {{comment:ID.quote}}           {{unchecked:<any of the above>}}
 //   {{fleet.workers-up}}  {{fleet.workers-down}}  {{gate.last-tick.age}}  {{release:OWNER/REPO.latest}}      (a11ign/a11ign#3420)
 //
@@ -31,6 +31,7 @@ import { readFleetRoster, readLastMerge, readLastTick, readWaitingRows } from ".
 export const MASK = "\u0000";
 /** A verbatim quote is given whole or not at all: a cut quote is a different statement. */
 export const QUOTE_LIMIT = 1000;
+const ROWS_PER_PAGE = 100;
 const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
 const HOURS_PER_DAY = 24;
@@ -50,6 +51,7 @@ const REPOSITORY = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
  *   pr: (number: number) => Promise<{number: number, state: string, review: string}>,
  *   run: (id: number) => Promise<{status: string, conclusion: string | null}>,
  *   ready: () => Promise<{count: number}>,
+ *   open: () => Promise<{count: number}>,
  *   lastMerge: () => Promise<{at: number}>,
  *   unit: (name: string) => Promise<{state: string}>,
  *   comment: (id: number) => Promise<{body: string, url: string}>,
@@ -128,6 +130,7 @@ const VOCABULARY = Object.freeze({
   },
   run: { id: NUMBER, idName: "id", read: (readers, id) => readers.run(Number(id)), fields: { status: runStatus, conclusion: runConclusion } },
   ready: { id: null, read: (readers) => readers.ready(), fields: { count: (value) => String(value.count) } },
+  open: { id: null, read: (readers) => readers.open(), fields: { count: (value) => String(value.count) } },
   "last-merge": { id: null, read: (readers) => readers.lastMerge(), fields: { age: (value, at) => describeAge(at - value.at) } },
   unit: { id: UNIT_NAME, idName: "unit", read: (readers, id) => readers.unit(String(id)), fields: { state: (value) => fieldValue(value.state, "the state") } },
   comment: { id: NUMBER, idName: "id", read: (readers, id) => readers.comment(Number(id)), fields: { quote: (value) => quoteOf(value) } },
@@ -246,6 +249,21 @@ export async function readPlaceholders(placeholders, { readers, now }) {
   return { values, failures, at };
 }
 
+/**
+ * How many ROWS are open: the issues, never the pull requests the issues endpoint lists beside them (`repos/<repo>.open_issues_count` counts both, so it is
+ * not this fact). Paged to the end, so a count over one page is the count and not the page's size.
+ * @param {{api: (path: string) => Promise<any>}} github @param {string} repo @returns {Promise<number>}
+ */
+async function countOpenRows(github, repo) {
+  let count = 0;
+  for (let page = 1; ; page += 1) {
+    const listed = await github.api(`repos/${repo}/issues?state=open&per_page=${ROWS_PER_PAGE}&page=${page}`);
+    if (!Array.isArray(listed)) throw new TypeError("GitHub's list of open issues was not a list");
+    count += listed.filter((issue) => issue.pull_request === undefined).length;
+    if (listed.length < ROWS_PER_PAGE) return count;
+  }
+}
+
 /** @param {string} text `systemctl show` output, `Key=value` per line @returns {Record<string, string>} */
 function parseProperties(text) {
   return Object.fromEntries(text.split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
@@ -282,6 +300,9 @@ export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, no
     },
     async ready() {
       return { count: (await readWaitingRows({ github, repo })).length };
+    },
+    async open() {
+      return { count: await countOpenRows(github, repo) };
     },
     async lastMerge() {
       return { at: await readLastMerge({ github, repo }) };

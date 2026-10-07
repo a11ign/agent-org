@@ -62,7 +62,7 @@ decision 8).
   classifier has false negatives, so it is the first of three layers, not the guarantee:** the second is `ceo`'s brief, the third
   is that the outbound path can carry only checked facts (next).
 - **(e) Answers are facts, checked before they are sent.** `chairman:reply` takes text containing **placeholders from a closed
-  vocabulary** (`{{issue:2885.labels}}`, `{{pr:2881.state}}`, `{{run:36891064128.status}}` (and `.conclusion`, once the run has one), `{{ready.count}}`,
+  vocabulary** (`{{issue:2885.labels}}`, `{{pr:2881.state}}`, `{{run:36891064128.status}}` (and `.conclusion`, once the run has one), `{{ready.count}}`, `{{open.count}}`,
   `{{last-merge.age}}`, `{{unit:work-tick.state}}`, and a verbatim quote of a row comment with its link). **The core re-reads each at
   send time and stamps the message "as of HH:MMZ"**. A read that fails REFUSES the send and tells `ceo` which, and "I could not check
   X" is itself sendable. A `#<number>`, a state word (merged, green, red, passing, failed) or a count outside a placeholder is

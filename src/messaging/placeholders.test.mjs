@@ -43,6 +43,7 @@ function fixtureReaders(overrides) {
     pr: async (number) => ({ number, state: "open", review: "none" }),
     run: async () => ({ status: "completed", conclusion: "success" }),
     ready: async () => ({ count: 0 }),
+    open: async () => ({ count: 0 }),
     lastMerge: async () => ({ at: NOW }),
     unit: async () => ({ state: "active" }),
     comment: async () => ({ body: "x", url: "https://example.test/c" }),
@@ -222,6 +223,7 @@ describe("(5) the list of placeholder names is pinned, because the liaison's bri
       "pr:<number>.number", "pr:<number>.state", "pr:<number>.review",
       "run:<id>.status", "run:<id>.conclusion",
       "ready.count",
+      "open.count",
       "last-merge.age",
       "unit:<unit>.state",
       "comment:<id>.quote",
@@ -234,7 +236,7 @@ describe("(5) the list of placeholder names is pinned, because the liaison's bri
   test("every name in it PARSES once its id is filled in, and the four new ones are in it (the list is the table, not a second copy of it)", () => {
     const filled = [...PLACEHOLDER_NAMES].map((name) => `{{${name.replace("<number>", "7").replace("<id>", "7").replace("<unit>", "a.service").replace("<repo>", RELEASE_REPO)}}}`);
     assert.deepEqual(parsePlaceholders(filled.join(" ")).problems, []);
-    for (const added of ["fleet.workers-up", "fleet.workers-down", "gate.last-tick.age", "release:<repo>.latest"]) assert.ok(PLACEHOLDER_NAMES.includes(added), added);
+    for (const added of ["fleet.workers-up", "fleet.workers-down", "gate.last-tick.age", "release:<repo>.latest", "open.count"]) assert.ok(PLACEHOLDER_NAMES.includes(added), added);
   });
 });
 
@@ -277,5 +279,75 @@ describe("(6) a run is read by `.status` while it runs and by its conclusion onc
     assert.equal(refused.outcome, "refused");
     assert.match(refused.problems[0].reason, /the run's status came back empty/);
     assert.deepEqual(provider.sent, []);
+  });
+});
+
+describe("(7) how many rows are open is a placeholder, so the figure is read and never typed (a11ign/a11ign#3909)", () => {
+  const ROW = (/** @type {number} */ number) => ({ number, labels: [] });
+  const PULL = (/** @type {number} */ number) => ({ number, labels: [], pull_request: {} });
+  /** @param {unknown[][]} pages what GitHub lists, page by page, with pull requests among the issues as it does @param {string[]} asked collects each path read */
+  function ghOver(pages, asked) {
+    return async (/** @type {string[]} */ argv) => {
+      assert.equal(argv[0], "api");
+      asked.push(argv[1]);
+      const page = Number(/[?&]page=(\d+)/.exec(argv[1])?.[1]);
+      return JSON.stringify(pages[page - 1] ?? []);
+    };
+  }
+  /** @param {unknown[][]} pages */
+  function readerOver(pages, asked = /** @type {string[]} */ ([])) {
+    return replyOver(createGhReaders({ gh: ghOver(pages, asked), systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+  }
+
+  test("`{{open.count}}` is the number of open ROWS: pull requests the issues endpoint lists are not counted", async () => {
+    const { reply, provider } = readerOver([[ROW(1), PULL(2), ROW(3), PULL(4), ROW(5)]]);
+    assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent");
+    assert.match(provider.sent[0].text, /^3 rows are open\n/);
+  });
+
+  test("a list longer than a page is counted to its end, and the read stops at the first short page", async () => {
+    const full = Array.from({ length: 100 }, (_, index) => (index % 2 === 0 ? ROW(index + 1) : PULL(index + 1)));
+    const asked = /** @type {string[]} */ ([]);
+    const { reply, provider } = readerOver([full, full, [ROW(201), ROW(202)]], asked);
+    assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent");
+    assert.match(provider.sent[0].text, /^102 rows are open\n/);
+    assert.equal(asked.length, 3, "three pages read, and no fourth after the short one");
+  });
+
+  test("the count is read ONCE however often the text uses it", async () => {
+    const asked = /** @type {string[]} */ ([]);
+    const { reply } = readerOver([[ROW(1), ROW(2)]], asked);
+    assert.equal((await reply.send("{{open.count}} and {{open.count}}")).outcome, "sent");
+    assert.equal(asked.length, 1);
+  });
+
+  test("a figure the reader did not return is still REFUSED, and so is the very figure it did: the filter is on free text, not on what was read", async () => {
+    const readers = fixtureReaders({ open: async () => ({ count: 55 }) });
+    for (const text of ["56 rows are open", "55 rows are open"]) {
+      const { reply, provider } = replyOver(readers);
+      const refused = /** @type {any} */ (await reply.send(text));
+      assert.equal(refused.outcome, "refused", text);
+      assert.match(refused.problems[0].reason, /is a number outside a placeholder \(a count of ready rows is \{\{ready\.count\}\}, of open rows \{\{open\.count\}\}/, "the refusal names the road to the fact");
+      assert.deepEqual(provider.sent, [], text);
+    }
+    const { reply, provider } = replyOver(readers);
+    assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent", "the control: the same sentence built from the placeholder");
+    assert.match(provider.sent[0].text, /^55 rows are open\n/);
+  });
+
+  test("a page that is not a list refuses with that, and a failed read refuses and sends nothing", async () => {
+    for (const gh of [async () => JSON.stringify({ message: "Bad credentials" }), async () => { throw new Error("HTTP 502"); }]) {
+      const { reply, provider } = replyOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+      const refused = /** @type {any} */ (await reply.send("{{open.count}} rows are open"));
+      assert.equal(refused.outcome, "refused");
+      assert.equal(refused.problems[0].placeholder, "{{open.count}}");
+      assert.match(refused.problems[0].reason, /not a list|HTTP 502/);
+      assert.deepEqual(provider.sent, []);
+    }
+  });
+
+  test("`{{open.count}}` takes no id, as `{{ready.count}}` does not", () => {
+    assert.match(parsePlaceholders("{{open:7.count}}").problems[0].reason, /takes no id/);
+    assert.deepEqual(parsePlaceholders("{{open.count}}").problems, []);
   });
 });
