@@ -342,7 +342,11 @@ describe("no other module can produce the branded value (done-when 5)", () => {
   });
 
   test("nothing a module exports is the brand, the registry or the minted value; only inbound.mjs exports a way to mint one", async () => {
-    const brand = Object.getOwnPropertySymbols(accepted)[0];
+    // BOTH COPIES FROM ONE KIND OF IMPORT: the scan below `import()`s each module natively, so `inbound.mjs` there is Node's copy and the static import above is rstest's, and
+    // `value === createInbound` is false across the two. The minter, the checker and the brand all come from the copy the scan reads.
+    const native = await import(pathToFileURL(join(here.pathname, "inbound.mjs")).href);
+    const nativeAccepted = native.createInbound({ ledger: createLedger({ path: join(scratch, "native-brand.jsonl"), now: Date.now }), chairman: CHAIRMAN }).handle(update(130)).accepted;
+    const brand = Object.getOwnPropertySymbols(nativeAccepted)[0];
     assert.ok(brand, "a minted value carries a symbol (control: the scan below has something to look for)");
     const mintersByModule = /** @type {Record<string, string[]>} */ ({});
     for (const name of modules) {
@@ -350,12 +354,12 @@ describe("no other module can produce the branded value (done-when 5)", () => {
       for (const [exportName, value] of Object.entries(exported)) {
         assert.notEqual(value, brand, `${name} exports the brand as ${exportName}`);
         assert.ok(!(value instanceof WeakSet), `${name} exports a WeakSet (${exportName})`);
-        assert.ok(!isAccepted(value, CHAIRMAN), `${name} exports an accepted value (${exportName})`);
-        if (typeof value === "function" && value === createInbound) (mintersByModule[name] ??= []).push(exportName);
+        assert.ok(!native.isAccepted(value, CHAIRMAN), `${name} exports an accepted value (${exportName})`);
+        if (typeof value === "function" && value === native.createInbound) (mintersByModule[name] ??= []).push(exportName);
       }
     }
     assert.deepEqual(mintersByModule, { "inbound.mjs": ["createInbound"] });
-    assert.deepEqual(Object.keys(await import("./inbound.mjs")).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.mjs is a decision, and this list is where it is made");
+    assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.mjs is a decision, and this list is where it is made");
   });
 
   test("only inbound.mjs names the brand: no other source can mint, or even spell, it", () => {

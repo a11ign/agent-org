@@ -232,8 +232,9 @@ describe("the 409 and the lock (done-when 2)", () => {
 
   test("a second instance fails the lock, naming the holder; the free lock and a stale one are taken, and release frees it", () => {
     const path = join(freshDirectory(), "listener.lock");
-    const first = acquireLock(path, { pid: process.pid });
-    assert.throws(() => acquireLock(path, { pid: process.pid + 1 }), (error) => error instanceof ListenerLockHeld && error.holder === process.pid && /one listener per bot/.test(error.message));
+    // THE HOLDER IS THE WORKER'S PARENT, NOT THE WORKER: asking whether a pid is alive is `process.kill(pid, 0)`, and rstest's worker throws on that call for its own pid.
+    const first = acquireLock(path, { pid: process.ppid });
+    assert.throws(() => acquireLock(path, { pid: process.ppid + 1 }), (error) => error instanceof ListenerLockHeld && error.holder === process.ppid && /one listener per bot/.test(error.message));
     first.release();
     assert.ok(!existsSync(path), "release removed it");
     acquireLock(path, { pid: 1234, exists: () => true, startOf: () => "100" });
@@ -468,9 +469,9 @@ describe("main", () => {
 
   test("a second instance refuses with the holder's pid and calls nothing", async () => {
     const harness = mainHarness();
-    acquireLock(join(harness.state, "listener.lock"));
+    acquireLock(join(harness.state, "listener.lock"), { pid: process.ppid }); // the worker's parent: see the lock test above
     assert.equal(await harness.run(), EXIT.refused);
-    assert.match(harness.errors.join("\n"), new RegExp(`pid ${process.pid}`));
+    assert.match(harness.errors.join("\n"), new RegExp(`pid ${process.ppid}`));
     assert.equal(harness.telegram.requests.length, 0);
   });
 });

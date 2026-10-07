@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
   from "../row-claim/stale-rule-guard.mjs";
@@ -183,6 +183,14 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
 });
 
 /**
+ * An import of a path built at run time, which rstest cannot resolve as a bare absolute path (it looks for the module under its own dist) but imports as a `file:` URL.
+ * The query keeps one fixture's copy from being another's (`import.meta.url` is the point of these tests).
+ */
+function importFresh(path: string, query: string) {
+  return import(`${pathToFileURL(path).href}?${query}`);
+}
+
+/**
  * THE GUARD, AS IT LIVES IN A TOOL CHECKOUT: this repository's own `stale-rule-guard.mjs` (and the two leaf modules it imports) committed into a
  * throwaway repository at `<prefix>src/row-claim/`, then IMPORTED FROM THERE, so `import.meta.url` is the fixture's and `staleRuleReason()` is
  * called with no options -- exactly how `row-claim.mjs` calls it. A test that passes `repoRoot` or `files` never reaches the layout decision, which
@@ -195,7 +203,7 @@ async function guardInTool(prefix: string) {
   commit(`${prefix}src/row-claim/own-pr-health-rule.mjs`, "export const inBuildReason = () => null;\n");
   const base = commit(`${prefix}src/row-claim.mjs`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
   setRef(root, "refs/remotes/origin/main", base);
-  const guard = await import(`${join(root, prefix, "src/row-claim/stale-rule-guard.mjs")}?fixture=${encodeURIComponent(root)}`);
+  const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.mjs"), `fixture=${encodeURIComponent(root)}`);
   return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.mjs` };
 }
 
@@ -296,7 +304,7 @@ async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
     mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
     writeFileSync(join(root, dir, rel), text);
   }
-  const guard = await import(`${join(root, dir, "src/row-claim/stale-rule-guard.mjs")}?installed=${encodeURIComponent(root)}`);
+  const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.mjs"), `installed=${encodeURIComponent(root)}`);
   return { root, guard };
 }
 
