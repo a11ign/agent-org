@@ -79,7 +79,9 @@ test("a REFUSED queued-job read says UNKNOWN on stderr and offers nothing", () =
 
 test("a refused job read does not hide a fleet-gated row that is waiting: the rows trip alone", () => {
   const gated = { number: 2870, title: "row", labels: [{ name: "backlog" }, { name: "fleet-gated" }] /* #3942: a row in a state, or the state-label signal trips beside it */, body: "", blockedBy: { nodes: [] } };
-  const { orders } = tickOver(() => { throw new Error("denied"); }, [gated]);
+  // #3943: an engineer holds a row, or the org reads as idle with a `backlog` row open and `idle-with-open-rows` trips beside the fleet signal
+  const held = { number: 2871, title: "row", labels: [{ name: "in-progress" }, { name: "session:worker-2871" }], body: "", blockedBy: { nodes: [] } };
+  const { orders } = tickOver(() => { throw new Error("denied"); }, [gated, held]);
   assert.equal(orders.length, 1);
   assert.match(orders[0].prompt, /#2870/);
 });

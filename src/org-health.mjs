@@ -62,6 +62,8 @@ import { ANSWER_PREFIX, BACKLOG_LABEL } from "./project-vocabulary.mjs";
 import { brokenChecks } from "./red-pr.mjs";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.mjs";
+// A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
+import { IDLE_REASONS, idleLine } from "./idle-with-open-rows.mjs";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
 export const NO_MERGE_HOURS = 3;
@@ -188,6 +190,7 @@ export const SIGNALS = Object.freeze({
   TEAM_ACCESS: "team-access-drifted",
   AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
   STATE_LABEL: "row-without-exactly-one-state",
+  IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
@@ -668,6 +671,26 @@ export function stateLabelReading({ rows }) {
 }
 
 /**
+ * SIGNAL: THE ORG IS IDLE WHILE ROWS ARE OPEN (#3943). `idle` is `idleWithOpenRowsReading`'s answer over the open rows the tick already read, so it costs no call:
+ * `null` is an engineer holding a row (clear); `{ kind: "unread" }` is a read that did not return, which is unknown and NEVER an idle org; an idle org
+ * with nothing unoffered is finished and clear. It trips THE TICK THE CONDITION HOLDS, with no grace (the chairman's order: within one tick), and clears the tick an
+ * engineer holds a row. KEYED ON THE KINDS OF REASON (and the `READY_UNOFFERED` numbers, the one defect), not on every row, so a backlog row filed while idle is not a
+ * second order; a new KIND of reason is.
+ * @param {{ idle: import("./idle-with-open-rows.mjs").IdleRows }} input
+ * @returns {Reading}
+ */
+export function idleWithOpenRowsSignal({ idle }) {
+  if (idle === null) return clear(SIGNALS.IDLE_WITH_OPEN_ROWS);
+  if (idle.kind === "unread") return unknown(SIGNALS.IDLE_WITH_OPEN_ROWS, idle.why);
+  if (idle.findings.length === 0) return clear(SIGNALS.IDLE_WITH_OPEN_ROWS);
+  const kinds = [...new Set(idle.findings.map((f) => f.kind))].sort();
+  const defects = idle.findings.filter((f) => f.kind === IDLE_REASONS.READY_UNOFFERED).map((f) => f.number);
+  return { signal: SIGNALS.IDLE_WITH_OPEN_ROWS, status: "tripped", firstTrippedAt: null,
+    discriminator: `${SIGNALS.IDLE_WITH_OPEN_ROWS}@${kinds.join(",")}${defects.length > 0 ? `:${defects.join(",")}` : ""}`,
+    detail: `no engineer holds a row, and ${idleLine(idle.findings, idle.dateHeld)}` };
+}
+
+/**
  * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
  * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
  * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
@@ -1002,7 +1025,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"] }} facts `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows }} facts `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -1020,6 +1043,7 @@ export function orgHealthReadings(facts) {
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows }));
+  if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   return readings;
 }
 
@@ -1075,6 +1099,11 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "Ready lane, the claim pool and every label-keyed count, and `ready:audit`'s `labelless rows` could not see it while it held any other label at all. `product-manager` reads it first: PROMOTE a row in none "
     + `(\`${READY_LABEL}\` if it is startable, else \`${BACKLOG_LABEL}\`), and for a row in several keep the ONE that is true (\`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\`), by hand with the reason on the row. `
     + "Do not script the repair; read `ready:audit`'s `state labels` line for the count against what GitHub reports.",
+  [SIGNALS.IDLE_WITH_OPEN_ROWS]: "Nobody is building and rows are open: each row named is the reason it is not being built, from a closed list. MOST ARE STATES THE ORG CHOSE (`BACKLOG`, `PARKED`, `EPIC`, "
+    + "`BLOCKED_BY` an open row, `WAITING_FOR` a declared condition, `ANSWER_OWED`, `LANE`, `B4 overlaps`): read whether the one holding the most is still true, and PROMOTE or UNBLOCK it if it is not. "
+    + "`NO_STATE_LABEL` and `TWO_STATE_LABELS` are `row-without-exactly-one-state`'s. **`READY_UNOFFERED` IS A DEFECT, NOT A STATE**: a `" + READY_LABEL + "` row the gate has no reason to withhold while no one works, "
+    + "so the offer is wrong or is not being taken; read `work:tick`'s own output for it and FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn. Rows waiting on a `Not-before:` date are counted and not named. "
+    + "It clears the tick an engineer holds a row.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
