@@ -79,7 +79,8 @@ const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
  * @typedef {{ releases: (r: Repository, window: { since: string }) => Release[] | null,
  *   mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null,
  *   regressions: (r: Repository, window: { since: string }) => Regression[] | null,
- *   range: (r: Repository, commits: { base: string, head: string }) => Range | null }} Readers
+ *   range: (r: Repository, commits: { base: string, head: string }) => Range | null,
+ *   parentOf?: (r: Repository, commit: string) => string | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone
  * @typedef {{ status: string, commits: string[] }} Range GitHub's compare of `base...head`: `status` is `ahead`/`identical` when `base` is in `head`'s history, `behind`/`diverged` when it is not;
  *   `commits` are the commits in `head`'s history that are not in `base`'s, so a commit is in `head` exactly when it is in that list or is `base` itself
  * Every reader answers `null` (or throws) for a read that was REFUSED, and `[]` only for a read that found nothing.
@@ -128,46 +129,108 @@ function ordered(releases) {
  * and this runs inside the work gate's tick). `base` is the OLDEST commit anyone will ask about; a release's `range` from it lists every commit in the release
  * that is not in `base`, which answers every later question about that release from memory. Sound because the merged history is linear on the default branch (a
  * change merged later descends from one merged earlier), so a release that does not contain `base` contains none of the later changes either.
- * @param {{ repository: Repository, readers: Readers, base: string | null }} input
- * @returns {(release: Release, commit: string) => boolean | null} `null` when the range could not be read: never read as `false`
+ *
+ * AND ONCE PER REPOSITORY WHEN THE NEWEST RELEASE'S RANGE CAN BE READ (a11ign/a11ign#3910). That range lists the commits oldest first, so it is the whole linear
+ * history from `base`, and a release contains a commit exactly when it stands at or after it there. Measured 2026-10-07 for `a11ign/agent-org`: 317 releasable changes
+ * and 184 releases in the window, whose one range from the oldest change to the newest release lists 863 commits, every one of the 863 in order of commit date.
+ * One `compare` of ~4 s stands in for the one-per-release that no budget covers once a repository releases on every merge. A release or commit that range does not
+ * list (a release cut from older history than `base`, a commit on no path to the newest release) is asked of its own range, as before.
+ * @param {{ repository: Repository, readers: Readers, base: string | null, releases: Release[] }} input
+ * @returns {{ contains: (release: Release, commit: string) => boolean | null, inHistory: (release: Release, commit: string) => boolean | undefined }}
+ *   `contains` is `null` when the range could not be read: never read as `false`. `inHistory` answers from the one ordered history alone, and is `undefined`
+ *   where that history does not place the release or the commit: asking it never reads anything.
  */
-function ancestryOf({ repository, readers, base }) {
-  /** Keyed by COMMIT: a backport and the release it was cut beside can point at one commit, and the range is the commit's. @type {Map<string, { status: string, commits: Set<string> } | null>} */
+function ancestryOf({ repository, readers, base, releases }) {
+  /** Keyed by COMMIT: a backport and the release it was cut beside can point at one commit, and the range is the commit's. The Set keeps the order the commits were listed in. @type {Map<string, { status: string, commits: Set<string> } | null>} */
   const ranges = new Map();
   const rangeOf = (/** @type {Release} */ release) => {
     const head = release.commit;
     if (head === null || base === null) return null;
     if (!ranges.has(head)) {
-      const range = attempt(() => readers.range(repository, { base, head }));
+      const range = attempt(() => { startable("compare"); return readers.range(repository, { base, head }); });
       ranges.set(head, range === null ? null : { status: range.status, commits: new Set(range.commits) });
     }
     return ranges.get(head) ?? null;
   };
-  return (release, commit) => {
+  /** @type {Map<string, number> | null | undefined} undefined until first asked; null when the newest release's range is unreadable or does not descend from `base` */
+  let positions;
+  const positionsOfHistory = () => {
+    if (positions !== undefined) return positions;
+    const newest = releases.findLast((release) => release.commit !== null);
+    const range = newest === undefined || base === null ? null : rangeOf(newest);
+    const descends = range !== null && (range.status === "ahead" || range.status === "identical");
+    positions = descends && base !== null ? new Map([[base, 0], ...[...range.commits].map((sha, index) => /** @type {[string, number]} */ ([sha, index + 1]))]) : null;
+    return positions;
+  };
+  /** A release's place in the history: its own commit's, else its ONLY PARENT's, because a tag is often a one-commit "Release x.y.z" cut from a main commit and never merged back
+   *  (all but 3 of agent-org's 185 in the window), and a commit that adds nothing but itself contains what its parent does. @type {Map<string, number | undefined>} */
+  const placed = new Map();
+  const placeOf = (/** @type {Release} */ release) => {
+    const history = positionsOfHistory();
+    const head = release.commit;
+    if (history === null || head === null) return undefined;
+    if (!placed.has(head)) {
+      const parent = history.has(head) ? null : attempt(() => readers.parentOf?.(repository, head) ?? null);
+      placed.set(head, history.get(head) ?? (parent === null ? undefined : history.get(parent)));
+    }
+    return placed.get(head);
+  };
+  const inHistory = (/** @type {Release} */ release, /** @type {string} */ commit) => {
+    const at = placeOf(release);
+    const wanted = positionsOfHistory()?.get(commit);
+    return at === undefined || wanted === undefined ? undefined : at >= wanted;
+  };
+  const contains = (/** @type {Release} */ release, /** @type {string} */ commit) => {
+    const known = inHistory(release, commit);
+    if (known !== undefined) return known;
     const range = rangeOf(release);
     if (range === null) return null;
     return commit === base ? range.status === "ahead" || range.status === "identical" : range.commits.has(commit);
   };
+  return { contains, inHistory };
+}
+
+/**
+ * The smallest index in `[0, length)` at which `holds` is true, given that it is false up to some index and true from there on; `length` when it is never true.
+ * `null` when `holds` could not be answered at an index it was asked about: the position is then unknown, and no neighbour's answer stands in for it.
+ * @param {number} length @param {(index: number) => boolean | null} holds @returns {number | null}
+ */
+function firstIndexWhere(length, holds) {
+  let low = 0;
+  let high = length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const answer = holds(middle);
+    if (answer === null) return null;
+    if (answer) high = middle;
+    else low = middle + 1;
+  }
+  return low;
 }
 
 /**
  * The first release that CONTAINS `commit`. A release published before `notBefore` cannot contain it, so it is not asked.
+ * WHEN THE ORDERED HISTORY PLACES EVERY RELEASE THE ANSWER COSTS NO READ, so the releases are walked in time order exactly as they always were (a backport published
+ * after a newer release is still handled, because nothing assumes the answers are monotone). When some release needs a read of its own range, they are BISECTED
+ * instead: the merged history is linear, so once a release contains the commit every later one does, and the reads are `O(log n)` rather than one `compare` for each
+ * release walked past, which no budget covers once a repository releases on every merge (a11ign/a11ign#3910).
+ * A release with no commit cannot be asked: one inside the window that sits BEFORE the answer might be the one, so it makes the question unreadable.
  * `unreadable` is a question that could not be answered: it is never read as "no release contains it", which would make a change look unreleased.
- * @param {{ commit: string | null, notBefore: number, releases: (Release & { at: number })[], windowStart: number, contains: ReturnType<typeof ancestryOf> }} query
+ * @param {{ commit: string | null, notBefore: number, releases: (Release & { at: number })[], windowStart: number, contains: ReturnType<typeof ancestryOf>["contains"], inHistory: ReturnType<typeof ancestryOf>["inHistory"] }} query
  * @returns {{ release: (Release & { at: number }) | null, unreadable: boolean }}
  */
-function firstContaining({ commit, notBefore, releases, windowStart, contains }) {
-  if (commit === null) return { release: null, unreadable: true };
-  for (const release of releases.filter((candidate) => candidate.at >= notBefore)) {
-    if (release.commit === null) {
-      if (release.at >= windowStart) return { release: null, unreadable: true }; // a recent release we cannot place might be the one
-      continue;
-    }
-    const contained = contains(release, commit);
-    if (contained === null) return { release: null, unreadable: true };
-    if (contained) return { release, unreadable: false };
-  }
-  return { release: null, unreadable: false };
+function firstContaining({ commit, notBefore, releases, windowStart, contains, inHistory }) {
+  const unreadable = { release: null, unreadable: true };
+  if (commit === null) return unreadable;
+  const candidates = releases.filter((candidate) => candidate.at >= notBefore);
+  const placed = candidates.filter((candidate) => candidate.commit !== null);
+  const free = placed.every((candidate) => inHistory(candidate, commit) !== undefined);
+  const found = free ? placed.findIndex((candidate) => inHistory(candidate, commit)) : firstIndexWhere(placed.length, (index) => contains(placed[index], commit));
+  if (found === null) return unreadable;
+  const release = placed[found === -1 ? placed.length : found] ?? null;
+  const askedBefore = release === null ? candidates : candidates.slice(0, candidates.indexOf(release));
+  if (askedBefore.some((candidate) => candidate.commit === null && candidate.at >= windowStart)) return unreadable; // a recent release we cannot place might be the one
+  return { release, unreadable: false };
 }
 
 /** @typedef {Omit<Parameters<typeof firstContaining>[0], "commit" | "notBefore">} Context what every ancestry question shares */
@@ -322,6 +385,16 @@ function readSources({ repository, readers, windowStart }) {
 }
 
 /**
+ * A refusal says so when the TIME LIMIT is what ended a read of this repository: taken the moment a metric is refused, so a limit that was hit only after it does
+ * not rewrite it, and a `compare` that was refused for any other reason still reads as it always did. Without it the report blamed an ancestry for a budget (#3910).
+ * @param {string | null} reason @returns {string | null}
+ */
+function namingTheLimit(reason) {
+  const [first] = readLimits.timedOut;
+  return reason === null || first === undefined ? reason : `${reason} (${first} hit its time limit)`;
+}
+
+/**
  * ONE repository's four metrics. Each block is `null` when ITS sources were refused (with the reason in `reasons`), so a refused regression list does
  * not hide a deployment frequency that was read, and none of them is ever a 0 made of an absence.
  * @param {Repository} repository @param {Readers} readers @param {number} now
@@ -335,10 +408,12 @@ export function measureRepository(repository, readers, now) {
   const releasable = merged === null ? null : merged.filter((pr) => (noReleaseYet || Date.parse(pr.mergedAt) >= windowStart) && isReleasable(pr, repository));
   const regressions = attempt(() => readers.regressions(repository, { since: new Date(windowStart).toISOString() }));
   const inScope = regressions === null ? null : regressions.filter((regression) => regressionInScope(regression, windowStart));
-  const context = { releases, windowStart, contains: ancestryOf({ repository, readers, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) }) };
+  const context = { releases, windowStart, ...ancestryOf({ repository, readers, releases, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) }) };
   const frequency = deploymentFrequency({ releases, releasable, now });
   const lead = releasable === null ? { block: null, reason: "its merged pull requests could not be read" } : leadTime({ releasable, context, now });
+  lead.reason = namingTheLimit(lead.reason);
   const fixing = inScope === null ? { rows: null, reason: "its regression rows could not be read" } : fixingReleases({ regressions: inScope, context });
+  fixing.reason = namingTheLimit(fixing.reason);
   const fixes = fixing.rows === null ? [] : fixing.rows.flatMap((row) => (row.fix === null ? [] : [row.fix]));
   const reasons = {
     ...(lead.reason === null ? {} : { leadTime: lead.reason }),
@@ -540,14 +615,24 @@ let readLimits = { timeoutMs: READ_TIMEOUT_MS, deadlineAt: Infinity, timedOut: [
 /** @param {string} command @param {string[]} args @returns {string} the call as a person would name it: the command and the first two words that are not flags */
 const callName = (command, args) => [command, ...args.filter((arg) => !arg.startsWith("-")).slice(0, 2)].join(" ");
 
-/** @param {string} command @param {string[]} args @returns {string} */
-function run(command, args) {
-  const timeout = Math.min(readLimits.timeoutMs, readLimits.deadlineAt - Date.now());
-  const call = callName(command, args);
-  if (timeout <= 0) {
+/**
+ * The milliseconds left of this repository's budget, or a throw that records `call` as the one the budget ended. Every read starts here, so a reader that
+ * does not go through `run` (the ones a test injects) is bound by the same deadline.
+ * @param {string} call @returns {number}
+ */
+function startable(call) {
+  const left = readLimits.deadlineAt - Date.now();
+  if (left <= 0) {
     readLimits.timedOut.push(call);
     throw new Error(`${call} was not started: this repository's read budget is spent`);
   }
+  return left;
+}
+
+/** @param {string} command @param {string[]} args @returns {string} */
+function run(command, args) {
+  const call = callName(command, args);
+  const timeout = Math.min(readLimits.timeoutMs, startable(call));
   try {
     return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout });
   } catch (/** @type {any} */ err) {
@@ -560,10 +645,30 @@ function run(command, args) {
 /** @param {string[]} args @returns {any} */
 const ghJson = (args) => JSON.parse(run("gh", args));
 
+/**
+ * The ONE parent of every commit this process has read, keyed `repo@sha` (a commit's parents never change, so it is never stale): `null` for a commit with none or with two.
+ * Filled by the call that resolves a release's commit, which already carries the parents, so knowing them costs no read of its own (a11ign/a11ign#3910).
+ * @type {Map<string, string | null>}
+ */
+const onlyParents = new Map();
+
+/** @param {string} repo @param {string} ref @returns {{ sha: string, parent: string | null } | null} the commit a tag or sha names; `null` when GitHub does not know it */
+function readCommit(repo, ref) {
+  const answer = attempt(() => run("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(ref)}`, "--jq", `[.sha, (.parents | map(.sha) | join(","))] | join(" ")`]).trim());
+  const [sha, parents = ""] = answer === null ? [] : answer.split(" ");
+  if (sha === undefined || sha.length !== SHA_LENGTH) return null;
+  const parent = parents.length === SHA_LENGTH ? parents : null;
+  onlyParents.set(`${repo}@${sha}`, parent);
+  return { sha, parent };
+}
+
 /** @param {string} repo @param {string} ref @returns {string | null} the commit a tag or sha names; `null` when GitHub does not know it */
-function commitOf(repo, ref) {
-  const sha = attempt(() => run("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(ref)}`, "--jq", ".sha"]).trim());
-  return sha !== null && sha.length === SHA_LENGTH ? sha : null;
+const commitOf = (repo, ref) => readCommit(repo, ref)?.sha ?? null;
+
+/** @param {string} repo @param {string} commit @returns {string | null} its only parent, `null` when it has none or two, or it could not be read */
+function parentOf(repo, commit) {
+  const key = `${repo}@${commit}`;
+  return onlyParents.has(key) ? onlyParents.get(key) ?? null : readCommit(repo, commit)?.parent ?? null;
 }
 
 /**
@@ -665,6 +770,7 @@ export const githubReaders = {
   })),
   regressions: (repository, { since }) => regressionRows(repository.repo, since),
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
+  parentOf: (repository, commit) => parentOf(repository.repo, commit),
   range: (repository, { base, head }) => {
     const pages = ghJson(["api", `repos/${repository.repo}/compare/${base}...${head}?per_page=100`, "--paginate", "--slurp"]);
     return { status: pages[0].status, commits: pages.flatMap((/** @type {any} */ page) => page.commits.map((/** @type {any} */ commit) => commit.sha))};

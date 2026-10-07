@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The DORA lead-time read finds the first release containing a change by bisection over the time-ordered releases instead of a `compare` per release walked past. A repository releasing 184 times in 14 days spent one ~4 s `compare` per release before its oldest change had an answer, so the 240 s repository budget ended first and the retrospective read `a11ign/agent-org: Lead time for changes: unknown -- ancestry of #304 could not be read` on the day deployment frequency was the best it had been. The reads are now `O(log n)` per change (a release answered once is remembered for every later one), a refused `compare` in the middle of the search still ends `unknown`, never the neighbouring release's answer, and a metric the budget or a read timeout refused says `(<call> hit its time limit)` on its reason, whichever metric it is, rather than blaming an ancestry. The budget now also binds an injected `range` reader, so a test's fixture is held to the same deadline as `gh`. a11ign/a11ign#3910.
