@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sandboxGitEnv } from "../lib/git-env.mjs";
@@ -360,14 +361,17 @@ test("#1101: this file's reported test count equals what it declares", () => {
   // regardless of `--test-reporter` -- so the spawn returned bytes in neither format and the count could
   // not be read at all. **The harness was shaping the output it was being used to measure.**
   // TSX'S OWN ENTRY, not `node_modules/.bin/tsx`: npm makes that a symlink to a JS file, which `node` can run;
-  // pnpm makes it a shell-script shim, which `node` cannot (#2297).
+  // pnpm makes it a shell-script shim, which `node` cannot (#2297). FOUND BY RESOLUTION, not as `<tool root>/node_modules/tsx`: CI lays
+  // this tool at `project/packages/agent-org` with the dependencies in `project/node_modules`, so a path built from the tool's root
+  // finds no tsx there and the child printed nothing (#3953, measured on agent-org#343's first run). `tsx`'s `exports` hides
+  // `dist/cli.mjs`, so the resolved entry is its neighbour.
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [join(REPO, "node_modules/tsx/dist/cli.mjs"), "--test", "--test-reporter=tap", file],
+    [join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
-  assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}`);
+  assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}${run.stderr.slice(0, 300)}`);
   assert.equal(Number(reported[1]), declared,
     `workflow-run-liveness.test.ts declares ${declared} tests and reports ${reported[1]}. A gap means it is running somebody `
     + "else's -- which is what importing a `.test.ts` does");
