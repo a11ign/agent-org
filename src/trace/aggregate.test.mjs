@@ -4,10 +4,15 @@
 // TWO WEEKS, so "never pooled" can fail: A (Mon 2026-09-21) holds rows 101 and 102, B (Mon 2026-09-28) holds 201 and 202, and the figures of the two differ. Row 301 is OPEN and
 // dear, so an average that lets it in moves a figure the test names. The hand-computed numbers are in the comments beside the assertion that uses them.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { eventsOfTranscript, PRICES } from "./store.mjs";
-import { parseMergePaths, readMoves } from "./trace.mjs";
+import { parseMergePaths, readMergePaths, readMoves } from "./trace.mjs";
 import { waterfall } from "./waterfall.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
@@ -674,9 +679,34 @@ test("DEFINITIONS name the four figures of #3967, and the report prints them", (
 });
 
 test("parseMergePaths: the paths of each `Merge pull request #n` commit or squash commit ending `(#n)`, and nothing of a commit that names no pull request", () => {
-  const text = ["@@\tMerge pull request #3957 from a11ign/agent/x", "", ".agent-org/roles/liaison.md", "packages/guards/a.test.ts", "@@\tA direct commit", "", "docs/x.md", "@@\tfix(#254): a squash-merged pull request (#265)", "", "src/y.mjs", "@@\tMerge pull request #3954 from a11ign/agent/y", "", ".github/workflows/release.yml"].join("\n");
+  const text = ["@@\tsha3957\tMerge pull request #3957 from a11ign/agent/x", "", ".agent-org/roles/liaison.md", "packages/guards/a.test.ts", "@@\tsha0\tA direct commit", "", "docs/x.md", "@@\tsha265\tfix(#254): a squash-merged pull request (#265)", "", "src/y.mjs", "@@\tsha3954\tMerge pull request #3954 from a11ign/agent/y", "", ".github/workflows/release.yml"].join("\n");
   const paths = parseMergePaths(text, ROW_REPO);
   assert.deepEqual([...paths], [[`${ROW_REPO}#3957`, [".agent-org/roles/liaison.md", "packages/guards/a.test.ts"]], [`${ROW_REPO}#265`, ["src/y.mjs"]], [`${ROW_REPO}#3954`, [".github/workflows/release.yml"]]]);
+});
+
+test("parseMergePaths: a merge commit repeated once per parent keeps its FIRST section, the first parent's, and a later parent's diff replaces nothing (reviewer-agent-org-350)", () => {
+  const text = ["@@\tsha7\tMerge pull request #7 from a11ign/agent/x", "", "packages/agent-org/keep.mjs", "@@\tsha7\tMerge pull request #7 from a11ign/agent/x", "", "docs/unrelated.md", "@@\tsha8\tMerge pull request #8 from a11ign/agent/y", "", "docs/y.md"].join("\n");
+  assert.deepEqual([...parseMergePaths(text, ROW_REPO)], [[`${ROW_REPO}#7`, ["packages/agent-org/keep.mjs"]], [`${ROW_REPO}#8`, ["docs/y.md"]]]);
+});
+
+test("readMergePaths: the command as run, on a real merge whose first parent holds an unrelated change, reads the pull request's own paths and not the first parent's other work", () => {
+  const checkout = mkdtempSync(join(tmpdir(), "merge-paths-"));
+  try {
+    const git = (...args) => execFileSync("git", ["-C", checkout, "-c", "user.email=a@b", "-c", "user.name=n", "-c", "commit.gpgsign=false", ...args], { env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const commitFile = (path, message) => { mkdirSync(join(checkout, path, ".."), { recursive: true }); writeFileSync(join(checkout, path), message); git("add", "."); git("commit", "-qm", message); };
+    git("init", "-q", "-b", "main");
+    commitFile("README", "base");
+    git("checkout", "-qb", "pr");
+    commitFile("packages/agent-org/keep.mjs", "the pull request");
+    git("checkout", "-q", "main");
+    commitFile("docs/unrelated.md", "other work on main");
+    git("merge", "-q", "--no-ff", "pr", "-m", "Merge pull request #7 from a11ign/agent/x");
+    git("update-ref", "refs/remotes/origin/main", "main");
+    const { paths, note } = readMergePaths({ checkout, rowRepo: ROW_REPO, since: 0 });
+    assert.equal(note, null);
+    assert.deepEqual([...paths], [[`${ROW_REPO}#7`, ["packages/agent-org/keep.mjs"]]]); // a population of one, not an empty map: the positive control
+    assert.equal(readMergePaths({ checkout: join(checkout, "absent"), rowRepo: ROW_REPO, since: 0 }).paths.size, 0);
+  } finally { rmSync(checkout, { recursive: true, force: true }); }
 });
 
 // THE DERIVATION: one transcript whose window growth is known by hand.

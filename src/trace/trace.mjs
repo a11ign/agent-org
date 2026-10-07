@@ -993,18 +993,23 @@ const MERGE_SUBJECT = /^Merge pull request #(\d+) |\(#(\d+)\)$/;
 /**
  * The paths each merged pull request changed, from `git log --first-parent -m --name-only` text (the merge commit's difference from its first parent, which is the pull request's own change; a squash
  * commit's own). A commit whose subject names no pull request is not one's and is left out. Keys are `<repo>#<number>`, as the aggregate looks them up.
- * @param {string} text output of `git log --format=@@%x09%s` @param {string} rowRepo @returns {Map<string, string[]>}
+ * A commit that appears in more than one section (`-m` without `--first-parent` repeats a merge commit once per parent, the first parent's first) keeps its FIRST section: a later parent's diff
+ * is not the pull request's change and must not replace it.
+ * @param {string} text output of `git log --format=@@%x09%H%x09%s` @param {string} rowRepo @returns {Map<string, string[]>}
  */
 export function parseMergePaths(text, rowRepo) {
   /** @type {Map<string, string[]>} */
   const paths = new Map();
+  const seen = new Set();
   /** @type {string[] | null} */
   let current = null;
   for (const line of text.split("\n")) {
     if (line.startsWith("@@\t")) {
-      const found = MERGE_SUBJECT.exec(line.slice("@@\t".length));
+      const [sha, ...subject] = line.slice("@@\t".length).split("\t");
+      const found = MERGE_SUBJECT.exec(subject.join("\t"));
       const number = found?.[1] ?? found?.[2];
-      current = number ? [] : null;
+      current = number && !seen.has(sha) ? [] : null;
+      seen.add(sha);
       if (number && current) paths.set(`${rowRepo}#${number}`, current);
     } else if (line.trim() && current) current.push(line.trim());
   }
@@ -1017,7 +1022,7 @@ export function parseMergePaths(text, rowRepo) {
  */
 export function readMergePaths({ checkout, rowRepo, since }) {
   try {
-    const text = execFileSync("git", ["-C", checkout, "log", "origin/main", "--first-parent", "-m", `--since=${new Date(since).toISOString()}`, "--format=@@%x09%s", "--name-only"], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
+    const text = execFileSync("git", ["-C", checkout, "log", "origin/main", "--first-parent", "-m", `--since=${new Date(since).toISOString()}`, "--format=@@%x09%H%x09%s", "--name-only"], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
     return { paths: parseMergePaths(text, rowRepo), note: null };
   } catch (error) {
     return { paths: new Map(), note: `changed paths not read, so no row before a move is placed on a package: git -C ${checkout} log origin/main failed (${/** @type {Error} */ (error).message.split("\n")[0]})` };
