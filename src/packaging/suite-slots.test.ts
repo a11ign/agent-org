@@ -5,7 +5,7 @@
 // slot held the third contender starts at once), because "the third waits" is true of a limit that blocks everything.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -275,9 +275,32 @@ describe("the entry points", () => {
     assert.equal(insideSlot({ [SLOT_ENV]: "0" }), true);
   });
 
-  test("the default slot directory is under the host's cache directory, and `SLOT_DIR_ENV` moves it", () => {
-    assert.equal(slotDirectory({ XDG_CACHE_HOME: "/x/cache" }), "/x/cache/agent-org/suite-slots");
+  test("the default slot directory is the same under /tmp for every caller (a11ign/a11ign#3935), and `SLOT_DIR_ENV` moves it", () => {
+    const uid = process.getuid?.() ?? "shared";
+    const expected = `/tmp/agent-org-suite-slots-${uid}`;
+    assert.equal(slotDirectory({}), expected);
+    // The three variables a sandbox or a session changes must not move it: a private directory is a private limit.
+    assert.equal(slotDirectory({ HOME: "/read-only/home", XDG_CACHE_HOME: "/x/cache", TMPDIR: "/tmp/private" }), expected);
     assert.equal(slotDirectory({ [SLOT_DIR_ENV]: "/y" }), "/y");
+  });
+
+  test("a caller whose home is read-only and whose TMPDIR is private still takes the slot, and a second one finds it held there (a11ign/a11ign#3935)", async () => {
+    const shared = fresh("shared-default");
+    const readOnlyHome = fresh("ro-home");
+    chmodSync(readOnlyHome, 0o500);
+    try {
+      const sandboxed = { HOME: readOnlyHome, XDG_CACHE_HOME: undefined, TMPDIR: fresh("private-tmp") };
+      assert.equal(slotDirectory(env(sandboxed)), slotDirectory(env()), "same directory as an unsandboxed caller");
+      const started = join(shared, "s.started");
+      const release = join(shared, "s.release");
+      const holder = runUnderSlot({ ...holdsUntil(release, started), dir: shared, env: env(sandboxed), ...quick, label: "sandboxed" });
+      await until("the sandboxed run to hold a slot", () => existsSync(started));
+      assert.equal(existsSync(join(readOnlyHome, ".cache")), false, "nothing was written under the read-only home");
+      writeFileSync(release, "");
+      assert.equal(await holder, 0);
+    } finally {
+      chmodSync(readOnlyHome, 0o700);
+    }
   });
 
   test("`run -- <command>` takes a slot and returns the command's status; the CLI refuses what it does not know", () => {
