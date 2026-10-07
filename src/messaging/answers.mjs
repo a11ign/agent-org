@@ -89,21 +89,26 @@ const SIDE_ACTIONS = new Set(["later", "explain", "stuck", "forme"]);
 /** The most buttons one message carries (Telegram's own limit is far higher; a phone's screen is the limit): the two fixed buttons leave this many for options. */
 const MAX_BUTTONS = 8;
 const FIXED_BUTTONS = 2;
+/** The extra fixed button a brief that names an act adds. */
+const FORME_BUTTONS = 1;
 const MAX_BUTTON_LABEL = 64;
 
 /**
- * The keyboard a request message carries: its options, or Approve when it offers none, then Explain more and Later. A request with more options than
+ * The keyboard a request message carries: its options, or Approve when it offers none, then Explain more and Later, then "Do it for me" when the brief names the
+ * act it would do (a11ign/a11ign#3982: with no act named a press would OK an unnamed act, and the OK must be for a stated one). A request with more options than
  * the keyboard has room for carries NO keyboard (all or nothing, as `parseChairmanOptions` is): typing an answer still works, and a row of buttons
- * missing the option the chairman meant is a quieter wrong than none.
+ * missing the option the chairman meant is a quieter wrong than none. The room is counted WITH the act's button, so the button is never what is dropped.
  *
- * @param {{id: string, label: string}[]} options @returns {{label: string, data: string}[]}
+ * @param {{id: string, label: string}[]} options @param {string | null} [act] the act the brief names, from `parseChairmanAct`; null or absent draws no "Do it for me"
+ * @returns {{label: string, data: string}[]}
  */
-export function requestActions(options) {
-  if (options.length > MAX_BUTTONS - FIXED_BUTTONS) return [];
+export function requestActions(options, act = null) {
+  const names = act === null ? ["explain", "later"] : ["explain", "later", "forme"];
+  if (options.length > MAX_BUTTONS - FIXED_BUTTONS - (act === null ? 0 : FORME_BUTTONS)) return [];
   const answers = options.length > 0
     ? options.map(({ id, label }) => ({ label: `${id}: ${label}`.slice(0, MAX_BUTTON_LABEL), data: optionData(id) }))
     : [{ label: ACTION_LABELS.approve, data: actionData("approve") }];
-  return [...answers, ...["explain", "later"].map((name) => ({ label: ACTION_LABELS[name], data: actionData(name) }))];
+  return [...answers, ...buttonsOf(names)];
 }
 
 /** @param {readonly string[]} names @returns {{label: string, data: string}[]} the buttons for these words, in this order */
