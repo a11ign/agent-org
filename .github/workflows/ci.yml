@@ -30,8 +30,8 @@ name: ci
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
-# EVERY TEST THE SUITE HOLDS RUNS, UNDER ONE OF TWO RUNNERS (a11ign/a11ign#3738): rstest runs the files that converted, and `node --test` runs the ones in `NOT_YET_CONVERTED` (scripts/rstest/rstest.config.mjs), each
-# named there with the reason it did not convert. A step counts the two sets against the files on disk. The runs report `skipped 1` between them (the test that needs the `codex` binary, which skips itself).
+# EVERY TEST THE SUITE HOLDS RUNS, UNDER ONE RUNNER, RSTEST (a11ign/a11ign#3738, #3958): a step compares the files rstest lists with the files on disk, so a test file its `include` does not reach fails the job.
+# The run reports `skipped 1` (the test that needs the `codex` binary, which skips itself).
 # Four tests whose premise was the monorepo's directory layout were once skipped by name (a11ign/a11ign#2973) and are now fixed in the tests (#3002):
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
@@ -78,7 +78,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # `tsx`, `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
-      # because this job installs by name and not from it: move them together. `tsx` stays for the files `NOT_YET_CONVERTED` (scripts/rstest/rstest.config.mjs) still run under `node --test`.
+      # because this job installs by name and not from it: move them together.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
           npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@^0.1.2"
@@ -111,27 +111,22 @@ jobs:
       - name: rstest build cache HIT or MISS, printed so the run log can be quoted
         run: |
           echo "rstest build cache: ${{ steps.rstest-build-cache.outputs.cache-hit == 'true' && 'HIT' || 'MISS' }}"
-      # NOTHING IS DROPPED BETWEEN THE TWO RUNNERS: the files on disk must be the files rstest runs plus `NOT_YET_CONVERTED`, which the next steps run under `node --test`. A test file in neither fails
-      # here, naming it, before anything runs: an `exclude` that outgrew its list would otherwise be a test that silently does not run.
-      - name: Every test file is run by exactly one runner
+      # NOTHING IS DROPPED: the files on disk must be the files rstest runs. A test file its `include` does not reach fails here, naming it, before anything runs, and would otherwise be a test that
+      # silently does not run.
+      - name: Every test file is run by rstest
         working-directory: project
         run: |
           # `comm` needs its inputs in the order `sort` made, and the two disagree about punctuation in a UTF-8 locale: byte order for both.
           export LC_ALL=C
           rstest=node_modules/.bin/rstest
           config=packages/agent-org/scripts/rstest/rstest.config.mjs # in-project
-          unconverted=$(node -e 'import(process.argv[1]).then((m) => console.log(m.NOT_YET_CONVERTED.join("\n")))' "$PWD/$config" | sort)
           # NO_COLOR: with CI set rstest colours the list even into a pipe (the path's directory dim, the name cyan), and an escape code in front of `src/` matches nothing.
-          converted=$(NO_COLOR=1 $rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
+          listed=$(NO_COLOR=1 $rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
           ondisk=$(cd packages/agent-org && find src -name '*.test.ts' -o -name '*.test.mjs' | sort) # in-project
-          echo "on disk: $(echo "$ondisk" | wc -l); rstest: $(echo "$converted" | wc -l); node --test (NOT_YET_CONVERTED): $(echo "$unconverted" | wc -l)"
-          missing=$(comm -23 <(echo "$ondisk") <(printf '%s\n%s\n' "$converted" "$unconverted" | sort -u))
-          doubled=$(comm -12 <(echo "$converted") <(echo "$unconverted"))
-          stale=$(comm -13 <(echo "$ondisk") <(echo "$unconverted"))
+          echo "on disk: $(echo "$ondisk" | wc -l); rstest: $(echo "$listed" | wc -l)"
+          missing=$(comm -23 <(echo "$ondisk") <(echo "$listed"))
           [ -z "$missing" ] || { echo "run by NO runner:"; echo "$missing"; exit 1; }
-          [ -z "$stale" ] || { echo "NOT_YET_CONVERTED names a file that is not there (a converted or deleted file keeps its line):"; echo "$stale"; exit 1; }
-          [ -z "$doubled" ] || { echo "run by BOTH runners:"; echo "$doubled"; exit 1; }
-      - name: The tool's suite under rstest -- every converted *.test.ts and *.test.mjs, run from the project's root, with --trace
+      - name: The tool's suite under rstest -- every *.test.ts and *.test.mjs, run from the project's root, with --trace
         working-directory: project
         env:
           # The copy above has no `.git`, so a pinned population cannot read its base from where it sits. This is the checkout it was copied from, and the one place
@@ -146,13 +141,6 @@ jobs:
           files=$( (find node_modules/.cache -path 'node_modules/.cache/rstest-*' -type f 2>/dev/null || true) | wc -l)
           echo "files under node_modules/.cache/rstest-* after the tests: $files"
           [ "$files" -gt 0 ] || { echo "rstest ran with performance.buildCache on and wrote no cache files"; exit 1; }
-      - name: The files that have not converted yet, under node --test (NOT_YET_CONVERTED, scripts/rstest/rstest.config.mjs)
-        working-directory: project
-        env:
-          AGENT_ORG_TOOL_REPO: ${{ github.workspace }}
-        run: |
-          files=$(node -e 'import(process.argv[1]).then((m) => console.log(m.NOT_YET_CONVERTED.map((f) => "packages/agent-org/" + f).join(" ")))' "$PWD/packages/agent-org/scripts/rstest/rstest.config.mjs") # in-project
-          node --import tsx --test $files
       # ADR 0043: "CI runs `rstest run --trace` once, the summary archived as an artifact", the per-phase split and the top 10 files that a speed-up is read from.
       - name: The trace summary, archived
         if: always()

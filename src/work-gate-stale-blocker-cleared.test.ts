@@ -10,7 +10,8 @@
  * shape this cause was written for) and gets its order; each drop case differs from it in the one field that drops it. The tick that builds the facts is the REAL
  * `claimStallTick`, so `ownsPr`, `commentMove` and the claim record's parser are exercised and not restated.
  */
-import { test, mock } from "node:test";
+import { rs } from "@rstest/core";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { blockerClearedOrders, blockerClearedReading, claimStallTick, decide, readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate.mjs";
 import { claimRecordComment } from "./row-claim.mjs";
@@ -159,12 +160,12 @@ test("#3451 `decide` carries it: the order is absent with the facts and present 
     read: () => ({}), write: () => {}, onFacts: (f: unknown) => { claimFacts = f as Facts; } });
   const blockerCleared = (orders: { cause: string }[]) => orders.filter((o) => o.cause === "blocker-cleared");
   // `decide` reads the wall clock for this cause, and the order is due only inside the ask window's grid after the clearing: pin it, or the test passes at some hours and not others.
-  mock.timers.enable({ apis: ["Date"], now: T("12:00:00") });
+  rs.useFakeTimers({ toFake: ["Date"], now: T("12:00:00") });
   try {
     assert.equal(blockerCleared(decide(args as never)).length, 1, "without `claimFacts` (an old caller) the order is emitted, as before");
     assert.equal(blockerCleared(decide({ ...args, claimFacts } as never)).length, 0);
   } finally {
-    mock.timers.reset();
+    rs.useRealTimers();
   }
 });
 

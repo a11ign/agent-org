@@ -99,7 +99,8 @@ test("#3567: no marker is no killed tick, and a marker whose process ENDED is on
 
 test("#3567: a marker whose process is still ALIVE is a tick running beside this one, not a killed one", () => inDir((dir) => {
   const path = join(dir, TICK_MARKER_FILE);
-  writeStartMarker(path, { at: START, pid: process.pid });
+  // The worker's PARENT, which is alive: asking about a pid is `process.kill(pid, 0)`, and rstest's worker throws on that call for its own pid.
+  writeStartMarker(path, { at: START, pid: process.ppid });
   assert.equal(readKilledTick(path), null);
 }));
 

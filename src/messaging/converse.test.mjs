@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, describe, test, test as skippableTest } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, FALLBACK_RECIPIENT, PASSED_REFUSED, PASSED_SEAT_ABSENT, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
@@ -56,6 +56,8 @@ async function loadReal() {
   }
 }
 const real = await loadReal();
+/** Why the real queue's tests are skipped here, or false when it loaded. */
+const skipReason = "reason" in real ? real.reason : false;
 
 /** The real `promptOrQueue`'s herdr, recording what it is told to type (`herdr --session org agent prompt <label> <text>`) and answering nothing else. A standing seat is cleared first, by a `/clear` typed the same way: that is the window being prepared, not the order, so it is not recorded. */
 const recordingHerdr = (/** @type {string[]} */ args) => {
@@ -177,8 +179,13 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   return { queuePath, provider, clock, converse, accept, events, said: said.words, ledgerLines: () => readLedgerLines(ledgerPath), queued: () => entries(queuePath), delivered: () => [...delivered] };
 }
 
-/** @param {Record<string, any>} queue @param {string} label */
-function cases(queue, label) {
+/**
+ * `skip` is the reason the real queue cannot load here, or false. It is on each test and not on the `describe()` that holds them, because rstest's shim refuses a `describe()`
+ * option by name (a dropped `{ skip }` would RUN what node:test skips).
+ * @param {Record<string, any>} queue @param {string} label @param {string | false} skip
+ */
+function cases(queue, label, skip) {
+  const test = (/** @type {string} */ name, /** @type {() => void | Promise<void>} */ body) => skippableTest(name, { skip }, body);
   const ready = (/** @type {Record<string, any>} */ more = {}) => harness({ queue, ...more });
 
   test("done-when 1, and the POSITIVE CONTROL: the chairman's message IS queued, once, for the liaison and nobody else, with its provenance, and acknowledged once in plain words", async () => {
@@ -529,14 +536,14 @@ function cases(queue, label) {
   });
 }
 
-describe("fake queue port", () => cases(fakeQueue, "fake"));
+describe("fake queue port", () => cases(fakeQueue, "fake", false));
 
-describe("real queue (prompt-session.mjs)", { skip: "reason" in real ? /** @type {{reason: string}} */ (real).reason : false }, () => {
+describe("real queue (prompt-session.mjs)", () => {
   const { session, wake } = "port" in real ? real.port : { session: null, wake: null };
   // The real `promptOrQueue` over a herdr that RECORDS (`recordingHerdr`) and no settle or checkout of its own: nothing here prompts a session.
   const port = session && wake ? { promptOrQueue: session.promptOrQueue, run: recordingHerdr, NOT_QUEUED_PREFIX: session.NOT_QUEUED_PREFIX, attributed: session.attributed, EXIT: session.EXIT, STANCE: session.STANCE,
     handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, delivery: { sleep: () => {}, checkout: FAKE_CHECKOUT, contextRoot: scratch }, realPort: true } : null;
-  cases(/** @type {any} */ (port ?? fakeQueue), "real");
+  cases(/** @type {any} */ (port ?? fakeQueue), "real", skipReason);
 });
 
 describe("the queue file, when the listener names none", () => {
@@ -629,7 +636,8 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // DONE-WHEN 4: `resolveSender`, over every workspace id a fixture holds, never yields the chairman's sender. Needs the real `prompt-session.mjs`.
 
-describe("done-when 4: resolveSender never yields the chairman sender", { skip: "reason" in real ? /** @type {{reason: string}} */ (real).reason : false }, () => {
+describe("done-when 4: resolveSender never yields the chairman sender", () => {
+  const test = (/** @type {string} */ name, /** @type {() => void | Promise<void>} */ body) => skippableTest(name, { skip: skipReason }, body);
   const WORKSPACES = [["w1", "ceo"], ["w2", "product-manager"], ["w3", "orchestrator"], ["w4", "worker-2909"], ["w5", "reviewer-3"], ["w6", "chairman"], ["w7", "chairman via telegram"]]
     .map(([workspace_id, label]) => ({ workspace_id, label, agent_status: "idle" }));
   const LOOKALIKE = "w7";

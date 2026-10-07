@@ -36,6 +36,8 @@ let seen = [];
 /** @type {{parseWaits: import("./ask-ceo.mjs").ParseWaits} | {reason: string}} */
 const gate = await import("../wait-condition.mjs").then((module) => ({ parseWaits: module.parseWaits }), (error) => ({ reason: describeError(error) }));
 const skip = "reason" in gate ? gate.reason : false;
+/** rstest's shim refuses a `describe()` option (a dropped `{ skip }` would RUN what node:test skips), so the skip is on each test it covers. */
+const hosted = (/** @type {string} */ name, /** @type {() => void | Promise<void>} */ body) => test(name, { skip }, body);
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-ask-ceo-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -73,8 +75,8 @@ async function run(argv, { messaging = true, env = GH_ACCOUNT, stdin = QUESTION,
 const VERB_COUNT = 3;
 const GOOD = [`--row=${ROW}`, `--message=${REF}`];
 
-describe("chairman:ask-ceo", { skip }, () => {
-  test("1. a ref the ledger holds and a question that names what clears it queues ONE order to ceo, as a decision, from the liaison (the positive control)", async () => {
+describe("chairman:ask-ceo", () => {
+  hosted("1. a ref the ledger holds and a question that names what clears it queues ONE order to ceo, as a decision, from the liaison (the positive control)", async () => {
     const result = await run(GOOD);
     assert.deepEqual([result.code, result.err], [EXIT.ok, []]);
     assert.equal(seen.length, 1, "one order, and the runner DID run: the refusals below are read against this");
@@ -86,7 +88,7 @@ describe("chairman:ask-ceo", { skip }, () => {
     assert.match(result.out[0], /^chairman:ask-ceo: queued for ceo/);
   });
 
-  test("2. a ref the ledger does not hold is refused, and nothing is queued", async () => {
+  hosted("2. a ref the ledger does not hold is refused, and nothing is queued", async () => {
     const result = await run([`--row=${ROW}`, "--message=99"]);
     assert.equal(result.code, EXIT.refused);
     assert.match(result.err[0], /no message from the chairman with ref 99/);
@@ -96,7 +98,7 @@ describe("chairman:ask-ceo", { skip }, () => {
     assert.deepEqual(seen, []);
   });
 
-  test("3. THE PREDICATE, AS A PAIR: the question without its Waiting-for line is refused, the same question with it is queued", async () => {
+  hosted("3. THE PREDICATE, AS A PAIR: the question without its Waiting-for line is refused, the same question with it is queued", async () => {
     const without = await run(GOOD, { stdin: WITHOUT_CLEARS });
     assert.equal(without.code, EXIT.refused);
     assert.match(without.err[0], /names nothing that clears it, so nothing was sent/);
@@ -106,7 +108,7 @@ describe("chairman:ask-ceo", { skip }, () => {
     assert.equal(seen.length, 1);
   });
 
-  test("3b. what is NOT a clearing clause: prose naming a row, a wait outside the grammar, `manual`, and a Waiting-for line inside a code fence", async () => {
+  hosted("3b. what is NOT a clearing clause: prose naming a row, a wait outside the grammar, `manual`, and a Waiting-for line inside a code fence", async () => {
     const refused = [
       `${WITHOUT_CLEARS}\nPlease rule on #${ROW}: does it apply?`,
       `${WITHOUT_CLEARS}\nWaiting-for: soon`,
@@ -122,15 +124,15 @@ describe("chairman:ask-ceo", { skip }, () => {
     }
   });
 
-  test("3c. an empty question is refused; so is one that is only whitespace", async () => {
+  hosted("3c. an empty question is refused; so is one that is only whitespace", async () => {
     for (const stdin of ["", "  \n"]) assert.equal((await run(GOOD, { stdin })).code, EXIT.refused);
     assert.deepEqual(seen, []);
   });
 
 });
 
-describe("chairman:ask-ceo, its target and what `prompt:session` answers", { skip }, () => {
-  test("4. the target is ceo only: no argument names another session, and a flag or a positional is refused before anything is sent", async () => {
+describe("chairman:ask-ceo, its target and what `prompt:session` answers", () => {
+  hosted("4. the target is ceo only: no argument names another session, and a flag or a positional is refused before anything is sent", async () => {
     assert.equal(RECIPIENT, "ceo");
     for (const extra of [["--to=worker-1"], ["--session=worker-1"], ["--label=reviewer-3"], ["--target", "product-manager"], ["worker-1"], ["--needs-decision"]]) {
       const result = await run([...GOOD, ...extra]);
@@ -141,7 +143,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", { ski
     assert.equal(/** @type {import("./ask-ceo.mjs").Invocation[]} */ (seen)[0].args.filter((arg) => !arg.startsWith("-") && !["run", "prompt:session"].includes(arg)).join(), "ceo", "the one session named in the invocation is ceo");
   });
 
-  test("4b. the source names ceo once, as the constant, and takes no target from argv", () => {
+  hosted("4b. the source names ceo once, as the constant, and takes no target from argv", () => {
     const code = readFileSync(new URL("./ask-ceo.mjs", import.meta.url), "utf8").split("\n").filter((line) => !/^\s*(\/\/|\/?\*)/.test(line)).join("\n");
     assert.match(code, /export const RECIPIENT = "ceo";/);
     assert.equal((code.match(/"ceo"/g) ?? []).length, 1, "the literal appears once");
@@ -150,7 +152,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", { ski
     assert.equal(/values\.(to|session|label|target)/.test(code), false, "no option is read as a target");
   });
 
-  test("5. prompt:session's exit 2 is reported as queued, exits 0, and is run ONCE; a refusal exits 2 with its words; a crash exits 1", async () => {
+  hosted("5. prompt:session's exit 2 is reported as queued, exits 0, and is run ONCE; a refusal exits 2 with its words; a crash exits 1", async () => {
     const queued = await run(GOOD, { ran: { status: 2, stderr: "QUEUED handoff/ceo/aa -- DO NOT RETRY\n" } });
     assert.deepEqual([queued.code, queued.err, seen.length], [EXIT.ok, [], 1], "queued is not a failure and is not retried");
     assert.match(queued.out[0], /queued for ceo \(prompt:session exit 2 is QUEUED, not a failure; do not retry\)/);
@@ -168,7 +170,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", { ski
     assert.match(crashed.err[0], /could not run prompt:session \(spawn pnpm ENOENT\).*do not assume it was/);
   });
 
-  test("a command that cannot start sends nothing: messaging off, no account, no --message, no --row", async () => {
+  hosted("a command that cannot start sends nothing: messaging off, no account, no --message, no --row", async () => {
     const cases = [["messaging off", GOOD, { messaging: false }], ["no declared account", GOOD, { env: {} }], ["no --message", [`--row=${ROW}`], undefined], ["no --row", [`--message=${REF}`], undefined]];
     for (const [name, argv, options] of cases) {
       assert.equal((await run(/** @type {string[]} */ (argv), /** @type {any} */ (options))).code, EXIT.refused, String(name));
@@ -176,12 +178,12 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", { ski
     assert.deepEqual(seen, []);
   });
 
-  test("a refused or queued question writes no ledger line of its own and no row comment (it reaches `prompt:session` and nothing else)", async () => {
+  hosted("a refused or queued question writes no ledger line of its own and no row comment (it reaches `prompt:session` and nothing else)", async () => {
     const result = await run(GOOD);
     assert.equal(result.ledgerLines().filter((line) => line.direction !== "in").length, 0);
   });
 
-  test("6. package.json carries chairman:ask-ceo, and the verb set of chairman:correct is unchanged", () => {
+  hosted("6. package.json carries chairman:ask-ceo, and the verb set of chairman:correct is unchanged", () => {
     const scripts = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).scripts;
     assert.equal(scripts["chairman:ask-ceo"], "node src/messaging/ask-ceo.mjs");
     assert.deepEqual(VERBS, ["withdraw", "reroute", "re-ask"]);
