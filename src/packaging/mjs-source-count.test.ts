@@ -60,7 +60,8 @@ const SOURCE_MJS_PIN = 223;
 // 49 to 50 (a11ign/a11ign#3512): `swimlane.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 50 to 51 (a11ign/a11ign#3515): `publish.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 51 to 52 (a11ign/a11ign#3540): `selftest.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 52;
+// 52 to 53 (a11ign/a11ign#3982): `forme-button.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 53;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
