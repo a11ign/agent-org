@@ -1199,7 +1199,7 @@ function reportInvisibleRows() {
   const rows = invisibleRows(issues);
   if (rows.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one is `
-      + `reachable: it carries \`${BACKLOG_LABEL}\`, \`${READY_LABEL}\`, \`epic\` or \`meta\`, or it is claimed `
+      + `reachable: it carries \`${BACKLOG_LABEL}\`, \`${READY_LABEL}\`, \`epic\`, \`parked\` or \`meta\`, or it is claimed `
       + `(\`${CLAIM_LABEL}\`) and its owner is working it\n`);
     return 0;
   }
@@ -1219,8 +1219,13 @@ function reportInvisibleRows() {
  * The labels that make an UNCLAIMED row visible to a gate cause: `readPromotableRows` reads `backlog`
  * and `readReadyRows` `ready`, both SERVER-SIDE; `readEpics` reads `epic`; a `meta` row is a process
  * thread nobody was ever meant to promote.
+ *
+ * #3942: `parked` IS ON THE LIST, because it is a state of its own and no longer rides beside `backlog` (the state-label rule: one of six).
+ * A row parked on purpose is not forgotten -- `ceo` schedules it (`PARKED_LABEL`, `work-gate.mjs`) -- and the eight two-state rows could not
+ * be migrated to `parked` alone while this check named every one UNREACHABLE. `blocked` is NOT added: whether a `blocked`-only row is
+ * reached is a ruling this row does not make, and the rows that carry it today carry `backlog` too.
  */
-const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta"];
+const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta", "parked"];
 
 /**
  * PURE. The open rows no cause can reach.

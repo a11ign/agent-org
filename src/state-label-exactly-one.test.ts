@@ -33,7 +33,7 @@ const { STATE_LABELS, stateLabelFindings } = await import("./claim-labels.mjs");
 const { declineRow, claimRecordComment } = await import("./row-claim.mjs");
 const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.mjs");
 const { PARKED_LABEL } = await import("./work-gate.mjs");
-const { reportStateLabels, CHECKS } = await import("./ready-label-audit.mjs");
+const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label-audit.mjs");
 const { SIGNALS, stateLabelReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.mjs");
 const { labelRefusal, boardingFor } = await import("./row-file.mjs");
 
@@ -190,6 +190,13 @@ test("the TICK trips the signal for rows in none or in two, naming each number, 
   assert.match(orders[0].prompt, /#3643/);
   assert.equal(orgHealthReadings({ now: 0, lastMergedAt: 0, work: null, redPrs: [], refusals: {}, drift: null, primarySince: null } as never).some((x) => x.signal === SIGNALS.STATE_LABEL), false,
     "a caller that does not ask is silent");
+});
+
+// --- the migration the row orders must not turn a legitimate state into a different finding ------------------------------------------------
+
+test("a row in `parked` alone is reached (a state of its own, so migrating `backlog`+`parked` to `parked` is not UNREACHABLE); one with no cause label still is", () => {
+  assert.deepEqual(invisibleRows([{ number: 1520, title: "parked", labels: ["parked", "lane:any"] }]), []);
+  assert.deepEqual(invisibleRows([{ number: 1521, title: "none", labels: ["lane:any"] }]).map((r: { number: number }) => r.number), [1521], "CONTROL: a row with no cause label is found");
 });
 
 // --- row-file refuses a second state ------------------------------------------------------------------------------------------------
