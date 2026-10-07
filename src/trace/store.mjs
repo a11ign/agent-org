@@ -36,6 +36,7 @@ export const DEFINITIONS = [
   "WAKE: a delivery that started a model turn (wakes-per-row's definition). `deliveryLagMs` is delivery minus the time `wake` typed the order, when the ledger line pairs (not the gate's deferral, which no record keeps).",
   "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. That record is stamped after a tool call ends, so the call is NOT in it: it is the model's own time.",
   "TOOL TIME OF A TURN (`toolMs`, measured): when the message follows a tool call, from the last block of the message before it to the tool's result record; `null` when it follows no tool call, never 0. A turn that follows an order or a prompt has none, and so does the first turn of a read when nothing was carried to say when the call began.",
+  "TOOL READ (`toolRead`, measured): on the turn that CARRIES a result, the growth of the window the result caused: this turn's `input + cacheRead + cacheWrite5m + cacheWrite1h`, less the previous message's, less the previous message's own `output` (which re-enters the window the same way). Present only when the previous message called `Read`, `Grep` or `Glob`; `tool` is that tool, or `mixed` when the message called more than one tool (any mix with a tool that is not one of the three is in it too), and `tokens` is `null` (never 0) when the window cannot be read that way: a prompt, an order or a compaction came between, the window shrank, or the previous message is not in the store. `null` on a turn stored by this reader means no such call preceded it; an ABSENT field is a turn stored before the reader, which says nothing.",
   "COST: tokens x the rate in PRICES, cache writes at the 1-hour rate when the split is absent (every transcript seen writes 1-hour). `null` for a model with no price.",
   "GITHUB EVENT: what GitHub's REST API holds of a row or pull request (`source: github`, session `github`): filed/opened, claimed/released (the claim-record comments), labeled/unlabeled for an order to a session or a hold, ready_for_review, reviewed (state, and the head it was posted on), head_moved, ci_run, added_to_merge_queue, removed_from_merge_queue, merged, closed.",
   "HEAD_MOVED (inferred): `at` is the commit's own date, not the push's; the timeline carries no push event. CI RUN: each head the timeline names is asked for its check-runs; the merge queue's own runs, on its temporary branch, and legacy commit statuses are not read.",
@@ -75,11 +76,13 @@ export const PRICES = [
  * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
  * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | import("./github-events.mjs").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log", at: number, session: string, row: number | null,
  *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, transcript?: string, wallClockMs?: number | null, toolMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
+ *   costUsd?: number | null, toolRead?: ToolRead | null, transcript?: string, wallClockMs?: number | null, toolMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
  *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
  *   completedAt?: number | null, how?: "delivered" | "gone", outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
  *   script?: string, sessionId?: string, keyedBy?: "session" | "time" | null, unkeyed?: "script" | "no-turn" }} TraceEvent
  */
+
+/** @typedef {{ tool: "Read" | "Grep" | "Glob" | "mixed", tokens: number | null }} ToolRead */
 
 /**
  * Cost of a turn, or `null` when the model has no price: an unpriced turn is unknown, and 0 would say it was free.
@@ -332,12 +335,13 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   const owner = (/** @type {number} */ at) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
     ?? { id: null, ...subjectOfSession(session, rowRepo), cause: null, causeKey: null };
   const priorAt = carry?.lastAt ?? null;
-  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, transcript: transcriptId(file), owner, priorAt, rowRepo }), ...compactionsOf(settled, session, owner));
+  const reads = toolReadsOf({ records, groups: groups.filter((group) => !held.includes(group)), end: settled.length, carried: carry?.previous ?? null });
+  events.push(...turnsOf({ records, groups: groups.filter((group) => !held.includes(group)), session, transcript: transcriptId(file), owner, priorAt, rowRepo, reads: reads.byMessage }), ...compactionsOf(settled, session, owner));
   const lastAt = settled.findLast((candidate) => !Number.isNaN(candidate.at))?.at ?? priorAt;
   const remembered = [...used, ...spent].filter((entry) => latest === null || entry.at >= latest.at - LEDGER_MEMORY_MS);
   return {
     session, events, unreadable: unreadable.filter((start) => start < boundary || start === tail).length, consumed: boundary, held: held.length, settleAt,
-    carry: { session: carry?.session ?? named, owner: latest, lastAt, used: remembered }, namedLate: carry !== null && carry.session === null && named !== null,
+    carry: { session: carry?.session ?? named, owner: latest, lastAt, used: remembered, previous: reads.previous }, namedLate: carry !== null && carry.session === null && named !== null,
   };
 }
 
@@ -380,10 +384,10 @@ const listedBy = ({ rows, prs }) => ({ ...(rows ? { rows } : {}), ...(prs ? { pr
 
 /**
  * One turn per `message.id`, from its last record. `priorAt` is the time of the record before this read began, for the wall-clock of a turn that is the first thing in it.
- * @param {{ records: Rec[], groups: MessageGroup[], session: string, transcript: string, owner: Owner, priorAt: number | null, rowRepo: string }} input
+ * @param {{ records: Rec[], groups: MessageGroup[], session: string, transcript: string, owner: Owner, priorAt: number | null, rowRepo: string, reads: Map<string, ToolRead | null> }} input
  * @returns {TraceEvent[]}
  */
-function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo }) {
+function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo, reads }) {
   const before = recordBefore(records, priorAt);
   const assistantAt = assistantBefore(records, priorAt);
   return groups.map(({ id: messageId, first, last, record }) => {
@@ -393,12 +397,68 @@ function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo
     const own = owner(endedAt);
     return {
       id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, transcript, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
-      causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens),
+      causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens), toolRead: reads.get(messageId) ?? null,
       wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, toolMs: toolMsBefore(records, first, assistantAt[first]),
       sidechain: record.isSidechain === true,
       ...touchesOf(records.slice(first, last + 1).filter(({ record: block }) => block?.message?.id === messageId), rowRepo),
     };
   });
+}
+
+/** The tools whose results the report calls READ tokens. */
+export const READ_TOOLS = ["Read", "Grep", "Glob"];
+
+/** @typedef {import("./ingest-state.mjs").Previous} Previous */
+
+/** @param {Tokens} tokens the window a turn was sent: everything on the input side */
+const windowOf = (tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
+
+/** Whether the records in `[from, to)` of one side (main thread or a subagent's) hold only tool results: a prompt, an order or a compaction summary there means the window grew by more than the results. @param {Rec[]} records @param {{ from: number, to: number, side: boolean }} span */
+function onlyToolResults(records, { from, to, side }) {
+  return records.slice(from, to).every(({ record }) => record?.type !== "user" || (record.isSidechain === true) !== side
+    || (Array.isArray(record.message?.content) && record.message.content.some((/** @type {{ type?: string }} */ block) => block?.type === "tool_result")));
+}
+
+/** @param {Rec[]} records @param {MessageGroup} group @returns {string[]} the tool the message called, one name per call */
+function toolsCalled(records, { id, first, last }) {
+  return records.slice(first, last + 1).filter(({ record }) => record?.message?.id === id)
+    .flatMap(({ record }) => (Array.isArray(record.message.content) ? record.message.content : []).filter((/** @type {{ type?: string }} */ block) => block?.type === "tool_use").map((/** @type {{ name?: string }} */ block) => String(block.name)));
+}
+
+/**
+ * What each message's results cost the window (`toolRead`, defined in `DEFINITIONS`): a turn is sent the whole window again, so the growth since the message before it, less that
+ * message's own output, is what the results (and the few tokens of framing around them) added. A thread is its own sequence: a subagent's messages are not between the main thread's.
+ * `carried` is what the read before this one left, so a resumed read derives its first turn the way one read of the whole file would have.
+ * @param {{ records: Rec[], groups: MessageGroup[], end: number, carried: { main: Previous | null, side: Previous | null } | null }} input `end` is where the settled records end
+ * @returns {{ byMessage: Map<string, ToolRead | null>, previous: { main: Previous | null, side: Previous | null } }}
+ */
+function toolReadsOf({ records, groups, end, carried }) {
+  const previous = { main: carried?.main ?? null, side: carried?.side ?? null };
+  const lastAt = { main: -1, side: -1 };
+  /** @type {Map<string, ToolRead | null>} */
+  const byMessage = new Map();
+  for (const group of groups) {
+    const thread = group.record.isSidechain === true ? "side" : "main";
+    const prior = previous[thread];
+    const clean = prior !== null && prior.clean && onlyToolResults(records, { from: lastAt[thread] + 1, to: group.first, side: thread === "side" });
+    const tokens = tokensOf(group.record.message.usage);
+    byMessage.set(group.id, prior === null ? null : toolReadOf(prior, { window: windowOf(tokens), clean }));
+    previous[thread] = { window: windowOf(tokens), output: tokens.output, tools: toolsCalled(records, group), clean: true };
+    lastAt[thread] = group.last;
+  }
+  for (const thread of /** @type {const} */ (["main", "side"])) {
+    const last = previous[thread];
+    if (last !== null) previous[thread] = { ...last, clean: (lastAt[thread] >= 0 || last.clean) && onlyToolResults(records, { from: lastAt[thread] + 1, to: end, side: thread === "side" }) };
+  }
+  return { byMessage, previous };
+}
+
+/** @param {Previous} prior the message before @param {{ window: number, clean: boolean }} now @returns {ToolRead | null} `null` when that message called no read tool */
+function toolReadOf(prior, { window, clean }) {
+  if (!prior.tools.some((tool) => READ_TOOLS.includes(tool))) return null;
+  const distinct = [...new Set(prior.tools)];
+  const grown = window - prior.window - prior.output;
+  return { tool: distinct.length === 1 ? /** @type {"Read" | "Grep" | "Glob"} */ (distinct[0]) : "mixed", tokens: clean && grown >= 0 ? grown : null };
 }
 
 /** For each position, the time of the last record before it that has one, in one pass (a search per message was quadratic in the file). @param {Rec[]} records @param {number | null} priorAt */

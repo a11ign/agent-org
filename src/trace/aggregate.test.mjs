@@ -5,8 +5,9 @@
 // dear, so an average that lets it in moves a figure the test names. The hand-computed numbers are in the comments beside the assertion that uses them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregate, compareWeeks, DEFINITIONS, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
-import { PRICES } from "./store.mjs";
+import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
+import { eventsOfTranscript, PRICES } from "./store.mjs";
+import { parseMergePaths, readMoves } from "./trace.mjs";
 import { waterfall } from "./waterfall.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
@@ -561,4 +562,179 @@ test("REPRICED: a changed price in PRICES moves a turn that was stored at the ol
     row.input = was;
   }
   near(weekOf(oneRow(events), WEEK_A).rows[0].dollars, 0.007);
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// #3967: by repository, before and after the move, the first turn and the tokens read through tools
+
+const AGENT_ORG = "a11ign/agent-org";
+const inRepo = (repo, number, row, openedIso, mergedIso) => ({ repo, number, createdAt: openedIso, mergedAt: mergedIso, body: `Closes ${ROW_REPO}#${row}` });
+const SIZES = (...windows) => windows.map((window) => [window, 0, 0, 0]); // [input, output, cacheRead, cacheWrite1h]: a first turn whose whole window is `window`
+
+test("BY REPOSITORY: a row is in the repository of its LAST merged pull request, each repository has its own rows, and one with no merged row prints nothing", () => {
+  const pulls = [
+    pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z"), pull(1102, 102, "2026-09-22T09:00:00Z", "2026-09-24T10:00:00Z"),
+    inRepo(AGENT_ORG, 31, 201, "2026-09-22T09:00:00Z", "2026-09-25T10:00:00Z"),
+    pull(1103, 103, "2026-09-22T09:00:00Z", "2026-09-22T12:00:00Z"), inRepo(AGENT_ORG, 32, 103, "2026-09-23T09:00:00Z", "2026-09-26T10:00:00Z"), // two repositories: the later merge is the row's
+  ];
+  const events = [
+    turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 10, 80, 0] }), turn({ when: "2026-09-22T11:00:00Z", session: "worker-102", row: 102, cost: 3, tokens: [10, 10, 180, 0] }),
+    turn({ when: "2026-09-22T12:00:00Z", session: "worker-201", row: 201, cost: 7, tokens: [10, 10, 30, 0] }),
+    turn({ when: "2026-09-22T13:00:00Z", session: "worker-103", row: 103, cost: 2, tokens: [10, 10, 30, 0] }),
+  ];
+  const [week] = aggregate({ events, pulls, rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks;
+  assert.deepEqual(week.byRepo.map((cut) => [cut.repo, cut.rows]), [[ROW_REPO, 2], [AGENT_ORG, 2]], "rows 201 and 103 are agent-org's (103's last merge was there), 101 and 102 the primary's");
+  const primary = week.byRepo.find((cut) => cut.repo === ROW_REPO);
+  assert.deepEqual([primary.tokens.n, primary.tokens.p50, primary.tokens.p90], [2, 100, 200], "P50 and P90 are nearest-rank over the repository's own rows: 100 and 200 tokens");
+  assert.deepEqual([primary.dollars.p50, primary.dollars.p90], [1, 3]);
+  const [empty] = aggregate({ events, pulls: [pulls[0]], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks;
+  assert.deepEqual(empty.byRepo.map((cut) => cut.repo), [ROW_REPO], "a repository with no merged row has no entry, and so no figure of 0");
+});
+
+test("FIRST-TURN SIZE: the first turn of each per-row transcript, never a standing seat's, a subagent's or a later turn", () => {
+  const events = [
+    turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 5, 900, 90], transcript: "w1" }), // window 10 + 900 + 90 = 1000; output is not in it
+    turn({ when: "2026-09-22T10:30:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 5, 5000, 0], transcript: "w1" }), // a later turn of the same transcript: not a first turn
+    turn({ when: "2026-09-22T09:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [1, 1, 99999, 0], transcript: "w1", sidechain: true }), // a subagent's, earlier: not the transcript's first
+    turn({ when: "2026-09-22T11:00:00Z", session: "reviewer-1101", pr: 1101, cost: 1, tokens: [30, 5, 2970, 0], transcript: "r1" }), // 3000, placed on row 101 through its pull request
+    turn({ when: "2026-09-22T12:00:00Z", session: "ceo", row: 101, cost: 1, tokens: [10, 5, 7777, 0], transcript: "c1" }), // a standing seat that wrote to the row
+  ];
+  const [week] = aggregate({ events, pulls: [pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks;
+  const { firstTurn } = week.byRepo[0];
+  assert.deepEqual([firstTurn.n, firstTurn.p50, firstTurn.p90], [2, 1000, 3000], "two first turns, 1000 and 3000: the worker's and the reviewer's");
+  const none = aggregate({ events: [events[4]], pulls: [pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks[0].byRepo[0].firstTurn;
+  assert.deepEqual(none, { n: 0, p50: null, p90: null }, "a row with only a standing seat's turn has no first turn, which is not 0");
+  assert.match(renderAggregate(aggregate({ events: [events[4]], pulls: [pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } })), /FIRST-TURN SIZE: not held/);
+});
+
+test("TOOL-READ TOKENS: summed per row and per tool, mixed in the total and in no tool, and a turn with no field or no tokens makes the row's figure a floor", () => {
+  const read = (tool, tokens) => ({ tool, tokens });
+  const events = [
+    turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Read", 400) }),
+    turn({ when: "2026-09-22T10:10:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Grep", 100) }),
+    turn({ when: "2026-09-22T10:20:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("mixed", 50) }),
+    turn({ when: "2026-09-22T10:30:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: null }), // no read call before it: derived, and nothing
+    turn({ when: "2026-09-22T11:00:00Z", session: "worker-102", row: 102, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Read", 200) }),
+    turn({ when: "2026-09-22T11:10:00Z", session: "worker-102", row: 102, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Glob", null) }), // a window that cannot be read that way
+    turn({ when: "2026-09-22T12:00:00Z", session: "worker-103", row: 103, cost: 1, tokens: [10, 0, 990, 0] }), // stored before the reader: no field at all
+  ];
+  const pulls = [101, 102, 103].map((row) => pull(1100 + row, row, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z"));
+  const [{ byRepo: [cut] }] = aggregate({ events, pulls, rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks;
+  const read3 = cut.toolRead;
+  assert.deepEqual([read3.total, read3.byTool, read3.mixed], [750, { Read: 600, Grep: 100, Glob: 0 }, 50], "400 + 100 + 50 + 200: the mixed 50 is in the total and in no tool");
+  assert.deepEqual([read3.rows, read3.notHeldRows, read3.floorRows, read3.notDerivableTurns], [2, 1, 1, 1], "row 103 has no figure; row 102 has one turn it could not derive, so its figure is a floor");
+  near(read3.share, 750 / 6000); // of the tokens of the rows that have the figure: 101 has 4 turns of 1000 and 102 has 2, row 103 is not in the denominator
+});
+
+test("MOVE: the weeks before, the week that holds it, and the weeks after, each its own population, with a row placed by its pull requests' paths", () => {
+  const moves = [{ ...MOVES[0], at: at("2026-10-02T18:13:06Z") }];
+  const pulls = [
+    pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z"), pull(1102, 102, "2026-09-22T08:00:00Z", "2026-09-24T10:00:00Z"), pull(1103, 103, "2026-09-22T08:00:00Z", "2026-09-25T10:00:00Z"),
+    pull(1104, 104, "2026-09-22T08:00:00Z", "2026-09-26T10:00:00Z"), pull(1201, 201, "2026-09-29T08:00:00Z", "2026-09-30T10:00:00Z"), inRepo(AGENT_ORG, 31, 301, "2026-10-05T08:00:00Z", "2026-10-06T10:00:00Z"),
+  ];
+  const pullPaths = new Map([
+    [`${ROW_REPO}#1101`, ["packages/agent-org/src/a.mjs", "packages/agent-org/b.mjs"]], // wholly under the old directory: the package's
+    [`${ROW_REPO}#1102`, ["packages/agent-org/src/a.mjs", "docs/x.md"]], // under it and elsewhere: MIXED
+    [`${ROW_REPO}#1103`, ["docs/x.md"]], // not under it
+  ]); // 1104 is not found: its paths were not read
+  const events = [
+    turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 90, 0], transcript: "a" }), turn({ when: "2026-09-22T11:00:00Z", session: "worker-102", row: 102, cost: 1, tokens: [10, 0, 90, 0], transcript: "b" }),
+    turn({ when: "2026-09-22T12:00:00Z", session: "worker-103", row: 103, cost: 1, tokens: [10, 0, 90, 0], transcript: "c" }), turn({ when: "2026-09-22T13:00:00Z", session: "worker-104", row: 104, cost: 1, tokens: [10, 0, 90, 0], transcript: "d" }),
+    turn({ when: "2026-09-29T10:00:00Z", session: "worker-201", row: 201, cost: 1, tokens: [10, 0, 90, 0], transcript: "e" }), turn({ when: "2026-10-05T10:00:00Z", session: "worker-301", row: 301, cost: 5, tokens: [10, 0, 490, 0], transcript: "f" }),
+  ];
+  const report = aggregate({ events, pulls, rowRepo: ROW_REPO, now: at("2026-10-14T00:00:00Z"), since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" }, moves, pullPaths });
+  const [before, moveWeek, after, current] = report.weeks.map((week) => week.moves[0]);
+  assert.deepEqual([before.side, moveWeek.side, after.side, current.side], ["before", "move-week", "after", "after"]);
+  assert.deepEqual(before.placed, { package: 1, mixed: 1, other: 1, unread: 1 }, "positive control: every placement occurs, so the counts below are not all zero");
+  assert.equal(before.cut.rows, 1, "only row 101 is the package's; the MIXED row, the other row and the one with no paths are on neither side");
+  assert.equal(moveWeek.cut, null, "the week that holds the move is on neither side and has no figure");
+  assert.equal(after.cut.rows, 1, "row 301 merged in a11ign/agent-org");
+  assert.equal(current.cut.rows, 0, "a week after the move with no merged row of the package has a cut of zero rows, which the text prints as no figure");
+  const text = renderAggregate(report);
+  assert.match(text, /BEFORE AND AFTER THE MOVE, agent-org \(#2974, closed 2026-10-02T18:13:06.000Z/);
+  assert.match(text, /MOVE WEEK: on neither side/);
+  assert.match(text, /placed by paths: 1 on the package, MIXED 1 \(on neither side\), other 1, paths not read 1\./);
+  assert.match(text, /AFTER: the whole weeks above are the reading/, "a whole week after the move exists in this reading");
+});
+
+test("MOVE: until a whole week has passed after the move the after side is NOT HELD, and a move whose time was not read is not placed", () => {
+  const moves = [{ ...MOVES[0], at: at("2026-10-02T18:13:06Z") }, { ...MOVES[1], at: null }];
+  const events = [turn({ when: "2026-09-29T10:00:00Z", session: "worker-201", row: 201, cost: 1, tokens: [10, 0, 90, 0], transcript: "e" })];
+  const report = aggregate({ events, pulls: [pull(1201, 201, "2026-09-29T08:00:00Z", "2026-09-30T10:00:00Z")], rowRepo: ROW_REPO, now: at("2026-10-06T00:00:00Z"), since: WEEK_B, held: { from: HELD_FROM, basis: "fixture" }, moves });
+  const text = renderAggregate(report);
+  assert.match(text, /AFTER: not held: no whole week has passed since the move \(the first is the week of 2026-10-05, which ends 2026-10-12\)/);
+  assert.match(text, /BEFORE AND AFTER THE MOVE, lab \(#2703\): not held: the closing time of the row was not read/);
+  assert.equal(report.weeks[0].moves[1].side, "not held");
+  assert.ok(!/\$0\.0000/.test(text.split("BEFORE AND AFTER THE MOVE, agent-org")[1]), "no figure of 0 stands in for a side that is not held");
+});
+
+test("DEFINITIONS name the four figures of #3967, and the report prints them", () => {
+  for (const name of ["BY REPOSITORY", "BEFORE AND AFTER THE MOVE", "FIRST-TURN SIZE", "TOOL-READ TOKENS"]) assert.ok(DEFINITIONS.some((line) => line.startsWith(`${name} (#3967)`)), name);
+});
+
+test("parseMergePaths: the paths of each `Merge pull request #n` commit or squash commit ending `(#n)`, and nothing of a commit that names no pull request", () => {
+  const text = ["@@\tMerge pull request #3957 from a11ign/agent/x", "", ".agent-org/roles/liaison.md", "packages/guards/a.test.ts", "@@\tA direct commit", "", "docs/x.md", "@@\tfix(#254): a squash-merged pull request (#265)", "", "src/y.mjs", "@@\tMerge pull request #3954 from a11ign/agent/y", "", ".github/workflows/release.yml"].join("\n");
+  const paths = parseMergePaths(text, ROW_REPO);
+  assert.deepEqual([...paths], [[`${ROW_REPO}#3957`, [".agent-org/roles/liaison.md", "packages/guards/a.test.ts"]], [`${ROW_REPO}#265`, ["src/y.mjs"]], [`${ROW_REPO}#3954`, [".github/workflows/release.yml"]]]);
+});
+
+// THE DERIVATION: one transcript whose window growth is known by hand.
+const order = (timestamp, session) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="1">\nYou are \`${session}\` -- an order.\n</pasted_content>` } });
+const result = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
+const message = (timestamp, id, tools, [input, output, cacheRead, cacheWrite]) => JSON.stringify({
+  type: "assistant", timestamp, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: tools.map((name) => ({ type: "tool_use", id: `${id}-${name}`, name, input: {} })),
+    usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: cacheWrite } } },
+});
+const T = (minute) => `2026-10-04T10:${String(minute).padStart(2, "0")}:00.000Z`;
+const READS = [
+  order(T(0), "worker-9001"),
+  message(T(1), "m1", ["Read"], [2, 40, 1000, 500]), // window 1502, output 40
+  result(T(2)),
+  message(T(3), "m2", ["Grep", "Glob"], [3, 10, 1500, 400]), // window 1903: grew 1903 - 1502 - 40 = 361 over m1, the Read's
+  result(T(4)),
+  message(T(5), "m3", ["Bash"], [1, 7, 1900, 800]), // window 2701: grew 2701 - 1903 - 10 = 788 over m2, a Grep and a Glob: mixed
+  result(T(6)),
+  message(T(7), "m4", ["Read"], [1, 5, 2700, 500]), // window 3201, over m3 which called no read tool: nothing
+  order(T(8), "worker-9001"), // an order between m4 and m5: the window grew by more than a result
+  message(T(9), "m5", ["Bash"], [1, 5, 3200, 700]),
+].join("\n");
+const readsOf = (events) => Object.fromEntries(events.filter((event) => event.kind === "turn").map((event) => [event.id.replace("turn:", ""), event.toolRead]));
+const readTranscript = (text, carry = null) => eventsOfTranscript({ text, file: "t.jsonl", ledger: [], rowRepo: ROW_REPO, carry });
+
+test("TOOL READ derivation: the window's growth less the previous output, the tool or mixed, nothing after a tool that is not read, null tokens after an order", () => {
+  const reads = readsOf(readTranscript(READS).events);
+  assert.deepEqual(reads.m1, null, "the first message follows an order and a Read of nothing: no read call came before it");
+  assert.deepEqual(reads.m2, { tool: "Read", tokens: 361 }, "1903 - 1502 - 40");
+  assert.deepEqual(reads.m3, { tool: "mixed", tokens: 788 }, "a Grep and a Glob in one message: in no tool's figure");
+  assert.equal(reads.m4, null, "m3 called Bash only");
+  assert.deepEqual(reads.m5, { tool: "Read", tokens: null }, "an order came between: not derivable, never a guess and never 0");
+});
+
+test("TOOL READ derivation: a read that resumes from the carry derives the same as one read of the whole transcript, and without the carry it cannot", () => {
+  const lines = READS.split("\n");
+  const first = readTranscript(`${lines.slice(0, 4).join("\n")}\n`);
+  const resumed = readTranscript(`${lines.slice(4).join("\n")}`, first.carry);
+  assert.deepEqual({ ...readsOf(first.events), ...readsOf(resumed.events) }, readsOf(readTranscript(READS).events), "the same as one whole read: m3, whose previous message m2 is in the first read, is derived in the second");
+  assert.deepEqual(readsOf(resumed.events).m3, { tool: "mixed", tokens: 788 }, "POSITIVE CONTROL: the resumed read derives something");
+  assert.equal(readsOf(readTranscript(`${lines.slice(4).join("\n")}`).events).m3, null, "with nothing carried there is no previous message to grow from: null");
+});
+
+test("TOOL-READ TOKENS: a Codex reviewer's turn is unmeasured and in no denominator, so it neither makes the figure a floor nor dilutes its share", () => {
+  const events = [
+    turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: { tool: "Read", tokens: 100 } }),
+    turn({ when: "2026-09-22T11:00:00Z", session: "reviewer-1101", pr: 1101, cost: null, model: "gpt-x", tokens: [10, 0, 99990, 0], harness: "codex" }), // no `toolRead`: Codex's tools are not Claude's
+  ];
+  const [{ byRepo: [cut] }] = aggregate({ events, pulls: [pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "fixture" } }).weeks;
+  assert.deepEqual([cut.toolRead.total, cut.toolRead.floorRows], [100, 0], "the Claude turn's 100 tokens, and no floor for a turn that was never measurable");
+  near(cut.toolRead.share, 100 / 1000); // of the 1000 tokens of the turn that has the figure, not of the 101,000 the row holds
+});
+
+test("readMoves: the closing time of each move's row, null (never a guess) when the budget stopped the call, and a failure that is not the budget is thrown", () => {
+  const closed = { 2974: "2026-10-02T18:13:06Z", 2703: "2026-10-06T05:54:15Z" };
+  const moves = readMoves({ rowRepo: ROW_REPO, gh: (args) => ({ closed_at: closed[Number(args[0].split("/").pop())] }) });
+  assert.deepEqual(moves.map((move) => [move.name, move.row, move.at]), [["agent-org", 2974, at(closed[2974])], ["lab", 2703, at(closed[2703])]]);
+  const spent = readMoves({ rowRepo: ROW_REPO, gh: () => { throw Object.assign(new Error("budget"), { code: "GH_CALLS_SPENT" }); } });
+  assert.deepEqual(spent.map((move) => move.at), [null, null]);
+  assert.throws(() => readMoves({ rowRepo: ROW_REPO, gh: () => { throw new Error("HTTP 404"); } }), { message: /could not read when the move closed/ });
 });
