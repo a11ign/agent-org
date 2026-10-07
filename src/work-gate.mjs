@@ -4926,6 +4926,15 @@ export const PRODUCT_SHARE_FLOOR = 6;
 /** The starts memory beside `claim-refusals.json`: `{ "<row>": { at, kind } }`, the newest `PRODUCT_SHARE_WINDOW` only. */
 export const ENGINEER_STARTS_FILE = "engineer-starts.json";
 
+/**
+ * #3929: the last `NO PRODUCT ROW OFFERABLE` line printed, `{ line, at }`, beside `engineer-starts.json`. The line carries nothing on the 2nd..Nth tick it
+ * did not carry on the 1st (the share moves when an engineer starts a row, a few times a day), and printed every tick it was 124 lines in 3 h, which
+ * the repeating-lines detector (#2848) rightly offered as a fault. So it is printed when its TEXT changes, and again after `SHARE_LINE_REMINDER_MS`:
+ * the empty shelf is the chairman's unmet order and a standing state must not go quiet for good, and once a day is far under the detector's 30-tick threshold.
+ */
+export const SHARE_LINE_FILE = "product-share-line.json";
+export const SHARE_LINE_REMINDER_MS = 24 * 60 * 60 * 1000;
+
 /** The tool's own repository: releasable, and not product (agent-org is the org's, not the thing the org ships). */
 const TOOL_REPO = "a11ign/agent-org";
 
@@ -4972,19 +4981,59 @@ export function productShare(starts) {
  * ONE `NO PRODUCT ROW OFFERABLE` line, which `product-manager` reads as an order to stock the shelf. AN ENGINEER IS NEVER LEFT IDLE TO HOLD
  * A RATIO. Only the pool is restricted: a row a lane routes to its owner is not an engineer's start and passes through. ABSENT MEANS NOT
  * ASKED (`decide` sits on its complexity limit, so there is no default there): no starts or no declaration offers as the gate always did.
- * @param {any[]} offerable @param {{ starts?: { at: number, kind: string }[], declaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void }} [read]
+ * @param {any[]} offerable @param {{ starts?: { at: number, kind: string }[], declaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} [read]
+ *        `shareMemory` (#3929) is where the line is remembered so it prints when it CHANGES; omitted, it prints every time it is reached.
  */
-export function offeredByShare(offerable, { starts, declaration, shareLog = (line) => process.stderr.write(line) } = {}) {
+export function offeredByShare(offerable, { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory } = {}) {
   if (starts === undefined || declaration === undefined) return offerable;
   const { product, of } = productShare(starts);
-  if (product >= PRODUCT_SHARE_FLOOR) return offerable;
+  if (product >= PRODUCT_SHARE_FLOOR) {
+    forgetShareLine(shareMemory);
+    return offerable;
+  }
   const regions = productRegionsOf(declaration);
   const pool = offerable.filter((row) => laneOwnerOf(row) === null).map((row) => ({ row, ...rowKind(declaredRegionFiles(String(row.body ?? "")), regions) }));
   const productRows = pool.filter((entry) => entry.kind === "product").map((entry) => entry.row);
-  if (productRows.length > 0) return [...offerable.filter((row) => laneOwnerOf(row) !== null), ...productRows];
+  if (productRows.length > 0) {
+    forgetShareLine(shareMemory);
+    return [...offerable.filter((row) => laneOwnerOf(row) !== null), ...productRows];
+  }
   const unreadable = pool.filter((entry) => entry.unreadable).map((entry) => subjectRef(entry.row.repoKey, entry.row.number));
-  shareLog(`NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`);
+  const line = `NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`;
+  if (shareLineDue(line, shareMemory)) shareLog(line);
   return offerable;
+}
+
+/**
+ * Whether the line is to be printed now, remembering that it was. ABSENT MEMORY MEANS NOT ASKED: it prints every time, as it always did. A memory
+ * that cannot be read (absent, empty, unparseable) or written prints, and never throws: a broken memory must not stop the orders behind it, and
+ * must not silence the line either, for `recordEngineerStarts`'s reason.
+ * @param {string} line @param {{ stateDir: string, now?: number } | undefined} memory
+ */
+function shareLineDue(line, memory) {
+  if (memory === undefined) return true;
+  const { stateDir, now = Date.now() } = memory;
+  const path = `${stateDir}/${SHARE_LINE_FILE}`;
+  const before = readJsonObject(path);
+  if (before.line === line && Number.isFinite(before.at) && now - before.at < SHARE_LINE_REMINDER_MS) return false;
+  try {
+    writeJsonObject(path, { line, at: now });
+  } catch {
+    // The memory is unwritable, so it will not hold: print, which is the direction that cannot hide the empty shelf.
+  }
+  return true;
+}
+
+/** A tick that stocked the shelf (a product row on offer, or the share at the floor) ends the standing state, so a recurrence prints. @param {{ stateDir: string } | undefined} memory */
+function forgetShareLine(memory) {
+  if (memory === undefined) return;
+  const path = `${memory.stateDir}/${SHARE_LINE_FILE}`;
+  if (Object.keys(readJsonObject(path)).length === 0) return;
+  try {
+    writeJsonObject(path, {});
+  } catch {
+    // Unwritable: the old line stays remembered, and a recurrence of the SAME text within a day stays quiet. The cost is one missed repeat, never a throw.
+  }
 }
 
 /**
@@ -5024,7 +5073,7 @@ function startedByAnEngineer(row) {
 /** #3820: `decide`'s two arguments for the product share, read at the tick: the starts memory (local files, no `gh`) and the declaration `dora` is in. @param {any[]} openRows */
 function engineerShareReads(openRows) {
   const declaration = homeProjectDeclaration();
-  return { engineerStarts: recordEngineerStarts(openRows, { declaration }), projectDeclaration: declaration };
+  return { engineerStarts: recordEngineerStarts(openRows, { declaration }), projectDeclaration: declaration, shareMemory: { stateDir: REVIEWER_STATE_DIR } };
 }
 
 /**
@@ -6129,7 +6178,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>, answerGiven?: ReturnType<typeof answerGivenOrders>,
  *           labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null,
  *           claimRefusals?: Record<string, { reason: string, ticks: number }>,
- *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void }} state
+ *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} state
  *        `engineerStarts` and `projectDeclaration` (#3820) are the last engineer starts and the declaration that says which rows are product; the engineer pool is
  *        offered product rows only while fewer than 6 of the last 10 starts were one (`offeredByShare`). OMITTED MEANS NOT ASKED: the offer is unrestricted.
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
@@ -6199,7 +6248,7 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog }) {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory }) {
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -6225,7 +6274,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // causes above use: work that already EXISTS outranks work nobody has started.
   const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows });
   orders.push(...rowBranchOrders(readyRows, rowBranches, prs, branchPrs), ...incompleteRowOrders(readyRows)); // #2791, #3010, #3892
-  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog }), branchesToReplace(rowBranches, branchPrs)), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory }), branchesToReplace(rowBranches, branchPrs)), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
