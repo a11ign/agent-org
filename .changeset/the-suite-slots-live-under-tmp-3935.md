@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The suite slots move from `~/.cache/agent-org/suite-slots` to `/tmp/agent-org-suite-slots-<uid>` (a11ign/a11ign#3935, found on #3932). Under `codex sandbox` with `writable_roots = ["/tmp"]` the home is read-only, so `pnpm run verify` stopped at the slot (`cannot create .../slot-0.lock: Read-only file system`) having run nothing, and a reviewer could not run it. The path is the same for every caller whatever its `HOME`, `XDG_CACHE_HOME` or `TMPDIR` (a literal `/tmp`, never `os.tmpdir()`, which follows `TMPDIR`), so the limit stays host-wide (#3536), and the directory is made 0700. `waits.log` moves with it. For the one run in which an older checkout is still holding a slot under `~/.cache`, up to four suites can overlap; `/tmp` is cleared at boot, which takes the wait record with it. Pinned in `suite-slots.test.ts`: the default is one path whatever those three variables say, and a caller with a read-only home and a private `TMPDIR` takes a slot without writing under the home.

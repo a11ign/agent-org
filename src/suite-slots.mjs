@@ -36,7 +36,7 @@
 
 import { spawn } from "node:child_process";
 import { accessSync, appendFileSync, constants, mkdirSync, readFileSync } from "node:fs";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,12 +54,20 @@ export const WAIT_REPORT_MS = 60_000;
 export const WAITS_LOG = "waits.log";
 /** Set in the environment of a command that is running in a slot, to the slot's number: how a script that re-runs itself under a slot knows it already is. */
 export const SLOT_ENV = "AGENT_ORG_SUITE_SLOT";
-/** Names the directory holding the slots, for a test or an operator; by default the host's cache directory. */
+/** Names the directory holding the slots, for a test or an operator; by default a directory under `/tmp` (see {@link slotDirectory}). */
 export const SLOT_DIR_ENV = "AGENT_ORG_SUITE_SLOT_DIR";
+/**
+ * The one place every caller on the host can write, which is why the slots live there: a reviewer's `codex sandbox` with `writable_roots = ["/tmp"]` has a read-only home, so slots under
+ * `~/.cache` refused it (`Read-only file system`, a11ign/a11ign#3935, found on #3932). A LITERAL `/tmp`, never `os.tmpdir()`: that honours `TMPDIR`, and a caller that points `TMPDIR` at a private
+ * directory (a sandbox must) would get a private slot directory and so a limit of its own, which is the one thing the slots exist to prevent.
+ */
+const SHARED_TMP = "/tmp";
 /** `flock`'s own exit code for "the lock is held" (`--conflict-exit-code`): a command that exits it is still told apart, because `held` is read from the command having started, not from this code. */
 const CONFLICT_EXIT = 200;
 /** What the holder script exits when the lock file cannot be opened: a refusal, and not a held slot. */
 const REFUSED_EXIT = 201;
+/** Owner only: the directory sits in a world-writable `/tmp`, and nobody else has a reason to take or read a slot. */
+const SLOT_DIR_MODE = 0o700;
 const LABEL_LIMIT = 120;
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
@@ -87,10 +95,14 @@ export class SuiteSlotRefusal extends Error {}
 /** @param {Record<string, string | undefined>} env @returns {boolean} true on a GitHub runner (or anything else that sets `CI`): not this host, so no slot */
 const onRunner = (env) => Boolean(env.CI);
 
-/** @param {Record<string, string | undefined>} env @returns {string} the host's cache directory for the slots */
+/**
+ * The directory holding the slots: the SAME path for every caller on the host, whatever its `HOME`, `XDG_CACHE_HOME` or `TMPDIR`, because a path that varies with them is a limit per caller and
+ * not per host (#3536). Per user (the uid in the name) so one user's directory, made 0700, cannot refuse another's; the agent host runs everything as one.
+ * @param {Record<string, string | undefined>} env @returns {string}
+ */
 export function slotDirectory(env = process.env) {
   if (env[SLOT_DIR_ENV]) return env[SLOT_DIR_ENV];
-  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "agent-org", "suite-slots");
+  return join(SHARED_TMP, `agent-org-suite-slots-${process.getuid?.() ?? "shared"}`);
 }
 
 /** @param {string} name @param {string | undefined} pathVar @returns {string | null} the first executable called `name` on `pathVar`, or null */
@@ -204,7 +216,7 @@ export async function runUnderSlot({ command, args = [], env = process.env, cwd,
   if (onRunner(env)) return await runAsIs({ command, args, env, cwd, output });
   const tools = requiredTools(env);
   const slotDir = dir ?? slotDirectory(env);
-  mkdirSync(slotDir, { recursive: true });
+  mkdirSync(slotDir, { recursive: true, mode: SLOT_DIR_MODE });
   const named = oneLine(label ?? [command, ...args].join(" "));
   const began = now();
   /** @type {number | null} */
