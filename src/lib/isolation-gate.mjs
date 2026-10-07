@@ -1,4 +1,4 @@
-// COPIED FROM `packages/guards/src/isolation-gate.mjs` at 2cd67ad44 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/isolation-gate.mjs` at d8d9a02fc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
 // - its import of cli-flags.mjs, now the tool's own copy beside it
@@ -565,7 +565,7 @@ export function checkIsolation(packageDir) {
 const REPO_ROOT = HOME_CHECKOUT;
 
 /** Where the one declaration of the layers lives, relative to a repository root. */
-const LAYERS_JSON = "packages/control/layers.json";
+const LAYERS_JSON = "layers.json";
 
 /**
  * The directories `layers.json` declares as the checkout of a layer that lives in a repository of its own (#3830).
@@ -579,7 +579,7 @@ const LAYERS_JSON = "packages/control/layers.json";
  * Read from the file directly, the way `scripts/lay-layer.mjs` does, and NOT through `control`'s `layer-checkouts.mjs`:
  * that module holds a computed `import()` (`layerCodeVersion`), and every guard that declares a walk scope has this
  * file in its import closure, where a computed import is refused (`declared-walk-scope.test.ts`). It is still the one
- * declaration, read here and never restated. #3506 deletes `packages/control`, and then this is the line it repoints.
+ * declaration, read here and never restated. It sat in `packages/control/` until #3506 deleted that directory, and is at the root now.
  *
  * A layer with no `remote` is inside this repository's checkout, which publishes it, so it is not a layer checkout.
  * An absent or unreadable `layers.json` throws: answering "no layers" would pack them again, silently.
