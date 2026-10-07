@@ -114,7 +114,7 @@ jobs:
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "last=$last" >> "$GITHUB_OUTPUT"
           echo "$count changeset(s) not yet released; the last tag is $last" | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.pending.outputs.count != '0'
         with:
           node-version: 22.22.1
