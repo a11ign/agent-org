@@ -20,8 +20,10 @@ import { claimRecordOf } from "../claim-stall.mjs";
 import { idleClaimantReading } from "../idle-claimant.mjs";
 import { familyNumber } from "../arm-pr.mjs";
 import { readAgents } from "../herdr-agents.mjs";
+import { idleWithOpenRowsReading } from "../idle-with-open-rows.mjs";
+import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
-import { NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
+import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
 import { FLEET_IDLE_HOURS, readLastMergedAt, orgHealthTick,
   primaryStandingSince, readTeamAccess } from "../org-health.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
@@ -487,11 +489,43 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
     ...(openRowsRead !== undefined && { stateRows: openRowsRead }), // #3942: the rows this tick already read, so the signal costs no call
+    ...(openRowsRead !== undefined && { idle: idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) }), // #3943: the same rows, and the gate's own shelving list
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
     ...teamAccessFact(teamAccess()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   return [...readings, ...staleWaitOrders(stale)];
+}
+
+/**
+ * #3943: THE ENGINEER SEATS: the standing roles `sessions.json` marks `engineer` and every spawned `worker-<n>` a row names (a spawned seat exists only while it
+ * holds one, so the rows are where it is read from). `null` is a roster that could not be read, which is unknown and never "no engineer".
+ * @param {any[]} openRows @param {string} [path]
+ * @returns {string[] | null}
+ */
+export function engineerSeats(openRows, path = roleBriefPath("sessions.json").absolute) {
+  try {
+    const { live } = JSON.parse(readFileSync(path, "utf8"));
+    const standing = live.filter((/** @type {any} */ s) => s.role === "engineer" && s.family === undefined).map((/** @type {any} */ s) => s.name);
+    const spawned = openRows.flatMap((row) => labelsOf(row).filter((l) => l.startsWith(SESSION_PREFIX)).map((l) => l.slice(SESSION_PREFIX.length)))
+      .filter((name) => familyNumber(name) !== null);
+    return [...new Set([...standing, ...spawned])];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #3943: THE IDLE READING over the rows and the gate's own offer, both already in hand. A tick whose pull-request or Ready read was refused cannot say which
+ * rows the gate shelves, so it says UNREAD: every ready row would otherwise read as `READY_UNOFFERED`, a false defect.
+ * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, readyRead: any[] | null, decideArgs: any, now: number }} input
+ */
+function idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) {
+  if (openRowsRead === null) return idleWithOpenRowsReading({ now, engineers: null, openRows: null });
+  if (prsRead === null || readyRead === null) return { kind: /** @type {const} */ ("unread"), why: "the gate's own offer could not be read, so which ready rows it withholds is not known" };
+  const { prFiles, rowBranches, openRows, readyRows } = decideArgs;
+  const shelved = new Map(partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).blocked.map((b) => [b.number, b.reason]));
+  return idleWithOpenRowsReading({ now, engineers: engineerSeats(openRowsRead), openRows: openRowsRead, shelved });
 }
 
 /**
