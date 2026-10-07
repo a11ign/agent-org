@@ -319,24 +319,35 @@ test("readMergedPulls lets any other failure through as it came, with no flag ad
   await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
 });
 
-test("run as a command it prints the reading and exits 0: the entry module's top-level await must not wait on the `trace` import that imports it back", () => {
+/** The script run as a command, with `gh` replaced by a stub that runs `ghBody` and a `HOME` holding the empty sources it reads. */
+function runCommand(ghBody) {
   const home = mkdtempSync(join(tmpdir(), "wakes-per-row-"));
   try {
     mkdirSync(join(home, "bin"));
     mkdirSync(join(home, ".claude", "projects"), { recursive: true });
     mkdirSync(join(home, ".cache", "a11ign"), { recursive: true });
-    writeFileSync(join(home, ".cache", "a11ign", "wake-ledger"), "");
-    writeFileSync(join(home, ".cache", "a11ign", "spare-cycles"), "");
+    for (const file of ["wake-ledger", "spare-cycles"]) writeFileSync(join(home, ".cache", "a11ign", file), "");
     writeFileSync(join(home, ".cache", "a11ign", "spare-instances.json"), "{}");
-    writeFileSync(join(home, "bin", "gh"), "#!/bin/sh\necho '[]'\n"); // an empty pull-requests list: no merged row, so no claim read either
+    writeFileSync(join(home, "bin", "gh"), `#!/bin/sh\n${ghBody}\n`);
     chmodSync(join(home, "bin", "gh"), 0o755);
     const script = fileURLToPath(new URL("./wakes-per-row.mjs", import.meta.url));
-    const run = spawnSync(process.execPath, [script, "--from", "2026-10-04T00:00:00Z", "--to", "2026-10-04T13:00:00Z", "--repos", "a11ign/a11ign"], {
+    return spawnSync(process.execPath, [script, "--from", "2026-10-04T00:00:00Z", "--to", "2026-10-04T13:00:00Z", "--repos", "a11ign/a11ign"], {
       encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, PATH: `${join(home, "bin")}:${process.env.PATH}` },
     });
-    assert.equal(run.status, 0, `exit ${run.status}, stderr: ${run.stderr}`);
-    assert.match(run.stdout, /merged rows/i, "the reading was printed");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+}
+
+test("run as a command it prints the reading and exits 0: the entry module's top-level await must not wait on the `trace` import that imports it back", () => {
+  const run = runCommand("echo '[]'"); // an empty pull-requests list: no merged row, so no claim read either
+  assert.equal(run.status, 0, `exit ${run.status}, stderr: ${run.stderr}`);
+  assert.match(run.stdout, /merged rows/i, "the reading was printed");
+});
+
+test("run as a command a failed read exits 1 with the error on stderr, never 0 and never silent", () => {
+  const run = runCommand("echo 'HTTP 403 rate limit exceeded' >&2; exit 1");
+  assert.equal(run.status, 1, `stderr: ${run.stderr}`);
+  assert.match(run.stderr, /rate limit exceeded|gh/i, "the cause is printed");
+  assert.equal(run.stdout, "", "no reading is printed from a failed read");
 });
