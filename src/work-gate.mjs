@@ -78,7 +78,7 @@ import { stateEntryPath } from "./host-config.mjs"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.mjs` is one: it reads the journal, not GitHub.
 import { repeatingLinesTick } from "./repeating-lines.mjs";
 // #2936: THE ORG-HEALTH QUESTION, in its own leaf for the same reason: relative imports only, so the gate keeps the property its own header states.
-import { redSinceOf, readToolAgreement } from "./org-health.mjs";
+import { redSinceOf, readToolAgreement, readReleaseRuns } from "./org-health.mjs";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.mjs";
 import { isBrokenRed } from "./red-pr.mjs"; // #2997
@@ -563,7 +563,10 @@ export const GH_READS = Object.freeze({
     // listing, which lags minutes behind an add (see `readRowsOffBoard`).
     "api graphql repository.issues(states: OPEN) { projectItems } (readRowsOffBoard -- row-off-board)",
     // #2936: ONE REST CALL on the core pool -- the 20 newest-updated closed pull requests, of which the latest `merged_at` is the last merge.
-    "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)"],
+    "api repos/{repo}/pulls?state=closed&sort=updated (readLastMergedAt -- org-health's no-merge-while-work-exists)",
+    // #4001: ONE REST CALL on the core pool -- the 30 newest `release.yml` runs on `main` (readReleaseRuns -- org-health's release-run-failed). While the newest verdict is a failure it makes TWO
+    // MORE (that run's jobs, and `.changeset/` on `main`), which are the failure's detail and are not counted here.
+    "api repos/{repo}/actions/workflows/release.yml/runs (readReleaseRuns -- org-health's release-run-failed)"],
   conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   // #3535: ONE GRAPHQL CALL, ONLY WHEN HERDR LISTS AT LEAST ONE `worker-<n>`, for THOSE rows' numbers (one aliased `issue(number: n)` each, state, labels and comments), asked with the
   // follow-ups' wave (`readOpenRowFollowUps`) so its wall time overlaps theirs. A row CLOSED while it still carries the claim is in none of the open lists above, and the instance
@@ -7681,7 +7684,7 @@ function main() {
   const { delivered: orders, performed: performedOnPrs } = performActions(markOutageReads(incident.orders, outageNow));
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
   orders.push(...incident.signal);
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()) }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.

@@ -191,6 +191,7 @@ export const SIGNALS = Object.freeze({
   AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
   STATE_LABEL: "row-without-exactly-one-state",
   IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
+  RELEASE_FAILED: "release-run-failed",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
@@ -1016,6 +1017,85 @@ export function readLastMergedAt(run, repo) {
   }
 }
 
+/** How many of the newest `release.yml` runs on `main` the release read looks at: the `status` runs it skips on every commit crowd the list, so the window is wide. */
+const RELEASE_RUN_WINDOW = 30;
+const RELEASE_JOBS_WINDOW = 100;
+/** The two conclusions that say whether a release happened. `cancelled`, `skipped`, `neutral` and a run still going say nothing, so they neither trip nor clear (#4001). */
+const RELEASE_VERDICTS = Object.freeze(["success", "failure"]);
+
+/**
+ * @typedef {{ id: number, event: string, status: string, conclusion: string | null, sha: string, createdAt: string, updatedAt: string, url: string }} ReleaseRun
+ * @typedef {{ name: string, steps: string[] }} FailedJob
+ * @typedef {{ runs: ReleaseRun[], jobs?: FailedJob[] | null, pending?: string[] | null }} ReleaseRuns `jobs` and `pending` are read only when the newest verdict is a failure; `null` is a read that was refused
+ */
+
+/** @param {ReleaseRun[]} runs @returns {ReleaseRun | undefined} the newest run that concluded `success` or `failure`: the one that says whether the last release happened */
+export function newestReleaseVerdict(runs) {
+  return [...runs].filter((r) => RELEASE_VERDICTS.includes(String(r.conclusion))).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+}
+
+/**
+ * SIGNAL 18 (#4001): THE LAST RELEASE RUN ON `main` FAILED AND NOTHING HAS SUCCEEDED SINCE. The newest run that CONCLUDED decides: a later `success` clears it, and a run
+ * that was cancelled, skipped or is still going neither trips nor clears it (the `status` runs `release.yml` skips on every commit must not read as a release). Any event
+ * counts, because a failed release is a failed release whatever started it. A list with no verdict in it is UNKNOWN, never clear: a window of skipped runs says nothing.
+ * The jobs and the pending changesets are the DETAIL of a failure already certain, so a refusal of either is said in the detail and does not turn the trip into an unknown.
+ * @param {{ releaseRuns: ReleaseRuns | null }} input
+ * @returns {Reading}
+ */
+export function releaseFailedReading({ releaseRuns }) {
+  const signal = SIGNALS.RELEASE_FAILED;
+  if (releaseRuns === null) return unknown(signal, "the runs of release.yml on main could not be read, so the last release is not known to have succeeded");
+  const verdict = newestReleaseVerdict(releaseRuns.runs);
+  if (verdict === undefined) return unknown(signal, `none of the newest ${releaseRuns.runs.length} release.yml run(s) on main concluded success or failure, so no release is known to have happened or failed`);
+  if (verdict.conclusion === "success") return clear(signal);
+  const failedAt = Date.parse(verdict.updatedAt);
+  return { signal, status: "tripped", firstTrippedAt: Number.isFinite(failedAt) ? failedAt : null, discriminator: `${signal}@${verdict.id}`,
+    detail: `release.yml on main FAILED and no later run succeeded: run ${verdict.id} (${verdict.event}) at ${verdict.sha.slice(0, 9)}, ${failedJobsText(releaseRuns.jobs)}; ${pendingText(releaseRuns.pending)}; ${verdict.url}` };
+}
+
+/** @param {FailedJob[] | null | undefined} jobs @returns {string} */
+function failedJobsText(jobs) {
+  if (!jobs) return "the failing job could not be read (read the run)";
+  if (jobs.length === 0) return "no job of it reports failure (read the run)";
+  const named = jobs.slice(0, MAX_NAMED).map(({ name, steps }) => `job \`${name}\`${steps.length > 0 ? ` (step ${steps.map((s) => `"${s}"`).join(", ")})` : ""}`);
+  return `${named.join("; ")}${jobs.length > MAX_NAMED ? `; and ${jobs.length - MAX_NAMED} more` : ""}`;
+}
+
+/** @param {string[] | null | undefined} pending @returns {string} */
+function pendingText(pending) {
+  if (!pending) return "the pending changesets could not be read";
+  if (pending.length === 0) return "no changeset is pending in .changeset/";
+  return `${pending.length} changeset(s) pending in .changeset/: ${pending.slice(0, MAX_NAMED).join(", ")}${pending.length > MAX_NAMED ? ", ..." : ""}`;
+}
+
+/**
+ * THE FACT FOR `releaseFailedReading`: ONE REST CALL on the core pool for the newest `release.yml` runs on `main`, and, only while the newest verdict is a failure, TWO MORE
+ * (that run's jobs, and `.changeset/` on `main`). `null` is a refused or unparseable list, a stated unknown and never "no failure". NEVER THROWS.
+ * @param {(args: string[]) => string} run @param {string} repo
+ * @returns {ReleaseRuns | null}
+ */
+export function readReleaseRuns(run, repo) {
+  const runs = tryJson(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/release.yml/runs`, "-f", "branch=main", "-f", `per_page=${RELEASE_RUN_WINDOW}`,
+    "--jq", "[.workflow_runs[] | {id, event, status, conclusion, sha: .head_sha, createdAt: .created_at, updatedAt: .updated_at, url: .html_url}]"]));
+  if (!Array.isArray(runs)) return null;
+  const verdict = newestReleaseVerdict(runs);
+  if (verdict?.conclusion !== "failure") return { runs };
+  const jobs = tryJson(() => run(["api", `repos/${repo}/actions/runs/${verdict.id}/jobs?per_page=${RELEASE_JOBS_WINDOW}`,
+    "--jq", "[.jobs[] | select(.conclusion == \"failure\") | {name, steps: [.steps[] | select(.conclusion == \"failure\") | .name]}]"]));
+  const files = tryJson(() => run(["api", `repos/${repo}/contents/.changeset?ref=main`, "--jq", "[.[].name]"]));
+  return { runs, jobs: Array.isArray(jobs) ? jobs : null,
+    pending: Array.isArray(files) ? files.filter((name) => name.endsWith(".md") && name !== "README.md") : null };
+}
+
+/** @param {() => string} read @returns {any} the parsed output, or `null` for a refusal or text that is not JSON: a stated gap for the caller, never an empty answer */
+function tryJson(read) {
+  try {
+    return JSON.parse(read());
+  } catch {
+    return null;
+  }
+}
+
 /**
  * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
@@ -1025,7 +1105,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows }} facts `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null }} facts `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -1044,6 +1124,7 @@ export function orgHealthReadings(facts) {
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
+  if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
   return readings;
 }
 
@@ -1104,6 +1185,11 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "`NO_STATE_LABEL` and `TWO_STATE_LABELS` are `row-without-exactly-one-state`'s. **`READY_UNOFFERED` IS A DEFECT, NOT A STATE**: a `" + READY_LABEL + "` row the gate has no reason to withhold while no one works, "
     + "so the offer is wrong or is not being taken; read `work:tick`'s own output for it and FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn. Rows waiting on a `Not-before:` date are counted and not named. "
     + "It clears the tick an engineer holds a row.",
+  [SIGNALS.RELEASE_FAILED]: "The newest `release.yml` run on `main` that concluded failed, and no later run has succeeded, so what merged since is NOT released and the tag the org follows is behind. "
+    + "The job (and step) are named above: READ THE RUN'S LOG for that step before choosing. A cause that was TRANSIENT (a runner lost, a registry or network error) is retried from the SAME run: "
+    + "`gh run rerun <run id> --failed -R <the repository in the URL above>`. A cause FIXED ON `main` since (the run is at an older sha) needs a NEW run, which a rerun of the old one does not give: "
+    + "`gh workflow run release.yml --ref main -R <repository>`. If the cause is not fixed yet, FILE THE FIX `" + READY_LABEL + "` WITH AN OWNER in this turn. "
+    + "Do not wait for the next changeset: a run is only ever started by a merge that carries one, so waiting leaves it red for as long as nobody merges one. It clears the tick a later run succeeds.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
