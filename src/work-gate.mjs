@@ -130,7 +130,9 @@ export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, review
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.mjs";
 // #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.mjs`, which imports the shared reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
-import { orgHealthNow, rulingOrdersNow } from "./work-gate/org-health.mjs";
+import { orgHealthNow, rulingOrdersNow, readWaitFacts } from "./work-gate/org-health.mjs";
+// #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
+import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.mjs";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { withPrOwners } from "./work-gate/pr-owners.mjs";
@@ -1175,6 +1177,13 @@ export function readReadyRows(run = defaultRun) {
  * Raise it when there are more engineers than this, not before.
  */
 export const MAX_ROW_ORDERS_PER_TICK = 8;
+
+/**
+ * #4020: THE TICK'S DECLARED-ASK STEP over the open rows, with the gate's own runner and reader. It reads nothing for an org in which no row declares an ask.
+ * @param {any[] | null} openRowsRead @returns {any[]}
+ */
+export const chairmanAsksNow = (openRowsRead) => chairmanAskOrders({ rows: openRowsRead, now: Date.now() },
+  { run: defaultRun, repo: repoNow, readItemFacts: readWaitFacts, limit: MAX_ROW_ORDERS_PER_TICK });
 
 /** The label `ceo` created for "offer this row before others"; `offerOrder` reads it (#2296). */
 export const PRIORITY_LABEL = "priority";
@@ -7685,7 +7694,7 @@ function main() {
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
   orders.push(...incident.signal);
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()) }),
-    ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })); // #2848, #2936, #2997: before the dead man's switch -- a repeating line, a stuck org: something found
+    ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() }), ...chairmanAsksNow(openRowsRead)); // #2848, #2936, #2997, #4020: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);
