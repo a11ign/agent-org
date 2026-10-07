@@ -57,7 +57,7 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 // `CLAIM_LABEL` from the module the CLAIM PATH itself writes, never the string "in-progress" retyped
 // here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
 // a second spelling of the label is how that disagreement gets to happen again silently.
-import { READY_LABEL, WAS_READY_LABEL, CLAIM_LABEL } from "./claim-labels.mjs";
+import { READY_LABEL, WAS_READY_LABEL, CLAIM_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.mjs";
 // #782: THE PURE DECISION ONLY -- `labelsToStrip` classifies a label, it never calls `gh`. Importing it
 // does NOT give this file a mutation capability; the header above's ruling ("this audit REPORTS the
 // debris; it does not strip it... a bulk label mutation is product-manager's deliberate act") is
@@ -1199,7 +1199,7 @@ function reportInvisibleRows() {
   const rows = invisibleRows(issues);
   if (rows.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, every one is `
-      + `reachable: it carries \`${BACKLOG_LABEL}\`, \`${READY_LABEL}\`, \`epic\` or \`meta\`, or it is claimed `
+      + `reachable: it carries \`${BACKLOG_LABEL}\`, \`${READY_LABEL}\`, \`epic\`, \`parked\` or \`meta\`, or it is claimed `
       + `(\`${CLAIM_LABEL}\`) and its owner is working it\n`);
     return 0;
   }
@@ -1219,8 +1219,13 @@ function reportInvisibleRows() {
  * The labels that make an UNCLAIMED row visible to a gate cause: `readPromotableRows` reads `backlog`
  * and `readReadyRows` `ready`, both SERVER-SIDE; `readEpics` reads `epic`; a `meta` row is a process
  * thread nobody was ever meant to promote.
+ *
+ * #3942: `parked` IS ON THE LIST, because it is a state of its own and no longer rides beside `backlog` (the state-label rule: one of six).
+ * A row parked on purpose is not forgotten -- `ceo` schedules it (`PARKED_LABEL`, `work-gate.mjs`) -- and the eight two-state rows could not
+ * be migrated to `parked` alone while this check named every one UNREACHABLE. `blocked` is NOT added: whether a `blocked`-only row is
+ * reached is a ruling this row does not make, and the rows that carry it today carry `backlog` too.
  */
-const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta"];
+const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta", "parked"];
 
 /**
  * PURE. The open rows no cause can reach.
@@ -1289,6 +1294,34 @@ function reportLabelless() {
     + `the safe default, and which is right is a human judgement -- so they become visible to every `
     + `check that reads this tracker.\n`);
   return rows.length;
+}
+
+/**
+ * #3942: Report open rows in NO state or in MORE THAN ONE -- `reportLabelless`'s question, asked of the population that matters. Read
+ * 2026-10-07: fifteen rows carried no state label and the check above passed every one, because each still held `out-of-release` or
+ * `lane:any`: "no label" is a smaller population than "no STATE label". Eight more held two (`backlog` with `parked` or `epic`).
+ * The rule is `stateLabelFindings`' (the leaf), so the org-health tick reads the same one. As #788: it STATES the count examined against
+ * the count GitHub reports open (`fetchOpenIssuesChecked` refuses a partial read), the half of #788 that mattered.
+ * @param {Parameters<typeof fetchOpenIssuesChecked>[0]} [deps] the test's seams for `gh`
+ * @returns {number} how many rows are not in exactly one state
+ */
+export function reportStateLabels(deps = {}) {
+  const { issues, reportedCount } = fetchOpenIssuesChecked(deps);
+  const findings = stateLabelFindings(issues);
+  if (findings.length === 0) {
+    process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, each carries exactly one of ${STATE_LABELS.join(", ")}\n`);
+    return 0;
+  }
+  const titles = new Map(issues.map((i) => [i.number, i.title]));
+  for (const { number, labels, kind } of findings) {
+    const head = kind === "NONE" ? `NO STATE LABEL  #${number}` : `TWO STATE LABELS  #${number}  ${labels.join(", ")}`;
+    process.stdout.write(`${head} "${titles.get(number) ?? ""}" -- ${kind === "NONE"
+      ? "it is absent from the Ready lane, the claim pool and every label-keyed count"
+      : `each reader resolves two states its own way, and \`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\` rather than sit beside it`}\n`);
+  }
+  process.stderr.write(`\n${findings.length} of ${issues.length} open row(s) (GitHub reports ${reportedCount}) are not in exactly one of `
+    + `${STATE_LABELS.join(", ")}. Promoting or migrating them is \`product-manager\`'s, by hand with the reason recorded -- never this tool's.\n`);
+  return findings.length;
 }
 
 /**
@@ -2303,6 +2336,8 @@ export const CHECKS = [
   ["open issues", reportMutexViolations],
   ["hand claims", reportHandClaims],
   ["labelless rows", reportLabelless],
+  // #3942: the same question about STATE labels -- fifteen rows passed the line above with `lane:any` and no state.
+  ["state labels", reportStateLabels],
   ["declined rows", reportStrandedByIncompleteDecline],
   ["closed issues", reportClosedDebris],
   ["board membership", reportAbsentFromBoard],

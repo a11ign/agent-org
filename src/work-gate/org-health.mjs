@@ -486,6 +486,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     fleet: readCaptures(now),
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
+    ...(openRowsRead !== undefined && { stateRows: openRowsRead }), // #3942: the rows this tick already read, so the signal costs no call
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
     ...teamAccessFact(teamAccess()),

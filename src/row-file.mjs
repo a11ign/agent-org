@@ -114,7 +114,7 @@ import { loadLanes, inLane } from "./lane-ownership.mjs";
 // enforces exactly this: a fresh local declaration of any of the four, anywhere in this directory, is a
 // finding -- and that guard reads RAW source, so this note must not spell one out either. It caught this
 // very comment first.
-import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.mjs";
+import { CLAIM_LABEL, READY_LABEL, STATE_LABELS } from "./claim-labels.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, the release label and
 // milestone, the `lane:` prefix and the lanes-file path, and the template's own field/question names.
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX,
@@ -1059,7 +1059,22 @@ export function labelRefusal(argv, laneLabels) {
     return `row-file: REFUSING to file -- this filing says both \`${READY_LABEL}\` and \`${BACKLOG_LABEL}\`. \`--ready\` (or `
       + `\`--label ${READY_LABEL}\`) boards it Ready; no board flag boards it Backlog. Give one. Nothing was filed.`;
   }
-  return null;
+  return secondStateRefusal(argv, given);
+}
+
+/**
+ * #3942: A FILING GETS EXACTLY ONE STATE LABEL, and `boardingFor` already gives it `backlog` or `ready`, so a `--label` naming ANOTHER of
+ * `STATE_LABELS` (`parked`, `epic`, `blocked`, `in-progress`) is a second one: eight open rows carry `backlog` beside `parked` or `epic`
+ * that way. A state that is not the board label is set by the act that means it (a claim, a hold, a parking) once the row exists.
+ * @param {string[]} argv @param {string[]} given the filer's own labels
+ * @returns {string | null}
+ */
+function secondStateRefusal(argv, given) {
+  const boarding = boardingFor(argv).label;
+  const second = given.filter((label) => STATE_LABELS.some((state) => sameLabel(state, label)) && !sameLabel(label, boarding));
+  if (second.length === 0) return null;
+  return `row-file: REFUSING to file -- --label ${second.join(", ")} would give this row a SECOND state label beside \`${boarding}\`, which the filing writes itself. `
+    + `A row is in exactly one of ${STATE_LABELS.join(", ")}; \`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\`, and the state that means it is set once the row exists. Drop the --label. Nothing was filed.`;
 }
 
 /**
