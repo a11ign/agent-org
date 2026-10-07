@@ -66,14 +66,14 @@ test("readReleaseFacts reads each distinct fact once, leaves a failed read OUT, 
 });
 
 test("remoteTagExists compares the EXACT ref (matching-refs is a prefix match) and reads a failure as null", () => {
-  const gh = (answer: () => string) => ({ run: answer, repo: () => "a11ign/a11ign" });
+  const remote = (answer: () => string) => ({ run: answer, repo: () => "a11ign/a11ign" });
   const asked: string[][] = [];
-  assert.equal(remoteTagExists("v0", gh(() => JSON.stringify([{ ref: "refs/tags/v0" }, { ref: "refs/tags/v0.1" }]))), true);
+  assert.equal(remoteTagExists("v0", remote(() => JSON.stringify([{ ref: "refs/tags/v0" }, { ref: "refs/tags/v0.1" }]))), true);
   assert.equal(remoteTagExists("v0", { run: (a) => { asked.push(a); return "[]"; }, repo: () => "a11ign/a11ign" }), false);
   assert.deepEqual(asked, [["api", "repos/a11ign/a11ign/git/matching-refs/tags/v0"]]);
-  assert.equal(remoteTagExists("v0", gh(() => JSON.stringify([{ ref: "refs/tags/v0.1" }]))), false, "a longer tag is not this one");
-  assert.equal(remoteTagExists("v0", gh(() => { throw new Error("403"); })), null);
-  assert.equal(remoteTagExists("v0", gh(() => "not json")), null);
+  assert.equal(remoteTagExists("v0", remote(() => JSON.stringify([{ ref: "refs/tags/v0.1" }]))), false, "a longer tag is not this one");
+  assert.equal(remoteTagExists("v0", remote(() => { throw new Error("403"); })), null);
+  assert.equal(remoteTagExists("v0", remote(() => "not json")), null);
 });
 
 test("doneWhenCount counts the numbered clauses under the Done-when heading only", () => {
