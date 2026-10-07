@@ -33,7 +33,10 @@ export const MARKER = "<!-- chairman-ask-on-clear -->";
 const REPORTED_TO = "product-manager";
 const TOLD = "ceo";
 const FENCE = /^[ \t]*(```|~~~)/;
-const ASK_HEADER = /^[ \t]*#{0,6}[ \t]*Then-ask-chairman:[ \t]*(.*?)[ \t]*$/;
+// The block is read as a header at the START of a line, outside a fence (prose that merely quotes it declares
+// nothing). It fires only when EVERY `Waiting-for:` condition on the row reads TRUE: a failed read is unknown and
+// never counts, so the ask waits rather than guesses.
+const ASK_HEADER =/^[ \t]*#{0,6}[ \t]*Then-ask-chairman:[ \t]*(.*?)[ \t]*$/;
 const DECLARED_LINE = /^[ \t]*Declared:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/m;
 
 /**
