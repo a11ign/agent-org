@@ -13,9 +13,14 @@ name: release
 # and `release-tag-on-merge.test.ts` (the pin and the inputs).
 #
 # THE PIN IS A FULL SHA, because a tag or a branch would let a push to toolchain change what this repository releases with no pull request here; Dependabot's `github-actions`
-# entry moves it in a pull request that is reviewed. THE INPUTS: `kind: tag` (no registry, no OIDC, no `id-token`), `gate-check: gate` (ci.yml's required check),
+# entry moves it in a pull request that is reviewed. THE INPUTS: `kind: tag` (no registry, and no OIDC token is minted), `gate-check: gate` (ci.yml's required check),
 # `node-version` as this file always ran, and, because agent-org has no lockfile and no `packageManager`, `pnpm-version` and `changesets-version` (the shared workflow refuses
 # a repository with neither a `packageManager` nor a `pnpm-version`, and runs `pnpm dlx @changesets/cli@<changesets-version>`, which is the version package.json's `changeset` script names).
+#
+# `id-token: write` IS HELD BY THE CALL, AND NOTHING IS MINTED WITH IT (ceo review of a11ign/agent-org#352). The called file's `publish` job asks for `id-token: write`, and GitHub checks a
+# called workflow's job permissions against the caller's when the workflow is LOADED, not against a job's `if:`: a caller that withholds it fails the whole call before any job runs,
+# `publish` skipped or not. Under `kind: tag` that job is skipped, so no token is minted (and `publish` sits in the `npm-publish` environment, restricted to `main`). The pair is pinned
+# by `release-triggers-itself.test.ts`: the grant is on the call only, and only beside `kind: tag`. Not run before merge: the first run on `main` is its reading.
 #
 # A push that arrives while another run is waiting REPLACES the waiting run (GitHub keeps one). That is harmless: every run reads the unreleased changesets from its own tree.
 # A tag pushed with GITHUB_TOKEN starts no workflow, and `on` here names branches only.
@@ -30,9 +35,11 @@ permissions:
 jobs:
   release:
     permissions:
-      # The tag and the Release are the only writes. No `pull-requests`, no `id-token`, and no registry token anywhere.
+      # The tag and the Release are the only writes. No `pull-requests`, and no registry token anywhere.
       contents: write
       checks: read
+      # Required to LOAD the call (see the header): the called `publish` job asks for it, and `kind: tag` skips that job, so nothing is minted.
+      id-token: write
     concurrency:
       group: release
       cancel-in-progress: false
