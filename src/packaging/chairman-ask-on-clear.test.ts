@@ -39,7 +39,7 @@ const row = (number: number, text: string, labels: string[] = ["lane:any", "park
 const noItems = () => ({ items: {} });
 
 /** A `gh` that records every write and answers the comment read; `fail` names a subcommand that throws. */
-function gh({ comments = [] as { body: string }[], fail = "", unreadable = false } = {}) {
+function fakeGh({ comments = [] as { body: string }[], fail = "", unreadable = false } = {}) {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
@@ -55,16 +55,16 @@ function gh({ comments = [] as { body: string }[], fail = "", unreadable = false
 }
 
 const readers = (distTags: Record<string, string> | null) => ({ distTags: () => distTags, tagExists: () => null });
-const tick = (rows: unknown[], dist: Record<string, string> | null, io: ReturnType<typeof gh>, extra = {}) =>
+const tick = (rows: unknown[], dist: Record<string, string> | null, io: ReturnType<typeof fakeGh>, extra = {}) =>
   chairmanAskOrders({ rows, now: NOW }, { run: io.run, repo: () => "a11ign/a11ign", readItemFacts: noItems, limit: 8, readers: readers(dist), log: () => {}, ...extra });
 
 test("#2887 (the whole shape): RED while the registry holds only the placeholder, GREEN once `latest` exists -- the brief is posted, the label put on, the declaration removed, ceo told, ONCE", () => {
   const rows = [row(2887, body(`published ${FLEET}@latest`))];
-  const before = gh();
+  const before = fakeGh();
   assert.deepEqual(tick(rows, { reserved: "0.0.0-reserved.0" }, before), [], "the placeholder alone is not `latest`");
   assert.deepEqual(before.writes(), []);
 
-  const after = gh();
+  const after = fakeGh();
   const orders = tick(rows, { reserved: "0.0.0-reserved.0", latest: "0.5.1" }, after);
   const [comment, label, edit] = after.writes();
   assert.deepEqual(after.writes().map((a) => a.slice(0, 3)), [["issue", "comment", "2887"], ["issue", "edit", "2887"], ["issue", "edit", "2887"]]);
@@ -84,7 +84,7 @@ test("#2887 (the whole shape): RED while the registry holds only the placeholder
   assert.equal(orders[0].causeKey, "ceo/org-health/chairman-ask-raised-order@2887");
   assert.match(orders[0].prompt, /remove `needs:chairman` now/);
 
-  const again = gh();
+  const again = fakeGh();
   assert.deepEqual(tick([row(2887, newBody, ["lane:any", "parked", "needs:chairman"])], { latest: "0.5.1" }, again), [], "the next tick sees a labelled row with no declaration");
   assert.deepEqual(again.calls, []);
 });
@@ -103,7 +103,7 @@ test("the brief the tick posts is one the REAL alert source sends, with the decl
 test("CONTROLS raise NOTHING: a failed registry read, `latest` absent, the label already on, a block missing `Ask`", () => {
   const declared = body(`published ${FLEET}@latest`);
   const quiet = (rows: unknown[], dist: Record<string, string> | null) => {
-    const io = gh();
+    const io = fakeGh();
     const orders = tick(rows, dist, io);
     assert.deepEqual(io.writes(), []);
     return orders;
@@ -131,7 +131,7 @@ test("a block with no condition that can come true is malformed, and so is a sec
 test("a body QUOTING the grammar in a fence, or with no block at all, declares nothing", () => {
   assert.equal(askOf(waitItemOf(row(1, `\`\`\`\n${block()}\n\`\`\`\nWaiting-for: closed #5\n`), "row")), null);
   assert.equal(askOf(waitItemOf(row(1, "Waiting-for: closed #5\n"), "row")), null);
-  const io = gh();
+  const io = fakeGh();
   assert.deepEqual(tick([row(1, "Waiting-for: closed #5\n"), row(2, "no wait at all")], { latest: "1.0.0" }, io), []);
   assert.deepEqual(io.calls, [], "a quiet org with no declaration pays no call");
 });
@@ -150,8 +150,8 @@ test("a floor says WHICH release counts (the #2885 case): below it nothing, at o
   assert.equal(versionAtLeast("1.0", "1.0.0"), null);
 
   const rows = [row(2885, body(`published ${worker}@latest >= 0.2.0`))];
-  assert.deepEqual(tick(rows, { latest: "0.1.0" }, gh()), []);
-  const io = gh();
+  assert.deepEqual(tick(rows, { latest: "0.1.0" }, fakeGh()), []);
+  const io = fakeGh();
   assert.equal(tick(rows, { latest: "0.3.0" }, io).length, 1);
   assert.equal(io.writes().length, 3);
 });
@@ -161,7 +161,7 @@ test("EVERY condition must be true: one still false, or unread, holds the ask ba
   const closed = (state: string) => () => ({ items: { "#5": { state, labels: [], resolvedAt: null, changedAt: null } } });
   const rows = [row(7, text)];
   const run = (state: string | null, dist: Record<string, string> | null) => {
-    const io = gh();
+    const io = fakeGh();
     const orders = tick(rows, dist, io, { readItemFacts: state === null ? noItems : closed(state) });
     return { orders, writes: io.writes().length };
   };
@@ -175,25 +175,25 @@ test("EVERY condition must be true: one still false, or unread, holds the ask ba
 
 test("a failed write is recoverable: no label without a brief, and a posted brief is never posted twice", () => {
   const rows = [row(9, body(`published ${FLEET}@latest`))];
-  const commentFails = gh({ fail: "issue comment" });
+  const commentFails = fakeGh({ fail: "issue comment" });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, commentFails), [], "ceo is told only when the label went on");
   assert.deepEqual(commentFails.writes().map((a) => a[1]), ["comment"], "the label is NOT applied after a failed comment");
 
-  const labelFails = gh({ fail: "issue edit" });
+  const labelFails = fakeGh({ fail: "issue edit" });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, labelFails), []);
-  const retry = gh({ comments: [{ body: `BRIEF for the chairman\n...\n${MARKER}` }] });
+  const retry = fakeGh({ comments: [{ body: `BRIEF for the chairman\n...\n${MARKER}` }] });
   assert.equal(tick(rows, { latest: "0.5.1" }, retry).length, 1);
   assert.deepEqual(retry.writes().map((a) => a[1]), ["edit", "edit"], "the posted brief is found by its marker and not posted again");
 
-  const blind = gh({ unreadable: true });
+  const blind = fakeGh({ unreadable: true });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, blind), []);
   assert.deepEqual(blind.writes(), [], "comments that cannot be read raise nothing");
 });
 
 test("a refused list raises nothing, and the cap bounds the raises per tick", () => {
-  assert.deepEqual(chairmanAskOrders({ rows: null, now: NOW }, { run: gh().run, repo: () => "x/y", readItemFacts: noItems, limit: 8 }), []);
+  assert.deepEqual(chairmanAskOrders({ rows: null, now: NOW }, { run: fakeGh().run, repo: () => "x/y", readItemFacts: noItems, limit: 8 }), []);
   const rows = [1, 2, 3].map((n) => row(n, body(`published ${FLEET}@latest`)));
-  const io = gh();
+  const io = fakeGh();
   assert.equal(tick(rows, { latest: "0.5.1" }, io, { limit: 2 }).length, 2);
   assert.equal(io.writes().length, 6);
 });
