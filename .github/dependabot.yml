@@ -1,5 +1,6 @@
 # Dependency updates come from the platform (a11ign/a11ign ADR 0041, decision 4; row a11ign/a11ign#3968): a new release of an action this
 # repository's workflows call opens a pull request here, so nobody polls for one. Dependabot, because it is a file and not an app install.
+# Row #3968's Acceptance reads this file on `main` AFTER the merge: it is a 404 there before it, by design, and a reading at this file's PR head is the pre-merge check.
 version: 2
 updates:
   - package-ecosystem: github-actions
