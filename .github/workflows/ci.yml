@@ -1,9 +1,10 @@
 name: ci
 
 # THE REQUIRED CHECK IS `gate` (a11ign/a11ign#2792; ADR 0040 decision 6 step 6). A check name can be required only after it has run once,
-# and this file's first pull request is that run.
+# and this file's first pull request is that run. Since a11ign/a11ign#3986 `gate` is the LAST job: it waits for `suite` and `typecheck` and is green only if both
+# are, so the one context a non-admin can read as required carries both (the last job of this file says why).
 #
-# `gate` RUNS THE TOOL'S WHOLE TEST SUITE (a11ign/a11ign#2973, cut-over 2 of 6), because after the cut this repository is the only place the tool's
+# `suite` (what `gate` was before #3986) RUNS THE TOOL'S WHOLE TEST SUITE (a11ign/a11ign#2973, cut-over 2 of 6), because after the cut this repository is the only place the tool's
 # tests can run and "fix forward, no rollback copy" is safe only with a gate that can go red. The suite cannot run in this tree alone: the tool reads
 # `.agent-org/project.json` and walks the project it is pointed at, and when that was tried here without one, 158 of 464 subtests failed and 60 of
 # 125 modules did not import, all for that reason. So the job takes ROUTE (a) of the row: it checks out the project under test,
@@ -53,7 +54,7 @@ permissions:
   contents: read
 
 jobs:
-  gate:
+  suite:
     runs-on: ubuntu-latest
     steps:
       # The WHOLE history: `lib/pin-ratchet.mjs` reads the base with git from this checkout (a11ign/a11ign#3245). A `merge_group` run needs `HEAD^1`, which a depth-1
@@ -157,9 +158,8 @@ jobs:
   # `exclude` names the files NOT yet clean, so a new file is checked from its first commit and the list can only shrink. A file that is imported by an included one is checked
   # whether it is excluded or not (TypeScript follows imports), which is why `tsconfig.json` names only files nothing included reaches.
   #
-  # IT IS A SEPARATE JOB, NOT A STEP OF `gate`: `gate` waits minutes for the whole suite and a type error should not cost that wait, and a required check is a JOB name, so a job of
-  # its own is the only way `main` can demand it without demanding the suite twice. It runs on the same three events as `gate`, because a merge queue waits for a check reporting on
-  # `merge_group`. Making it REQUIRED is a repository setting, not this file's (see the pull request that added it for who sets it and the read-back).
+  # IT IS A SEPARATE JOB, NOT A STEP OF `suite`: `suite` waits minutes for the whole suite and a type error should not cost that wait, so it runs beside it. It runs on the same three events,
+  # because a merge queue waits for a check reporting on `merge_group`. It is REQUIRED through `gate`, the last job, which needs it (a11ign/a11ign#3986); no repository setting is involved.
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -179,3 +179,22 @@ jobs:
           count=$(npx tsc --noEmit -p tsconfig.json --listFilesOnly | grep -vc node_modules)
           echo "tsc program: $count files outside node_modules"
           test "$count" -ge 440
+
+  # THE ONE CONTEXT `main` REQUIRES (a11ign/a11ign#3986), and the only way `typecheck` is required without an admin's act. `typecheck` is a job of its own so a type error does not wait
+  # for the suite, but a job nobody requires is advisory: `rules/branches/main` listed `gate` alone and whether classic protection listed `typecheck` is admin-only to read, so the
+  # repository-settings table read it CANNOT_TELL. Requiring it by a `needs:` on `gate` puts it where any token reads it, and keeps the name every other reader
+  # of `gate` already holds (`release.yml`'s `gate-check`, `auto-arm.yml`).
+  #
+  # `if: always() && !cancelled()` IS THE POINT, not decoration: with the default `success()` a failing `typecheck` SKIPS `gate`, and a skipped required check counts as passing, so a type
+  # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is NOT accepted: neither job here has an `if:`, so a skip means a job that
+  # did not run for a reason nobody wrote, and the only green is `success` from both.
+  gate:
+    needs: [suite, typecheck]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: The suite and the typecheck both succeeded
+        run: |
+          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}"; do
+            [ "$result" = "success" ] || { echo "::error::a job reported '$result', not success"; exit 1; }
+          done
