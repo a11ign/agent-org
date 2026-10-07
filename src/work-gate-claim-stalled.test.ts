@@ -2042,3 +2042,54 @@ test("#3075 the gate reads the other repositories ONCE, by the scope enumeration
   const refused = readElsewherePrs(scopes, (() => { throw new Error("HTTP 403"); }) as never)!;
   assert.deepEqual([refused.open, refused.merged], [null, null], "a refusal is `null`, never `[]`");
 });
+
+// --- (#4017) an idle holder whose OWN pull request is younger than the clock's interval is waiting on the review the org owes --------------
+
+/**
+ * THE FIVE `claim-stalled` NUDGES #4017 MEASURED, each typed while a pull request closing the row was open (read 2026-10-07): the pull request's age in whole
+ * minutes at the nudge (`created_at` from `gh api repos/<repo>/pulls/<n>`, the nudge time from the wake ledger's `nudge-<ms>` key), and its repository.
+ * None had a reviewer seat yet (the gate woke `reviewer-<n>` 14 to 160 minutes AFTER the nudge) and none carried a hold or `awaiting-evidence`, so the #2999
+ * overlay read each as an idle holder with no wait the org can read. A reading at a moment: the ages are the ones the nudge times gave.
+ */
+const NUDGED_WITH_A_PR_OPEN = [
+  { row: 3560, pr: 210, repoKey: "agent-org", ageMin: 54 }, { row: 3591, pr: 211, repoKey: "agent-org", ageMin: 53 },
+  { row: 3719, pr: 3721, repoKey: undefined, ageMin: 74 }, { row: 3787, pr: 3802, repoKey: undefined, ageMin: 59 },
+  { row: 3993, pr: 3997, repoKey: undefined, ageMin: 52 },
+];
+const IDLE_HOLDER = [...CEO_ORCH, { label: "worker-7", status: "idle" }];
+const IDLE_FOR_N = { now: NOW, restartAt: null, nudge: null, agents: IDLE_HOLDER, goneSince: null, idleSince: ago(50) } as Parameters<typeof claimReading>[1];
+/** An open pull request of the holder's: green, no review asked of anybody, nothing held -- the shape every one of the five had. */
+const unreviewedPr = (ageMs: number | undefined, over: object = {}) => ({ number: 9, headRefName: BRANCH, reviewDecision: "REVIEW_REQUIRED", labels: [{ name: "session:worker-7" }],
+  checksPending: false, ...(ageMs === undefined ? {} : { createdAt: iso(NOW - ageMs) }), ...over });
+const holderWith = (pr: object | null): Facts => ({ ...withOpenPr(), openPrs: pr === null ? 0 : 1, ownPrs: pr === null ? [] : [pr],
+  comment: ago(60), commit: ago(60), push: ago(60) } as Facts);
+
+test("#4017 each of the five measured shapes -- an idle holder, a pull request of its own opened under an hour ago, no reviewer yet -- reads `pr-owned`, never a nudge", () => {
+  for (const { row, pr, repoKey, ageMin } of NUDGED_WITH_A_PR_OPEN) {
+    const shape = holderWith(unreviewedPr(ageMin * MIN, { number: pr, ...(repoKey === undefined ? {} : { repoKey }) }));
+    assert.deepEqual(claimReading(shape, IDLE_FOR_N), { kind: "pr-owned" }, `#${row}: ${repoKey ?? "a11ign"}#${pr}, ${ageMin} minutes old`);
+  }
+});
+
+test("#4017 CONTROLS: the same holder is still nudged when its pull request is older than the interval, has no age on record, or there is none", () => {
+  const nudged = (facts: Facts) => claimReading(facts, IDLE_FOR_N);
+  const stood = nudged(holderWith(unreviewedPr(STALL_INTERVAL_MS)));
+  assert.deepEqual([stood.kind, (stood as { idle?: boolean }).idle], ["nudge", true], "AT the interval it is no longer young: #2968 sat 171 minutes behind `pr-owned`");
+  assert.equal(nudged(holderWith(unreviewedPr(STALL_INTERVAL_MS - 1))).kind, "pr-owned", "one millisecond short of it is still young");
+  assert.equal(nudged(holderWith(unreviewedPr(undefined))).kind, "nudge", "an age the list did not carry is not a young pull request: absence is not proof");
+  assert.equal(nudged(holderWith(unreviewedPr(undefined, { createdAt: "not a date" }))).kind, "nudge", "nor is one that does not parse");
+  const none = nudged(holderWith(null));
+  assert.deepEqual([none.kind, (none as { idle?: boolean }).idle], ["nudge", true], "NO open pull request and no wait is nudged, as before");
+  const oldAndNew = nudged({ ...holderWith(unreviewedPr(STALL_INTERVAL_MS + MIN)), openPrs: 2,
+    ownPrs: [unreviewedPr(STALL_INTERVAL_MS + MIN), unreviewedPr(10 * MIN, { number: 10 })] } as Facts);
+  assert.equal(oldAndNew.kind, "pr-owned", "a holder that opened a second pull request ten minutes ago has just MOVED");
+});
+
+test("#4017 the tick: a young pull request of an idle holder sends nothing, and the same one aged past the interval sends the idle nudge", () => {
+  const memory = () => ({ 2407: { session: "worker-7", idleSince: ago(50) } });
+  const young = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: [{ ...OPEN_PR, createdAt: iso(ago(54)) }] });
+  assert.deepEqual(young.orders, [], "a pull request opened 54 minutes ago is the review the org owes, not the holder stalling");
+  const aged = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: [{ ...OPEN_PR, createdAt: iso(ago(N_MIN + 1)) }] });
+  assert.equal(aged.orders.length, 1, "CONTROL: the same fixture a minute past the interval still reaches the holder");
+  assert.match(aged.orders[0].prompt, /IDLE FOR \d+ MINUTES WITH NO WAIT THE ORG CAN READ/);
+});
