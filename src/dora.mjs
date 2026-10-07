@@ -14,6 +14,14 @@
 //   3. Change failure rate: releases later deprecated, or followed within 24 hours by a release that closes a `regression` row, over releases.
 //   4. Time to restore: the opening of that `regression` row to the publish of the release that closes it (still-open rows at their current age).
 //
+// TWO CHANNELS, TWO MORE READINGS (#3949, outcome 3 of #3911): a merge is published to `next` and the fleet's verdict moves `latest` to it later. The registry's `time` map lists
+// a version's publish time whatever dist-tag it went to, so lead time above is MERGE-TO-`next` with no change. What `time` does not record is when a dist-tag MOVED, so:
+//   5. Lead time, `next` to `latest`: a version's publish to the `Promoted to latest: <time>` line the promotion leaves in its GitHub Release's notes (readable with no token).
+//      A version never promoted is counted at its CURRENT age and marked unpromoted, as an unreleased merge is: a 14-day wait is a number.
+//   6. Versions qualified: versions `latest` has pointed at, over versions published, in the same window (`MIN_RELEASES_FOR_A_RATE` caveat, as the failure rate has).
+// A version whose record cannot be read (no Release for it, or `latest` names it and its Release records no time) makes both `unknown`, never 0 and never a guess.
+// The chairman's TARGETS are in the table and print beside the number: `next` under 30 minutes, `latest` under 24 hours (the share of versions qualified has no target).
+//
 // A REFUSED READ IS `unknown`, NEVER 0 (#1286): a reader that threw, or answered `null`, read nothing. AN EMPTY ANSWER IS AN ANSWER (#3171): a declared repository
 // with no release and no merged pull request is `no release yet`, and so is an npm package the registry answers 404 for (never published: the one refusal that
 // is an answer, and only on a package the declaration names). `undefined` is a third state, not a failure: a metric with nothing to measure (no regression
@@ -50,6 +58,16 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 const PERCENT = 100;
+
+/** The chairman's targets (#3911): a merge is on `next` in under 30 minutes, and a version is on `latest` in under 24 hours. */
+const NEXT_TARGET_MINUTES = 30;
+const LATEST_TARGET_MINUTES = MINUTES_PER_DAY;
+
+/**
+ * The line a promotion leaves in its Release's notes: written by a11y-witness's `release.yml` (`promotion-record`) and read by `scripts/release-promote.mjs`, which this leaf
+ * cannot import. `dora-channels.test.ts` pins it against the line the workflow prints, so a change to one side that misses the other is a red test and not a silent `unknown`.
+ */
+const PROMOTION_LINE = /^Promoted to latest: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \(qualification read on [0-9a-f]{40}\)$/m;
 /** `gh pr list --json files` returns the first 100: a pull request showing that many may have touched more, so it is treated as releasable. */
 const FILES_PAGE = 100;
 const SHA_LENGTH = 40;
@@ -80,7 +98,11 @@ const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
  *   mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null,
  *   regressions: (r: Repository, window: { since: string }) => Regression[] | null,
  *   range: (r: Repository, commits: { base: string, head: string }) => Range | null,
- *   parentOf?: (r: Repository, commit: string) => string | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone
+ *   parentOf?: (r: Repository, commit: string) => string | null,
+ *   promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone.
+ *   `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`
+ * @typedef {{ latest: string | null, notes: Record<string, string> }} PromotionRecords `latest` is the version the `latest` dist-tag names now (`null`: it names none); `notes` is the notes of each
+ *   version's GitHub Release, keyed by version, and a version with no Release has no key
  * @typedef {{ status: string, commits: string[] }} Range GitHub's compare of `base...head`: `status` is `ahead`/`identical` when `base` is in `head`'s history, `behind`/`diverged` when it is not;
  *   `commits` are the commits in `head`'s history that are not in `base`'s, so a commit is in `head` exactly when it is in that list or is `base` itself
  * Every reader answers `null` (or throws) for a read that was REFUSED, and `[]` only for a read that found nothing.
@@ -325,9 +347,71 @@ function timeToRestore({ rows, windowStart, now }) {
 /** @param {Repository} repository @returns {string | null} the one npm package this repository's releases are read from, `null` for a tag repository */
 const npmPackageOf = (repository) => (repository.release.kind === "npm" ? repository.release.package : null);
 
+/**
+ * When `latest` moved, from a Release's notes: the time of its `Promoted to latest:` line, `null` when it has none.
+ * @param {string} body @returns {string | null}
+ */
+export function promotionTimeFrom(body) {
+  return PROMOTION_LINE.exec(body)?.[1] ?? null;
+}
+
+/**
+ * @typedef {{ id: string, state: "promoted" | "unpromoted", minutes: number } | { id: string, state: "unknown", why: string }} Wait
+ * How long a version waited between `next` and `latest`: to the promotion when it has one, else to now (`unpromoted`). `unknown` when the record cannot say which.
+ */
+
+/** @param {{ release: Release & { at: number }, records: PromotionRecords, now: number }} input @returns {Wait} */
+function waitOf({ release, records, now }) {
+  const { id } = release;
+  if (!Object.hasOwn(records.notes, id)) return { id, state: "unknown", why: "it has no GitHub Release to read a promotion record from" };
+  const promotedAt = promotionTimeFrom(records.notes[id]);
+  if (promotedAt === null) {
+    return id === records.latest ? { id, state: "unknown", why: "`latest` names it and its Release records no time" }
+      : { id, state: "unpromoted", minutes: (now - release.at) / MS_PER_MINUTE };
+  }
+  const minutes = (Date.parse(promotedAt) - release.at) / MS_PER_MINUTE;
+  return minutes < 0 ? { id, state: "unknown", why: "its record says `latest` moved before it was published" } : { id, state: "promoted", minutes };
+}
+
+/** @param {Wait[]} waits the versions of the window @returns {object} `next` -> `latest`, the median and maximum over every version, the unpromoted at their current age */
+function promotionLeadTime(waits) {
+  const minutes = waits.flatMap((wait) => (wait.state === "unknown" ? [] : [wait.minutes]));
+  const unpromoted = waits.flatMap((wait) => (wait.state === "unpromoted" ? [wait.minutes] : []));
+  return { medianMinutes: median(minutes), maxMinutes: Math.max(...minutes), versions: waits.length, unpromoted: unpromoted.length,
+    oldestUnpromotedMinutes: unpromoted.length === 0 ? null : Math.max(...unpromoted), undefinedBecause: null };
+}
+
+/** @param {Wait[]} waits the versions of the window @returns {object} the share of them `latest` has pointed at */
+function qualifiedShare(waits) {
+  const qualified = waits.filter((wait) => wait.state === "promoted").length;
+  return { value: Math.round((PERCENT * qualified) / waits.length), qualified, published: waits.length, fewVersions: waits.length < MIN_RELEASES_FOR_A_RATE, undefinedBecause: null };
+}
+
+/** @param {string} why @returns {{ promotionLeadTime: object, qualified: object, reason: null }} both readings undefined, for a reason that is an answer */
+const channelsUndefined = (why) => ({ promotionLeadTime: { undefinedBecause: why }, qualified: { undefinedBecause: why }, reason: null });
+
+/**
+ * The two channel readings of the versions published in the window. ONE version whose record cannot be read leaves BOTH `unknown` (the lead time's rule too): a figure over
+ * the versions that happened to be readable would read well because the unreadable ones were the slow ones.
+ * @param {{ repository: Repository, versions: (Release & { at: number })[], records: PromotionRecords | null, now: number }} input
+ * @returns {{ promotionLeadTime: object | null, qualified: object | null, reason: string | null }}
+ */
+function channelBlocks({ repository, versions, records, now }) {
+  if (repository.release.kind !== "npm") return channelsUndefined("its releases are tags, not npm versions: it has no channels");
+  if (versions.length === 0) return channelsUndefined(`no version published in the last ${LOOKBACK_DAYS} days`);
+  if (records === null) return { promotionLeadTime: null, qualified: null, reason: "its promotion records could not be read" };
+  const waits = versions.map((release) => waitOf({ release, records, now }));
+  const unknown = waits.filter((wait) => wait.state === "unknown");
+  if (unknown.length > 0) {
+    const [first] = unknown;
+    return { promotionLeadTime: null, qualified: null, reason: `the promotion record of ${first.id} cannot be read (${first.why})${unknown.length > 1 ? `, and ${unknown.length - 1} more` : ""}` };
+  }
+  return { promotionLeadTime: promotionLeadTime(waits), qualified: qualifiedShare(waits), reason: null };
+}
+
 /** @param {Repository} repository @param {string} reason */
 function unknownRepository(repository, reason) {
-  return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: /** @type {const} */ ("unknown"), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, changeFailure: null, restore: null,
+  return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: /** @type {const} */ ("unknown"), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, promotionLeadTime: null, qualified: null, changeFailure: null, restore: null,
     reasons: /** @type {Record<string, string>} */ ({}) };
 }
 
@@ -365,6 +449,17 @@ function readReleases({ repository, readers, windowStart }) {
   } catch (/** @type {any} */ err) {
     return err?.code === NEVER_PUBLISHED && repository.release.kind === "npm" ? [] : null;
   }
+}
+
+/**
+ * Where `latest` moved, read only for an npm repository that published a version in the window (a tag repository has no channels, and an empty window has nothing to
+ * ask about), so the ordinary reading pays no call for it. `null` for a reader that is absent or refused: nothing was read.
+ * @param {{ repository: Repository, readers: Readers, windowStart: number, versions: Release[] }} input @returns {PromotionRecords | null}
+ */
+function readPromotions({ repository, readers, windowStart, versions }) {
+  if (repository.release.kind !== "npm" || versions.length === 0) return null;
+  const { promotions } = readers;
+  return promotions === undefined ? null : attempt(() => promotions(repository, { since: new Date(windowStart).toISOString() }));
 }
 
 /**
@@ -415,13 +510,16 @@ export function measureRepository(repository, readers, now) {
   const fixing = inScope === null ? { rows: null, reason: "its regression rows could not be read" } : fixingReleases({ regressions: inScope, context });
   fixing.reason = namingTheLimit(fixing.reason);
   const fixes = fixing.rows === null ? [] : fixing.rows.flatMap((row) => (row.fix === null ? [] : [row.fix]));
+  const channel = channelBlocks({ repository, versions: frequency.releases, records: readPromotions({ repository, readers, windowStart, versions: frequency.releases }), now });
   const reasons = {
     ...(lead.reason === null ? {} : { leadTime: lead.reason }),
+    ...(channel.reason === null ? {} : { promotionLeadTime: channel.reason, qualified: channel.reason }),
     ...(fixing.reason === null ? {} : { changeFailure: fixing.reason, restore: fixing.reason }),
   };
   return {
     repo: repository.repo, npmPackage: npmPackageOf(repository), status: noReleaseYet ? /** @type {const} */ ("no release yet") : /** @type {const} */ ("read"), reason: null,
-    deploymentFrequency: frequency, leadTime: /** @type {any} */ (lead.block), oldestUnreleasedMinutes: /** @type {any} */ (lead.block)?.oldestUnreleasedMinutes ?? null,
+    deploymentFrequency: frequency, leadTime: /** @type {any} */ (lead.block), promotionLeadTime: /** @type {any} */ (channel.promotionLeadTime), qualified: /** @type {any} */ (channel.qualified),
+    oldestUnreleasedMinutes: /** @type {any} */ (lead.block)?.oldestUnreleasedMinutes ?? null,
     changeFailure: fixing.rows === null ? null : changeFailure({ inWindow: frequency.releases, fixes }),
     restore: fixing.rows === null ? null : timeToRestore({ rows: fixing.rows, windowStart, now }),
     reasons: /** @type {Record<string, string>} */ (reasons),
@@ -499,6 +597,18 @@ function leadText(b) {
 }
 
 /** @param {any} b @returns {string} */
+function promotionText(b) {
+  const unpromoted = b.unpromoted === 0 ? "" : `, ${b.unpromoted} UNPROMOTED (counted at current age; oldest ${duration(b.oldestUnpromotedMinutes)})`;
+  return `median ${duration(b.medianMinutes)}, max ${duration(b.maxMinutes)} over ${b.versions} version${b.versions === 1 ? "" : "s"}${unpromoted}`;
+}
+
+/** @param {any} b @returns {string} */
+function qualifiedText(b) {
+  const caveat = b.fewVersions ? `; ONLY ${b.published} version${b.published === 1 ? "" : "s"}, fewer than ${MIN_RELEASES_FOR_A_RATE}: a count of events, not a trend` : "";
+  return `${b.value}% (${b.qualified} of ${b.published} versions have been \`latest\`)${caveat}`;
+}
+
+/** @param {any} b @returns {string} */
 function failureText(b) {
   const caveat = b.fewReleases ? `; ONLY ${b.releases} release${b.releases === 1 ? "" : "s"}, fewer than ${MIN_RELEASES_FOR_A_RATE}: a count of events, not a trend` : "";
   return `${b.value}% (${b.failed} of ${b.releases} releases)${caveat}`;
@@ -517,15 +627,18 @@ const whole = (n) => (n === null || n === undefined ? null : Math.round(n));
 /**
  * Every metric: its id, which way is better, the block of a repository's reading it comes from, and how it prints. A block that is `null` is an
  * UNKNOWN metric; one with `undefinedBecause` is an UNDEFINED one; neither is a number. Every printed line ends with its direction.
- * @type {readonly { id: string, title: string, label: string, better: "lower" | "higher", block: "deploymentFrequency" | "leadTime" | "changeFailure" | "restore",
- *   of: (block: any) => number | null, text: (block: any) => string }[]}
+ * `targetMinutes` is the chairman's target for a duration metric (`null`: none is set), printed beside the number.
+ * @type {readonly { id: string, title: string, label: string, better: "lower" | "higher", block: "deploymentFrequency" | "leadTime" | "promotionLeadTime" | "qualified" | "changeFailure" | "restore",
+ *   targetMinutes: number | null, of: (block: any) => number | null, text: (block: any) => string }[]}
  */
 export const DORA_METRICS = Object.freeze([
-  { id: "deploymentFrequency", title: "Deployment frequency", label: "Deployment frequency (releases in 14 days)", better: "higher", block: "deploymentFrequency", of: (b) => b.value, text: frequencyText },
-  { id: "leadTimeMedianMinutes", title: "Lead time for changes", label: "Lead time for changes, median (minutes)", better: "lower", block: "leadTime", of: (b) => whole(b.medianMinutes), text: leadText },
-  { id: "leadTimeMaxMinutes", title: "Lead time for changes", label: "Lead time for changes, max (minutes)", better: "lower", block: "leadTime", of: (b) => whole(b.maxMinutes), text: leadText },
-  { id: "changeFailureRatePercent", title: "Change failure rate", label: "Change failure rate (%)", better: "lower", block: "changeFailure", of: (b) => b.value, text: failureText },
-  { id: "timeToRestoreMedianMinutes", title: "Time to restore", label: "Time to restore, median (minutes)", better: "lower", block: "restore", of: (b) => whole(b.value), text: restoreText },
+  { id: "deploymentFrequency", title: "Deployment frequency", label: "Deployment frequency (releases in 14 days)", better: "higher", block: "deploymentFrequency", targetMinutes: null, of: (b) => b.value, text: frequencyText },
+  { id: "leadTimeMedianMinutes", title: "Lead time for changes", label: "Lead time for changes, median (minutes)", better: "lower", block: "leadTime", targetMinutes: NEXT_TARGET_MINUTES, of: (b) => whole(b.medianMinutes), text: leadText },
+  { id: "leadTimeMaxMinutes", title: "Lead time for changes", label: "Lead time for changes, max (minutes)", better: "lower", block: "leadTime", targetMinutes: null, of: (b) => whole(b.maxMinutes), text: leadText },
+  { id: "promotionLeadTimeMedianMinutes", title: "Lead time, next to latest", label: "Lead time next to latest, median (minutes)", better: "lower", block: "promotionLeadTime", targetMinutes: LATEST_TARGET_MINUTES, of: (b) => whole(b.medianMinutes), text: promotionText },
+  { id: "qualifiedSharePercent", title: "Versions qualified", label: "Versions qualified (% of those published in 14 days)", better: "higher", block: "qualified", targetMinutes: null, of: (b) => b.value, text: qualifiedText },
+  { id: "changeFailureRatePercent", title: "Change failure rate", label: "Change failure rate (%)", better: "lower", block: "changeFailure", targetMinutes: null, of: (b) => b.value, text: failureText },
+  { id: "timeToRestoreMedianMinutes", title: "Time to restore", label: "Time to restore, median (minutes)", better: "lower", block: "restore", targetMinutes: null, of: (b) => whole(b.value), text: restoreText },
 ]);
 
 /**
@@ -534,6 +647,7 @@ export const DORA_METRICS = Object.freeze([
  */
 export function metricState(reading, metric) {
   const block = /** @type {any} */ (reading)[metric.block];
+  if (block === undefined) return { state: "unknown", reason: "this reading was taken before the metric existed" };
   if (block === null) return { state: "unknown", reason: reading.reason ?? reading.reasons[metric.block] ?? "its source could not be read" };
   if (block.undefinedBecause !== null) return { state: "undefined", reason: block.undefinedBecause };
   return { state: "value", value: metric.of(block) };
@@ -569,6 +683,9 @@ export function doraDeclarations(report) {
 /** One line per BLOCK: lead time's median and maximum are one sentence, so the table's second row of a block prints nothing. */
 const PRINTED = DORA_METRICS.filter((metric, index) => DORA_METRICS.findIndex((first) => first.block === metric.block) === index);
 
+/** @param {(typeof DORA_METRICS)[number]} metric @returns {string} ` (target under 30m)` beside the title, and nothing for a metric with no target */
+const targetNote = (metric) => (metric.targetMinutes === null ? "" : ` (target under ${duration(metric.targetMinutes)})`);
+
 /** @param {RepositoryReading} reading @returns {string[]} */
 function repositoryLines(reading) {
   if (reading.status === "unknown") return [`- ${reading.repo}: ${UNKNOWN} -- ${reading.reason}. Not 0: nothing was measured.`];
@@ -577,7 +694,7 @@ function repositoryLines(reading) {
   for (const metric of PRINTED) {
     const state = metricState(reading, metric);
     const body = state.state === "value" ? metric.text(/** @type {any} */ (reading)[metric.block]) : `${state.state} -- ${state.reason}`;
-    lines.push(`    ${metric.title}: ${body} (${metric.better} is better)`);
+    lines.push(`    ${metric.title}${targetNote(metric)}: ${body} (${metric.better} is better)`);
   }
   return lines;
 }
@@ -748,6 +865,31 @@ function tagReleases(repository, { since }) {
 }
 
 /**
+ * The records of a package's promotions: the notes of each GitHub Release named `<package>@<version>`, keyed by version (drafts are not Releases yet), beside the version
+ * `latest` names now. A Release of another package of the repository is not this package's version.
+ * @param {{ releases: any[], latest: string | null, npmPackage: string }} input @returns {PromotionRecords}
+ */
+export function promotionRecordsFrom({ releases, latest, npmPackage }) {
+  const prefix = `${npmPackage}@`;
+  const named = releases.filter((release) => !release.draft && typeof release.tag_name === "string" && release.tag_name.startsWith(prefix));
+  return { latest, notes: Object.fromEntries(named.map((release) => [release.tag_name.slice(prefix.length), release.body ?? ""])) };
+}
+
+/** @param {string} npmPackage @returns {string | null} the version the `latest` dist-tag names; throws when the registry cannot say */
+function latestTag(npmPackage) {
+  const url = `https://registry.npmjs.org/-/package/${npmPackage.replace("/", "%2f")}/dist-tags`;
+  const tags = JSON.parse(run("curl", ["-sSf", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", url]));
+  return typeof tags.latest === "string" ? tags.latest : null;
+}
+
+/** @param {Repository & { release: { kind: "npm", package: string } }} repository @returns {PromotionRecords} */
+function promotionRecords(repository) {
+  const npmPackage = repository.release.package;
+  const releases = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
+  return promotionRecordsFrom({ releases, latest: latestTag(npmPackage), npmPackage });
+}
+
+/**
  * The `regression` rows of a repository, `[]` for one whose issues are DISABLED (it has no rows and can have none: `gh issue list` refuses it, which would
  * read as `unknown` for every metric of a repository that only exists to hold code, #3171). A failed read of the setting itself throws, and is refused.
  * @param {string} repo @param {string} since @returns {Regression[]}
@@ -769,6 +911,7 @@ export const githubReaders = {
     number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((/** @type {any} */ f) => f.path) : null,
   })),
   regressions: (repository, { since }) => regressionRows(repository.repo, since),
+  promotions: (repository) => (repository.release.kind === "npm" ? promotionRecords(/** @type {any} */ (repository)) : null),
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
   parentOf: (repository, commit) => parentOf(repository.repo, commit),
   range: (repository, { base, head }) => {

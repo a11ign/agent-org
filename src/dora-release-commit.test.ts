@@ -110,7 +110,7 @@ test("(4) Lead time prints a number once the commit is placed: the same world as
     assert.equal(reading.status, "read");
     assert.equal(reading.leadTime.changes, 1);
     assert.ok(Math.abs(reading.leadTime.medianMinutes - 97.697) < 0.001, `merge 08:00:00Z to publish 09:37:41.806Z is 97.697 minutes, read ${reading.leadTime.medianMinutes}`);
-    assert.deepEqual(reading.reasons, {});
+    assert.equal(reading.reasons.leadTime, undefined, "lead time has no reason to give; this world has no promotions reader, so only the channel readings (#3949) are `unknown`");
   }
 });
 

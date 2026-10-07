@@ -270,10 +270,10 @@ test("the reading says which npm package it reads, ONE per repository, and print
 });
 
 test("every metric prints its direction, from ONE table that declares one", () => {
-  assert.ok(DORA_METRICS.length === 5 && DORA_METRICS.every((m) => m.better === "lower" || m.better === "higher"));
-  assert.deepEqual(DORA_METRICS.filter((m) => m.better === "higher").map((m) => m.id), ["deploymentFrequency"]);
+  assert.ok(DORA_METRICS.length === 7 && DORA_METRICS.every((m) => m.better === "lower" || m.better === "higher"));
+  assert.deepEqual(DORA_METRICS.filter((m) => m.better === "higher").map((m) => m.id), ["deploymentFrequency", "qualifiedSharePercent"]);
   const lines = renderDora(REPORT).filter((line) => line.startsWith("    "));
-  assert.equal(lines.length, 3 * 4, "four metric lines for each of three repositories");
+  assert.equal(lines.length, 3 * 6, "six metric lines for each of three repositories (#3949 added the two channel readings)");
   assert.ok(lines.every((line) => /\((higher|lower) is better\)$/.test(line)), lines.join("\n"));
   const declared = doraDeclarations(REPORT);
   assert.equal(declared.length, 3 * DORA_METRICS.length);
