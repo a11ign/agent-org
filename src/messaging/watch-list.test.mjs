@@ -62,7 +62,7 @@ function world(states) {
     pr: async (/** @type {number} */ number) => ({ number, state: read(`pr:${number}`), review: "none" }),
     run: async (/** @type {number} */ id) => runAsGithubSays(read(`run:${id}`)),
     unit: async (/** @type {string} */ name) => ({ state: read(`unit:${name}`) }),
-    ready: unused, lastMerge: unused, comment: unused, fleet: unused, gate: unused, release: unused,
+    ready: unused, open: unused, lastMerge: unused, comment: unused, fleet: unused, gate: unused, release: unused,
   };
   return { states, asked, readers };
 }

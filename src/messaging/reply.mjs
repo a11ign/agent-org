@@ -99,7 +99,7 @@ function stateFix(word, rows) {
  */
 const FREE_TEXT_RULES = [
   { pattern: /#\d+/g, reason: (match, rows) => `"${match}" is a row or pull request number outside a placeholder (${numberFix(match, rows)})` },
-  { pattern: /(?<![A-Za-z\d])\d+/g, reason: (match) => `"${match}" is a number outside a placeholder (a count is {{ready.count}}, an age is {{last-merge.age}}; a figure with no placeholder is left out of the facts, or said under \`My read:\` as an opinion)` },
+  { pattern: /(?<![A-Za-z\d])\d+/g, reason: (match) => `"${match}" is a number outside a placeholder (a count of ready rows is {{ready.count}}, of open rows {{open.count}}, an age is {{last-merge.age}}; a figure with no placeholder is left out of the facts, or said under \`My read:\` as an opinion)` },
   { pattern: NUMBER_WORDS, reason: (match) => `"${match}" is a count in words outside a placeholder` },
   { pattern: STATE_WORDS, reason: (match, rows) => `"${match}" is a state word outside a placeholder (${stateFix(match, rows)})` },
 ];
