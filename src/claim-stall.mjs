@@ -467,6 +467,11 @@ function latest(times) {
  * a release. Only then the idle clock: a first stall is the nudge, and a holder idle but short of N is `idle-watch`, which is how the first
  * idle tick is remembered (`herdr` reports a status and never since when).
  *
+ * WHY A `pr-owned` READING IS NOT THE LAST WORD (#4017). The 2026-10-04 ruling that an open pull request closing the row is not a stall read only
+ * {@link clockReading}'s `pr-owned` branch, and this overlay sits ABOVE it and re-reads that very reading, so a holder the clock left alone was still nudged
+ * here once it had been idle for N. Which facts reach a nudge is therefore decided in this function, not in the clock: an idle holder with a pull request
+ * that is not yet {@link ownPrStillYoung}, and no declared wait.
+ *
  * @param {ClaimFacts} facts
  * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number, deliveredAt: number | null, idle?: boolean } | null,
  *   agents?: {label: string, status: string}[] | null, goneSince?: number | null, idleSince?: number | null, intervalMs?: number }} ctx
@@ -477,13 +482,32 @@ function overlayReading(facts, ctx) {
   if (base.kind !== "pr-owned" && base.kind !== "moving") return base;
   const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [],
     waitKinds: [...(facts.waitKind ? [facts.waitKind] : []), ...(facts.blockedBy.length > 0 ? ["blocked-by"] : [])] }, ctx);
-  if (idle.kind === "waiting") return base;
+  if (idle.kind === "waiting" || ownPrStillYoung(facts, ctx)) return base;
   const held = ctx.nudge === null ? null : rememberedNudge(facts, ctx);
   if (held !== null) return held;
   if (idle.kind === "stall") return { kind: "nudge", idle: true, lastMoveAt: ctx.now - idle.idleMs, idleMs: idle.idleMs };
   if (idle.kind === "watching") return { kind: "idle-watch", since: idle.since };
   if (idle.kind === "unknown" && ctx.idleSince != null) return { kind: "idle-watch", since: ctx.idleSince };
   return base;
+}
+
+/**
+ * (#4017) A PULL REQUEST THE HOLDER OPENED INSIDE THE CLOCK'S OWN INTERVAL IS WAITING ON THE REVIEW THE ORG OWES, AND THAT IS NOT THE HOLDER STALLING.
+ * Five idle nudges in three days were typed while a pull request closing the row was open (#3560, #3591, #3719, #3787, #3993), each 52 to 74 minutes
+ * after the pull request opened and each before the gate had asked anybody to review it: the overlay's N is 45 minutes, derived from the gap between a
+ * claim and its FIRST pull request (#2999), and was being applied to the gap between that pull request and its first review, which took 69 to 162 minutes
+ * in the same five. A holder with nothing left to do but wait cannot shorten that wait, and the nudge starts a turn that re-reads its whole window.
+ *
+ * THE BOUND IS {@link STALL_INTERVAL_MS}, the interval `moving` already grants a row, and NOT a figure derived from those five: it keeps #2999's
+ * own case (#2968 and #2969 sat behind `pr-owned` for 171 and 233 minutes) a stall, and moves nothing but the first two hours of a pull request's life.
+ * THE NEWEST OWN PULL REQUEST DECIDES: opening a second one is a move. A pull request whose age the list did not carry, or carried unparseably, is NOT young --
+ * absence is not proof, and it is today's reading.
+ * @param {ClaimFacts} facts @param {{ now: number, intervalMs?: number }} ctx @returns {boolean}
+ */
+function ownPrStillYoung(facts, ctx) {
+  const interval = ctx.intervalMs ?? STALL_INTERVAL_MS;
+  const opened = (facts.ownPrs ?? []).map((pr) => Date.parse(String(/** @type {{ createdAt?: string }} */ (pr).createdAt ?? ""))).filter(Number.isFinite);
+  return opened.length > 0 && ctx.now - Math.max(...opened) < interval;
 }
 
 /**
