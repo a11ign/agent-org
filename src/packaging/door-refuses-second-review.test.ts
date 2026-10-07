@@ -59,10 +59,13 @@ const DIFFS: Record<string, string> = {
 /** The verdict line, naming the commit it was written at (a11ign/agent-org#3640: the door compares that sha with the head, so a fixture must name one). */
 const openerAt = (commit: string): string => `**Review of #7 at \`${commit.slice(0, 8)}\`, by reviewer-7: convinced (CI run 41)**`;
 
+/** The account every door-posted review comes from, and so the one whose LATEST review GitHub reads for `reviewDecision`. */
+const BOT = "a11ign-bot";
+
 /** A code owner's hand-written approval of one path (agent-org#66): a review, but not one that opens as a verdict. */
 const SCOPED_APPROVAL = "ceo, as code owner of `.github/`: **approved for the workflow change only**. I did not review `src/`.";
 
-interface Review { when: string; state: string; commit: string; body: string | null }
+interface Review { when: string; state: string; commit: string; body: string | null; user?: string }
 /** A review the door could have posted, unless `body` says otherwise: its body opens with the verdict line. */
 const reviewAt = (commit: string, state: string, when: string, body: string | null = `${openerAt(commit)}\n\nbody`): Review =>
   ({ commit, state, when, body });
@@ -89,7 +92,7 @@ function runDoor(scenario: Scenario): Run {
     writeFileSync(join(dir, "verdict.md"), `${opener}\n\nbody\n`);
     writeFileSync(join(dir, "pr.json"), JSON.stringify({ head: { sha: scenario.head }, base: { ref: "main" } }));
     writeFileSync(join(dir, "reviews.json"), JSON.stringify((scenario.reviews ?? []).map((r) => ({
-      submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: r.body }))));
+      submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: r.body, user: { login: r.user ?? BOT } }))));
     for (const [sha, diff] of Object.entries(DIFFS)) writeFileSync(join(dir, `diff-${sha}`), diff);
     if (scenario.failing === "reviews") writeFileSync(join(dir, "fail-reviews"), "");
     if (scenario.failing === "compare") writeFileSync(join(dir, "fail-compare"), "");
@@ -237,7 +240,7 @@ test("3199 (3) no human dismissal is in the path: the door posts the approval an
   const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: REFUSED_AT_FIRST, failedChecks: RED_AT_FIRST });
   assert.equal(status, 0, stderr);
   assert.match(posted(calls)[0], /--approve/);
-  assert.deepEqual(calls.filter((c) => /dismiss/i.test(c)), [], "no review was dismissed by anyone");
+  assert.deepEqual(calls.filter((c) => /dismissals/.test(c)), [], "no review was dismissed by anyone");
 });
 
 test("3199 (5b) NEGATIVE: the older commit's checks were all green (the #3033 shape) is refused", () => {
@@ -400,4 +403,54 @@ test("3: the first line only: (environment) in the BODY is not the opener's", ()
   const { status } = runDoor({ head: AFTER_MERGE_OF_MAIN, verdict: "not-convinced",
     opener: "**Review of #7 at `c7764afb`, by reviewer-7: not convinced (CI run 41)**\n\nThe (environment) was fine." });
   assert.equal(status, 0);
+});
+
+// --- a11ign#4029 (from #4017): an APPROVED review the same account's LATER dismissal superseded no longer stands ------------------
+// agent-org#358: the door posted APPROVED at head H, the reviewer then ran `gh pr review --approve` by hand (a duplicate) and dismissed it.
+// GitHub reads `reviewDecision` from each account's LATEST review, which was now the DISMISSED one: REVIEW_REQUIRED, BLOCKED. The door
+// still saw a standing approval at an equal patch and refused the one post that would clear it, so only a push could (which voids the verdict).
+
+const DOOR_APPROVAL_AT_358 = reviewAt(FIRST, "APPROVED", "2026-10-07T19:47:46Z");
+/** The by-hand duplicate, after dismissal: not a verdict by its opener, and its state is the account's latest. */
+const HAND_DUPLICATE_DISMISSED = reviewAt(FIRST, "DISMISSED", "2026-10-07T19:47:52Z", "");
+
+test("4029 (1) the #358 shape: a door-posted APPROVED at H, then a DISMISSED review by the same account at H, posts exactly ONE approval", () => {
+  const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [DOOR_APPROVAL_AT_358, HAND_DUPLICATE_DISMISSED] });
+  assert.equal(status, 0, stderr);
+  assert.equal(posted(calls).length, 1);
+  assert.match(posted(calls)[0], /--approve/);
+  assert.deepEqual(calls.filter((c) => /dismissals/.test(c)), [], "no human dismissal is in the path: the door never calls a `dismissals` endpoint");
+});
+
+test("4029 (2) CONTROL: the same APPROVED at H with NO later dismissal is still refused (exit 3)", () => {
+  const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [DOOR_APPROVAL_AT_358] });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("4029 (3) CONTROL: a DISMISSED review by ANOTHER account does not lift the refusal", () => {
+  const { status, calls } = runDoor({ head: FIRST, reviews: [DOOR_APPROVAL_AT_358, { ...HAND_DUPLICATE_DISMISSED, user: "someone-else" }] });
+  assert.equal(status, EXIT_SECOND_REVIEW);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("4029 (4) CONTROL: a DISMISSED review BEFORE the approval does not lift it (the approval is the account's latest)", () => {
+  const dismissedFirst = { ...HAND_DUPLICATE_DISMISSED, when: "2026-10-07T19:40:00Z" };
+  const { status, calls } = runDoor({ head: FIRST, reviews: [dismissedFirst, DOOR_APPROVAL_AT_358] });
+  assert.equal(status, EXIT_SECOND_REVIEW);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("4029 (5) the lifted approval lifts only itself: an older APPROVED, a dismissal, then a NEWER door APPROVED is refused again", () => {
+  const reposted = reviewAt(FIRST, "APPROVED", "2026-10-07T20:30:00Z");
+  const { status, calls } = runDoor({ head: FIRST, reviews: [DOOR_APPROVAL_AT_358, HAND_DUPLICATE_DISMISSED, reposted] });
+  assert.equal(status, EXIT_SECOND_REVIEW, "once the one fresh approval is posted the door is back to refusing a second");
+  assert.deepEqual(posted(calls), []);
+});
+
+test("4029 (6) the same lift at an equal patch ON ANOTHER COMMIT (a merge of main between the approval and the dismissal)", () => {
+  const dismissedLater = reviewAt(AFTER_MERGE_OF_MAIN, "DISMISSED", "2026-10-07T19:47:52Z", "");
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [DOOR_APPROVAL_AT_358, dismissedLater] });
+  assert.equal(status, 0, stderr);
+  assert.equal(posted(calls).length, 1);
 });
