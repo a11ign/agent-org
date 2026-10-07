@@ -467,6 +467,11 @@ function latest(times) {
  * a release. Only then the idle clock: a first stall is the nudge, and a holder idle but short of N is `idle-watch`, which is how the first
  * idle tick is remembered (`herdr` reports a status and never since when).
  *
+ * WHY A `pr-owned` READING IS NOT THE LAST WORD (#4017). The 2026-10-04 ruling that an open pull request closing the row is not a stall read only
+ * {@link clockReading}'s `pr-owned` branch, and this overlay sits ABOVE it and re-reads that very reading, so a holder the clock left alone was still nudged
+ * here once it had been idle for N. Which facts reach a nudge is therefore decided in this function, not in the clock: an idle holder with a pull request
+ * that is not yet {@link ownPrStillYoung}, and no declared wait.
+ *
  * @param {ClaimFacts} facts
  * @param {{ now: number, restartAt: number | null, nudge: { nudgedAt: number, deliveredAt: number | null, idle?: boolean } | null,
  *   agents?: {label: string, status: string}[] | null, goneSince?: number | null, idleSince?: number | null, intervalMs?: number }} ctx
