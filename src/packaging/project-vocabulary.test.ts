@@ -168,6 +168,9 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // leaf's no-import contract or state the same four facts twice, and `project-vocabulary.mjs` imports them from here instead (assertion 1, above,
   // pins the values equal).
   ...nonVocabulary("claim-labels.mjs", ['"ready"', '"was-ready"', '"in-progress"', '"started"'], "the import-free leaf the claim-lifecycle labels are defined in (#804)"),
+  // #3942: the same leaf holds `STATE_LABELS`, whose `backlog` and `blocked` ARE vocabulary labels. It cannot import the vocabulary (no imports, same contract), so it keeps its
+  // own copy and `state-label-exactly-one.test.ts` ("STATE_LABELS is the six names ...") pins each equal to the vocabulary's, which is what stops the copy drifting.
+  ...nonVocabulary("claim-labels.mjs", ['"backlog"', '"blocked"'], "the import-free leaf's own copy of two vocabulary labels in STATE_LABELS, pinned equal to them (#3942)"),
   // `claim-stall.mjs`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
   ...nonVocabulary("claim-stall.mjs", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),

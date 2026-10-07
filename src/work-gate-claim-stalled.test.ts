@@ -1091,7 +1091,8 @@ test("#2470 (10) `decline --answer=<session>` releases to that session's `answer
   const done = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never,
     keepWorktree: true, answer: "product-manager", recordGone: NOOP_RECORD_GONE });
   assert.equal(done.declined, true);
-  assert.deepEqual(board.edits()[0].added, ["answer:product-manager"], "the row was `ready` before the claim, and is NOT returned to the pool: the work merged");
+  // #3942: `backlog` goes WITH the answer label -- `answer:` is not a state, and removing it (the answerer's act) left fourteen rows in none.
+  assert.deepEqual(board.edits()[0].added, ["answer:product-manager", "backlog"], "the row was `ready` before the claim, and is NOT returned to the pool: the work merged");
   const control = releaseBoard();
   declineRow(2416, "worker-7", { run: control.run as never, fetchComments: () => RECORD, moveStatus: NO_STATUS as never, keepWorktree: true,
     recordGone: NOOP_RECORD_GONE });

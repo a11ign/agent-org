@@ -54,10 +54,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
-import { READY_LABEL } from "./claim-labels.mjs";
+import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.mjs";
 // The checkout the tool serves and the project's own words are read from where they are declared (`standalone-roots.test.ts`, `project-vocabulary.test.ts`).
 import { HOME_CHECKOUT } from "./project-config.mjs";
-import { ANSWER_PREFIX } from "./project-vocabulary.mjs";
+import { ANSWER_PREFIX, BACKLOG_LABEL } from "./project-vocabulary.mjs";
 // A LEAF too (it imports `newest-check-run.mjs` and `pr-hold-state.mjs`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.mjs";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
@@ -166,6 +166,8 @@ export const OVERDUE_PR_MINUTES = 100;
 export const OVERDUE_ROW_MINUTES = 135;
 /** The session every signal is offered to. */
 const OFFERED_TO = "ceo";
+/** #3942: the first reader of rows (`.claude/rules/org-routing-and-timers.md`), who is told of a row-state signal BEFORE `ceo` is, and in the same tick. */
+const FIRST_READER = "product-manager";
 /** How many merged PRs the last-merge read looks at: the newest-updated, which holds every merge of the last day or two. */
 const MERGED_WINDOW = 20;
 
@@ -185,7 +187,11 @@ export const SIGNALS = Object.freeze({
   TOOL_VERSION: "runner-behind-newest-release",
   TEAM_ACCESS: "team-access-drifted",
   AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
+  STATE_LABEL: "row-without-exactly-one-state",
 });
+
+/** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
+const FIRST_READERS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER }));
 
 /**
  * @typedef {{ signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null,
@@ -638,6 +644,30 @@ export function poolLowReading({ pools }) {
 }
 
 /**
+ * SIGNAL: AN OPEN ROW IS NOT IN EXACTLY ONE STATE (#3942). THE RULE IS `stateLabelFindings`' (the leaf the audit reads too), over the open rows
+ * the tick already read, so it costs no call. It trips THE TICK A ROW APPEARS, with no grace: a row in no state is absent from the Ready lane and
+ * the claim pool and nothing else will ever name it (fifteen stood for days behind `labellessRows`, which a `lane:any` label satisfied), and a
+ * row in two is read two ways by two readers. KEYED ON THE NUMBERS AND THEIR KIND, not an hour: the set changes only when a row enters, leaves
+ * or changes kind, so one standing set is one order however many ticks it lasts. `null` is a refused read, which is unknown and never clear.
+ * @param {{ rows: { number: number, state?: string, labels?: (string | { name?: string })[] }[] | null }} input
+ * @returns {Reading}
+ */
+export function stateLabelReading({ rows }) {
+  if (rows === null) return unknown(SIGNALS.STATE_LABEL, "the open rows could not be read, so no row is known to be in exactly one state");
+  const found = stateLabelFindings(rows).sort((a, b) => a.number - b.number);
+  if (found.length === 0) return clear(SIGNALS.STATE_LABEL);
+  const none = found.filter((f) => f.kind === "NONE");
+  const many = found.filter((f) => f.kind === "MANY");
+  const parts = [
+    ...(none.length > 0 ? [`${none.length} carry NO state label: ${none.map((f) => `#${f.number}`).join(", ")}`] : []),
+    ...(many.length > 0 ? [`${many.length} carry MORE THAN ONE: ${many.map((f) => `#${f.number} (${f.labels.join(", ")})`).join(", ")}`] : []),
+  ];
+  return { signal: SIGNALS.STATE_LABEL, status: "tripped", firstTrippedAt: null,
+    discriminator: `${SIGNALS.STATE_LABEL}@${found.map((f) => `${f.number}${f.kind === "NONE" ? "n" : "m"}`).join(",")}`,
+    detail: `${found.length} open row(s) are not in exactly one of ${STATE_LABELS.join(", ")}; ${parts.join("; ")}` };
+}
+
+/**
  * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
  * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
  * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
@@ -972,7 +1002,7 @@ export function readLastMergedAt(run, repo) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact }} facts `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"] }} facts `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -989,6 +1019,7 @@ export function orgHealthReadings(facts) {
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
+  if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows }));
   return readings;
 }
 
@@ -1040,24 +1071,31 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "the comparison could not be made (`cannot-tell`), so idle workers stay powered ON. It is loud by design and was unread: 2,569 refusals over twelve hours on 2026-10-06. READ THE REASON AND DETAIL "
     + "above, then have `orchestrator` (the first reader for fleet questions) bring the control plane's checkout to `main` or fix the fetch. DO NOT RUN `fleet:*` YOURSELF, and do not clear the record by "
     + "hand: it clears when a tick proceeds. Say on #928 what the refusal was and what ended it.",
+  [SIGNALS.STATE_LABEL]: `A row is in exactly ONE of ${STATE_LABELS.map((l) => `\`${l}\``).join(", ")}, and each row named is in none or in several. A row in none is absent from the `
+    + "Ready lane, the claim pool and every label-keyed count, and `ready:audit`'s `labelless rows` could not see it while it held any other label at all. `product-manager` reads it first: PROMOTE a row in none "
+    + `(\`${READY_LABEL}\` if it is startable, else \`${BACKLOG_LABEL}\`), and for a row in several keep the ONE that is true (\`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\`), by hand with the reason on the row. `
+    + "Do not script the repair; read `ready:audit`'s `state labels` line for the count against what GitHub reports.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
 }));
 
+/** @param {string} signal @returns {string[]} who is ordered: the signal's first reader if it has one, then `ceo`, who takes every signal */
+const readersOf = (signal) => [...(FIRST_READERS[signal] ? [FIRST_READERS[signal]] : []), OFFERED_TO];
+
 /**
- * ONE ORDER PER TRIPPED SIGNAL, to `ceo`, the numbers in the prompt. THE PROMPT CARRIES THE OTHER TRIPPED SIGNALS, because a
+ * ONE ORDER PER TRIPPED SIGNAL, to `ceo` (and to the signal's first reader where `FIRST_READERS` names one), the numbers in the prompt. THE PROMPT CARRIES THE OTHER TRIPPED SIGNALS, because a
  * session is delivered one order per tick (`repeating-lines.mjs`' reason). An unknown or clear reading emits nothing here.
  * @param {Reading[]} readings
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function orgHealthOrders(readings) {
   const tripped = readings.filter((r) => r.status === "tripped");
-  return tripped.map((r) => {
+  return tripped.flatMap((r) => readersOf(r.signal).map((session) => {
     const others = tripped.filter((o) => o !== r).map((o) => o.signal);
     const when = r.firstTrippedAt ? ` It first tripped at ${isoOf(r.firstTrippedAt)}.` : "";
     return {
-      session: OFFERED_TO,
+      session,
       cause: "org-health",
       subject: r.signal,
       discriminator: /** @type {string} */ (r.discriminator),
@@ -1065,9 +1103,9 @@ export function orgHealthOrders(readings) {
         + "This is asked because the org fixes what it is told about and does not look (the chairman, 2026-10-01): leave the place "
         + "better than you found it, and say on #928 what you found and did. It holds for two hours unchanged and stops when the "
         + `condition clears.${others.length > 0 ? `\nALSO TRIPPED (${others.length}): ${others.join(", ")}.` : ""}`,
-      causeKey: `${OFFERED_TO}/org-health/${r.discriminator}`,
+      causeKey: `${session}/org-health/${r.discriminator}`,
     };
-  });
+  }));
 }
 
 /**

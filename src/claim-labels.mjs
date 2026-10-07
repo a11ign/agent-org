@@ -45,3 +45,31 @@ export const STARTED_LABEL = "started";
 // that makes neither necessary; the header above says so for the four labels, and a claim-lifecycle
 // literal two modules must agree on is the same fact whether it is spelled as a label or as a marker.
 export const CLAIM_RECORD_MARKER = "<!-- row-claim: claim record -->";
+
+// THE SIX STATE LABELS, AND THE ONE RULE OVER THEM -- #3942 (chairman, 2026-10-07).
+//
+// A row is in exactly ONE of these. `ready`/`in-progress` are the claim lifecycle above; `backlog` is "not offered, not decided
+// against", `parked` "decided not to do now", `epic` a container, `blocked` a wait only a human lifts. So `parked` and `epic`
+// REPLACE `backlog` rather than sit beside it, and a claim removes `ready` in the same edit that adds `in-progress`.
+//
+// WHY THIS IS IN THE LEAF: the rule is read by `ready:audit`, by the org-health tick and by the decline path's own re-read, and
+// the last of those must not pull in the audit's graph (`row-claim.mjs` re-exports from here for the same reason as the four
+// above). `backlog`/`blocked` are also declared in `.agent-org/project.json`'s vocabulary, which a leaf cannot read, so
+// `state-label-exactly-one.test.ts` pins that the spellings agree.
+export const STATE_LABELS = Object.freeze([READY_LABEL, CLAIM_LABEL, "backlog", "parked", "epic", "blocked"]);
+
+/**
+ * Pure: the open rows that are not in exactly one state. `NONE` is the row no state-keyed check can see (the Ready lane, the claim
+ * pool, every label-keyed count); `MANY` is two states at once, which each reader resolves its own way. A CLOSED row is skipped:
+ * it has no lane to be in, and a row whose `state` is not given is read as open (the gate's own `--state open` list carries none).
+ * `labels` may be names or `{ name }` objects, as `gh` returns them.
+ * @param {{ number: number, state?: string, labels?: (string | { name?: string })[] }[]} openRows
+ * @returns {{ number: number, labels: string[], kind: "NONE" | "MANY" }[]} the held state labels, in `STATE_LABELS` order
+ */
+export function stateLabelFindings(openRows) {
+  return openRows.filter((row) => row.state !== "CLOSED").flatMap((row) => {
+    const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
+    const held = STATE_LABELS.filter((state) => names.includes(state));
+    return held.length === 1 ? [] : [{ number: row.number, labels: held, kind: held.length === 0 ? /** @type {const} */ ("NONE") : /** @type {const} */ ("MANY") }];
+  });
+}

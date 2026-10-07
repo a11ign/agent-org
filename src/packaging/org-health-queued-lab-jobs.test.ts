@@ -78,7 +78,7 @@ test("a REFUSED queued-job read says UNKNOWN on stderr and offers nothing", () =
 });
 
 test("a refused job read does not hide a fleet-gated row that is waiting: the rows trip alone", () => {
-  const gated = { number: 2870, title: "row", labels: [{ name: "fleet-gated" }], body: "", blockedBy: { nodes: [] } };
+  const gated = { number: 2870, title: "row", labels: [{ name: "backlog" }, { name: "fleet-gated" }] /* #3942: a row in a state, or the state-label signal trips beside it */, body: "", blockedBy: { nodes: [] } };
   const { orders } = tickOver(() => { throw new Error("denied"); }, [gated]);
   assert.equal(orders.length, 1);
   assert.match(orders[0].prompt, /#2870/);

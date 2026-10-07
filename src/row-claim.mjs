@@ -94,9 +94,9 @@ import { claimRefusal, recordRemoval } from "./worktree-removal.mjs";
 
 /** What the worktree-removal log (#2782) names as the asker for this file's two removers. */
 const CALLER = "row-claim.mjs";
-import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
+import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER, STATE_LABELS, stateLabelFindings } from "./claim-labels.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `blocked`, `answer:`, `session:`.
-import { BLOCKED_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
+import { BLOCKED_LABEL, BACKLOG_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { worktreeOwner, stampWorktree, OWNER_FILE } from "./worktree-owner.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
@@ -1909,10 +1909,15 @@ function declineRemoveLabels(status, mySession, wasReady) {
  * proof the COMMAND ran, never proof the EFFECT landed (`docs/operational-lessons.md`'s own standing
  * rule, restated here because this call had never had to honour it): create what is about to be added,
  * then read the row back and REFUSE to report a decline that did not durably change it.
+ *
+ * #3942: AND ONE STATE LABEL, NOT NONE. `answer:<session>` is not a state, so the decline-with-answer edit that added only it left
+ * fourteen open rows in no state at all -- invisible to the Ready lane, the claim pool and every label-keyed count -- once the answerer
+ * removed it (the correct act). An OPEN row whose labels after the write hold no state label is refused here for the same reason a label
+ * that did not land is: the edit ran and its effect is not the one a decline promises. A closed row has no lane to be in (`closed`).
  * @param {number} issueNumber @param {string[]} removeLabels @param {string[]} addLabels
- * @param {{ run: typeof defaultRun, landed: string[] }} deps
+ * @param {{ run: typeof defaultRun, landed: string[], closed: boolean }} deps
  */
-function writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed }) {
+function writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed }) {
   ensureLabelsExist(addLabels, { run });
   run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
     ...removeLabels.flatMap((l) => ["--remove-label", l]),
@@ -1926,6 +1931,12 @@ function writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed 
       + `${stillMissing.length > 0 ? stillMissing.join(", ") : "(none)"}. Refusing to report DECLINED over a `
       + "write whose effect this call cannot confirm (#2746).");
   }
+  const stateless = closed ? [] : stateLabelFindings([{ number: issueNumber, labels: after }]);
+  if (stateless.length > 0) {
+    throw new Error(`row-claim: #${issueNumber}'s decline edit left an OPEN row with ${stateless[0].labels.length === 0 ? "NO state label" : `TWO state labels (${stateless[0].labels.join(", ")})`}`
+      + ` (it carries: ${after.join(", ") || "(none)"}). A row is in exactly one of ${STATE_LABELS.join(", ")}; one in none is absent from the Ready lane, the claim pool `
+      + "and every label-keyed count. Refusing to report DECLINED over it (#3942).");
+  }
   landed.push(`removed labels ${removeLabels.join(", ")}${addLabels.length > 0 ? `; added ${addLabels.join(", ")}` : ""} (verified by re-read)`);
 }
 
@@ -1934,14 +1945,18 @@ function writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed 
  * out of `declineRow` to keep its own complexity below the lint gate, same reason `declineRemoveLabels`
  * was. `isClosed` wins over every other reason to add a label (#752): a closed row has no lane to go back
  * to, so neither `wasReady` nor `blockedReason` may add anything once it is true.
- * @param {{ isClosed: boolean, wasReady: boolean, blockedReason: string | undefined, answer?: string }} facts
+ * @param {{ isClosed: boolean, wasReady: boolean, blockedReason: string | undefined, answer?: string, keepsState?: boolean }} facts
+ * `keepsState` is a state label the decline does not remove (a row claimed from `backlog` still carries it).
  * @returns {{ restoreReady: boolean, addLabels: string[] }}
  */
-function declineAddLabels({ isClosed, wasReady, blockedReason, answer }) {
+function declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState = false }) {
   if (isClosed) return { restoreReady: false, addLabels: [] };
   // #2470: `answer:<session>` says the row is not for the pool: a session owes a RULING on it (the work merged and the row is
   // still open, or it needs a decision), so it neither returns to `ready` nor is marked `blocked`.
-  if (answer) return { restoreReady: false, addLabels: [`${ANSWER_LABEL_PREFIX}${answer}`] };
+  // #3942: BUT `answer:` IS NOT A STATE, and it clears by being REMOVED -- so as the row's only label of the kind it left the row in
+  // NO state once answered (fourteen rows). `backlog` is the one state the gate does not offer and nobody has to remember to remove:
+  // `ready` beside `answer:` WOULD be offered (the prefix is not in `NOT_STARTABLE`), and `blocked` has no referent.
+  if (answer) return { restoreReady: false, addLabels: [`${ANSWER_LABEL_PREFIX}${answer}`, ...(keepsState ? [] : [BACKLOG_LABEL])] };
   const restoreReady = wasReady && !blockedReason;
   return { restoreReady, addLabels: blockedReason ? [BLOCKED_LABEL] : restoreReady ? [READY_LABEL] : [] };
 }
@@ -2071,9 +2086,10 @@ function releaseRow(issueNumber,
 
   const isClosed = before.state === "CLOSED";
   const wasReady = before.labels.includes(WAS_READY_LABEL);
-  const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer });
+  const keepsState = before.labels.some((l) => l !== CLAIM_LABEL && STATE_LABELS.includes(l));
+  const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState });
   const removeLabels = declineRemoveLabels(status, mySession, wasReady);
-  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed });
+  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed: isClosed });
 
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
   // this call has just removed.
