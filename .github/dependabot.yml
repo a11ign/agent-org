@@ -1,0 +1,16 @@
+# Dependency updates come from the platform (a11ign/a11ign ADR 0041, decision 4; row a11ign/a11ign#3968): a new release of an action this
+# repository's workflows call opens a pull request here, so nobody polls for one. Dependabot, because it is a file and not an app install.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    # `directory: /` is the one Dependabot documents for this ecosystem: it reads every `uses:` under `.github/workflows/` from there. That covers
+    # the `actions/*` pins today and a reusable-workflow call pinned at a full commit sha (a11ign/a11ign#3965), which nothing else would move.
+    directory: /
+    schedule:
+      # Weekly, as the row asks. a11ign/a11ign and a11ign/toolchain run `daily`; this repository has few action pins, and a pull request the
+      # caller reviews each week is enough for them.
+      interval: weekly
+    # No `groups:` on purpose: each action is its own pull request, which keeps a bump small and mergeable alone.
+    commit-message:
+      # The handle the org's gate recognises a dependency pull request by: every title starts `deps:`.
+      prefix: deps
