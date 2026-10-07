@@ -20,8 +20,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
-import { aggregate, claimsOf, renderAggregate, weekStart } from "./aggregate.mjs";
+import { aggregate, claimsOf, MOVES, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
 import { swimlane } from "./swimlane.mjs";
 import { renderWakeCache, wakeCache } from "./wake-cache.mjs";
@@ -942,22 +943,25 @@ async function readSources({ since, storePath, budget, log }) {
   const metered = meteredGhApi();
   const gh = budgetedGh({ gh: metered, budget, floor: RATE_FLOOR, gapMs: PACE_GAP_MS });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
+  const moves = readMoves({ rowRepo, gh }); // one counted call for each package that moved, BEFORE the long reading that can spend the budget: when its row closed
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
   const addedOfMerged = appendToStore(store, seen).added;
   const named = githubEventsOfNamed({ held: store.events, since, rowRepo, gh }); // after the merged reading is in the store: a subject it read is not read twice
   const github = { calls: gh.calls, read: seen.length + named.events.length, added: addedOfMerged + appendToStore(store, named.events).added, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped, named: { unread: named.unread.length, failed: named.failed } };
-  return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github };
+  return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github, moves };
 }
 
 async function mainAggregate() {
   const { since, store: storePath, json, budget } = parseAggregateArgs(process.argv.slice(2));
   const log = json ? console.error : console.log; // stdout of a `--json 1` run is the JSON and nothing before it
-  const { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github } = await readSources({ since, storePath, budget, log });
+  const { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github, moves } = await readSources({ since, storePath, budget, log });
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
-  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows });
-  console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), githubSummary({ github, budget, unread: unreadRows.length }), NOT_HELD] }));
+  const { HOME_CHECKOUT } = await import("../project-config.mjs");
+  const { paths: pullPaths, note } = readMergePaths({ checkout: HOME_CHECKOUT, rowRepo, since });
+  const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows, moves, pullPaths });
+  console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), githubSummary({ github, budget, unread: unreadRows.length }), ...(note ? [note] : []), NOT_HELD] }));
 }
 
 async function mainMap() {
@@ -965,6 +969,64 @@ async function mainMap() {
   const { rowRepo, now, store, pulls, unreadRows, github } = await readSources({ since, storePath, budget, log: console.log });
   writeFileSync(out, buildMap({ events: repriceEvents(store.events), pulls, rowRepo, window: { from: since, to: now }, filter, generatedAt: now }));
   console.log(`wrote ${out}: the merged rows since ${new Date(since).toISOString()}; ${githubSummary({ github, budget, unread: unreadRows.length })}`);
+}
+
+/**
+ * The time each package's move row closed (#3967), from the row itself: one counted call each. A stop of the budget leaves `at` null, printed `not held`, never a guess; any other failure is thrown.
+ * @param {{ rowRepo: string, gh: (args: string[]) => any }} input @returns {import("./aggregate.mjs").Move[]}
+ */
+export function readMoves({ rowRepo, gh }) {
+  return MOVES.map((move) => {
+    try {
+      const closedAt = gh([`repos/${rowRepo}/issues/${move.row}`]).closed_at;
+      return { ...move, at: closedAt ? Date.parse(closedAt) : null };
+    } catch (error) {
+      if (isSpent(error)) return { ...move, at: null };
+      throw new Error(`gh api repos/${rowRepo}/issues/${move.row}: could not read when the move closed`, { cause: error });
+    }
+  });
+}
+
+/** A pull request lands as a merge commit (`Merge pull request #n from ...`) or, in the early weeks of the history, as a squash commit whose subject ends `(#n)`. */
+const MERGE_SUBJECT = /^Merge pull request #(\d+) |\(#(\d+)\)$/;
+
+/**
+ * The paths each merged pull request changed, from `git log --first-parent -m --name-only` text (the merge commit's difference from its first parent, which is the pull request's own change; a squash
+ * commit's own). A commit whose subject names no pull request is not one's and is left out. Keys are `<repo>#<number>`, as the aggregate looks them up.
+ * A commit that appears in more than one section (`-m` without `--first-parent` repeats a merge commit once per parent, the first parent's first) keeps its FIRST section: a later parent's diff
+ * is not the pull request's change and must not replace it.
+ * @param {string} text output of `git log --format=@@%x09%H%x09%s` @param {string} rowRepo @returns {Map<string, string[]>}
+ */
+export function parseMergePaths(text, rowRepo) {
+  /** @type {Map<string, string[]>} */
+  const paths = new Map();
+  const seen = new Set();
+  /** @type {string[] | null} */
+  let current = null;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("@@\t")) {
+      const [sha, ...subject] = line.slice("@@\t".length).split("\t");
+      const found = MERGE_SUBJECT.exec(subject.join("\t"));
+      const number = found?.[1] ?? found?.[2];
+      current = number && !seen.has(sha) ? [] : null;
+      seen.add(sha);
+      if (number && current) paths.set(`${rowRepo}#${number}`, current);
+    } else if (line.trim() && current) current.push(line.trim());
+  }
+  return paths;
+}
+
+/**
+ * The paths of every pull request merged into the primary repository since `since`, read from the checkout's own `origin/main` (as last fetched, no `gh` call). `note` says why none was read.
+ * @param {{ checkout: string, rowRepo: string, since: number }} input @returns {{ paths: Map<string, string[]>, note: string | null }}
+ */
+export function readMergePaths({ checkout, rowRepo, since }) {
+  try {
+    const text = execFileSync("git", ["-C", checkout, "log", "origin/main", "--first-parent", "-m", `--since=${new Date(since).toISOString()}`, "--format=@@%x09%H%x09%s", "--name-only"], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
+    return { paths: parseMergePaths(text, rowRepo), note: null };
+  } catch (error) {
+    return { paths: new Map(), note: `changed paths not read, so no row before a move is placed on a package: git -C ${checkout} log origin/main failed (${/** @type {Error} */ (error).message.split("\n")[0]})` };
+  }
 }
 
 /** The first turn after each wake needs the transcripts and the wake ledger and nothing from GitHub, so it makes no `gh` call. */

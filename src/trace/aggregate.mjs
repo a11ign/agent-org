@@ -37,6 +37,10 @@ export const DEFINITIONS = [
   "  deferred wait: how long a busy seat held an order before it was typed. The deferral log is not in the store (#3510), so it is `not held`, never 0.",
   "PHASE SHARE (#3511): from each merged row's waterfall (`waterfall.mjs`, its own definitions): the wall-clock each phase has to ITSELF (each moment in the latest-started phase running at it; time no phase covers is `between`) and the dollars of the turns that ENDED in it, as a share of the week's merged rows' whole wall-clock (the first phase's start to the last one's end) and whole dollars. The shares add up to the whole, and a report whose do not THROWS instead of printing. A row with no phase record in the store (its GitHub events not read) has no waterfall, is counted apart and is in no share. Dollars are the priced turns only, so a row with an unpriced turn makes them a floor (marked).",
   "DEAREST PHASE (#3511): for each of the ten dearest rows, the phase whose turns cost most (priced dollars, a floor when a turn is unpriced) and the phase with the most wall-clock to itself, each with its share of that row's. The row's dollars here are the waterfall's own (the turns on the row and on the pull requests that close it), so they can differ from the per-row figure above, which also places a standing lead's `touched` write.",
+  "BY REPOSITORY (#3967): the week's merged rows grouped by the repository of the LAST pull request that closed them (`MergedRow.repo`: a row closed by pull requests in two repositories is by the one that merged last), with the same per-row figures as above (tokens and dollars per row, P50 and P90, the count of rows behind them) for each repository. A repository with no merged row that week prints no figure, never 0.",
+  "BEFORE AND AFTER THE MOVE (#3967): for agent-org and lab, the weeks before the row that moved the package against the weeks after it, each week its own population and never pooled. The move's time is the closing time of its row (agent-org #2974, lab #2703), read from GitHub. A week that holds the move is the MOVE WEEK and is on neither side. AFTER is the rows merged in the package's own repository. BEFORE is the rows merged in the primary repository whose pull requests changed ONLY paths under the package's old directory (`packages/agent-org/`, `packages/lab/`), read from `git log --first-parent` of the primary checkout's `origin/main`, as last fetched (a squash commit ending `(#n)` is read the same way): a row with a pull request that changed paths both under it and elsewhere is MIXED and a row with a pull request not found there is `paths not read`, and neither is on a side. Until a whole week has passed after the move the after side prints `not held`, never 0.",
+  "FIRST-TURN SIZE (#3967): the window of the first turn of a transcript, `input + cacheRead + cacheWrite5m + cacheWrite1h`, P50 and P90, over the first turns of the per-row sessions (a spawned `worker-<n>` or `reviewer-<n>`) of the rows in the cut, NEVER of a standing seat, whose first turn is not a start-up. A transcript's first turn is its earliest turn in the store that is not a subagent's. It holds everything the session loads before it can act, and the order it was woken with: the fixed start-up context (the system prompt, the tool definitions, `CLAUDE.md`, `.claude/rules`, the memory index) is in it and is not separated from the order, so this figure is the start-up context plus one order. A cut with no such first turn in the store prints `not held`.",
+  "TOOL-READ TOKENS (#3967): the tokens that `Read`, `Grep` and `Glob` results added to the window, MEASURED and not guessed (the store's `toolRead`, defined there): the window of the turn that carries a result, less the window of the message before it, less that message's own output. Summed per row and shown per tool, and as a share of the tokens (all five fields) of the turns that have the figure. Cache reads dominate that denominator and a result is counted once here and read again on every later turn, so the share is small by construction. A Codex reviewer's turns have no figure (its tools are not Claude's) and are in no denominator. A message that called more than one tool is `mixed`: it is in the total and in no per-tool figure, and it can hold results of a tool that is none of the three, so the total is not a floor on reads alone. It holds the few tokens of framing around a result, and counts a result at what the model was charged, which for code is about 2.5 characters a token (a characters-divided-by-four figure reads about half of it, and is never printed here). CHECKED on 20 single-result `Read` calls against their own character counts (2026-10-07): derived tokens are a median 1.76 times characters/4 (p10 1.59), and 5 of the 20 are 3.4 to 16 times it, because whatever else entered the window with the result is in the growth (a nested memory file loaded by the read is in two of them; three are unexplained). On this host the sessions call `Read` far less than `Bash` and have no `Grep` or `Glob` tool (357 `Read` against 11,084 `Bash` calls in three days of transcripts, counted 2026-10-07), so most of what they read through tools is a `Bash` result and is NOT in this figure, and Grep and Glob print 0 because they are not called, not because they were not measured. A turn whose window cannot be read that way (a prompt, an order or a compaction between, a window that shrank) is `not derivable`, and a turn stored before the reader has no figure (`not held`): either makes the row's figure a FLOOR (marked), and a cut whose rows have none prints `not held`.",
   "WAKES, against wakes-per-row: for the rows of the week, the store's count of the wakes of the row's own worker and reviewer sessions (a reviewer's only inside its pull request's open-to-merge window, as wakes-per-row places them) is compared with wakes-per-row's `wakes` for the same row. The week prints how many rows agree and the reason for each that does not.",
 ];
 
@@ -599,6 +603,121 @@ function compareWakes({ merged, readings, wakeCounts, claims, heldFrom }) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// By repository, before and after a move, the first turn and the tokens read through tools (#3967)
+
+/** The per-row sessions: a spawned worker or reviewer belongs to one row or pull request, so its first turn is a start-up for that row. */
+const SPAWNED = /^(worker|reviewer)-/;
+
+/** The two packages that left the primary repository, and the row that moved each: `at` is that row's closing time, which the caller reads (`null` when it could not). @typedef {{ name: string, repo: string, row: number, oldDir: string, at: number | null }} Move */
+export const MOVES = [
+  { name: "agent-org", repo: "a11ign/agent-org", row: 2974, oldDir: "packages/agent-org/" },
+  { name: "lab", repo: "a11ign/lab", row: 2703, oldDir: "packages/lab/" },
+];
+
+/** The window of each transcript's first turn, by turn id: its earliest turn in the store that is a main thread's, Claude's own. @param {TraceEvent[]} turns in time order @returns {Map<string, number>} */
+function firstTurnWindows(turns) {
+  /** @type {Map<string, TraceEvent>} */
+  const first = new Map();
+  for (const turn of turns) {
+    if (!turn.tokens || turn.sidechain === true || turn.harness === "codex" || !turn.transcript || first.has(turn.transcript)) continue;
+    first.set(turn.transcript, turn);
+  }
+  return new Map([...first.values()].map((turn) => [turn.id, inputSide(/** @type {Tokens} */ (turn.tokens))]));
+}
+
+/**
+ * What the turns of one row read through tools. A turn with no field was stored before the reader (`notHeld`), one with a field and no tokens could not be derived (`notDerivable`), and a Codex
+ * reviewer's turn is `unmeasured` (its tools are not Claude's): none of the three is in `heldTokens`, the tokens of the turns that do have the figure, which is what a share is of.
+ * @param {TraceEvent[]} turns
+ */
+function toolReadOfTurns(turns) {
+  const read = { notHeld: 0, notDerivable: 0, unmeasured: 0, heldTurns: 0, heldTokens: 0, total: 0, mixed: 0, byTool: { Read: 0, Grep: 0, Glob: 0 } };
+  for (const turn of turns) {
+    const { toolRead } = turn;
+    if (turn.harness === "codex") read.unmeasured += 1;
+    else if (toolRead === undefined) read.notHeld += 1;
+    else {
+      read.heldTurns += 1;
+      read.heldTokens += turn.tokens ? allTokens(turn.tokens) : 0;
+      if (toolRead === null) continue;
+      if (toolRead.tokens === null) read.notDerivable += 1;
+      else if (toolRead.tool === "mixed") read.mixed += toolRead.tokens;
+      else read.byTool[toolRead.tool] += toolRead.tokens;
+    }
+  }
+  read.total = read.mixed + read.byTool.Read + read.byTool.Grep + read.byTool.Glob;
+  return read;
+}
+
+/** @param {ReturnType<typeof toolReadOfTurns>[]} rows the rows of a cut that have turns */
+function toolReadFigures(rows) {
+  const held = rows.filter((row) => row.heldTurns > 0);
+  const sum = (/** @type {(row: typeof held[number]) => number} */ pick) => held.reduce((all, row) => all + pick(row), 0);
+  const tokens = sum((row) => row.heldTokens);
+  return {
+    rows: held.length, notHeldRows: rows.length - held.length, floorRows: held.filter((row) => row.notHeld > 0 || row.notDerivable > 0).length, notDerivableTurns: sum((row) => row.notDerivable),
+    total: sum((row) => row.total), mixed: sum((row) => row.mixed), byTool: { Read: sum((row) => row.byTool.Read), Grep: sum((row) => row.byTool.Grep), Glob: sum((row) => row.byTool.Glob) },
+    share: tokens > 0 ? sum((row) => row.total) / tokens : null, perRow: spread(held.map((row) => row.total)),
+  };
+}
+
+/**
+ * One cut of the week's rows (a repository, or one side of a move): the per-row figures, the first-turn size and the tokens read through tools.
+ * @param {ReturnType<typeof rowFigures>[]} rows @param {{ turnsOfRow: Map<number, TraceEvent[]>, firstWindows: Map<string, number> }} held
+ */
+function cutFigures(rows, { turnsOfRow, firstWindows }) {
+  /** @type {Map<string, number>} */
+  const first = new Map();
+  const reads = [];
+  for (const row of rows) {
+    const turns = turnsOfRow.get(row.row) ?? [];
+    for (const turn of turns) if (SPAWNED.test(turn.session) && firstWindows.has(turn.id)) first.set(turn.id, /** @type {number} */ (firstWindows.get(turn.id)));
+    if (row.held) reads.push(toolReadOfTurns(turns));
+  }
+  return { ...perRowSpread(rows), firstTurn: spread([...first.values()]), toolRead: toolReadFigures(reads) };
+}
+
+/** @param {ReturnType<typeof rowFigures>[]} rows @param {Parameters<typeof cutFigures>[1]} held */
+function byRepository(rows, held) {
+  const repos = [...new Set(rows.map((row) => row.repo))].sort();
+  return repos.map((repo) => ({ repo, ...cutFigures(rows.filter((row) => row.repo === repo), held) }));
+}
+
+/**
+ * Where a row merged in the primary repository belongs to a package that has since left it, by what its pull requests changed: `package` when every changed path of every pull request is under the
+ * package's old directory, `mixed` when some are and some are not, `other` when none is, `unread` when the paths of one of its pull requests were not read.
+ * @param {MergedRow} merged @param {{ move: Move, pullPaths: Map<string, string[]> }} input @returns {"package" | "mixed" | "other" | "unread"}
+ */
+function placement(merged, { move, pullPaths }) {
+  const lists = merged.pulls.map((pull) => pullPaths.get(`${merged.repo}#${pull}`));
+  if (lists.some((paths) => paths === undefined || paths.length === 0)) return "unread";
+  const paths = lists.flatMap((list) => /** @type {string[]} */ (list));
+  const inside = paths.filter((path) => path.startsWith(move.oldDir)).length;
+  if (inside === paths.length) return "package";
+  return inside > 0 ? "mixed" : "other";
+}
+
+/**
+ * One move's reading of one week. `side` is `before`, `move-week` (the week that holds the move: on neither side), `after`, or `not held` when the move's time was not read.
+ * @param {{ move: Move, start: number, rows: ReturnType<typeof rowFigures>[], merged: MergedRow[], rowRepo: string, pullPaths: Map<string, string[]>, held: Parameters<typeof cutFigures>[1] }} input
+ */
+function moveOfWeek({ move, start, rows, merged, rowRepo, pullPaths, held }) {
+  const base = { name: move.name, row: move.row, at: move.at };
+  if (move.at === null) return { ...base, side: /** @type {const} */ ("not held"), cut: null, placed: null };
+  const moveWeek = weekStart(move.at);
+  if (start === moveWeek) return { ...base, side: /** @type {const} */ ("move-week"), cut: null, placed: null };
+  if (start > moveWeek) return { ...base, side: /** @type {const} */ ("after"), cut: cutFigures(rows.filter((row) => row.repo === move.repo), held), placed: null };
+  const placed = { package: 0, mixed: 0, other: 0, unread: 0 };
+  const ownRows = new Set();
+  for (const entry of merged.filter((candidate) => candidate.repo === rowRepo)) {
+    const where = placement(entry, { move, pullPaths });
+    placed[where] += 1;
+    if (where === "package") ownRows.add(entry.row);
+  }
+  return { ...base, side: /** @type {const} */ ("before"), cut: cutFigures(rows.filter((row) => ownRows.has(row.row)), held), placed };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The report
 
 /** @param {{ events: TraceEvent[], keys: Keys }} input */
@@ -619,7 +738,7 @@ function indexes({ events, keys }) {
       turnsOf.row.set(row, [...(turnsOf.row.get(row) ?? []), turn]);
     }
   }
-  return { turns, placed, byRow, turnsOf };
+  return { turns, placed, byRow, turnsOf, firstWindows: firstTurnWindows(turns) };
 }
 
 /**
@@ -637,14 +756,16 @@ function partialReason({ start, now, held, unread }) {
 
 /**
  * The report. `readings` is wakes-per-row's `measure` result for each week by its start (`null` for a week it was not run for).
+ * `moves` are the packages that left the primary repository (`MOVES`, each with its closing time) and `pullPaths` the paths each pull request of the primary repository changed, by `<repo>#<number>`.
  * `openRows` are the rows GitHub says are open at the reading (`null` when not asked: none is then called open). `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
  * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
- *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null }} input
+ *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null, moves?: Move[], pullPaths?: Map<string, string[]> }} input
  */
-export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null }) {
+export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null, moves = [], pullPaths = new Map() }) {
   const events = repriceEvents(stored); // every dollar below, the waterfalls' included, is at PRICES now and not at the price the turn was stored with (#3638)
   const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
-  const { turns, placed, byRow, turnsOf } = indexes({ events, keys });
+  const { turns, placed, byRow, turnsOf, firstWindows } = indexes({ events, keys });
+  const cutHeld = { turnsOfRow: turnsOf.row, firstWindows };
   const everyMerge = mergedRows(pulls, { from: -Infinity, to: Infinity }, rowRepo);
   const claims = claimsOf(events);
   const unreadSet = new Set(unreadRows);
@@ -664,9 +785,10 @@ export function aggregate({ events: stored, pulls, rowRepo, now, since, held, re
       phases: { ...phaseShares(drawn), noRecord: merged.length - drawn.length },
       spend: spendFigures(spendOf(placed.filter((entry) => inWeek(entry.turn, start))), unreadable), repeats: { classes, total: repeatTotal(classes) },
       wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
+      byRepo: byRepository(rows, cutHeld), moves: moves.map((move) => moveOfWeek({ move, start, rows, merged, rowRepo, pullPaths, held: cutHeld })),
     });
   }
-  return { weeks, ...unmerged({ byRow, merged: everyMerge, openRows }), held, since: weekStart(since), now };
+  return { weeks, ...unmerged({ byRow, merged: everyMerge, openRows }), held, since: weekStart(since), now, moves };
 }
 
 /**
@@ -764,7 +886,7 @@ function weekLines(week) {
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
     `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.flatMap((entry) => [classLine(entry, week.githubUnread), ...causeLines(entry)]));
-  return [...lines, ...phaseLines(week), ...dearestLines(week), ...wakeLines(week)];
+  return [...lines, ...byRepoLines(week), ...phaseLines(week), ...dearestLines(week), ...wakeLines(week)];
 }
 
 /** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
@@ -796,6 +918,58 @@ function wakeLines(week) {
     ...groupByReason(week.wakes.differ)];
 }
 
+/** @typedef {ReturnType<typeof cutFigures>} Cut */
+
+/** @param {Cut} cut */
+function firstTurnText(cut) {
+  const { firstTurn } = cut;
+  if (firstTurn.n === 0) return `FIRST-TURN SIZE: ${NOT_HELD} (no first turn of a worker or reviewer session of these rows is in the store)`;
+  return `FIRST-TURN SIZE: p50 ${count(firstTurn.p50)}  p90 ${count(firstTurn.p90)} tokens  (n=${firstTurn.n} first turns)`;
+}
+
+/** @param {Cut} cut */
+function toolReadText(cut) {
+  const read = cut.toolRead;
+  if (read.rows === 0) return `TOOL-READ TOKENS: ${NOT_HELD} (${read.notHeldRows} of these rows' turns were stored before the reader; they are read again when their transcripts are)`;
+  const floor = read.floorRows > 0 ? ">= " : "";
+  const parts = `Read ${count(read.byTool.Read)}, Grep ${count(read.byTool.Grep)}, Glob ${count(read.byTool.Glob)}, mixed ${count(read.mixed)}`;
+  const why = read.floorRows > 0 ? `; a FLOOR: ${read.floorRows} rows have a turn stored before the reader or not derivable (${read.notDerivableTurns} turns not derivable; ${read.notHeldRows} rows have no turn with the figure)` : "";
+  return `TOOL-READ TOKENS: ${floor}${count(read.total)} = ${floor}${percent(read.share)} of the tokens of the turns of ${read.rows} rows that have it (${parts}); per row p50 ${count(read.perRow.p50)}  p90 ${count(read.perRow.p90)}${why}`;
+}
+
+/** @param {Cut} cut @param {string} pad */
+function cutLines(cut, pad) {
+  const rowsLine = `rows ${cut.rows} (no turn in the store: ${cut.noTurns}; dollars a floor: ${cut.floors})  dollars p50 ${dollars(cut.dollars.p50)}  p90 ${dollars(cut.dollars.p90)} (n=${cut.dollars.n})  tokens p50 ${count(cut.tokens.p50)}  p90 ${count(cut.tokens.p90)} (n=${cut.tokens.n})`;
+  return [`${pad}${rowsLine}`, `${pad}${firstTurnText(cut)}`, `${pad}${toolReadText(cut)}`];
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
+function byRepoLines(week) {
+  if (week.byRepo.length === 0) return ["  BY REPOSITORY: no merged row this week, so no figure"];
+  return ["  BY REPOSITORY (the repository of each row's last merged pull request):", ...week.byRepo.flatMap((cut) => [`    ${cut.repo}`, ...cutLines(cut, "      ")])];
+}
+
+/** @param {ReturnType<typeof aggregate>["weeks"][number]["moves"][number]} entry */
+const placedText = (entry) => (entry.placed === null ? "" : ` placed by paths: ${entry.placed.package} on the package, MIXED ${entry.placed.mixed} (on neither side), other ${entry.placed.other}, paths not read ${entry.placed.unread}.`);
+
+/** One move across the report's weeks, each week its own line and never pooled. @param {ReturnType<typeof aggregate>} report @param {number} index */
+function moveLines(report, index) {
+  const move = report.moves[index];
+  if (move.at === null) return [`BEFORE AND AFTER THE MOVE, ${move.name} (#${move.row}): ${NOT_HELD}: the closing time of the row was not read, so no week can be placed on a side`];
+  const moveWeek = weekStart(move.at);
+  const lines = [`BEFORE AND AFTER THE MOVE, ${move.name} (#${move.row}, closed ${new Date(move.at).toISOString()}; ${move.repo}, before it packages/${move.name}/ of the primary repository). Each week is its own population; the week of the move is on neither side:`];
+  for (const week of report.weeks) {
+    const entry = week.moves[index];
+    const flag = week.partial === null ? "" : "  PARTIAL, not compared";
+    if (entry.side === "move-week") lines.push(`  ${day(week.start)}  MOVE WEEK: on neither side${flag}`);
+    else if (entry.cut === null) lines.push(`  ${day(week.start)}  ${NOT_HELD}`);
+    else lines.push(`  ${day(week.start)}  ${entry.side.toUpperCase()}${flag}${placedText(entry)}`, ...(entry.cut.rows === 0 ? ["      no merged row on this side this week: no figure"] : cutLines(entry.cut, "      ")));
+  }
+  const whole = report.weeks.some((week) => week.start > moveWeek && week.partial === null);
+  lines.push(whole ? "  AFTER: the whole weeks above are the reading" : `  AFTER: ${NOT_HELD}: no whole week has passed since the move (the first is the week of ${day(moveWeek + WEEK_MS)}, which ends ${day(moveWeek + 2 * WEEK_MS)})`);
+  return lines;
+}
+
 /** @param {ReturnType<typeof aggregate>} report @param {{ ingestFooter?: string[] }} [footer] */
 export function renderAggregate(report, footer = {}) {
   const lines = ["TRACE --AGGREGATE (a reading at a moment: re-run it, do not quote it)", "", "DEFINITIONS", ...DEFINITIONS.map((line) => `- ${line}`), "",
@@ -805,6 +979,7 @@ export function renderAggregate(report, footer = {}) {
   lines.push("WEEK OVER WEEK (complete weeks only; a partial week is never compared):");
   for (const step of trend) lines.push(`  ${day(step.from)} -> ${day(step.to)}: p50 dollars ${signed(step.p50Dollars)}, p90 ${signed(step.p90Dollars)}, overhead share ${signedShare(step.overheadShare)}, repeat waste ${signed(step.repeatDollars)}, cache-read share ${signedShare(step.cacheReadShare)}`);
   if (trend.length === 0) lines.push("  fewer than two complete weeks: nothing to compare yet");
+  for (const index of report.moves.keys()) lines.push("", ...moveLines(report, index));
   lines.push("", `OPEN ROWS, in no average (${report.openKnown ? report.open.length : "not asked"}); the ${DEAREST} dearest:`, ...report.open.slice(0, DEAREST).map(openLine),
     `ROWS MERGED BEFORE THESE WEEKS OR CLOSED WITH NO MERGE (OUTSIDE), in no average (${report.outside.length}); the ${DEAREST} dearest:`, ...report.outside.slice(0, DEAREST).map(openLine));
   return [...lines, ...(footer.ingestFooter ?? [])].join("\n");

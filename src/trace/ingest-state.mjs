@@ -16,15 +16,16 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname } from "node:path";
 
 // A version moves when a fix to what a turn CARRIES must reach turns already stored: the state of another version is a cold start, every transcript is read from byte 0, and
-// `appendToStore` supersedes each stored turn with the differing copy. 3: `toolMs` (a11ign/a11ign#3669), absent from every turn stored before it, so its tool time printed as `unexplained` (#3680).
-export const STATE_VERSION = 3;
+// `appendToStore` supersedes each stored turn with the differing copy. 3: `toolMs` (a11ign/a11ign#3669), absent from every turn stored before it, so its tool time printed as `unexplained` (#3680). 4: `toolRead` (a11ign/a11ign#3967), the tokens a `Read`, `Grep` or `Glob` result added to the window, absent from every turn stored before it.
+export const STATE_VERSION = 4;
 
 /** The first bytes hashed to tell a rewritten file from a grown one. Small, so that checking a grown file costs next to nothing. */
 export const HEAD_BYTES = 256;
 
 /**
+ * @typedef {{ window: number, output: number, tools: string[], clean: boolean }} Previous the last message of a thread: its window, its output, the tools it called, and whether only tool results followed it in the read
  * @typedef {{ session: string | null, owner: { at: number, id: string, row: number | null, pr: number | null, repo: string | null, rows?: number[], prs?: number[], cause: string | null, causeKey: string | null } | null,
- *   lastAt: number | null, used: { at: number, key: string }[] }} Carry
+ *   lastAt: number | null, used: { at: number, key: string }[], previous?: { main: Previous | null, side: Previous | null } }} Carry
  * @typedef {{ offset: number, size: number, mtimeMs: number, headBytes: number, headHash: string, firstReadAt: number, settleAt: number | null, carry: Carry }} FileState
  * @typedef {{ version: number, firstRunAt: number, firstRunSince: number, storeBytes: number, files: Record<string, FileState> }} IngestState
  */
