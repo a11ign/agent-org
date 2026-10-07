@@ -2,7 +2,12 @@
 // no-token: gh -- every source is an injected fixture; the only `gh` calls in the module are `readMergedPulls`'s default and `readClaimedAt`; the tests inject `readMergedPulls`'s reader and call no other
 // The worker-3390 fixture is the worked example on the row, in the real record shape (a `user` record whose string content is wrapped in `<pasted_content`).
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   compareReadings, dailyMeans, isWake, matchLedger, measure, parseArgs, parseLedger, parseTranscript, readMergedPulls, renderReading, reviewerTarget, rowsClosedBy, workerRowFor,
 } from "./wakes-per-row.mjs";
@@ -312,4 +317,26 @@ test("readMergedPulls refuses a window the list cannot finish in its page limit,
 test("readMergedPulls lets any other failure through as it came, with no flag advice added to it", async () => {
   const broken = () => { throw new Error("gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded"); };
   await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
+});
+
+test("run as a command it prints the reading and exits 0: the entry module's top-level await must not wait on the `trace` import that imports it back", () => {
+  const home = mkdtempSync(join(tmpdir(), "wakes-per-row-"));
+  try {
+    mkdirSync(join(home, "bin"));
+    mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+    mkdirSync(join(home, ".cache", "a11ign"), { recursive: true });
+    writeFileSync(join(home, ".cache", "a11ign", "wake-ledger"), "");
+    writeFileSync(join(home, ".cache", "a11ign", "spare-cycles"), "");
+    writeFileSync(join(home, ".cache", "a11ign", "spare-instances.json"), "{}");
+    writeFileSync(join(home, "bin", "gh"), "#!/bin/sh\necho '[]'\n"); // an empty pull-requests list: no merged row, so no claim read either
+    chmodSync(join(home, "bin", "gh"), 0o755);
+    const script = fileURLToPath(new URL("./wakes-per-row.mjs", import.meta.url));
+    const run = spawnSync(process.execPath, [script, "--from", "2026-10-04T00:00:00Z", "--to", "2026-10-04T13:00:00Z", "--repos", "a11ign/a11ign"], {
+      encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, PATH: `${join(home, "bin")}:${process.env.PATH}` },
+    });
+    assert.equal(run.status, 0, `exit ${run.status}, stderr: ${run.stderr}`);
+    assert.match(run.stdout, /merged rows/i, "the reading was printed");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

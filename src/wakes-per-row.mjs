@@ -613,4 +613,10 @@ async function main() {
   console.log(json ? JSON.stringify(reading, null, 2) : renderReading(reading));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
+// Not `await main()`: a top-level await keeps this module "evaluating", and `main` imports `trace`, which imports this module back, so the import waits on a module that waits on it and node exits 13 with nothing printed.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
