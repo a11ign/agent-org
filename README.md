@@ -50,7 +50,7 @@ never moved or deleted once a project can have pinned it**: a moved tag changes 
 A release starts itself, on the merge that carries a changeset, and no pull request stands between the merge and the tag (a11ign/a11ign#3134, #3187); nobody dispatches anything:
 
 1. A pull request that changes what a project gets carries a changeset (`pnpm run changeset add`). Merge it.
-2. On that push to `main`, **release** waits for `gate` to have succeeded on that sha, then reads which changesets the last tag already consumed (the ones its commit deleted
+2. On that push to `main`, **release** (a call of a11ign/toolchain's shared `release-per-merge.yml`, pinned by sha, `kind: tag`) waits for `gate` to have succeeded on that sha, then reads which changesets the last tag already consumed (the ones its commit deleted
    from its parent). If any other is pending it builds a **release commit** on top of the merge, carrying the last tag's version and `CHANGELOG.md` with `changeset version`
    run over the unreleased changesets, and pushes it as the tag `v<version>` with a Release carrying the changelog entry. The release commit is on no branch, so nothing is
    written to `main`, and nothing else is needed: no pull request per release, no token beyond the job's own. It refuses if `CHANGELOG.md` has no entry for the version or the
