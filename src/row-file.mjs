@@ -109,6 +109,7 @@ import { REPO } from "./project-identity.mjs";
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { umbrellaEdge } from "./wait-condition.mjs";
+import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.mjs"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -1457,7 +1458,7 @@ export function createIssue(argv, deps = {}) {
   // different questions about one body and a body can trip several: all are printed, never chosen between.
   // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
   // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
-  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run) });
+  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run) }) ?? chairmanAskRefusal(/** @type {string} */ (body)); // #4020: a declared ask that could never raise one
   if (umbrella) {
     process.stderr.write(`${umbrella}\n`);
     return 1;

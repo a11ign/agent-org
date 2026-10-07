@@ -18,6 +18,11 @@
 // THE RELEASE STATES (#4005): a condition can also be a FACT ABOUT A RELEASE, read from the registry or the remote, never from a workflow's log:
 //
 //     Waiting-for: published a11ign@next         Waiting-for: a11ign latest = next         Waiting-for: tagged v0
+//     Waiting-for: published a11ign@latest >= 0.2.0
+//
+// THE FLOOR (#4020): `>= x.y.z` after a `published` wait says WHICH release counts. "A real release" is a judgement, so the declarer writes the version they judge real and the
+// gate compares it; a wait with no floor is true for ANY version on the tag, which for a package whose first release was a placeholder is true the day it is declared.
+// A version the comparison cannot read (not `x.y.z`, with an optional prerelease) is an unknown, never true.
 //
 // WHY: a wait that could only name a ROW had to name the umbrella row whose done-when it needed (seven `ready` rows sat behind #3778 after
 // `0.3.0` reached `next`, because "a version exists" could only be spelled `closed #3778`, which also needs `latest` and the Action's tag).
@@ -77,7 +82,7 @@ export const WAIT_FIELDS = Object.freeze([
  *             key: string, text: string }} ReadableWait
  * @typedef {{ state: "manual", text: string }} ManualWait
  * @typedef {{ state: "unreadable", text: string }} UnreadableWait
- * @typedef {{ state: "published" | "latest-next", pkg: string, distTag: string, key: string, text: string }} NpmWait
+ * @typedef {{ state: "published" | "latest-next", pkg: string, distTag: string, floor?: string, key: string, text: string }} NpmWait
  * @typedef {{ state: "tagged", tag: string, key: string, text: string }} TagWait
  * @typedef {ReadableWait | NpmWait | TagWait | ManualWait | UnreadableWait} Wait
  * `key` is how a reference is looked up in the facts: `#n` for this repository, `owner/repo#n` otherwise; `npm:<pkg>` for a package's
@@ -96,7 +101,8 @@ const WAITING_FOR_LINE = /^[ \t]*#{0,6}[ \t]*Waiting-for:[ \t]*(.*?)[ \t]*$/;
 const REFERENCE = /^(?:([\w.-]+\/[\w.-]+))?#(\d+)$/;
 const CLOSED_OR_MERGED = /^(closed|merged)[ \t]+(\S+)$/;
 const LABEL_STATE = /^(labelled|unlabelled)[ \t]+(\S+)[ \t]+(\S+)$/;
-const PUBLISHED = /^published[ \t]+(@[\w.-]+\/[\w.-]+|[\w.-]+)@([\w.-]+)$/;
+const PUBLISHED = /^published[ \t]+(@[\w.-]+\/[\w.-]+|[\w.-]+)@([\w.-]+?)(?:[ \t]*>=[ \t]*(\d+\.\d+\.\d+))?$/;
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)(-[\w.-]+)?(?:\+[\w.-]+)?$/;
 const LATEST_IS_NEXT = /^(@[\w.-]+\/[\w.-]+|[\w.-]+)[ \t]+latest[ \t]*=[ \t]*next$/;
 const TAGGED = /^tagged[ \t]+([\w.@/+-]+)$/;
 const FENCE = /^[ \t]*(```|~~~)/;
@@ -126,7 +132,7 @@ export const isItemWait = (wait) => ITEM_STATES.includes(wait.state);
 /** @param {string} value the text after `Waiting-for:` @returns {NpmWait | TagWait | null} */
 function releaseWaitOf(value) {
   const published = PUBLISHED.exec(value);
-  if (published) return { state: "published", pkg: published[1], distTag: published[2], key: `npm:${published[1]}`, text: value };
+  if (published) return { state: "published", pkg: published[1], distTag: published[2], ...(published[3] && { floor: published[3] }), key: `npm:${published[1]}`, text: value };
   const caughtUp = LATEST_IS_NEXT.exec(value);
   if (caughtUp) return { state: "latest-next", pkg: caughtUp[1], distTag: "next", key: `npm:${caughtUp[1]}`, text: value };
   const tagged = TAGGED.exec(value);
@@ -180,6 +186,21 @@ export function conditionHolds(wait, facts) {
 }
 
 /**
+ * WHETHER A VERSION IS AT LEAST A FLOOR, by `major.minor.patch`; a PRERELEASE sorts below the release it precedes (`0.2.0-next.1` is below `0.2.0`). `null` when either is not a version.
+ * @param {string} version @param {string} floor @returns {boolean | null}
+ */
+export function versionAtLeast(version, floor) {
+  const v = SEMVER.exec(version);
+  const f = SEMVER.exec(floor);
+  if (!v || !f) return null;
+  for (const part of [1, 2, 3]) {
+    const difference = Number(v[part]) - Number(f[part]);
+    if (difference !== 0) return difference > 0;
+  }
+  return v[4] === undefined;
+}
+
+/**
  * A RELEASE FACT, READ OFF THE FACTS THE TICK GATHERED. `published` is a version on that dist-tag; `latest = next` is both dist-tags naming
  * the SAME version (and so false while `next` is ahead, the state a release channel sits in until qualification promotes it).
  * @param {NpmWait | TagWait} wait @param {WaitFacts} facts @returns {boolean | null} `null` when the fact was not read
@@ -189,7 +210,10 @@ function releaseHolds(wait, facts) {
   if (wait.state === "tagged") return typeof fact === "boolean" ? fact : null;
   if (fact === null || typeof fact !== "object") return null;
   const version = (/** @type {string} */ tag) => (typeof fact[tag] === "string" && fact[tag] !== "" ? fact[tag] : null);
-  if (wait.state === "published") return version(wait.distTag) !== null;
+  if (wait.state === "published") {
+    const onTag = version(wait.distTag);
+    return wait.floor === undefined || onTag === null ? onTag !== null : versionAtLeast(onTag, wait.floor);
+  }
   return version("latest") !== null && version("latest") === version("next");
 }
 
