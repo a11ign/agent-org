@@ -108,6 +108,7 @@ import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "./project-identity.mjs";
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+import { umbrellaEdge } from "./wait-condition.mjs";
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -711,6 +712,50 @@ export function fileRefusalReason(body) {
   // questions about the same token and the existence check's `runs/` exemption is what leaves this one
   // anything to say -- a `runs/` path is never refused as absent, so nothing else would ever look at it.
   return labFetchPathReason(body, "row-file");
+}
+
+/**
+ * THE ROW NUMBERS A FILING NAMES AS BLOCKERS: `--blocked-by=3778,12`, `--blocked-by #3778`, repeated or not. A reference of another form (a URL, `owner/repo#n`) is not read:
+ * its done-whens are not this repository's to count, and an unread edge is not an umbrella one.
+ * @param {string[]} argv @returns {number[]}
+ */
+export function blockedByNumbers(argv) {
+  const values = argv.flatMap((arg, i) => {
+    if (arg.startsWith("--blocked-by=")) return [arg.slice("--blocked-by=".length)];
+    return arg === "--blocked-by" && argv[i + 1] !== undefined ? [argv[i + 1]] : [];
+  });
+  return values.flatMap((value) => value.split(",")).flatMap((ref) => /^#?(\d+)$/.exec(ref.trim())?.slice(1).map(Number) ?? []);
+}
+
+/**
+ * #4005: A NEW EDGE ONTO A ROW OF MORE THAN ONE DONE-WHEN MUST SAY WHICH ONE, or the filing must wait on a condition instead. A native `blocked-by` clears when the blocker
+ * CLOSES (all of its done-whens) and names none of them: seven `ready` rows sat behind #3778 after the first version reached `next`, because the one fact they needed was one
+ * of five. `null` means proceed. A blocker that cannot be READ, or is already closed, is not refused: that is an unknown, and a closed row holds nothing.
+ * @param {string} body @param {string[]} argv
+ * @param {{ read: (number: number) => { state: string, body: string } | null }} deps `read` is `gh issue view`'s state and body, `null` when it failed
+ * @returns {string | null}
+ */
+export function blockedByRefusal(body, argv, { read }) {
+  for (const number of blockedByNumbers(argv)) {
+    const blocker = read(number);
+    const edge = blocker && String(blocker.state).toUpperCase() === "OPEN" ? umbrellaEdge({ holderBody: body, blocker: { number, body: blocker.body } }) : null;
+    if (edge) {
+      return `row-file: REFUSING to file -- \`--blocked-by=${number}\` names a row of ${edge.doneWhens} done-whens and does not say which one this row waits for, so it holds `
+        + `until ALL ${edge.doneWhens} are done. Either name it with a line \`Waits-on-done-when: ${number}.<k>\` (k is 1 to ${edge.doneWhens}) in the body, or wait on the CONDITION `
+        + "with a \`Waiting-for:\` line the gate reads (\`published <pkg>@<dist-tag>\`, \`<pkg> latest = next\`, \`tagged <tag>\`, \`closed #n\`, \`merged #n\`).";
+    }
+  }
+  return null;
+}
+
+/** @param {number} number @param {(cmd: string, args: string[]) => string} run @returns {{ state: string, body: string } | null} the blocker, `null` when it cannot be read */
+function readBlocker(number, run) {
+  try {
+    const row = JSON.parse(run("gh", ["issue", "view", String(number), "--repo", REPO, "--json", "state,body"]));
+    return typeof row?.state === "string" ? { state: row.state, body: String(row.body ?? "") } : null;
+  } catch {
+    return null; // an unreadable blocker is an unknown, never an umbrella
+  }
 }
 
 /**
@@ -1412,6 +1457,11 @@ export function createIssue(argv, deps = {}) {
   // different questions about one body and a body can trip several: all are printed, never chosen between.
   // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
   // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
+  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run) });
+  if (umbrella) {
+    process.stderr.write(`${umbrella}\n`);
+    return 1;
+  }
   for (const warning of filingWarnings(/** @type {string} */ (body), argv)) {
     process.stderr.write(`row-file: ${warning}\n`);
   }

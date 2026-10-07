@@ -31,7 +31,8 @@ import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
 import { readRulings, unreadableLine, rulingTick } from "../ruling-record.mjs";
 import { homeProjectDeclaration } from "../project-config.mjs";
-import { referencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds } from "../wait-condition.mjs";
+import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.mjs";
+import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.mjs";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.mjs";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -351,13 +352,16 @@ export function readRefFacts({ refs, open, run, limit = MAX_WAIT_READS }) {
 /**
  * #2996: EVERY WAIT THE OPEN ROWS AND PULL REQUESTS DECLARE, RE-READ AGAINST WHAT THEY WAIT FOR: the facts, the waits that stand although
  * their condition is true, the ones that name no reason, and the count that say `manual`. `null` when either list was refused.
- * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, now: number, run?: (args: string[]) => string }} input
+ * #4005: THE RELEASE FACTS a wait names (a dist-tag, a tag) ARE READ HERE TOO, once each, and `umbrella` is the `ready` rows held by an edge onto a multi-done-when row that
+ * names no condition. `readers` is the test's seam for the registry and the remote.
+ * @param {{ prsRead: any[] | null, openRowsRead: any[] | null, now: number, run?: (args: string[]) => string,
+ *           readers?: import("./held-on-satisfied-orders.mjs").ReleaseReaders }} input
  */
-export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun }) {
+export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun, readers = { distTags: registryDistTags, tagExists: (tag) => remoteTagExists(tag, { run, repo: repoNow }) } }) {
   if (prsRead === null || openRowsRead === null) return null;
   const items = [...prsRead.map((pr) => waitItemOf(pr, "pr")), ...openRowsRead.map((row) => waitItemOf(row, "row"))];
-  const facts = readWaitFacts({ items, open: [...prsRead, ...openRowsRead], run });
-  return { facts, stale: staleWaits({ items, facts, now }), bare: bareWaits({ items, now }), manual: manualWaits({ items, now }) };
+  const facts = { ...readWaitFacts({ items, open: [...prsRead, ...openRowsRead], run }), releases: readReleaseFacts({ items, readers }) };
+  return { facts, stale: staleWaits({ items, facts, now }), bare: bareWaits({ items, now }), manual: manualWaits({ items, now }), umbrella: umbrellaEdges({ items }) };
 }
 
 /**
@@ -437,7 +441,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
   const pending = record.rulings.filter((r) => !r.resolved);
   if (pending.length === 0) return [];
   const refs = pending.flatMap((r) => r.checks.flatMap((text) => parseWaits(`Waiting-for: ${text}`)))
-    .filter((w) => w.state !== "manual" && w.state !== "unreadable").map((w) => ({ key: w.key, repo: w.repo, number: w.number }));
+    .filter(isItemWait).map((w) => ({ key: w.key, repo: w.repo, number: w.number }));
   const facts = readRefFacts({ refs, open: [...(prsRead ?? []), ...(openRowsRead ?? [])], run });
   const world = { rows: openRowsRead && openRowsRead.map((row) => waitItemOf(row, "row")), prs: prsRead && prsRead.map((pr) => waitItemOf(pr, "pr")), facts };
   return rulingTick({ stateDir, world, now, log, comment: (issue, line) => { run(["issue", "comment", String(issue), "--body", line]); } });
@@ -496,7 +500,9 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     ...releaseRunsFact(readReleaseRuns()), // #4001
     ...teamAccessFact(teamAccess()),
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
-  return [...readings, ...staleWaitOrders(stale)];
+  const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
+  const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
+  return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap)];
 }
 
 /**

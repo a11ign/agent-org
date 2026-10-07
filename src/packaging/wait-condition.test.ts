@@ -48,8 +48,8 @@ const ROWS = [{ number: 11, labels: [{ name: "in-progress" }, { name: "session:w
 
 // --- the grammar ------------------------------------------------------------------------------------------------------------
 
-test("the grammar's states are the four the row names, and each round-trips through parseWaits", () => {
-  assert.deepEqual([...WAIT_STATES], ["closed", "merged", "labelled", "unlabelled"]);
+test("the grammar's item states are the four #2996 names, and each round-trips through parseWaits (the release states are #4005's, in wait-release-states.test.ts)", () => {
+  assert.deepEqual([...WAIT_STATES].slice(0, 4), ["closed", "merged", "labelled", "unlabelled"]);
   for (const text of ["closed #2867", "merged owner/repo#40", "labelled hold:ceo #12", "unlabelled needs:chairman a/b#7"]) {
     const [wait] = parseWaits(`Waiting-for: ${text}`);
     assert.equal(wait.text, text);

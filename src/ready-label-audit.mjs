@@ -43,6 +43,7 @@ import { join } from "node:path";
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { proseBlockers } from "./waiting-condition.mjs";
+import { umbrellaEdge } from "./wait-condition.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
 import { HOME_CHECKOUT } from "./project-config.mjs";
@@ -2329,6 +2330,48 @@ function fetchIssuesWithWaits({ run = defaultRun } = {}) {
 }
 
 /**
+ * #4005: EDGES THE FILING TOOL NOW REFUSES, found among the rows that have them. An edge ADDED on or after this instant onto an open row of more than one done-when, naming
+ * neither WHICH done-when nor a `Waiting-for:` condition, is a finding; an edge from before it is the gate's to report (`umbrella-edge`), not refused retroactively.
+ */
+export const UMBRELLA_EDGE_REFUSED_FROM = "2026-10-08T00:00:00Z";
+
+/**
+ * @typedef {{ number: number, body?: string, labels?: ({ name?: string } | string)[], blockedBy?: { nodes?: { number?: number, state?: string }[] } }} RowWithEdges
+ * @param {{ rows: RowWithEdges[], addedAt: (holder: number, blocker: number) => string }} input `addedAt` is when the edge was added (it THROWS when it cannot be read: an unknown date is a check that did not answer, never a pass)
+ * @returns {{ holder: number, blocker: number, doneWhens: number, addedAt: string }[]}
+ */
+export function newUmbrellaEdges({ rows, addedAt }) {
+  const bodyOf = new Map(rows.map((row) => [row.number, row.body ?? ""]));
+  const isReady = (/** @type {RowWithEdges} */ row) => (row.labels ?? []).some((l) => (typeof l === "string" ? l : l.name) === READY_LABEL);
+  return rows.filter(isReady).flatMap((row) => (row.blockedBy?.nodes ?? []).flatMap((node) => {
+    const blocker = Number(node.number);
+    const open = String(node.state ?? "OPEN").toUpperCase() === "OPEN" && bodyOf.has(blocker);
+    const edge = open ? umbrellaEdge({ holderBody: row.body ?? "", blocker: { number: blocker, body: /** @type {string} */ (bodyOf.get(blocker)) } }) : null;
+    const when = edge ? addedAt(row.number, blocker) : "";
+    return edge && when >= UMBRELLA_EDGE_REFUSED_FROM ? [{ holder: row.number, blocker, doneWhens: edge.doneWhens, addedAt: when }] : [];
+  }));
+}
+
+/** @param {number} holder @param {number} blocker @returns {string} the newest `blocked_by_added` of this edge in the holder's timeline */
+function edgeAddedAt(holder, blocker) {
+  const events = JSON.parse(defaultRun("gh", ["api", `repos/${REPO}/issues/${holder}/timeline`, "--paginate", "--slurp"])).flat();
+  const added = events.filter((/** @type {any} */ e) => e.event === "blocked_by_added" && e.blocked_by?.number === blocker).map((/** @type {any} */ e) => String(e.created_at));
+  if (added.length === 0) throw new Error(`#${holder}'s timeline has no blocked_by_added event for #${blocker}, so when the edge was added is not known`);
+  return added.sort().at(-1) ?? "";
+}
+
+/** #4005: the edges onto a multi-done-when row that were added after the tool began to refuse them. NAMES THEM; the remedy is a `Waiting-for:` line or `Waits-on-done-when:`. */
+function reportNewUmbrellaEdges() {
+  const rows = /** @type {RowWithEdges[]} */ (listUntilShort({ run: defaultRun, what: "open rows with edges",
+    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--limit", String(ask), "--json", "number,body,labels,blockedBy"] }));
+  const found = newUmbrellaEdges({ rows, addedAt: edgeAddedAt });
+  for (const { holder, blocker, doneWhens, addedAt } of found) {
+    process.stdout.write(`  #${holder}: blocked-by #${blocker} (${doneWhens} done-whens) added ${addedAt} names no done-when and no Waiting-for condition\n`);
+  }
+  return found.length;
+}
+
+/**
  * @type {[string, () => number][]}  annotated rather than inferred: adding the twelfth entry
  * changed the inferred element type and the destructure at the call site stopped narrowing.
  */
@@ -2349,6 +2392,7 @@ export const CHECKS = [
   ["release declaration", reportReleaseDrift],
   ["filing guidance", reportGuidanceDrift],
   ["waits stated in prose", reportProseBlockers],
+  ["edges onto umbrella rows", reportNewUmbrellaEdges],
   ["rows no cause can reach", reportInvisibleRows],
   // #2111: the opposite defect to the line above -- a row carrying BOTH board labels rather than neither.
   ["half-promoted rows", reportBothBoardLabels],

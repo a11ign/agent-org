@@ -7,7 +7,7 @@
 // THE VOCABULARY IS CLOSED ON PURPOSE: a check that is free text is a sentence, and a sentence cannot be re-read by a program. The single-reference kinds are
 // #2996's own grammar (`closed #n`, `merged #n`, `labelled|unlabelled <label> #n`), parsed and decided by `wait-condition.mjs` and not restated here; the
 // population kinds are this file's: `no-open-row-body-matches <regex>`, `no-open-pr-label <label>`, `no-open-row-label <label> [except #n ...]`.
-import { parseWaits, conditionHolds } from "./wait-condition.mjs";
+import { parseWaits, conditionHolds, isItemWait } from "./wait-condition.mjs";
 
 /** The grace a ruling gets before a failing check is offered, in minutes: the ruling's own to override (`--grace=`). */
 export const DEFAULT_GRACE_MINUTES = 20;
@@ -42,7 +42,8 @@ export function parseCheck(text) {
   if (word === PR_LABEL && rest.length === 1) return { ok: true, check: { kind: "pr-label", text: trimmed, label: rest[0] } };
   if (word === ROW_LABEL) return rowLabelCheck(trimmed, argument);
   const [wait] = parseWaits(`Waiting-for: ${trimmed}`);
-  if (wait && wait.state !== "manual" && wait.state !== "unreadable") return { ok: true, check: { kind: "ref", text: trimmed, wait } };
+  // A release state is not in a ruling's vocabulary: its facts are read for waits (`readReleaseFacts`), not for a ruling's checks, and a check that could only ever read `unknown` would never resolve.
+  if (wait && isItemWait(wait)) return { ok: true, check: { kind: "ref", text: trimmed, wait } };
   return { ok: false, why: `\`${trimmed}\` is not in the vocabulary: closed #n, merged #n, labelled|unlabelled <label> #n, ${ROW_BODY} <regex>, ${PR_LABEL} <label>, `
     + `${ROW_LABEL} <label> [except #n ...]` };
 }
