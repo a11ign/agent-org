@@ -94,7 +94,7 @@ jobs:
       # The tag and the Release are the only writes. No `pull-requests`, no `id-token`, and no registry token anywhere.
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The last tag, and the parent of the commit it points at, must both be here.
           fetch-depth: 0
