@@ -245,21 +245,6 @@ refuse_stale_head() {
   exit "$EXIT_HEAD_MOVED"
 }
 
-# THE ACCOUNTS WHOSE LATEST REVIEW IS A DISMISSED ONE (#4029, found on agent-org#358). GitHub decides `reviewDecision` from each account's LATEST
-# non-COMMENTED review, so an approval the same account's later dismissal superseded no longer counts there, and must not count here either: the
-# door posted APPROVED at head H, the reviewer then ran `gh pr review --approve` by hand (a duplicate) and dismissed it, GitHub read
-# REVIEW_REQUIRED and BLOCKED, and a door that still saw a standing approval refused the one post that clears it. Only a push did, which voids the
-# verdict already given. Reads the sorted-newest-first TSV on stdin and prints the accounts as " a b ", so the caller tests membership with a glob.
-lapsed_accounts() {
-  local when state user rest seen=" " lapsed=" "
-  while IFS=$'\t' read -r when state user rest; do
-    [[ "$seen" != *" $user "* ]] || continue
-    seen+="$user "
-    [[ "$state" != DISMISSED ]] || lapsed+="$user "
-  done
-  printf '%s' "$lapsed"
-}
-
 refuse_second_review() {
   local reviews lapsed when state user commit url kind pid differing=" "
   # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
@@ -267,9 +252,12 @@ refuse_second_review() {
   # approval of one path (agent-org#66: "approved for the workflow change only") opens some other way and is not the duplicate
   # a11ign#3050 exists to stop. `$n` is digits by now, so it is safe inside the jq program.
   #
-  # A DISMISSED review of ANY body is read as well, but only to find the accounts whose latest review it is (`lapsed_accounts`), and a verdict by
-  # such an account does not stand. The `kind` column carries the opener test out of jq, because `--paginate` runs the program once per page and
-  # "an account's latest review" is a fact about all of them.
+  # AN APPROVAL THE SAME ACCOUNT'S LATER DISMISSAL SUPERSEDED DOES NOT STAND (#4029, found on agent-org#358). GitHub decides `reviewDecision` from each
+  # account's LATEST non-COMMENTED review. The door posted APPROVED at head H, the reviewer then ran `gh pr review --approve` by hand (a duplicate) and
+  # dismissed it: GitHub read REVIEW_REQUIRED and BLOCKED while a door that still saw a standing approval refused the one post that clears it, and only
+  # a push did, which voids the verdict already given. So a DISMISSED review of ANY body is read as well, and a verdict by an account whose newest review
+  # it is does not stand. The `kind` column carries the opener test out of jq, because `--paginate` runs the program once per page and "an account's
+  # newest review" is a fact about all of them.
   #
   # THE COMMIT A REVIEW IS AT IS THE ONE ITS BODY NAMES (#3640), the same reading as `named` above and as the gate's `verdictAtHead`; `commit_id`
   # is only where GitHub attached it, which is the HEAD at the moment of posting and so says nothing about what the reviewer read. It is the
@@ -277,7 +265,7 @@ refuse_second_review() {
   reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
       --jq '.[] | .body //= "" | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED") | [.submitted_at, .state, (.user.login // "-"), ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id), .html_url, (if .state != "DISMISSED" and (.body | startswith("**Review of #'"$n"' at ")) then "verdict" else "other" end)] | @tsv' \
       | sort -r)" || undetermined "its reviews would not read"
-  lapsed="$(lapsed_accounts <<<"$reviews")"
+  lapsed=" $(awk -F'\t' '!seen[$3]++ && $2 == "DISMISSED" { printf "%s ", $3 }' <<<"$reviews")"
   [[ -n "$reviews" ]] || return 0
   while IFS=$'\t' read -r when state user commit url kind; do
     [[ "$kind" == verdict && "$lapsed" != *" $user "* ]] || continue
