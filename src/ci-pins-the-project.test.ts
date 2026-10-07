@@ -46,5 +46,3 @@ test("the checkout must read the pin: a sha nothing uses holds nothing still", (
   const unused = checkout("9915703d61d1e8e56968afe8574bf0b24927c076").replace("${{ env.PROJECT_REF }}", "main");
   assert.match(refProblem(unused) ?? "", /does not read `ref: \$\{\{ env\.PROJECT_REF \}\}`/);
 });
-
-export const redProbe3986: number = "not a number";
