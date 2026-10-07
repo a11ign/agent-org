@@ -1,355 +1,144 @@
 // no-token: gh
-// a11ign/a11ign#3187: this file RUNS release.yml's `release` job, step by step, against scratch git repositories with a bare remote, a stand-in `gh` that records what it was
-// asked to create, and a stand-in `pnpm` that does what `changeset version` does to a directory; the `gh` and `pnpm` in the workflow text are what charged it, and nothing here
-// spawns the real `gh`, reaches the network or installs anything.
+// a11ign/a11ign#3965 (earlier #3134, #3187, #3958): this file parses release.yml as YAML and reads the CALL it makes; nothing here spawns a process or needs the network.
 /**
- * A MERGE THAT CARRIES A CHANGESET IS TAGGED, AND THE NEXT ONE IS TAGGED AGAIN (a11ign/a11ign#3187; ceo, a11ign/a11ign#3175).
+ * THE MERGE THAT CARRIES A CHANGESET IS TAGGED BY A CALL OF THE SHARED WORKFLOW, AND THE CALL'S PIN AND INPUTS ARE PINNED HERE (a11ign/a11ign#3965; chairman, #928, 2026-10-07).
  *
- * With no version pull request there is no commit on `main` that consumes the changesets, so every later merge still sees them. What keeps the second tag from being
- * the first again is read from the last tag's commit (the changesets it deleted), and what a project pins is that commit's tree, which `main` never carries. Each
- * property is a function over the PARSED workflow returning what is wrong with it, and each is ALSO run on a copy with exactly that thing broken, because a scenario that
- * passes on a workflow that releases nothing proves nothing:
- *   - (b) a first merge carrying one changeset is tagged with a tree holding the bumped `package.json` and the changelog entry, `main`'s tip untouched and the tag on no branch;
- *   - (c) a SECOND merge carrying one more is tagged with a DIFFERENT, later tag whose notes hold the new changeset and not the first, and the first tag still names the commit
- *     it did (a version recomputed from `main`'s own version, or from every pending file, fails here);
- *   - (d) a push that leaves no unreleased changeset cuts nothing, and the steps that change anything do not run;
- *   - the last tag may be a merge that consumed its changesets (the version pull request the old workflow made), and then nothing is released twice.
- *
- * What the stand-ins do not prove is named: `changeset version` is the real tool's job and is replaced here by a function of the same directory (bump by the highest level,
- * a `## <version>` entry, the consumed files deleted); the push of a tag to a real GitHub remote is a local bare repository. The first release after this lands is the
- * read-back on the platform (the row's Done-when 2).
+ * This file used to RUN the release job's steps over a scratch git repository with stand-in `gh` and `pnpm`, across two merges. Those steps are gone: `release.yml` calls
+ * `release-per-merge.yml` in a11ign/toolchain, whose own tests run the version logic over scratch repositories. For EACH old test, where it is now:
+ *   - "(b)(c)(d) the first merge is tagged, the second with a different and later tag, a push with no unreleased changeset cuts nothing" ... toolchain
+ *     `release-per-merge.test.ts`: "a merge carrying two unreleased changesets makes ONE version ...", "a merge after it with no changeset of its own makes NO tag ...",
+ *     "the next package to release is versioned from its OWN last tag ...", "an empty changeset is not unreleased, and the lone package at the root is tagged v<version>";
+ *   - "positive control: refuses a job that recomputes from every pending file, one that starts from main's version, one that pushes main" ... toolchain "CONTROL: the same
+ *     repository with the 'already consumed' subtraction removed re-releases, and is RED", "... leaves main alone", and the tag job pushing tags only (`release-parity.test.ts` G5);
+ *   - "a tag that appears between the check and the push is not moved and gets no Release" ... toolchain `release-parity.test.ts` G5 (the tag step, and "no step after the
+ *     push runs when it failed, so a refused push cuts no Release");
+ *   - "with no tag at all the job refuses rather than guessing a base" ... DIFFERENT AND MOOT, as #3958's parity table line 5 says: the shared script gives a package with no tag
+ *     the version the merge has, where this file's job refused; agent-org has `v0.65.0` and every tag before it, so the case cannot arise here;
+ *   - "the last tag may be the merge of a version pull request that consumed its changesets: that merge cuts nothing, and the next releases only what is new" ... by the
+ *     shared script's design (its header: what a release commit, or the merge of a version pull request, DELETED is what was consumed, summed over every release tag), and
+ *     NOT found under a test of that name at the pinned sha. The regime ended at #3175, so it is a history case, not a live one; said on a11ign/a11ign#3965;
+ *   - "the runner is not vacuous: the steps that change anything ran for a merge with a changeset" ... toolchain's scenarios assert a tag was made, and the positive control
+ *     below asserts the call has the one job these properties are about;
+ *   - "(a) there is no version-pr job and no pull-requests permission, and the job that releases holds contents: write only" ... HERE, `callProblems`, and
+ *     `release-triggers-itself.test.ts` for the permissions.
+ * What stays HERE is what only this repository's call can get wrong: that it IS a call (one job, no steps of its own, no secrets), that the workflow it calls is pinned by a
+ * FULL sha (a tag or branch would let a push to toolchain change what is released here), and the inputs: `kind: tag`, the gate this repository's required check is named,
+ * and the pnpm and changesets versions a repository with no lockfile has to name. Each property is ALSO run on a copy with exactly that thing broken.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; env?: Record<string, string> }
-interface Workflow { jobs: Record<string, { steps: Step[] }> }
+interface Job { uses?: string; with?: Record<string, unknown>; secrets?: unknown; steps?: unknown[]; needs?: unknown }
+interface Workflow { jobs: Record<string, Job> }
 
-const REAL = parse(readFileSync(fileURLToPath(new URL("../../.github/workflows/release.yml", import.meta.url)), "utf8")) as Workflow;
+const REPO = fileURLToPath(new URL("../../", import.meta.url));
+const read = (path: string): string => readFileSync(`${REPO}${path}`, "utf8");
+const REAL = parse(read(".github/workflows/release.yml")) as Workflow;
+const CI = parse(read(".github/workflows/ci.yml")) as Workflow;
+const PACKAGE = JSON.parse(read("package.json")) as { packageManager?: string; scripts: Record<string, string> };
 
-const SCRIPT_TIMEOUT_MS = 20_000;
-/** The runner's `run:` shell with no `shell:` is `bash -e {0}`, with no `pipefail` (release-safety.test.ts says why this one and not a stricter one). */
-const PLATFORM_SHELL_ARGS = ["-e"];
+const SHARED = /^a11ign\/toolchain\/\.github\/workflows\/release-per-merge\.yml@[0-9a-f]{40}$/;
 
-const scratch = <T>(prefix: string, use: (dir: string) => T): T => {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+const clone = (w: Workflow): Workflow => structuredClone(w);
+const callJob = (w: Workflow): Job => Object.values(w.jobs)[0] as Job;
+const inputsOf = (w: Workflow): Record<string, unknown> => callJob(w).with ?? {};
+
+/** The `@changesets/cli` version package.json's `changeset` script runs, which the shared workflow's `pnpm dlx` must run too so the changelog is written by the same tool. */
+const scriptChangesets = (): string | undefined => /@changesets\/cli@(\d+\.\d+\.\d+)/.exec(PACKAGE.scripts["changeset"] ?? "")?.[1];
+
+/** One job named `release` that is a call, pinned by full sha, with no steps beside it, no `needs` and no secrets passed to it. */
+function callProblems(w: Workflow): string[] {
+  const names = Object.keys(w.jobs);
+  const job = callJob(w);
+  if (names.join() !== "release") return [`jobs are [${names}], not exactly one named release`];
+  const problems: string[] = [];
+  if (!SHARED.test(job.uses ?? "")) problems.push(`uses is '${job.uses}', not the shared per-merge workflow pinned by a full sha`);
+  if (job.steps !== undefined) problems.push("the call job has steps of its own: a called job runs none, so they would not run, and a reader would think they did");
+  if (job.secrets !== undefined) problems.push("the call passes `secrets:`, and a tag release needs none");
+  if (job.needs !== undefined) problems.push("the call waits on a job of its own, and the gate is the called workflow's to wait for");
+  return problems;
+}
+
+/** What the call asks for: tags only, ci.yml's required check as the gate, the node this file always ran, and the two versions a repository with no lockfile must name. */
+function inputProblems(w: Workflow): string[] {
+  const inputs = inputsOf(w);
+  const problems: string[] = [];
+  if (inputs["kind"] !== "tag") problems.push(`kind is '${inputs["kind"]}', not 'tag': agent-org publishes to no registry`);
+  if (inputs["gate-check"] !== "gate") problems.push(`gate-check is '${inputs["gate-check"]}', not the required check 'gate'`);
+  if (inputs["node-version"] !== "22.22.1") problems.push(`node-version is '${inputs["node-version"]}', not the 22.22.1 the release has always run`);
+  if (!/^\d+\.\d+\.\d+$/.test(String(inputs["pnpm-version"] ?? ""))) problems.push(`pnpm-version is '${inputs["pnpm-version"]}': with no lockfile and no packageManager the shared workflow refuses the run`);
+  if (inputs["changesets-version"] !== scriptChangesets()) problems.push(`changesets-version is '${inputs["changesets-version"]}', not the '${scriptChangesets()}' package.json's \`changeset\` script runs`);
+  if ("dist-tag" in inputs) problems.push("a `dist-tag` is set, and `kind: tag` publishes nothing for it to name");
+  return problems;
+}
+
+/** The gate the call waits for is a job ci.yml has: an absent one would be waited for until the 45 minutes were out. */
+const gateProblems = (w: Workflow): string[] => (CI.jobs[String(inputsOf(w)["gate-check"])] ? [] : [`ci.yml has no job named '${inputsOf(w)["gate-check"]}', and the called workflow would wait out its time for a check that never comes`]);
+
+/** The repository has no lockfile and no packageManager, which is why the call names the pnpm: if either appears the input is ignored or argues with it, and this says so. */
+function lockfileProblems(): string[] {
+  const problems: string[] = [];
+  if (PACKAGE.packageManager !== undefined) problems.push("package.json now has a packageManager: the shared workflow reads that and ignores the pnpm-version input, so drop the input");
   try {
-    return use(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    readFileSync(`${REPO}pnpm-lock.yaml`);
+    problems.push("there is now a pnpm-lock.yaml: the shared workflow installs from it and runs the repository's own changeset, and ignores changesets-version");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("could not look for pnpm-lock.yaml", { cause: error });
   }
-};
-
-const git = (cwd: string, ...args: string[]): string => {
-  const r = spawnSync("git", ["-c", "user.email=a@b.c", "-c", "user.name=n", ...args], { cwd, encoding: "utf8", env: sandboxGitEnv() });
-  assert.equal(r.status, 0, `git ${args.join(" ")}: ${r.stderr}`);
-  return r.stdout.trim();
-};
-
-// ---- the stand-ins ------------------------------------------------------------------------------------------------------------
-
-/** `changeset version` as a function of the directory: bump by the highest level named, write a `## <version>` entry above the older ones, delete the consumed files. */
-const STAND_IN_PNPM = `#!/usr/bin/env node
-const fs = require("fs");
-if (process.argv.slice(2).join(" ") !== "run changeset version") { console.error("stand-in pnpm: unexpected " + process.argv.slice(2).join(" ")); process.exit(2); }
-const pending = fs.readdirSync(".changeset").filter((f) => f.endsWith(".md") && f !== "README.md").sort();
-if (pending.length === 0) { console.log("No unreleased changesets found"); process.exit(0); }
-const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-const levels = ["patch", "minor", "major"];
-let level = 0;
-const entries = {};
-for (const f of pending) {
-  const text = fs.readFileSync(".changeset/" + f, "utf8");
-  const m = /^---\\n"agent-org": (\\w+)\\n---\\n\\n?([\\s\\S]*)$/.exec(text);
-  if (!m) { console.error("stand-in pnpm: unreadable changeset " + f); process.exit(2); }
-  level = Math.max(level, levels.indexOf(m[1]));
-  (entries[m[1]] ||= []).push(m[2].trim());
-}
-const [a, b, c] = pkg.version.split(".").map(Number);
-pkg.version = level === 2 ? (a + 1) + ".0.0" : level === 1 ? a + "." + (b + 1) + ".0" : a + "." + b + "." + (c + 1);
-const body = levels.slice().reverse().filter((l) => entries[l]).map((l) => "### " + l[0].toUpperCase() + l.slice(1) + " Changes\\n\\n" + entries[l].map((e) => "- " + e).join("\\n") + "\\n").join("\\n");
-const old = fs.readFileSync("CHANGELOG.md", "utf8");
-const at = old.indexOf("## ");
-fs.writeFileSync("CHANGELOG.md", old.slice(0, at) + "## " + pkg.version + "\\n\\n" + body + "\\n" + old.slice(at));
-fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\\n");
-for (const f of pending) fs.rmSync(".changeset/" + f);
-`;
-
-/** `gh release create TAG … --verify-tag` succeeds only when the remote already has the tag, as the real one does, and records the tag. Anything else is an error. */
-const STAND_IN_GH = `#!/bin/bash
-if [ "$1 $2" != "release create" ]; then echo "stand-in gh: unexpected $*" >&2; exit 9; fi
-tag="$3"
-case " $* " in *" --verify-tag "*) ;; *) echo "stand-in gh: no --verify-tag" >&2; exit 9 ;; esac
-git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null || { echo "stand-in gh: the remote has no tag $tag" >&2; exit 1; }
-echo "$tag" >> "$GH_LOG"
-`;
-
-function standIns(dir: string): string {
-  const bin = join(dir, "bin");
-  mkdirSync(bin, { recursive: true });
-  for (const [name, text] of [["pnpm", STAND_IN_PNPM], ["npm", "#!/bin/bash\nexit 0\n"], ["gh", STAND_IN_GH]] as const) {
-    writeFileSync(join(bin, name), text);
-    chmodSync(join(bin, name), 0o755);
-  }
-  return bin;
+  return problems;
 }
 
-// ---- running a job's steps ----------------------------------------------------------------------------------------------------
+const PROPERTIES: Array<[string, (w: Workflow) => string[]]> = [["call", callProblems], ["inputs", inputProblems], ["gate", gateProblems]];
+const problemsOf = (w: Workflow): string[] => PROPERTIES.flatMap(([name, check]) => check(w).map((p) => `${name}: ${p}`));
 
-interface Ran { failed?: { step: string; status: number | null; output: string }; ran: string[]; outputs: Record<string, Record<string, string>>; released: string[] }
-
-/** `${{ steps.X.outputs.Y }}` and `${{ github.token }}` are the only expressions a step here may hold; anything else throws, so a mutant cannot hide behind one. */
-function expand(text: string, outputs: Record<string, Record<string, string>>): string {
-  return text.replace(/\$\{\{\s*([^}]*?)\s*\}\}/g, (_all, expr: string) => {
-    const out = /^steps\.([\w-]+)\.outputs\.([\w-]+)$/.exec(expr);
-    if (out) return outputs[out[1] as string]?.[out[2] as string] ?? "";
-    if (expr === "github.token") return "token";
-    throw new Error(`the test runner does not evaluate \${{ ${expr} }}`);
-  });
-}
-
-function condition(expr: string | undefined, outputs: Record<string, Record<string, string>>): boolean {
-  if (expr === undefined) return true;
-  const m = /^steps\.([\w-]+)\.outputs\.([\w-]+) (==|!=) '([^']*)'$/.exec(expr.trim());
-  if (!m) throw new Error(`the test runner does not evaluate if: ${expr}`);
-  const actual = outputs[m[1] as string]?.[m[2] as string] ?? "";
-  return m[3] === "==" ? actual === m[4] : actual !== m[4];
-}
-
-/**
- * Runs the steps of `job` with a script, in order, in `clone` (already checked out at the pushed sha), as the platform would: `bash -e`, step outputs fed to later steps.
- * `before` is called with each step's name just before it runs, so a test can make the world change between two steps, as another run or a person can.
- */
-function runJob(workflow: Workflow, job: string, clone: string, root: string, before: (step: string) => void = () => undefined): Ran {
-  const bin = standIns(root);
-  const temp = join(root, "runner-temp");
-  mkdirSync(temp, { recursive: true });
-  const ghLog = join(root, "gh.log");
-  writeFileSync(ghLog, "");
-  const result: Ran = { ran: [], outputs: {}, released: [] };
-  const sha = git(clone, "rev-parse", "HEAD");
-  for (const [i, step] of (workflow.jobs[job]?.steps ?? []).entries()) {
-    if (step.run === undefined || !condition(step.if, result.outputs)) continue;
-    before(step.name ?? "");
-    const outFile = join(root, `output-${i}`);
-    writeFileSync(outFile, "");
-    const env: Record<string, string> = {
-      PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: root, GITHUB_SHA: sha, GITHUB_REF: "refs/heads/main", GITHUB_OUTPUT: outFile, GITHUB_STEP_SUMMARY: join(root, "summary"),
-      RUNNER_TEMP: temp, GH_LOG: ghLog,
-      ...Object.fromEntries(Object.entries(step.env ?? {}).map(([k, v]) => [k, expand(String(v), result.outputs)])),
-    };
-    const file = join(root, `step-${i}.sh`);
-    writeFileSync(file, step.run);
-    const r = spawnSync("bash", [...PLATFORM_SHELL_ARGS, file], { cwd: clone, env, encoding: "utf8", timeout: SCRIPT_TIMEOUT_MS });
-    result.ran.push(step.name ?? `step ${i}`);
-    if (step.id) result.outputs[step.id] = Object.fromEntries(readFileSync(outFile, "utf8").split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
-    if (r.status !== 0) {
-      result.failed = { step: step.name ?? `step ${i}`, status: r.status, output: r.stdout + r.stderr };
-      break;
-    }
-  }
-  result.released = readFileSync(ghLog, "utf8").split("\n").filter(Boolean);
-  return result;
-}
-
-// ---- scratch repositories -----------------------------------------------------------------------------------------------------
-
-interface Repo { root: string; remote: string; seed: string }
-
-/** A bare remote and the working repository that pushes to it as `main`. */
-function newRepo(root: string): Repo {
-  const remote = join(root, "remote.git");
-  const seed = join(root, "seed");
-  git(root, "init", "-q", "--bare", "-b", "main", remote);
-  git(root, "init", "-q", "-b", "main", seed);
-  git(seed, "remote", "add", "origin", remote);
-  return { root, remote, seed };
-}
-
-/** Writes (or, for `null`, deletes) files, commits and pushes `main`. Returns the sha. */
-function commit(repo: Repo, files: Record<string, string | null>, message: string): string {
-  for (const [path, text] of Object.entries(files)) {
-    if (text === null) rmSync(join(repo.seed, path), { force: true });
-    else {
-      mkdirSync(join(repo.seed, path, ".."), { recursive: true });
-      writeFileSync(join(repo.seed, path), text);
-    }
-  }
-  git(repo.seed, "add", "-A");
-  git(repo.seed, "commit", "-q", "--allow-empty", "-m", message);
-  git(repo.seed, "push", "-q", "origin", "HEAD:refs/heads/main");
-  return git(repo.seed, "rev-parse", "HEAD");
-}
-
-const tagOf = (repo: Repo, name: string, sha: string): void => { git(repo.seed, "push", "-q", "origin", `${sha}:refs/tags/${name}`); };
-const changeset = (level: string, text: string): string => `---\n"agent-org": ${level}\n---\n\n${text}\n`;
-const pkg = (version: string): string => `${JSON.stringify({ name: "agent-org", version, scripts: { changeset: "x" } }, null, 2)}\n`;
-const FIRST_CHANGELOG = "# agent-org\n\n## 0.1.0\n\n### Minor Changes\n\n- first release\n";
-
-/** What `actions/checkout` with `fetch-depth: 0` leaves for a push of `sha`: the whole history and every tag, `sha` checked out detached. */
-function checkout(repo: Repo, sha: string, name: string): string {
-  const dest = join(repo.root, name);
-  git(repo.root, "clone", "-q", repo.remote, dest);
-  git(dest, "checkout", "-q", "--detach", sha);
-  return dest;
-}
-
-const remoteTags = (repo: Repo): Record<string, string> =>
-  Object.fromEntries(git(repo.root, "--git-dir", repo.remote, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/tags").split("\n").filter(Boolean).map((l) => l.split(" ") as [string, string]));
-const remoteMain = (repo: Repo): string => git(repo.root, "--git-dir", repo.remote, "rev-parse", "refs/heads/main");
-const atTag = (repo: Repo, tag: string, path: string): string => git(repo.root, "--git-dir", repo.remote, "show", `${tag}:${path}`);
-const versionAt = (repo: Repo, tag: string): string => (JSON.parse(atTag(repo, tag, "package.json")) as { version: string }).version;
-const entryAt = (repo: Repo, tag: string, version: string): string =>
-  atTag(repo, tag, "CHANGELOG.md").split(/^## /m).find((section) => section.startsWith(`${version}\n`)) ?? "";
-
-/** The history every scenario starts from: a release v0.1.0 whose commit has a parent, no changeset pending. The tag is at the second commit, as v0.1.0 is. */
-function released010(repo: Repo): string {
-  commit(repo, { "package.json": pkg("0.0.0"), ".changeset/README.md": "# changesets\n", ".changeset/config.json": "{}\n" }, "initial");
-  const first = commit(repo, { "package.json": pkg("0.1.0"), "CHANGELOG.md": FIRST_CHANGELOG }, "release 0.1.0");
-  tagOf(repo, "v0.1.0", first);
-  return first;
-}
-
-// ---- the scenario -------------------------------------------------------------------------------------------------------------
-
-/** What the `release` job of `workflow` does wrong across three merges, as a list. Empty means it behaves as pinned. */
-function cutProblems(workflow: Workflow): string[] {
-  return scratch("release-merge-", (root) => {
-    const problems: string[] = [];
-    const repo = newRepo(root);
-    released010(repo);
-    const v010 = remoteTags(repo)["v0.1.0"];
-
-    // (b) the first merge carrying a changeset.
-    const m1 = commit(repo, { ".changeset/alpha.md": changeset("minor", "alpha"), "src/a.mjs": "1\n" }, "merge 1: alpha");
-    const first = runJob(workflow, "release", checkout(repo, m1, "clone-1"), join(root, "run-1"));
-    if (first.failed) problems.push(`first merge: step "${first.failed.step}" failed (${first.failed.status}): ${first.failed.output.trim()}`);
-    const tags1 = remoteTags(repo);
-    const t1 = tags1["v0.2.0"];
-    if (Object.keys(tags1).sort().join() !== "v0.1.0,v0.2.0") problems.push(`first merge: the remote's tags are [${Object.keys(tags1).sort()}], not v0.1.0 and v0.2.0`);
-    if (t1 === undefined) return [...problems, "first merge: no v0.2.0 tag, so nothing after it is read"];
-    if (versionAt(repo, "v0.2.0") !== "0.2.0") problems.push(`first merge: the tag's package.json says ${versionAt(repo, "v0.2.0")}, not 0.2.0`);
-    if (!entryAt(repo, "v0.2.0", "0.2.0").includes("alpha")) problems.push("first merge: the tag's CHANGELOG.md has no 0.2.0 entry carrying alpha");
-    if (!atTag(repo, "v0.2.0", "package.json").includes("\"scripts\"")) problems.push("first merge: the tag's package.json lost what the merge had besides the version");
-    if (git(repo.root, "--git-dir", repo.remote, "rev-parse", "v0.2.0^") !== m1) problems.push("first merge: the tag's commit is not a child of the merge");
-    if (git(repo.root, "--git-dir", repo.remote, "ls-tree", "--name-only", "v0.2.0", ".changeset/").includes("alpha.md")) problems.push("first merge: the tag's tree still holds the changeset it consumed");
-    if (remoteMain(repo) !== m1) return [...problems, "first merge: main's tip moved"];
-    if (git(repo.root, "--git-dir", repo.remote, "branch", "--contains", "v0.2.0") !== "") problems.push("first merge: the tag is reachable from a branch");
-    if (first.released.join() !== "v0.2.0") problems.push(`first merge: the Releases created are [${first.released}], not v0.2.0`);
-
-    // (c) the second merge, which still carries alpha as well as beta.
-    const m2 = commit(repo, { ".changeset/beta.md": changeset("minor", "beta"), "src/b.mjs": "2\n" }, "merge 2: beta");
-    const second = runJob(workflow, "release", checkout(repo, m2, "clone-2"), join(root, "run-2"));
-    if (second.failed) problems.push(`second merge: step "${second.failed.step}" failed (${second.failed.status}): ${second.failed.output.trim()}`);
-    const tags2 = remoteTags(repo);
-    if (Object.keys(tags2).sort().join() !== "v0.1.0,v0.2.0,v0.3.0") problems.push(`second merge: the remote's tags are [${Object.keys(tags2).sort()}], not v0.1.0, v0.2.0 and v0.3.0`);
-    if (tags2["v0.2.0"] !== t1 || tags2["v0.1.0"] !== v010) problems.push("second merge: an earlier tag moved");
-    if (tags2["v0.3.0"] !== undefined) {
-      const notes = entryAt(repo, "v0.3.0", "0.3.0");
-      if (!notes.includes("beta") || notes.includes("alpha")) problems.push(`second merge: the 0.3.0 entry is not exactly beta (it holds: ${JSON.stringify(notes)})`);
-      if (!entryAt(repo, "v0.3.0", "0.2.0").includes("alpha")) problems.push("second merge: the tag's CHANGELOG.md lost the 0.2.0 entry, so entries do not accumulate");
-      if (git(repo.root, "--git-dir", repo.remote, "rev-parse", "v0.3.0^") !== m2) problems.push("second merge: the tag's commit is not a child of the second merge");
-    }
-    if (remoteMain(repo) !== m2) return [...problems, "second merge: main's tip moved"];
-    if (second.released.join() !== "v0.3.0") problems.push(`second merge: the Releases created are [${second.released}], not v0.3.0`);
-
-    // (d) a push with no changeset beyond those released.
-    const m3 = commit(repo, { "src/c.mjs": "3\n" }, "merge 3: no changeset");
-    const third = runJob(workflow, "release", checkout(repo, m3, "clone-3"), join(root, "run-3"));
-    if (third.failed) problems.push(`third merge: step "${third.failed.step}" failed (${third.failed.status}): ${third.failed.output.trim()}`);
-    if (JSON.stringify(remoteTags(repo)) !== JSON.stringify(tags2)) problems.push("third merge: a push with nothing unreleased changed the tags");
-    if (third.released.length !== 0) problems.push(`third merge: the Releases created are [${third.released}], not none`);
-    if (third.ran.length !== 1) problems.push(`third merge: ${third.ran.length} steps ran, not only the count (${third.ran})`);
-    return problems;
-  });
-}
-
-test("(b)(c)(d) the release job tags the first merge, tags the second with a different and later tag, and cuts nothing for a push with no unreleased changeset", () => {
-  assert.deepEqual(cutProblems(REAL), []);
+test("the real release.yml is a tag-only call of the shared workflow, and has no pin, input or gate problem", () => {
+  assert.deepEqual(problemsOf(REAL), []);
 });
 
-function mutant(job: string, match: RegExp, edit: (script: string) => string): Workflow {
-  const w = structuredClone(REAL);
-  const step = w.jobs[job]?.steps.find((s) => match.test(`${s.name ?? ""}\n${s.run ?? ""}`));
-  assert.ok(step?.run, `no ${job} step matches ${match}`);
-  const before = step.run;
-  step.run = edit(before);
-  assert.notEqual(step.run, before, `the mutation of ${match} changed nothing`);
-  return w;
-}
+test("the call names pnpm and changesets itself because the repository has neither a lockfile nor a packageManager, and says when that stops being true", () => {
+  assert.deepEqual(lockfileProblems(), []);
+});
 
-test("positive control: the scenario refuses a job that recomputes from every pending file, one that starts from main's version, and one that pushes main", () => {
-  const present = /Which changesets/;
-  const cases: Array<[string, Workflow, RegExp]> = [
-    ["recomputes from every pending file (nothing is subtracted)", mutant("release", present, (s) => s.replace(/comm -23 "\$RUNNER_TEMP\/present.txt" "\$RUNNER_TEMP\/released.txt"/, 'cat "$RUNNER_TEMP/present.txt"')), /second merge: the 0.3.0 entry is not exactly beta/],
-    ["leaves the released changesets in the tree for `changeset version`", mutant("release", /release commit/, (s) => s.replace(/^.*xargs -r rm -f --.*\n/m, "")), /second merge: the 0.3.0 entry is not exactly beta/],
-    ["starts from main's own version, not the last tag's", mutant("release", /release commit/, (s) => s.replace(/^ *node -e "const fs.*\n/m, "")), /second merge: the remote's tags are \[v0.1.0,v0.2.0\]/],
-    ["takes main's CHANGELOG.md, not the last tag's", mutant("release", /release commit/, (s) => s.replace(/^ *git show "\$LAST:CHANGELOG.md".*\n/m, "")), /lost the 0.2.0 entry/],
-    ["reads the released set from the wrong parent", mutant("release", present, (s) => s.replace('"$last^1" "$last"', '"$last" "$last"')), /second merge: the 0.3.0 entry is not exactly beta/],
-    ["pushes the release commit to main", mutant("release", /Cut the tag/, (s) => s.replace('"HEAD:refs/tags/$TAG"', '"HEAD:refs/heads/main" "HEAD:refs/tags/$TAG"')), /main's tip moved/],
+test("positive control: the properties are about something (a pinned call, a changesets version the script names, and a gate job that exists)", () => {
+  assert.match(callJob(REAL).uses ?? "", SHARED);
+  assert.match(scriptChangesets() ?? "", /^\d+\.\d+\.\d+$/);
+  assert.ok(CI.jobs["gate"]);
+});
+
+test("positive control: each copy with ONE thing broken is refused by the property that owns it, naming it", () => {
+  const mutants: Array<[string, string, (w: Workflow) => void]> = [
+    ["call", "a branch name instead of a sha", (w) => { callJob(w).uses = "a11ign/toolchain/.github/workflows/release-per-merge.yml@main"; }],
+    ["call", "a short sha", (w) => { callJob(w).uses = "a11ign/toolchain/.github/workflows/release-per-merge.yml@ab856fdd"; }],
+    ["call", "a 39-character sha, the typo that has already happened once", (w) => { callJob(w).uses = `a11ign/toolchain/.github/workflows/release-per-merge.yml@${"a".repeat(39)}`; }],
+    ["call", "another repository's workflow", (w) => { callJob(w).uses = `a11ign/other/.github/workflows/release-per-merge.yml@${"a".repeat(40)}`; }],
+    ["call", "another workflow of toolchain", (w) => { callJob(w).uses = `a11ign/toolchain/.github/workflows/release.yml@${"a".repeat(40)}`; }],
+    ["call", "a step of its own", (w) => { callJob(w).steps = [{ run: "echo hi" }]; }],
+    ["call", "a second job (a version-pr job)", (w) => { w.jobs["version-pr"] = { uses: callJob(w).uses }; }],
+    ["call", "a job of another name", (w) => { w.jobs = { publish: callJob(w) }; }],
+    ["call", "inherited secrets", (w) => { callJob(w).secrets = "inherit"; }],
+    ["call", "a needs of its own", (w) => { callJob(w).needs = ["lint"]; }],
+    ["inputs", "kind npm", (w) => { inputsOf(w)["kind"] = "npm"; }],
+    ["inputs", "another gate check, one that ci.yml has", (w) => { inputsOf(w)["gate-check"] = "typecheck"; }],
+    ["inputs", "another node", (w) => { inputsOf(w)["node-version"] = "22"; }],
+    ["inputs", "no pnpm-version", (w) => { delete inputsOf(w)["pnpm-version"]; }],
+    ["inputs", "a changesets version the script does not run", (w) => { inputsOf(w)["changesets-version"] = "3.0.3"; }],
+    ["inputs", "a dist-tag", (w) => { inputsOf(w)["dist-tag"] = "next"; }],
   ];
-  for (const [label, workflow, expected] of cases) assert.match(cutProblems(workflow).join("\n"), expected, `${label}: the scenario did not notice`);
+  for (const [owner, what, mutate] of mutants) {
+    const broken = clone(REAL);
+    mutate(broken);
+    const found = problemsOf(broken);
+    assert.ok(found.some((p) => p.startsWith(`${owner}:`)), `${what}: not refused by the ${owner} property (${JSON.stringify(found)})`);
+    assert.ok(found.every((p) => p.startsWith(`${owner}:`)), `${what}: refused by a property that does not own it (${JSON.stringify(found)})`);
+  }
 });
 
-test("the last tag may be the merge of a version pull request that consumed its changesets: that merge cuts nothing, and the next releases only what is new", () => {
-  scratch("release-pr-", (root) => {
-    const repo = newRepo(root);
-    commit(repo, { "package.json": pkg("0.1.0"), "CHANGELOG.md": FIRST_CHANGELOG, ".changeset/README.md": "# changesets\n", ".changeset/old.md": changeset("minor", "old") }, "a changeset");
-    const merge = commit(repo, { "package.json": pkg("0.2.0"), "CHANGELOG.md": `# agent-org\n\n## 0.2.0\n\n- old\n\n${FIRST_CHANGELOG.slice("# agent-org\n\n".length)}`, ".changeset/old.md": null }, "Version agent-org 0.2.0");
-    tagOf(repo, "v0.2.0", merge);
-    const idle = runJob(REAL, "release", checkout(repo, merge, "clone-a"), join(root, "run-a"));
-    assert.equal(idle.failed, undefined);
-    assert.deepEqual([idle.released, Object.keys(remoteTags(repo))], [[], ["v0.2.0"]]);
-    const next = commit(repo, { ".changeset/new.md": changeset("patch", "new") }, "merge: new");
-    const ran = runJob(REAL, "release", checkout(repo, next, "clone-b"), join(root, "run-b"));
-    assert.equal(ran.failed, undefined, ran.failed?.output);
-    assert.deepEqual(ran.released, ["v0.2.1"]);
-    assert.ok(entryAt(repo, "v0.2.1", "0.2.1").includes("new") && !entryAt(repo, "v0.2.1", "0.2.1").includes("old"));
-  });
-});
-
-test("a tag that appears between the check and the push is not moved and gets no Release, and with no tag at all the job refuses rather than guessing a base", () => {
-  scratch("release-clash-", (root) => {
-    const repo = newRepo(root);
-    const first = released010(repo);
-    const m1 = commit(repo, { ".changeset/alpha.md": changeset("minor", "alpha") }, "merge 1");
-    const ran = runJob(REAL, "release", checkout(repo, m1, "clone-1"), join(root, "run-1"), (step) => {
-      if (/Cut the tag/.test(step)) tagOf(repo, "v0.2.0", first); // somebody else tagged v0.2.0 after `exists=false` was read
-    });
-    assert.equal(ran.failed?.step, "Cut the tag and the Release", "the push of a tag that exists is refused, not forced");
-    assert.deepEqual([ran.released, remoteTags(repo)["v0.2.0"]], [[], first], "the tag is neither moved nor given a Release");
-  });
-  scratch("release-notag-", (root) => {
-    const repo = newRepo(root);
-    const sha = commit(repo, { "package.json": pkg("0.1.0"), ".changeset/a.md": changeset("minor", "a") }, "no tag yet");
-    const ran = runJob(REAL, "release", checkout(repo, sha, "clone"), join(root, "run"));
-    assert.match(ran.failed?.output ?? "", /no v<version> tag exists/);
-  });
-});
-
-test("the runner is not vacuous: the steps that change anything ran for a merge with a changeset, and every one waits on the count", () => {
-  scratch("release-ran-", (root) => {
-    const repo = newRepo(root);
-    released010(repo);
-    const m1 = commit(repo, { ".changeset/alpha.md": changeset("minor", "alpha") }, "merge 1");
-    const ran = runJob(REAL, "release", checkout(repo, m1, "clone"), join(root, "run"));
-    assert.equal(ran.ran.length, 7, `the steps with a script that ran: ${ran.ran}`);
-  });
-  const steps = REAL.jobs.release?.steps ?? [];
-  const after = steps.slice(steps.findIndex((s) => s.id === "pending") + 1);
-  assert.ok(after.length >= 6, "the steps after the count are the population this checks");
-  for (const s of after) assert.match(s.if ?? "", /^steps\.(pending\.outputs\.count != '0'|tag\.outputs\.exists == 'false')$/, `step "${s.name ?? s.uses}" runs without a changeset to release`);
-});
-
-test("(a) there is no version-pr job and no pull-requests permission, and the job that releases holds contents: write only", () => {
-  assert.deepEqual(Object.keys(REAL.jobs).sort(), ["gate", "release"]);
-  assert.ok(!/pull-requests|gh pr |changeset-release/.test(readFileSync(fileURLToPath(new URL("../../.github/workflows/release.yml", import.meta.url)), "utf8").split("\n").filter((l) => !l.trim().startsWith("#")).join("\n")));
-  assert.deepEqual((REAL.jobs.release as unknown as { permissions: unknown }).permissions, { contents: "write" });
+test("positive control: a gate check ci.yml has no job for is refused by the gate property alone", () => {
+  const broken = clone(REAL);
+  inputsOf(broken)["gate-check"] = "no-such-job";
+  const found = problemsOf(broken);
+  assert.ok(found.some((p) => p.startsWith("gate:")), JSON.stringify(found));
 });
