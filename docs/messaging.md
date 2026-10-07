@@ -124,7 +124,7 @@ closed**: `ans:<option id>` (one of the options the brief offered) or `act:<word
 | An option, **Approve**, **Done** | resolves the request on its row (decision 2(c)): comment, then `needs:chairman` off, then `answer:ceo` on |
 | **Later** | snoozes the request's reminders for 24 hours; the label stays, so it is not an answer |
 | **Explain more**, **Stuck** | each queues ONE order for the liaison, who answers in the chat |
-| **Do it for me** | writes ONE ledger line (`step: "forme"`, `via: "button"`) that `chairman:queue add` accepts as his OK; it leaves the label alone, because a press is not an answer |
+| **Do it for me** | drawn only under a brief that names the act in a `Do it for me: <the act>` line (the alert shows it); writes ONE ledger line (`step: "forme"`, `via: "button"`) that `chairman:queue add` accepts as his OK; it leaves the label alone, because a press is not an answer |
 
 ### A physical or account ask is walked through (C2, `a11ign/a11ign#3425`; shipped, and its live check is #3425's)
 

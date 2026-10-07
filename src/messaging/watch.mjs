@@ -177,14 +177,16 @@ export function createGhReader({ run = runGh } = {}) {
  *
  * A procedure brief (`walks`, a11ign/a11ign#3425) carries a walk's own: Done, Stuck and Explain more.
  *
- * @param {Record<string, unknown>[]} events @param {{ options: Record<string, { id: string, label: string }[]>, walks: Record<string, true> }} offered keyed by event key
+ * A brief that names an act (`acts`, a11ign/a11ign#3982) adds "Do it for me" to its keyboard; one that names none does not.
+ *
+ * @param {Record<string, unknown>[]} events @param {{ options: Record<string, { id: string, label: string }[]>, walks: Record<string, true>, acts: Record<string, string> }} offered keyed by event key
  * @returns {Record<string, unknown>[]}
  */
-function withButtons(events, { options, walks }) {
+function withButtons(events, { options, walks, acts }) {
   return events.map((event) => {
     if (event.kind !== "request" || event.resolved === true) return event;
     const key = /** @type {string} */ (event.key);
-    const actions = walks[key] === true ? walkActions() : requestActions(options[key] ?? []);
+    const actions = walks[key] === true ? walkActions() : requestActions(options[key] ?? [], acts[key] ?? null);
     return actions.length === 0 ? event : { ...event, actions };
   });
 }
@@ -194,9 +196,9 @@ const REQUESTS = {
   name: "requests",
   async observe({ github, repo, now, openKeys, history }) {
     // A walk's first message and its reminders show the step the LEDGER says it is on (`walk.mjs`), so the watcher hands the source that one question.
-    const { events, options, walks, problems } = await readRequests({ github, repo, openKeys, now, positionOf: (key) => walkPosition(history, key) });
+    const { events, options, walks, acts, problems } = await readRequests({ github, repo, openKeys, now, positionOf: (key) => walkPosition(history, key) });
     // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
-    return { events: withButtons(events, { options, walks }), notes: problems };
+    return { events: withButtons(events, { options, walks, acts }), notes: problems };
   },
 };
 

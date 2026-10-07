@@ -56,6 +56,11 @@ const BASE_LABELS = ["What is happening", "Ask", "Only you because", "Checked", 
 const OPTION_LABELS = ["Recommend", "Trade-off"];
 /** A brief with no options is a physical or account ask: its author must have said why the chairman's own Claude session cannot do it. */
 const NOT_HIS_CLAUDE = "Not the chairman's Claude session because";
+/**
+ * **THE ACT A PRESS OF "DO IT FOR ME" WOULD OK (a11ign/a11ign#3982, D1 #3427).** One line of the brief, `Do it for me: <the act>`, named like the button it draws. It is optional and
+ * never required: a brief that names no act draws no button, because a press would OK an act nobody stated. Its label is the button's words so a reader of the brief sees what the button says.
+ */
+const ACT_LABEL = "Do it for me";
 const MISSING_HINTS = new Map([
   // None of these hints may contain the words `chairman-options`: a grep for them must find only an options-block problem (#3344).
   ["Recommend", "a brief that offers options must say which one it recommends"],
@@ -127,6 +132,17 @@ export function parseChairmanOptions(body) {
     options.push({ id, label });
   }
   return { options, problem: null };
+}
+
+/**
+ * The act a brief names for the "Do it for me" button, read as the other brief lines are (markup and control characters out, one line, the same cap).
+ *
+ * @param {string} body the whole comment @returns {string | null} the act, or null when the brief names none (absent is not malformed: most briefs ask for an answer, not an act)
+ */
+export function parseChairmanAct(body) {
+  const found = briefLinePattern(ACT_LABEL).exec(body);
+  const act = found === null ? "" : plainLine(found[1]);
+  return act === "" ? null : act;
 }
 
 /** @param {string} text @returns {{ verify: Verify | null, problem: string | null }} the `Verify:` line's text read as a check, or why it is not one */
@@ -254,18 +270,21 @@ function refusalReason(brief, missing) {
  * **A PROCEDURE BRIEF IS A PROCEDURE, NOT A CHOICE**: a brief with both a `Steps:` list and an options block is refused, and so is a `Steps:` list that cannot be read (`steps:` names it).
  *
  * @param {{ repo: string, row: RequestRow, now: number, position?: number }} input `position` is the step the walk is on (1-based), which only a procedure brief uses
- * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], walk: Walk | null, problem: string | null }}
+ * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], walk: Walk | null, act: string | null, problem: string | null }}
+ *   `act` is the act the brief names for "Do it for me", or null; the event's text carries it, so the OK a press gives is for something he read.
  */
 export function requestEvent({ repo, row, now, position = 1 }) {
   const brief = latestBrief(row.comments);
-  if (brief === null) return { event: null, options: [], walk: null, problem: refusalReason(null, []) };
+  if (brief === null) return { event: null, options: [], walk: null, act: null, problem: refusalReason(null, []) };
   const { options, problem } = parseChairmanOptions(brief.body);
   const { walk, problem: stepsProblem } = readWalk(brief.body);
   // A malformed block still means the author meant to offer a choice, so it is held to the options lines, and its own problem is still reported.
   const { lines, missing } = readBriefLines(brief.body, requiredLabels(options.length > 0 || problem !== null));
-  if (missing.length > 0) return { event: null, options: [], walk: null, problem: refusalReason(brief, missing) };
+  if (missing.length > 0) return { event: null, options: [], walk: null, act: null, problem: refusalReason(brief, missing) };
   const refused = stepsProblem ?? (walk !== null && options.length > 0 ? "steps: a brief is a procedure or a choice, not both" : null);
-  if (refused !== null) return { event: null, options: [], walk: null, problem: `alert not sent: ${refused}` };
+  if (refused !== null) return { event: null, options: [], walk: null, act: null, problem: `alert not sent: ${refused}` };
+  // A procedure has its own keyboard (Done, Stuck), so an act named beside one draws nothing and is not shown as if it did.
+  const act = walk === null ? parseChairmanAct(brief.body) : null;
   return {
     event: {
       key: requestKey(repo, row.number),
@@ -275,13 +294,14 @@ export function requestEvent({ repo, row, now, position = 1 }) {
       // guard, and for that a later time is the right one: a row that regains the label is a NEW episode.
       firstSeenAt: now,
       // The row's number and title are NOT here and not in the link's label: the brief opens the message, and the link is its last line.
-      text: [...lines, ...walkLine(walk, position)].join("\n"),
+      text: [...lines, ...(act === null ? [] : [`${ACT_LABEL}: ${act}`]), ...walkLine(walk, position)].join("\n"),
       links: [row.url],
       resolved: false,
-      state: requestState(lines, options, walk),
+      state: requestState(act === null ? lines : [...lines, `${ACT_LABEL}: ${act}`], options, walk),
     },
     options,
     walk,
+    act,
     problem: problem === null ? null : `chairman-options: ${problem}`,
   };
 }
@@ -311,8 +331,9 @@ export function resolvedEvent({ repo, number, now }) {
  * PURE: what this tick observes. `openKeys` are the request keys the ledger says the chairman has been told about and not told cleared.
  *
  * @param {{ repo: string, rows: RequestRow[], openKeys: Iterable<string>, now: number, positionOf?: (key: string) => number }} input `positionOf` is the step the ledger says a walk is on
- * @returns {{ events: Record<string, unknown>[], options: Record<string, ChairmanOption[]>, walks: Record<string, true>, problems: { key: string, reason: string }[] }}
+ * @returns {{ events: Record<string, unknown>[], options: Record<string, ChairmanOption[]>, walks: Record<string, true>, acts: Record<string, string>, problems: { key: string, reason: string }[] }}
  *   `options` is keyed by event key, for stage 2's buttons (row 9); the core's `normalizeEvent` has no field for it and stage 1 ignores it. `walks` holds the keys of the procedure briefs.
+ *   `acts` holds, by key, the act a brief names for "Do it for me": a key with none is absent, and its keyboard has no such button.
  */
 export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 1 }) {
   /** @type {Record<string, unknown>[]} */
@@ -321,6 +342,8 @@ export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 
   const options = {};
   /** @type {Record<string, true>} */
   const walks = {};
+  /** @type {Record<string, string>} */
+  const acts = {};
   /** @type {{ key: string, reason: string }[]} */
   const problems = [];
   const labelled = new Set();
@@ -331,6 +354,7 @@ export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 
     if (observed.event !== null) events.push(observed.event);
     options[key] = observed.options;
     if (observed.walk !== null) walks[key] = true;
+    if (observed.act !== null) acts[key] = observed.act;
     if (observed.problem !== null) problems.push({ key, reason: observed.problem });
   }
   for (const key of openKeys) {
@@ -339,7 +363,7 @@ export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 
     if (parsed === null || parsed.repo !== repo || labelled.has(key)) continue;
     events.push(resolvedEvent({ repo, number: parsed.number, now }));
   }
-  return { events, options, walks, problems };
+  return { events, options, walks, acts, problems };
 }
 
 /**
