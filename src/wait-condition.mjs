@@ -15,6 +15,14 @@
 //
 // A line at the START of a row or PR body line (an optional `#` heading prefix is allowed, as for `Not-before:`) outside a code fence.
 // A body QUOTING the grammar in prose, inline, or in a fence declares nothing, which is the repo's own fence rule (`Acceptance:`).
+// THE RELEASE STATES (#4005): a condition can also be a FACT ABOUT A RELEASE, read from the registry or the remote, never from a workflow's log:
+//
+//     Waiting-for: published a11ign@next         Waiting-for: a11ign latest = next         Waiting-for: tagged v0
+//
+// WHY: a wait that could only name a ROW had to name the umbrella row whose done-when it needed (seven `ready` rows sat behind #3778 after
+// `0.3.0` reached `next`, because "a version exists" could only be spelled `closed #3778`, which also needs `latest` and the Action's tag).
+// A wait that names the CONDITION clears the moment the condition is true, and the tick can say so.
+//
 // `Waiting-for: manual` is the one non-condition, ALLOWED AND COUNTED: it is what `pr:hold --until manual` writes, and it expires into
 // the unexcused after `MANUAL_WAIT_HOURS` (the length the 2026-10-02 freeze held for before a human found it).
 //
@@ -39,7 +47,10 @@ const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 
 /** The states a wait may name. `manual` is not one of them: it is the absence of a condition, said out loud. */
-export const WAIT_STATES = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
+export const WAIT_STATES = Object.freeze(["closed", "merged", "labelled", "unlabelled", "published", "latest-next", "tagged"]);
+
+/** The states that name an ITEM (a row or a pull request); the others name a release fact. */
+const ITEM_STATES = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
 
 /**
  * EVERY KIND OF WAIT FIELD THE GATE READS, and whether it CLEARS ITSELF. A clock and a `blockedBy` edge do: the date passes, GitHub
@@ -66,12 +77,16 @@ export const WAIT_FIELDS = Object.freeze([
  *             key: string, text: string }} ReadableWait
  * @typedef {{ state: "manual", text: string }} ManualWait
  * @typedef {{ state: "unreadable", text: string }} UnreadableWait
- * @typedef {ReadableWait | ManualWait | UnreadableWait} Wait
- * `key` is how a reference is looked up in the facts: `#n` for this repository, `owner/repo#n` otherwise.
+ * @typedef {{ state: "published" | "latest-next", pkg: string, distTag: string, key: string, text: string }} NpmWait
+ * @typedef {{ state: "tagged", tag: string, key: string, text: string }} TagWait
+ * @typedef {ReadableWait | NpmWait | TagWait | ManualWait | UnreadableWait} Wait
+ * `key` is how a reference is looked up in the facts: `#n` for this repository, `owner/repo#n` otherwise; `npm:<pkg>` for a package's
+ * dist-tags and `tag:<tag>` for a tag of this repository's remote.
  *
  * @typedef {{ state: "open" | "closed" | "merged", labels: string[], resolvedAt: number | null, changedAt: number | null }} RefFact
- * @typedef {{ items: Record<string, RefFact> }} WaitFacts
- * What the gate read about each referenced item. A reference ABSENT from `items` is one that could not be read, and that is an
+ * @typedef {{ items: Record<string, RefFact>, releases?: Record<string, Record<string, string> | boolean> }} WaitFacts
+ * What the gate read about each referenced item. `releases` is what it read about each release fact: a package's dist-tags (`npm:<pkg>`) or whether
+ * a tag exists (`tag:<tag>`); a key ABSENT from it was not read, and that is an unknown, never "not published" and never "no tag". A reference ABSENT from `items` is one that could not be read, and that is an
  * unknown, never "closed". `resolvedAt` is when the item closed or merged and `changedAt` its last update of any kind: a label
  * condition is dated by the second, because the label changed no LATER than that and so the grace it earns is never too short.
  * `null` when nothing dated it.
@@ -81,6 +96,9 @@ const WAITING_FOR_LINE = /^[ \t]*#{0,6}[ \t]*Waiting-for:[ \t]*(.*?)[ \t]*$/;
 const REFERENCE = /^(?:([\w.-]+\/[\w.-]+))?#(\d+)$/;
 const CLOSED_OR_MERGED = /^(closed|merged)[ \t]+(\S+)$/;
 const LABEL_STATE = /^(labelled|unlabelled)[ \t]+(\S+)[ \t]+(\S+)$/;
+const PUBLISHED = /^published[ \t]+(@[\w.-]+\/[\w.-]+|[\w.-]+)@([\w.-]+)$/;
+const LATEST_IS_NEXT = /^(@[\w.-]+\/[\w.-]+|[\w.-]+)[ \t]+latest[ \t]*=[ \t]*next$/;
+const TAGGED = /^tagged[ \t]+([\w.@/+-]+)$/;
 const FENCE = /^[ \t]*(```|~~~)/;
 
 /** @param {string} text @returns {string[]} the lines outside every fenced code block */
@@ -102,9 +120,24 @@ function referenceOf(ref) {
   return { repo: m[1] ?? null, number: Number(m[2]), key: `${m[1] ?? ""}#${m[2]}` };
 }
 
+/** @param {Wait} wait @returns {wait is ReadableWait} the wait names a row or a pull request, so it has a `number` and a `repo` */
+export const isItemWait = (wait) => ITEM_STATES.includes(wait.state);
+
+/** @param {string} value the text after `Waiting-for:` @returns {NpmWait | TagWait | null} */
+function releaseWaitOf(value) {
+  const published = PUBLISHED.exec(value);
+  if (published) return { state: "published", pkg: published[1], distTag: published[2], key: `npm:${published[1]}`, text: value };
+  const caughtUp = LATEST_IS_NEXT.exec(value);
+  if (caughtUp) return { state: "latest-next", pkg: caughtUp[1], distTag: "next", key: `npm:${caughtUp[1]}`, text: value };
+  const tagged = TAGGED.exec(value);
+  return tagged ? { state: "tagged", tag: tagged[1], key: `tag:${tagged[1]}`, text: value } : null;
+}
+
 /** @param {string} value the text after `Waiting-for:` @returns {Wait} */
 function waitOf(value) {
   if (value === "manual") return { state: "manual", text: value };
+  const release = releaseWaitOf(value);
+  if (release) return release;
   const plain = CLOSED_OR_MERGED.exec(value);
   const labelled = LABEL_STATE.exec(value);
   const ref = referenceOf(plain ? plain[2] : labelled ? labelled[3] : "");
@@ -137,6 +170,7 @@ export function parseWaits(text) {
  */
 export function conditionHolds(wait, facts) {
   if (wait.state === "manual" || wait.state === "unreadable") return null;
+  if (!isItemWait(wait)) return releaseHolds(wait, facts);
   const fact = Object.hasOwn(facts.items, wait.key) ? facts.items[wait.key] : null;
   if (fact === null) return null;
   if (wait.state === "closed") return fact.state !== "open";
@@ -146,9 +180,23 @@ export function conditionHolds(wait, facts) {
 }
 
 /**
+ * A RELEASE FACT, READ OFF THE FACTS THE TICK GATHERED. `published` is a version on that dist-tag; `latest = next` is both dist-tags naming
+ * the SAME version (and so false while `next` is ahead, the state a release channel sits in until qualification promotes it).
+ * @param {NpmWait | TagWait} wait @param {WaitFacts} facts @returns {boolean | null} `null` when the fact was not read
+ */
+function releaseHolds(wait, facts) {
+  const fact = facts.releases !== undefined && Object.hasOwn(facts.releases, wait.key) ? facts.releases[wait.key] : null;
+  if (wait.state === "tagged") return typeof fact === "boolean" ? fact : null;
+  if (fact === null || typeof fact !== "object") return null;
+  const version = (/** @type {string} */ tag) => (typeof fact[tag] === "string" && fact[tag] !== "" ? fact[tag] : null);
+  if (wait.state === "published") return version(wait.distTag) !== null;
+  return version("latest") !== null && version("latest") === version("next");
+}
+
+/**
  * @typedef {{ kind: "pr" | "row", number: number, repoKey?: string, repo?: string, labels: string[], body: string,
- *             comments: { body: string, createdAt: number }[], openBlockers: number, updatedAt: number | null }} WaitItem
- * One open row or pull request as the wait readers see it. `updatedAt` is epoch ms and the QUIET SINCE of the item, `null` when it
+ *             comments: { body: string, createdAt: number }[], openBlockers: number, blockers?: number[], updatedAt: number | null }} WaitItem
+ * One open row or pull request as the wait readers see it. `blockers` are the numbers of the OPEN rows its native `blockedBy` edge names (#4005). `updatedAt` is epoch ms and the QUIET SINCE of the item, `null` when it
  * was not read. `repoKey` and `repo` are set for an item of a repository other than the first (`owner/repo`, as the gate tagged it).
  */
 
@@ -161,6 +209,10 @@ const commentsOf = (raw) => (raw?.comments ?? []).map((/** @type {any} */ c) => 
 /** @param {any} raw @returns {number} the blockers GitHub still lists as open: a closed one is a condition that has cleared */
 const openBlockersOf = (raw) => (raw?.blockedBy?.nodes ?? []).filter((/** @type {any} */ n) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN").length;
 
+/** @param {any} raw @returns {number[]} the numbers of the open blockers, for a reader that must know WHICH row an edge names */
+const openBlockerNumbersOf = (raw) => (raw?.blockedBy?.nodes ?? [])
+  .filter((/** @type {any} */ n) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN" && Number.isInteger(Number(n?.number))).map((/** @type {any} */ n) => Number(n.number));
+
 /**
  * A raw `gh` row or pull request, as a `WaitItem`.
  * @param {any} raw @param {"pr" | "row"} kind @returns {WaitItem}
@@ -170,6 +222,7 @@ export function waitItemOf(raw, kind) {
   return {
     kind, number: Number(raw?.number), ...(raw?.repoKey && { repoKey: String(raw.repoKey) }), ...(raw?.repoKey && raw?.repo && { repo: String(raw.repo) }),
     labels: (raw?.labels ?? []).map(labelName), body: String(raw?.body ?? ""), comments: commentsOf(raw), openBlockers: openBlockersOf(raw),
+    blockers: openBlockerNumbersOf(raw),
     updatedAt: Number.isFinite(updated) ? updated : null,
   };
 }
@@ -202,7 +255,7 @@ export function waitFieldsOf(item, now) {
  * @param {WaitItem} item @param {Wait} wait @returns {Wait}
  */
 function ownedBy(item, wait) {
-  if (item.repo === undefined || wait.state === "manual" || wait.state === "unreadable" || wait.repo !== null) return wait;
+  if (item.repo === undefined || !isItemWait(wait) || wait.repo !== null) return wait;
   return { ...wait, repo: item.repo, key: `${item.repo}#${wait.number}` };
 }
 
@@ -238,7 +291,7 @@ export function fieldsToRemove(item, wait, now) {
 }
 
 /**
- * @typedef {{ item: WaitItem, wait: ReadableWait, setter: string, remove: string[], resolvedAt: number | null }} StaleWait
+ * @typedef {{ item: WaitItem, wait: ReadableWait | NpmWait | TagWait, setter: string, remove: string[], resolvedAt: number | null }} StaleWait
  * A wait that stands although its condition is true.
  */
 
@@ -252,11 +305,21 @@ export function staleWaits({ items, facts, now }) {
     if (waitFieldsOf(item, now).length === 0) return [];
     return declaredWaitsOf(item).waits.flatMap((wait) => {
       if (wait.state === "manual" || wait.state === "unreadable" || conditionHolds(wait, facts) !== true) return [];
-      const fact = facts.items[wait.key];
-      const resolvedAt = wait.state === "labelled" || wait.state === "unlabelled" ? fact.changedAt : fact.resolvedAt;
+      const resolvedAt = resolvedAtOf(item, wait, facts);
       return [{ item, wait, setter: setterOf(item), remove: fieldsToRemove(item, wait, now), resolvedAt }];
     });
   });
+}
+
+/**
+ * WHEN A TRUE CONDITION BECAME TRUE, as far as anything dated it. A release fact carries no date of its own (the dist-tags say WHICH version, not since when), so it is
+ * dated by the item's last update, the same bound a label condition uses: the item changed no EARLIER than the wait was written, so the grace it earns is never too short.
+ * @param {WaitItem} item @param {Wait} wait @param {WaitFacts} facts @returns {number | null}
+ */
+function resolvedAtOf(item, wait, facts) {
+  if (!isItemWait(wait)) return item.updatedAt;
+  const fact = facts.items[wait.key];
+  return wait.state === "labelled" || wait.state === "unlabelled" ? fact.changedAt : fact.resolvedAt;
 }
 
 /** @param {string} kind @returns {boolean} the wait field is one somebody must remove (`selfClears: false`) */
@@ -333,10 +396,73 @@ export function referencesOf(items) {
   const seen = new Map();
   for (const item of items) {
     for (const wait of declaredWaitsOf(item).waits) {
-      if (wait.state !== "manual" && wait.state !== "unreadable") seen.set(wait.key, { key: wait.key, repo: wait.repo, number: wait.number });
+      if (isItemWait(wait)) seen.set(wait.key, { key: wait.key, repo: wait.repo, number: wait.number });
     }
   }
   return [...seen.values()];
+}
+
+/**
+ * Every distinct RELEASE fact the items' waits name (#4005): a package's dist-tags or a tag of the remote, what the gate must read besides the items.
+ * @param {WaitItem[]} items @returns {({ key: string, kind: "npm", pkg: string } | { key: string, kind: "tag", tag: string })[]}
+ */
+export function releaseReferencesOf(items) {
+  const seen = new Map();
+  for (const item of items) {
+    for (const wait of declaredWaitsOf(item).waits) {
+      if (wait.state === "tagged") seen.set(wait.key, { key: wait.key, kind: "tag", tag: wait.tag });
+      else if (wait.state === "published" || wait.state === "latest-next") seen.set(wait.key, { key: wait.key, kind: "npm", pkg: wait.pkg });
+    }
+  }
+  return [...seen.values()];
+}
+
+const DONE_WHEN_HEADING = /^[ \t]*#{1,6}[ \t]*done[- ]when\b/i;
+const ANY_HEADING = /^[ \t]*#{1,6}[ \t]/;
+const NUMBERED_CLAUSE = /^ {0,3}\d+[.)][ \t]/;
+const WAITS_ON_DONE_WHEN = /^[ \t]*#{0,6}[ \t]*Waits-on-done-when:[ \t]*#?(\d+)\.(\d+)[ \t]*$/;
+
+/**
+ * HOW MANY DONE-WHENS A ROW HAS: the numbered clauses under its `## Done-when` heading (the shape #3778's five are written in), `0` for a row with no such
+ * section. `0` is not "one": a row that does not say is not an umbrella, and absence is not proof (a row of one done-when has nothing to choose between).
+ * @param {string} body @returns {number}
+ */
+export function doneWhenCount(body) {
+  let inSection = false;
+  let count = 0;
+  for (const line of linesOutsideFences(body)) {
+    if (DONE_WHEN_HEADING.test(line)) inSection = true;
+    else if (ANY_HEADING.test(line)) inSection = false;
+    else if (inSection && NUMBERED_CLAUSE.test(line)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * THE DONE-WHENS A HOLDER SAYS IT WAITS ON: `Waits-on-done-when: <row>.<k>` lines (a line at the start of the body, outside a fence, like `Waiting-for:`). It is the
+ * spelling an edge added later with `gh issue edit --add-blocked-by` can carry, since a native edge names a row and nothing finer.
+ * @param {string} body @returns {{ row: number, clause: number }[]}
+ */
+export function namedDoneWhens(body) {
+  return linesOutsideFences(String(body ?? "")).flatMap((line) => {
+    const m = WAITS_ON_DONE_WHEN.exec(line);
+    return m ? [{ row: Number(m[1]), clause: Number(m[2]) }] : [];
+  });
+}
+
+/**
+ * IS THIS EDGE AN UMBRELLA EDGE? An edge onto a row of MORE THAN ONE done-when that names neither WHICH one it waits on (`Waits-on-done-when: <row>.<k>` with `k` a
+ * clause the blocker has) nor a readable `Waiting-for:` condition in its place. A native edge clears when the blocker CLOSES, and says nothing about which of the
+ * blocker's done-whens the holder needs: the rest of them are waited for too (#4005).
+ * @param {{ holderBody: string, blocker: { number: number, body: string } }} edge
+ * @returns {{ doneWhens: number } | null} the blocker's done-when count when the edge is an umbrella one
+ */
+export function umbrellaEdge({ holderBody, blocker }) {
+  const doneWhens = doneWhenCount(blocker.body);
+  if (doneWhens < 2) return null;
+  if (parseWaits(holderBody).some((w) => w.state !== "unreadable" && w.state !== "manual")) return null;
+  const names = namedDoneWhens(holderBody).some((n) => n.row === blocker.number && n.clause >= 1 && n.clause <= doneWhens);
+  return names ? null : { doneWhens };
 }
 
 /** @param {number} at @param {number} now @returns {number} whole hours between, never negative */
