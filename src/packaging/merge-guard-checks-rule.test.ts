@@ -12,10 +12,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
 import { reasonKind } from "../merge-guard/reason-kind.mjs";
 
-const REPO = HOME_CHECKOUT;
+// THE TOOL'S OWN ROOT, not `HOME_CHECKOUT`: that is the PROJECT's checkout (the product's tree), which holds no
+// `src/` of this tool's and, in a worktree with no host declaration, does not resolve at all (#3953). Every
+// property swept below belongs to the files this repository tracks.
+const REPO = fileURLToPath(new URL("../../", import.meta.url));
 
 /**
  * Every `.test.*` specifier a source imports from. Named so the sweep's CONTROL can drive the same
@@ -316,7 +318,7 @@ test("#1101: NO test file imports another test file — the cause, not the sympt
   // three numbers: a count assertion protects the three files that exist today, and this protects the
   // next one. The row asked for the counts; they are asserted below as well, on one file, because a
   // structural rule nobody has watched fail is worth less than a rule plus one instance of it holding.
-  const files = tracked("packages/*/src/**/*.test.ts");
+  const files = tracked("src/**/*.test.ts");
   // THE POPULATION'S OWN VACUITY GUARD, and I did not have it until `git-population-vacuity.test.ts`
   // refused this file. My control below proves the PREDICATE can match; nothing proved the FILE LIST was
   // non-empty, so an `ls-files` returning nothing would have made the sweep vacuously green. **Third
