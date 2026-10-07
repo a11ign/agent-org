@@ -1266,13 +1266,16 @@ function draftOrder(pr, required = null, baseTip = null) {
 }
 
 /**
- * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), the later one of each pair that
- * changes one file (#3480), then the set-wide one for labelled pull requests nobody has explained (#2416).
+ * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), the ones GitHub holds for review that
+ * NO order reached (#4002), the later one of each pair that changes one file (#3480), then the set-wide one for labelled pull requests nobody
+ * has explained (#2416).
  * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip] @param {number} [nowMs] omitted is `Date.now()`
  */
-export function perPullRequestOrders(prs, required, baseTip, nowMs) {
-  const own = prs.map((pr) => draftOrder(pr, required, baseTip)).filter((o) => o !== null);
-  return [...own, ...checklessPrOrders(prs, nowMs), ...sharedFileOrders(prs), ...awaitingEvidenceStaleOrders(prs)];
+export function perPullRequestOrders(prs, required, baseTip, nowMs = Date.now()) {
+  const asked = prs.map((pr) => ({ pr, order: draftOrder(pr, required, baseTip) }));
+  const unreached = asked.filter(({ pr, order }) => order === null && !isCheckless(pr, nowMs)).map(({ pr }) => pr);
+  return [...asked.flatMap(({ order }) => order ?? []), ...checklessPrOrders(prs, nowMs), ...unorderedPrOrders(unreached, required, nowMs),
+    ...sharedFileOrders(prs), ...awaitingEvidenceStaleOrders(prs)];
 }
 
 /**
@@ -1327,15 +1330,108 @@ function checklessOrder(pr) {
     + "an `edited` event that does not start CI. ";
   return {
     session,
-    ...(session === DEAD_OWNER_FALLBACK ? {}
-      : { fallback: DEAD_OWNER_FALLBACK, fallbackOnlyIfAbsent: true,
-        fallbackPrompt: `${what}Its owner, \`${session}\`, NO LONGER EXISTS (no workspace carries that label), so this order reached you. The remedy needs no code, so apply it: ${remedy}.` }),
+    ...deadOwnerFallback(session, what, remedy),
     cause: "pr-checks-failing",
     subject: ref,
     discriminator: `checkless-${head8}`,
     prompt: `${what}REMEDY, and it fires CI without a code change: ${remedy}. ${ownershipOf(pr, source, "remedy")}`,
     causeKey: `${session}/pr-checks-failing/${ref}/checkless/${head8}`,
   };
+}
+
+/**
+ * What an order for a CODE-FREE remedy carries beside its owner: where it goes if that session no longer exists, and the words that tell the
+ * fallback the remedy is its own to apply. Empty when the owner IS the fallback.
+ * @param {string} session @param {string} what @param {string} remedy
+ */
+function deadOwnerFallback(session, what, remedy) {
+  if (session === DEAD_OWNER_FALLBACK) return {};
+  return { fallback: DEAD_OWNER_FALLBACK, fallbackOnlyIfAbsent: true,
+    fallbackPrompt: `${what}Its owner, \`${session}\`, NO LONGER EXISTS (no workspace carries that label), so this order reached you. The remedy needs no code, so apply it: ${remedy}.` };
+}
+
+/**
+ * PURE. #4002: THE PULL REQUESTS GITHUB HOLDS FOR REVIEW THAT NO ORDER REACHED, quiet for `CHECKLESS_QUIET_MINUTES`. `unreached` is the caller's
+ * list of pull requests for which `draftOrder` and `checklessPrOrders` both said nothing: this asks only whether one of them is a pull request
+ * that SHOULD have been asked, and never repeats a reading those two made.
+ *
+ * THE DEFECT, a11ign#3997, 2026-10-07: opened READY, armed, `REVIEW_REQUIRED`, 0 reviews, and sat 67 minutes with no reviewer. Its `ci` runs ended
+ * `failure` with NO `gate` job, so the rollup held 22 checks and none of them the one required on `main`. `required` was `["gate"]` (#3996 was red),
+ * `blockingChecks` was therefore EMPTY, `checksSettledGreen([])` is `null`, and `reviewWait` read the head as `"running"` for ever. Nothing else
+ * reaches it: `failingChecksOrder` needs red, `isCheckless` needs an EMPTY rollup, `hungCheckOf` needs a check that exists, and the outcome clock
+ * (100 minutes) is an age with no cause.
+ *
+ * THE CLASS IS WIDER THAN THAT SHAPE, so the population is defined by what it LACKS and not by which check went missing: not a draft, not
+ * conflicting (`pr-merge-conflict`'s), not held, not `awaiting-evidence`, GitHub says `REVIEW_REQUIRED`, and no order at all. `REFUSED`
+ * is not here (`pr-review-blocked` reports it) and neither is an UNREADABLE decision, which is not a statement about the pull request.
+ *
+ * QUIET IS THE LATER OF `updatedAt` AND THE NEWEST CHECK TIMESTAMP, because a re-run started from the Actions page moves no `updatedAt`: a
+ * run begun a minute ago on a pull request last touched an hour ago is not a pull request nobody is looking at. Like `isCheckless`, the
+ * failure it can have is DELAY, and an unparseable time is never an accusation.
+ *
+ * FILED UNDER `pr-checks-failing`, as the checkless one is, keyed `unordered` so it collides with neither that nor a red head's. WHEN `required`
+ * WAS READ the order names the required checks absent from the rollup; when it was not, it says so rather than guessing which one went missing.
+ * NO OWNER IS `product-manager`, the first reader for the queue, and not the `ceo` rung `ownerOfPr` ends on (the row's own words).
+ *
+ * @param {any[]} unreached @param {string[] | null} required @param {number} nowMs
+ */
+export function unorderedPrOrders(unreached, required, nowMs) {
+  return (unreached ?? [])
+    .filter((pr) => pr && Number.isFinite(Number(pr.number)) && isUnordered(pr, nowMs))
+    .sort((a, b) => Number(a.number) - Number(b.number))
+    .map((pr) => unorderedOrder(pr, required));
+}
+
+/** @param {any} pr @param {number} nowMs */
+function isUnordered(pr, nowMs) {
+  if (!pr.headRefOid || pr.isDraft === true || awaitingEvidence(pr) || !armabilityOf({ labels: labelsOf(pr) }).arm) return false;
+  if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return false;
+  if (reviewStateOf(pr).code !== REVIEW_STATE.AWAITING_REVIEW) return false;
+  const quietSince = lastActivityMs(pr);
+  return !Number.isNaN(quietSince) && nowMs - quietSince >= CHECKLESS_QUIET_MINUTES * MS_PER_MINUTE;
+}
+
+/** @param {any} pr @returns {number} the newest of `updatedAt` and every check's start and completion; NaN when `updatedAt` cannot be read */
+function lastActivityMs(pr) {
+  const updated = Date.parse(String(pr.updatedAt ?? ""));
+  if (Number.isNaN(updated)) return NaN;
+  const stamps = (pr.statusCheckRollup ?? []).flatMap((/** @type {any} */ c) => [c?.startedAt, c?.completedAt])
+    .map((/** @type {unknown} */ at) => Date.parse(String(at ?? ""))).filter((/** @type {number} */ ms) => Number.isFinite(ms));
+  return Math.max(updated, ...stamps);
+}
+
+/** @param {any} pr @param {string[] | null} required */
+function unorderedOrder(pr, required) {
+  const head8 = String(pr.headRefOid).slice(0, 8);
+  const owner = ownerOfPr(pr);
+  const session = owner.source === "ceo" ? DEAD_OWNER_FALLBACK : owner.session;
+  const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+  const repoFlag = pr.repo ? ` --repo ${pr.repo}` : "";
+  const remedy = `\`gh pr close ${pr.number}${repoFlag} && gh pr reopen ${pr.number}${repoFlag}\` (\`reopened\` starts CI, so the required check is produced), or push a commit`;
+  const what = `${subjectMention(pr)} at \`${head8}\` is held by GitHub for review (\`REVIEW_REQUIRED\`) and the gate has raised NO order for it for ${CHECKLESS_QUIET_MINUTES} minutes of quiet: `
+    + `no reviewer was asked, no failing check was reported, and it is not checkless. ${absentChecksSentence(pr, required)}`
+    + "THE CASE THAT FOUND THIS (#3997) was a run that ended without producing `gate`: the one required check never appeared, so the head read as still running for ever. ";
+  return {
+    session,
+    ...deadOwnerFallback(session, what, remedy),
+    cause: "pr-checks-failing",
+    subject: ref,
+    discriminator: `unordered-${head8}`,
+    prompt: `${what}REMEDY: ${remedy}. ${ownershipOf(pr, owner.source, "remedy")}`,
+    causeKey: `${session}/pr-checks-failing/${ref}/unordered/${head8}`,
+  };
+}
+
+/**
+ * Which required checks the head does not carry, said only as far as the reading allows: a READ list names them, an unread one says so.
+ * @param {any} pr @param {string[] | null} required
+ */
+function absentChecksSentence(pr, required) {
+  if (required === null) return "The required-check list was NOT read this tick, so which check is absent cannot be said. ";
+  const present = newestPerName(pr.statusCheckRollup ?? []).map((/** @type {any} */ c) => String(c?.name ?? c?.context));
+  const absent = required.filter((name) => !present.includes(name));
+  if (absent.length === 0) return "Every required check IS in the rollup, so the cause is not an absent one: read the rollup and the reviewer seat. ";
+  return `The required check(s) ${absent.map((name) => `\`${name}\``).join(", ")} are ABSENT from its rollup, which carries ${present.length} other check(s). `;
 }
 
 /**
