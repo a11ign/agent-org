@@ -2,7 +2,8 @@
 
 How the organisation tells its chairman things, and (in later stages) how the chairman answers, over a chat provider. Telegram is
 the first. **This is the design as the chairman decided it (2026-10-01, `a11ign/a11ign#2899`) and the limits it states about
-itself.** The build is thirteen rows; this document says at the end what exists so far.
+itself, as amended by the chairman's direction of 2026-10-04 (`a11ign/a11ign#3409`): the chairman talks to a session whose only job is the chat, the
+liaison, and not to `ceo`.** The build is thirteen rows and then nineteen more under #3409; this document says at the end what exists so far.
 
 The repository is public. Nothing in this document, the code or its tests may carry a token, a chat id or a user id: those are
 read from files on the host, by reference (decision 1, "Secret by reference only").
@@ -31,7 +32,9 @@ decision 8).
   **every provider's own test calls it**, and it is the only definition of "a provider".
 - **Optional and off by default:** the `messaging` key in `.agent-org/project.json` (`provider`, `tokenFile`, `chairmanFile`,
   `summary: { at: "08:00", timezone: "Europe/London" }`), read like `causes`. **Absent means nothing is constructed, no unit is
-  installed and `host:check` is silent.** The summary is idempotent per LOCAL date (DST-correct, via `Intl`) and is sent silent.
+  installed and `host:check` is silent.** **The daily summary is opt-in and OFF** (chairman, 2026-10-04, `a11ign/a11ign#3410`: he does not want a daily
+  message): an absent `summary` key is no summary at all, and a PRESENT one (`summary: {}` is enough) keeps the 08:00 London defaults. A summary that is
+  declared is idempotent per LOCAL date (DST-correct, via `Intl`) and is sent silent.
 - **Secret by reference only:** `tokenFile` names a file under `~/.config/agent-org/`. The reader refuses a file that is not mode
   0600 or not owned by the running user, never puts the token in argv, env, a unit file or a log, and **redacts the Telegram URL
   (`/bot<token>/`) from every error it surfaces** (a failed `fetch` quotes it). The chairman's Telegram user id and chat id are not
@@ -40,21 +43,28 @@ decision 8).
   minutes, and the bot records the first sender that proves it. Nobody types an id into a repository.
 - **Long polling (`getUpdates`), no inbound port**, one listener process under a single-instance lock (a second poller gets
   `409 Conflict`), the offset persisted after each accepted batch.
-- **No quiet hours.** Only the summary is silent.
+- **No quiet hours.** The summary, where one is declared, is the only silent message.
 
 ## Decision 2. Two-way, "done right", each point a test
 
 - **(a) Identity.** `acceptUpdate` accepts only `from.id == chairman.userId AND chat.id == chairman.chatId AND chat.type ==
   "private"`, for messages and button presses alike. Edits, forwards, group events and everything else are DROPPED and logged
   (reason, ids, length, hash). The bot leaves any chat that is not theirs.
-- **(b) Chairman -> `ceo` only.** An accepted message is queued for `ceo` through the existing `prompt:session` queue, with a sender
+- **(b) Chairman -> the liaison only; the liaison -> `ceo` only through `prompt:session`** (the first reading was "chairman -> `ceo` only";
+  `a11ign/a11ign#3416` and #3409 replaced it). An accepted message is queued for the `liaison` through the existing `prompt:session` queue, with a sender
   the listener alone supplies (`chairman via Telegram`); `resolveSender` derives every other sender from a workspace id, so no agent
-  session can produce it. **There is no code path from a chat message to a worker.** `createInbound(...).handle` forwards a value branded with a
+  session can produce it. **The liaison reaches `ceo` in one way**: `chairman:ask-ceo`, which runs `prompt:session ceo --needs-decision` and refuses a
+  question that names nothing that clears it (below). **One exception, and it is the chairman's (2026-10-04, `a11ign/a11ign#3538`): a message the
+  liaison's queue refuses (the seat is not running, its inbox is full) is passed to `ceo` and the chairman is told so in plain words, because his message
+  is never dropped.** `converse.mjs` holds the two recipients as constants, and a test scans every file under `src/messaging/` for a second caller of the queue.
+  **There is no code path from a chat message to a worker.** `createInbound(...).handle` forwards a value branded with a
   module-private symbol (after the classifier, for the configured chairman), and the only function that writes a chairman-attributed
   row comment accepts nothing else.
 - **(c) GitHub is the record.** A button press or reply to a request writes a row comment quoting it with provenance (Telegram
   message ref, time, "verified id"), removes `needs:chairman` (taking the label off IS the act of answering) and sets `answer:ceo`,
-  so `ceo` is woken with the answer as data. A conversational ruling is recorded by `ceo` on the row it concerns before it acts.
+  so `ceo` is woken with the answer as data. **A conversational answer or correction is recorded on its row by the liaison** (`chairman:record`,
+  `chairman:correct`), in its own name and never the chairman's: the comment says `Recorded by liaison from the chairman's message <ref>; not written by the
+  chairman`, and the provenance line above is written by the listener alone. A ruling `ceo` makes is recorded by `ceo` on the row it concerns before it acts.
 - **(d) Never from chat: credentials, secrets, deletions, money.** Inbound text is classified before anything is forwarded.
   Secret-shaped strings (the leak-scan patterns plus key, token and password shapes) are DROPPED, `deleteMessage` is attempted, and
   the bot replies that it does not take credentials in chat and where to put one. Deletion verbs on a repository, branch, row, data
@@ -71,7 +81,57 @@ decision 8).
 ## Decision 3. Stages, each usable on its own
 
 **S1 notify** (rows 1-6): one-way; the chairman sees requests, stalls, incidents and the summary. **S2 answer** (rows 7-9, 13):
-buttons and replies resolve requests on their rows. **S3 conversation** (rows 10-12): free messages to `ceo` and checked replies.
+buttons and replies resolve requests on their rows. **S3 conversation** (rows 10-12): free messages to the liaison (and, when its queue refuses, `ceo`) and checked replies.
+
+## Decision 4. The liaison: the chairman talks to a session whose only job is the chat (chairman, 2026-10-04, `a11ign/a11ign#3409`)
+
+His words: *"sending tickets isn't really ideal because it's a waste of my energy having to go into the ticket and read the whole ticket ... I'd rather it was more of
+a conversation and explained what's needed from me"*, and *"a lot of the time things are incorrectly labelled, and I need a back-and-forth."* `ceo` is cleared before
+each order (`clearBeforeOrder`), so it could not keep a conversation; the liaison is the session that can.
+
+**The seat.** `liaison` is a persistent role (`"persistent": true` in `.agent-org/roles/sessions.json`, brief `.agent-org/roles/liaison.md`, both in `a11ign/a11ign`; B1 and B5): the tick never clears it and compacts
+it when its window fills. It reports to `ceo`, is never offered work, claims no row, and runs nothing that reaches the fleet or the lab. A summary of a conversation is not a citation, so
+after a compaction everything it believes about the organisation is a belief until it re-reads it that turn.
+
+**Its duties are six, and the brief lists each:** answer from facts it checked this turn; say when it is unsure; follow up when a watched thing changes; ask `ceo` for a ruling and relay the
+answer in the chairman's words; record what the chairman said and take his corrections back to the rows; keep him posted on a thing until it ends. **It decides nothing and never acts as the
+chairman.** The listener, not the liaison, acknowledges every message at once and in words (B2), with no model in the path, so the chairman hears "Got it" at the speed of a poll; the liaison's
+turn is the answer.
+
+**Two closed sets of commands, and nothing else.** A command that is absent or refuses is reported to the chairman as that, and a `gh` comment is not a substitute, because the command is what ties
+a write to a real message.
+
+| Set | Commands | What it may do | Where it is described |
+|---|---|---|---|
+| **B4: what it writes to a row, or asks `ceo`** | `chairman:record`, `chairman:correct`, `chairman:ask-ceo` | `record` quotes his words on a row, in the liaison's name, with `--message=<ref>` an accepted inbound line whose words hash to the receipt's. `correct` is a CLOSED set of three verbs: `withdraw` (the row stops asking him: `needs:chairman` is the only label it removes), `reroute` (sets `answer:product-manager`, nothing else) and `re-ask` (a new brief). `ask-ceo` asks for a ruling and refuses a question that names no `Waiting-for:` condition the gate reads. | "The liaison's commands", below |
+| **D1: what it asks of the chairman's OWN session** | `chairman:queue add` (the org's side); `list`, `take`, `done` (his session's side) | A one-line ask (what, why, the result wanted) for a session only a human runs, written after his OK is verified as `record` verifies one. **There is no executor**: nothing in `src/messaging/` that touches the queue file may spawn a process, and the org never holds the credential the act needs. | "`chairman:queue`", below |
+
+The rest of what it does is read-only or already checked: `chairman:reply` (every fact is a placeholder the core re-reads at send time, stamped "as of HH:MMZ"), `chairman:watch` (the ledger is the
+watch list; a watch ends when its final state has been TOLD) and `messaging:measure` (time to acknowledge and to answer, asks sent, answered and withdrawn, and hand-fixes by the chairman's session).
+
+### What the chairman sees, and the buttons (C1, `a11ign/a11ign#3423`)
+
+Outbound is a message when something happens, and no more: a **need**, written as a BRIEF (what is happening, why only he can do it, the steps, what comes back, the link LAST; A2), a **release**
+shipped (A3), an **incident or stall** starting and clearing with its impact and what is being done (A6), a **milestone** the project declared (A4, A8) and a **watch-list item** (A5). Not merges, audits or
+label changes. Plain English and short.
+
+A message that asks for something carries inline buttons, drawn by the Telegram provider as `reply_markup.inline_keyboard` (before C1 the provider declared `buttons: false` and drew none). **The vocabulary is
+closed**: `ans:<option id>` (one of the options the brief offered) or `act:<word>` for `approve`, `done`, `stuck`, `later`, `explain` and `forme`; any other `callback_data` is dropped as
+`unknown-callback-data` and never forwarded. A press is routed by the ledger-known message it sits under, never by the data:
+
+| Button | What it does |
+|---|---|
+| An option, **Approve**, **Done** | resolves the request on its row (decision 2(c)): comment, then `needs:chairman` off, then `answer:ceo` on |
+| **Later** | snoozes the request's reminders for 24 hours; the label stays, so it is not an answer |
+| **Explain more**, **Stuck** | each queues ONE order for the liaison, who answers in the chat |
+| **Do it for me** | writes ONE ledger line (`step: "forme"`, `via: "button"`) that `chairman:queue add` accepts as his OK; it leaves the label alone, because a press is not an answer |
+
+### A physical or account ask is walked through (C2, `a11ign/a11ign#3425`; shipped, and its live check is #3425's)
+
+A brief with a `Steps:` list is a procedure. `walk.mjs` sends the first step with Done / Stuck / Explain more under it; on Done the step's `Verify: {{placeholder}} is|contains <value>` is READ through the
+checked-facts vocabulary at that moment, and only a read that shows it moves the walk on. A read that fails, or says something else, tells him plainly that it is not seen, and offers Done again, Stuck and Later. A
+step with no `Verify:` is confirmed on Done alone, and the message says "I can't check that one from here". After the last verified step the request is answered on its row through the same path as any other
+press, and the closing message says what it unblocked. **The walk's memory is the ledger** (one `direction: "walk"` line per transition), so a restart finds it where it was.
 
 ## Where it runs
 
@@ -87,22 +147,64 @@ code path, a sender nobody else can derive, a branded value) and made DETECTABLE
 chairman can check against their own chat. It is not cryptographic**, and an agent with shell access could write a comment saying
 anything. The classifier in 2(d) is a heuristic.
 
-## What exists so far (rows 1 to 5b and 7, merged; read 2026-10-02)
+**What the liaison design adds to this, in three sentences.**
+
+1. **The liaison and every agent share the host and one GitHub account, so a recorded answer is traceable to a Telegram message ref the chairman can check and is not cryptographically proven.** `chairman:record`
+   and `chairman:correct` refuse a ref the ledger lacks and words that do not hash to the receipt, and they say in the comment that the liaison wrote it; an agent with a shell can still write any comment with `gh`.
+   What the design buys is that the chairman can compare any recorded answer with his own chat, and that a row never claims he wrote what the liaison did.
+2. **The do-it-for-me queue cannot know his session is running.** It is a file that only his own session reads. The only thing recorded about that session is `lastRead`, the time its `list` or `take` last ran, so
+   `chairman:queue status` can say "never read", "not read since <time>" or "last read <time>", and it cannot say "running". An ask can sit unread; nothing here retries it or acts in its place, by design (there is no executor).
+3. **A walk-through verifies only what a read can see.** A step whose `Verify:` is a placeholder is confirmed by the organisation's own reading; a step with none is confirmed on his word, and the message says so. A step
+   done in a place the checked-facts vocabulary cannot read (a console, a device, an account on another service) is not verified, however the walk reads.
+
+**One more limit, because the design now has two recipients.** A message the liaison's queue refuses goes to `ceo` (2(b)): the chairman is never left unanswered, and the price is that the fallback reader is a session that
+is cleared before each order and has no memory of the conversation.
+
+## What exists so far (every row merged or done; read 2026-10-07 from the tracker, `a11ign/a11ign` rows #2900-#2913 and the children of #3409)
+
+**The thirteen rows of #2899.** Rows 6 and 13 are host acts (units installed, a real round trip), so they are "done" and have no code of their own; rows 5b and 12 are follow-ups the sequence grew.
 
 | Row | What it is | Where |
 |---|---|---|
 | 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.ts` |
 | 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.mjs`, `check.mjs`, `host/chairman-watch.*.in` |
-| 3 | The Telegram provider | `providers/telegram/` |
+| 3 | The Telegram provider: send, silent, split, retry, pairing | `providers/telegram/send.mjs`, `providers/telegram/pair.mjs` |
 | 4 | The one-shot program the timer runs, and the request and summary sources | `watch.mjs`, `sources/requests.mjs`, `sources/summary.mjs` |
 | 5 | The stall and incident sources, every read injected | `sources/stall.mjs`, `sources/incidents.mjs` |
-| **5b** | **The real reads for row 5, wired into `watch.mjs`, and the `messaging:watch` package script** | `sources/readers.mjs`, `watch.mjs`, `package.json` |
+| 5b | The real reads for row 5, wired into `watch.mjs`, and the `messaging:watch` package script | `sources/readers.mjs`, `watch.mjs`, `package.json` |
+| 6 | **Live, first real message and the units installed** (a host act; closed 2026-10-04) | `host/chairman-watch.*.in` |
 | 7 | Stage 2's inbound core (identity, the classifier, the branded value) | `inbound.mjs`, `classify.mjs` |
+| 8 | The Telegram long poll and the listener unit | `providers/telegram/poll.mjs`, `listen.mjs`, `host/chairman-listen.service.in` |
+| 9 | Answers: a button or a reply resolves a request on its row | `answers.mjs` |
+| 10 | Conversation in: a free message queued for the liaison (it was `ceo` when the row was written; decision 2(b)) | `converse.mjs` |
+| 11 | Conversation out: replies are checked facts | `placeholders.mjs`, `reply.mjs`, `reply-cli.mjs` |
+| 12 | `ceo`'s brief and the known gaps say what the code cannot enforce | `.agent-org/roles/ceo.md` and `docs/known-gaps.md` in `a11ign/a11ign` |
+| 13 | **Live, the round trip** (a host act; closed 2026-10-05) | the ledger, and the rows it wrote |
 
-**Not built:** row 6 (a host act: install the units, read back; nothing sends until it is done), the listener (rows 8 and 9), conversation
-(rows 10 to 12) and the first week's reading (row 13). The one `messaging:watch` script exists in this repository's `package.json`; **the unit
-runs `pnpm run messaging:watch` in the PROJECT's checkout** (`WorkingDirectory=@@checkout@@`), so row 6 must make that name resolve there and say
-which it read back.
+**The liaison epic, #3409** (the chairman's direction of 2026-10-04; its rows are in the order they were built, wave by wave).
+
+| Row | What it is | Where |
+|---|---|---|
+| A1 #3410 | The daily summary is opt-in and absent means off | `config.mjs`, `sources/summary.mjs` |
+| A7 #3411 | How fast the org acknowledges and answers is readable from the ledger | `measure.mjs` (`messaging:measure`) |
+| A2 #3412 | A request reaches the chairman as a brief | `sources/requests.mjs` |
+| A3 #3413 | A release shipping is told in one line | `sources/releases.mjs` |
+| A4 #3414, A8 #3422 | A milestone moving is told, and the first milestones are declared | `sources/milestones.mjs` |
+| A5 #3418 | The watch list: "keep me posted on X" is recorded once, told when X changes, and ends when X ends | `watch-list.mjs`, `sources/watched.mjs` (`chairman:watch`) |
+| A6 #3419 | An incident or stall message says what it is, its impact, and what is being done | `sources/incidents.mjs`, `sources/stall.mjs` |
+| B1 #3415 | A seat that is never cleared | `"persistent": true` in `.agent-org/roles/sessions.json` |
+| B3 #3420 | The checked facts the liaison may state beyond issue, PR and run: fleet, gate, release | `placeholders.mjs` |
+| B5 #3421 | The liaison's brief and its roster entry | `.agent-org/roles/liaison.md` and `sessions.json` in `a11ign/a11ign` |
+| B2 #3416 | The chairman's messages go to the liaison, acknowledged at once in words; `ceo` is the fallback (#3538) | `converse.mjs` |
+| B4 #3417 | The liaison records the chairman's answers on the row and fixes what he says is wrong; `chairman:ask-ceo` (#3490) | `record.mjs`, `correct.mjs`, `ask-ceo.mjs` |
+| C1 #3423 | Buttons are drawn, and the vocabulary is closed | `providers/telegram/send.mjs`, `answers.mjs` |
+| C2 #3425 | A physical or account ask is walked through, one verified step at a time | `walk.mjs`, `sources/requests.mjs` |
+| D1 #3427 | "Do it for me": a queue for the chairman's own session, written only after his OK | `session-queue.mjs` (`chairman:queue`) |
+
+**Not done:** **E2 #3431, which is the live one**: the liaison seat is started, one real conversation is had, and the first before-and-after readings are taken. Until then the chairman's
+messages that the liaison's queue refuses go to `ceo`, which is what the fallback in 2(b) is for. **C2's live check is #3425's** (the walk-through is merged and its tests pass; it has not been walked on a real request). E3 `a11ign/a11ign#3430`
+is this repository's own record and rules (`ceo`'s brief, the labellers' rule for a brief), and this document is E1. The units run `pnpm run messaging:watch` and `pnpm run messaging:listen` in the PROJECT's
+checkout (`WorkingDirectory=@@checkout@@`), so each name must resolve there.
 
 ### Row 1: the core, the provider contract and its conformance test
 
@@ -293,9 +395,9 @@ What the design defends, and against whom:
    lowercase word after a strong credential word with no separator, a deletion phrased without the listed verbs, a misspelling) and
    it is tuned to the other error on purpose: it refuses a message it should have forwarded rather than forward one it should have
    refused.
-2. **`ceo`'s brief (row 12).** What reaches `ceo` is read by a model told never to act on a credential, a deletion or a spend
-   from chat, whatever the classifier let through.
-3. **The outbound path carries only checked facts (row 11).** Even a `ceo` that was talked into something cannot say it in the chat:
+2. **The liaison's brief and `ceo`'s (rows 12 and B5).** What reaches the liaison, or `ceo` on the fallback, is read by a model told never to act on a
+   credential, a deletion or a spend from chat, whatever the classifier let through.
+3. **The outbound path carries only checked facts (row 11).** Even a liaison or a `ceo` that was talked into something cannot say it in the chat:
    an answer is placeholders the core re-reads, so the chat cannot be turned into a channel for anything the repository does not hold.
 
 ### Choices row 7 made that the design did not spell out
