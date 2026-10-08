@@ -5,7 +5,7 @@
 // whose 13 children were all closed and which stayed open, and #3425, a `ready` row carrying `no-code-left`, a label that only a
 // claimed row has.
 //
-// SEVEN QUESTIONS, EACH A PURE FUNCTION OF ROWS THE CALLER ALREADY READ, so the rule is testable without a tracker and the reader that
+// EIGHT QUESTIONS, EACH A PURE FUNCTION OF ROWS THE CALLER ALREADY READ, so the rule is testable without a tracker and the reader that
 // fetches them (`readBoardFacts`, below) is the only part that spends a call:
 //   epic-all-closed       an open `epic` whose sub-issues are all closed                      -> product-manager (close it)
 //   closing-pr-merged     an open row a merged PR names in `Closes #n`                        -> product-manager (close it)
@@ -18,6 +18,8 @@
 //   duplicate-or-superseded  a near-duplicate title of another row, or `Superseded by #n` with #n closed completed -> the row's owner
 //   parked-without-condition a `parked` row with no `Not-before:`, no `Waiting-for:`, no open `blockedBy` edge and no `answer:<session>`, and not
 //                         `needs:chairman` (chairman rule 1, 2026-10-08, #4049)                       -> product-manager (give it one)
+//   parked-on-the-chairman   a `parked` row, not `needs:chairman`, with a `Blocked-on:` line naming the chairman, whatever date or condition it also
+//                         carries (#4201, class fix A: a wait on the chairman is never a date)         -> product-manager (`needs:chairman` and a brief)
 //
 // ABSENCE IS NOT PROOF: a fact that could not be read is `null`, and its question is listed as UNREAD, never counted as agreeing. The
 // table says `0 disagree` only for a board every question read and found true, so silence cannot be read as health.
@@ -41,6 +43,7 @@ export const QUESTIONS = Object.freeze({
   STATE_LABEL: "state-label",
   DUPLICATE: "duplicate-or-superseded",
   PARKED_BARE: "parked-without-condition",
+  PARKED_ON_CHAIRMAN: "parked-on-the-chairman",
 });
 
 /**
@@ -62,6 +65,8 @@ const DUPLICATE_MIN_WORDS = 6;
 const PARKED_LABEL = "parked";
 const PARKED_STATES = Object.freeze([PARKED_LABEL, BACKLOG_LABEL]);
 const PRODUCT_MANAGER = "product-manager";
+const BLOCKED_ON_LINE = /^[ \t]*Blocked-on:[ \t]*(.*)$/gim;
+const CHAIRMAN_WORD = /\bchairman\b/i;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -267,6 +272,24 @@ function parkedWithoutConditions(facts) {
     `parked with no \`Not-before:\`, no \`Waiting-for:\`, no open \`blockedBy\` edge and no \`${ANSWER_PREFIX}<session>\`: give it one, or \`${NEEDS_CHAIRMAN_LABEL}\` and a brief`));
 }
 
+/**
+ * A wait on the chairman is never a date (`ceo`, #4201): #4159 sat `parked` behind `Not-before: 2026-10-15T00:00:00Z` while its `Blocked-on:` line said the chairman's session had to
+ * mint a token, and a date does not move the chairman. `parkedWithoutCondition` could not see it, since the date IS a condition; this reads the line that SAYS who the wait is. Only a
+ * `Blocked-on:` line counts: `Waiting-for: labelled needs:chairman #3229` is a DATA wait on the chairman's label (#3425), the right form, and `needs:chairman` on the row is the answer.
+ * @param {BoardRow} row @returns {boolean}
+ */
+function parkedOnChairman(row) {
+  const labels = labelsOf(row);
+  if (!labels.includes(PARKED_LABEL) || labels.includes(NEEDS_CHAIRMAN_LABEL)) return false;
+  return [...String(row.body ?? "").matchAll(BLOCKED_ON_LINE)].some((m) => CHAIRMAN_WORD.test(m[1]));
+}
+
+/** @param {BoardFacts} facts @returns {Finding[]} */
+function parkedOnChairmen({ openRows }) {
+  return openRows.filter(parkedOnChairman).map((row) => finding(row, QUESTIONS.PARKED_ON_CHAIRMAN, "`Blocked-on:` line",
+    `parked on the chairman: a date does not move the chairman, so give it \`${NEEDS_CHAIRMAN_LABEL}\` and a BRIEF, or a wait the gate can read`));
+}
+
 /** The questions and the fact each needs that may be unread, `null`. @type {[string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean][]} */
 const READERS = [
   [QUESTIONS.EPIC_DONE, epicsDone, () => true],
@@ -276,10 +299,11 @@ const READERS = [
   [QUESTIONS.STATE_LABEL, stateLabels, () => true],
   [QUESTIONS.DUPLICATE, duplicates, (f) => f.closedRows !== null],
   [QUESTIONS.PARKED_BARE, parkedWithoutConditions, (f) => parkedBare(f).every(blockersRead)],
+  [QUESTIONS.PARKED_ON_CHAIRMAN, parkedOnChairmen, () => true],
 ];
 
 /**
- * ASK ALL SEVEN QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no fact) and is named in `unread`, so the table never states health it did not read.
+ * ASK ALL EIGHT QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no fact) and is named in `unread`, so the table never states health it did not read.
  * @param {BoardFacts} facts
  * `filing` is how many rows were EXCUSED from the state-label question because they are being filed (#4048), so the table can say it rather than read them as agreeing.
  * #4080: EVERY KEYED TRACKER IS ASKED THE SAME QUESTIONS (`facts.others`), its findings tagged with its key. `notAsked` is what a keyed tracker is not asked on purpose: the wait facts are the gate's, read for the
@@ -340,7 +364,7 @@ export function boardTruthTable({ findings, unread, filing = 0, merging = 0, not
 const gh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
 /**
- * THE READS THE SEVEN QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
+ * THE READS THE EIGHT QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
  * UNREAD too (it would read every holder as gone). Merged PRs are the newest 200 and closed rows the newest 500, which cover a day's closers and the rows a duplicate is
  * likely to repeat. The closed rows ask for no body (2.4 MB of the 2.5 MB the read measured on 2026-10-08, and no question reads it).
  * #4045: THE TICK HANDS ITS OWN READS IN. `openRows` is the open list the gate already holds (so the 1000-row read, comments and all, is not made a second time) and `waitFacts` the

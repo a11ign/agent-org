@@ -3,7 +3,7 @@
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each `disagrees` test has an `agrees` twin that differs by ONE fact, so a question that always fires is red in the twin and one that
 // never fires is red in the first. The chairman's two cases are fixtures: #2899 (an epic, 13 of 13 children closed, open) and the #3425 shape (`ready` carrying `no-code-left`).
-// `emptiness` is the control for every `[]` here: the same audit finds each of the seven rows in `BOARD` below, so an empty result is a reading and not an unwired reader.
+// `emptiness` is the control for every `[]` here: the same audit finds each of the eight rows in `BOARD` below, so an empty result is a reading and not an unwired reader.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -31,6 +31,9 @@ const facts = (over) => ({ now: NOW, openRows: [], closedRows: [], mergedPrs: []
 /** @param {Partial<import("./board-truth-audit.mjs").BoardFacts>} over @param {string} question @returns {number[]} the rows found for one question */
 const found = (over, question) => boardTruthAudit(facts(over)).findings.filter((f) => f.question === question).map((f) => f.number);
 
+/** #4159's shape exactly: parked behind a DATE, while the `Blocked-on:` line says the wait is the chairman's session. */
+const CHAIRMAN_BODY = "## Why\n\nBlocked-on: the chairman's session minting a fine-grained token (this repository alone, `contents: write`)\nNot-before: 2026-10-15T00:00:00Z";
+
 const BOARD = {
   openRows: [
     row(2899, ["epic", "out-of-release", "lane:any"], { subIssuesSummary: { total: 13, completed: 13 } }),
@@ -40,6 +43,7 @@ const BOARD = {
     row(12, ["parked"], { body: "Waiting-for: closed #50" }),
     row(13, []),
     row(15, ["parked"], { body: "lifts when the thing is done", blockedBy: { nodes: [] } }),
+    row(4159, ["parked", "lane:any"], { body: CHAIRMAN_BODY }),
     row(14, ["backlog"], { title: "Chairman messaging for agent-org, Telegram first: the design and the sequence" }),
   ],
   closedRows: [row(50, ["ready"], { state: "CLOSED", stateReason: "COMPLETED" }),
@@ -48,7 +52,7 @@ const BOARD = {
   waitFacts: { items: { "#50": { state: "closed", labels: [], resolvedAt: NOW, changedAt: NOW } } },
 };
 
-test("emptiness control: the seeded board is found on all seven questions, so the empty results below are readings", () => {
+test("emptiness control: the seeded board is found on all eight questions, so the empty results below are readings", () => {
   const audit = boardTruthAudit(facts({ ...BOARD, liveSessions: ["ceo"] }));
   assert.deepEqual([...new Set(audit.findings.map((f) => f.question))].sort(), Object.values(QUESTIONS).sort());
   assert.deepEqual(audit.unread, []);
@@ -532,4 +536,40 @@ test("#4080: the wait facts are the gate's, read for the first tracker only, so 
   assert.match(boardTruthTable(audit, DAY), /\*\*0 disagree\*\* -- NOT ASKED: agent-org: wait-already-true/);
   const posted = [];
   assert.equal(postDaysTable({ audit, day: DAY, repo: "a/home", run: (args) => { posted.push(args[0]); return ""; } }), "posted");
+});
+
+// ---- the eighth question: a `parked` row whose `Blocked-on:` names the chairman, whatever date it carries (a11ign/a11ign#4201) ----
+const onChairman = (/** @type {string[]} */ labels, /** @type {Record<string, any>} */ more = {}) =>
+  found({ openRows: [edged(4159, labels, { body: CHAIRMAN_BODY, ...more })] }, QUESTIONS.PARKED_ON_CHAIRMAN);
+
+test("#4201 (1) POSITIVE CONTROL: #4159's shape (parked, lane:any, a future Not-before, a Blocked-on naming the chairman) is found, and the table names the rule and product-manager", () => {
+  const audit = boardTruthAudit(facts({ openRows: [edged(4159, ["parked", "lane:any"], { body: CHAIRMAN_BODY })] }));
+  const mine = audit.findings.filter((f) => f.question === QUESTIONS.PARKED_ON_CHAIRMAN);
+  assert.equal(mine.length, 1, "the population is not empty");
+  assert.equal(mine[0].route, "product-manager");
+  assert.match(mine[0].detail, /needs:chairman/);
+  assert.match(boardTruthTable(audit, DAY), /\| #4159 \| parked-on-the-chairman \|.*needs:chairman.*\| product-manager \|/);
+  assert.deepEqual(audit.findings.filter((f) => f.question === QUESTIONS.PARKED_BARE), [], "the date IS a condition, which is why the other question could not see it");
+});
+
+test("#4201 (2) NEGATIVE CONTROLS: needs:chairman, a Blocked-on naming another session, and `Waiting-for: labelled needs:chairman #3229` are not found", () => {
+  assert.deepEqual(onChairman(["parked", "lane:any", "needs:chairman"]), []);
+  assert.deepEqual(onChairman(["parked", "lane:any"], { body: "Blocked-on: orchestrator reading the lab\nNot-before: 2099-01-01T00:00:00Z" }), []);
+  assert.deepEqual(onChairman(["parked", "lane:any"], { body: "Waiting-for: labelled needs:chairman #3229" }), []);
+  assert.deepEqual(onChairman(["parked", "lane:any"]), [4159], "the same labels with the chairman's line ARE found");
+});
+
+test("#4201 (3) any wording of the chairman on the Blocked-on line is found, whatever else the row carries; prose elsewhere and other states are not", () => {
+  assert.deepEqual(onChairman(["parked"], { body: "blocked-on:   The Chairman" }), [4159], "case-insensitive");
+  assert.deepEqual(onChairman(["parked"], { body: "Blocked-on: the chairman\nWaiting-for: closed #50" }), [4159], "whatever other wait it carries");
+  assert.deepEqual(onChairman(["parked"], { body: "Blocked-on: the chairman", blockedBy: { nodes: [{ number: 50, state: "OPEN" }] } }), [4159]);
+  assert.deepEqual(onChairman(["parked"], { body: "we are waiting on the chairman\nBlocked-on: a merge" }), [], "only the Blocked-on line is read");
+  assert.deepEqual(onChairman(["parked"], { body: "Blocked-on: chairmanship of nothing" }), [], "a word, not a substring");
+  for (const state of ["backlog", "ready", "in-progress"]) assert.deepEqual(onChairman([state]), [], `${state}: the rule is about parked`);
+});
+
+test("#4201 (4) the question needs no fact, so it is never UNREAD", () => {
+  const audit = boardTruthAudit(facts({ openRows: [row(4159, ["parked"], { body: CHAIRMAN_BODY })], mergedPrs: null, closedRows: null, liveSessions: null, waitFacts: null }));
+  assert.equal(audit.findings.filter((f) => f.question === QUESTIONS.PARKED_ON_CHAIRMAN).length, 1);
+  assert.ok(!audit.unread.includes(QUESTIONS.PARKED_ON_CHAIRMAN));
 });
