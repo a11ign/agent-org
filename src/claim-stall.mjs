@@ -51,6 +51,21 @@ const MINUTE_MS = 60_000;
 export const CLAIM_STALLED = "claim-stalled";
 
 /**
+ * THE CAUSES THAT REPEAT AN ORDER TO A WORKER ON ITS OWN CLAIM (#4070, #4055 move 2): each is a "go back to your work" order, and each costs a
+ * full-context turn. The count of these per claim is what {@link MAX_CONTINUATIONS} caps. Spelled as strings, not read from the gate, for the
+ * reason {@link CLAIM_STALLED} gives.
+ */
+export const CONTINUATION_CAUSES = Object.freeze([CLAIM_STALLED, "pr-checks-failing", "pr-review-blocked", "answer-label-unexplained"]);
+
+/**
+ * THE nTH GATE ORDER TO ONE CLAIM GOES TO `orchestrator`, NOT TO THE WORKER AGAIN: three, the report's "two or three" at its upper end. A worker
+ * sent the same kind of reminder twice and still not moving is not helped by a third copy of it; someone who can see why must. The row takes the
+ * report's upper figure because the A/B cannot tell a cap that is too tight from a worker that needed the order, and escalating earlier would
+ * hide the second. A reading to change it from is the A/B's own (continuations per claim, median and p90), not an opinion.
+ */
+export const MAX_CONTINUATIONS = 3;
+
+/**
  * N: how long a claim may sit with nothing moving before it is nudged, and how long after the nudge before it is
  * released. ONE FIGURE FOR BOTH, because the second reading is the same question asked again.
  *

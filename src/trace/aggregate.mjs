@@ -175,12 +175,13 @@ function spendOf(turns) {
   const input = { cacheRead: 0, side: 0 };
   /** @type {Map<string, number>} */
   const unpricedModels = new Map();
-  const unpricedCodex = emptyTally(); // PRICES has no Codex row (#4055): these turns are in no dollar figure, so they are counted on their own line and not inside a total
+  const unpricedCodex = emptyTally(); // a Codex model PRICES has no row for (#4055): these turns are in no dollar figure, so they are counted on their own line and not inside a total
+  const pricedCodex = emptyTally(); // the Codex turns that DO have a sourced rate (#4076): inside the dollar totals, and shown again on a line of their own so the Claude part can be read off
   for (const { turn, kind } of turns) {
     addTurn(all, turn);
     addTurn(kinds[kind], turn);
     if (typeof turn.costUsd !== "number") unpricedModels.set(String(turn.model), (unpricedModels.get(String(turn.model)) ?? 0) + 1);
-    if (turn.harness === "codex" && typeof turn.costUsd !== "number") addTurn(unpricedCodex, turn);
+    if (turn.harness === "codex") addTurn(typeof turn.costUsd === "number" ? pricedCodex : unpricedCodex, turn);
     if (turn.tokens) {
       input.cacheRead += turn.tokens.cacheRead;
       input.side += inputSide(turn.tokens);
@@ -191,7 +192,7 @@ function spendOf(turns) {
       standing.set(turn.session, own);
     }
   }
-  return { all, ...kinds, standing, input, unpricedModels, unpricedCodex };
+  return { all, ...kinds, standing, input, unpricedModels, unpricedCodex, pricedCodex };
 }
 
 /** A standing lead: not a spawned worker or reviewer, which belong to one row or pull request. @param {string} session */
@@ -211,6 +212,7 @@ function spendFigures(spend, unreadable) {
     unmeasured: { ...spend.unmeasured, unreadableTranscripts: unreadable },
     unplaced: spend.unplaced,
     unpricedCodex: { turns: spend.unpricedCodex.turns, tokens: spend.unpricedCodex.tokens },
+    pricedCodex: { turns: spend.pricedCodex.turns, tokens: spend.pricedCodex.tokens, dollars: spend.pricedCodex.dollars },
     unpricedModels: [...spend.unpricedModels].sort(([a, x], [b, y]) => y - x || a.localeCompare(b)).slice(0, UNPRICED_LISTED),
     cacheRead: { share: spend.input.side > 0 ? spend.input.cacheRead / spend.input.side : null, cacheRead: spend.input.cacheRead, inputSide: spend.input.side },
   };
@@ -883,6 +885,7 @@ function weekLines(week) {
     `                  wall-clock p50 ${perRow.wallClock.p50 === null ? "n/a" : hours(perRow.wallClock.p50)}  p90 ${perRow.wallClock.p90 === null ? "n/a" : hours(perRow.wallClock.p90)}  (n=${perRow.wallClock.n}; no claim record: ${perRow.noClaim})`);
   lines.push(`  the week's spend by turn time: ${dollars(spend.dollars, spend.unpriced > 0)} over ${spend.turns - spend.unpriced} priced turns; ${spend.unpriced} turns have a model with no price and are NOT in it (${percent(spend.turns > 0 ? spend.unpriced / spend.turns : null)}), ${count(spend.tokens)} tokens`,
     `    models with no price, by turns: ${spend.unpricedModels.map(([model, turns]) => `${model} ${turns}`).join(", ") || "none"}`,
+    `    CODEX turns priced (OpenAI's list rate, sourced in store.mjs; INSIDE the dollars above, Claude = the rest): ${spend.pricedCodex.turns} turns, ${count(spend.pricedCodex.tokens)} tokens, ${dollars(spend.pricedCodex.dollars)}`,
     `    CODEX turns not priced (no rate sourced; in no dollar figure above): ${spend.unpricedCodex.turns} turns, ${count(spend.unpricedCodex.tokens)} tokens`,
     `  overhead (no row): ${dollars(spend.overhead.dollars, spend.overhead.unpriced > 0)} = ${percent(spend.overhead.share.dollars)} of the priced dollars (${spend.overhead.unpriced} of its ${spend.overhead.turns} turns unpriced), ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
   for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars, own.unpriced > 0)}  ${count(own.tokens)} tokens  (${own.unpriced} unpriced; on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars, own.onRows.unpriced > 0)})`);

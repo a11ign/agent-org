@@ -46,7 +46,7 @@ import { proseBlockers } from "./waiting-condition.mjs";
 import { umbrellaEdge } from "./wait-condition.mjs";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { REPO } from "./project-identity.mjs";
-import { HOME_CHECKOUT } from "./project-config.mjs";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.mjs";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.mjs";
 // `claimsFromEvents`/`describeClaims` are no longer imported: a row that reaches the report has NO claim
 // events by construction, so describing them printed "no session ever claimed this row" every time --
@@ -137,6 +137,26 @@ export const MUTEX_LABELS =
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
 /**
+ * #4080 (row 2 of #4056): WHICH TRACKER THE CHECKS ARE ABOUT. The 23 reads below named `REPO` -- the first code repository -- so a row filed in a second declared tracker was
+ * never listed, never counted and never audited. Each read now asks `trackerRepo()` (its issues) or `codeRepo()` (its pull requests), which answer for the scope `auditTrackers` has
+ * set and, with none set, for `REPO`: every exported reader called on its own (the tests, `row-claim`) behaves exactly as it did.
+ * A module-level scope and not a parameter on every reader, for the reason `work-gate.mjs`'s `inRepo` gives: the checks are zero-argument closures in `CHECKS`, and 17 exported
+ * readers keep their signatures.
+ * @typedef {{ key: string, repo: string, codeRepo: string }} AuditScope `repo` is the tracker's repository; `codeRepo` the code repository of the SAME key, else the tracker's own
+ */
+/** @type {AuditScope | null} */
+let activeScope = null;
+
+/** The repository the active tracker's ISSUES are read from. @returns {string} */
+const trackerRepo = () => activeScope?.repo ?? REPO;
+
+/** The repository the active tracker's PULL REQUESTS are read from. @returns {string} */
+const codeRepo = () => activeScope?.codeRepo ?? REPO;
+
+/** A row as a reader of two trackers must name it: `#7` for the primary project's, `agent-org#7` for a keyed tracker's, because both trackers have a row 7. @param {number} number @returns {string} */
+const rowName = (number) => (activeScope === null || activeScope.key === "" ? `#${number}` : `${activeScope.key}#${number}`);
+
+/**
  * Reads every OPEN issue's labels from the real board. Same discipline as `row-claim.mjs`'s `fetchLabels`:
  * `gh` failing, or answering with a shape this function does not recognise, THROWS -- it never falls
  * through to an empty issue list, which would report "audited: 0 violations" having examined nothing. A
@@ -173,7 +193,7 @@ export function fetchReportedOpenIssueNumbers({ run = defaultRun } = {}) {
   /** @type {string} */
   let raw;
   try {
-    raw = run("gh", ["api", `search/issues?q=${encodeURIComponent(`repo:${REPO} is:issue is:open`)}`,
+    raw = run("gh", ["api", `search/issues?q=${encodeURIComponent(`repo:${trackerRepo()} is:issue is:open`)}`,
       "--paginate", "--jq", ".items[].number"]);
   } catch (cause) {
     throw new Error(`ready-label-audit: could not read GitHub's reported open-issue numbers -- refusing `
@@ -295,10 +315,10 @@ function asksToCeiling(first) {
  * dark LOUDLY by refusing. **A guarded cap fails closed; an unguarded one fails quiet.**
  *
  * @param {{ run: typeof defaultRun, argv: (limit: number) => string[], what: string,
- *           first?: number }} spec
+ *           first?: number, repo?: string }} spec `repo` is only what a refusal NAMES (the tracker's by default; a pull-request list passes `codeRepo()`): `argv` is what asks
  * @returns {unknown[]}
  */
-function listUntilShort({ run, argv, what, first = FIRST_ASK }) {
+function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo() }) {
   const maxAsks = asksToCeiling(first);
   for (let limit = first, asks = 1; ; limit = Math.min(limit * 2, MAX_ISSUE_FETCH), asks++) {
     if (asks > maxAsks) {
@@ -312,7 +332,7 @@ function listUntilShort({ run, argv, what, first = FIRST_ASK }) {
     try {
       raw = run("gh", argv(limit));
     } catch (cause) {
-      throw new Error(`ready-label-audit: could not list ${what} from ${REPO} -- refusing to guess. `
+      throw new Error(`ready-label-audit: could not list ${what} from ${repo} -- refusing to guess. `
         + `${/** @type {Error} */ (cause).message}`, { cause });
     }
     /** @type {unknown} */
@@ -364,7 +384,7 @@ export function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }) {
   // the behaviour reaches three is this repository's most expensive recurring shape. `limit` survives as
   // a parameter only because `fetchOpenIssues` starts its walk lower.
   const parsed = listUntilShort({ run, first: limit, what: `${state} issues`,
-    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", state, "--limit", String(ask),
+    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", state, "--limit", String(ask),
       "--json", "number,title,labels,state"] });
   return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
     const obj = /** @type {{ number?: unknown, title?: unknown, labels?: unknown, state?: unknown }} */ (entry);
@@ -682,7 +702,7 @@ export function fetchClosingPrRefs(issueNumbers, { run = defaultRun } = {}) {
   /** @type {Map<number, ClosingPrRef[]>} */
   const map = new Map();
   if (issueNumbers.length === 0) return map;
-  const [owner, name] = REPO.split("/");
+  const [owner, name] = trackerRepo().split("/");
   const fields = issueNumbers.map((n, i) => `i${i}: issue(number: ${n}) { number `
     + `closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } }`).join(" ");
   const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
@@ -735,7 +755,7 @@ export function fetchLatestReopenedAt(issueNumbers, { run = defaultRun } = {}) {
   /** @type {Map<number, string | null>} */
   const map = new Map();
   if (issueNumbers.length === 0) return map;
-  const [owner, name] = REPO.split("/");
+  const [owner, name] = trackerRepo().split("/");
   const fields = issueNumbers.map((n, i) => `i${i}: issue(number: ${n}) { number `
     + `timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }`)
     .join(" ");
@@ -829,7 +849,7 @@ function reportMutexViolations() {
     return 0;
   }
   for (const { number, title, conflicting } of violations) {
-    process.stdout.write(`VIOLATION  #${number} "${title}" -- ready + ${conflicting.join(", ")}\n`);
+    process.stdout.write(`VIOLATION  ${rowName(number)} "${title}" -- ready + ${conflicting.join(", ")}\n`);
   }
   process.stderr.write(`\n${violations.length} row(s) carry \`ready\` alongside a label that already means `
     + `not pickable. Remove one or the other.\n`);
@@ -864,7 +884,7 @@ export const HAND_CLAIM_CAUSES = [
 export function handClaimFinding({ number, title, sessions }) {
   const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
   const causes = HAND_CLAIM_CAUSES.map(({ cause, remedy }, i) => `(${i + 1}) ${cause} -- ${remedy}`).join("; ");
-  return `HAND CLAIM  #${number} "${title}" -- \`ready\` and \`in-progress\` together, held by ${who}. A claim `
+  return `HAND CLAIM  ${rowName(number)} "${title}" -- \`ready\` and \`in-progress\` together, held by ${who}. A claim `
     + `through row-claim.mjs does not leave this pair (its label write is one request, #2151), so it is one of: `
     + `${causes}\n`;
 }
@@ -944,7 +964,7 @@ function reportBothBoardLabels() {
     return 0;
   }
   for (const { number, title, labels } of rows) {
-    process.stdout.write(`HALF-PROMOTED  #${number} "${title}" -- [${labels.join(", ")}] -- carries BOTH `
+    process.stdout.write(`HALF-PROMOTED  ${rowName(number)} "${title}" -- [${labels.join(", ")}] -- carries BOTH `
       + `\`${BACKLOG_LABEL}\` and \`${READY_LABEL}\`. It is not hidden -- \`${BACKLOG_LABEL}\` is not in `
       + `work-gate's NOT_PICKABLE, so the row is still offered -- but \`readPromotableRows\` reads `
       + `\`--label ${BACKLOG_LABEL}\` server-side and excludes neither \`${READY_LABEL}\` nor anything `
@@ -1127,7 +1147,7 @@ export function unclaimableReadyRows(rows) {
  */
 export function fetchReadyRowsWithBodies({ run = defaultRun } = {}) {
   const parsed = listUntilShort({ run, what: "open ready rows with bodies",
-    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--label", READY_LABEL,
+    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "open", "--label", READY_LABEL,
       "--limit", String(ask), "--json", "number,title,labels,body"] });
   return parsed.map((/** @type {unknown} */ entry, /** @type {number} */ i) => {
     const obj = /** @type {{ number?: unknown, title?: unknown, labels?: unknown, body?: unknown }} */ (entry);
@@ -1161,7 +1181,7 @@ function reportUnclaimableReadyRows() {
     return 0;
   }
   for (const { number, title, missing, reason } of found) {
-    process.stdout.write(`UNCLAIMABLE  #${number} "${title}" -- carries \`${READY_LABEL}\` and is missing `
+    process.stdout.write(`UNCLAIMABLE  ${rowName(number)} "${title}" -- carries \`${READY_LABEL}\` and is missing `
       + `${missing.length > 0 ? missing.join(", ") : `a section the rule refused for (${reason})`}, so the gate `
       + `offers it and \`row-claim\` refuses it: the claimant pays a turn for a defect in somebody else's `
       + `filing\n`);
@@ -1205,7 +1225,7 @@ function reportInvisibleRows() {
     return 0;
   }
   for (const { number, title, labels } of rows) {
-    process.stdout.write(`UNREACHABLE  #${number} "${title}" -- [${labels.join(", ")}] -- UNCLAIMED, and `
+    process.stdout.write(`UNREACHABLE  ${rowName(number)} "${title}" -- [${labels.join(", ")}] -- UNCLAIMED, and `
       + `carries neither \`${BACKLOG_LABEL}\` nor \`${READY_LABEL}\`, and \`work-gate\` reads both SERVER-SIDE by label, so no `
       + `cause can see this row and no session will ever be ordered to touch it. Add \`${BACKLOG_LABEL}\` (or `
       + `\`${READY_LABEL}\` if it is genuinely startable), or close it -- on an unclaimed row that label is what `
@@ -1286,7 +1306,7 @@ function reportLabelless() {
     return 0;
   }
   for (const { number, title } of rows) {
-    process.stdout.write(`NO LABELS  #${number} "${title}" -- carries no label at all, so it is absent `
+    process.stdout.write(`NO LABELS  ${rowName(number)} "${title}" -- carries no label at all, so it is absent `
       + `from every other check in this audit, and from the Ready lane, the backlog view, the WIP count, `
       + `the dead-claim check, the hourly table and the section-backfill sweep, all of which enumerate by `
       + `label\n`);
@@ -1315,7 +1335,7 @@ export function reportStateLabels(deps = {}) {
   }
   const titles = new Map(issues.map((i) => [i.number, i.title]));
   for (const { number, labels, kind } of findings) {
-    const head = kind === "NONE" ? `NO STATE LABEL  #${number}` : `TWO STATE LABELS  #${number}  ${labels.join(", ")}`;
+    const head = kind === "NONE" ? `NO STATE LABEL  ${rowName(number)}` : `TWO STATE LABELS  ${rowName(number)}  ${labels.join(", ")}`;
     process.stdout.write(`${head} "${titles.get(number) ?? ""}" -- ${kind === "NONE"
       ? "it is absent from the Ready lane, the claim pool and every label-keyed count"
       : `each reader resolves two states its own way, and \`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\` rather than sit beside it`}\n`);
@@ -1361,7 +1381,7 @@ function reportClosedDebris() {
     return 0;
   }
   for (const { number, title, debris: labels } of debris) {
-    process.stdout.write(`DEBRIS  #${number} "${title}" -- closed, still carries ${labels.join(", ")}\n`);
+    process.stdout.write(`DEBRIS  ${rowName(number)} "${title}" -- closed, still carries ${labels.join(", ")}\n`);
   }
   const readyOnClosed = debris.filter((d) => d.debris.includes(READY_LABEL)).length;
   // #752: STATE-AWARE, NOT A SINGLE COMMAND FOR BOTH POPULATIONS -- `decline` needs `in-progress` (a
@@ -1393,7 +1413,7 @@ function reportStrandedByIncompleteDecline() {
     return 0;
   }
   for (const { number, title } of stranded) {
-    process.stdout.write(`STRANDED  #${number} "${title}" -- was ready before a claim, declined, `
+    process.stdout.write(`STRANDED  ${rowName(number)} "${title}" -- was ready before a claim, declined, `
       + `never restored to \`ready\`\n`);
   }
   process.stderr.write(`\n${stranded.length} row(s) were ready, got claimed and correctly declined, and `
@@ -1461,8 +1481,8 @@ export function fetchClaimActivity(numbers, { run = defaultRun } = {}) {
   // "This row has no open PR" is what `claimsNobodyIsWorking` acts on, so a quiet under-read here does
   // not refuse; it RELEASES a claim somebody is working. Same walk as the other three.
   /** @type {{number: number, body: string, headRefName: string}[]} */
-  const prs = /** @type {any} */ (listUntilShort({ run, what: "open PRs",
-    argv: (ask) => ["pr", "list", "--repo", REPO, "--state", "open", "--limit", String(ask),
+  const prs = /** @type {any} */ (listUntilShort({ run, what: "open PRs", repo: codeRepo(),
+    argv: (ask) => ["pr", "list", "--repo", codeRepo(), "--state", "open", "--limit", String(ask),
       "--json", "number,body,headRefName"] }));
   for (const n of numbers) {
     // `Closes #N` in an OPEN PR is work in flight. Matching the row number anywhere in the body would
@@ -1477,7 +1497,7 @@ export function fetchClaimActivity(numbers, { run = defaultRun } = {}) {
   // from "never started".
   for (const n of numbers) {
     try {
-      const at = run("gh", ["api", `repos/${REPO}/issues/${n}/timeline`, "--paginate", "--jq",
+      const at = run("gh", ["api", `repos/${trackerRepo()}/issues/${n}/timeline`, "--paginate", "--jq",
         `[.[]|select(.event=="labeled" and .label.name=="${CLAIM_LABEL}")]|last|.created_at`]).trim();
       if (at) claimedMinutes.set(n, Math.floor((Date.now() - Date.parse(at)) / 60000));
     } catch { /* a row whose timeline cannot be read is left absent, never assumed fresh */ }
@@ -1488,7 +1508,7 @@ export function fetchClaimActivity(numbers, { run = defaultRun } = {}) {
   // rather than the claimant's: session authorship is not observable through GitHub here.
   for (const n of numbers) {
     try {
-      const at = run("gh", ["api", `repos/${REPO}/issues/${n}/comments`, "--paginate", "--jq",
+      const at = run("gh", ["api", `repos/${trackerRepo()}/issues/${n}/comments`, "--paginate", "--jq",
         "[.[].created_at]|last"]).trim();
       if (at) lastCommentMinutes.set(n, Math.floor((Date.now() - Date.parse(at)) / 60000));
     } catch { /* a row whose comments cannot be read is left absent, never assumed fresh */ }
@@ -1533,7 +1553,7 @@ function branchAges(numbers, run) {
 export function formatDeadClaimLine({ number, title, sessions, minutes }) {
   const held = sessions.length > 0 ? sessions.join(", ") : "nobody (no session label)";
   const age = minutes === null ? "no branch at all" : `last push ${minutes} min ago`;
-  return `DEAD-CLAIM  #${number} "${title}" -- held by ${held}, no open PR, ${age}, `
+  return `DEAD-CLAIM  ${rowName(number)} "${title}" -- held by ${held}, no open PR, ${age}, `
     + "no comment in the window -- none of `ceo`'s three legs (#723)\n";
 }
 
@@ -1575,14 +1595,14 @@ function reportAlreadyMerged() {
     return 0;
   }
   for (const row of alreadyMerged) {
-    process.stdout.write(`ALREADY-MERGED  #${row.number} "${row.title}" -- PR #${row.closedBy} merged and `
+    process.stdout.write(`ALREADY-MERGED  ${rowName(row.number)} "${row.title}" -- PR #${row.closedBy} merged and `
       + `declares \`Closes #${row.number}\`, but the row is still open and claims a live state\n`);
   }
   // #550: NOT counted toward the returned finding count -- this is not debris to close, it is a fix
   // someone deliberately put back after the merge that referenced it. "Nothing goes quiet" means it is
   // still printed on every run; it is just never the sentence that says a session should act on it.
   for (const row of reopenedAfterMerge) {
-    process.stdout.write(`REOPENED-AFTER-MERGE  #${row.number} "${row.title}" -- PR #${row.closedBy} `
+    process.stdout.write(`REOPENED-AFTER-MERGE  ${rowName(row.number)} "${row.title}" -- PR #${row.closedBy} `
       + `merged ${row.mergedAt} and declared \`Closes #${row.number}\`, but the row was reopened `
       + `${row.reopenedAt}, AFTER that merge -- a refuted fix, not debris\n`);
   }
@@ -1784,8 +1804,8 @@ export function reportProvenanceOf(gated, { closingPrFor = fetchClosingPullReque
  * @returns {ClosedPr[]}
  */
 export function fetchClosedUnmergedPrs({ run = defaultRun } = {}) {
-  const parsed = listUntilShort({ run, what: "closed PRs",
-    argv: (ask) => ["pr", "list", "--repo", REPO, "--state", "closed", "--limit", String(ask),
+  const parsed = listUntilShort({ run, what: "closed PRs", repo: codeRepo(),
+    argv: (ask) => ["pr", "list", "--repo", codeRepo(), "--state", "closed", "--limit", String(ask),
       "--json", "number,mergedAt"] });
   return parsed
     .map((/** @type {any} */ p) => ({ number: p.number, mergedAt: p.mergedAt ?? null }))
@@ -1805,7 +1825,7 @@ export function fetchClosingIssueRefs(prNumbers, { run = defaultRun } = {}) {
   /** @type {Map<number, number[]>} */
   const map = new Map();
   if (prNumbers.length === 0) return map;
-  const [owner, name] = REPO.split("/");
+  const [owner, name] = codeRepo().split("/");
   const fields = prNumbers.map((n, i) => `p${i}: pullRequest(number: ${n}) { number `
     + `closingIssuesReferences(first: 20) { nodes { number } } }`).join(" ");
   const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
@@ -1931,7 +1951,7 @@ function reportSoleUnmergedCloser() {
     // REOPEN is the ruling this row asks for; the mutation itself is left to whoever runs `gh issue
     // reopen`, matching this whole file's own standing rule that it reports debris and does not act on
     // the tracker.
-    process.stdout.write(`REOPEN  #${row.number} "${row.title}" was closed by PR #${row.closedBy}, which `
+    process.stdout.write(`REOPEN  ${rowName(row.number)} "${row.title}" was closed by PR #${row.closedBy}, which `
       + `never merged, and no other PR is currently recognised as closing it -- closed ${row.closedAt}. `
       + `The work may have shipped elsewhere; this check cannot see that, only that this closing reference `
       + `did not.\n`);
@@ -2044,7 +2064,7 @@ export function reachableCriteriaWithoutRow(statuses, closedIssues) {
  */
 export function fetchClosedCompletedIssues({ run = defaultRun } = {}) {
   const parsed = listUntilShort({ run, what: "closed issues",
-    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", "closed", "--limit", String(ask),
+    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "closed", "--limit", String(ask),
       "--json", "number,title,closedAt,stateReason"] });
   return parsed.map((/** @type {any} */ i) =>
     ({ number: i.number, title: i.title, closedAt: i.closedAt, stateReason: i.stateReason ?? null }));
@@ -2130,7 +2150,7 @@ function reportReleaseDrift() {
   // carrying `--limit 500`, an hour after I removed the last four such caps from this file: a cap goes
   // stale silently the day the population passes it, and this population only grows.
   const list = (/** @type {string[]} */ args) => listUntilShort({ run, what: `out-of-release rows`,
-    argv: (ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--limit", String(ask),
+    argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "open", "--limit", String(ask),
       "--json", "number", ...args] });
   const rows = (/** @type {string[]} */ args) =>
     /** @type {{number: number}[]} */ (/** @type {unknown} */ (list(args)));
@@ -2266,7 +2286,7 @@ function reportGuidanceDrift() {
   let description = null;
   try {
     const milestones = JSON.parse(defaultRun("gh",
-      ["api", `repos/${REPO}/milestones?state=all`, "--jq", "[.[]|{title,description}]"]));
+      ["api", `repos/${trackerRepo()}/milestones?state=all`, "--jq", "[.[]|{title,description}]"]));
     description = milestones.find((/** @type {{title: string}} */ m) => m.title === OUT_OF_RELEASE_MILESTONE)
       ?.description ?? null;
   } catch (cause) {
@@ -2303,7 +2323,7 @@ function reportProseBlockers() {
   const issues = fetchIssuesWithWaits();
   const found = proseBlockers(issues);
   for (const { number, quote } of found) {
-    process.stdout.write(`  #${number}: "${quote}" -- stated in prose, invisible to the gate\n`);
+    process.stdout.write(`  ${rowName(number)}: "${quote}" -- stated in prose, invisible to the gate\n`);
   }
   process.stdout.write(`waits stated in prose: ${found.length} of ${issues.length} open row(s)`
     + `${found.length > 0 ? " -- record each as `--add-blocked-by` or `Not-before:`, or say it is only discussion" : ""}\n`);
@@ -2325,7 +2345,7 @@ function fetchIssuesWithWaits({ run = defaultRun } = {}) {
   // knows the fields.
   return /** @type {{number?: number, body?: string, blockedBy?: {totalCount?: number}}[]} */ (
     listUntilShort({ run, what: "open issues with waits",
-    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", REPO, "--state", "open",
+    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "open",
       "--limit", String(ask), "--json", "number,body,blockedBy"] }));
 }
 
@@ -2354,7 +2374,7 @@ export function newUmbrellaEdges({ rows, addedAt }) {
 
 /** @param {number} holder @param {number} blocker @returns {string} the newest `blocked_by_added` of this edge in the holder's timeline */
 function edgeAddedAt(holder, blocker) {
-  const events = JSON.parse(defaultRun("gh", ["api", `repos/${REPO}/issues/${holder}/timeline`, "--paginate", "--slurp"])).flat();
+  const events = JSON.parse(defaultRun("gh", ["api", `repos/${trackerRepo()}/issues/${holder}/timeline`, "--paginate", "--slurp"])).flat();
   const added = events.filter((/** @type {any} */ e) => e.event === "blocked_by_added" && e.blocked_by?.number === blocker).map((/** @type {any} */ e) => String(e.created_at));
   if (added.length === 0) throw new Error(`#${holder}'s timeline has no blocked_by_added event for #${blocker}, so when the edge was added is not known`);
   return added.sort().at(-1) ?? "";
@@ -2363,10 +2383,10 @@ function edgeAddedAt(holder, blocker) {
 /** #4005: the edges onto a multi-done-when row that were added after the tool began to refuse them. NAMES THEM; the remedy is a `Waiting-for:` line or `Waits-on-done-when:`. */
 function reportNewUmbrellaEdges() {
   const rows = /** @type {RowWithEdges[]} */ (listUntilShort({ run: defaultRun, what: "open rows with edges",
-    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", REPO, "--state", "open", "--limit", String(ask), "--json", "number,body,labels,blockedBy"] }));
+    argv: (/** @type {number} */ ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "open", "--limit", String(ask), "--json", "number,body,labels,blockedBy"] }));
   const found = newUmbrellaEdges({ rows, addedAt: edgeAddedAt });
   for (const { holder, blocker, doneWhens, addedAt } of found) {
-    process.stdout.write(`  #${holder}: blocked-by #${blocker} (${doneWhens} done-whens) added ${addedAt} names no done-when and no Waiting-for condition\n`);
+    process.stdout.write(`  ${rowName(holder)}: blocked-by ${rowName(blocker)} (${doneWhens} done-whens) added ${addedAt} names no done-when and no Waiting-for condition\n`);
   }
   return found.length;
 }
@@ -2467,17 +2487,73 @@ export function runCheck(what, check, refused, notRun = []) {
   }
 }
 
+/**
+ * #4080: THE CHECKS THAT READ THE PRIMARY PROJECT ONLY, each with the reason, so that skipping one for a keyed tracker is a SAID skip and never a quiet "none". Each reads a source
+ * this file does not choose: the Project board (`board-snapshot.mjs` is aimed at the primary board), the closed-row event log (`claim-provenance.mjs` names the primary repository),
+ * the product's criterion table and its release milestone. A keyed tracker gets them when those readers take a repository; until then they are not run for it.
+ * @type {ReadonlyMap<string, string>}
+ */
+export const PRIMARY_ONLY = new Map([
+  ["board membership", "board-snapshot.mjs reads the primary project's board only"],
+  ["status vs ready label", "board-snapshot.mjs reads the primary project's board only"],
+  ["closed-row provenance", "claim-provenance.mjs reads the primary repository's event log only"],
+  ["coverage vs tracker", "criterion-coverage.ts is the product's criterion table"],
+  ["release declaration", "the release milestone is the product's"],
+  ["filing guidance", "the release milestone is the product's"],
+]);
+
+/**
+ * The trackers this run audits: EVERY declared tracker, each with the code repository of the same key (its pull requests are read there; a tracker with no code repository of its
+ * own is read for pull requests in its own repository, where its rows' closing references resolve). `declaration` is the seam a test injects; the default is the host's project.
+ * @param {{ tracker: readonly { key: string, repo: string }[], code: readonly { key: string, repo: string }[] }} [declaration]
+ * @returns {AuditScope[]}
+ */
+export function trackersOf(declaration = homeProjectDeclaration()) {
+  return declaration.tracker.map(({ key, repo }) => ({ key, repo, codeRepo: declaration.code.find((code) => code.key === key)?.repo ?? repo }));
+}
+
+/** @template T @param {AuditScope} scope @param {() => T} read @returns {T} */
+function inScope(scope, read) {
+  const outer = activeScope;
+  activeScope = scope;
+  try {
+    return read();
+  } finally {
+    activeScope = outer;
+  }
+}
+
+/**
+ * RUN THE CHECKS ONCE PER DECLARED TRACKER (#4080, row 2 of #4056). With ONE tracker nothing is added to the output: no heading, no suffix, the same separators. With several, each
+ * tracker's checks follow a heading and every check is named with its tracker (`COULD NOT AUDIT <what> (agent-org)`), so a read that fails on one is reported for THAT tracker and the
+ * others' findings still count. A check in `PRIMARY_ONLY` is said to be not run for a keyed tracker and listed in `skipped`.
+ * @param {AuditScope[]} scopes @param {{ checks?: [string, () => number][] }} [options]
+ * @returns {{ findings: number, refused: string[], notRun: string[], skipped: string[], total: number }}
+ */
+export function auditTrackers(scopes, { checks = CHECKS } = {}) {
+  const several = scopes.length > 1;
+  /** @type {{ findings: number, refused: string[], notRun: string[], skipped: string[], total: number }} */
+  const result = { findings: 0, refused: [], notRun: [], skipped: [], total: checks.length * scopes.length };
+  for (const [position, scope] of scopes.entries()) {
+    const suffix = several || scope.key !== "" ? ` (${scope.key === "" ? scope.repo : scope.key})` : "";
+    if (several) process.stdout.write(`${position > 0 ? "\n" : ""}== tracker ${scope.key === "" ? "(primary)" : scope.key} -- ${scope.repo} ==\n`);
+    for (const [index, [what, check]] of checks.entries()) {
+      if (index > 0) process.stdout.write("\n");
+      const reason = scope.key === "" ? undefined : PRIMARY_ONLY.get(what);
+      if (reason !== undefined) {
+        process.stdout.write(`NOT RUN  ${what}${suffix}: ${reason}\n`);
+        result.skipped.push(`${what}${suffix}`);
+        continue;
+      }
+      result.findings += inScope(scope, () => runCheck(`${what}${suffix}`, check, result.refused, result.notRun));
+    }
+  }
+  return result;
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "ready-label-audit" });
-  /** @type {string[]} */
-  const refused = [];
-  /** @type {string[]} */
-  const notRun = [];
-  let findings = 0;
-  for (const [index, [what, check]] of CHECKS.entries()) {
-    if (index > 0) process.stdout.write("\n");
-    findings += runCheck(what, check, refused, notRun);
-  }
+  const { findings, refused, notRun, skipped, total } = auditTrackers(trackersOf());
   const partial = refused.length + notRun.length;
   if (partial > 0) {
     /** @type {string[]} */
@@ -2489,9 +2565,13 @@ function main() {
     if (refused.length > 0) {
       clauses.push(`${refused.length} refused for an unexplained reason: ${refused.join(", ")}`);
     }
-    process.stderr.write(`\n${partial} of ${CHECKS.length} check(s) did not answer -- ${clauses.join("; ")}. `
+    process.stderr.write(`\n${partial} of ${total} check(s) did not answer -- ${clauses.join("; ")}. `
       + `The count above is a PARTIAL audit and must not be read as a clean one -- an unasked question `
       + "and a question answered `none` are different states.\n");
+  }
+  if (skipped.length > 0) {
+    process.stderr.write(`\n${skipped.length} check(s) were NOT RUN for a keyed tracker, because the reader each one uses is aimed at the primary project: ${skipped.join(", ")}. `
+      + "They are not counted as clean for it.\n");
   }
   // ONLY an unexplained refusal fails the job (unchanged from before this ruling). #546's named gap is
   // still stated as partial above, but the other checks' own findings are what decide exit 0 vs 1 --
