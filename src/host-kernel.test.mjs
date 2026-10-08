@@ -13,6 +13,7 @@ import { after, describe, test } from "node:test";
 import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
   readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.mjs";
 import { driftReport, shippedUnitText, shippedUnits, unitDrift, unitState } from "./host-units.mjs";
+import { homeHostConfig } from "./host-config.mjs";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;
@@ -362,11 +363,19 @@ describe("the record store", () => {
   });
 });
 
-// a11ign/a11ign#4053: SOMETHING RUNS `--reboot`. Rendered against the host the acceptance command names (`$AGENT_ORG_HOST`), so the tool form is the one read.
+// a11ign/a11ign#4053: SOMETHING RUNS `--reboot`. Rendered against a host built HERE -- a scratch project and a `tool` -- and never against the
+// machine's own declaration: CI has no `a11y-witness` checkout, so reading `project.json` from the real host refused there (the first push of this row).
 describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   const SERVICE = "a11ign-kernel-reboot.service";
   const TIMER = "a11ign-kernel-reboot.timer";
-  const text = (/** @type {string} */ unit) => String(shippedUnitText(unit));
+  const project = join(scratch, "project");
+  mkdirSync(join(project, ".agent-org"), { recursive: true });
+  writeFileSync(join(project, ".agent-org", "project.json"), JSON.stringify({ schema: 1 }));
+  const home = homeHostConfig();
+  const { tool: _tool, ...untooled } = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (home));
+  const plainHost = /** @type {any} */ (untooled);
+  const toolHost = /** @type {any} */ ({ ...untooled, projects: [{ id: home.primary, checkout: project }], tool: "/tool" });
+  const text = (/** @type {string} */ unit, /** @type {any} */ host = toolHost) => String(shippedUnitText(unit, { host }));
 
   test("both units ship and render, and the service is the name the drain excuses (the positive control for every pin below)", () => {
     assert.deepEqual(shippedUnits().filter((u) => u.includes("kernel-reboot")).sort(), [SERVICE, TIMER]);
@@ -378,7 +387,8 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   test("the service's ExecStart is exactly `--reboot` -- one ExecStart, the module, and no other flag", () => {
     const starts = text(SERVICE).split("\n").filter((line) => /^ExecStart=/.test(line));
     assert.equal(starts.length, 1);
-    assert.match(starts[0], /^ExecStart=\/usr\/bin\/node (packages\/agent-org\/)?src\/host-kernel\.mjs --reboot$/);
+    assert.equal(starts[0], "ExecStart=/usr/bin/node src/host-kernel.mjs --reboot", "the tool form");
+    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.mjs --reboot", "the plain form");
     assert.doesNotMatch(text(SERVICE), /^ExecStart.*--(self|row|read-back)/m);
     assert.match(text(SERVICE), /^Type=oneshot$/m);
     assert.doesNotMatch(text(SERVICE), /^\[Install\]/m, "a boot must not start a reboot");
@@ -396,7 +406,7 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
     const installedDir = join(scratch, "installed");
     mkdirSync(installedDir, { recursive: true });
     const systemctl = (/** @type {string[]} */ args) => (args[0] === "is-enabled" ? "enabled" : "active");
-    const states = () => [SERVICE, TIMER].map((unit) => unitState(unit, { installedDir, systemctl }));
+    const states = () => [SERVICE, TIMER].map((unit) => unitState(unit, { installedDir, systemctl, host: toolHost }));
     assert.deepEqual(unitDrift(states()).map((d) => `${d.unit}: ${d.problem}`), [`${SERVICE}: NOT INSTALLED`, `${TIMER}: NOT INSTALLED`], "the control: absent is reported");
     for (const unit of [SERVICE, TIMER]) writeFileSync(join(installedDir, unit), text(unit));
     assert.deepEqual(unitDrift(states()), [], "installed from the shipped text, the pair is current");
