@@ -479,26 +479,37 @@ export function staleWaitReading({ now, stale }) {
  * SIGNAL 9: A WAIT THAT NAMES NO REASON, QUIET FOR `MANUAL_WAIT_HOURS` (#2996). `hold:*`, `answer:*` and the blocked label do not clear themselves, so with
  * no readable `Waiting-for:` nothing can ever say they are over. THE AGE IS TIME SINCE THE ITEM'S LAST ACTIVITY (this signal's own; the outcome clock runs from the opening): an item somebody
  * is working on is not stalled, and the wait's own start is not on the list read. A wait on `manual` is not here -- it is COUNTED in the detail.
- * @param {{ now: number, bare: { item: { kind: string, number: number, repoKey?: string }, fields: string[], quietSince: number | null }[] | null, manual?: number }} input
+ * @param {{ now: number, bare: { item: { kind: string, number: number, repoKey?: string }, fields: string[], quietSince: number | null, atOnce?: boolean }[] | null, manual?: number }} input
  * @returns {Reading}
  */
 export function waitWithoutReasonReading({ now, bare, manual = 0 }) {
   if (bare === null) return unknown(SIGNALS.WAIT_WITHOUT_REASON, "the rows and pull requests carrying waits could not be read");
-  const quiet = bare.filter((b) => b.quietSince !== null && now - b.quietSince >= MANUAL_WAIT_HOURS * MS_PER_HOUR)
-    .sort((a, b) => /** @type {number} */ (a.quietSince) - /** @type {number} */ (b.quietSince));
+  const quiet = bare.flatMap((b) => {
+    const trippedAt = bareTrippedAt(b, now);
+    return trippedAt === null ? [] : [{ ...b, trippedAt }];
+  }).sort((a, b) => a.trippedAt - b.trippedAt);
   if (quiet.length === 0) {
     const undated = bare.filter((b) => b.quietSince === null);
     return undated.length === 0 ? clear(SIGNALS.WAIT_WITHOUT_REASON)
       : unknown(SIGNALS.WAIT_WITHOUT_REASON, `${undated.length} wait(s) with no reason carried no activity time, so how long they have stood is not known`);
   }
-  const first = /** @type {number} */ (quiet[0].quietSince) + MANUAL_WAIT_HOURS * MS_PER_HOUR;
-  const named = quiet.slice(0, MAX_NAMED).map((b) => `${b.item.repoKey ?? ""}#${b.item.number} (${b.fields.join(", ")}, quiet `
-    + `${ageText(/** @type {number} */ (b.quietSince), now)})`);
+  const named = quiet.slice(0, MAX_NAMED).map((b) => `${b.item.repoKey ?? ""}#${b.item.number} (${b.fields.join(", ")}, ${b.atOnce ? "no reason given" : "quiet "
+    + ageText(/** @type {number} */ (b.quietSince), now)})`);
   const more = quiet.length > MAX_NAMED ? `, and ${quiet.length - MAX_NAMED} more` : "";
   const key = quiet.map((b) => `${b.item.repoKey ?? ""}#${b.item.number}`).sort().join(",");
-  return { signal: SIGNALS.WAIT_WITHOUT_REASON, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.WAIT_WITHOUT_REASON}@${key}`,
-    detail: `${quiet.length} wait(s) name no readable condition and have been quiet over ${MANUAL_WAIT_HOURS} h: ${named.join("; ")}${more}; `
+  return { signal: SIGNALS.WAIT_WITHOUT_REASON, status: "tripped", firstTrippedAt: quiet[0].trippedAt, discriminator: `${SIGNALS.WAIT_WITHOUT_REASON}@${key}`,
+    detail: `${quiet.length} wait(s) name no readable condition and are either parked with no reason or have been quiet over ${MANUAL_WAIT_HOURS} h: ${named.join("; ")}${more}; `
       + `${manual} further wait(s) are \`manual\`, which is allowed and counted` };
+}
+
+/**
+ * WHEN A BARE WAIT BECAME NAMEABLE, or `null` while it is not. A `parked` row with no reason is nameable at once (#4230): a park with no reason is the defect itself, so it does not wait
+ * out the quiet hours a `hold:*` earns, and `now` stands in for an activity time nobody read. Every other bare wait is nameable `MANUAL_WAIT_HOURS` after the item's last activity.
+ * @param {{ quietSince: number | null, atOnce?: boolean }} bare @param {number} now @returns {number | null}
+ */
+function bareTrippedAt({ quietSince, atOnce }, now) {
+  if (atOnce === true) return quietSince ?? now;
+  return quietSince !== null && now - quietSince >= MANUAL_WAIT_HOURS * MS_PER_HOUR ? quietSince + MANUAL_WAIT_HOURS * MS_PER_HOUR : null;
 }
 
 /**
@@ -1394,7 +1405,7 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "release the claim or close the duplicate with the reason on the row. Do not script the repair, and post the day's table on #928 so a count of 0 is a statement and not silence.",
   [SIGNALS.STATE_LABEL]: `A row is in exactly ONE of ${STATE_LABELS.map((l) => `\`${l}\``).join(", ")}, and each row named is in none or in several. A row in none is absent from the `
     + "Ready lane, the claim pool and every label-keyed count, and `ready:audit`'s `labelless rows` could not see it while it held any other label at all. `product-manager` reads it first: PROMOTE a row in none "
-    + `(\`${READY_LABEL}\` if it is startable, else \`${BACKLOG_LABEL}\`), and for a row in several keep the ONE that is true (\`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\`), by hand with the reason on the row. `
+    + `(\`${READY_LABEL}\` if it is startable, else \`${BACKLOG_LABEL}\`), and for a row in several keep the ONE that is true (\`epic\` REPLACES \`${BACKLOG_LABEL}\`, and so does \`parked\` ONLY while its wait is real: READ the wait first, and a \`Waiting-for:\` that is true, free text or absent, or a passed \`Not-before:\`, leaves \`parked\` untrue, #4230), by hand with the reason on the row. `
     + "Do not script the repair; read `ready:audit`'s `state labels` line for the count against what GitHub reports.",
   [SIGNALS.IDLE_WITH_OPEN_ROWS]: "Nobody is building and rows are open: each row named is the reason it is not being built, from a closed list. MOST ARE STATES THE ORG CHOSE (`BACKLOG`, `PARKED`, `EPIC`, "
     + "`BLOCKED_BY` an open row, `WAITING_FOR` a declared condition, `ANSWER_OWED`, `LANE`, `B4 overlaps`): read whether the one holding the most is still true, and PROMOTE or UNBLOCK it if it is not. "
@@ -1420,8 +1431,8 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "The oldest open row is named with its state and who owes its next move: THAT SESSION READS THIS ALARM, so route it (`" + ANSWER_PREFIX + "<session>` on the row), and do not act on the row yourself unless it is yours. "
     + "A parked or backlog row needs `product-manager` to PROMOTE it or say why not; a date-held row is correctly waiting, so ask whether another row of the milestone could start now; a blocked row's blocker is the row to read. "
     + "It is keyed on the milestone and the named row, so it is re-asked when the named row changes, and it clears the tick a row is claimed or a pull request opens against one.",
-  [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
-    + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
+  [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*`, the blocked label or `parked`) that says nothing about what it waits for, and nothing "
+    + "has moved on it for hours (a `parked` row with no reason is named at once: the park with no reason is the defect). A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
 }));
 

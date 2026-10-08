@@ -55,6 +55,7 @@ const VERDICT: Record<string, [verdict: "gate lifts" | "a session lifts", reason
   "hold:*": ["gate lifts", "removing the label IS the whole remedy once the declared merged/closed condition is true, and `pr-hold.mjs --release` re-arms what the hold disarmed"],
   "answer:*": ["a session lifts", "removing the label IS the answer: the session it is addressed to must give it, whatever the condition says"],
   "blocked": ["a session lifts", "`blocked` has no referent, so only a human can say what would clear it; a condition beside it does not make the gate's reading the human's"],
+  "parked": ["a session lifts", "`parked` is a row's label and the gate only ever releases a pull request's hold; a true condition on a parked row is `unpark-satisfied`'s to act on, not `pr-hold.mjs`'s"],
 };
 
 test("every wait field kind that does not clear itself has a verdict and a reason, and a kind added without one is red", () => {
@@ -70,7 +71,7 @@ test("every wait field kind that does not clear itself has a verdict and a reaso
 
 for (const kind of Object.keys(VERDICT)) {
   test(`the verdict for \`${kind}\` is what the gate DOES on a pull request whose condition is true`, () => {
-    const label = kind === "hold:*" ? "hold:ceo" : kind === "blocked" ? "blocked" : "answer:ceo";
+    const label = kind === "hold:*" ? "hold:ceo" : kind === "blocked" || kind === "parked" ? kind : "answer:ceo";
     const { asked, remaining } = lift(heldPr([label], ["merged #3278"]), { "#3278": resolved("merged") });
     assert.equal(asked.length > 0, VERDICT[kind][0] === "gate lifts", `${label}: ${VERDICT[kind][1]}`);
     assert.equal(remaining.length, VERDICT[kind][0] === "gate lifts" ? 0 : 1, "what the gate does not lift is still ordered to a session");
