@@ -133,6 +133,7 @@ import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.mjs";
 import { unparkingWaits } from "./unpark-satisfied.mjs"; // #4050: a parked row whose every condition is true is un-parked where the tick reads the waits
+import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.mjs"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
 // #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
 import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.mjs";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
@@ -7253,6 +7254,18 @@ function exitPartial(unread, delivered) {
 }
 
 /**
+ * #4064: PROMOTE THE CLEARED ROWS THEIR FILERS DECLARED `Ready-when-unblocked: yes`, in place, and hand the same list back. `unclaimedClearings` is the population the `unclaimed-blocker-cleared`
+ * order asks about, so the two cannot disagree on "cleared"; a promoted row leaves it because its tick object now carries `ready`. Writes nothing for a row without the line.
+ * @param {any[]} rows @returns {any[]}
+ */
+function promotedWhenUnblocked(rows) {
+  const now = Date.now();
+  const clearings = unclaimedClearings(rows, todayIso(), now).filter(({ row }) => declaresReadyWhenUnblocked(row.body));
+  if (clearings.length > 0) reportReadyWhenUnblocked(promoteReadyWhenUnblocked({ clearings, notStartable: NOT_STARTABLE, now }, githubReadyIo(defaultRun)), (line) => process.stderr.write(line));
+  return rows;
+}
+
+/**
  * #2849: `decide`, with the call RECORDED for the shadow-window runner (#2846): the arguments it was given and its RAW return, before
  * `withStalePrimaryNotice`. A helper rather than three lines in `main`, which is at its physical-line limit. DORMANT unless
  * `<stateDir>/shadow-window-open` exists, and a failed write is a stderr line, never a different tick (`shadow-reads.mjs`).
@@ -7679,7 +7692,7 @@ function main() {
   // it. `decide`'s label-derived causes want a list to filter, and an empty one is the right degradation
   // there; the dead man's switch needs to tell "refused" from "empty", so it is handed the raw result.
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
-  const allOpen = openRowsRead ?? [];
+  const allOpen = promotedWhenUnblocked(openRowsRead ?? []); // #4064: BEFORE any cause reads the rows, so a row promoted here is not offered to `product-manager` as unpromoted
   const { claimedComments, closedRows, closings, closedClaims, closedClaimLabels } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
   const strippedClosedClaims = stripClosedClaims(closedClaimLabels); // #3883: the closed rows whose holder herdr does not list lose their claim labels, in the tick that read them
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an

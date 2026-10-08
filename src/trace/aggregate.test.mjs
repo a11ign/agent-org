@@ -541,7 +541,7 @@ test("REPRICED: a stored turn of a model priced SINCE (claude-sonnet-5, stored n
 });
 
 test("CODEX UNPRICED (#4057): the report prints the Codex turns it could not price as a line of their own, with their count and tokens, and not inside a total", () => {
-  const codex = (when, tokens) => storedAt(when, "gpt-5.6-luna", null, { harness: "codex", tokens });
+  const codex = (when, tokens) => storedAt(when, "gpt-5.6-terra", null, { harness: "codex", tokens });
   const events = [storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), codex("2026-09-22T11:00:00Z", [10, 0, 990, 0]), codex("2026-09-22T12:00:00Z", [20, 5, 1475, 0])];
   const week = weekOf(oneRow(events), WEEK_A);
   assert.deepEqual(week.spend.unpricedCodex, { turns: 2, tokens: 2500 }, "1000 + 1500 tokens over the two Codex turns, the Claude turn's 1500 not among them");
@@ -558,12 +558,12 @@ test("REPRICED: the stored figure is not trusted over PRICES (a line that says 9
 });
 
 test("REPRICED, positive control: a Codex turn stored null stays UNPRICED (null, never 0) and its row stays a FLOOR of the Claude turn beside it", () => {
-  const week = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), storedAt("2026-09-22T11:00:00Z", "gpt-5.6-luna", null)]), WEEK_A);
+  const week = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), storedAt("2026-09-22T11:00:00Z", "gpt-5.6-terra", null)]), WEEK_A);
   const row9 = week.rows[0];
   near(row9.dollars, 0.007);
   assert.deepEqual([row9.floor, row9.unpriced], [true, 1]);
-  assert.deepEqual(week.spend.unpricedModels, [["gpt-5.6-luna", 1]]);
-  const only = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "gpt-5.6-luna", null)]), WEEK_A);
+  assert.deepEqual(week.spend.unpricedModels, [["gpt-5.6-terra", 1]]);
+  const only = weekOf(oneRow([storedAt("2026-09-22T10:00:00Z", "gpt-5.6-terra", null)]), WEEK_A);
   assert.equal(only.rows[0].dollars, null, "a row of only unpriced turns has no dollar figure");
 });
 

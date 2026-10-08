@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.mjs";
 import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_SLOW, TICK_SLOW_SECONDS, clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick,
   readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.mjs";
 
@@ -235,4 +236,49 @@ test("#3730: a longest phase some other process timed has a wall and NO CPU, and
   const [order] = slow(line);
   assert.match(order.prompt, /took longest: `github-status`, 1000\.0 s wall, CPU not measured\./);
   assert.doesNotMatch(order.prompt, /NaN/);
+});
+
+// --- THE HEARTBEAT IS WRITTEN TO EVERY DECLARED TRACKER (a11ign/a11ign#4080, row 2 of #4056) ---------------------------------------------------------
+
+/** `writeHeartbeat` over fake trackers and a fake `gh`: every call it makes, and every line it says on stderr. `refuse` names a repository whose writes `gh` refuses. */
+function heartbeatTo(trackers: { key: string; repo: string }[], refuse: string[] = []) {
+  const calls: string[] = [];
+  const said: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => { said.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    writeHeartbeat(1_700_000_000_000, (_file: string, args: string[]) => {
+      calls.push(args[2] + " " + args[3]);
+      if (refuse.some((repo) => args[3].includes(`repos/${repo}/`))) throw Object.assign(new Error("boom"), { stderr: Buffer.from("gh: HTTP 403") });
+      return "";
+    }, () => trackers);
+  } finally {
+    process.stderr.write = write;
+  }
+  return { calls, said };
+}
+const HOME = { key: "", repo: "a11ign/a11ign" };
+const ORG = { key: "agent-org", repo: "a11ign/agent-org" };
+const variableOf = (repo: string) => `PATCH repos/${repo}/actions/variables/GATE_LAST_TICK`;
+const commentOf = (repo: string) => `PATCH repos/${repo}/issues/comments/${HEARTBEAT_COMMENT_ID}`;
+
+test("#4080 CONTROL: with ONE declared tracker the heartbeat is the two writes it always was, the variable then the standing comment, both to that repository", () => {
+  const { calls, said } = heartbeatTo([HOME]);
+  assert.deepEqual(calls, [variableOf(HOME.repo), commentOf(HOME.repo)]);
+  assert.deepEqual(said, []);
+});
+
+test("#4080: with TWO declared trackers the variable is written to BOTH repositories, and the standing comment to the first only (its id is an object of that repository)", () => {
+  const { calls } = heartbeatTo([HOME, ORG]);
+  assert.deepEqual(calls, [variableOf(HOME.repo), commentOf(HOME.repo), variableOf(ORG.repo)]);
+});
+
+test("#4080: a refusal on the SECOND tracker is a line naming that repository and the first tracker's writes are made; a refusal on the first does not stop the second", () => {
+  const second = heartbeatTo([HOME, ORG], [ORG.repo]);
+  assert.deepEqual(second.calls, [variableOf(HOME.repo), commentOf(HOME.repo), variableOf(ORG.repo)]);
+  assert.equal(second.said.length, 1);
+  assert.match(second.said[0], new RegExp(`HEARTBEAT NOT WRITTEN to ${ORG.repo} variable GATE_LAST_TICK: gh: HTTP 403`));
+  const first = heartbeatTo([HOME, ORG], [HOME.repo]);
+  assert.ok(first.calls.includes(variableOf(ORG.repo)), "the second tracker is written although the first refused");
+  assert.equal(first.said.filter((line) => line.includes(HOME.repo)).length, 2, "the variable and the comment each say they were refused, naming the first repository");
 });

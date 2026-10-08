@@ -13,7 +13,7 @@
 // TOKENS: Codex's `input_tokens` INCLUDES `cached_input_tokens` (`total_tokens` = input + output in every record; cached never exceeds input), so `input` here is the
 // uncached part, `cacheRead` the cached part, and `output` is `output_tokens` as given, which already includes `reasoning_output_tokens`. `cache_write_input_tokens` was 0
 // in every record, and Codex has no write TTL, so both write fields are 0.
-// COST: `null`. `PRICES` has no row for a Codex model, and a number invented here would wear the clothes of a measured one.
+// COST: `costOf`, which prices only a model `PRICES` has an exact, sourced row for (`gpt-5.6-luna`, #4076); any other Codex model is `null`, since a neighbour's rate would wear the clothes of a measured one.
 // WALL-CLOCK (inferred): from the last record that sent something TO the model (an order, a tool's output, the task's start) to the usage record, which is when the request
 // completed. It includes the time the harness spent on the tool call that preceded it, as a Claude turn's does.
 import { basename } from "node:path";

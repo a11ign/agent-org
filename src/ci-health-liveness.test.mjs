@@ -13,6 +13,7 @@ import { test } from "node:test";
 import {
   GRACE_HOURS, VERDICT, ciHealthLiveness, ciHealthOrders, declarationFrom, headingForRun, latestSlot, readCiHealth, readingLine, slotFromWorkflow,
 } from "./ci-health-liveness.mjs";
+import * as everyTracker from "./ci-health-liveness.mjs"; // the readers #4080 adds, by namespace so a run without them fails each test and not the file's import
 import { homeHostConfig } from "./host-config.mjs";
 
 const MONDAY_SLOT = { minute: 43, hour: 6, weekday: 1 };
@@ -179,11 +180,12 @@ test("the line the gate prints for a SILENT week", () => {
   assert.equal(line, "ci-health liveness: SILENT -- slot 2026-10-05T06:43:00.000Z: no `schedule` run of the 2026-10-05T06:43:00.000Z slot, 6 h grace over (workflow state: active)");
 });
 
-test("the declaration names the workflow and the issue beside tracker[0].repo, and refuses what is absent or malformed", () => {
+test("the declaration names the workflow and the issue beside each tracker's repo, and refuses what is absent or malformed", () => {
   const good = { tracker: [{ repo: "a11ign/a11ign" }], units: { ciHealthWorkflow: "ci-health.yml", ciHealthIssue: 928 } };
-  assert.deepEqual(declarationFrom(JSON.stringify(good)), { declared: { repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 } });
+  assert.deepEqual(declarationFrom(JSON.stringify(good)), { declared: [{ key: "", repo: "a11ign/a11ign", workflow: "ci-health.yml", issue: 928 }] });
   const refused = [
-    [{ ...good, tracker: [] }, /tracker\[0\]\.repo/],
+    [{ ...good, tracker: [] }, /`repo` for every entry of `tracker`/],
+    [{ ...good, tracker: [{ repo: "a11ign/a11ign" }, { key: "agent-org" }] }, /`repo` for every entry of `tracker`/],
     [{ ...good, units: { ciHealthIssue: 928 } }, /units\.ciHealthWorkflow/],
     [{ ...good, units: { ciHealthWorkflow: "ci-health.yml" } }, /units\.ciHealthIssue/],
     [{ ...good, units: { ciHealthWorkflow: "ci-health.yml", ciHealthIssue: "928" } }, /units\.ciHealthIssue/],
@@ -223,4 +225,73 @@ test("the heading, the seven-day window and the already-posted rule are still th
 
 test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the project's script is found", { skip: process.env.AGENT_ORG_HOST ? false : "AGENT_ORG_HOST is unset, so the pin above may legitimately skip" }, () => {
   assert.ok(SCRIPT, "AGENT_ORG_HOST is set but its primary checkout has no scripts/ci-health.mjs: the pin above skipped");
+});
+
+// ---- #4080: every declared tracker is read, not the first -----------------------------------------------------------------------------------
+const TWO_TRACKERS = { tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }], units: { ciHealthWorkflow: "ci-health.yml", ciHealthIssue: 928 } };
+
+/** A `gh` that answers per repository: `answers[repo]` is `"present"`, `"silent"` (no run), or `"refused"` (every call throws). A repository not listed has no workflow, as a tracker without one does. */
+const ghPerRepo = (/** @type {Record<string, string>} */ answers) => (/** @type {string[]} */ args) => {
+  const url = args.find((a) => a.startsWith("repos/")) ?? "";
+  const mode = answers[url.split("/").slice(1, 3).join("/")];
+  if (mode === undefined) throw new Error(`HTTP 404: Not Found (${url})`);
+  if (mode === "refused") throw new Error("HTTP 403: API rate limit exceeded");
+  if (url.includes("/contents/")) return 'on:\n  schedule:\n    - cron: "43 6 * * 1"\n';
+  if (url.endsWith("/actions/workflows/ci-health.yml")) return JSON.stringify({ state: "active", path: ".github/workflows/ci-health.yml" });
+  if (url.includes("/runs?")) return JSON.stringify({ workflow_runs: mode === "present" ? [SCHEDULE_RUN] : [] });
+  if (url.includes("/comments?")) return JSON.stringify([mode === "present" ? [{ body: COMMENT }] : []]);
+  throw new Error(`unexpected ${url}`);
+};
+
+test("#4080: the declaration yields one lookup per tracker, the second tracker's repository among them", () => {
+  const result = declarationFrom(JSON.stringify(TWO_TRACKERS));
+  assert.ok("declared" in result);
+  assert.deepEqual(result.declared.map((d) => [d.key, d.repo, d.issue]), [["", "a11ign/a11ign", 928], ["agent-org", "a11ign/agent-org", 928]]);
+});
+
+test("#4080: a report that exists ONLY in the second tracker's repository is found there", () => {
+  const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "present" }) });
+  assert.deepEqual(readings.map((r) => [r.repo, r.reading.verdict]), [["a11ign/a11ign", VERDICT.SILENT], ["a11ign/agent-org", VERDICT.PRESENT]]);
+});
+
+test("#4080: the same issue number in both trackers stays two questions, told apart by repository in the line and in the order's key", () => {
+  const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "silent", "a11ign/agent-org": "silent" }) });
+  const lines = readings.map(({ repo, reading }) => readingLine(reading, repo));
+  assert.match(lines[0], /^ci-health liveness \(a11ign\/a11ign\): SILENT/);
+  assert.match(lines[1], /^ci-health liveness \(a11ign\/agent-org\): SILENT/);
+  const keys = readings.flatMap(({ repo, reading }) => ciHealthOrders(reading, repo).map((o) => o.causeKey));
+  assert.equal(new Set(keys).size, 2, "a miss in each tracker is its own order");
+});
+
+test("#4080: a lookup refused on the second tracker names that tracker, and the first tracker's reading is still reported", () => {
+  const where = declarationFrom(JSON.stringify(TWO_TRACKERS));
+  const readings = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh: ghPerRepo({ "a11ign/a11ign": "present", "a11ign/agent-org": "refused" }) });
+  assert.equal(readings[0].reading.verdict, VERDICT.PRESENT);
+  assert.equal(readings[1].repo, "a11ign/agent-org");
+  assert.equal(readings[1].reading.verdict, VERDICT.CANNOT_TELL);
+  assert.match(readings[1].reading.detail, /rate limit exceeded/);
+  assert.equal(everyTracker.exitFor(readings.map((r) => r.reading)), 2, "one tracker PRESENT does not excuse the other's CANNOT TELL");
+});
+
+test("#4080: the exit is the most alarming reading: a finding, then CANNOT TELL, then NOT YET, and only all PRESENT is 0", () => {
+  const exit = (/** @type {string[]} */ ...verdicts) => everyTracker.exitFor(verdicts.map((verdict) => ({ ...read({}), verdict })));
+  assert.equal(exit(VERDICT.PRESENT), 0);
+  assert.equal(exit(VERDICT.PRESENT, VERDICT.NOT_YET), 3);
+  assert.equal(exit(VERDICT.NOT_YET, VERDICT.CANNOT_TELL), 2);
+  assert.equal(exit(VERDICT.CANNOT_TELL, VERDICT.SILENT), 1);
+  assert.equal(exit(VERDICT.PRESENT, VERDICT.NO_COMMENT), 1);
+});
+
+test("#4080: with ONE declared tracker the reading, the line and the order are the ones they were before", () => {
+  const where = declarationFrom(JSON.stringify({ ...TWO_TRACKERS, tracker: [TWO_TRACKERS.tracker[0]] }));
+  const gh = ghPerRepo({ "a11ign/a11ign": "silent" });
+  const all = everyTracker.readCiHealthAll(where, AFTER_GRACE, { gh });
+  assert.ok("declared" in where);
+  assert.deepEqual(all.map((r) => r.reading), [readCiHealth({ declared: where.declared[0] }, AFTER_GRACE, { gh })]);
+  const single = all[0].reading;
+  assert.match(readingLine(single), /^ci-health liveness: SILENT -- slot /, "no repository in the line when there is nothing to tell apart");
+  assert.equal(ciHealthOrders(single)[0].causeKey, "product-manager/ci-health-missing/2026-10-05T06:43:00.000Z/silent", "the key is unchanged");
+  assert.equal(everyTracker.exitFor([single]), 1);
 });
