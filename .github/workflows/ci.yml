@@ -172,7 +172,8 @@ jobs:
         with:
           node-version: 22.22.1
       - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml, tsx)
-        run: npm install --no-package-lock
+        # The toolchain is named EXACT beside `package.json`'s `^0.1.5` for the same reason as in `suite` (a11ign/a11ign#4308): the range resolved 0.1.6, which has no `dist/`.
+        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.1.5"
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
       # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain` 0.1.5). This repository is the standard's model -- one package at the root, one
