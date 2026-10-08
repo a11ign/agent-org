@@ -30,9 +30,17 @@
 // NOT IN SCOPE: `needs:chairman` is never added here (whether the next act is the chairman's is a judgement a row marks), and a `needs:chairman` row is skipped. A parked row declaring NO
 // condition is not touched: it is a different defect (a park with no reason), and un-parking it would hide it. A `lane:<owner>` row is un-parked and not offered to another session.
 //
+// WHERE THE PROMOTION RUNS (a11ign/a11ign#4202): `row-file` refuses a launch from a checkout whose `.git` is a directory (`launchGate`, #1352: a policy script's writes must not land in a tree
+// other sessions share), and the tick's working directory IS the tool's primary checkout, so every promotion was refused and every un-parked row landed on `backlog` + `answer:product-manager`
+// (a11ign/a11ign#4159 twice, #4182, #4183). The guard is right and stays as it is; the tick runs the child from `tickWorktree()`, a linked worktree it owns, and the log line says which one.
+// The other children the tick starts (`update-primary --drift`, `host-units --json`) carry no launch guard and need none; `unpark-satisfied.test.mjs` pins that list from the source.
+//
 // A LEAF AT LOAD TIME: no import of `work-gate.mjs` (which imports this), so the gate's `run` is passed in.
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.mjs";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.mjs";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.mjs";
@@ -52,6 +60,9 @@ export const NOT_PICKABLE_BESIDE_READY = Object.freeze(["fleet-gated", "disputed
 const SESSION = "work-gate";
 const ROW_FILE_ENTRY = fileURLToPath(new URL("./row-file.mjs", import.meta.url));
 const ROW_FILE_REFUSED = 1;
+/** The tick's own worktree, named the way a session's launch tree is (`role-<session>`, beside the checkout): `prune-worktrees` treats `role-*` as a tree that is moved between runs, never removed. */
+export const TICK_WORKTREE = `role-${SESSION}`;
+const GIT_TIMEOUT_MS = 30_000;
 const NOT_BEFORE_LINE = /^[ \t]*#{0,6}[ \t]*Not-before:/im;
 
 /**
@@ -214,16 +225,17 @@ export function reportUnpark(result, log) {
 
 /**
  * THE REAL WORLD, through the gate's own `gh` runner (`(args) => stdout`, which throws on failure, so every failure here is an error NAMING the row in `unparkSatisfied`).
- * @param {(args: string[]) => string} run @returns {UnparkIo}
+ * @param {(args: string[]) => string} run @param {{ worktree?: () => TickWorktree }} [deps] `worktree` is where the promotion runs from, a seam for a test that builds its own checkout
+ * @returns {UnparkIo}
  */
-export function githubIo(run) {
+export function githubIo(run, { worktree = tickWorktree } = {}) {
   return {
     readLabels: (number) => {
       const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state"]));
       return { labels: (read.labels ?? []).map((/** @type {any} */ l) => String(l.name)), state: String(read.state) };
     },
     setLabels: (number, labels) => { run(["api", "--method", "PUT", `repos/${REPO}/issues/${number}/labels`, ...labels.flatMap((l) => ["-f", `labels[]=${l}`])]); },
-    promote: (number) => promoteViaModule(number),
+    promote: (number) => promoteViaModule(number, worktree),
     mergedClosers: (number) => mergedClosersOf(number, run),
     // The close time only dates a line of the comment, so a read that fails says "not dated" there; it is not a reason to leave a row parked.
     closedAt: (number) => {
@@ -253,12 +265,53 @@ export function mergedClosersOf(number, run) {
 }
 
 /**
- * PROMOTE THROUGH THE ACT THAT OWNS IT, `row-file --promote` (the Status move, the label set, the read-back), as a child process like `releaseHoldViaModule`: the module is a CLI whose `main`
- * runs on load. Exit `1` is a REFUSAL with nothing changed, which is the failing check; any other non-zero (`2`: written, unconfirmed) is an error, not a refusal to route.
- * @param {number} number @returns {{ ok: true } | { ok: false, refusal: string }}
+ * @typedef {(args: string[], cwd: string) => { status: number | null, output: string }} GitExec
+ * @typedef {{ dir: string } | { refusal: string }} TickWorktree
  */
-function promoteViaModule(number) {
-  const result = spawnSync(process.execPath, [ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8" });
+
+/** @type {GitExec} */
+const gitExec = (args, cwd) => {
+  const ran = spawnSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv(), timeout: GIT_TIMEOUT_MS });
+  return { status: ran.status, output: `${ran.stdout ?? ""}${ran.stderr ?? ""}${ran.error?.message ?? ""}`.trim() };
+};
+
+/**
+ * THE LINKED WORKTREE THE TICK OWNS: `role-work-gate`, beside the checkout the tick's code runs from, detached at that checkout's HEAD so the tree holds the code that is running. Created when absent;
+ * moved to HEAD when it is detached and clean (best effort: a tree that cannot move is still a launch directory); a registration whose directory is gone is pruned first, which is what "stale" means
+ * here. A directory of that name that is NOT one of this repository's worktrees is refused by name and never removed or reused: it is somebody's.
+ * @param {{ git?: GitExec, exists?: (path: string) => boolean, codeDir?: string }} [deps] `codeDir` is where the code runs from, a seam so a test can build its own checkout
+ * @returns {TickWorktree}
+ */
+export function tickWorktree({ git = gitExec, exists = existsSync, codeDir = dirname(fileURLToPath(import.meta.url)) } = {}) {
+  const top = git(["rev-parse", "--show-toplevel"], codeDir);
+  const head = git(["rev-parse", "HEAD"], codeDir);
+  if (top.status !== 0 || head.status !== 0) return { refusal: `the checkout ${codeDir} runs from could not be read (${(top.status !== 0 ? top : head).output.split("\n")[0]})` };
+  const checkout = top.output;
+  const dir = join(dirname(checkout), TICK_WORKTREE);
+  git(["worktree", "prune"], checkout);
+  if (!exists(dir)) {
+    const made = git(["worktree", "add", "--detach", dir, head.output], checkout);
+    return made.status === 0 ? { dir } : { refusal: `could not create ${dir} (${made.output.split("\n")[0]})` };
+  }
+  const listed = git(["worktree", "list", "--porcelain"], checkout).output.split("\n");
+  if (!listed.includes(`worktree ${dir}`)) return { refusal: `${dir} exists and is not a worktree of ${checkout}: left alone, and nothing was run from it` };
+  const detached = git(["symbolic-ref", "-q", "HEAD"], dir).status !== 0;
+  const clean = git(["status", "--porcelain", "--untracked-files=no"], dir).output === "";
+  if (detached && clean) git(["checkout", "--quiet", "--detach", head.output], dir);
+  return { dir };
+}
+
+/**
+ * PROMOTE THROUGH THE ACT THAT OWNS IT, `row-file --promote` (the Status move, the label set, the read-back), as a child process: the module is a CLI whose `main` runs on load. It runs FROM
+ * `worktree()` (see the header), and the line saying which tree ran it is written before the child starts. Exit `1` is a REFUSAL with nothing changed, which is the failing check; any other non-zero
+ * (`2`: written, unconfirmed) is an error, not a refusal to route. No tree to run from is a refusal too: the row is routed to `product-manager` WITH that reason, not left as a plain `backlog` row.
+ * @param {number} number @param {() => TickWorktree} [worktree] @returns {{ ok: true } | { ok: false, refusal: string }}
+ */
+export function promoteViaModule(number, worktree = tickWorktree) {
+  const launch = worktree();
+  if ("refusal" in launch) return { ok: false, refusal: `the tick has no linked worktree to run \`row-file --promote=${number}\` from: ${launch.refusal}` };
+  process.stderr.write(`unpark-satisfied: row-file --promote=${number} runs from the tick's worktree ${launch.dir}\n`);
+  const result = spawnSync(process.execPath, [ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8", cwd: launch.dir });
   if (result.status === 0) return { ok: true };
   const said = String(result.stderr).trim();
   if (result.status === ROW_FILE_REFUSED) return { ok: false, refusal: said.replace(/^row-file: REFUSING to promote -- /, "") };
