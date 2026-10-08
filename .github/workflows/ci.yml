@@ -22,7 +22,7 @@ name: ci
 #
 # THE TESTS' SIBLINGS COME FROM THE LAB: the tool's tests were extracted from the lab package (`project/packages/lab/src/packaging/`), where they sat beside helper
 # modules and fixtures that were not extracted. a11ign/a11ign deleted that package (#3505) and takes a11ign/lab as a pinned tag, so the job lays the lab at the tag the project's
-# `layers.json` pins AT `PROJECT_REF` (the project's own `scripts/lay-layer.mjs`) and copies those siblings (never a test) beside the tests, without overwriting anything this repository has.
+# `layers.json` pins AT `PROJECT_REF` (the project's own `project/scripts/lay-layer.mjs`) and copies those siblings (never a test) beside the tests, without overwriting anything this repository has.
 #
 # NODE IS PINNED TO 22.22.1, NOT `22`: on 22.23.3 (what `22` resolved to on 2026-10-02) the suite's one tree-walking observer, `walk-scope.mjs`, sees
 # tsx probe `<name>.mts` beside every `<name>.mjs` it imports and fails `board-reported-data-integrity.test.ts` for reads outside its declared scope
@@ -78,11 +78,11 @@ jobs:
           # The suite reads the project's git history (merge-base, branch tips, recorded commits), so a shallow clone would fail it for the wrong reason.
           fetch-depth: 0
           persist-credentials: false
-      # THE LAB, LAID BY THE PROJECT'S OWN COMMAND (a11ign/a11ign#3505, scripts/lay-layer.mjs): `lab` left the project's tree for the pinned tag `layers.json` declares at `PROJECT_REF`, and this lays its
+      # THE LAB, LAID BY THE PROJECT'S OWN COMMAND (a11ign/a11ign#3505, `project/scripts/lay-layer.mjs`): `lab` left the project's tree for the pinned tag `layers.json` declares at `PROJECT_REF`, and this lays its
       # `src/` (less its tests), scripts, baselines, `rule-ownership.json` and `CLAUDE.md` at `project/packages/lab`, where the tests' siblings and the tests that read the lab by path expect them.
       - name: The lab at the tag the project pins, laid at project/packages/lab
         working-directory: project
-        run: node scripts/lay-layer.mjs lab
+        run: node scripts/lay-layer.mjs lab # in-project
       # `tsx`, `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
       - name: Install the tool's dependencies where the project's root would hold them
