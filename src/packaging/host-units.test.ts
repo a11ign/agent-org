@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
-  existsSync } from "node:fs";
+  existsSync, copyFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
@@ -2861,6 +2861,30 @@ test("#3515: installed as the tool, the trace pages' service runs publish.mjs fr
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
   assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/publish\.mjs$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
+});
+
+test("#4071: the OTel receiver's unit is listed where this guard looks -- classified as the tool's, long-running with no timer, installed as the tool runs it", () => {
+  assert.ok(TOOL_ENTRIES.includes("otel-receiver.service.in"));
+  assert.ok(LONG_RUNNING_TEMPLATES.includes("otel-receiver.service.in"), "`enable --now` on the SERVICE is what starts it: no timer does");
+  assert.ok(!TOOL_ENTRIES.includes("otel-receiver.timer.in"));
+  const listed = shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "a11ign-", declaredKeys: new Set() });
+  assert.ok(listed.includes("a11ign-otel-receiver.service"), "and `host:check` / `host:install` see it");
+  assert.deepEqual(unclassifiedEntries({ shippedDir: SHIPPED_DIR, projectUnitsDir: null }), [], "and nothing in the host directory is classified nowhere");
+
+  // POSITIVE CONTROL for that empty list: the same directory plus a stray copy of the unit under a name nobody classified IS refused.
+  const stray = tmpDir("otel-shipped-");
+  for (const name of TOOL_ENTRIES) if (existsSync(join(SHIPPED_DIR, name))) copyFileSync(join(SHIPPED_DIR, name), join(stray, name));
+  assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }), []);
+  copyFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), join(stray, "stray-otel.service.in"));
+  assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }).map((finding) => finding.unit), ["stray-otel.service.in"]);
+
+  const rendered = readFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), "utf8")
+    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  const installed = toolForm("otel-receiver.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/otel-receiver\.mjs$/m);
+  assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit");
 });
 
 // --- #3702: A CLONE `host.json` DECLARES MUST BE ONE THE REVIEWER'S CODEX TRUSTS -----------------------------------------------------------
