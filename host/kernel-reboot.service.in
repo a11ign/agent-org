@@ -1,0 +1,36 @@
+[Unit]
+# THE DRAINED REBOOT ONTO A NEWER KERNEL, RUN BY A CLOCK -- a11ign/a11ign#4053, the follow-up #4046 named. `host-kernel.mjs --reboot` is the whole
+# procedure (the tick timer stopped, every seat and host job waited out, the one granted `sudo systemctl reboot`, the 24 h loop guard, the record the
+# read-back finding reads), and until this unit existed NOTHING called it: `host:check`'s `newer kernel installed, not running` was a note that woke
+# nobody. Shipping the module was not the wiring, which is the shape @@prefix@@worktree-prune.service already records.
+#
+# ON A DAY WITH NOTHING TO DO THIS IS A NO-OP: the procedure reads the running and installed kernels first and prints `no reboot` when they agree.
+Description=a11ign: reboot onto a newer installed kernel, drained (host-kernel.mjs --reboot, #4053)
+
+[Service]
+Type=oneshot
+
+WorkingDirectory=@@checkout@@
+
+# SAME REASON AS THE OTHER SHIPPED SERVICES: a unit gets no login shell's PATH, and the procedure starts `systemctl` and `sudo` by name. Without this line every firing dies before it reads anything while the timer looks healthy.
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
+
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# THE WORKERS' ACCOUNT, declared as every unit that can reach a `gh` spawn declares it (#1974). `--reboot` posts nothing, but the module's `--read-back`
+# does (`gh issue comment`), and `unitsSpendingGh` reads reachability from the entry point, not from the flag, so the unit names the account it would spend.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# EXACTLY `--reboot`, AND NOTHING THAT GRANTS MORE. The privileged command is a constant in the module (`REBOOT_ARGV`, compared by value before it spawns)
+# and the sudoers line is `/usr/bin/systemctl reboot` alone; a flag added here would be a second thing a unit can ask for, and `host-kernel.test.mjs` pins
+# this line so that adding one is a reviewed change. `--self` and `--row` are for a session that runs it by hand.
+ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.mjs --reboot
+
+# THE DRAIN IS THE LONG PART: the module waits up to `DRAIN_BOUND_MS` (30 min) for a seat mid-turn or a host job, then defers, plus the two `systemctl`
+# calls it times at 60 s each. A oneshot has no start timeout by default, so this states the bound and a hung `systemctl` cannot hold the unit forever.
+TimeoutStartSec=2700
+
+# NO `[Install]` SECTION, for #1993's reason: `WantedBy=default.target` on a oneshot means "also run at boot", and a reboot unit that runs at boot is a
+# reboot loop waiting for a boot loader that keeps choosing the old kernel. The timer is the only thing that may start it.

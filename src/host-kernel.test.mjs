@@ -5,14 +5,15 @@
 // "idle reboots" twin, each "refuses inside 24 h" has an "after 24 h reboots" twin. `emptiness` below is the control for the `[]` results: the same reader reports a note for
 // the same /boot with another running kernel, so an empty result is a reading and not a reader that cannot see the kernels.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
+import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
   readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.mjs";
-import { driftReport } from "./host-units.mjs";
+import { driftReport, shippedUnitText, shippedUnits, unitDrift, unitState } from "./host-units.mjs";
+import { homeHostConfig } from "./host-config.mjs";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;
@@ -150,6 +151,14 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
     assert.deepEqual(result.held, ["host job a11ign-tmp-prune.service is running"]);
     assert.equal(sudoCalls(h.calls).length, 0);
     assert.equal(timerCalls(h.calls, "start").length, 1);
+  });
+
+  test("the scheduled reboot's OWN service, which shows as `activating` while it runs, does not hold its own reboot (#4053); another job still does", async () => {
+    const own = `${REBOOT_SERVICE} loaded activating start start a11ign: reboot onto a newer installed kernel\n`;
+    const h = host({ jobs: own });
+    assert.equal((await drainedReboot(h.deps)).outcome, "rebooted");
+    const other = host({ jobs: `${own}a11ign-tmp-prune.service loaded activating start start x\n` });
+    assert.deepEqual((await drainedReboot(other.deps)).held, ["host job a11ign-tmp-prune.service is running"]);
   });
 
   test("a herdr that cannot be asked HOLDS the reboot: unknown is not idle", async () => {
@@ -351,5 +360,57 @@ describe("the record store", () => {
     assert.throws(() => store.read(), /is not JSON/);
     store.write(null);
     assert.equal(store.read(), null);
+  });
+});
+
+// a11ign/a11ign#4053: SOMETHING RUNS `--reboot`. Rendered against a host built HERE -- a scratch project and a `tool` -- and never against the
+// machine's own declaration: CI has no `a11y-witness` checkout, so reading `project.json` from the real host refused there (the first push of this row).
+describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
+  const SERVICE = "a11ign-kernel-reboot.service";
+  const TIMER = "a11ign-kernel-reboot.timer";
+  const project = join(scratch, "project");
+  mkdirSync(join(project, ".agent-org"), { recursive: true });
+  writeFileSync(join(project, ".agent-org", "project.json"), JSON.stringify({ schema: 1 }));
+  const home = homeHostConfig();
+  const { tool: _tool, ...untooled } = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (home));
+  const plainHost = /** @type {any} */ (untooled);
+  const toolHost = /** @type {any} */ ({ ...untooled, projects: [{ id: home.primary, checkout: project }], tool: "/tool" });
+  const text = (/** @type {string} */ unit, /** @type {any} */ host = toolHost) => String(shippedUnitText(unit, { host }));
+
+  test("both units ship and render, and the service is the name the drain excuses (the positive control for every pin below)", () => {
+    assert.deepEqual(shippedUnits().filter((u) => u.includes("kernel-reboot")).sort(), [SERVICE, TIMER]);
+    assert.equal(SERVICE, REBOOT_SERVICE, "whatHolds excuses this name; a rename that misses one of them makes every scheduled run defer");
+    assert.match(text(SERVICE), /^\[Service\]$/m);
+    assert.match(text(TIMER), /^\[Timer\]$/m);
+  });
+
+  test("the service's ExecStart is exactly `--reboot` -- one ExecStart, the module, and no other flag", () => {
+    const starts = text(SERVICE).split("\n").filter((line) => /^ExecStart=/.test(line));
+    assert.equal(starts.length, 1);
+    assert.equal(starts[0], "ExecStart=/usr/bin/node src/host-kernel.mjs --reboot", "the tool form");
+    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.mjs --reboot", "the plain form");
+    assert.doesNotMatch(text(SERVICE), /^ExecStart.*--(self|row|read-back)/m);
+    assert.match(text(SERVICE), /^Type=oneshot$/m);
+    assert.doesNotMatch(text(SERVICE), /^\[Install\]/m, "a boot must not start a reboot");
+  });
+
+  test("the timer says exactly `ceo`'s hour, and carries no `Requires=`, so `host:install`'s `enable --now` cannot reboot the host", () => {
+    assert.match(text(TIMER), /^OnCalendar=\*-\*-\* 05:30:00 Europe\/London$/m);
+    assert.equal(text(TIMER).split("\n").filter((l) => /^OnCalendar=/.test(l)).length, 1);
+    assert.doesNotMatch(text(TIMER), /^Requires=/m);
+    assert.doesNotMatch(text(TIMER), /^Persistent=/m, "a catch-up would fire at boot");
+    assert.match(text(TIMER), /^WantedBy=timers\.target$/m);
+  });
+
+  test("host:check finds the pair CURRENT once installed; a missing, edited or untouched-but-different copy is reported", () => {
+    const installedDir = join(scratch, "installed");
+    mkdirSync(installedDir, { recursive: true });
+    const systemctl = (/** @type {string[]} */ args) => (args[0] === "is-enabled" ? "enabled" : "active");
+    const states = () => [SERVICE, TIMER].map((unit) => unitState(unit, { installedDir, systemctl, host: toolHost }));
+    assert.deepEqual(unitDrift(states()).map((d) => `${d.unit}: ${d.problem}`), [`${SERVICE}: NOT INSTALLED`, `${TIMER}: NOT INSTALLED`], "the control: absent is reported");
+    for (const unit of [SERVICE, TIMER]) writeFileSync(join(installedDir, unit), text(unit));
+    assert.deepEqual(unitDrift(states()), [], "installed from the shipped text, the pair is current");
+    writeFileSync(join(installedDir, TIMER), text(TIMER).replace("05:30", "04:30"));
+    assert.deepEqual(unitDrift(states()).map((d) => `${d.unit}: ${d.problem}`), [`${TIMER}: STALE`]);
   });
 });

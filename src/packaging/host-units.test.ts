@@ -856,7 +856,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1295,13 +1295,15 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
+    // a11ign/a11ign#4053: the kernel reboot's timer. Its service REBOOTS THE HOST, so a start at `host:install` would reboot it at an operator's keystroke; the hour is the clock's alone.
+    "a11ign-kernel-reboot.timer",
     // a11ign/a11ign#3627: the weekly token-efficiency post, on the board edition's side for the board edition's reason: it POSTS A REPORT.
     "a11ign-trace-weekly.timer",
   ], "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
     + "four above each started their service in that second and board-report did not, though the same run "
     + "reinstalled it. It activates its service by name alone, ON PURPOSE: it dispatches a board edition, "
     + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock. "
-    + "The weekly report's timer is the second member: its service comments on the record issue");
+    + "The weekly report's timer is the second member: its service comments on the record issue. The kernel reboot's is the third: its service reboots the host");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
