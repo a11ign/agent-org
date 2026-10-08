@@ -10,8 +10,8 @@
 // WHAT IS MEASURED AND WHAT IS INFERRED, because the two wear the same clothes in a report:
 //   tokens        MEASURED: the API's own `usage` for the message.
 //   costUsd       COMPUTED from `PRICES` when the turn is INGESTED, and again when a report READS it (`repriceEvents`): the stored value is a first reading, never the one printed. Checked against Claude Code's own `cost_usd` on one Haiku and one Sonnet 5.5 request (exact to 7 places); the Fable 5.1,
-//                 Opus 5.5, Opus 5 and Sonnet 5 rows are the published rates, not checked. A model with no row costs `null`, never 0 (a Codex model has none: no rate
-//                 for it is sourced, a11ign/a11ign#3582).
+//                 Opus 5.5, Opus 5 and Sonnet 5 rows are the published rates, not checked. A model with no row costs `null`, never 0. The one Codex model with a row (`gpt-5.6-luna`, #4076) is matched by its exact name and carries the URL and date its rate was quoted from;
+//                 any other Codex model stays `null`.
 //   wallClockMs   INFERRED: the gap from the record before the message's first block to its last block. That record is the harness's (the tool's result, or an attachment stamped a
 //                 few seconds after it), stamped AFTER the tool finished, so it is the model's own time and NOT the tool's: MEASURED on worker-3641 (a11ign/a11ign#3669), five
 //                 tool calls of 365-524 s were followed by messages whose `wallClockMs` was 3-7 s. A turn that follows a slow tool does NOT read long. Named in `DEFINITIONS`.
@@ -60,7 +60,11 @@ const WRITE_1H_FACTOR = 2;
  * Dollars per million tokens, `cacheRead` as the pricing page lists it (read 2026-10-08, #4057): the factor on input is not the same for every model (Fable 5.1 $0.25 on a $10 input,
  * Fable 5 $1, Sonnet 5.5 $0.10). `verified` is true where the formula reproduced Claude Code's own `cost_usd` (2026-10-04, #3494); the others are the published rates.
  * A row is NOT verified when it disagrees with the page: `cost_usd` is the client's estimate and the page is the billing rate (Sonnet 5.5, which `cost_usd` priced at the old $0.20).
- * @type {{ prefix: string, input: number, output: number, cacheRead: number, verified: boolean }[]}
+ * A Claude row matches by `prefix` (ids carry dated suffixes). A row of any OTHER vendor matches by `model`, the EXACT name, and carries `source` (the URL it was quoted from) and `fetched`
+ * (the date), because a rate borrowed from a neighbouring model is an invention with a citation on it (#4076, #4055 move 10): `gpt-5.6-luna-pro` is a different model with a different price.
+ * `longContext` is the tier a request pays when its whole prompt is above `above` tokens: the rates there replace these for the full request.
+ * @typedef {{ input: number, output: number, cacheRead: number, verified: boolean }} Rates
+ * @type {(Rates & { prefix?: string, model?: string, source?: string, fetched?: string, longContext?: { above: number } & Omit<Rates, "verified"> })[]}
  */
 export const PRICES = [
   // `claude-fable-5-1` stands BEFORE `claude-fable-5`: the page lists them apart, and `costOf` takes the first prefix that matches.
@@ -74,6 +78,10 @@ export const PRICES = [
   { prefix: "claude-opus-5", input: 5, output: 25, cacheRead: 0.5, verified: false },
   { prefix: "claude-sonnet-5", input: 2, output: 10, cacheRead: 0.2, verified: false },
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1, verified: true },
+  // The Codex reviewers' model (#4076). OpenAI's own pricing page, Standard table, row `gpt-5.6-luna`: $0.20 input, $0.02 cached input, $1.20 output; above 272K prompt tokens $0.40, $0.04, $1.80
+  // for the full request. Not checked against an invoice. No Codex request in the 7 days before 2026-10-08 reached 272K (the largest was 159,638), so the tier is the page's rule, not a measured case.
+  { model: "gpt-5.6-luna", input: 0.2, output: 1.2, cacheRead: 0.02, verified: false, source: "https://developers.openai.com/api/docs/pricing", fetched: "2026-10-08",
+    longContext: { above: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04 } },
 ];
 
 /**
@@ -88,16 +96,23 @@ export const PRICES = [
 
 /** @typedef {{ tool: "Read" | "Grep" | "Glob" | "mixed", tokens: number | null }} ToolRead */
 
+/** The rates one request pays: a row's `longContext` ones when its whole prompt is above the row's threshold. @param {typeof PRICES[number]} price @param {Tokens} tokens */
+function ratesFor(price, tokens) {
+  const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
+  return price.longContext && prompt > price.longContext.above ? price.longContext : price;
+}
+
 /**
  * Cost of a turn, or `null` when the model has no price: an unpriced turn is unknown, and 0 would say it was free.
  * @param {string | undefined} model @param {Tokens} tokens
  * @returns {number | null}
  */
 export function costOf(model, tokens) {
-  const price = PRICES.find((entry) => model?.startsWith(entry.prefix));
+  const price = PRICES.find((entry) => (entry.model === undefined ? model?.startsWith(entry.prefix ?? "") : model === entry.model));
   if (!price) return null;
-  const dollars = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead
-    + tokens.cacheWrite5m * price.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * price.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
+  const rate = ratesFor(price, tokens);
+  const dollars = (tokens.input * rate.input + tokens.output * rate.output + tokens.cacheRead * rate.cacheRead
+    + tokens.cacheWrite5m * rate.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * rate.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
   return Math.round(dollars * COST_PRECISION) / COST_PRECISION;
 }
 
