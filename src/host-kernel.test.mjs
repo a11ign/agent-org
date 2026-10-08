@@ -1,4 +1,4 @@
-// no-token: none -- `host-kernel.mjs` starts a process only through the injected `run`, reads herdr only through the injected `agents`, and the record is a temp-dir fixture; nothing here reboots, stops a timer or reaches gh
+// no-token: gh -- `host-kernel.mjs` starts a process only through the injected `run` (its `gh issue comment` post is in `--read-back`'s main, never called here), reads herdr only through the injected `agents`, and the record is a temp-dir fixture; nothing here reboots, stops a timer or reaches a network
 // a11ign/a11ign#4046: a newer kernel than the one running is NOTED by `host:check`, and the org does the drained reboot in #3846's order. FIXTURES ONLY.
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each "gives the note" test has a "gives none" twin that differs by ONE fact (which kernel runs), each "defers" has an
