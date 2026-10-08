@@ -1,5 +1,6 @@
 // #4075 (#4055 move 9): a worker as `claude -p` over stream-json is a SECOND launch form, off by default. Run with
-// `AGENT_ORG_HOST=<checkout>/.agent-org/host.json node --test src/worker-profile-headless.test.mjs`.
+// `AGENT_ORG_HOST=<checkout>/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.mjs src/worker-profile-headless.test.ts`.
+// A `.ts` and not the `.mjs` the row named: `mjs-source-count.test.ts` pins the `.mjs` test files and a new test is `.ts`.
 // Each claim below carries a positive control and a negative one, so none of them is an emptiness assertion that
 // passes because nothing was looked at.
 import { test } from "node:test";
@@ -19,7 +20,7 @@ const PANE_FORM_BEFORE = ["--model", "sonnet", "--effort", "high", "--dangerousl
   "--settings", WORKER_SETTINGS_PATH];
 
 const headless = () => agentArgs(CLAUDE, { headless: CAPS });
-const valueAfter = (args, flag) => args[args.indexOf(flag) + 1];
+const valueAfter = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
 
 test("flag OFF: the launch arguments are byte-identical to today's, with or without an empty launch", () => {
   assert.deepEqual(agentArgs(CLAUDE), PANE_FORM_BEFORE);
@@ -67,7 +68,7 @@ test("flag ON keeps the token levers that are not pane-shaped (#2750)", () => {
 });
 
 test("flag ON refuses what it cannot launch: codex, a missing cap, a cap that is not a positive number", () => {
-  const refuses = (profile, headlessCaps) => assert.throws(() => agentArgs(profile, { headless: headlessCaps }));
+  const refuses = (profile: { kind: string; model: string; effort: string }, headlessCaps: object) => assert.throws(() => agentArgs(profile, { headless: headlessCaps as never }));
   refuses({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" }, CAPS);
   refuses(CLAUDE, { maxTurns: 40 });
   refuses(CLAUDE, { maxBudgetUsd: 2.5 });
@@ -82,18 +83,19 @@ test("the flag is OFF by default: no profile carries it, and no cause turns it o
   const causes = Object.keys(PROFILES);
   assert.ok(causes.length > 0, "positive control: there are causes to look at");
   for (const cause of causes) {
-    assert.ok(!("headless" in PROFILES[cause]), `${cause} carries a headless setting`);
+    assert.ok(!("headless" in (PROFILES as Record<string, object>)[cause]), `${cause} carries a headless setting`);
     const got = profileFor(cause);
+    if ("refusal" in got) throw new Error(got.refusal);
     if (got.kind === "claude") assert.ok(!agentArgs(got).includes("-p"), `${cause} launches headless`);
   }
 });
 
-// SELF: this file and worker-profile.mjs itself spell `headless:` on purpose; every OTHER module that does is a caller
-// turning the form on, which is the row that follows this one and not this one.
-const SELF = new Set(["worker-profile.mjs", "worker-profile-headless.test.mjs"]);
+// SELF: worker-profile.mjs itself spells `headless:` on purpose; every OTHER module that does is a caller turning the
+// form on, which is the row that follows this one and not this one. (This file is `.ts`, so the `.mjs` walk never meets it.)
+const SELF = new Set(["worker-profile.mjs"]);
 const TURNS_IT_ON = /agentArgs\([^)]*headless\s*:/;
 
-function callersTurningItOn(files) {
+function callersTurningItOn(files: { name: string; text: string }[]) {
   return files.filter(({ name, text }) => !SELF.has(name) && TURNS_IT_ON.test(text)).map(({ name }) => name);
 }
 
