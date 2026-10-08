@@ -1,6 +1,6 @@
 // #4075 (#4055 move 9): a worker as `claude -p` over stream-json is a SECOND launch form, off by default. Run with
 // `AGENT_ORG_HOST=<checkout>/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.mjs src/worker-profile-headless.test.ts`.
-// A `.ts` and not the `.mjs` the row named: `mjs-source-count.test.ts` pins the `.mjs` test files and a new test is `.ts`.
+// A `.ts` and not the `.mjs` the row named: `mjs-ratchet.test.ts` judges the `.mjs` files against `mjs-ratchet.baseline.json` and a new test is `.ts`.
 // Each claim below carries a positive control and a negative one, so none of them is an emptiness assertion that
 // passes because nothing was looked at.
 import { test } from "node:test";

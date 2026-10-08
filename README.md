@@ -34,8 +34,8 @@ with the project's compiler. Tested on Node 22.22.1.
 
 ## Source is TypeScript
 
-**A new source file is `.ts`, and a `.mjs` you touch may convert in the same pull request** (ADR 0043, a11ign/a11ign#3550). `src/packaging/mjs-source-count.test.ts` pins how
-many `.mjs` source files there are and fails when the count RISES; a pull request that converts one lowers the pin in the same diff, so the pin is the progress report.
+**A new source file is `.ts`, and a `.mjs` you touch may convert in the same pull request** (ADR 0043, a11ign/a11ign#3550). `src/packaging/mjs-ratchet.test.ts` judges the
+`.js`/`.mjs`/`.cjs` source files against `mjs-ratchet.baseline.json` and fails on a file the baseline does not list, so the count can only go down and there is no raise.
 The mapping from `@ts-check` JSDoc to types is in the ADR's table.
 
 **One limit, until the tool is built rather than run from source:** a `.ts` that a shipped command imports does not load under the host's `node` (22.22.1 is built without
