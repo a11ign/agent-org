@@ -58,7 +58,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 227 to 228 (a11ign/a11ign#4050): `src/unpark-satisfied.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript). It un-parks a parked row whose every condition is true, on the tick; its test is `unpark-satisfied.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 56 to 57 below.
 // 228 to 229 (a11ign/a11ign#4071): `src/trace/otel-receiver.mjs` is a NEW source file that a shipped unit runs (`otel-receiver.service`, `/usr/bin/node src/trace/otel-receiver.mjs`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 229 to 230 (a11ign/a11ign#4078): `src/row-tracker.mjs` is a NEW source file that a shipped command imports (`row-file.mjs`, `pnpm run row-file`, run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript). It is the pure function that names a row's tracker.
-const SOURCE_MJS_PIN = 230;
+// 230 to 231 (a11ign/a11ign#4124): `src/found-by-chairman.mjs` is a NEW source file that a shipped command imports (`board-data.mjs`, which `board-document.mjs` and `board-report.mjs` run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 231;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
@@ -76,7 +77,8 @@ const SOURCE_MJS_PIN = 230;
 // 58 to 59 (a11ign/a11ign#4078): `row-tracker.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 59 to 60 (a11ign/a11ign#4070): `wake-calm-arm.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 60 to 62 (a11ign/a11ign#4080): `ready-label-audit.test.mjs` and `board-report-trackers.test.mjs` are two of the test files the row's Acceptance command names (run under plain `node --test`), so they are `.mjs`.
-const TEST_MJS_PIN = 62;
+// 62 to 63 (a11ign/a11ign#4124): `found-by-chairman.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 63;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
