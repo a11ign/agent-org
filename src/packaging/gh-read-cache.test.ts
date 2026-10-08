@@ -6,12 +6,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpDirForFile } from "../lib/tmp-fixture.ts";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const WORKERS = "a11ign-ai-workers";
 const NOW = "2026-10-08T15:00:00Z";
@@ -27,7 +26,7 @@ const WRAPPER = (() => {
 
 /** A stub `gh-real` that numbers its calls, so the SECOND answer of an uncached read differs from the first and a cache hit is the first one repeated. */
 const host = () => {
-  const root = mkdtempSync(join(tmpdir(), "gh-read-cache-4148-"));
+  const root = tmpDir("gh-read-cache-4148-");
   const cfg = join(root, "cfg");
   mkdirSync(cfg);
   writeFileSync(join(cfg, "hosts.yml"), `github.com:\n    user: ${WORKERS}\n    oauth_token: not-a-token\n`);

@@ -8,20 +8,18 @@
 // THE POSITIVE CONTROL for "the rollup survives the trim" is the ledger ALONE: after the trim it holds fewer lines than were written, so a rollup that counted nothing
 // would show up as a total short of what the wrapper was called.
 
-import { after, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.mjs";
-import { tmpDirForFile } from "../lib/tmp-fixture.ts";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.mjs` resolves the checkout it serves when it is imported, and with no
 // `$AGENT_ORG_HOST` that is wherever the suite happens to be run from, which refuses. The host file is set FIRST and the tool imported AFTER it, so the acceptance command as written runs.
-const SCRATCH = mkdtempSync(join(tmpdir(), "gh-per-hour-project-"));
-after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const SCRATCH = tmpDirForFile("gh-per-hour-project-");
 const PROJECT = join(SCRATCH, "project");
 cpSync(fileURLToPath(new URL("./fixtures/org-health/project", import.meta.url)), PROJECT, { recursive: true });
 const HOST_FILE = join(SCRATCH, "host.json");
@@ -72,7 +70,7 @@ const WRAPPER = (() => {
 })();
 
 const host = () => {
-  const root = mkdtempSync(join(tmpdir(), "gh-per-hour-4148-"));
+  const root = tmpDir("gh-per-hour-4148-");
   const cfg = join(root, "cfg");
   mkdirSync(cfg);
   writeFileSync(join(cfg, "hosts.yml"), `github.com:\n    user: ${WORKERS}\n    oauth_token: not-a-token\n`);

@@ -4,17 +4,16 @@
 // that cannot say is a CHANGE (fail towards reading), a repository with no Actions is a steady state and not one, and the tag is sent WITHOUT its `W/` (measured: the prefixed one came
 // back 200 and cost a point). THE POSITIVE CONTROL for "unchanged" is the same refresh with a 200 in the stub's place, which moves the generation.
 
-import { after, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_UNCHANGED_SECONDS, parseAnswer, probeOnce, probePaths, refreshTickSnapshot, slugOf } from "../tick-snapshot.mjs";
+import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE: see `org-health-auto-off-refusal.test.ts`. `work-tick.mjs` resolves the checkout it serves when it is imported.
-const SCRATCH = mkdtempSync(join(tmpdir(), "tick-snapshot-project-"));
-after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const SCRATCH = tmpDirForFile("tick-snapshot-project-");
 const PROJECT = join(SCRATCH, "project");
 cpSync(fileURLToPath(new URL("./fixtures/org-health/project", import.meta.url)), PROJECT, { recursive: true });
 const HOST_FILE = join(SCRATCH, "host.json");
@@ -68,7 +67,7 @@ test("#4148: a probe sends the held tag and reads 304 as unchanged, 200 with a n
   assert.equal(send("absent", "HTTP/2.0 404 Not Found\r\n\r\n").args.includes("-H"), false, "and `absent` is never sent as a tag");
 });
 
-const configDir = () => mkdtempSync(join(tmpdir(), "tick-snapshot-cfg-"));
+const configDir = () => tmpDir("tick-snapshot-cfg-");
 const gen = (dir: string, repo: string) => {
   const path = join(dir, "read-cache", "gen", slugOf(repo));
   return existsSync(path) ? readFileSync(path, "utf8").trim().split(" ").map(Number) : null;
