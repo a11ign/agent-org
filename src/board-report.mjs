@@ -28,6 +28,7 @@ import {
   conflictMetrics, readyRows} from "./board-data.mjs";
 import { editionDay } from "./board-discussion.mjs";
 import { liveToolVersion } from "./lib/tool-version.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.mjs";
 
 const argv = process.argv.slice(2);
@@ -560,7 +561,7 @@ function facts(since, sinceLabel) {
   const { latestGate, gateIsFresh, fleetHours } = reported();
   const conflict = conflictMetrics(since);
 
-  const closed = all.filter((/** @type {any} */ i) => i.state === "CLOSED" && i.closedAt && Date.parse(i.closedAt) >= Date.parse(since));
+  const closed = closedSince(all, since);
   // Meta rows are containers, not work -- see `countable` in board-data.mjs, and section 6 prints the rule.
   const open = countable(all.filter((/** @type {any} */ i) => i.state === "OPEN"));
   const blockers = open.filter((/** @type {any} */ i) => i.milestone?.title === MILESTONE);
@@ -568,7 +569,53 @@ function facts(since, sinceLabel) {
   const awaiting = open.filter((/** @type {any} */ i) => i.labelNames.includes("awaiting-merge"));
 
   return { since, sinceLabel, all, ms, merges, unpushed, strays, latestGate, gateIsFresh,
-    fleetHours, closed, open, blockers, ready, awaiting, conflict, flow: readFlow(Date.now()) };
+    fleetHours, closed, open, blockers, ready, awaiting, conflict, flow: readFlow(Date.now()),
+    otherTrackers: readOtherTrackers({ trackers: homeProjectDeclaration().tracker, since }) };
+}
+
+/** @param {any[]} all @param {string} since */
+const closedSince = (all, since) => all.filter((i) => i.state === "CLOSED" && i.closedAt && Date.parse(i.closedAt) >= Date.parse(since));
+
+/** A row's name where two trackers' rows share one table: `agent-org#7` beside `#7`, because both trackers have a row 7 (#4080). @param {string} key @param {number} number */
+export const trackerRowName = (key, number) => (key === "" ? `#${number}` : `${key}#${number}`);
+
+/**
+ * #4080 (row 2 of #4056): EVERY DECLARED TRACKER OTHER THAN THE HOME ONE, read the way the home tracker is (`issues()`, paged and proved complete). The home tracker is
+ * the one `REPO` names, and `facts()` reads it with the rest of the edition; a tracker whose repository is `REPO` is skipped here so no tracker is read twice. A read that
+ * fails is `unread` NAMING that tracker and its cause, and the other trackers' rows are still returned: a refused tracker is never an empty one.
+ * @param {{ trackers: readonly { key: string, repo: string }[], since: string, run?: (args: string[]) => string }} input
+ * @returns {{ key: string, repo: string, open?: any[], ready?: any[], closed?: any[], unread?: string }[]}
+ */
+export function readOtherTrackers({ trackers, since, run = gh }) {
+  return trackers.filter((tracker) => tracker.repo !== REPO).map(({ key, repo }) => {
+    try {
+      const all = issues({ run, repo });
+      const open = countable(all.filter((/** @type {any} */ i) => i.state === "OPEN"));
+      return { key, repo, open, ready: readyRows(open), closed: closedSince(all, since) };
+    } catch (cause) {
+      return { key, repo, unread: /** @type {Error} */ (cause).message.split("\n")[0] };
+    }
+  });
+}
+
+/**
+ * One section per tracker beyond the home one (#4080), after the home queue and its flow. Rows carry the key form so a row 7 here is not the home tracker's. The queue flow
+ * and the milestone are the home tracker's alone: the flow reads that repository's label-event log, and a second tracker has no `v1` milestone to be late against.
+ * @param {any} d @param {string[]} L
+ */
+export function otherTrackerSections(d, L) {
+  for (const t of d.otherTrackers ?? []) {
+    L.push("");
+    L.push(`## Tracker${t.key === "" ? "" : ` \`${t.key}\``} (${t.repo})`);
+    if (t.unread !== undefined) {
+      L.push(`**NOT READ** — ${t.unread}. The rows of \`${t.repo}\` are absent from this edition, which is not the same as there being none.`);
+      continue;
+    }
+    L.push(`**Ready ${t.ready.length}** · **Open ${t.open.length}** · **Closed in this window ${t.closed.length}**`);
+    const link = (/** @type {any} */ r) => `- [${trackerRowName(t.key, r.number)}](${r.url}) ${r.title}`;
+    if (t.ready.length > 0) L.push("", "Ready:", ...t.ready.map(link));
+    if (t.closed.length > 0) L.push("", "Closed:", ...t.closed.map(link));
+  }
 }
 
 /**
@@ -622,6 +669,7 @@ export function render(d, now = new Date(), readVersion = () => readToolVersionL
   conflictMetricsSection(d, L);
   queue(d, L);
   flow(d, L);
+  otherTrackerSections(d, L);
   return L.join("\n");
 }
 

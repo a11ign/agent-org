@@ -30,6 +30,7 @@ import { conditionHolds, declaredWaitsOf, waitItemOf } from "./wait-condition.mj
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.mjs";
 import { ANSWER_PREFIX, BACKLOG_LABEL, LANE_ANY_LABEL, LANE_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX } from "./project-vocabulary.mjs";
 import { readAgents, listingIsComplete } from "./herdr-agents.mjs";
+import { homeProjectDeclaration } from "./project-config.mjs";
 
 export const QUESTIONS = Object.freeze({
   EPIC_DONE: "epic-all-closed",
@@ -60,8 +61,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *             comments?: { body?: string, createdAt?: string }[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string }} BoardRow
  * @typedef {{ number: number, body?: string }} MergedPr
  * @typedef {{ now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null,
- *             waitFacts: import("./wait-condition.mjs").WaitFacts | null }} BoardFacts
- * @typedef {{ question: string, number: number, field: string, detail: string, route: string }} Finding
+ *             waitFacts: import("./wait-condition.mjs").WaitFacts | null, others?: OtherTracker[] }} BoardFacts `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker
+ * @typedef {{ key: string, repo: string, codeRepo?: string }} DeclaredTracker `codeRepo` is the code repository of the same key, where the pull requests that close this tracker's rows are
+ * @typedef {{ key: string, repo: string, facts: BoardFacts | null, why?: string }} OtherTracker `facts` is `null` when its open rows could not be read, and `why` says what the read said
+ * @typedef {{ question: string, number: number, field: string, detail: string, route: string, key?: string }} Finding `key` is the tracker's, absent for the first tracker's own rows (#4080)
  */
 
 /** @param {BoardRow} row @returns {string[]} */
@@ -231,16 +234,39 @@ const READERS = [
 ];
 
 /**
- * ASK ALL SEVEN QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no
- * fact) and is named in `unread`, so the table never states health it did not read.
+ * ASK ALL SEVEN QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no fact) and is named in `unread`, so the table never states health it did not read.
  * @param {BoardFacts} facts
  * `filing` is how many rows were EXCUSED from the state-label question because they are being filed (#4048), so the table can say it rather than read them as agreeing.
- * @returns {{ findings: Finding[], unread: string[], filing: number }}
+ * #4080: EVERY KEYED TRACKER IS ASKED THE SAME QUESTIONS (`facts.others`), its findings tagged with its key. `notAsked` is what a keyed tracker is not asked on purpose: the wait facts are the gate's, read for the
+ * first tracker's rows only, so that question is said NOT ASKED rather than listed unread (which would stop the day's table ever being posted).
+ * @returns {{ findings: Finding[], unread: string[], filing: number, notAsked?: string[] }} `notAsked` is absent with one declared tracker, so its audit is the one it always was
  */
 export function boardTruthAudit(facts) {
+  const own = askAll(facts);
+  const others = (facts.others ?? []).map(askOther);
+  const findings = [...own.findings, ...others.flatMap((o) => o.findings)];
+  const unread = [...own.unread, ...others.flatMap((o) => o.unread)];
+  const notAsked = others.flatMap((o) => o.notAsked);
+  return { findings, unread, filing: own.filing + others.reduce((sum, o) => sum + o.filing, 0), ...(notAsked.length > 0 && { notAsked }) };
+}
+
+/** @param {BoardFacts} facts @returns {{ findings: Finding[], unread: string[], filing: number }} one tracker's own answers */
+function askAll(facts) {
   const findings = READERS.flatMap(([, ask]) => ask(facts)).sort((a, b) => a.number - b.number || a.question.localeCompare(b.question));
   return { findings, unread: READERS.filter(([, , read]) => !read(facts)).map(([question]) => question), filing: rowsBeingFiled(facts.openRows, facts).length };
 }
+
+/** @param {OtherTracker} other @returns {{ findings: Finding[], unread: string[], filing: number, notAsked: string[] }} */
+function askOther({ key, facts, why }) {
+  if (facts === null) return { findings: [], unread: [`${key}: the open rows (${why})`], filing: 0, notAsked: [] };
+  const answered = askAll(facts);
+  const notWaits = (/** @type {string} */ question) => question !== QUESTIONS.WAIT_TRUE;
+  return { findings: answered.findings.map((f) => ({ ...f, key })), unread: answered.unread.filter(notWaits).map((q) => `${key}: ${q}`), filing: answered.filing,
+    notAsked: answered.unread.filter((q) => !notWaits(q)).map((q) => `${key}: ${q}`) };
+}
+
+/** A row's name in a table two trackers share: `agent-org#7` beside the first tracker's `#7`, because both trackers have a row 7 (#4080). @param {Finding} f */
+const rowName = (f) => `${f.key ? `${f.key}#` : "#"}${f.number}`;
 
 /** The first line of a table, which is what a second tick looks for on #928. @param {string} day */
 const tableHeading = (day) => `### Board against reality, ${day}`;
@@ -248,15 +274,16 @@ const tableHeading = (day) => `### Board against reality, ${day}`;
 /**
  * THE DAY'S TABLE: the count first, then one line per finding with the field to fix and who reads it. `0 disagree` is stated when it is true.
  * A row EXCUSED as being filed (#4048) is named `N filing, not judged` beside the count: it is neither a disagreement nor an agreement.
- * @param {{ findings: Finding[], unread: string[], filing?: number }} audit @param {string} day `YYYY-MM-DD`
+ * @param {{ findings: Finding[], unread: string[], filing?: number, notAsked?: string[] }} audit @param {string} day `YYYY-MM-DD`
  * @returns {string}
  */
-export function boardTruthTable({ findings, unread, filing = 0 }, day) {
+export function boardTruthTable({ findings, unread, filing = 0, notAsked = [] }, day) {
   const filingNote = filing === 0 ? "" : `, ${filing} filing, not judged`;
   const unreadNote = unread.length === 0 ? "" : ` -- NOT READ, so not counted as agreeing: ${unread.join(", ")}`;
-  const head = [tableHeading(day), "", `**${findings.length} disagree**${filingNote}${unreadNote}`];
+  const notAskedNote = notAsked.length === 0 ? "" : ` -- NOT ASKED: ${notAsked.join(", ")}`;
+  const head = [tableHeading(day), "", `**${findings.length} disagree**${filingNote}${unreadNote}${notAskedNote}`];
   if (findings.length === 0) return head.join("\n");
-  const rows = findings.map((f) => `| #${f.number} | ${f.question} | ${f.field} | ${f.detail} | ${f.route} |`);
+  const rows = findings.map((f) => `| ${rowName(f)} | ${f.question} | ${f.field} | ${f.detail} | ${f.route} |`);
   return [...head, "", "| row | question | field to fix | what disagrees | to |", "|---|---|---|---|---|", ...rows].join("\n");
 }
 
@@ -269,19 +296,49 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256
  * likely to repeat. The closed rows ask for no body (2.4 MB of the 2.5 MB the read measured on 2026-10-08, and no question reads it).
  * #4045: THE TICK HANDS ITS OWN READS IN. `openRows` is the open list the gate already holds (so the 1000-row read, comments and all, is not made a second time) and `waitFacts` the
  * facts its wait pass built; a caller that gives neither gets the old behaviour, the open rows read here and the wait facts `null` (unread).
+ * #4080: EVERY KEYED TRACKER IS READ TOO, by the same three reads aimed at its own repository (its merged PRs from the code repository of the same key). `repo` stays the first tracker's: the
+ * tick hands its rows in and the table is posted there. A tracker whose open rows are refused is `facts: null` with what `gh` said, so it is named unread and the first tracker's rows still stand.
  * @param {string} repo `owner/name`
- * @param {{ run?: (args: string[]) => string, agents?: typeof readAgents, now?: number, openRows?: BoardRow[], waitFacts?: BoardFacts["waitFacts"] }} [io]
+ * @param {{ run?: (args: string[]) => string, agents?: typeof readAgents, now?: number, openRows?: BoardRow[], waitFacts?: BoardFacts["waitFacts"], trackers?: DeclaredTracker[] }} [io]
  * @returns {BoardFacts} `openRows` is not guarded: a refused open-row read throws, because there is no board to read without it
  */
-export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null } = {}) {
+export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null, trackers = declaredTrackers() } = {}) {
   const json = (/** @type {string[]} */ args) => JSON.parse(run([...args, "--repo", repo]));
   const orUnread = (/** @type {string[]} */ args) => { try { return json(args); } catch { return null; } };
-  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,state,comments,subIssuesSummary,createdAt,blockedBy"]);
+  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);
   const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
   const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body"]);
   const listed = agents();
   const liveSessions = listed !== null && listingIsComplete(listed) ? listed.map((a) => a.label) : null;
-  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts };
+  const others = trackers.filter((tracker) => tracker.key !== "").map((tracker) => readOtherTracker(tracker, { run, now, liveSessions }));
+  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts, ...(others.length > 0 && { others }) };
+}
+
+const OPEN_ROW_FIELDS = "number,title,body,labels,state,comments,subIssuesSummary,createdAt,blockedBy";
+
+/** The declared trackers with the code repository of the same key beside each. Read on use, so a file that never reads a second tracker never needs the declaration. @returns {DeclaredTracker[]} */
+function declaredTrackers() {
+  const { tracker, code } = homeProjectDeclaration();
+  return tracker.map(({ key, repo }) => ({ key, repo, ...(code.some((c) => c.key === key) && { codeRepo: code.find((c) => c.key === key)?.repo }) }));
+}
+
+/**
+ * ONE KEYED TRACKER'S FACTS. Its open rows are read with their comments (nobody hands them in), its sessions are the org's, and its wait facts are `null`: they are built by the gate for the first tracker's rows.
+ * @param {DeclaredTracker} tracker @param {{ run: (args: string[]) => string, now: number, liveSessions: string[] | null }} io @returns {OtherTracker}
+ */
+function readOtherTracker({ key, repo, codeRepo }, { run, now, liveSessions }) {
+  const json = (/** @type {string} */ aimed, /** @type {string[]} */ args) => JSON.parse(run([...args, "--repo", aimed]));
+  const orUnread = (/** @type {string} */ aimed, /** @type {string[]} */ args) => { try { return json(aimed, args); } catch { return null; } };
+  /** @type {BoardRow[]} */
+  let openRows;
+  try {
+    openRows = json(repo, ["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);
+  } catch (error) {
+    return { key, repo, facts: null, why: (error instanceof Error ? error.message : String(error)).split("\n")[0] };
+  }
+  const closedRows = orUnread(repo, ["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
+  const mergedPrs = codeRepo === undefined ? null : orUnread(codeRepo, ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body"]);
+  return { key, repo, facts: { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts: null } };
 }
 
 /** The record the day's table is posted on (#4045). A row the org owns, not a pull request: it is `ceo`'s and the chairman's reading place. */

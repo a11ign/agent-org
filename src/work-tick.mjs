@@ -341,7 +341,7 @@ function finish(code, run) {
   process.exit(code);
 }
 
-/** The one GitHub object the last completion lives in (a11ign/a11ign#3880): a variable of the project's tracker repository (the declaration's first), because it is ONE value overwritten in place, where a comment stream grows. */
+/** The one GitHub object the last completion lives in (a11ign/a11ign#3880): a variable of EACH declared tracker's repository (#4080; the standing comment is the first's alone), because it is ONE value overwritten in place, where a comment stream grows. */
 export const HEARTBEAT_VARIABLE = "GATE_LAST_TICK";
 /**
  * ITS SIBLING FOR A READER WITH NO TOKEN (a11ign/a11ign#3896): the control plane's token has no scopes, and GitHub answers it `403` for an Actions variable
@@ -378,22 +378,39 @@ function whatGhSaid(err) {
  * Two writes, each failing alone: the variable (the host's own readers) and the standing comment (the reader with no token, #3896). A write that fails is said on
  * stderr and changes nothing else, for the reason `finish` gives: the reader then sees a stale value, which is the outcome that counts. The variable must already
  * exist (`gh api -X POST repos/<repo>/actions/variables`) and so must the comment; a missing one fails here and says so.
- * @param {number} at epoch milliseconds @param {(file: string, args: string[], options: object) => unknown} [run] @returns {void}
+ * @param {number} at epoch milliseconds @param {(file: string, args: string[], options: object) => unknown} [run]
+ * @param {() => readonly { repo: string }[]} [readTrackers] the declared trackers; a seam so a test needs no project declaration @returns {void}
  */
-export function writeHeartbeat(at, run = execFileSync) {
-  let repo = "the tracker";
+export function writeHeartbeat(at, run = execFileSync, readTrackers = () => homeProjectDeclaration().tracker) {
+  /** @type {readonly { repo: string }[]} */
+  let trackers;
   try {
-    repo = homeProjectDeclaration().tracker[0].repo;
+    trackers = readTrackers();
   } catch (err) {
-    process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
+    process.stderr.write(`HEARTBEAT NOT WRITTEN to the tracker variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
     return;
   }
   const options = { stdio: ["ignore", "ignore", "pipe"], timeout: HEARTBEAT_TIMEOUT_MS };
+  // #4080: EVERY declared tracker's repository holds the variable, a refusal on one naming that repository and stopping no other write. The standing comment is
+  // the FIRST tracker's alone: `HEARTBEAT_COMMENT_ID` is an object of that repository (a PATCH of it through another repository's path is a 404), and the one reader
+  // of it (`gate-heartbeat.mjs` of the control repository) reads that one object, so a second comment would have no reader.
+  trackers.forEach(({ repo }, index) => {
+    writeHeartbeatVariable({ at, repo, run, options });
+    if (index === 0) writeHeartbeatComment({ at, repo, run, options });
+  });
+}
+
+/** @param {{ at: number, repo: string, run: (file: string, args: string[], options: object) => unknown, options: object }} write @returns {void} */
+function writeHeartbeatVariable({ at, repo, run, options }) {
   try {
     run("gh", ["api", "-X", "PATCH", `repos/${repo}/actions/variables/${HEARTBEAT_VARIABLE}`, "-f", `value=${at}`], options);
   } catch (err) {
     process.stderr.write(`HEARTBEAT NOT WRITTEN to ${repo} variable ${HEARTBEAT_VARIABLE}: ${whatGhSaid(err)}. A reader off this host will see the previous value.\n`);
   }
+}
+
+/** @param {{ at: number, repo: string, run: (file: string, args: string[], options: object) => unknown, options: object }} write @returns {void} */
+function writeHeartbeatComment({ at, repo, run, options }) {
   try {
     run("gh", ["api", "-X", "PATCH", `repos/${repo}/issues/comments/${HEARTBEAT_COMMENT_ID}`, "-f", `body=${heartbeatCommentBody(at)}`], options);
   } catch (err) {

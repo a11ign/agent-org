@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   compareReadings, dailyMeans, isWake, matchLedger, measure, parseArgs, parseLedger, parseTranscript, readMergedPulls, renderReading, reviewerTarget, rowsClosedBy, workerRowFor,
 } from "./wakes-per-row.mjs";
+import * as everyTracker from "./wakes-per-row.mjs"; // the readers #4080 adds, by namespace so a run without them fails each test and not the file's import
 
 const at = (iso) => Date.parse(iso);
 const WINDOW = { from: at("2026-10-04T00:00:00Z"), to: at("2026-10-04T13:00:00Z") };
@@ -375,4 +376,65 @@ test("run as a command a failed read exits 1 with the error on stderr, never 0 a
   assert.equal(run.status, 1, `stderr: ${run.stderr}`);
   assert.match(run.stderr, /rate limit exceeded|gh/i, "the cause is printed");
   assert.equal(run.stdout, "", "no reading is printed from a failed read");
+});
+
+// ---- #4080: a row of EVERY declared tracker is a row, not only the first tracker's ----------------------------------------------------------------
+const TRACKERS = [{ key: "", repo: ROW_REPO }, { key: "agent-org", repo: "a11ign/agent-org" }];
+const PR_ORG_ROW = { repo: "a11ign/agent-org", number: 135, createdAt: "2026-10-04T11:06:00Z", mergedAt: "2026-10-04T11:19:39Z", body: "Closes a11ign/agent-org#3390\n" };
+/** Today's report below its DEFINITIONS, recorded from the unfixed code (the definitions are prose that moves for its own reasons). */
+const ONE_TRACKER_SNAPSHOT = `window by merge time: 2026-10-04T00:00:00.000Z .. 2026-10-04T13:00:00.000Z
+merged rows: 1 (measured 1, UNMEASURED 0)
+wakes attributed: 3; wakes per merged row: mean 3.00, median 3.00
+wakes after the row's last pull request opened: 2; after it merged: 1; stale at typing: 2
+bytes per wake: 109.00; compactions seen: 1
+daily mean wakes per row: 2026-10-04=3.00 (n=1)
+causes: {"ready-row-unclaimed":1,"blocker-cleared":1,"claim-stalled":1}
+REMAINDER (no merged row): 0 wakes; by session {}; by reason {}
+ledger lines with no transcript wake: 0; Codex reviewer rollouts (own line, not folded in): not read`;
+
+test("#4080: a closing line names the row of whichever declared tracker it points at; a bare number is the project's own", () => {
+  assert.deepEqual(everyTracker.rowsClosedInTrackers("Closes #7\n", TRACKERS), [{ key: "", row: 7 }]);
+  assert.deepEqual(everyTracker.rowsClosedInTrackers("Closes a11ign/agent-org#7\n", TRACKERS), [{ key: "agent-org", row: 7 }]);
+  assert.deepEqual(everyTracker.rowsClosedInTrackers("Closes #7, a11ign/agent-org#7\n", TRACKERS), [{ key: "", row: 7 }, { key: "agent-org", row: 7 }], "the same number in two trackers is two rows");
+  assert.deepEqual(everyTracker.rowsClosedInTrackers("Closes other/repo#7\nCloses: none -- a11ign/agent-org#8\n", TRACKERS), []);
+});
+
+test("#4080: a row that exists ONLY in the second tracker is measured, and its claimant's wakes are attributed to it", () => {
+  const reading = run({ pulls: [PR_ORG_ROW], trackers: TRACKERS, instances: [{ ...INSTANCE_3390, rows: ["agent-org#3390"] }], claimedAt: new Map([["agent-org#3390", at("2026-10-04T10:35:57Z")]]) });
+  assert.equal(reading.mergedRows, 1);
+  assert.equal(reading.rows[0].key, "agent-org");
+  assert.equal(reading.attributedWakes, 3);
+  assert.equal(reading.measuredRows, 1);
+});
+
+test("#4080: the same row number in both trackers stays TWO rows, and the table names each in its key form", () => {
+  const reading = run({ pulls: [PR_134, PR_ORG_ROW], trackers: TRACKERS });
+  assert.equal(reading.mergedRows, 2);
+  assert.deepEqual(reading.rows.map((row) => [row.row, row.key ?? ""]), [[3390, ""], [3390, "agent-org"]]);
+  assert.equal(reading.attributedWakes, 3, "the home row's claimant is counted once, not once per row of that number");
+  const text = everyTracker.renderReading(reading);
+  assert.match(text, /UNMEASURED row agent-org#3390: no claimant recorded/);
+  assert.doesNotMatch(text, /UNMEASURED row #3390/);
+});
+
+test("#4080: a claim record unreadable on the second tracker names that tracker, and the first tracker's claim time is still read", () => {
+  const asked = [];
+  const read = (row, repo) => { asked.push(`${repo}#${row}`); if (repo === "a11ign/agent-org") throw new Error("HTTP 410: Issues are disabled for this repo\nbody"); return 1234; };
+  const { claimedAt, unreadClaims } = everyTracker.readClaims([{ row: 3390 }, { row: 3390, key: "agent-org" }], TRACKERS, read);
+  assert.deepEqual(asked, ["a11ign/a11ign#3390", "a11ign/agent-org#3390"], "each row is asked of ITS tracker's repository");
+  assert.equal(claimedAt.get(3390), 1234);
+  assert.equal(claimedAt.get("agent-org#3390"), null);
+  assert.deepEqual(unreadClaims, [{ tracker: "agent-org (a11ign/agent-org)", reason: "HTTP 410: Issues are disabled for this repo" }]);
+  const text = everyTracker.renderReading(run({ unreadClaims }));
+  assert.match(text, /UNREAD claim records of tracker agent-org \(a11ign\/agent-org\): HTTP 410/);
+});
+
+test("#4080: with ONE declared tracker the reading is exactly the one it was: no key, no unread-claims field, the same text", () => {
+  const one = run({ trackers: [TRACKERS[0]] });
+  assert.deepEqual(one, run());
+  assert.equal("key" in one.rows[0], false);
+  assert.equal("unreadClaims" in one, false);
+  const text = everyTracker.renderReading(one);
+  assert.equal(text.slice(text.indexOf("window by merge time")), ONE_TRACKER_SNAPSHOT);
+  assert.equal(everyTracker.readClaims([{ row: 3390 }], [TRACKERS[0]], () => 99).unreadClaims.length, 0);
 });
