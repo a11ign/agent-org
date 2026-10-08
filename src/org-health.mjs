@@ -651,16 +651,17 @@ export function poolLowReading({ pools }) {
 
 /**
  * SIGNAL: AN OPEN ROW IS NOT IN EXACTLY ONE STATE (#3942). THE RULE IS `stateLabelFindings`' (the leaf the audit reads too), over the open rows
- * the tick already read, so it costs no call. It trips THE TICK A ROW APPEARS, with no grace: a row in no state is absent from the Ready lane and
+ * the tick already read, so it costs no call. It trips THE TICK A ROW APPEARS, with one grace (#4048: a row `row-file` is still filing, below): a row in no state is absent from the Ready lane and
  * the claim pool and nothing else will ever name it (fifteen stood for days behind `labellessRows`, which a `lane:any` label satisfied), and a
  * row in two is read two ways by two readers. KEYED ON THE NUMBERS AND THEIR KIND, not an hour: the set changes only when a row enters, leaves
  * or changes kind, so one standing set is one order however many ticks it lasts. `null` is a refused read, which is unknown and never clear.
- * @param {{ rows: { number: number, state?: string, labels?: (string | { name?: string })[] }[] | null }} input
+ * #4048: GIVEN `now`, a row with no state label younger than `FILING_GRACE_MS` is a row `row-file` is still filing (it adds the label last), not a finding.
+ * @param {{ rows: { number: number, state?: string, createdAt?: string, labels?: (string | { name?: string })[] }[] | null, now?: number }} input
  * @returns {Reading}
  */
-export function stateLabelReading({ rows }) {
+export function stateLabelReading({ rows, now }) {
   if (rows === null) return unknown(SIGNALS.STATE_LABEL, "the open rows could not be read, so no row is known to be in exactly one state");
-  const found = stateLabelFindings(rows).sort((a, b) => a.number - b.number);
+  const found = stateLabelFindings(rows, { now }).sort((a, b) => a.number - b.number);
   if (found.length === 0) return clear(SIGNALS.STATE_LABEL);
   const none = found.filter((f) => f.kind === "NONE");
   const many = found.filter((f) => f.kind === "MANY");
@@ -1144,7 +1145,7 @@ export function orgHealthReadings(facts) {
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
-  if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows }));
+  if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows, now: facts.now }));
   if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));

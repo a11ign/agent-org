@@ -115,6 +115,15 @@ test("a caller that gives no `now` excuses nothing (row-claim's one-row re-read)
   assert.equal(stateLabelFindings([dated(8, ["meta"], created(-3600))], { now: NOW }).length, 1, "CONTROL: an hour in the future is a bad read, judged");
 });
 
+test("the tick's signal: a stateless row filed 13 s ago is clear, the same row 10 minutes old trips, and a tick that gives no `now` excuses nothing", () => {
+  const young = [dated(4047, ["meta"], created(13))];
+  assert.equal(stateLabelReading({ rows: young, now: NOW }).status, "clear");
+  assert.equal(stateLabelReading({ rows: [dated(4047, ["meta"], created(600))], now: NOW }).status, "tripped");
+  assert.equal(stateLabelReading({ rows: young }).status, "tripped", "CONTROL: no `now`, no grace");
+  const readings = orgHealthReadings({ now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: {}, drift: null, primarySince: null, stateRows: young } as never);
+  assert.equal(readings.find((r) => r.signal === SIGNALS.STATE_LABEL)?.status, "clear", "and `orgHealthReadings` passes the tick's own `now` through");
+});
+
 test("`rowsBeingFiled` names exactly the rows the grace excused, so a reader can count them", () => {
   const rows = [dated(10, ["meta"], created(13)), dated(11, ["meta"], created(600)), dated(12, ["ready"], created(13)), dated(13, ["backlog", "epic"], created(13)),
     { ...dated(14, ["meta"], created(13)), state: "CLOSED" }, dated(15, ["meta"])];

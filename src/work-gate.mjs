@@ -1564,10 +1564,10 @@ export function readOpenRows(run = defaultRun) {
   try {
     // ONE READ, SEVERAL CAUSES. `answer-owed` needs the labels and `blocked-without-a-referent` needs
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
-    // count where `GH_READS` says it is. #4042: `subIssuesSummary` RIDES THIS READ so the epic causes
+    // count where `GH_READS` says it is. #4048: `createdAt` RIDES IT TOO, so `stateLabelFindings` can tell a row being filed from one in no state. #4042: `subIssuesSummary` RIDES THIS READ so the epic causes
     // (`epicRowsOf`) are answered from rows already in hand on every tick, not by a second call.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary"]));
+      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
