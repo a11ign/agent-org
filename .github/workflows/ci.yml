@@ -87,9 +87,11 @@ jobs:
         run: node scripts/lay-layer.mjs lab # in-project
       # `tsx`, `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
+      # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
+      # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.1.5 is the last version that ships `dist/`; move this pin deliberately, to a release that does.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
-          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@^0.1.2"
+          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.1.5"
           mv node_modules project/node_modules
       - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
         run: |
