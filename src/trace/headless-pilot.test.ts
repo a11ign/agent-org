@@ -1,6 +1,7 @@
 // a11ign/a11ign#4184 (#4055 next wave, item 5): the headless pilot's script, against a FAKE `claude` and a STUB `gh`. No model, no network, no org write.
 // Run with `AGENT_ORG_HOST=<checkout>/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.mjs src/trace/headless-pilot.test.ts`.
 // The git side is real (a local bare `origin` and a clone), so the throwaway worktree is a real worktree and "it does not exist afterwards" is read off the disk.
+// no-token: gh -- `gh` is an injected stub that fails the run on any write; wake.mjs is imported for `addressed` only and its gh readers are never called here
 // Every claim carries a positive control (the same input made valid passes) and a negative one (the input that must be refused or must fail does), so none is an emptiness assertion.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -75,18 +76,18 @@ function fixture(issues: Record<number, ReturnType<typeof issue>>) {
   chmodSync(join(bin, "claude"), 0o755);
   const ghCalls: string[][] = [];
   const gitCalls: string[][] = [];
-  const gh = (args: string[]) => {
+  const ghStub = (args: string[]) => {
     ghCalls.push(args);
     // the stub FAILS THE RUN on anything but a read, whatever the script's own guard did before it
     if (!(args[0] === "issue" && args[1] === "view") && !(args[0] === "api" && !args.includes("-X"))) throw new Error(`STUB gh: a write reached the org: gh ${args.join(" ")}`);
     return JSON.stringify(issues[Number(args[2])] ?? (() => { throw new Error(`no such issue ${args[2]}`); })());
   };
   const git = (args: string[]) => { gitCalls.push(args); return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); };
-  const deps = { gh, git, claudeBin: join(bin, "claude"), scratch: join(root, "scratch"), checkout, recordDir: join(root, "records"), configDir: join(root, "claude-config"), out: () => {} };
+  const deps = { gh: ghStub, git, claudeBin: join(bin, "claude"), scratch: join(root, "scratch"), checkout, recordDir: join(root, "records"), configDir: join(root, "claude-config"), out: () => {} };
   process.env.FAKE_DIR = root;
   process.env.CLAUDE_CONFIG_DIR = deps.configDir;
   const launches = () => (existsSync(join(root, "calls.jsonl")) ? readFileSync(join(root, "calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-  return { root, deps, ghCalls, gitCalls, launches, worktree: join(deps.scratch, `wt-${EVEN_ROW}`) };
+  return { root, deps, ghStub, ghCalls, gitCalls, launches, worktree: join(deps.scratch, `wt-${EVEN_ROW}`) };
 }
 
 const validIssues = () => ({ [NAMED_ON]: issue(NAMED_ON, { body: `Pilot rows.\nPilot-rows: ${EVEN_ROW}, 4302\n` }), [EVEN_ROW]: issue(EVEN_ROW) });
@@ -244,8 +245,8 @@ test("assertGhRead refuses a write and passes a read", () => {
 
 test("the stub itself fails on a write (the negative control for the stub)", () => {
   const f = fixture(validIssues());
-  for (const write of [["issue", "edit", "1"], ["issue", "comment", "1"], ["pr", "create"]]) assert.throws(() => f.deps.gh(write), /a write reached the org/);
-  assert.doesNotThrow(() => f.deps.gh(["issue", "view", String(EVEN_ROW)]));
+  for (const write of [["issue", "edit", "1"], ["issue", "comment", "1"], ["pr", "create"]]) assert.throws(() => f.ghStub(write), /a write reached the org/);
+  assert.doesNotThrow(() => f.ghStub(["issue", "view", String(EVEN_ROW)]));
 });
 
 test("the throwaway worktree is gone after a run that succeeds AND after one that fails", async () => {
