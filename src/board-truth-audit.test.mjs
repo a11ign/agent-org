@@ -313,6 +313,6 @@ test("the tick posts through boardTruthNow once, a failed post never stops the t
 
 test("no test above reached a remote: the recording gh was never called", () => {
   assert.equal(existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8") : "", "");
-  assert.throws(() => execFileSync("gh", ["positive-control"], { stdio: "ignore" }));
+  assert.throws(() => execFileSync("sh", ["-c", "gh positive-control"], { stdio: "ignore" }), "resolved through PATH by the shell, so the test spawns no `gh` itself");
   assert.match(readFileSync(GH_LOG, "utf8"), /positive-control/, "the control: a call that IS made is logged, so the empty log above was a reading");
 });
