@@ -36,7 +36,10 @@
 //
 // A LEAF, RELATIVE IMPORTS ONLY, like `red-pr.mjs`: `work-gate.mjs` imports it before any build.
 import { notBeforeDate, fleetHoldUntil } from "./waiting-condition.mjs";
-import { ANSWER_PREFIX, BLOCKED_LABEL, LANE_PREFIX, LANE_ANY_LABEL } from "./project-vocabulary.mjs";
+import { ANSWER_PREFIX, BLOCKED_LABEL, LANE_PREFIX, LANE_ANY_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.mjs";
+
+/** The label of a row held out of the queue on purpose; `work-gate.mjs` exports the same string as `PARKED_LABEL`, restated because that file imports this one. */
+export const PARKED_LABEL = "parked";
 
 /** How long a `manual` hold, or a hold with no condition at all, is excused: the 2026-10-02 freeze held this long unseen. */
 export const MANUAL_WAIT_HOURS = 4;
@@ -63,6 +66,9 @@ const ITEM_STATES = Object.freeze(["closed", "merged", "labelled", "unlabelled"]
  * condition, and an item carrying one without it is `wait-without-reason`. `wait-condition.test.ts` pins this set and gives each
  * kind a case, so a kind added here without one is red.
  *
+ * `parked` IS A WAIT (#4230, the chairman's root cause 3, 2026-10-08): it holds a row out of the queue and clears only when somebody takes it off, so the
+ * stall signals read it like a `hold:*`. Before this no detector did, and #4090 sat ten hours `parked` on a wait that had been met.
+ *
  * WHO REMOVES THEM (#3364): THE GATE LIFTS a PULL REQUEST's `hold:*` once every `Waiting-for:` it declares is `merged`/`closed` and true
  * (`liftableHolds`, through `pr-hold.mjs --release`, which re-arms). A SESSION lifts everything else: a `hold:*` on a row, a hold whose
  * condition is a label, `manual`, unreadable or unread, and every `answer:*` (its removal IS the answer) and `blocked` (no referent).
@@ -74,6 +80,7 @@ export const WAIT_FIELDS = Object.freeze([
   { kind: "hold:*", selfClears: false },
   { kind: `${ANSWER_PREFIX}*`, selfClears: false },
   { kind: BLOCKED_LABEL, selfClears: false },
+  { kind: PARKED_LABEL, selfClears: false },
   { kind: "blockedBy", selfClears: true },
 ]);
 
@@ -267,6 +274,7 @@ export function waitFieldsOf(item, now) {
     if (label.startsWith("hold:")) found.push({ kind: "hold:*", label });
     else if (label.startsWith(ANSWER_PREFIX)) found.push({ kind: `${ANSWER_PREFIX}*`, label });
     else if (label === BLOCKED_LABEL) found.push({ kind: BLOCKED_LABEL, label });
+    else if (label === PARKED_LABEL) found.push({ kind: PARKED_LABEL, label });
   }
   if (item.openBlockers > 0) found.push({ kind: "blockedBy", label: null });
   return found;
@@ -388,22 +396,37 @@ function gateLiftHolders(item, group, { now, declared }) {
 }
 
 /**
- * @typedef {{ item: WaitItem, fields: string[], quietSince: number | null }} BareWait
- * An item carrying a wait that does not clear itself and no readable condition.
+ * @typedef {{ item: WaitItem, fields: string[], quietSince: number | null, atOnce: boolean }} BareWait
+ * An item carrying a wait that does not clear itself and no readable condition. `atOnce` is a `parked` row and nothing else holding it: a park with no reason is
+ * the defect itself, so it is named without waiting out `MANUAL_WAIT_HOURS` (#4230).
  */
 
 /**
- * EVERY ITEM HOLDING A WAIT NOBODY SAID THE REASON FOR: a `hold:*`, `answer:*` or `blocked` field (the kinds that do not clear
+ * THE WAIT FIELDS THAT NEED A REASON, `parked` only when it stands alone without one. A park is excused by any other thing that says why the row is held: another wait field
+ * (named in its own right), a `Not-before:` the gate can read (past or future: a passed date is `unpark-satisfied`'s to act on, not a park without reason), or `needs:chairman`
+ * (the chairman's brief IS the reason, `board-truth-audit.mjs` rule 2).
+ * @param {WaitItem} item @param {number} now @returns {{ kind: string, label: string | null }[]}
+ */
+function fieldsNeedingAReason(item, now) {
+  const needing = waitFieldsOf(item, now).filter((f) => !WAIT_FIELDS.find((w) => w.kind === f.kind)?.selfClears);
+  const others = waitFieldsOf(item, now).filter((f) => f.kind !== PARKED_LABEL);
+  const excused = others.length > 0 || notBeforeDate(item.body) !== null || item.labels.includes(NEEDS_CHAIRMAN_LABEL);
+  return excused ? needing.filter((f) => f.kind !== PARKED_LABEL) : needing;
+}
+
+/**
+ * EVERY ITEM HOLDING A WAIT NOBODY SAID THE REASON FOR: a `hold:*`, `answer:*`, `parked` or blocked field (the kinds that do not clear
  * themselves) with no readable `Waiting-for:` and no `manual` one. `Waiting-for: soon` is here, never a pass. A `manual` wait is not
  * bare: it is counted by `manualWaits`.
  * @param {{ items: WaitItem[], now: number }} input @returns {BareWait[]}
  */
 export function bareWaits({ items, now }) {
   return items.flatMap((item) => {
-    const needing = waitFieldsOf(item, now).filter((f) => !WAIT_FIELDS.find((w) => w.kind === f.kind)?.selfClears);
+    const needing = fieldsNeedingAReason(item, now);
     const { waits } = declaredWaitsOf(item);
     if (needing.length === 0 || waits.some((w) => w.state !== "unreadable")) return [];
-    return [{ item, fields: needing.map((f) => f.label ?? f.kind), quietSince: item.updatedAt }];
+    const atOnce = needing.every((f) => f.kind === PARKED_LABEL);
+    return [{ item, fields: needing.map((f) => f.label ?? f.kind), quietSince: item.updatedAt, atOnce }];
   });
 }
 

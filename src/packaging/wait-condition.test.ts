@@ -196,9 +196,10 @@ const KIND_CASES: Record<string, Record<string, unknown>> = {
   "hold:*": { labels: [{ name: "hold:ceo" }] },
   "answer:*": { labels: [{ name: "answer:ceo" }] },
   "blocked": { labels: [{ name: "blocked" }] },
+  "parked": { labels: [{ name: "parked" }] },
   "blockedBy": { blockedBy: { nodes: [{ number: 2972, state: "OPEN" }] } },
 };
-const SELF_CLEARS: Record<string, boolean> = { "Not-before": true, "Fleet-hold-until": true, "hold:*": false, "answer:*": false, "blocked": false, "blockedBy": true };
+const SELF_CLEARS: Record<string, boolean> = { "Not-before": true, "Fleet-hold-until": true, "hold:*": false, "answer:*": false, "blocked": false, "parked": false, "blockedBy": true };
 
 test("the wait-field set is pinned, and a kind added without a case is red", () => {
   assert.deepEqual(WAIT_FIELDS.map((f) => f.kind).sort(), Object.keys(KIND_CASES).sort(), "add a case to KIND_CASES for the new kind");

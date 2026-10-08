@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A `parked` row is a wait the stall signals read. `waitFieldsOf` and `WAIT_FIELDS` now list `parked` (it clears only when somebody takes it off), so the stale-wait signal (8) reads a parked row's `Waiting-for:` like a held one's and the wait-without-reason signal (9) names a parked row whose wait is free text, unreadable or absent AT ONCE, not after the four quiet hours a `hold:*` earns: a park with no reason is the defect itself. A park is excused by an open `Waiting-for:`, a `Not-before:` the gate can read, an open `blockedBy` edge, an `answer:<session>` label or `needs:chairman`. `unpark-satisfied` ignores `parked` among the fields that keep a row where it is, so a parked row whose condition is true is un-parked exactly as before. The state-label repair prose no longer says `parked` REPLACES `backlog` unconditionally: the wait is read first, and a met, free-text or absent one leaves `parked` untrue. #4090 sat ten hours parked on a met wait (a11ign/a11ign#4230).

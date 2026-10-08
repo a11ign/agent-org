@@ -41,7 +41,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.mjs";
+import { PARKED_LABEL, conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.mjs";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.mjs";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.mjs";
 import { ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.mjs";
@@ -118,7 +118,8 @@ export function readSatisfaction(row, facts, now, closedAt = () => null) {
   const skipped = notOurs(labelsOf(row));
   if (skipped !== null) return untouched(skipped);
   const item = waitItemOf(row, "row");
-  const standing = waitFieldsOf(item, now).map((f) => f.label ?? f.kind);
+  // `parked` is itself a wait field since #4230, and it is the one this module exists to lift: only the OTHER fields keep the row where it is.
+  const standing = waitFieldsOf(item, now).filter((f) => f.kind !== PARKED_LABEL).map((f) => f.label ?? f.kind);
   if (standing.length > 0) return untouched(`still waiting on ${standing.join(", ")}`);
   if (NOT_BEFORE_LINE.test(String(row.body ?? "")) && notBeforeDate(row.body) === null) return untouched("a `Not-before:` line the gate cannot read");
   const readings = declaredWaitsOf(item).waits.map((wait) => ({ wait, holds: conditionHolds(wait, facts) }));
