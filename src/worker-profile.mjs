@@ -203,10 +203,15 @@ export function profileFor(cause, override = {}) {
  * the repository's own guards rather than by an interactive prompt. `codex`'s box already runs
  * `approval_policy = "never"` for the same reason.
  *
+ * `launch.headless` is the ONE switch to the other form (#4075, #4055 move 9): absent, which is every caller today,
+ * the arguments are the pane form below, byte for byte. No `PROFILES` entry carries it and no cause turns it on.
+ *
  * @param {{ kind: string, model: string, effort: string }} profile
+ * @param {{ headless?: HeadlessCaps }} [launch]
  * @returns {string[]}
  */
-export function agentArgs(profile) {
+export function agentArgs(profile, launch = {}) {
+  if (launch.headless) return headlessClaudeArgs(profile, launch.headless);
   if (profile.kind === "codex") {
     // NOT `--dangerously-bypass-approvals-and-sandbox`, which was the first spelling here and is wrong.
     // That flag drops the SANDBOX as well as the prompts, and this host deliberately runs
@@ -267,6 +272,41 @@ export function agentArgs(profile) {
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
     "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS),
     "--settings", WORKER_SETTINGS_PATH];
+}
+
+/** @typedef {{ maxTurns: number, maxBudgetUsd: number }} HeadlessCaps */
+
+/**
+ * A worker as `claude -p` over stream-json instead of a pane (#4075, the report's move 9): the same process, but its
+ * cost and its end are the CLI's to report and to enforce rather than a transcript's to be summed after the fact.
+ *
+ * THE CAPS HAVE NO DEFAULT HERE, ON PURPOSE. A turn or dollar ceiling that nobody measured is a number invented to
+ * look safe, and a stop that bites mid-row is a cost of its own; the caller who turns this on names both.
+ * Measured 2026-10-08 on claude 2.1.294 (n of one, a read-only task): `--max-turns 2` ended the run with exit 1 and
+ * `subtype: error_max_turns`, `--max-budget-usd` is in `--help`, and `--max-turns` is NOT in `--help` though the CLI
+ * accepts it -- so a release may drop it, and the test that pins this argument list is what would notice.
+ *
+ * WHAT THE PANE FORM HAS THAT THIS ONE LEAVES OUT: `--dangerously-skip-permissions` (`--permission-prompts none` denies
+ * what would prompt, and the permission mode decides the rest, so a headless worker is granted its tools by settings
+ * rather than bypassing them) and `--autocompact` (the pane's context window knob, #2717; not measured in print mode).
+ * `--verbose` is required by the CLI for stream-json output under `-p`.
+ *
+ * @param {{ kind: string, model: string, effort: string }} profile
+ * @param {HeadlessCaps} caps
+ * @returns {string[]}
+ */
+function headlessClaudeArgs(profile, caps) {
+  if (profile.kind !== "claude") throw new Error(`headless workers are claude-only, not "${profile.kind}"`);
+  for (const name of /** @type {const} */ (["maxTurns", "maxBudgetUsd"])) {
+    const value = caps[name];
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`headless cap ${name} must be a positive number, got ${value}`);
+  }
+  if (!Number.isInteger(caps.maxTurns)) throw new Error(`headless cap maxTurns must be a whole number, got ${caps.maxTurns}`);
+  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    "--max-turns", String(caps.maxTurns), "--max-budget-usd", String(caps.maxBudgetUsd),
+    "--permission-prompts", "none",
+    "--model", profile.model, "--effort", profile.effort,
+    "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--settings", WORKER_SETTINGS_PATH];
 }
 
 function main() {
