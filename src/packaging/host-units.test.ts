@@ -181,11 +181,14 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
   assert.ok(copied.length > 0, "it copied the units it found");
   assert.deepEqual(calls[0], ["daemon-reload"], "reload BEFORE enabling, or systemd enables a stale unit");
   const enables = calls.filter((c) => c[0] === "enable");
+  const longRunning = LONG_RUNNING_TEMPLATES.map((template) => `a11ign-${template.replace(/\.in$/, "")}`);
   assert.ok(enables.length > 0, "and it enabled the timers");
   for (const call of enables) {
     assert.deepEqual(call.slice(0, 2), ["enable", "--now"], `bare enable in ${JSON.stringify(call)}`);
-    assert.match(call[2], /\.timer$/, "only timers are enabled -- a oneshot service is pulled by its timer");
+    // A oneshot service is pulled by its timer; a LONG-RUNNING one (`LONG_RUNNING_TEMPLATES`, #3025, #4071) has none, so `enable --now` on the service is what starts it.
+    assert.ok(/\.timer$/.test(call[2]) || longRunning.includes(call[2]), `only timers and the long-running services are enabled, not ${call[2]}`);
   }
+  assert.ok(enables.some((call) => call[2] === "a11ign-otel-receiver.service"), "POSITIVE CONTROL: the OTel receiver (#4071) is started by the install, not left installed and stopped");
 });
 
 test("#1858: every unit this repository ships is discovered -- against the real directory", () => {
@@ -2535,7 +2538,7 @@ function withListenerHome(body: (home: { shippedDir: string, installedDir: strin
 test("#3025: the listener's template is classified as the tool's and optional on `messaging`, so it is never UNCLASSIFIED", () => {
   assert.ok(TOOL_ENTRIES.includes("chairman-listen.service.in"));
   assert.equal(OPTIONAL_UNITS["chairman-listen.service.in"], "messaging");
-  assert.deepEqual(LONG_RUNNING_TEMPLATES, ["chairman-listen.service.in"]);
+  assert.deepEqual(LONG_RUNNING_TEMPLATES, ["chairman-listen.service.in", "otel-receiver.service.in"]);
   withListenerHome(({ shippedDir }) => {
     assert.deepEqual(unclassifiedEntries({ shippedDir, projectUnitsDir: null }), []);
     writeFileSync(join(shippedDir, "stray-listener.service.in"), LISTENER_TEMPLATE);
