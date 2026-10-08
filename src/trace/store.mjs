@@ -77,6 +77,10 @@ export const PRICES = [
   // prices ($2 / $10, reads $0.20). Not reproduced against a `cost_usd`.
   { prefix: "claude-opus-5", input: 5, output: 25, cacheRead: 0.5, verified: false },
   { prefix: "claude-sonnet-5", input: 2, output: 10, cacheRead: 0.2, verified: false },
+  // Haiku 5.5 (#4186; found on #4183, where its turns read `costUsd: null`). The claude-api skill's model docs (2026-10-08): $0.10 / $0.50 per MTok for a prompt of 100K tokens or fewer, cache reads at 0.1x
+  // the input rate ($0.01), and "$0.50 / $2.50 when it is longer", so `maxPrompt` makes a longer request `null` rather than priced at the wrong card. Not reproduced against a `cost_usd`.
+  // Ahead of `-4-5` by reading order only: the prefixes do not overlap.
+  { prefix: "claude-haiku-5-5", input: 0.1, output: 0.5, cacheRead: 0.01, verified: false, maxPrompt: 100_000 },
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1, verified: true },
   // The Codex reviewers' model (#4076). OpenAI's model page, "Text tokens": Input $0.2, Cached input $0.02, Output $1.2 per 1M tokens (curl the URL below; the pricing page's Standard table carries the same three).
   // The page adds "Prompts with >272K input tokens are priced at 2x input and 1.5x output for the full request" and says nothing of the cached rate there, so a request above 272K is `null`, never a guess.

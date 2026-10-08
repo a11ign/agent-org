@@ -98,6 +98,21 @@ test("COST: the price table reproduces Claude Code's own cost_usd on the Haiku r
   assert.deepEqual(PRICES.filter((price) => price.verified).map((price) => price.prefix), ["claude-haiku-4-5"], "exactly one row is marked verified: Haiku 4.5, whose cost_usd agrees with the page");
 });
 
+test("COST (#4186): a Haiku 5.5 turn is priced, not null, and Haiku 4.5 is unchanged", () => {
+  // The tokens of the one scored Haiku 5.5 triage run on #4183 (session 33fb0cf8): the CLI's own total_cost_usd was $0.00384.
+  const run = tokensOf({ input_tokens: 2, output_tokens: 4324, cache_read_input_tokens: 535, cache_creation_input_tokens: 8345 });
+  assert.equal(run.cacheWrite1h, 8345, "CONTROL: the write is read as the 1-hour kind, the rate every transcript uses");
+  const haiku55 = costOf("claude-haiku-5-5", run);
+  assert.equal(typeof haiku55, "number", "priced, never null");
+  assert.equal(haiku55, 0.00383655, "2 x 0.1 + 4324 x 0.5 + 535 x 0.01 + 8345 x 0.2, over 1e6");
+  assert.equal(Math.round(haiku55 * 1e5) / 1e5, 0.00384, "agrees with the CLI's figure to its printed precision");
+  assert.equal(costOf("claude-haiku-5-5-20260601", run), haiku55, "a dated suffix still matches");
+  assert.equal(costOf("claude-haiku-4-5", run), 0.0383655, "Haiku 4.5 is not priced as 5.5: 2 x 1 + 4324 x 5 + 535 x 0.1 + 8345 x 2, over 1e6");
+  assert.equal(costOf("claude-haiku-4-5-20251001", tokensOf(usage(10, 43, 12548, 9289))), 0.0200578, "Haiku 4.5 is unchanged");
+  const long = tokensOf({ input_tokens: 100_001, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.equal(costOf("claude-haiku-5-5", long), null, "a prompt above 100K is on the page's other card: unknown, never the short-prompt rate");
+});
+
 test("COST (#3582): claude-sonnet-5 and claude-opus-5 are priced at their own rates, and the 5.5 ids still at theirs", () => {
   const tokens = tokensOf({ input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 });
   // Published rates (claude-api model docs, 2026-09-25): input + output + cache read, per million tokens.
