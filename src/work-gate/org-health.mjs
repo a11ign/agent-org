@@ -478,7 +478,9 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  * the list from BEFORE the hold, so without it the red the gate chose not to wake anyone for tripped `red-pr-unattended` two hours later, a second alarm for a failure the org had
  * decided not to act on. NOTHING IS RECORDED: the next tick with the incident gone holds nothing, so the same red counts again by itself. `undefined` is a caller with no hold.
  * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
- * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.mjs").PoolReading[] }} tick
+ * #4189: `keyedPrsRead` IS THE OPEN PULL REQUESTS OF THE DECLARED REPOSITORIES BESIDE THE FIRST, tagged `repoKey`/`repo`, and it feeds THE WAIT READ ONLY: `prsRead` is the first repository's own list and every other
+ * reading here (red, overdue, idle) is about it. Absent, a keyed pull request's hold is never read, so no `Waiting-for` of it is ever lifted or ordered.
+ * @param {{ prsRead: any[] | null, keyedPrsRead?: any[], readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | { at: number, repo: string } | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
@@ -490,14 +492,14 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
-export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
+export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
-  const waits = liftedWaits(readWaits({ prsRead, openRowsRead, now }), { now, release });
+  const waits = liftedWaits(readWaits({ prsRead: prsRead === null ? null : [...prsRead, ...keyedPrsRead], openRowsRead, now }), { now, release });
   const { holdStands, stale } = waitStanding(waits, now);
   const readings = orgHealthTick({
     now,
