@@ -169,7 +169,7 @@ function tickIn(dir: string, gate = "process.exit(0);") {
   mkdirSync(join(dir, "empty"));
   const ledger = join(dir, "ledger.jsonl");
   const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
-    const base: NodeJS.ProcessEnv = { ...process.env, PATH: join(dir, "empty"), ...extra };
+    const base: NodeJS.ProcessEnv = { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "", ...extra }; // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
     delete base.INVOCATION_ID;
     return base;
   };

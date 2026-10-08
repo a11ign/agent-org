@@ -64,7 +64,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 233 to 234 (a11ign/a11ign#4123): `src/defect-class-line.mjs` is the leaf the row's Region names, and shipped commands import it (`pr-open.mjs`, `row-file.mjs`, `acceptance-commands.mjs`, run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript). It is the one parse of a defect row's `Class:` line, shared by `pr:open` and CI.
 // 234 to 235 (a11ign/a11ign#4126): `src/class-repeat.mjs` is a NEW source file that a shipped command imports (`org-health.mjs`, a leaf `work-gate.mjs` runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript).
 // 235 to 236 (a11ign/a11ign#4124): `src/found-by-chairman.mjs` is a NEW source file that a shipped command imports (`board-data.mjs`, which `board-document.mjs` and `board-report.mjs` run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
-const SOURCE_MJS_PIN = 236;
+// 236 to 237 (a11ign/a11ign#4148): `src/tick-snapshot.mjs` is a NEW source file that a shipped command imports (`work-tick.mjs`, run with plain `node` by the work-tick unit), so it cannot be `.ts` (node on the host has no TypeScript loader).
+const SOURCE_MJS_PIN = 237;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.

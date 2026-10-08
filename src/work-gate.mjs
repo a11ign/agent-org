@@ -289,8 +289,12 @@ export const BATCH_OUTER_GRACE_MS = 5_000;
 /**
  * The `node` one batch runs: each call through ASYNC `execFile` so they wait together, answers printed as one JSON list in the order asked. `GH_REPO`
  * aims a call exactly as `defaultRun` does, so the census (preloaded through `NODE_OPTIONS`) still counts each `gh` by repository.
+ *
+ * (#4148) THE FIRST LINE NAMES THE SCRIPT. `host/gh` records the calling process's command line cut at 160 characters, and a `node -e <code>` has nothing in it that is
+ * a file, so 852 of 7,053 ledger calls (12% of the 14:00Z-15:45Z window, measured 2026-10-08) read `/usr/bin/node` and belonged to no one. The comment is what the ledger's
+ * script-name pattern finds.
  */
-const BATCH_WORKER = `
+const BATCH_WORKER = `/* work-gate.mjs runBatch */
 const { execFile } = require("node:child_process");
 const one = ({ args, repo }) => new Promise((done) => execFile("gh", args,
   { encoding: "utf8", maxBuffer: ${BATCH_MAX_BUFFER}, timeout: Number(process.argv[2]), killSignal: "SIGKILL",

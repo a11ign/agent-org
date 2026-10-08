@@ -88,6 +88,7 @@ ledger_record() { # status stdout-copy first-arg second-arg
     pr\ *|issue\ *|project\ *|repo\ *|label\ *|discussion\ *) resource='graphql?' ;;
     *) resource=other ;;
   esac
+  resource=${LEDGER_RESOURCE:-$resource}
   cost=
   if [ "$resource" = graphql ] && [ -n "$2" ] && [ -s "$2" ]; then
     cost=$(grep -o '"rateLimit": *{[^}]*}' "$2" | grep -o '"cost": *[0-9]*' | tr -dc '0-9\n' |
@@ -101,13 +102,130 @@ ledger_record() { # status stdout-copy first-arg second-arg
     "${HERDR_WORKSPACE_ID:--}" "$caller" "${session:--}" >> "$file" || return 0
   max=${A11Y_GH_LEDGER_MAX_BYTES:-2097152}
   if [ "$(wc -c < "$file")" -gt "$max" ]; then
-    tail -c "$((max / 2))" "$file" | tail -n +2 > "$file.trim" && mv "$file.trim" "$file"
+    tail -c "$((max / 2))" "$file" | tail -n +2 > "$file.trim" || return 0
+    rollup_dropped "$file" "$(($(wc -c < "$file") - $(wc -c < "$file.trim")))" && mv "$file.trim" "$file"
   fi
 }
 
-# stdout is captured only for the one call that can carry a cost, and only when it is not a terminal.
+# --- #4148: THE HOURLY ROLLUP -- a reading for any hour, though the ledger keeps only the newest half -------------
+#
+# What the trim is about to drop is counted FIRST, per UTC hour, account and resource, into `<ledger>.hourly` (one TAB line:
+# hour, account, resource, calls, points READ, floor points; the same two numbers `gh-ledger.mjs` reads off a ledger line, so a
+# reading adds the two files and never double-counts: a line is in the ledger or in the rollup, never both). Merged on every trim
+# so the file holds one line per hour x account x resource and not one per trim. If the rollup cannot be written the trim does NOT
+# go ahead (the caller's `&&`): a kept ledger past its bound is a diagnostic's lesser harm than a lost hour. Two calls trimming at
+# once can count a span twice, which is the race the trim above already accepts.
+rollup_dropped() { # ledger-file dropped-bytes
+  { cat "$1.hourly" 2>/dev/null; head -c "$2" "$1"; } | awk -F'\t' '
+    NF == 6 { k = $1 "\t" $2 "\t" $3; calls[k] += $4; read[k] += $5; floor[k] += $6 }
+    NF >= 8 && $1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]/ {
+      res = $3; sub(/\?$/, "", res); k = substr($1, 1, 13) "\t" $2 "\t" res
+      calls[k] += 1; if ($4 != "") read[k] += $4
+      floor[k] += ($4 != "" ? $4 : (res == "graphql" ? 1 : 0)) }
+    END { for (k in calls) printf "%s\t%d\t%d\t%d\n", k, calls[k], read[k], floor[k] }' | sort > "$1.hourly.$$" &&
+    mv "$1.hourly.$$" "$1.hourly"
+}
+
+
+# --- #4148: THE READ CACHE -- the same READ, asked again, is answered from disk and spends no point ------------
+#
+# THE COST WAS NEVER ONE EXPENSIVE CALL: it was the same `pr list`, `issue list` and `pr view` asked again and again (4,400 calls
+# in 72 minutes, 2026-10-08), by the tick, its children and sessions polling `gh pr checks`. Two lifetimes, one store (`$GH_CONFIG_DIR/read-cache`):
+#
+#   1. N SECONDS (`A11Y_GH_READ_CACHE_SECONDS`, default 20, clamped to 30): an IDENTICAL read (same arguments, same repository, same
+#      directory and branch, since a bare `gh pr view` answers for the branch) is answered from the entry a moment ago. Any caller.
+#   2. THE TICK'S SNAPSHOT: a process the tick started carries `A11Y_TICK_SNAPSHOT`, and its entry stays good while the repository's
+#      GENERATION has not moved. `tick-snapshot.mjs` moves it from a REST call that costs nothing when nothing changed (a 304), once per
+#      tick; the generation is `<counter> <last verified>` and an entry is not served past `A11Y_TICK_SNAPSHOT_MAX_AGE` (150 s) of
+#      the last verification, so a tick that stopped refreshing stops being believed. A session (no such variable) is never served this.
+#
+# WHAT IS CACHED is a READ that exited 0: `pr|issue|label|repo|run|release` list/view/status/checks/diff, and a plain `gh api <path>` GET.
+# NEVER cached: a `--web`/`--watch` call, `gh api` with `-i`/`--include` or `-H` (the `X-Ratelimit-*` headers, and every ETag probe,
+# are an answer about NOW: #1967, #1275) or `rate_limit`, and `gh api graphql` (a POST). WHAT DROPS THE CACHE: any call that is not a read and not
+# known to be neutral, by this account (`pr merge`, `issue edit`, a `git push` through the credential helper, an unknown verb): the whole
+# store, at once. A write by another account, or a person, is not seen here: that is what the 20 s and the tick's generation bound.
+# `A11Y_GH_READ_CACHE=off` skips all of it. A hit is recorded in the ledger as resource `cache`: it spends no point, and the ledger can show the hit rate.
+
+# Sets `class` to read | write | neutral for the arguments given.
+call_class() {
+  class=read
+  case "$1" in
+    pr|issue|label|repo|run|release) case "$2" in list|view|checks|status|diff) ;; *) class=write; return 0 ;; esac ;;
+    api) ;;
+    auth) case "$2" in status|token) class=neutral ;; *) class=write ;; esac; return 0 ;;
+    ""|--version|version|help) class=neutral; return 0 ;;
+    *) class=write; return 0 ;;
+  esac
+  if [ "$1" = api ]; then
+    if [ "$2" = graphql ]; then
+      class=neutral
+      for a; do case "$a" in *mutation*) class=write ;; esac; done
+      return 0
+    fi
+    for a; do
+      case "$a" in
+        -X*|--method|--method=*|-f|-F|-f*|-F*|--field|--field=*|--raw-field|--raw-field=*|--input|--input=*) class=write; return 0 ;;
+        -i|--include|-H|--header|--header=*|--cache|--cache=*|rate_limit|*/rate_limit) class=neutral ;;
+      esac
+    done
+    return 0
+  fi
+  for a; do case "$a" in -w|--web|--watch|-h|--help|-i|--include) class=neutral ;; esac; done
+}
+
+# Sets `repo_slug`: the repository the call names (`-R`/`--repo`, else $GH_REPO), as a file name; `default` when it names none.
+read_repo_slug() {
+  r=${GH_REPO:-}
+  prev=
+  for a; do
+    case "$prev" in -R|--repo) r=$a ;; esac
+    case "$a" in --repo=*) r=${a#--repo=} ;; esac
+    prev=$a
+  done
+  repo_slug=$(printf %s "${r:-default}" | tr -c 'A-Za-z0-9._-' '_')
+}
+
+# Succeeds when `$entry` may answer this call. `entry_gen` is the generation the entry was stored under.
+read_cache_fresh() {
+  [ -f "$entry" ] || return 1
+  IFS=' ' read -r stamp entry_gen 2>/dev/null < "$entry" || return 1
+  now_s=$(date +%s)
+  [ "$((now_s - stamp))" -le "$ttl" ] && return 0
+  [ -n "${A11Y_TICK_SNAPSHOT:-}" ] && [ -n "$entry_gen" ] || return 1
+  IFS=' ' read -r cur verified 2>/dev/null < "$RC/gen/$repo_slug" || return 1
+  [ "$cur" = "$entry_gen" ] && [ "$((now_s - verified))" -le "${A11Y_TICK_SNAPSHOT_MAX_AGE:-150}" ]
+}
+
+read_cache_store() { # the stdout copy, the generation read BEFORE the call ran
+  mkdir -p "$RC/e" 2>/dev/null || return 0
+  { printf '%s %s\n' "$(date +%s)" "$1"; cat "$2"; } > "$entry.$$" 2>/dev/null && mv "$entry.$$" "$entry" 2>/dev/null
+  [ "$(($$ % 16))" -eq 0 ] && find "$RC/e" -type f -mmin +60 -exec rm -f {} + 2>/dev/null
+  return 0
+}
+
+call_class "$@"
+cache_on=0
+RC=${A11Y_GH_READ_CACHE_DIR:-$GH_CONFIG_DIR/read-cache}
+if [ "$class" = read ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && [ ! -t 1 ]; then
+  ttl=${A11Y_GH_READ_CACHE_SECONDS:-20}
+  case "$ttl" in ''|*[!0-9]*) ttl=20 ;; esac
+  [ "$ttl" -gt 30 ] && ttl=30
+  read_repo_slug "$@"
+  key=$({ for a; do printf '%s\0' "$a"; done; printf '%s\0%s\0%s' "${GH_REPO:-}" "$PWD" "$(git symbolic-ref -q HEAD 2>/dev/null)"; } | sha1sum | cut -c1-40)
+  entry=$RC/e/$key
+  gen0=
+  [ -n "${A11Y_TICK_SNAPSHOT:-}" ] && { IFS=' ' read -r gen0 _ 2>/dev/null < "$RC/gen/$repo_slug" || gen0=; }
+  if read_cache_fresh; then
+    LEDGER_RESOURCE=cache
+    ledger_record 0 "" "$1" "$2" 2>/dev/null || :
+    exec tail -n +2 "$entry"
+  fi
+  cache_on=1
+fi
+
+# stdout is captured for the one call that can carry a cost and for a read that may be stored, and only when it is not a terminal.
 copy=
-if [ "$1 $2" = "api graphql" ] && [ ! -t 1 ]; then
+if { [ "$1 $2" = "api graphql" ] || [ "$cache_on" = 1 ]; } && [ ! -t 1 ]; then
   copy=$(mktemp "${TMPDIR:-/tmp}/gh-call.XXXXXX" 2>/dev/null) || copy=
 fi
 # gh-real runs in the background so this shell can forward a signal, and dash gives a background command /dev/null for stdin
@@ -125,5 +243,7 @@ kill -0 "$child" 2>/dev/null && { wait "$child"; status=$?; }
 trap - TERM INT HUP
 [ -n "$copy" ] && cat "$copy"
 ledger_record "$status" "$copy" "$1" "$2" 2>/dev/null || :
+[ "$cache_on" = 1 ] && [ -n "$copy" ] && [ "$status" -eq 0 ] && read_cache_store "$gen0" "$copy"
+[ "$class" = write ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && rm -f "${RC:?}"/e/* 2>/dev/null
 [ -n "$copy" ] && rm -f "${copy:?}"
 exit "$status"

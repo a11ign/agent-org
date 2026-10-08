@@ -51,7 +51,8 @@ function runTick({ gate, wake = "process.exit(0);", tickPrefix = "", recordIsADi
     if (recordIsADirectory) mkdirSync(record);
     const before = Date.now();
     const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`], {
-      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty") },
+      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
+
     });
     const after = Date.now();
     const written = !recordIsADirectory && existsSync(record) ? readCompletion(record) : null;

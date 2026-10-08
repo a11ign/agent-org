@@ -30,6 +30,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
 import { toolVersionLine } from "./lib/tool-version.mjs";
+import { refreshTickSnapshot } from "./tick-snapshot.mjs";
 import { clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, slowThresholdSeconds, slowTickOrders, tickMarkerPath,
   writeStartMarker } from "./work-tick-health.mjs";
 import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, setCensusPhase, summariseCensus } from "./lib/spawn-census.mjs";
@@ -452,6 +453,28 @@ function tidyRoster(roster, ledgerPath, meter) {
   meter.phase("recover", () => recoverNow(roster, ledgerPath));
 }
 
+/**
+ * (#4148) THE TICK'S SNAPSHOT, refreshed once and BEFORE anything reads GitHub: one conditional REST probe pair per declared repository (a 304 costs no point), after which every
+ * reader this tick starts is answered from the wrapper's store for a repository that did not change. `A11Y_TICK_SNAPSHOT` is set only when the refresh RAN, in this process's own
+ * environment so the gate, wake and every child inherit it; a refresh that could not run unsets it, and every read then goes to GitHub as it did before this existed. Returns the one line the tick logs.
+ * @param {{ declaration?: () => import("./project-config.mjs").ProjectDeclaration, configDir?: string | undefined, refresh?: typeof refreshTickSnapshot, env?: NodeJS.ProcessEnv }} [deps]
+ * @returns {string}
+ */
+export function refreshSnapshotOrSay({ declaration = homeProjectDeclaration, configDir = process.env.GH_CONFIG_DIR, refresh = refreshTickSnapshot, env = process.env } = {}) {
+  delete env.A11Y_TICK_SNAPSHOT;
+  if (configDir === undefined || configDir === "") return "SNAPSHOT OFF: GH_CONFIG_DIR is unset, so there is no account store to hold one; every read goes to GitHub this tick.";
+  try {
+    const project = declaration();
+    const repos = [...new Set([...project.tracker.map((t) => t.repo), ...project.code.map((c) => c.repo)])];
+    const lines = refresh({ repos, homeRepo: project.repo, configDir });
+    env.A11Y_TICK_SNAPSHOT = "1";
+    const changed = lines.filter((line) => line.includes(": CHANGED"));
+    return `SNAPSHOT ${repos.length} repositories, ${changed.length} changed${changed.length > 0 ? ` (${changed.map((line) => line.split(":")[0]).join(", ")})` : ""}`;
+  } catch (err) {
+    return `SNAPSHOT NOT REFRESHED (${whatGhSaid(err)}): every read goes to GitHub this tick.`;
+  }
+}
+
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
     entry: import.meta.url, command: "node packages/agent-org/src/work-tick.mjs",
@@ -474,6 +497,9 @@ function main() {
   // THEN THE CHAIRMAN'S PATH (#3540): the first tick after a release that touched the messaging code, the queue or the roster's readers sends one synthetic inbound through it. After the seats
   // step, so a liaison this tick just started is the seat the check meets; a no-op on every other tick. Its red reaches `ceo`'s queue (written here, so the gate below delivers it) and never the chairman.
   for (const line of meter.phase("chairmanPath", () => checkChairmanPath())) process.stderr.write(`${line}\n`);
+
+  // THEN THE SNAPSHOT (#4148): after the seats and the chairman's path (they read nothing it would change), before the first read the gate or any child of it makes.
+  process.stderr.write(`${meter.phase("snapshot", refreshSnapshotOrSay)}\n`);
 
   const gate = meter.phase("gate", () => spawnSync(process.execPath, [...CRASH_PRELOAD, here("./work-gate.mjs")], { encoding: "utf8" }));
   if (gate.error) {
