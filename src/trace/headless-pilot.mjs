@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "../lib/cli-flags.mjs";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { agentArgs, profileFor } from "../worker-profile.mjs";
 import { addressed, PRIMARY_CHECKOUT } from "../wake.mjs";
 import { extractAcceptanceSection, declaredFleetAnswer } from "../acceptance-commands.mjs";
@@ -211,12 +212,14 @@ export const worktreePathFor = (scratch, row) => join(scratch, `wt-${row}`);
 
 /** @param {Deps} deps */
 function resolved(deps) {
+  const checkout = deps.checkout ?? PRIMARY_CHECKOUT;
   return {
     gh: deps.gh ?? ((args) => execFileSync("gh", args, { encoding: "utf8" })),
-    git: deps.git ?? ((args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })),
+    // named checkout (#3363) and a scrubbed environment (#1185): a leaked GIT_DIR must not send these calls to another repository
+    git: deps.git ?? ((args) => execFileSync("git", args, { cwd: checkout, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })),
     claudeBin: deps.claudeBin ?? "claude",
     scratch: deps.scratch ?? join(tmpdir(), "headless-pilot"),
-    checkout: deps.checkout ?? PRIMARY_CHECKOUT,
+    checkout,
     recordDir: deps.recordDir ?? join(homedir(), ".cache", "a11ign", "headless-pilot"),
     configDir: deps.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
     out: deps.out ?? ((line) => process.stdout.write(`${line}\n`)),

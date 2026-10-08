@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { agentArgs, profileFor } from "../worker-profile.mjs";
 import { addressed } from "../wake.mjs";
 import {
@@ -55,7 +56,7 @@ process.stdin.on("end", () => {
 });
 `;
 
-const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 const roots: string[] = [];
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); }); // the private-tmp guard fails a file that leaves a fixture behind
@@ -82,7 +83,7 @@ function fixture(issues: Record<number, ReturnType<typeof issue>>) {
     if (!(args[0] === "issue" && args[1] === "view") && !(args[0] === "api" && !args.includes("-X"))) throw new Error(`STUB gh: a write reached the org: gh ${args.join(" ")}`);
     return JSON.stringify(issues[Number(args[2])] ?? (() => { throw new Error(`no such issue ${args[2]}`); })());
   };
-  const git = (args: string[]) => { gitCalls.push(args); return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); };
+  const git = (args: string[]) => { gitCalls.push(args); return execFileSync("git", args, { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); };
   const deps = { gh: ghStub, git, claudeBin: join(bin, "claude"), scratch: join(root, "scratch"), checkout, recordDir: join(root, "records"), configDir: join(root, "claude-config"), out: () => {} };
   process.env.FAKE_DIR = root;
   process.env.CLAUDE_CONFIG_DIR = deps.configDir;
