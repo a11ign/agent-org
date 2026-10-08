@@ -21,6 +21,11 @@
 //   parked-on-the-chairman   a `parked` row, not `needs:chairman`, with a `Blocked-on:` line naming the chairman, whatever date or condition it also
 //                         carries (#4201, class fix A: a wait on the chairman is never a date)         -> product-manager (`needs:chairman` and a brief)
 //
+// TWO MORE READ THE LAST DAY'S COMMENTS (`PROSE_QUESTIONS`, a11ign/a11ign#4232): a HANDOFF WRITTEN AS A SENTENCE moves nobody, so a comment by an org account that hands off in
+// prose (`goes to <session>`, `<session> will file`, `<session> to file`, `for <session> to`, `I will ask <session>`, `Asked of <session>`) is flagged unless the same author filed
+// a row or labelled `answer:<session>` within 15 minutes (`handoff-in-prose`), and a READING comment (`reading N of M`, `Ruling`) with no `Defect-row:` line is flagged
+// (`reading-without-defect-row`). A plain pattern set, no model; a fenced block is never read. They are kept out of `QUESTIONS` so a caller that does not hand in `proseEvidence` is not asked.
+//
 // ABSENCE IS NOT PROOF: a fact that could not be read is `null`, and its question is listed as UNREAD, never counted as agreeing. The
 // table says `0 disagree` only for a board every question read and found true, so silence cannot be read as health.
 //
@@ -68,15 +73,20 @@ const PRODUCT_MANAGER = "product-manager";
 const BLOCKED_ON_LINE = /^[ \t]*Blocked-on:[ \t]*(.*)$/gim;
 const CHAIRMAN_WORD = /\bchairman\b/i;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The time an author has to turn a handoff sentence into a row or an `answer:` label (#4232); a comment younger than this is not judged yet. */
+export const HANDOFF_GRACE_MS = 15 * 60 * 1000;
 
 /**
  * @typedef {{ number: number, title?: string, body?: string, state?: string, stateReason?: string, labels?: (string | { name?: string })[],
- *             comments?: { body?: string, createdAt?: string }[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string }} BoardRow
+ *             comments?: RowComment[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string }} BoardRow
  * @typedef {{ number: number, body?: string, mergedAt?: string | null }} MergedPr `mergedAt` is absent when a read omitted it
  * @typedef {{ now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null,
- *             waitFacts: import("./wait-condition.mjs").WaitFacts | null, others?: OtherTracker[] }} BoardFacts `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker
+ *             waitFacts: import("./wait-condition.mjs").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null }} BoardFacts `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker
  * @typedef {{ key: string, repo: string, codeRepo?: string }} DeclaredTracker `codeRepo` is the code repository of the same key, where the pull requests that close this tracker's rows are
  * @typedef {{ key: string, repo: string, facts: BoardFacts | null, why?: string }} OtherTracker `facts` is `null` when its open rows could not be read, and `why` says what the read said
+ * @typedef {{ author?: { login?: string } | null, body?: string, createdAt?: string, url?: string }} RowComment
+ * @typedef {{ rows: { author: string, createdAt: string, text?: string }[], labelEvents: { number: number, label: string, actor: string, createdAt: string }[] }} ProseEvidence the rows filed and the labels
+ *             added in the last day, by whom and when (#4232); `undefined` on `BoardFacts` is a caller that does not ask, `null` is a read that failed
  * @typedef {{ question: string, number: number, field: string, detail: string, route: string, key?: string }} Finding `key` is the tracker's, absent for the first tracker's own rows (#4080)
  */
 
@@ -290,6 +300,92 @@ function parkedOnChairmen({ openRows }) {
     `parked on the chairman: a date does not move the chairman, so give it \`${NEEDS_CHAIRMAN_LABEL}\` and a BRIEF, or a wait the gate can read`));
 }
 
+export const PROSE_QUESTIONS = Object.freeze({
+  HANDOFF: "handoff-in-prose",
+  READING_FIELD: "reading-without-defect-row",
+});
+
+/** The sessions a sentence can hand off to; a `goes to <word>` that is not one of these is a function or a file, not a handoff. */
+const SESSION_NAME = "[`*]*(product-manager|orchestrator|ceo|(?:worker|reviewer|engineer)-\\d+)(?![\\w-])[`*]*";
+const HANDOFF_PHRASES = [`goes to ${SESSION_NAME}`, `${SESSION_NAME}\\s+will file`, `${SESSION_NAME}\\s+to file`, `for ${SESSION_NAME}\\s+to\\b`, `I will ask ${SESSION_NAME}`,
+  `Asked of ${SESSION_NAME}`].map((source) => new RegExp(source, "i"));
+const READING_COMMENT = /\breading \d+ of \d+\b|^\W*ruling\b/im;
+const DEFECT_ROW_LINE = /^[ \t]*\**Defect-row\**:[ \t]*(?:#\d+|none[ \t]+(?:--|—)[ \t]*\S)/im;
+const ORG_ACCOUNT = /^a11ign-/;
+/** A fenced block, closed or running to the end of the comment (markdown's own rule), so a comment that QUOTES a phrase is not one that hands off. */
+const FENCED_BLOCK = /^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm;
+
+/** @param {string} text @returns {string} the text outside its fenced blocks */
+const outsideFences = (text) => text.replace(FENCED_BLOCK, "");
+
+/** The session a comment speaks for: its first words name it (`ceo, reading 2 of 2`), else the row's owner reads it. @param {string} body @param {BoardRow} row */
+function authorSessionOf(body, row) {
+  const named = /^\W*(product-manager|orchestrator|ceo|(?:worker|reviewer|engineer)-\d+)\b/i.exec(body);
+  return named ? named[1].toLowerCase() : ownerOf(row);
+}
+
+/** @typedef {{ row: BoardRow, comment: RowComment, author: string, at: number, text: string }} JudgedComment */
+/** The comments by org accounts in the last day, old enough that the author has had the grace (a younger one is not judged yet). @param {BoardFacts} facts @returns {JudgedComment[]} */
+function commentsToJudge({ openRows, now }) {
+  return openRows.flatMap((row) => (row.comments ?? []).flatMap((comment) => {
+    const at = Date.parse(comment.createdAt ?? "");
+    const author = comment.author?.login ?? "";
+    const aged = Number.isFinite(at) && now - at >= HANDOFF_GRACE_MS && now - at <= DAY_MS;
+    return aged && ORG_ACCOUNT.test(author) ? [{ row, comment, author, at, text: outsideFences(comment.body ?? "") }] : [];
+  }));
+}
+
+/** @param {string} text @returns {{ phrase: string, session: string }[]} one per session the comment hands off to, by the first phrase naming it */
+function handoffsIn(text) {
+  const found = HANDOFF_PHRASES.flatMap((pattern) => { const m = pattern.exec(text); return m ? [{ phrase: m[0].trim(), session: m[1].toLowerCase() }] : []; });
+  return found.filter((h, i) => found.findIndex((other) => other.session === h.session) === i);
+}
+
+/**
+ * A row the author filed THAT NAMES THE ROW THE COMMENT IS ON, or the `answer:<session>` label the author added, inside the grace after the comment. The account is shared by every session of a
+ * lane (`a11ign-ai-leads` is `ceo` and its peers), so "any row by the same author" cleared #4090's own comment live: `ceo` filed #4110 and #4111, unrelated, five minutes after it (measured 2026-10-08).
+ * A row counts when its title or body cites `#<n>` of the row commented on; a filed row that does not is the author's to add the citation to. @param {JudgedComment} judged @param {string} session @param {ProseEvidence} evidence */
+function followedUp({ row, author, at }, session, evidence) {
+  const within = (/** @type {string} */ when) => { const t = Date.parse(when) - at; return t >= 0 && t <= HANDOFF_GRACE_MS; };
+  const cites = (/** @type {string | undefined} */ text) => new RegExp(`#${row.number}(?!\\d)`).test(text ?? "");
+  return evidence.rows.some((filed) => filed.author === author && within(filed.createdAt) && cites(filed.text))
+    || evidence.labelEvents.some((e) => e.number === row.number && e.actor === author && e.label === `${ANSWER_PREFIX}${session}` && within(e.createdAt));
+}
+
+/** @param {JudgedComment} judged @param {string} detail @param {string} question @param {string} field @returns {Finding} */
+const proseFinding = ({ row, comment, author }, question, field, detail) =>
+  finding(row, question, field, `${detail} (${author}, ${comment.createdAt}${comment.url ? `, ${comment.url}` : ""})`, authorSessionOf(comment.body ?? "", row));
+
+/** @param {BoardFacts} facts @returns {Finding[]} */
+function handoffsInProse(facts) {
+  const evidence = facts.proseEvidence;
+  if (!evidence) return [];
+  return commentsToJudge(facts).flatMap((judged) => handoffsIn(judged.text).filter((h) => !followedUp(judged, h.session, evidence)).map((h) => proseFinding(judged,
+    PROSE_QUESTIONS.HANDOFF, `a row filed, or \`${ANSWER_PREFIX}${h.session}\`, in the same turn`, `a handoff written as a sentence, "${h.phrase}", and no row or order followed within 15 minutes`)));
+}
+
+/** @param {BoardFacts} facts @returns {Finding[]} */
+function readingsWithoutField(facts) {
+  if (facts.proseEvidence === undefined) return [];
+  return commentsToJudge(facts).filter(({ text }) => READING_COMMENT.test(text) && !DEFECT_ROW_LINE.test(text)).map((judged) => proseFinding(judged,
+    PROSE_QUESTIONS.READING_FIELD, "`Defect-row: #N` or `Defect-row: none -- <reason>` line", "a reading with no `Defect-row:` field, which the org cannot read as prose"));
+}
+
+/** @type {[string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean][]} */
+const PROSE_READERS = [
+  [PROSE_QUESTIONS.HANDOFF, handoffsInProse, (f) => f.proseEvidence !== null],
+  [PROSE_QUESTIONS.READING_FIELD, readingsWithoutField, () => true],
+];
+
+/**
+ * THE TWO COMMENT QUESTIONS ALONE, over the facts `readProseFacts` built: the day's table adds them to the tick's audit, because asking them of the tick's rows would run the other eight over rows made of comments.
+ * @param {BoardFacts} facts @returns {{ findings: Finding[], unread: string[] }}
+ */
+export function proseAudit(facts) {
+  const findings = PROSE_READERS.flatMap(([, ask]) => ask(facts)).sort((a, b) => a.number - b.number || a.question.localeCompare(b.question));
+  return { findings, unread: PROSE_READERS.filter(([, , read]) => !read(facts)).map(([question]) => question) };
+}
+
 /** The questions and the fact each needs that may be unread, `null`. @type {[string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean][]} */
 const READERS = [
   [QUESTIONS.EPIC_DONE, epicsDone, () => true],
@@ -300,6 +396,7 @@ const READERS = [
   [QUESTIONS.DUPLICATE, duplicates, (f) => f.closedRows !== null],
   [QUESTIONS.PARKED_BARE, parkedWithoutConditions, (f) => parkedBare(f).every(blockersRead)],
   [QUESTIONS.PARKED_ON_CHAIRMAN, parkedOnChairmen, () => true],
+  ...PROSE_READERS,
 ];
 
 /**
@@ -387,6 +484,35 @@ export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date
   return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts, ...(others.length > 0 && { others }) };
 }
 
+/**
+ * THE DAY'S COMMENTS AND THE EVIDENCE THEY NEED (#4232), read once per edition day by `postDaysTable` and never by the tick: the tick's open rows carry comments for CLAIMED rows only, and a
+ * handoff is as likely on a parked or closed one (#4090 was neither claimed nor open at the time). ONE paginated REST call lists every comment of the last day in the repository (measured 2026-10-08:
+ * 899 comments, 9 pages, 1.0 MB, so it is not a per-tick read); the org accounts' are kept and grouped by row. Then ONE call for the issues created in the day (who filed what, when) and ONE per row
+ * holding a handoff comment, for its `labeled` events. REST spends the core pool, not GraphQL's. A refused read is `null` (UNREAD), never "no evidence", which would flag every handoff.
+ * Orders are not evidence here: the queue is local state the audit cannot see, so a handoff answered ONLY by an order is flagged, and the label the order also needs is the remedy.
+ * @param {{ repo: string, run: (args: string[]) => string, now: number }} input @returns {BoardFacts | null} facts for `proseAudit` alone: only `openRows` and `proseEvidence` mean anything
+ */
+export function readProseFacts({ repo, run, now }) {
+  const lines = (/** @type {string[]} */ args) => run(["api", "--paginate", ...args]).split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
+  const since = new Date(now - DAY_MS).toISOString().replace(/\.\d+Z$/, "Z");
+  try {
+    const comments = lines([`repos/${repo}/issues/comments?since=${since}&per_page=100`, "--jq", `.[] | select(.user.login | startswith("a11ign-"))
+      | {number: (.issue_url | split("/") | last | tonumber), author: {login: .user.login}, body: .body, createdAt: .created_at, url: .html_url}`]);
+    const byRow = new Map();
+    for (const c of comments) byRow.set(c.number, [...(byRow.get(c.number) ?? []), c]);
+    const openRows = [...byRow].map(([number, rowComments]) => ({ number, labels: [], comments: rowComments }));
+    const facts = { now, openRows, closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null };
+    const needing = [...new Set(commentsToJudge(facts).filter(({ text }) => handoffsIn(text).length > 0).map(({ row }) => row.number))];
+    if (needing.length === 0) return { ...facts, proseEvidence: { rows: [], labelEvents: [] } };
+    const rows = lines([`repos/${repo}/issues?state=all&since=${since}&per_page=100`, "--jq", ".[] | select(.pull_request | not) | {author: .user.login, createdAt: .created_at, text: (.title + \"\\n\" + (.body // \"\"))}"]);
+    const labelEvents = needing.flatMap((n) => lines([`repos/${repo}/issues/${n}/events?per_page=100`, "--jq",
+      `.[] | select(.event == "labeled") | {number: ${n}, label: .label.name, actor: .actor.login, createdAt: .created_at}`]));
+    return { ...facts, proseEvidence: { rows, labelEvents } };
+  } catch {
+    return null;
+  }
+}
+
 const OPEN_ROW_FIELDS = "number,title,body,labels,state,comments,subIssuesSummary,createdAt,blockedBy";
 
 /** The declared trackers with the code repository of the same key beside each. Read on use, so a file that never reads a second tracker never needs the declaration. @returns {DeclaredTracker[]} */
@@ -426,15 +552,22 @@ const lookBackFrom = (day) => new Date(Date.parse(`${day}T00:00:00Z`) - DAY_MS).
  * ONLY A COMPLETE READING IS POSTED: the day's table cannot be replaced, and a table carrying `NOT READ` at 00:02 because one call was refused would stand for the day. The
  * unread audit is the org-health signal's to say (`unknown`), so it is not posted and the next tick reads again. A failed ask posts nothing for the same reason in the other
  * direction: it could not tell whether the table is there.
- * @param {{ audit: { findings: Finding[], unread: string[] } | null, day: string, repo: string, run?: (args: string[]) => string }} input
+ * #4232: THE DAY'S TABLE ALSO CARRIES THE COMMENT QUESTIONS, read here and nowhere else (`readProseFacts`: a day's comments is one paginated read, not a tick's). They are read AFTER the ask
+ * above finds the table absent, so a tick that posts nothing spends none of it, and an unreadable comment list is `"unread"` for the same reason a table carrying `NOT READ` is not posted.
+ * @param {{ audit: { findings: Finding[], unread: string[] } | null, day: string, repo: string, run?: (args: string[]) => string, now?: number, readProse?: typeof readProseFacts }} input
  * @returns {"posted" | "already-posted" | "unread" | "no-audit"} what was done; a failed ask or post THROWS, and the caller says so
  */
-export function postDaysTable({ audit, day, repo, run = gh }) {
+export function postDaysTable({ audit, day, repo, run = gh, now = Date.now(), readProse = readProseFacts }) {
   if (audit === null) return "no-audit";
   if (audit.unread.length > 0) return "unread";
   const path = `repos/${repo}/issues/${TABLE_ROW}/comments?per_page=100&since=${lookBackFrom(day)}`;
   const ids = run(["api", "--paginate", path, "--jq", `.[] | select(.body | startswith("${tableHeading(day)}")) | .id`]).trim();
   if (ids !== "") return "already-posted";
-  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(audit, day)}\n\n_Read by the work-gate tick, once per edition day (a11ign/a11ign#4045)._`]);
+  const prose = readProse({ repo, run, now });
+  if (prose === null) return "unread";
+  const comments = proseAudit(prose);
+  if (comments.unread.length > 0) return "unread";
+  const whole = { ...audit, findings: [...audit.findings, ...comments.findings] };
+  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(whole, day)}\n\n_Read by the work-gate tick, once per edition day (a11ign/a11ign#4045)._`]);
   return "posted";
 }
