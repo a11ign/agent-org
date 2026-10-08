@@ -75,7 +75,7 @@ export const MEASURED_FRESH_WORKER_BASE_TOKENS = 65_000;
 // and the base and left only ~22k here -- one such read away from the exact failure this constant now
 // names: 139 compactions, 5.4 hours, an estimated $95-125, for a copied LICENSE file and one package.json
 // field.
-export const MIN_WORKING_ROOM_TOKENS = 200_000;
+export const MIN_WORKING_ROOM_TOKENS = 100_000;
 
 /**
  * The `--autocompact` window for a per-row Claude engineer, DERIVED rather than picked so the next
