@@ -115,6 +115,57 @@ test("(5) a row with no state label and one with two are found; one with exactly
   assert.deepEqual(found({ openRows: [row(17, ["parked", "lane:any"])] }, QUESTIONS.STATE_LABEL), []);
 });
 
+test("#4116: an open row whose closing PR merged 1 minute ago is NOT found and is counted `merging`; merged 10 minutes ago it IS found (the control), and an unreadable merge time never hides it", () => {
+  const at = (minutesAgo) => new Date(NOW - minutesAgo * MINUTE).toISOString();
+  const withPr = (/** @type {Record<string, any>} */ pr) => boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", ...pr }] }));
+  const young = withPr({ mergedAt: at(1) });
+  assert.deepEqual(young.findings, []);
+  assert.equal(young.merging, 1);
+  const old = withPr({ mergedAt: at(10) });
+  assert.deepEqual(old.findings.map((f) => f.number), [10], "CONTROL: with the grace gone the first case is red");
+  assert.equal(old.merging, 0);
+  for (const unreadable of [undefined, null, "not a date"]) {
+    const audit = withPr({ mergedAt: unreadable });
+    assert.deepEqual(audit.findings.map((f) => f.number), [10], `mergedAt ${String(unreadable)} is judged`);
+    assert.equal(audit.merging, 0);
+  }
+  const both = boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", mergedAt: at(1) }, { number: 901, body: "Closes #10", mergedAt: at(30) }] }));
+  assert.deepEqual(both.findings.map((f) => f.number), [10], "a row an older merge also closes is raised, not withheld");
+  assert.equal(both.merging, 0);
+});
+
+test("#4116: the grace applies to a keyed tracker's code-repository merges too, and its rows are counted in the same `merging`", () => {
+  const mergedAt = new Date(NOW - MINUTE).toISOString();
+  const other = { key: "agent-org", repo: "a/org", facts: facts({ openRows: [row(7, ["ready"])], mergedPrs: [{ number: 380, body: "Closes #7", mergedAt }] }) };
+  const audit = boardTruthAudit(facts({ others: [other] }));
+  assert.deepEqual(audit.findings, []);
+  assert.equal(audit.merging, 1);
+  const stale = { ...other, facts: facts({ openRows: [row(7, ["ready"])], mergedPrs: [{ number: 380, body: "Closes #7", mergedAt: new Date(NOW - 10 * MINUTE).toISOString() }] }) };
+  assert.deepEqual(boardTruthAudit(facts({ others: [stale] })).findings.map((f) => `${f.key}#${f.number}`), ["agent-org#7"]);
+});
+
+test("#4116: the table says `N merging, not judged` beside the count only when N is above 0, and with 0 the output is today's", () => {
+  const mergedAt = new Date(NOW - MINUTE).toISOString();
+  const withMerge = boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", mergedAt }] })), DAY);
+  assert.match(withMerge, /\*\*0 disagree\*\*, 1 merging, not judged$/);
+  assert.doesNotMatch(withMerge, /\| #10 \|/, "the withheld row has no line");
+  const bothNotes = boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"]), row(4047, [], { createdAt: new Date(NOW - 13_000).toISOString() })],
+    mergedPrs: [{ number: 900, body: "Closes #10", mergedAt }] })), DAY);
+  assert.match(bothNotes, /\*\*0 disagree\*\*, 1 filing, not judged, 1 merging, not judged$/);
+  const none = boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10" }] })), DAY);
+  assert.doesNotMatch(none, /merging/, "CONTROL: none withheld, nothing said");
+  assert.equal(boardTruthTable({ findings: [], unread: [] }, DAY), `### Board against reality, ${DAY}\n\n**0 disagree**`, "an audit without the field prints as it did");
+});
+
+test("#4116: every merged-PR read asks for `mergedAt`, the first tracker's and the code repository's", () => {
+  const asked = [];
+  const run = (/** @type {string[]} */ args) => { if (args[0] === "pr") asked.push(args); return "[]"; };
+  const trackers = [{ key: "", repo: "a/b" }, { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" }];
+  readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers });
+  assert.deepEqual(asked.map((a) => a.at(-1)), ["a/b", "a/org-code"], "CONTROL: both merged-PR reads were made");
+  assert.ok(asked.every((a) => /(^|,)mergedAt(,|$)/.test(a[a.indexOf("--json") + 1])));
+});
+
 test("(5) #4048: a row with no state label created 13 s ago is NOT found and is counted as filing; the same row 10 minutes old IS found and is not", () => {
   const at = (secondsAgo) => new Date(NOW - secondsAgo * 1000).toISOString();
   const young = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(13) })] }));
@@ -149,6 +200,32 @@ test("(6) a near-duplicate of a closed row, a near-duplicate of an older open ro
   const superseded = (/** @type {string} */ reason) => ({ openRows: [row(44, ["backlog"], { body: "Superseded by #45" })], closedRows: [row(45, [], { state: "CLOSED", stateReason: reason, title: "x" })] });
   assert.deepEqual(found(superseded("COMPLETED"), QUESTIONS.DUPLICATE), [44]);
   assert.deepEqual(found(superseded("NOT_PLANNED"), QUESTIONS.DUPLICATE), []);
+});
+
+/** The adoption rows of a11ign/a11ign#4127 as filed: one title, six repositories. @param {string} repo */
+const adoptionTitle = (repo) => `Adopt the shared changeset-required check in a11ign/${repo}: a pull request changing its releasable paths with no changeset and no no-release: line fails its gate (adoption of #4127, class fix for #4084)`;
+const ADOPTION_ROWS = [[4129, "agent-org"], [4130, "screenreader-worker"], [4132, "screenreader-fleet"], [4133, "documents"], [4134, "lab"], [4135, "control"]];
+
+test("sibling adoption rows naming different repositories are not near-duplicates (#4137)", () => {
+  const siblings = ADOPTION_ROWS.map(([number, repo]) => row(number, ["ready"], { title: adoptionTitle(repo) }));
+  assert.deepEqual(found({ openRows: siblings }, QUESTIONS.DUPLICATE), [], "the real titles of #4129-#4135 are six rows, not one");
+  // POSITIVE CONTROL for the line above: with the repository name taken out of the titles the same six rows ARE read as one, so the empty result is a reading.
+  const unnamed = ADOPTION_ROWS.map(([number]) => row(number, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") }));
+  assert.deepEqual(found({ openRows: unnamed }, QUESTIONS.DUPLICATE), [4130, 4132, 4133, 4134, 4135]);
+  // a title naming the same repository and one word more is still a real twin
+  const twin = row(4136, ["ready"], { title: `${adoptionTitle("screenreader-worker")} again` });
+  assert.deepEqual(found({ openRows: [siblings[1], twin] }, QUESTIONS.DUPLICATE), [4136]);
+  assert.deepEqual(found({ openRows: [siblings[1], row(4136, ["ready"], { title: adoptionTitle("Screenreader-Worker") })] }, QUESTIONS.DUPLICATE), [4136], "a repository name is compared lower-cased");
+  assert.deepEqual(found({ openRows: [siblings[1], row(4136, ["ready"], { title: adoptionTitle("screenreader-worker").replace("a11ign/screenreader-worker:", "a11ign/screenreader-worker,") })] }, QUESTIONS.DUPLICATE), [4136], "a trailing `:` or `,` is not part of the name");
+  assert.deepEqual(found({ openRows: [siblings[4], row(4136, ["ready"], { title: adoptionTitle("lab").replace("a11ign/lab:", "a11ign/lab.") })] }, QUESTIONS.DUPLICATE), [4136], "a trailing `.` is not part of the name");
+  // a title naming a repository against one naming none is compared as before
+  const prose = row(4137, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") });
+  assert.deepEqual(found({ openRows: [prose, row(4138, ["ready"], { title: adoptionTitle("lab") })] }, QUESTIONS.DUPLICATE), [4138]);
+  // against a closed row: the same repository is the question, a different one is not
+  const lab = (/** @type {number} */ number, /** @type {string} */ repo) => row(number, ["ready"], { title: `Repair the ${repo} stability gate reading in a11ign/${repo} so that every corpus run is read once` });
+  const closed = { ...lab(50, "lab"), state: "CLOSED", stateReason: "COMPLETED" };
+  assert.deepEqual(found({ openRows: [lab(51, "lab")], closedRows: [closed] }, QUESTIONS.DUPLICATE), [51]);
+  assert.deepEqual(found({ openRows: [lab(51, "control")], closedRows: [{ ...closed, title: lab(50, "lab").title.replace("lab stability", "control stability") }] }, QUESTIONS.DUPLICATE), [], "a11ign/lab against a11ign/control");
 });
 
 test("a fact that could not be read is UNREAD and never counted as agreeing", () => {

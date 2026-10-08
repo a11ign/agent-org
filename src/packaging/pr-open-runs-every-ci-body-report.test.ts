@@ -71,24 +71,24 @@ test("#3209 (2): a `## Measured` section with no command and its output is REFUS
   assert.ok(accepted.lines.includes("MEASURED: RECORDED"));
 });
 
-test("#3209 (3): the CLI entry and `checkBody` run ONE exported list, and it holds four reports today", () => {
-  assert.equal(CI_BODY_REPORTS.length, 4, "POSITIVE CONTROL for the emptiness: a refactor that empties the list fails here");
-  assert.deepEqual(CI_BODY_REPORTS.map((entry) => entry.name), ["acceptance", "closes", "mutation", "measured"]);
+test("#3209 (3): the CLI entry and `checkBody` run ONE exported list, and it holds five reports today", () => {
+  assert.equal(CI_BODY_REPORTS.length, 5, "POSITIVE CONTROL for the emptiness: a refactor that empties the list fails here");
+  assert.deepEqual(CI_BODY_REPORTS.map((entry) => entry.name), ["acceptance", "closes", "class", "mutation", "measured"]);
 });
 
 test("#3209 (3): a report added to the list is run by `checkBody` with no second edit", () => {
-  const added = { name: "fifth", report: () => ({ ok: false, lines: ["FIFTH: REFUSED -- added to the one list"] }) };
+  const added = { name: "sixth", report: () => ({ ok: false, lines: ["SIXTH: REFUSED -- added to the one list"] }) };
   CI_BODY_REPORTS.push(added);
   try {
     const result = check(body(), noTests);
     assert.equal(result.ok, false);
-    assert.ok(result.lines.includes("FIFTH: REFUSED -- added to the one list"));
+    assert.ok(result.lines.includes("SIXTH: REFUSED -- added to the one list"));
     assert.deepEqual(runCiBodyReports({ body: body(), run: () => 0, diff: noTests }), result,
       "the function the CLI entry calls gives the same answer as the one `pr:open` calls");
   } finally {
     CI_BODY_REPORTS.splice(CI_BODY_REPORTS.indexOf(added), 1);
   }
-  assert.equal(CI_BODY_REPORTS.length, 4, "the list is restored, so no other test sees the fifth");
+  assert.equal(CI_BODY_REPORTS.length, 5, "the list is restored, so no other test sees the sixth");
 });
 
 test("#3209 (3): neither `checkBody` nor the CLI entry spells its own list of reports", async () => {
@@ -96,7 +96,7 @@ test("#3209 (3): neither `checkBody` nor the CLI entry spells its own list of re
   const strip = (file: string) => readFileSync(new URL(file, import.meta.url), "utf8")
     .split("\n").filter((line) => !/^\s*(?:\/\/|\*|\/\*\*)/.test(line)).join("\n");
   const prOpen = strip("../pr-open.mjs");
-  const reports = ["acceptanceReport", "closesDeclarationReport", "mutationRecordReport", "measuredSectionReport"];
+  const reports = ["acceptanceReport", "closesDeclarationReport", "mutationRecordReport", "measuredSectionReport", "defectClassReport"];
   for (const name of reports) {
     assert.ok(!prOpen.includes(`${name}(`), `pr-open.mjs calls ${name} itself, a second spelling of the list`);
   }
