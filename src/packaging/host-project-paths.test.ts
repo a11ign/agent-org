@@ -120,7 +120,8 @@ const TODAYS_TEXT = {
 // DIVERGED until `host:install` runs, which is a host action and not this row's.
 // a11ign/a11ign#3589 MOVED IT AGAIN, deliberately: each ledger line gains a ninth field, the session id (`CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`). Same staleness, same remedy.
 // #3642 MOVED IT AGAIN, deliberately: a call with no workspace id and no GH_CONFIG_DIR refuses instead of acting as the human account. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "297e45210c096634e50b96739add43526f722971ea010aa39784fc2260a335c8";
+// a11ign/a11ign#4148 MOVED IT AGAIN, deliberately: the wrapper answers an identical repeated READ from a cache (20 s, 30 at most), serves the tick's own processes from the generation `tick-snapshot.mjs` keeps, and counts what the ledger trim drops into `<ledger>.hourly`. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "346938accf5a9bd217e1bf8f8ec108f35f64bf66b1848f1c2f7f94b7bed75c4c";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

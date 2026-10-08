@@ -119,7 +119,8 @@ function tickWith({ gate, wake }: { gate: string; wake: string }) {
     mkdirSync(join(dir, "empty"));
     // `--ledger=<path>` (the `=` form is the only one `flagValue` reads) puts the handoff queue beside it, so a real queued order cannot make a quiet tick deliver.
     const ran = spawnSync(process.execPath, [join(src, "work-tick.mjs"), `--ledger=${join(dir, "ledger.jsonl")}`], {
-      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty") },
+      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
+
     });
     return { ran, wakeRan: existsSync(marker) };
   } finally {
