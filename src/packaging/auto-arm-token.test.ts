@@ -3,31 +3,31 @@
 // an assertion message is what charged it, and it never uses a token. Without this the row's own Acceptance
 // command was REFUSED by the token-less acceptance job and verified nothing.
 /**
- * #416: AUTO-ARM MUST ARM WITH A TOKEN WHOSE EVENTS FIRE.
+ * #416 / #4200: AUTO-ARM MUST ARM WITH A TOKEN WHOSE EVENTS FIRE, AND THAT TOKEN IS MINTED, NOT STORED.
  *
  * GitHub does not trigger workflows from events created with `GITHUB_TOKEN` -- a merge completed by
  * `github-actions[bot]` fires neither `pull_request: closed` nor a `push`, so `trunk-guard`, `close-rows`
  * and every push watchdog go silent for exactly the merges the pipeline itself performs (measured
- * 2026-09-08, 37 data points, no exceptions). Arming with a real PAT (`A11IGN_BOT_TOKEN`) instead means
- * the completed merge is attributed to that identity and every one of those triggers fires.
+ * 2026-09-08, 37 data points, no exceptions). Arming with a real identity instead means the completed merge is
+ * attributed to that identity and every one of those triggers fires.
  *
- * Creating the token is NOT this row's job -- `ceo` asks the chairman for it. This file asserts the
- * WORKFLOW's own text, because the decision here is bash inside `auto-arm.yml`, not a separate script:
- * both `arm` (the per-PR trigger) and `sweep` (#344's queue sweep) must read the secret when present and
- * fall back to `GITHUB_TOKEN`, with a printed warning, when it is not -- so the pipeline keeps arming
- * before the token exists rather than stopping (#382's own lesson: a job that cannot do its intended work
- * must say which path it took).
+ * Until #4198 that identity was a stored PAT (`A11IGN_BOT_TOKEN`) and this file pinned that both jobs read it and
+ * FELL BACK to `GITHUB_TOKEN` with a warning. It is now the Octo STS GitHub App, minted per job by `octo-sts/action`
+ * against `.github/chainguard/auto-arm.sts.yaml`, and a stored-token read put back is what this file now refuses.
+ * What it pins, and the guarantee each pin carries (#4200):
+ *   1. the token reaches the repository on the write side  -> the policy's grant, and a mint that is a red step
+ *      at the point of use (no fallback), so a token that does not reach is not a quiet degradation;
+ *   2. the arming token is the one that fires events       -> `arm` and `sweep` act with the MINTED token only,
+ *      and the `GITHUB_TOKEN` fallback that restores #416's defect is absent;
+ *   3. no stored token                                     -> no workflow reads one, bar the named gap.
+ * Whether a merge it arms really fires `close-rows` is measured on a real merge (#4198, Done-when 2), never here.
  *
- * Scoped to EXACTLY these two jobs' own `run:` text, never the whole file -- C2 (#416's sibling) added a
- * THIRD job, `update-branch`, to this same workflow, and it prints its own `A11IGN_BOT_TOKEN is not set`
- * warning for a deliberately DIFFERENT reason (it skips outright rather than falling back -- see that
- * job's own comment). A whole-file regex count would have made this file's assertions couple to a job
- * this file is not about, and either broken a correct third job or hidden a real regression in the two
- * jobs this file actually specifies. See `auto-arm-update-branch.test.ts` for the third job's own tests.
+ * Scoped to EXACTLY the `arm` and `sweep` jobs' own steps, never the whole file: `auto-arm-update-branch.test.ts`
+ * and the other workflows have their own jobs and their own tests.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { parse as parseYaml } from "yaml";
@@ -37,101 +37,106 @@ import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
 
 const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");
 const WORKFLOW = join(WORKFLOWS, "auto-arm.yml");
+const POLICY = join(HOME_CHECKOUT, ".github/chainguard/auto-arm.sts.yaml");
 
-// WHO ACTS WITH THE SECRET, held here and not imported (#3559). These lived in a sibling `auto-arm-identity.ts` in
-// a11ign/a11ign, which the split never carried over, so this file died at import and none of its tests ran. They
-// are one project's account names, so they stay beside the only test in this repository that reads them; a11ign's
-// `auto-arm-token-live.test.ts` compares its own copy with who GitHub says acted. Moving either is a decision for a row.
+/** The jobs that arm, and so the only ones that mint the arming token. */
+const ARMING_JOBS = ["arm", "sweep"];
 
-/** The secret every arming workflow step reads. */
-const SECRET_NAME = "A11IGN_BOT_TOKEN";
+/** The stored tokens the Octo STS rows (#4194 to #4198) replace; the end state is that no workflow reads either. */
+const STORED_TOKENS = ["A11IGN_BOT_TOKEN", "ORG_SECRETS_READ_TOKEN"];
 
-/** The machine account expected to hold it, and that no session uses. */
-const SECRET_HOLDER = "a11ign-ci";
+/**
+ * THE NAMED GAP: workflow -> the stored tokens it still reads, each with the row that ends it. `nightly.yml`'s ruleset read has to
+ * ask AS the identity that completes a merge here and across nine repositories (#4195). When that row lands the entry goes, and this
+ * test is RED until it does: a gap that closed and stayed listed would let the next stored read in unnoticed.
+ */
+const NAMED_GAPS: Record<string, string[]> = { "nightly.yml": ["A11IGN_BOT_TOKEN"] };
 
-/** Accounts that must never act with the secret: the chairman's personal one, whose token it used to be. */
-const PERSONAL_ACCOUNTS = ["DanBeckDev"];
+type Step = { id?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; run?: string };
+type Job = { permissions?: Record<string, string>; steps?: Step[] };
+type Workflow = { jobs: Record<string, Job> };
 
-/** Somebody's identity rather than CI's: the reviewer and the two session accounts must never HOLD the secret. */
-const NOT_CI_ACCOUNTS = ["a11ign-bot", "a11ign-ai-workers", "a11ign-ai-leads"];
+const parseWorkflow = (text: string): Workflow => parseYaml(text) as Workflow;
+const armingJob = (name: string): Job => parseWorkflow(readFileSync(WORKFLOW, "utf8")).jobs[name] ?? {};
+const MINTED = "${{ steps.octo-sts.outputs.token }}";
 
-/** @param {{ jobs: Record<string, { steps: Array<{ env?: Record<string,string>, run?: string }> }> }} doc */
-function jobRunText(doc: { jobs: Record<string, { steps: Array<{ run?: string }> }> }, jobName: string): string {
-  return (doc.jobs[jobName]?.steps ?? []).map((s) => s.run ?? "").join("\n");
+test("arm and sweep each mint the arming token with octo-sts/action and read it in the one step that acts, never in a run: script", () => {
+  for (const jobName of ARMING_JOBS) {
+    const job = armingJob(jobName);
+    const steps = job.steps ?? [];
+    assert.deepEqual(job.permissions, { contents: "read", "id-token": "write" },
+      `${jobName} holds contents: read and id-token: write (the request Octo STS needs) and nothing more; the writes come from the minted token`);
+    const mints = steps.flatMap((step, index) => step.uses?.startsWith("octo-sts/action@") ? [{ step, index }] : []);
+    assert.equal(mints.length, 1, `${jobName} must mint exactly once, found ${mints.length}`);
+    const [{ step: mint, index: mintAt }] = mints;
+    assert.match(mint.uses ?? "", /^octo-sts\/action@[0-9a-f]{40}$/, `${jobName}: the Action is pinned to a commit (the version rides in a comment)`);
+    assert.equal(mint.id, "octo-sts");
+    assert.equal(mint.with?.identity, "auto-arm", `${jobName}: the identity names the policy file auto-arm.sts.yaml`);
+    assert.equal(mint.with?.scope, "${{ github.repository }}", `${jobName}: the token is scoped to this repository`);
+    const readers = steps.flatMap((step, index) => Object.values(step.env ?? {}).includes(MINTED) ? [{ step, index }] : []);
+    assert.equal(readers.length, 1, `${jobName}: one step reads the minted token, and it is the step that arms`);
+    assert.ok(readers[0].index > mintAt, `${jobName}: the token is minted before it is read`);
+    assert.equal(readers[0].step.env?.GH_TOKEN, MINTED, `${jobName}: it reaches \`gh\` as GH_TOKEN, the variable it reads by itself`);
+    assert.doesNotMatch(readers[0].step.run ?? "", /octo-sts|secrets\./, `${jobName}: the run: script names neither the mint nor a secret, so the value cannot reach a command line`);
+  }
+});
+
+/** The text a fallback to the token that fires nothing would leave in a job: #416's defect, restored quietly. */
+const FALLBACK = /FALLBACK_TOKEN|github\.token|secrets\.GITHUB_TOKEN|GH_TOKEN:\s*\$\{\{\s*github\./;
+const jobText = (job: Job): string => JSON.stringify(job);
+
+test("NO FALLBACK: neither arming job can arm with GITHUB_TOKEN, because that is the token whose merges fire no event (#416)", () => {
+  for (const jobName of ARMING_JOBS) {
+    assert.doesNotMatch(jobText(armingJob(jobName)), FALLBACK, `${jobName} falls back to a token that fires nothing`);
+  }
+  // POSITIVE CONTROL: the scan finds the PAT-era shape, so a clean result above is not a pattern that matches nothing.
+  const patEra: Job = { steps: [{ env: { FALLBACK_TOKEN: "${{ github.token }}" }, run: 'if [ -n "$A11IGN_BOT_TOKEN" ]; then :; fi' }] };
+  assert.match(jobText(patEra), FALLBACK);
+  assert.match(jobText({ steps: [{ env: { GH_TOKEN: "${{ github.token }}" } }] }), FALLBACK);
+});
+
+test("the policy grants the arm and the merge on this repository and nothing else, to the workflow as on main", () => {
+  const policy = parseYaml(readFileSync(POLICY, "utf8")) as { issuer?: string; repositories?: unknown; permissions?: Record<string, string>; claim_pattern?: Record<string, string> };
+  assert.deepEqual(policy.permissions, { pull_requests: "write", contents: "write" },
+    "pull-request write (enable auto-merge) and contents write (the merge itself); `issues` is not needed (#333: native `Closes #N` closure is the merging identity's)");
+  assert.equal(policy.repositories, undefined, "a repository policy reaches its own repository and says nothing wider");
+  assert.equal(policy.issuer, "https://token.actions.githubusercontent.com");
+  assert.match(policy.claim_pattern?.job_workflow_ref ?? "", /auto-arm\\\.yml@refs\/heads\/main$/,
+    "bound to auto-arm.yml AS ON main, so a branch that edits it cannot mint");
+  assert.match(policy.claim_pattern?.event_name ?? "", /^pull_request_target\|push\|workflow_dispatch$/, "the three triggers the minting jobs run on, and not `pull_request`");
+});
+
+/** The stored tokens each workflow reads on a LIVE line: a comment that names one, and `secrets: inherit`, are not reads. */
+function storedReads(text: string): string[] {
+  const live = text.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+  return [...live.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]).filter((name) => STORED_TOKENS.includes(name));
 }
 
-test("both arm and sweep read A11IGN_BOT_TOKEN as an env var -- never as a CLI argument or echoed", () => {
-  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as {
-    jobs: Record<string, { steps: Array<{ env?: Record<string, string>, run?: string }> }>,
+function storedReadsByWorkflow(read: (name: string) => string, names: string[]): Record<string, string[]> {
+  const found = names.map((name) => [name, storedReads(read(name))] as const).filter(([, reads]) => reads.length > 0);
+  return Object.fromEntries(found);
+}
+
+test("no workflow reads a stored token, bar the named gap -- and a read put back anywhere else is red (#4200)", () => {
+  const names = readdirSync(WORKFLOWS).filter((name) => /\.ya?ml$/.test(name));
+  assert.ok(names.includes("auto-arm.yml") && names.includes("trunk.yml"), "POSITIVE CONTROL: the walk sees the workflows it is about");
+  assert.deepEqual(storedReadsByWorkflow((name) => readFileSync(join(WORKFLOWS, name), "utf8"), names), NAMED_GAPS,
+    "a stored token is read somewhere not named (move it to Octo STS, or name the gap with its row), or a named gap closed and must leave NAMED_GAPS");
+  // POSITIVE CONTROL for the emptiness above: the same scan DOES find a live read, and does not count a comment or `secrets: inherit`.
+  const fixture: Record<string, string> = {
+    "reader.yml": "jobs:\n  j:\n    env:\n      GH_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}\n",
+    "org.yml": "jobs:\n  j:\n    env:\n      T: ${{ secrets.ORG_SECRETS_READ_TOKEN }}\n",
+    "quiet.yml": "# was ${{ secrets.A11IGN_BOT_TOKEN }}\njobs:\n  j:\n    secrets: inherit\n    env:\n      T: ${{ secrets.GITHUB_TOKEN }}\n",
   };
-  for (const jobName of ["arm", "sweep"]) {
-    const steps = doc.jobs[jobName]?.steps ?? [];
-    const withToken = steps.find((s) => s.env?.A11IGN_BOT_TOKEN === "${{ secrets.A11IGN_BOT_TOKEN }}");
-    assert.ok(withToken, `${jobName} must read secrets.A11IGN_BOT_TOKEN through an env: mapping`);
-    assert.ok(!(withToken?.run ?? "").includes("secrets.A11IGN_BOT_TOKEN"),
-      `${jobName}'s run: script must never reference the secret directly -- only through the env var it `
-      + "was mapped into, or the value risks appearing on a command line a log could capture");
-  }
-});
-
-test("MUTATION TARGET: both jobs actually BRANCH on whether the token is set -- a present secret is used, "
-  + "not merely read and ignored", () => {
-  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as Parameters<typeof jobRunText>[0];
-  for (const jobName of ["arm", "sweep"]) {
-    const branches = [...jobRunText(doc, jobName).matchAll(/if \[ -n "\$A11IGN_BOT_TOKEN" \]/g)];
-    assert.equal(branches.length, 1, `expected exactly one such conditional in ${jobName}, found `
-      + `${branches.length}`);
-  }
-});
-
-test("the fallback prints a warning naming what breaks -- trunk.yml's closeRows, the watchdogs, "
-  + "and #416 itself, so the next reader knows this path is temporary", () => {
-  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as Parameters<typeof jobRunText>[0];
-  for (const jobName of ["arm", "sweep"]) {
-    const warnings = [...jobRunText(doc, jobName).matchAll(/::warning::A11IGN_BOT_TOKEN is not set[^\n]*/g)];
-    assert.equal(warnings.length, 1, `${jobName} must print exactly one fallback warning`);
-    const [[warning]] = warnings;
-    // THE NAMES ARE THE WORKFLOW'S CURRENT ONES, and they moved without this moving with them. The
-    // warning used to say "trunk-guard" and "close-rows"; it now says "trunk.yml's closeRows ... and
-    // trunkGate/trunkBuildTest/trunkRecheck chain", which is strictly more precise and names the jobs a
-    // reader can actually go and look at. This asserted the old spellings and turned `main` red -- every
-    // pull request inherited it, because `ts` runs this file.
-    //
-    // WHAT THIS TEST IS FOR is unchanged: the fallback must say WHAT BREAKS and WHERE TO READ ABOUT IT,
-    // so nobody treats the GITHUB_TOKEN path as permanent. Asserting on the machinery by name is how it
-    // checks that -- and a rename of that machinery is exactly when it should be re-read, not routed
-    // around.
-    assert.match(warning, /trunk\.yml/);
-    assert.match(warning, /closeRows/);
-    assert.match(warning, /watchdogs/);
-    assert.match(warning, /#416/);
-  }
-});
-
-test("the fallback token is GITHUB_TOKEN (github.token), never a hard-coded or absent value", () => {
-  const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as {
-    jobs: Record<string, { steps: Array<{ env?: Record<string, string> }> }>,
-  };
-  for (const jobName of ["arm", "sweep"]) {
-    const steps = doc.jobs[jobName]?.steps ?? [];
-    const fallbacks = steps.filter((s) => s.env?.FALLBACK_TOKEN === "${{ github.token }}");
-    assert.equal(fallbacks.length, 1, `${jobName} must map github.token as the fallback exactly once`);
-  }
-});
-
-test("A11IGN_BOT_TOKEN never appears as a bare CLI argument anywhere in the workflow", () => {
-  const text = readFileSync(WORKFLOW, "utf8");
-  assert.doesNotMatch(text, /gh [^\n]*A11IGN_BOT_TOKEN/,
-    "the token must reach `gh` only via the GH_TOKEN environment variable it reads automatically, never "
-    + "as an explicit --token flag or similar, which would put the value on a process command line");
+  assert.deepEqual(storedReadsByWorkflow((name) => fixture[name], Object.keys(fixture)),
+    { "reader.yml": ["A11IGN_BOT_TOKEN"], "org.yml": ["ORG_SECRETS_READ_TOKEN"] });
 });
 
 test("issues: write is NOT added for this -- #333 already measured that granting it changes nothing", () => {
   const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as { permissions: Record<string, string> };
   // The permission already exists for #298's own reason (a bot-merge case predating this fix) and this
-  // test does not assert its absence -- only that this PR's own change did not ADD it a second time or
-  // widen it further, which would be the "do not widen permissions to make something else easier" the
-  // issue's own header warns against.
+  // test does not assert its absence -- only that no change ADDED it a second time or widened it further,
+  // which would be the "do not widen permissions to make something else easier" the issue's own header warns against.
   assert.equal(doc.permissions.issues, "write");
   assert.equal(doc.permissions.contents, "write");
   assert.equal(doc.permissions["pull-requests"], "write");
@@ -140,73 +145,10 @@ test("issues: write is NOT added for this -- #333 already measured that granting
     + "added for this token change");
 });
 
-// --- #2358: WHICH ACCOUNT HOLDS THE SECRET -- and where it lives --------------------------------------
-//
-// `A11IGN_BOT_TOKEN` was the chairman's PERSONAL token, so CI acted as `DanBeckDev`: 23 of the last 40
-// merged PRs were completed by that account (read by `ceo`, 2026-09-24, from `mergedBy`), against the
-// ruling that no agent acts as the chairman (#1950/#2333). The chairman swapped it 2026-09-24T19:54:17Z.
-//
-// WHAT HOLDS IT NOW, and it is a fact about GitHub's settings that no file in this repository can read:
-//   - the account is `SECRET_HOLDER` (above), a machine account no session uses. NOT
-//     `a11ign-bot` (the reviewer: the account that approves must not be the one that arms and completes the
-//     merge, or `main`'s review requirement is decorative -- `.claude/rules/main-review-requirement.md`), and
-//     not a session's identity (`a11ign-ai-workers`, `a11ign-ai-leads`), which would attribute CI's merges to
-//     a session. The test below enforces the NAMING (the constant is a machine account); the live file
-//     compares that same constant with who GitHub says acted.
-//   - the secret is ORG-LEVEL. The repository-level copy was deleted on purpose, so there is one place to
-//     manage it. A repository-level secret of the same name would SHADOW the org one (GitHub resolves the
-//     narrower scope first), so a swap back to a person can be made at either level and only one of them
-//     is where the chairman looks. THIS IS NOT ENFORCED ANYWHERE: reading a secret's scope needs admin, which
-//     no session and no CI job here holds, so it is recorded as a claim and left out of the constants.
-//
-// WHAT A TEST CAN AND CANNOT DO ABOUT THAT. The secret's value never reaches the repo, so nothing here
-// can read WHO holds it. What can be pinned is (1) the NAME every workflow step reads, so a rename that
-// quietly moves CI onto a different credential is red, and (2) below, the constants naming who is
-// EXPECTED to hold it, which `auto-arm-token-live.test.ts` reads back from GitHub's own timeline: an
-// `auto_merge_enabled` or `merged` actor that is a person is a red test THERE. This file must stay
-// token-free (the acceptance job has none), and the live read spawns `gh`, so it is a separate file.
-
-/** Every `secrets.X` a workflow reads, so a step that reads a DIFFERENT secret is visible by name. */
-function secretsRead(workflow: string): string[] {
-  const text = readFileSync(join(WORKFLOWS, workflow), "utf8");
-  return [...text.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-}
-
-test("#2358: the workflows that act as the arming identity read `secrets.A11IGN_BOT_TOKEN` and no other "
-  + "credential, at the counts measured 2026-10-02 (auto-arm.yml 2, nightly.yml 2)", () => {
-  // auto-arm.yml was 3 until #3046 deleted its `update-branch` job, the third reader (#3070).
-  for (const [workflow, uses] of [["auto-arm.yml", 2], ["nightly.yml", 2]] as const) {
-    assert.deepEqual(secretsRead(workflow), Array(uses).fill(SECRET_NAME),
-      `${workflow} must read exactly ${uses} x secrets.${SECRET_NAME} and nothing else. A rename moves CI onto `
-      + `another credential without a red test; \`${SECRET_HOLDER}\` holds ${SECRET_NAME} (#2358), so a `
-      + "change of name is a change of who acts, and belongs on a row");
-  }
-});
-
-test("#2358: the named holder is a machine account -- not a person, not the reviewer, not a session", () => {
-  assert.ok(!PERSONAL_ACCOUNTS.includes(SECRET_HOLDER),
-    `${SECRET_HOLDER} is a personal account: CI would act as the chairman again (#1950/#2333, #2358)`);
-  assert.ok(!NOT_CI_ACCOUNTS.includes(SECRET_HOLDER),
-    `${SECRET_HOLDER} is the reviewer's or a session's identity: the approver would arm and complete the merge, `
-    + "or a session would be credited with CI's merges");
-  // POSITIVE CONTROL for the two refusals above: the lists are not empty, so `!includes` is not vacuous, and
-  // the holder is a real name rather than an empty string that no list contains.
-  assert.ok(PERSONAL_ACCOUNTS.length > 0 && NOT_CI_ACCOUNTS.length > 0 && /^[\w-]+$/.test(SECRET_HOLDER));
-});
-
-test("#2358: trunk.yml no longer reads the arming secret -- the auto-revert path that used it is gone "
-  + "(#2356), so the arming identity is not what trunk runs as", () => {
-  assert.ok(!secretsRead("trunk.yml").includes(SECRET_NAME),
-    "trunk.yml reads the arming secret again: that is the revert path #2356 removed, or a new use of an "
-    + "identity that completes merges, and either belongs on a row before it lands");
-  assert.ok(secretsRead("auto-arm.yml").length > 0,
-    "POSITIVE CONTROL for the two assertions above: the reader finds the secret where it is known to be used");
-});
-
 // --- #1969: A TOKEN THAT IS SET BUT REFUSED IS NOT A TOKEN THAT WORKS -------------------------------
 //
-// The four tests above pin that both jobs BRANCH on whether `A11IGN_BOT_TOKEN` is SET. That branch was
-// the whole of the token's story, and on 2026-09-22 it was measured to be the wrong question: the secret
+// The PAT-era tests that stood above (#4200 replaced them) pinned that both jobs BRANCH on whether `A11IGN_BOT_TOKEN`
+// is SET. That branch was the whole of the token's story, and on 2026-09-22 it was measured to be the wrong question: the secret
 // was set, the branch took the PAT path, and the PAT's GraphQL pool was exhausted from 18:45:53Z to
 // 19:13:44Z. Every `pull_request` run of `auto-arm.yml` failed on `arm-pr.mjs`'s label read, and what it
 // printed -- `could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld` -- is TRUE,
