@@ -7,8 +7,8 @@
 // substitute for the checks.
 //
 // WHAT RUNS, IN ORDER, per row the tick already found cleared (`unclaimedClearings`, which is the "no remaining edge, `Not-before` or `answer:`" half and excludes claimed, `ready`, `parked` and
-// `needs:chairman` rows): (1) the line; (2) the row's labels, READ FRESH, still say it is a plain `backlog` row and none of them means "not startable" or "not pickable"; (3) the LIVE body, read
-// fresh, still declares the line, still has its waits clear, passes the claim rule's template check (`ineligibility`: Region, Acceptance, Open-check) and has no merged PR already naming it;
+// `needs:chairman` rows): (1) the line; (2) the row's labels, READ FRESH, still say it is a plain `backlog` row and none of them means "not startable" or "not pickable"; (3) the LIVE body AND `blockedBy` edges, read
+// fresh (an edge that reopened since the tick's snapshot is a wait again, and `row-file --promote` does not look at edges), still declares the line, still has its waits clear, passes the claim rule's template check (`ineligibility`: Region, Acceptance, Open-check) and has no merged PR already naming it;
 // (4) `row-file --promote`, which re-runs the filing rule (`fileRefusalReason`) on the live body once more and owns the Status move, the label set and the read-back. A refusal at ANY step leaves
 // the row exactly as it was, so the caller's order to `product-manager` is today's, unchanged.
 //
@@ -25,7 +25,7 @@ const DECLARATION = /^[ \t]*#{0,6}[ \t]*Ready-when-unblocked:[ \t]*yes[ \t]*$/im
 export const PROMOTED_REASON = "blockers cleared, Ready-when-unblocked";
 
 /**
- * @typedef {{ labels: string[], state: string, body: string }} LiveRow
+ * @typedef {{ labels: string[], state: string, body: string, blockedBy: { nodes?: { number?: number, state?: string }[] } }} LiveRow
  * @typedef {{ read: (number: number) => LiveRow, mergedClosers: (number: number) => { number: number, mergedAt: string }[],
  *            promote: (number: number) => { ok: true } | { ok: false, refusal: string } }} ReadyIo
  * @typedef {{ promoted: number[], kept: { number: number, reason: string }[], errors: { number: number, message: string }[] }} ReadyResult
@@ -39,16 +39,16 @@ const labelsOf = (row) => (row?.labels ?? []).map((/** @type {any} */ l) => Stri
 
 /**
  * WHY A FRESHLY READ ROW IS NOT THIS MODULE'S TO PROMOTE, or `null`. The tick's copy is seconds old; a label or an amendment made since is exactly the "since" the body check exists for.
- * @param {number} number @param {LiveRow} live @param {any} tickRow @param {readonly string[]} notStartable @param {number} now @returns {string | null}
+ * @param {number} number @param {LiveRow} live @param {readonly string[]} notStartable @param {number} now @returns {string | null}
  */
-function notPromotable(number, live, tickRow, notStartable, now) {
+function notPromotable(number, live, notStartable, now) {
   if (live.state !== "OPEN") return `#${number} is ${live.state}`;
   const standing = [CLAIM_LABEL, READY_LABEL, PARKED, NEEDS_CHAIRMAN_LABEL, ...notStartable].filter((l) => live.labels.includes(l));
   const answer = live.labels.find((l) => l.startsWith(ANSWER_PREFIX));
   if (standing.length > 0 || answer) return `it now carries ${[...standing, ...(answer ? [answer] : [])].map((l) => `\`${l}\``).join(", ")}`;
   if (!live.labels.includes(BACKLOG_LABEL)) return `it no longer carries \`${BACKLOG_LABEL}\``;
   if (!declaresReadyWhenUnblocked(live.body)) return "its body no longer declares `Ready-when-unblocked: yes`";
-  const waiting = waitingOn({ labels: live.labels.map((name) => ({ name })), body: live.body, blockedBy: tickRow.blockedBy }, undefined, now);
+  const waiting = waitingOn({ labels: live.labels.map((name) => ({ name })), body: live.body, blockedBy: live.blockedBy }, undefined, now);
   return waiting === null ? null : `it is waiting again (${waiting.kind})`;
 }
 
@@ -59,7 +59,7 @@ function notPromotable(number, live, tickRow, notStartable, now) {
 function tryPromote({ row }, io, notStartable, now) {
   const number = Number(row.number);
   const live = io.read(number);
-  const why = notPromotable(number, live, row, notStartable, now) ?? ineligibility({ number, body: live.body }, live.labels, io.mergedClosers);
+  const why = notPromotable(number, live, notStartable, now) ?? ineligibility({ number, body: live.body }, live.labels, io.mergedClosers);
   if (why !== null) return why;
   const promoted = io.promote(number);
   return promoted.ok ? null : promoted.refusal;
@@ -104,8 +104,8 @@ export function githubReadyIo(run) {
   const github = githubIo(run);
   return {
     read: (number) => {
-      const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state,body"]));
-      return { labels: (read.labels ?? []).map((/** @type {any} */ l) => String(l.name)), state: String(read.state), body: String(read.body ?? "") };
+      const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state,body,blockedBy"]));
+      return { labels: (read.labels ?? []).map((/** @type {any} */ l) => String(l.name)), state: String(read.state), body: String(read.body ?? ""), blockedBy: read.blockedBy ?? {} };
     },
     mergedClosers: (number) => mergedClosersOf(number, run),
     promote: github.promote,

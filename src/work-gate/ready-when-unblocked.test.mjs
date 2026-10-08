@@ -23,7 +23,7 @@ const tickRow = (number, more = {}) => ({ number, title: `row ${number}`, labels
 
 /**
  * A GitHub in memory. `live` is what a fresh read of each row says (labels, body), defaulting to the tick's own; `calls` logs every call; `refuse` makes the promotion refuse; `fail` makes a call throw.
- * @param {{ rows: any[], live?: Record<number, { labels?: string[], body?: string, state?: string }>, merged?: Record<number, { number: number, mergedAt: string }>, refuse?: Record<number, string>, fail?: string[] }} setup
+ * @param {{ rows: any[], live?: Record<number, { labels?: string[], body?: string, state?: string, blockedBy?: any }>, merged?: Record<number, { number: number, mergedAt: string }>, refuse?: Record<number, string>, fail?: string[] }} setup
  */
 function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }) {
   /** @type {string[]} */
@@ -34,7 +34,7 @@ function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }) {
       calls.push(`read ${n}`);
       if (fail.includes("read")) throw new Error(`HTTP 502 on read #${n}`);
       const row = rows.find((r) => r.number === n);
-      return { labels: live[n]?.labels ?? row.labels.map((/** @type {any} */ l) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body };
+      return { labels: live[n]?.labels ?? row.labels.map((/** @type {any} */ l) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body, blockedBy: live[n]?.blockedBy ?? row.blockedBy };
     },
     mergedClosers: (n) => { calls.push(`mergedClosers ${n}`); return merged[n] ? [merged[n]] : []; },
     promote: (n) => { calls.push(`promote ${n}`); return refuse[n] ? { ok: false, refusal: refuse[n] } : { ok: true }; },
@@ -107,6 +107,18 @@ test("THE DECLARATION IS RE-READ TOO: a line removed since the tick read the row
   assert.deepEqual(result.promoted, []);
   assert.match(result.kept[0].reason, /no longer declares/);
   assert.ok(!calls.includes("promote 10"));
+});
+
+test("AN EDGE THAT REOPENED SINCE THE TICK READ IT IS A WAIT AGAIN: the fresh read's `blockedBy` is what decides, not the tick's snapshot", () => {
+  const reopened = { nodes: [{ number: 1, state: "OPEN" }] };
+  const { result, calls, log, asked } = tick({ rows: [tickRow(10)], live: { 10: { blockedBy: reopened } } });
+  assert.deepEqual(result.promoted, []);
+  assert.match(result.kept[0].reason, /waiting again \(row\)/);
+  assert.ok(!calls.includes("promote 10"));
+  assert.match(log[0], /^NOT PROMOTED #10 /);
+  assert.deepEqual(asked, ["row-10"], "left alone, so product-manager is asked as before (the tick's snapshot still says cleared)");
+  const stillClosed = tick({ rows: [tickRow(10)], live: { 10: { blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] } } } });
+  assert.deepEqual(stillClosed.result.promoted, [10], "the same fresh read with the edge still closed promotes, so only the reopened edge stopped it");
 });
 
 test("a `Not-before:` still in the future is not promoted, whether the tick saw it or only the fresh read did", () => {
