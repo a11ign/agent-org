@@ -65,22 +65,43 @@ const worker = () => read(WORKER, "w.jsonl");
 const orchestrator = () => read(ORCHESTRATOR, "o.jsonl");
 const turns = (events) => events.filter((event) => event.kind === "turn");
 
-test("COST: the price table reproduces Claude Code's own cost_usd on the two requests it was checked against", () => {
+test("COST: the price table reproduces Claude Code's own cost_usd on the Haiku request it was checked against; Sonnet 5.5 is the page's rate, not the client's", () => {
   // From `CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=console claude -p ...`, 2026-10-04: api_request.cost_usd.
   assert.equal(costOf("claude-haiku-4-5-20251001", tokensOf(usage(10, 43, 12548, 9289))), 0.0200578);
-  assert.equal(costOf("claude-sonnet-5-5", tokensOf(usage(2, 4, 8650, 12311))), 0.051018);
-  assert.ok(PRICES.filter((price) => price.verified).length === 2, "exactly the two checked rows are marked verified");
+  // The same day's Sonnet 5.5 request: Claude Code 2.1.289's `cost_usd` was 0.051018, which is a $0.20 cache read (4 + 40 + 8650 x 0.2 + 12311 x 4, over 1e6). The pricing page
+  // (read 2026-10-08, #4057) lists $0.10, so the table prices it at 0.050153. `cost_usd` is the client's estimate and the page is the billing rate; the two differ by 8650 x 0.1 / 1e6.
+  const request = tokensOf(usage(2, 4, 8650, 12311));
+  assert.equal(costOf("claude-sonnet-5-5", request), 0.050153);
+  assert.equal(costOf("claude-sonnet-5-5", tokensOf({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 })), 0.1);
+  assert.ok(0.051018 !== costOf("claude-sonnet-5-5", request), "the old figure is no longer reproduced: that is the point");
+  // A figure that disagrees with the page is not a verification of the row, so no Sonnet 5.5 row is `verified`; Haiku 4.5 (which matches its page) is the only one.
+  assert.equal(PRICES.find((price) => price.prefix === "claude-sonnet-5-5")?.verified, false);
+  assert.deepEqual(PRICES.filter((price) => price.verified).map((price) => price.prefix), ["claude-haiku-4-5"], "exactly one row is marked verified: Haiku 4.5, whose cost_usd agrees with the page");
 });
 
 test("COST (#3582): claude-sonnet-5 and claude-opus-5 are priced at their own rates, and the 5.5 ids still at theirs", () => {
   const tokens = tokensOf({ input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 });
   // Published rates (claude-api model docs, 2026-09-25): input + output + cache read, per million tokens.
-  assert.equal(costOf("claude-sonnet-5", tokens), 2 + 10 + 0.2);
+  assert.equal(costOf("claude-sonnet-5", tokens), 2 + 10 + 0.2, "Sonnet 5 stays at $0.20: only Sonnet 5.5 moved (#4057)");
   assert.equal(costOf("claude-opus-5", tokens), 5 + 25 + 0.5);
   assert.equal(costOf("claude-opus-5-5", tokens), 4 + 20 + 0.2, "5.5 is not priced as 5: the shorter prefix must stand after the longer");
-  assert.equal(costOf("claude-sonnet-5-5", tokens), 2 + 10 + 0.2);
+  assert.equal(costOf("claude-sonnet-5-5", tokens), 2 + 10 + 0.1, "5.5 is not priced as 5: Sonnet 5.5 reads at $0.10 and Sonnet 5 at $0.20");
   assert.equal(costOf("gpt-5.6-luna", tokens), null, "no Codex rate is sourced: unknown, never 0");
   assert.equal(costOf("claude-opus-4-8", tokens), null, "a model still without a row stays null");
+});
+
+test("COST (#4057): Fable 5.1 reads at $0.25 and Fable 5 at $1 (the page lists them apart), the longer prefix standing first", () => {
+  const read = tokensOf({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 });
+  assert.equal(costOf("claude-fable-5-1", read), 0.25);
+  assert.equal(costOf("claude-fable-5", read), 1);
+  // POSITIVE CONTROL: with the `claude-fable-5-1` row deleted, a 5.1 turn falls through to the `claude-fable-5` prefix and is charged $1, so the ORDER of the two rows is what the test pins.
+  const prefixes = PRICES.map((price) => price.prefix);
+  assert.ok(prefixes.indexOf("claude-fable-5-1") >= 0 && prefixes.indexOf("claude-fable-5-1") < prefixes.indexOf("claude-fable-5"), "5.1 stands before 5");
+  const without = PRICES.filter((price) => price.prefix !== "claude-fable-5-1");
+  assert.equal(without.length, PRICES.length - 1, "the table holds exactly one row to delete");
+  const priceOf = (table, model) => table.find((entry) => model.startsWith(entry.prefix));
+  assert.equal(priceOf(PRICES, "claude-fable-5-1").cacheRead, 0.25);
+  assert.equal(priceOf(without, "claude-fable-5-1").cacheRead, 1, "without its own row a 5.1 turn is priced as Fable 5");
 });
 
 test("COST (#3582): POSITIVE CONTROL: with the two rows deleted the same turns are unpriced", () => {

@@ -74,8 +74,8 @@ const WEEK_B_TURNS = [
   // The standing lead: a wake delivered twice (same key), then a different one, a compaction and the turn that re-reads after it.
   turn({ when: "2026-09-29T08:05:00Z", session: "product-manager", cost: 0.2, wakeId: "wake:pm:1" }),
   turn({ when: "2026-09-29T09:05:00Z", session: "product-manager", cost: 0.5, wakeId: "wake:pm:2" }),
-  turn({ when: "2026-09-29T10:05:00Z", session: "product-manager", cost: 0.027, model: SONNET, tokens: [1000, 500, 100000, 0], wakeId: "wake:pm:3" }), // (1000 x 2 + 500 x 10 + 100000 x 0.2) / 1e6, at the real Sonnet rates: its re-read part is priced by `costOf` too
-  turn({ when: "2026-09-30T12:05:00Z", session: "ceo", cost: 0.012, model: SONNET, tokens: [500, 100, 50000, 0] }),
+  turn({ when: "2026-09-29T10:05:00Z", session: "product-manager", cost: 0.017, model: SONNET, tokens: [1000, 500, 100000, 0], wakeId: "wake:pm:3" }), // (1000 x 2 + 500 x 10 + 100000 x 0.1) / 1e6, at the real Sonnet rates: its re-read part is priced by `costOf` too
+  turn({ when: "2026-09-30T12:05:00Z", session: "ceo", cost: 0.007, model: SONNET, tokens: [500, 100, 50000, 0] }),
 ];
 
 const EVENTS = [
@@ -209,20 +209,20 @@ test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and
   // wake:pm:2 repeats wake:pm:1's key: 1 re-delivery, priced as the whole turn it started (0.5). It is also a later wake of its session, but its turn is taken.
   assert.deepEqual([byId.redelivered.count, byId.redelivered.dollars], [1, 0.5]);
   // Three wakes are not their session's first: PM's 2 and 3, and worker-202's second (which started no turn, so it costs nothing measured). Wake 3's first turn re-reads
-  // (1000 x $2 + 100000 x $0.2) / 1e6 = 0.022; wake 2's turn is already the re-delivery's.
+  // (1000 x $2 + 100000 x $0.1) / 1e6 = 0.012; wake 2's turn is already the re-delivery's.
   assert.equal(byId.preamble.count, 3);
-  near(/** @type {number} */ (byId.preamble.dollars), 0.022);
+  near(/** @type {number} */ (byId.preamble.dollars), 0.012);
   assert.equal(byId.preamble.tokens, 101000);
   // The reviewer's turn between its first review and the second: 0.3 (the 0.1 before the first review is not).
   assert.deepEqual([byId.rereview.count, byId.rereview.dollars], [1, 0.3]);
   // The turn on row 202 between the ejection (11:00) and the re-entry (13:00): 0.4.
   assert.deepEqual([byId.requeue.count, byId.requeue.dollars], [1, 0.4]);
-  // The ceo's first turn after its compaction: (500 x $2 + 50000 x $0.2) / 1e6 = 0.011.
+  // The ceo's first turn after its compaction: (500 x $2 + 50000 x $0.1) / 1e6 = 0.006.
   assert.equal(byId.compaction.count, 1);
-  near(/** @type {number} */ (byId.compaction.dollars), 0.011);
+  near(/** @type {number} */ (byId.compaction.dollars), 0.006);
   assert.deepEqual([byId["ci-rerun"].count, byId["ci-rerun"].dollars, byId["ci-rerun"].ms], [1, NOT_DERIVABLE, 15 * 60 * 1000]);
   assert.deepEqual([byId.deferred.count, byId.deferred.dollars], [0, NOT_HELD]);
-  near(total.dollars, 0.5 + 0.022 + 0.3 + 0.4 + 0.011);
+  near(total.dollars, 0.5 + 0.012 + 0.3 + 0.4 + 0.006);
   assert.equal(total.tokens, classes.reduce((sum, entry) => sum + entry.tokens, 0), "the headline's tokens are every class's, the not-derivable ones too");
   assert.equal(total.floor, false);
 });
@@ -538,6 +538,18 @@ test("REPRICED: a stored turn of a model priced SINCE (claude-sonnet-5, stored n
   assert.deepEqual([row9.floor, row9.unpriced], [false, 0]);
   assert.deepEqual(week.spend.unpricedModels, []);
   assert.equal(week.perRow.noPrice, 0);
+});
+
+test("CODEX UNPRICED (#4057): the report prints the Codex turns it could not price as a line of their own, with their count and tokens, and not inside a total", () => {
+  const codex = (when, tokens) => storedAt(when, "gpt-5.6-luna", null, { harness: "codex", tokens });
+  const events = [storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), codex("2026-09-22T11:00:00Z", [10, 0, 990, 0]), codex("2026-09-22T12:00:00Z", [20, 5, 1475, 0])];
+  const week = weekOf(oneRow(events), WEEK_A);
+  assert.deepEqual(week.spend.unpricedCodex, { turns: 2, tokens: 2500 }, "1000 + 1500 tokens over the two Codex turns, the Claude turn's 1500 not among them");
+  assert.match(renderAggregate(oneRow(events)), /CODEX turns not priced \(no rate sourced; in no dollar figure above\): 2 turns, 2,500 tokens/);
+  // POSITIVE CONTROL: a Codex-free week prints the line with 0, so the line is always there and the count is what moves; and an unpriced NON-Codex turn is not in it.
+  const none = oneRow([storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), storedAt("2026-09-22T11:00:00Z", "<synthetic>", null)]);
+  assert.deepEqual(weekOf(none, WEEK_A).spend.unpricedCodex, { turns: 0, tokens: 0 });
+  assert.match(renderAggregate(none), /CODEX turns not priced \(no rate sourced; in no dollar figure above\): 0 turns, 0 tokens/);
 });
 
 test("REPRICED: the stored figure is not trusted over PRICES (a line that says 99 for a turn PRICES puts at 0.007)", () => {
