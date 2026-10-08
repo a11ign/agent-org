@@ -22,7 +22,8 @@
 // which is the dangerous one for a number meant to prove a saving.
 //
 // ATTRIBUTION COMES FROM THE WAKE ITSELF. `wake.mjs`'s `addressed()` writes "You are `<session>`" into
-// every prompt it delivers, so a transcript driven by the tick names its own org session in its own text.
+// every first-contact prompt it delivers, and `[order:<wake id> session:<session> cause:<cause>]` opens every follow-up
+// (#4068), so a transcript driven by the tick names its own org session in its own text.
 // That is a happy accident of a change made for a different reason, and it is the only link between a
 // transcript and a session -- `cwd` names a worktree, which is a row, not an agent. A transcript with no
 // such line is reported as `unattributed` rather than guessed at.
@@ -63,11 +64,19 @@ function instantOf(timestamp) {
 
 /**
  * The org session a transcript belongs to, from the wake prompt's own words, or `null`.
+ *
+ * TWO SPELLINGS, THE EARLIER ONE WINS (#4068): a first-contact order says "You are `<session>`", a follow-up opens on
+ * `[order:<wake id> session:<session> cause:<cause>]`. A transcript written before the header changed still opens on the
+ * old phrase, so both are read; when a text holds both (an order body that quotes the other form) the one that comes
+ * FIRST is the delivery's own, because the header is the first thing a delivery writes.
  * @param {string} text
  */
 export function sessionOf(text) {
-  const m = /You are `([a-z0-9-]+)`/.exec(text);
-  return m ? m[1] : null;
+  const found = [/You are `([a-z0-9-]+)`/, /\[(?:order:\S+ )?session:([a-z0-9-]+)[ \]]/]
+    .map((pattern) => pattern.exec(text))
+    .filter((m) => m !== null)
+    .sort((a, b) => a.index - b.index);
+  return found.length > 0 ? found[0][1] : null;
 }
 
 /**
