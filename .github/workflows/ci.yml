@@ -190,6 +190,10 @@ jobs:
   # pull request, so move this value when that entry moves. `permissions` is the caller's to grant: a called workflow cannot hold more than its caller gives, and without them the whole
   # run is a `startup_failure`. On a `merge_group` entry the called job SUCCEEDS WITHOUT EVALUATING (the pull request's own run decided), so `gate` below stays green in the queue.
   changeset:
+    # A PUSH TO `main` HAS NO PULL REQUEST TO DECIDE (a11ign/a11ign#4139): the shared workflow reads the pull request's files through the API from `github.event.pull_request.number`, which is
+    # empty on a push, so it asks for `pulls//files` and GitHub answers 404 -- `main` was red on every push from the adoption's merge (`9e0d2d56`). The pull request's own run decided the change
+    # before it merged, so the job does not run here and `gate` accepts that skip on a push and nowhere else. The better home for this answer is the shared workflow (a11ign/a11ign#4140).
+    if: github.event_name != 'push'
     permissions:
       contents: read
       pull-requests: read
@@ -203,15 +207,20 @@ jobs:
   # of `gate` already holds (`release.yml`'s `gate-check`, `auto-arm.yml`).
   #
   # `if: always() && !cancelled()` IS THE POINT, not decoration: with the default `success()` a failing `typecheck` SKIPS `gate`, and a skipped required check counts as passing, so a type
-  # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is NOT accepted: none of the jobs here has an `if:`, so a skip means a job that
-  # did not run for a reason nobody wrote, and the only green is `success` from both.
+  # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is accepted in ONE place: `changeset` on a `push`, where it carries an `if:` that is
+  # false by design (a push has no pull request; a11ign/a11ign#4139). Everywhere else a skip means a job that did not run for a reason nobody wrote, so on `pull_request` and
+  # `merge_group` the only green is `success` from all three, and `suite` and `typecheck` must be `success` on a push too.
   gate:
     needs: [suite, typecheck, changeset]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - name: The suite, the typecheck and the changeset check all succeeded
+        env:
+          EVENT: ${{ github.event_name }}
         run: |
-          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "${{ needs.changeset.result }}"; do
+          changeset="${{ needs.changeset.result }}"
+          if [ "$EVENT" = "push" ] && [ "$changeset" = "skipped" ]; then changeset="success"; fi
+          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "$changeset"; do
             [ "$result" = "success" ] || { echo "::error::a job reported '$result', not success"; exit 1; }
           done
