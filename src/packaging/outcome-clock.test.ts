@@ -428,7 +428,7 @@ test("THE GATE AS A PROCESS raises #149's shape -- a HELD PR with a fresh commen
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Order);
     const offered = orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE);
     assert.equal(offered.length, 1, ran.stderr);
