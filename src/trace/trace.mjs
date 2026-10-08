@@ -17,7 +17,7 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
@@ -25,6 +25,7 @@ import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsC
 import { aggregate, claimsOf, MOVES, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
 import { swimlane } from "./swimlane.mjs";
+import { conditionalReader, readValidators, saveValidators } from "./publish.mjs";
 import { renderWakeCache, wakeCache } from "./wake-cache.mjs";
 import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.mjs";
@@ -429,16 +430,56 @@ export function splitHttp(text) {
 }
 
 /**
- * `gh api` that also remembers the rate-limit headers of the last reply (`.rate`) and of the first (`.first`), so a run can pace itself, stop at a floor, and say what it spent.
- * @returns {((args: string[]) => any) & { rate: { remaining: number, resource: string | null } | null, first: { remaining: number, resource: string | null } | null }}
+ * The reads that send the validator they were last given, because their ETag was MEASURED to hold (2026-10-08, #4097): a row's or pull request's own record and a head's check-runs. The timeline is
+ * left out on purpose (its body embeds the source issue of every cross-reference, and those moved within 15 seconds on a row nothing had touched), and so are the lists (a paged list's ETag
+ * changed within 120 seconds, #4077). Only a call of ONE argument can be one of these: a list carries `-X GET` and its parameters as further arguments.
  */
-function meteredGhApi() {
-  const metered = Object.assign((/** @type {string[]} */ args) => {
-    const { rate, body } = splitHttp(runGhApi(["-i", ...args]));
+const VALIDATED_READS = [/^repos\/[^/]+\/[^/]+\/(?:issues|pulls)\/\d+$/, /^repos\/[^/]+\/[^/]+\/commits\/[0-9a-f]+\/check-runs\?/];
+const NOT_MODIFIED = /^HTTP\/\S+\s+304\b/;
+
+/** `gh api`, whose exit code is 1 on a 304 as on a failure: the status line is what says which, so a 304 comes back as text and any other failure is thrown as it came. @param {string[]} args */
+function runGhApiAnswering(args) {
+  try {
+    return runGhApi(args);
+  } catch (error) {
+    if (NOT_MODIFIED.test(String(/** @type {any} */ (error).stdout ?? ""))) return /** @type {any} */ (error).stdout;
+    throw error;
+  }
+}
+
+/**
+ * `gh api` that also remembers the rate-limit headers of the last reply (`.rate`) and of the first (`.first`), so a run can pace itself, stop at a floor, and say what it spent.
+ * A read in VALIDATED_READS sends the ETag it was last given (`held`, the kept validators: see `publish.mjs`) and answers a 304 from the body kept with it, which costs no point of the pool. THE `-H` COMES
+ * FIRST on that call because the `gh` ledger keeps the first two words of a command (`api -H`), which is how the conditional reads are counted apart from the others (`api -i`). `validators.unchanged(path)` says
+ * whether this run got a 304 for it; `validators.forget(path)` drops a validator whose subject was not read to the end, so the next run asks for it whole.
+ * @param {{ held?: Record<string, import("./publish.mjs").Validated>, now?: number, run?: (args: string[]) => string }} [input] `run` is a parameter so a test can hand it a fixture
+ * @returns {((args: string[]) => any) & { rate: { remaining: number, resource: string | null } | null, first: { remaining: number, resource: string | null } | null, validators: { unchanged: (path: string) => boolean, forget: (path: string) => void } }}
+ */
+export function meteredGhApi({ held = {}, now = Date.now(), run = runGhApiAnswering } = {}) {
+  /** @type {Set<string>} */
+  const answered304 = new Set();
+  const remember = (/** @type {{ remaining: number, resource: string | null } | null} */ rate) => {
     metered.rate = rate;
     metered.first ??= rate;
+  };
+  /** @type {import("./publish.mjs").Ask} */
+  const ask = (path, etag) => {
+    const text = run([...(etag === null ? [] : ["-H", `If-None-Match: ${etag}`]), "-i", path]);
+    const { rate, body } = splitHttp(text);
+    remember(rate);
+    if (NOT_MODIFIED.test(text)) {
+      answered304.add(path);
+      return { status: 304, etag, body: null };
+    }
+    return { status: 200, etag: /^etag:\s*(.+?)\s*$/im.exec(text.split(/\r?\n\r?\n/)[0])?.[1] ?? null, body: JSON.parse(body) };
+  };
+  const reader = conditionalReader({ held, ask, now });
+  const metered = Object.assign((/** @type {string[]} */ args) => {
+    if (args.length === 1 && VALIDATED_READS.some((pattern) => pattern.test(args[0]))) return reader.read(args[0], (body) => body);
+    const { rate, body } = splitHttp(run(["-i", ...args]));
+    remember(rate);
     return JSON.parse(body);
-  }, { rate: /** @type {any} */ (null), first: /** @type {any} */ (null) });
+  }, { rate: /** @type {any} */ (null), first: /** @type {any} */ (null), validators: { unchanged: (/** @type {string} */ path) => answered304.has(path), forget: (/** @type {string} */ path) => { delete held[path]; } } });
   return metered;
 }
 
@@ -854,10 +895,29 @@ function namedByWakes(held, since) {
   return [...new Map(wakes.flatMap((wake) => namedByKey(String(wake.causeKey))).map((subject) => [nameOf(subject), subject])).values()];
 }
 
-/** @param {{ subject: Named, rowRepo: string, gh: (args: string[]) => any }} input */
-function readNamed({ subject, rowRepo, gh }) {
-  if (!subject.isPull) return readGithubEvents({ rows: [subject.number], prs: [], repo: rowRepo, gh });
-  return pullEventsOf({ pull: { number: subject.number, repo: subject.repo === null ? rowRepo : `${rowRepo.split("/")[0]}/${subject.repo}` }, rowRepo, gh });
+/** The answer already in hand for `path`, so a read that was made once to ask a question is not made again to answer it. @param {{ path: string, reply: any, gh: (args: string[]) => any }} input */
+const replaying = ({ path, reply, gh }) => (/** @type {string[]} */ args) => (args.length === 1 && args[0] === path ? reply : gh(args));
+
+/** What of GitHub's reading of a subject a run may take as read: `unchanged(path)` is true when the run got a 304 for it, `forget(path)` drops the validator of a subject whose reading did not finish. */
+const NO_VALIDATORS = { unchanged: (/** @type {string} */ _path) => false, forget: (/** @type {string} */ _path) => {} };
+
+/** The repository a named subject lives in: the row repository unless the wake named another of the owner's. @param {{ subject: Named, rowRepo: string }} input */
+const repoOfNamed = ({ subject, rowRepo }) => (subject.repo === null ? rowRepo : `${rowRepo.split("/")[0]}/${subject.repo}`);
+
+/** The path of the record a subject's reading starts from, which is the key its validator is kept under: `pulls/N` for a pull request, `issues/N` for a row. @param {{ subject: Named, rowRepo: string }} input */
+const recordPathOf = ({ subject, rowRepo }) => `repos/${repoOfNamed({ subject, rowRepo })}/${subject.isPull ? "pulls" : "issues"}/${subject.number}`;
+
+/**
+ * A ROW whose own record answers 304 and whose `filed` event the store holds has nothing new in its timeline: every event the store takes from it (a label, a claim comment, a close) moves the
+ * issue's ETag, so its timeline read (51 of the 105 calls a map render spent on the subjects the wakes name, #4097) is skipped. A pull request is read whole: a check-run finishing moves no ETag of the pull request.
+ * @param {{ subject: Named, rowRepo: string, gh: (args: string[]) => any, filedRows: Set<number>, validators: typeof NO_VALIDATORS }} input
+ */
+function readNamed({ subject, rowRepo, gh, filedRows, validators }) {
+  if (subject.isPull) return pullEventsOf({ pull: { number: subject.number, repo: repoOfNamed({ subject, rowRepo }) }, rowRepo, gh });
+  const path = recordPathOf({ subject, rowRepo });
+  const reply = gh([path]);
+  if (validators.unchanged(path) && filedRows.has(subject.number)) return [];
+  return readGithubEvents({ rows: [subject.number], prs: [], repo: rowRepo, gh: replaying({ path, reply, gh }) });
 }
 
 /**
@@ -866,10 +926,11 @@ function readNamed({ subject, rowRepo, gh }) {
  * week of 2026-09-28, #3688). `held` is the store AFTER the merged reading was added to it: a subject it settles (see `settledIn`) is not read again, an OPEN one is read on every run because
  * its record grows. Oldest naming first, within the same budget, and it STOPS when `gh` refuses a call; what it did not reach is returned by name and stays `unexplained`, as does a key that names
  * none. A subject that cannot be read for another reason (a number GitHub does not know) is returned as `failed` with the message and the next one is tried: one key must not cost the week.
- * @param {{ held: import("./store.mjs").TraceEvent[], since: number, rowRepo: string, gh: ReturnType<typeof budgetedGh> }} input
+ * @param {{ held: import("./store.mjs").TraceEvent[], since: number, rowRepo: string, gh: ReturnType<typeof budgetedGh>, validators?: typeof NO_VALIDATORS }} input
  */
-export function githubEventsOfNamed({ held, since, rowRepo, gh }) {
+export function githubEventsOfNamed({ held, since, rowRepo, gh, validators = NO_VALIDATORS }) {
   const settled = settledIn(held);
+  const filedRows = new Set(held.flatMap((event) => (event.source === "github" && event.kind === "filed" && typeof event.row === "number" ? [event.row] : [])));
   /** @type {import("./store.mjs").TraceEvent[]} */
   const events = [];
   /** @type {string[]} */
@@ -882,8 +943,9 @@ export function githubEventsOfNamed({ held, since, rowRepo, gh }) {
       continue;
     }
     try {
-      events.push(...readNamed({ subject, rowRepo, gh }));
+      events.push(...readNamed({ subject, rowRepo, gh, filedRows, validators }));
     } catch (error) {
+      validators.forget(recordPathOf({ subject, rowRepo })); // read to the end or not at all: a validator kept for a half-read row would let the next run take it as read
       if (isSpent(error)) unread.push(nameOf(subject));
       else failed.push({ subject: nameOf(subject), message: String(/** @type {Error} */ (error).message) });
     }
@@ -940,14 +1002,18 @@ async function readSources({ since, storePath, budget, log }) {
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8"));
   const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger, rowRepo, storePath, ghLedgers: ghLedgerFiles(), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)], now });
-  const metered = meteredGhApi();
+  const validatorsDir = dirname(storePath);
+  const heldValidators = readValidators(validatorsDir);
+  const metered = meteredGhApi({ held: heldValidators, now });
   const gh = budgetedGh({ gh: metered, budget, floor: RATE_FLOOR, gapMs: PACE_GAP_MS });
   const { pulls, openRows } = readListings({ repos: declaration.code.map((code) => code.repo), rowRepo, window: { from: since, to: now }, gh, budget });
   const moves = readMoves({ rowRepo, gh }); // one counted call for each package that moved, BEFORE the long reading that can spend the budget: when its row closed
   const { events: seen, unreadRows } = githubEventsOfMerged({ pulls, rowRepo, held: store.events, gh });
   const addedOfMerged = appendToStore(store, seen).added;
-  const named = githubEventsOfNamed({ held: store.events, since, rowRepo, gh }); // after the merged reading is in the store: a subject it read is not read twice
-  const github = { calls: gh.calls, read: seen.length + named.events.length, added: addedOfMerged + appendToStore(store, named.events).added, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped, named: { unread: named.unread.length, failed: named.failed } };
+  const named = githubEventsOfNamed({ held: store.events, since, rowRepo, gh, validators: metered.validators }); // after the merged reading is in the store: a subject it read is not read twice
+  const addedOfNamed = appendToStore(store, named.events).added;
+  saveValidators({ out: validatorsDir, held: heldValidators, now }); // AFTER the events are in the store: a validator is kept only for a reading the store already holds
+  const github = { calls: gh.calls, read: seen.length + named.events.length, added: addedOfMerged + addedOfNamed, remaining: { first: metered.first?.remaining ?? null, last: metered.rate?.remaining ?? null }, stopped: gh.stopped, named: { unread: named.unread.length, failed: named.failed } };
   return { rowRepo, cache, now, ledger, store, ingested, pulls, openRows, unreadRows, github, moves };
 }
 
