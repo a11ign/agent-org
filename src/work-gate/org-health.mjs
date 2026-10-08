@@ -483,6 +483,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
  *           readReleaseRuns?: () => import("../org-health.mjs").ReleaseRuns | null | undefined,
+ *           readReleaseBehind?: () => import("../release-behind-main.mjs").RepoFact[] | null | undefined,
  *           readClassRepeat?: () => import("../class-repeat.mjs").ClassRepeatFact | null | undefined,
  *           teamAccess?: () => import("../org-health.mjs").TeamAccessFact | undefined,
  *           readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined }} [io] `readBoardTruth` (#4045) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes `boardTruthNow`, which reads the closed rows, the merged PRs and herdr (a fixed three calls a tick) and posts the day's table, so no test reaches a remote; `readReleaseRuns` (#4001) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes the real one (ONE `gh api` call a tick, three while the newest release is a failure), so no test reaches a remote; `teamAccess` (#3634) is the team-level read, ONE `gh api` call per declared team each tick (the 2-minute tick is 30 calls an hour of a 5,000-an-hour core pool, 0.6% per team, the same price as `lastMergedAt`), and NO CALL AT ALL for a project that declares no `teamAccess`; a test that must reach no remote passes `() => undefined` `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
@@ -491,7 +492,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined, readClassRepeat = () => undefined,
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
@@ -516,6 +517,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
     ...releaseRunsFact(readReleaseRuns()), // #4001
+    ...releaseBehindFact(readReleaseBehind()), // #4128
     ...classRepeatFact(readClassRepeat()), // #4126
     ...teamAccessFact(teamAccess()),
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
@@ -623,6 +625,9 @@ const toolAgreementFact = (read) => (read === undefined ? {} : { toolAgreement: 
 
 /** #4001: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. @param {import("../org-health.mjs").ReleaseRuns | null | undefined} read */
 const releaseRunsFact = (read) => (read === undefined ? {} : { releaseRuns: read });
+
+/** #4128: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused listing of the repositories, which the signal says is unknown. @param {import("../release-behind-main.mjs").RepoFact[] | null | undefined} read */
+const releaseBehindFact = (read) => (read === undefined ? {} : { releaseBehind: read });
 
 /** #4126: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` or `{ unreadable }` a refused read, which the signal says is unknown. @param {import("../class-repeat.mjs").ClassRepeatFact | null | undefined} read */
 const classRepeatFact = (read) => (read === undefined ? {} : { classRepeat: read });
