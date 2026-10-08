@@ -153,7 +153,7 @@ const RENDERED: Record<string, Order[]> = {
   "blocker-cleared": blockerClearedOrders([heldRow(3390, "worker-3390", closed(3384))], TODAY),
   "unclaimed-blocker-cleared": unclaimedBlockerClearedOrders([backlogRow(1998, { ...closed(1993), labels: [{ name: "backlog" }, { name: "blocked" }] })], TODAY),
   "claimed-row-amended": claimedRowAmendedOrders([heldRow(2099, "worker-capture")], CLAIMED_COMMENTS),
-  "epic-finished": finishedEpicOrders([{ number: 1317, title: "epic", labels: [{ name: "backlog" }, { name: "epic" }], subIssuesSummary: { total: 10, completed: 10 } }], []),
+  "epic-finished": finishedEpicOrders([{ number: 1317, title: "epic", labels: [{ name: "backlog" }, { name: "epic" }], subIssuesSummary: { total: 10, completed: 10 } }]),
   "row-branch-unshipped": rowBranchOrders([{ number: 2000, title: "row", labels: [{ name: "ready" }] }], [BRANCH]),
   "ready-row-incomplete": incompleteRowOrders([{ number: 7, title: "row", labels: [{ name: "ready" }], body: "## Region\n\nx.mjs\n" }]),
   "ready-queue-empty": decide({ prs: [], readyRows: [], promotableRows: TOO_MANY_ROWS }),

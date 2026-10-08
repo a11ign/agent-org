@@ -47,7 +47,7 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, dec
   PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS, HOUR_MS,
   claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
   CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
-  readEpics, answersOwed, answerOrders,
+  epicRowsOf, doneWhenLines, answersOwed, answerOrders,
   readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
   withEndedLabels, withPrOwners, ownerOfPr,
   blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
@@ -2057,7 +2057,13 @@ test("the gate's read count is counted, not remembered", () => {
   // so a reader cannot quote a name that no longer exists.
   assert.ok(!("conditionalOnSilence" in GH_READS),
     "nothing is conditional on silence any more -- the second open-rows read was deleted");
-  assert.ok(GH_READS.conditionalOnEmptyShelf.includes("readEpics"));
+  // #4042 REMOVED THE EMPTY-SHELF-CONDITIONAL READ: a finished epic reached nobody while one row was Ready, because the epics were only
+  // read on an empty shelf. `subIssuesSummary` rides the unconditional all-open read now (twelve calls before and after), and the key is
+  // GONE rather than empty. The second half pins WHERE the epics now come from, or the key's absence would pass with no epics read at all.
+  assert.ok(!("conditionalOnEmptyShelf" in GH_READS), "no read is conditional on the shelf any more -- the epics ride the all-open read");
+  const openRead: string[][] = [];
+  readOpenRows((args: string[]) => { openRead.push(args); return "[]"; });
+  assert.match(openRead[0][openRead[0].indexOf("--json") + 1], /subIssuesSummary/, "or epicRowsOf would find no epic to be finished");
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
   // #2110: THE CLAIMED-ROW READ IS CONDITIONAL AND SERVER-SIDE FILTERED, and both halves are pinned
   // because both are what keep it bounded. `--label in-progress` is the filter; without it this would be
@@ -2378,11 +2384,10 @@ test("the prompt points at the fleet, because that is where the idle capacity is
     "a durable answer already on the epic must not be re-derived from scratch");
 });
 
-test("readEpics refuses rather than reporting an empty backlog", () => {
-  assert.equal(readEpics(() => { throw new Error("HTTP 502"); }), null);
-  assert.equal(readEpics(() => "not json"), null);
-  assert.deepEqual(readEpics(() => JSON.stringify([epic(34)]))?.map((e: { number: number }) => e.number),
-    [34]);
+test("#4042: the epics are the open rows labelled epic, read from the all-open list and not by a call of their own", () => {
+  const rows = [epic(34), { number: 7, title: "row", labels: [{ name: "backlog" }] }, doneEpic(2899, 13)];
+  assert.deepEqual(epicRowsOf(rows).map((e: { number: number }) => e.number), [34, 2899]);
+  assert.deepEqual(epicRowsOf([]), [], "a refused all-open read is [] upstream, and no epic is invented from it");
 });
 
 test("epic-unfiled is classified in all three registries", () => {
@@ -2643,11 +2648,11 @@ test("a CLEARED blocker makes the epic unfiled again, with no human involved", (
   assert.deepEqual(unfiledEpics([cleared], "2026-09-20").map((e) => e.number), [57]);
 });
 
-test("readEpics fetches the fields a waiting condition lives in", () => {
-  // Without `body` and `blockedBy` on the read, `waitingOn` can only ever answer null -- the filter
-  // would look correct and do nothing, which is the worst kind of wrong.
+test("readOpenRows fetches the fields an epic cause lives in", () => {
+  // Without `body` and `blockedBy` on the read, `waitingOn` can only ever answer null -- the filter would look correct and do nothing,
+  // which is the worst kind of wrong. `subIssuesSummary` (#4042) is the same for the finished-epic order and its done-when quote.
   const calls: string[][] = [];
-  readEpics((args: string[]) => { calls.push(args); return "[]"; });
+  readOpenRows((args: string[]) => { calls.push(args); return "[]"; });
   const json = calls[0][calls[0].indexOf("--json") + 1];
   assert.match(json, /body/);
   assert.match(json, /blockedBy/);
@@ -2883,10 +2888,8 @@ test("#1848: a WAITING epic is waiting, not finished -- #1780's filter, same as 
     + "by an edge that resolved months ago");
 });
 
-test("#1848: it fires only when the shelf is EMPTY, and goes to product-manager keyed per epic", () => {
-  assert.deepEqual(finishedEpicOrders([doneEpic(1317, 10)], [{ number: 9 }]), [],
-    "claimable work outranks tidying the epic list");
-  const [order] = finishedEpicOrders([doneEpic(1317, 10)], []) as
+test("#1848: it goes to product-manager, keyed per epic", () => {
+  const [order] = finishedEpicOrders([doneEpic(1317, 10)]) as
     { session: string, cause: string, discriminator: string, causeKey: string }[];
   assert.equal(order.cause, "epic-finished");
   assert.equal(order.session, "product-manager", "filing is product-manager's lane");
@@ -2895,12 +2898,66 @@ test("#1848: it fires only when the shelf is EMPTY, and goes to product-manager 
     "#1799: keyed on the epic, so closing an unrelated one does not re-litigate this judgment");
 });
 
+// --- #4042: a finished epic is raised WHATEVER IS READY ---------------------------------------------------
+//
+// `finishedEpicOrders` returned [] the moment the Ready shelf held a row, and the epics were not even READ unless it was empty. The board
+// showed #2899 at 13 of 13 and still open for three days, and #69 (23 of 23) until the chairman pushed: "the backlog is MISLEADING".
+// The summaries below are the REAL shape `gh issue list --json subIssuesSummary` returns for the two (read 2026-10-08).
+
+const REAL_SUMMARY_2899 = { completed: 13, percentCompleted: 100, total: 13 };
+const REAL_SUMMARY_69 = { completed: 23, percentCompleted: 100, total: 23 };
+const DONE_WHEN_2899 = "## What it is\n\nx\n\n## Done-when\n\n1. The gate raises it.\n2. **A live reading** after it merges.\n\n## Fleet\n\nNo.\n";
+const finished2899 = { number: 2899, title: "agent-org moves", labels: [{ name: "epic" }, { name: "out-of-release" }],
+  subIssuesSummary: REAL_SUMMARY_2899, body: DONE_WHEN_2899 };
+const finished69 = { number: 69, title: "epic 69", labels: [{ name: "epic" }], subIssuesSummary: REAL_SUMMARY_69, body: "no sections here\n" };
+
+test("#4042: a 13-of-13 epic is ordered with a Ready row on the shelf -- the inverse of #1848's pin", () => {
+  const rows = [{ number: 9, title: "claimable", labels: [{ name: "ready" }] }, finished2899];
+  const orders = decide({ prs: [], readyRows: [{ number: 9, title: "claimable" }], epics: epicRowsOf(rows),
+    promotableRows: [], chairmanBlocked: [] }).filter((o: { cause: string }) => o.cause === "epic-finished") as
+    { session: string, subject: string, prompt: string }[];
+  assert.equal(orders.length, 1, "exactly one order, with the shelf non-empty");
+  assert.equal(orders[0].session, "product-manager");
+  assert.equal(orders[0].subject, "epic-2899");
+  assert.match(orders[0].prompt, /13 of 13/);
+});
+
+test("#4042: the order quotes the epic's own Done-when lines, and says so when there are none", () => {
+  const [order] = finishedEpicOrders([finished2899]) as { prompt: string }[];
+  assert.match(order.prompt, /> 1\. The gate raises it\./);
+  assert.match(order.prompt, /> 2\. \*\*A live reading\*\* after it merges\./);
+  assert.doesNotMatch(order.prompt, /Fleet|What it is/, "the quote stops at the next heading and starts at Done-when");
+  const [bare] = finishedEpicOrders([finished69]) as { prompt: string }[];
+  assert.match(bare.prompt, /NO `## Done-when` SECTION/, "an epic with nothing to check against says so, rather than quoting nothing");
+  assert.match(bare.prompt, /23 of 23/);
+});
+
+test("#4042 POSITIVE CONTROLS: 18 of 19, 0 of 0 and a waiting epic yield none, so the firing is selective and not 'every epic'", () => {
+  const part = { ...finished2899, number: 1, subIssuesSummary: { completed: 18, percentCompleted: 94, total: 19 } };
+  const none = { ...finished2899, number: 2, subIssuesSummary: { completed: 0, percentCompleted: 0, total: 0 } };
+  const waiting = { ...finished2899, number: 3, body: "Not-before: 2099-01-01\n" };
+  assert.deepEqual(finishedEpicOrders([part]), [], "18 of 19 has a child open");
+  assert.deepEqual(finishedEpicOrders([none]), [], "0 of 0 is `epic-no-children`'s, which `unfiledEpics` already asks");
+  assert.deepEqual(finishedEpicOrders([waiting]), [], "a waiting epic is waiting (finishedEpics' filter stands)");
+  assert.deepEqual(finishedEpicOrders([part, none, waiting, finished2899, finished69]).map((o: { subject: string }) => o.subject),
+    ["epic-2899", "epic-69"], "and in one population only the two finished epics are ordered");
+});
+
+test("#4042: doneWhenLines reads the section and nothing around it", () => {
+  assert.deepEqual(doneWhenLines(DONE_WHEN_2899), ["1. The gate raises it.", "2. **A live reading** after it merges."]);
+  assert.deepEqual(doneWhenLines("### Done when\n- a\n"), ["- a"], "any heading depth, and 'Done when' with a space");
+  assert.deepEqual(doneWhenLines("## Region\nx\n"), []);
+  assert.deepEqual(doneWhenLines(undefined), []);
+  assert.equal(doneWhenLines(`## Done-when\n${"x\n".repeat(40)}`).length, 12, "capped, so one long epic cannot flood the order");
+  assert.ok(doneWhenLines(`## Done-when\n${"y".repeat(900)}\n`)[0].length < 410);
+});
+
 test("#1848: THE ORDER ASKS, IT DOES NOT ASSERT -- 'file the next tranche' must survive as an answer", () => {
   // Every child closed does NOT prove the epic is done; it equally means the next rows were never
   // filed, which is the more valuable answer and the one a "close this" order would talk the reader
   // out of. If this prompt ever reads as an instruction to close, the cause becomes a tidy-up that
   // destroys supply.
-  const [order] = finishedEpicOrders([doneEpic(34, 2)], []) as { prompt: string }[];
+  const [order] = finishedEpicOrders([doneEpic(34, 2)]) as { prompt: string }[];
   assert.match(order.prompt, /never been filed/, "the unfiled-supply reading must be offered explicitly");
   assert.match(order.prompt, /--parent 34/, "and the epic->child link stays DATA, not prose");
   assert.match(order.prompt, /2 of 2/, "the counts it judged on are in the prompt, not left to be re-read");
@@ -2909,14 +2966,14 @@ test("#1848: THE ORDER ASKS, IT DOES NOT ASSERT -- 'file the next tranche' must 
 });
 
 test("#1848 POSITIVE CONTROL: a backlog with nothing finished says nothing at all", () => {
-  assert.deepEqual(finishedEpicOrders([epic(69), epic(149, 6)], []), [],
+  assert.deepEqual(finishedEpicOrders([epic(69), epic(149, 6)]), [],
     "this cause must be capable of finding nothing, or product-manager learns to ignore it");
-  assert.deepEqual(finishedEpicOrders([], []), []);
+  assert.deepEqual(finishedEpicOrders([]), []);
 });
 
 test("#1848: one order per finished epic, capped like every other row cause", () => {
   const many = Array.from({ length: MAX_ROW_ORDERS_PER_TICK + 3 }, (_, i) => doneEpic(i + 1));
-  assert.equal(finishedEpicOrders(many, []).length, MAX_ROW_ORDERS_PER_TICK,
+  assert.equal(finishedEpicOrders(many).length, MAX_ROW_ORDERS_PER_TICK,
     "nine finished epics in one tick must not become nine orders");
 });
 

@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A finished epic is raised to `product-manager` on every tick, whatever is Ready (a11ign/a11ign#4042). `finishedEpicOrders` used to return nothing the moment one row was Ready, and the epics were not even read unless the shelf was empty, so an epic with every child closed (a11ign/a11ign#2899 at 13 of 13, #69 at 23 of 23) sat on the board, counted as backlog, until a person noticed. The epics now come from the all-open list the tick already reads (`readOpenRows` asks for `subIssuesSummary`; `epicRowsOf` filters the `epic` label), so the tick makes one `gh` call fewer on an empty shelf and none more on a busy one; `readEpics` and `GH_READS.conditionalOnEmptyShelf` are gone and `finishedEpicOrders(epics)` no longer takes the shelf. The order quotes the epic's own `## Done-when` lines (capped at 12 lines) beside the children count, or says the epic has none, so the answer is to each line and not only "are the children closed". It is still an ask, keyed per epic, and a waiting epic stays excluded. `epic-unfiled` keeps its empty-shelf bound.

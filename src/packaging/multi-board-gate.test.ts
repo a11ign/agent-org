@@ -276,7 +276,7 @@ const RECORDED_BUSY = [
 const RECORDED_EMPTY_SHELF = [
   { session: "product-manager", cause: "ready-queue-empty", subject: "ready-queue", discriminator: "2", causeKey: "product-manager/ready-queue-empty/2", promptSha256: "886a07ed1bf3905e4cf4329a2e2fc0ede4aff33739f4a473c99f95e48cf26554", promptLength: 1189 },
   { session: "product-manager", cause: "epic-unfiled", subject: "epic-601", discriminator: "601", causeKey: "product-manager/epic-unfiled/epic-601", promptSha256: "f888877ea2db03faabac02a31b132bca2be67b9e38eec5927ac3235c09e0245f", promptLength: 896 },
-  { session: "product-manager", cause: "epic-finished", subject: "epic-602", discriminator: "602", causeKey: "product-manager/epic-finished/epic-602", promptSha256: "01b3b3158a77b1a3a242481bc962fcc6360d342a7ef4b266cb92347d1e4c19ab", promptLength: 842 },
+  { session: "product-manager", cause: "epic-finished", subject: "epic-602", discriminator: "602", causeKey: "product-manager/epic-finished/epic-602", promptSha256: "80ca30110db998efdc4ad98ddc211c15726ea766ca728ff26c0458dbe4ec7c0d", promptLength: 950 },
   { session: "product-manager", cause: "blocked-unexaminable", subject: "row-502", discriminator: "502", causeKey: "product-manager/blocked-unexaminable/row-502", promptSha256: "6a6e94cdfbfb3416f70f571414c10e2e35170ed4ad25a7f4b1af913da85ac20d", promptLength: 1615 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
 ];
