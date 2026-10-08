@@ -808,12 +808,12 @@ test("VALIDATED (#4097): a timeline and a list are never sent a validator, even 
   const timeline = `${ROW_12}/timeline?per_page=100&page=1`;
   const stale = (etag) => ({ etag, value: ["stale"], used: 1 });
   const held = { [timeline]: stale('W/"t"'), "repos/a11ign/a11ign/pulls": stale('W/"l"'), [ROW_12]: stale('W/"a"') };
-  const gh = meteredGhApi({ held, now: 2, run: github.run });
-  assert.deepEqual(gh([timeline]), [], "the timeline came whole, not the stale copy");
-  assert.deepEqual(gh(["-X", "GET", "repos/a11ign/a11ign/pulls", "-f", "state=closed"]), [], "so did the list");
-  assert.equal(gh([ROW_12, "-f", "per_page=1"]).user.login, "someone", "a record's path WITH parameters came whole too");
+  const reader = meteredGhApi({ held, now: 2, run: github.run });
+  assert.deepEqual(reader([timeline]), [], "the timeline came whole, not the stale copy");
+  assert.deepEqual(reader(["-X", "GET", "repos/a11ign/a11ign/pulls", "-f", "state=closed"]), [], "so did the list");
+  assert.equal(reader([ROW_12, "-f", "per_page=1"]).user.login, "someone", "a record's path WITH parameters came whole too");
   assert.equal(github.asked.every((args) => args[0] === "-i"), true, "none of the three carried If-None-Match, though a validator was held for each path: a validator is keyed by path alone, so a request with parameters is not the one it was kept for");
-  assert.equal(gh.validators.unchanged(timeline), false);
+  assert.equal(reader.validators.unchanged(timeline), false);
 });
 
 test("VALIDATED (#4097): a missing or corrupt store of validators asks for everything, and says so when it was there", () => {
