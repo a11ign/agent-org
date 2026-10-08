@@ -56,14 +56,17 @@ const WRITE_5M_FACTOR = 1.25;
 const WRITE_1H_FACTOR = 2;
 
 /**
- * Dollars per million tokens. `readFactor` is not always 0.1: Fable 5.1's cache read is $0.25 on a $10 input. `verified` is true where the formula reproduced Claude
- * Code's own `cost_usd` (2026-10-04, #3494); the others are the published rates.
+ * Dollars per million tokens, `cacheRead` as the pricing page lists it (read 2026-10-08, #4057): the factor on input is not the same for every model (Fable 5.1 $0.25 on a $10 input,
+ * Fable 5 $1, Sonnet 5.5 $0.10). `verified` is true where the formula reproduced Claude Code's own `cost_usd` (2026-10-04, #3494); the others are the published rates.
+ * A row is NOT verified when it disagrees with the page: `cost_usd` is the client's estimate and the page is the billing rate (Sonnet 5.5, which `cost_usd` priced at the old $0.20).
  * @type {{ prefix: string, input: number, output: number, cacheRead: number, verified: boolean }[]}
  */
 export const PRICES = [
-  { prefix: "claude-fable-5", input: 10, output: 50, cacheRead: 0.25, verified: false },
+  // `claude-fable-5-1` stands BEFORE `claude-fable-5`: the page lists them apart, and `costOf` takes the first prefix that matches.
+  { prefix: "claude-fable-5-1", input: 10, output: 50, cacheRead: 0.25, verified: false },
+  { prefix: "claude-fable-5", input: 10, output: 50, cacheRead: 1, verified: false },
   { prefix: "claude-opus-5-5", input: 4, output: 20, cacheRead: 0.2, verified: false },
-  { prefix: "claude-sonnet-5-5", input: 2, output: 10, cacheRead: 0.2, verified: true },
+  { prefix: "claude-sonnet-5-5", input: 2, output: 10, cacheRead: 0.1, verified: false },
   // The ids before 5.5 (a11ign/a11ign#3582). `costOf` takes the FIRST prefix that matches, so these stand after `-5-5` or they would price its turns. Rates: the claude-api
   // skill's model docs (2026-09-25): Opus 5 $5 / $25 with cache reads at 0.1x ("every other model", Opus 5.5 being 0.05x and Fable 5.1 0.025x), Sonnet 5 at Sonnet 5.5's
   // prices ($2 / $10, reads $0.20). Not reproduced against a `cost_usd`.
