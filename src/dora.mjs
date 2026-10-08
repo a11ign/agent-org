@@ -20,6 +20,8 @@
 //      A version never promoted is counted at its CURRENT age and marked unpromoted, as an unreleased merge is: a 14-day wait is a number.
 //   6. Versions qualified: versions `latest` has pointed at, over versions published, in the same window (`MIN_RELEASES_FOR_A_RATE` caveat, as the failure rate has).
 // A version whose record cannot be read (no Release for it, or `latest` names it and its Release records no time) makes both `unknown`, never 0 and never a guess.
+// A PACKAGE WITH NO `next` HAS NO CHANNELS TO READ (#4040): its dist-tags are asked first, and one that names none publishes straight to `latest`, so both channel readings are
+// `undefined` with the reason, not `unknown` for a promotion record that cannot exist. A dist-tags read that is refused stays `unknown`: a registry that cannot answer is not evidence.
 // The chairman's TARGETS are in the table and print beside the number: `next` under 30 minutes, `latest` under 24 hours (the share of versions qualified has no target).
 //
 // A REFUSED READ IS `unknown`, NEVER 0 (#1286): a reader that threw, or answered `null`, read nothing. AN EMPTY ANSWER IS AN ANSWER (#3171): a declared repository
@@ -99,8 +101,10 @@ const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
  *   regressions: (r: Repository, window: { since: string }) => Regression[] | null,
  *   range: (r: Repository, commits: { base: string, head: string }) => Range | null,
  *   parentOf?: (r: Repository, commit: string) => string | null,
- *   promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone.
- *   `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`
+ *   promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null,
+ *   distTags?: (r: Repository) => Record<string, string> | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone.
+ *   `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`. `distTags` is the npm package's dist-tags, which say whether it HAS a `next` channel (#4040):
+ *   a reader without it leaves that question unasked, and the repository is read as one that has the channel
  * @typedef {{ latest: string | null, notes: Record<string, string> }} PromotionRecords `latest` is the version the `latest` dist-tag names now (`null`: it names none); `notes` is the notes of each
  *   version's GitHub Release, keyed by version, and a version with no Release has no key
  * @typedef {{ status: string, commits: string[] }} Range GitHub's compare of `base...head`: `status` is `ahead`/`identical` when `base` is in `head`'s history, `behind`/`diverged` when it is not;
@@ -390,15 +394,22 @@ function qualifiedShare(waits) {
 /** @param {string} why @returns {{ promotionLeadTime: object, qualified: object, reason: null }} both readings undefined, for a reason that is an answer */
 const channelsUndefined = (why) => ({ promotionLeadTime: { undefinedBecause: why }, qualified: { undefinedBecause: why }, reason: null });
 
+/** @param {Record<string, string> | undefined} tags @returns {boolean} the dist-tags were READ and name no `next`; `undefined` (not asked) is not that answer */
+const publishesStraightToLatest = (tags) => tags !== undefined && typeof tags.next !== "string";
+
 /**
  * The two channel readings of the versions published in the window. ONE version whose record cannot be read leaves BOTH `unknown` (the lead time's rule too): a figure over
  * the versions that happened to be readable would read well because the unreadable ones were the slow ones.
- * @param {{ repository: Repository, versions: (Release & { at: number })[], records: PromotionRecords | null, now: number }} input
+ * A package whose dist-tags carry no `next` publishes straight to `latest`: there is nothing to wait on and no promotion to record, so both are `undefined` (an answer), never
+ * `unknown` (a source that could not be read). `tags` is `null` when the registry would not say, which is NOT evidence that there is no channel (#4040).
+ * @param {{ repository: Repository, versions: (Release & { at: number })[], tags?: Record<string, string> | null, records: PromotionRecords | null, now: number }} input
  * @returns {{ promotionLeadTime: object | null, qualified: object | null, reason: string | null }}
  */
-function channelBlocks({ repository, versions, records, now }) {
+function channelBlocks({ repository, versions, tags, records, now }) {
   if (repository.release.kind !== "npm") return channelsUndefined("its releases are tags, not npm versions: it has no channels");
   if (versions.length === 0) return channelsUndefined(`no version published in the last ${LOOKBACK_DAYS} days`);
+  if (tags === null) return { promotionLeadTime: null, qualified: null, reason: `the dist-tags of ${repository.release.package} could not be read from the registry` };
+  if (publishesStraightToLatest(tags)) return channelsUndefined("its releases publish straight to `latest`: it has no `next` channel");
   if (records === null) return { promotionLeadTime: null, qualified: null, reason: "its promotion records could not be read" };
   const waits = versions.map((release) => waitOf({ release, records, now }));
   const unknown = waits.filter((wait) => wait.state === "unknown");
@@ -463,6 +474,17 @@ function readPromotions({ repository, readers, windowStart, versions }) {
 }
 
 /**
+ * The npm package's dist-tags, read only for an npm repository that published a version in the window. `undefined` when nothing was asked (a tag repository, an empty
+ * window, a reader that is absent), `null` for a read that was refused: the two never share a value.
+ * @param {{ repository: Repository, readers: Readers, versions: Release[] }} input @returns {Record<string, string> | null | undefined}
+ */
+function readDistTags({ repository, readers, versions }) {
+  const { distTags } = readers;
+  if (repository.release.kind !== "npm" || versions.length === 0 || distTags === undefined) return undefined;
+  return attempt(() => distTags(repository));
+}
+
+/**
  * The two reads every metric stands on, or WHY the repository is unknown. No release and no merged pull request is `no release yet`, as the row that
  * declared the repository promised: the page shows it as unfinished. It is the readers' contract that makes that safe: a read that FAILED throws or
  * answers `null`, and `[]` is only a read that found nothing.
@@ -490,6 +512,17 @@ function namingTheLimit(reason) {
 }
 
 /**
+ * The channel readings of a repository: the dist-tags are asked FIRST, and a package with no `next` is not asked where `latest` moved (a paginated read of its Releases that
+ * could only be thrown away).
+ * @param {{ repository: Repository, readers: Readers, windowStart: number, versions: (Release & { at: number })[], now: number }} input
+ */
+function channelBlocksOf({ repository, readers, windowStart, versions, now }) {
+  const tags = readDistTags({ repository, readers, versions });
+  const decided = tags === null || publishesStraightToLatest(tags);
+  return channelBlocks({ repository, versions, tags, now, records: decided ? null : readPromotions({ repository, readers, windowStart, versions }) });
+}
+
+/**
  * ONE repository's four metrics. Each block is `null` when ITS sources were refused (with the reason in `reasons`), so a refused regression list does
  * not hide a deployment frequency that was read, and none of them is ever a 0 made of an absence.
  * @param {Repository} repository @param {Readers} readers @param {number} now
@@ -510,7 +543,7 @@ export function measureRepository(repository, readers, now) {
   const fixing = inScope === null ? { rows: null, reason: "its regression rows could not be read" } : fixingReleases({ regressions: inScope, context });
   fixing.reason = namingTheLimit(fixing.reason);
   const fixes = fixing.rows === null ? [] : fixing.rows.flatMap((row) => (row.fix === null ? [] : [row.fix]));
-  const channel = channelBlocks({ repository, versions: frequency.releases, records: readPromotions({ repository, readers, windowStart, versions: frequency.releases }), now });
+  const channel = channelBlocksOf({ repository, readers, windowStart, versions: frequency.releases, now });
   const reasons = {
     ...(lead.reason === null ? {} : { leadTime: lead.reason }),
     ...(channel.reason === null ? {} : { promotionLeadTime: channel.reason, qualified: channel.reason }),
@@ -875,11 +908,18 @@ export function promotionRecordsFrom({ releases, latest, npmPackage }) {
   return { latest, notes: Object.fromEntries(named.map((release) => [release.tag_name.slice(prefix.length), release.body ?? ""])) };
 }
 
-/** @param {string} npmPackage @returns {string | null} the version the `latest` dist-tag names; throws when the registry cannot say */
-function latestTag(npmPackage) {
+/** @param {string} npmPackage @returns {Record<string, string>} the package's dist-tags; throws when the registry cannot say */
+function distTagsOf(npmPackage) {
   const url = `https://registry.npmjs.org/-/package/${npmPackage.replace("/", "%2f")}/dist-tags`;
   const tags = JSON.parse(run("curl", ["-sSf", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", url]));
-  return typeof tags.latest === "string" ? tags.latest : null;
+  if (tags === null || typeof tags !== "object" || Array.isArray(tags)) throw new Error(`the registry's dist-tags for ${npmPackage} are not a map`);
+  return tags;
+}
+
+/** @param {string} npmPackage @returns {string | null} the version the `latest` dist-tag names; throws when the registry cannot say */
+function latestTag(npmPackage) {
+  const { latest } = distTagsOf(npmPackage);
+  return typeof latest === "string" ? latest : null;
 }
 
 /** @param {Repository & { release: { kind: "npm", package: string } }} repository @returns {PromotionRecords} */
@@ -912,6 +952,7 @@ export const githubReaders = {
   })),
   regressions: (repository, { since }) => regressionRows(repository.repo, since),
   promotions: (repository) => (repository.release.kind === "npm" ? promotionRecords(/** @type {any} */ (repository)) : null),
+  distTags: (repository) => (repository.release.kind === "npm" ? distTagsOf(repository.release.package) : null),
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
   parentOf: (repository, commit) => parentOf(repository.repo, commit),
   range: (repository, { base, head }) => {
