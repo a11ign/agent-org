@@ -246,6 +246,7 @@ function fakeGitHub(options: { itemAddLandsOn?: { owner: string; number: number 
   const run = (_cmd: string, args: string[]): string => {
     gh.calls.push(args);
     const flag = (name: string) => args[args.indexOf(name) + 1];
+    if (args[0] === "issue" && args[1] === "list") return "[]"; // #4294: the duplicate-title read -- no open row has the title
     if (args[0] === "project" && args[1] === "item-add") {
       const landed = options.itemAddLandsOn ?? { owner: flag("--owner"), number: Number(args[2]) };
       gh.boards.set(boardKey(landed.owner, landed.number), { repo: repoOfUrl(flag("--url")), status: null });

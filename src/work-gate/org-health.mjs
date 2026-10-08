@@ -27,7 +27,7 @@ import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
 import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.mjs";
 import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, readLatestMerge, orgHealthTick,
-  primaryStandingSince, readTeamAccess } from "../org-health.mjs";
+  primaryStandingSince, readTeamAccess, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders } from "../org-health.mjs";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
@@ -481,10 +481,13 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
  * #4189: `keyedPrsRead` IS THE OPEN PULL REQUESTS OF THE DECLARED REPOSITORIES BESIDE THE FIRST, tagged `repoKey`/`repo`, and it feeds THE WAIT READ ONLY: `prsRead` is the first repository's own list and every other
  * reading here (red, overdue, idle) is about it. Absent, a keyed pull request's hold is never read, so no `Waiting-for` of it is ever lifted or ordered.
+ * #4295: `readMilestoneMoves` is the seam for THE EXACT START OF THE MILESTONE CLOCK, called only when the proxy trips it (`exactMilestoneClock`). IT IS THE REAL READ EXACTLY WHEN THE MERGE READ IS: a caller that
+ * passes its own `lastMergedAt` reaches no remote (every test does), so it gets no exact read unless it passes one, and the gate's call site passes neither.
  * @param {{ prsRead: any[] | null, keyedPrsRead?: any[], readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.mjs").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | { at: number, repo: string } | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
+ *           readMilestoneMoves?: typeof readMilestoneMoves,
  *           readReleaseRuns?: () => import("../org-health.mjs").ReleaseRuns | null | undefined,
  *           readReleaseBehind?: () => import("../release-behind-main.mjs").RepoFact[] | null | undefined,
  *           readClassRepeat?: () => import("../class-repeat.mjs").ClassRepeatFact | null | undefined,
@@ -494,15 +497,18 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
-  { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
+  io = {}) {
+  const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
-    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined } = {}) {
+    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined,
+    readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
   const waits = liftedWaits(readWaits({ prsRead: prsRead === null ? null : [...prsRead, ...keyedPrsRead], openRowsRead, now }), { now, release });
   const { holdStands, stale } = waitStanding(waits, now);
-  const readings = orgHealthTick({
+  const milestoneClock = openRowsRead === undefined ? undefined : milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now });
+  const facts = {
     now,
     ...lastMerge(lastMergedAt()),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
@@ -517,7 +523,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     waits,
     ...(openRowsRead !== undefined && { stateRows: openRowsRead }), // #3942: the rows this tick already read, so the signal costs no call
     ...(openRowsRead !== undefined && { idle: idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) }), // #3943: the same rows, and the gate's own shelving list
-    ...(openRowsRead !== undefined && { milestoneClock: milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now }) }), // #4231: the same rows and PRs, and no call of its own
+    ...(milestoneClock !== undefined && { milestoneClock }), // #4231: the same rows and PRs, and no call of its own
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
     ...releaseRunsFact(readReleaseRuns()), // #4001
@@ -525,10 +531,98 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...classRepeatFact(readClassRepeat()), // #4126
     ...teamAccessFact(teamAccess()),
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
-  }, { ...(log && { log }), ...(readCopies && { readCopies }) });
+  };
+  const proxyReadings = orgHealthTick(facts, { ...(log && { log }), ...(readCopies && { readCopies }) });
+  const readings = exactMilestoneClock({ orders: proxyReadings, fact: milestoneClock, now, merge: facts, readMoves, log });
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
   return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap)];
+}
+
+const MS_PER_MINUTE = 60_000;
+/** How many pages of 100 the exact-start read takes before it says it cannot see far enough (#4295). */
+const MOVE_PAGES = 3;
+const MOVE_PAGE_SIZE = 100;
+
+/**
+ * #4295: THE NEWEST-FIRST LIST OF `path`, PAGE BY PAGE, UNTIL IT REACHES BACK TO `since`. `jq` projects each item to `{ at, ... }` (epoch-able ISO `at`, the field the list is sorted on). Returns the items, or `null`
+ * when a page was refused, unparseable, or the pages ran out before the list reached `since`: an item older than the window cannot matter, but one the pages never reached might, so that is UNKNOWN and not "nothing".
+ * @param {(args: string[]) => string} run @param {{ path: string, jq: string, since: number }} list @returns {any[] | null}
+ */
+function newestSince(run, { path, jq, since }) {
+  const items = [];
+  for (let page = 1; page <= MOVE_PAGES; page++) {
+    let rows;
+    try {
+      rows = JSON.parse(run(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=${MOVE_PAGE_SIZE}&page=${page}`, "--jq", jq]));
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(rows)) return null;
+    items.push(...rows);
+    const oldest = rows.length === 0 ? NaN : Date.parse(rows[rows.length - 1].at);
+    if (rows.length < MOVE_PAGE_SIZE || oldest <= since) return items;
+  }
+  return null;
+}
+
+/**
+ * #4295: WHEN THE PRIMARY MILESTONE LAST HAD A CLAIM END, A ROW CLOSE OR A PULL REQUEST CLOSE, from GitHub's own event stream and no ledger of ours. Three reads, none of them on a healthy tick (`exactMilestoneClock`):
+ * the tracker's issue events (a `closed` event of a milestone row, or an `unlabeled` of `session:*` or the claim label: a claim released with NO merge), and each declared repository's recently updated closed pull requests
+ * (one that declares it closes an OPEN row of the milestone, merged or not: a PR closed unmerged leaves its row open, so no event of the row carries it). `at` is the latest of them inside the window, `null` when
+ * nothing happened in it (the caller's start then stays the proxy); the whole answer is `null` when any read was refused or did not reach back to `since`, which is UNKNOWN and never a clear one.
+ * @param {{ primary: number, openRows: number[], since: number }} input `since` is the earliest instant that could still matter: `now` minus the clock's bound
+ * @param {{ run?: (args: string[]) => string, tracker?: string, repos?: string[] }} [io]
+ * @returns {{ at: number | null } | null}
+ */
+export function readMilestoneMoves({ primary, openRows, since }, { run = defaultRun, tracker = repoNow(), repos = mergeRepositories() } = {}) {
+  const events = newestSince(run, { since, path: `repos/${tracker}/issues/events`,
+    jq: "[.[] | {at: .created_at, event: .event, label: (.label.name // \"\"), milestone: (.issue.milestone.number // 0), pr: (.issue.pull_request != null)}]" });
+  if (events === null) return null;
+  const moves = events.filter((e) => !e.pr && e.milestone === primary
+    && (e.event === "closed" || (e.event === "unlabeled" && (e.label.startsWith(SESSION_PREFIX) || e.label === CLAIM_LABEL)))).map((e) => Date.parse(e.at));
+  const owned = new Set(openRows);
+  for (const repo of repos) {
+    const closed = newestSince(run, { since, path: `repos/${repo}/pulls?state=closed&sort=updated&direction=desc`,
+      jq: "[.[] | {at: .updated_at, closedAt: .closed_at, body: (.body // \"\")}]" });
+    if (closed === null) return null;
+    for (const c of closed) if (declaredClosedRows(c.body, { prRepo: repo, trackerRepo: tracker }).some((n) => owned.has(n))) moves.push(Date.parse(c.closedAt));
+  }
+  const inWindow = moves.filter((at) => Number.isFinite(at) && at >= since);
+  return { at: inWindow.length === 0 ? null : Math.max(...inWindow) };
+}
+
+/** #4295: THE `ALSO TRIPPED` LINE `orgHealthOrders` ends a prompt with, read and rewritten here because the exact start can change whether the milestone clock is among them. */
+const ALSO_TRIPPED = /\nALSO TRIPPED \(\d+\): ([^\n]*)\.$/;
+const alsoTrippedOf = (/** @type {string} */ prompt) => ALSO_TRIPPED.exec(prompt)?.[1].split(", ") ?? [];
+const withAlsoTripped = (/** @type {string} */ prompt, /** @type {string[]} */ signals) =>
+  prompt.replace(ALSO_TRIPPED, "") + (signals.length === 0 ? "" : `\nALSO TRIPPED (${signals.length}): ${signals.join(", ")}.`);
+
+/**
+ * #4295: THE MILESTONE CLOCK STARTS AT THE REAL LAST MOVE, not at the last merge. The tick's proxy (`lastMergedAt`) is later than the milestone's own last claim or pull request ending whenever
+ * anything else merged, and EARLIER than it when a claim was released or a pull request closed with no merge: it then trips an idle milestone that moved 30 minutes ago. So when the proxy has
+ * ALREADY tripped (the only path that would alarm) ONE conditional read (`readMilestoneMoves`) takes the later of the proxy and the milestone's latest move and the reading is made again.
+ * A HEALTHY TICK MAKES NO EXTRA CALL: a clear or unknown proxy reading returns the orders untouched. A refused or too-short read is UNKNOWN (said on `log`, no order), never clear.
+ * @param {{ orders: ReturnType<typeof orgHealthOrders>, fact: ReturnType<typeof milestoneClockFact> | undefined, now: number, merge: { lastMergedAt: number | null },
+ *           readMoves: typeof readMilestoneMoves | undefined, log?: (line: string) => void }} input
+ */
+function exactMilestoneClock({ orders, fact, now, merge, readMoves, log = (line) => process.stderr.write(line) }) {
+  const signal = SIGNALS.MILESTONE_CLOCK;
+  const proxied = orders.filter((order) => order.subject === signal);
+  if (readMoves === undefined || proxied.length === 0 || !fact || merge.lastMergedAt === null) return orders;
+  let moves = null;
+  try {
+    moves = readMoves({ primary: fact.primaries[0].number, openRows: fact.rows.map((r) => r.number), since: now - MILESTONE_CLOCK_MINUTES * MS_PER_MINUTE });
+  } catch { /* an unreadable result is UNKNOWN, said below */ }
+  const reading = moves === null ? null : milestoneClockReading({ now, fact: { ...fact, endedAt: Math.max(merge.lastMergedAt, moves.at ?? 0) } });
+  if (reading === null) log(`org-health: ${signal} UNKNOWN -- the milestone's own last claim, row and pull request moves could not be read, so the proxy's start (the last merge) is not trusted; it is not read as clear.\n`);
+  else if (reading.status === "unknown") log(`org-health: ${signal} UNKNOWN -- ${reading.detail}; it is not read as clear.\n`);
+  const renewed = reading?.status === "tripped" ? orgHealthOrders([reading]) : [];
+  const also = alsoTrippedOf(proxied[0].prompt);
+  return orders.flatMap((order) => {
+    if (order.subject !== signal) return renewed.length > 0 ? [order] : [{ ...order, prompt: withAlsoTripped(order.prompt, alsoTrippedOf(order.prompt).filter((s) => s !== signal)) }];
+    return order === proxied[0] ? renewed.map((o) => ({ ...o, prompt: withAlsoTripped(o.prompt, also) })) : [];
+  });
 }
 
 /**

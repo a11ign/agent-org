@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`row-file` refuses a filing whose title an OPEN row in the tracker it files into already carries. A filing driver launched twice filed three layout rows twice, 18 s apart (a11ign/a11ign#4223 = #4222, #4225 = #4224, #4228 = #4227), and the tool never asked about the title; #4043's detector reads the board daily, after the copy is claimable. Before `gh issue create`, one `gh issue list --state open --search '"<title>" in:title' --limit 100` is read and the titles compared exactly after trimming, collapsing inner space and folding case; an equal one refuses, naming its number ("an open row #N already has this title; if this is a retry, #N is the row you filed"). A closed row's title does not refuse, a failed read refuses (an outage is not "no duplicate"), and `--allow-same-title` is the one override: stripped before `gh` sees it, refused beside `--promote`/`--board`, and in the known-flag list. Not here: a body-hash or fuzzy match (#4043, #4137) and a lock between concurrent runs. a11ign/a11ign#4294.
