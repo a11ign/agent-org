@@ -108,6 +108,32 @@ export const PER_ROW_DISALLOWED_TOOLS =
 /** `worker-settings.json`'s own absolute path, resolved from this file's rather than the caller's cwd. */
 export const WORKER_SETTINGS_PATH = fileURLToPath(new URL("./worker-settings.json", import.meta.url));
 
+/** The two prompt arms of the calm-finish A/B (#4070, #4055 move 2). */
+export const ARM = Object.freeze({ CALM: "calm", CONTROL: "control" });
+
+/**
+ * THE ARM OF A NEW PER-ROW WORKER IS ITS ROW NUMBER'S PARITY: even is `calm`, odd is `control`. A rule that is data and cannot be gamed: the
+ * number exists before the worker does, is fixed for the row, is unrelated to difficulty or lane, and is readable afterwards from the session
+ * name (`worker-<row>`), so any record yields the arm with no field to lose and no randomness to reproduce. A respawn of the same row is the
+ * same arm, which keeps a row's turns in one arm however many instances it took.
+ * @param {number} row
+ * @returns {"calm" | "control"}
+ */
+export function armOf(row) {
+  return row % 2 === 0 ? ARM.CALM : ARM.CONTROL;
+}
+
+/**
+ * The calm finish paragraph, appended LAST to a `calm` worker's first-contact preamble and to nothing else. The text is #4055 move 2's own, kept
+ * with its reason sentences and without capitals: the org's ALL-CAPS end-of-turn rules are what the report reads as a fight against early stops. The report's saving is Anthropic's, at max effort, on Anthropic's tasks; this arm exists to
+ * measure it here.
+ */
+export const CALM_FINISH_PARAGRAPH = "No one watches this session live. A question or a plan at the end of your turn stops all work until the\n"
+  + "next order arrives, which can be hours. Make routine judgment calls yourself, note the assumption in the\n"
+  + "task log, and keep going. Stop to ask only when nothing can move without an answer, or before a destructive\n"
+  + "or irreversible step. When the work in the order is done and its checks pass, stop and report what changed,\n"
+  + "the evidence (test output, PR link) and anything left open. Don't start extra rounds of review or polish.";
+
 /**
  * CAUSE -> the worker that should take it.
  *
@@ -177,10 +203,15 @@ export function profileFor(cause, override = {}) {
  * the repository's own guards rather than by an interactive prompt. `codex`'s box already runs
  * `approval_policy = "never"` for the same reason.
  *
+ * `launch.headless` is the ONE switch to the other form (#4075, #4055 move 9): absent, which is every caller today,
+ * the arguments are the pane form below, byte for byte. No `PROFILES` entry carries it and no cause turns it on.
+ *
  * @param {{ kind: string, model: string, effort: string }} profile
+ * @param {{ headless?: HeadlessCaps }} [launch]
  * @returns {string[]}
  */
-export function agentArgs(profile) {
+export function agentArgs(profile, launch = {}) {
+  if (launch.headless) return headlessClaudeArgs(profile, launch.headless);
   if (profile.kind === "codex") {
     // NOT `--dangerously-bypass-approvals-and-sandbox`, which was the first spelling here and is wrong.
     // That flag drops the SANDBOX as well as the prompts, and this host deliberately runs
@@ -241,6 +272,41 @@ export function agentArgs(profile) {
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
     "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS),
     "--settings", WORKER_SETTINGS_PATH];
+}
+
+/** @typedef {{ maxTurns: number, maxBudgetUsd: number }} HeadlessCaps */
+
+/**
+ * A worker as `claude -p` over stream-json instead of a pane (#4075, the report's move 9): the same process, but its
+ * cost and its end are the CLI's to report and to enforce rather than a transcript's to be summed after the fact.
+ *
+ * THE CAPS HAVE NO DEFAULT HERE, ON PURPOSE. A turn or dollar ceiling that nobody measured is a number invented to
+ * look safe, and a stop that bites mid-row is a cost of its own; the caller who turns this on names both.
+ * Measured 2026-10-08 on claude 2.1.294 (n of one, a read-only task): `--max-turns 2` ended the run with exit 1 and
+ * `subtype: error_max_turns`, `--max-budget-usd` is in `--help`, and `--max-turns` is NOT in `--help` though the CLI
+ * accepts it -- so a release may drop it, and the test that pins this argument list is what would notice.
+ *
+ * WHAT THE PANE FORM HAS THAT THIS ONE LEAVES OUT: `--dangerously-skip-permissions` (`--permission-prompts none` denies
+ * what would prompt, and the permission mode decides the rest, so a headless worker is granted its tools by settings
+ * rather than bypassing them) and `--autocompact` (the pane's context window knob, #2717; not measured in print mode).
+ * `--verbose` is required by the CLI for stream-json output under `-p`.
+ *
+ * @param {{ kind: string, model: string, effort: string }} profile
+ * @param {HeadlessCaps} caps
+ * @returns {string[]}
+ */
+function headlessClaudeArgs(profile, caps) {
+  if (profile.kind !== "claude") throw new Error(`headless workers are claude-only, not "${profile.kind}"`);
+  for (const name of /** @type {const} */ (["maxTurns", "maxBudgetUsd"])) {
+    const value = caps[name];
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`headless cap ${name} must be a positive number, got ${value}`);
+  }
+  if (!Number.isInteger(caps.maxTurns)) throw new Error(`headless cap maxTurns must be a whole number, got ${caps.maxTurns}`);
+  return ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    "--max-turns", String(caps.maxTurns), "--max-budget-usd", String(caps.maxBudgetUsd),
+    "--permission-prompts", "none",
+    "--model", profile.model, "--effort", profile.effort,
+    "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--settings", WORKER_SETTINGS_PATH];
 }
 
 function main() {
