@@ -174,7 +174,8 @@ test("9. the flag is in the tool's known-flag list: the unknown-flag refusal doe
   const run = (flag: string) => spawnSync(process.execPath, [entry, flag], { encoding: "utf8", env: process.env });
   const known = run("--allow-same-title");
   assert.doesNotMatch(known.stderr, /unknown flag/, "the flag is known");
-  assert.match(known.stderr, /--session=<name> is required/, "and the run went on to the filing path");
+  // Not asserted: that the run reached the filing path. `launchGate` refuses from a plain clone (CI's checkout), and the unknown-flag guard runs BEFORE it,
+  // so the near-miss control below is what proves the guard ran at all.
   const typo = run("--allow-same-titl");
   assert.match(typo.stderr, /unknown flag --allow-same-titl/, "the control: the same guard still refuses a near miss");
 });
