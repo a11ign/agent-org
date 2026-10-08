@@ -54,7 +54,9 @@ const CLAIM_MARKER = "<!-- row-claim: claim record -->";
  *   | { ok: false, file: string, session: string | null, reason: string }} Transcript
  * @typedef {{ at: number, key: string, session: string, cause: string }} LedgerEntry
  * @typedef {{ repo: string, number: number, createdAt: string, mergedAt: string, body: string }} PullRequest
- * @typedef {{ session: string, rows: number[], spawnedAt: number | null, endedAt: number | null }} Instance
+ * @typedef {{ key: string, repo: string }} TrackerRef a declared tracker (#4080): the key is `""` for the project's own, `agent-org` for the second
+ * @typedef {number | string} RowRef a row of the project's own tracker is its bare number (every record written so far); a row of a keyed tracker is `key#n`
+ * @typedef {{ session: string, rows: RowRef[], spawnedAt: number | null, endedAt: number | null }} Instance
  */
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -143,21 +145,58 @@ export function matchLedger(wakes, entries) {
 // Merged rows
 
 /**
+ * Every `#n` or `owner/repo#n` a body's `Closes` lines name, `repo` absent for a bare one. `Closes: none -- ...` closes nothing.
+ * @param {string} body
+ * @returns {{ repo: string | undefined, number: number }[]}
+ */
+function closingReferences(body) {
+  /** @type {{ repo: string | undefined, number: number }[]} */
+  const found = [];
+  for (const line of body.split("\n")) {
+    const closing = /^\s*closes\b:?\s*(.*)$/i.exec(line);
+    if (!closing || /^none\b/i.test(closing[1])) continue;
+    for (const ref of closing[1].matchAll(/(?:([\w.-]+\/[\w.-]+))?#(\d+)/g)) found.push({ repo: ref[1], number: Number(ref[2]) });
+  }
+  return found;
+}
+
+/**
  * The rows a pull request body closes. `Closes: none -- ...` closes nothing, and a reference to another repository's issue is not a row.
  * @param {string} body
- * @param {string} rowRepo the repository rows live in (the first tracker of the project's declaration): a bare `#n` is one of ITS rows
+ * @param {string} rowRepo the repository rows live in (the project's own tracker): a bare `#n` is one of ITS rows
  * @returns {number[]}
  */
 export function rowsClosedBy(body, rowRepo) {
   const rows = new Set();
-  for (const line of body.split("\n")) {
-    const closing = /^\s*closes\b:?\s*(.*)$/i.exec(line);
-    if (!closing || /^none\b/i.test(closing[1])) continue;
-    for (const ref of closing[1].matchAll(/(?:([\w.-]+\/[\w.-]+))?#(\d+)/g)) {
-      if (!ref[1] || ref[1] === rowRepo) rows.add(Number(ref[2]));
-    }
-  }
+  for (const ref of closingReferences(body)) if (!ref.repo || ref.repo === rowRepo) rows.add(ref.number);
   return [...rows];
+}
+
+/** How a row is written wherever two trackers' rows share one table: `#7`, and `agent-org#7` beside it (#4080). @param {string} key @param {number} row */
+export const rowName = (key, row) => `${key}#${row}`;
+
+/** @param {string} key @param {number} row @returns {RowRef} */
+const rowRef = (key, row) => (key === "" ? row : rowName(key, row));
+
+/** @param {{ key?: string, row: number }} entry */
+const refOf = (entry) => rowRef(entry.key ?? "", entry.row);
+
+/**
+ * The rows a pull request body closes in ANY declared tracker (#4080), each as `{ key, row }`. A bare `#n` is the project's own tracker's row (the empty key), as
+ * `pr-open` reads it; `owner/repo#n` is the row of the tracker declared at that repository, and an `owner/repo` that is no declared tracker is not a row.
+ * @param {string} body
+ * @param {TrackerRef[]} trackers
+ * @returns {{ key: string, row: number }[]}
+ */
+export function rowsClosedInTrackers(body, trackers) {
+  const own = trackers.find((tracker) => tracker.key === "");
+  /** @type {Map<RowRef, { key: string, row: number }>} */
+  const rows = new Map();
+  for (const ref of closingReferences(body)) {
+    const tracker = ref.repo ? trackers.find((candidate) => candidate.repo === ref.repo) : own;
+    if (tracker) rows.set(rowRef(tracker.key, ref.number), { key: tracker.key, row: ref.number });
+  }
+  return [...rows.values()];
 }
 
 /**
@@ -168,22 +207,35 @@ export function rowsClosedBy(body, rowRepo) {
  * @param {string} rowRepo
  */
 export function mergedRows(pulls, window, rowRepo) {
-  /** @type {Map<number, { row: number, repo: string, pulls: number[], firstOpenedAt: number, lastOpenedAt: number, mergedAt: number }>} */
+  return mergedTrackerRows(pulls, window, [{ key: "", repo: rowRepo }]);
+}
+
+/**
+ * `mergedRows` over every declared tracker (#4080): the same number in two trackers is TWO rows, told apart by `key`, which an entry of the project's own tracker
+ * does not carry, so a reading of one tracker is the one it always was.
+ * @param {PullRequest[]} pulls
+ * @param {{ from: number, to: number }} window by merge time
+ * @param {TrackerRef[]} trackers
+ */
+export function mergedTrackerRows(pulls, window, trackers) {
+  /** @type {Map<RowRef, { row: number, key?: string, repo: string, pulls: number[], firstOpenedAt: number, lastOpenedAt: number, mergedAt: number }>} */
   const rows = new Map();
   for (const pull of pulls) {
     const mergedAt = Date.parse(pull.mergedAt);
     const openedAt = Date.parse(pull.createdAt);
-    for (const row of rowsClosedBy(pull.body, rowRepo)) {
-      const known = rows.get(row);
-      if (!known) rows.set(row, { row, repo: pull.repo, pulls: [pull.number], firstOpenedAt: openedAt, lastOpenedAt: openedAt, mergedAt });
-      else rows.set(row, laterMerge(known, { repo: pull.repo, number: pull.number, openedAt, mergedAt }));
+    for (const { key, row } of rowsClosedInTrackers(pull.body, trackers)) {
+      const ref = rowRef(key, row);
+      const known = rows.get(ref);
+      const keyed = key === "" ? {} : { key };
+      if (!known) rows.set(ref, { row, ...keyed, repo: pull.repo, pulls: [pull.number], firstOpenedAt: openedAt, lastOpenedAt: openedAt, mergedAt });
+      else rows.set(ref, laterMerge(known, { repo: pull.repo, number: pull.number, openedAt, mergedAt }));
     }
   }
   return [...rows.values()].filter((entry) => entry.mergedAt >= window.from && entry.mergedAt < window.to);
 }
 
 /**
- * @param {{ repo: string, pulls: number[], firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, row: number }} known
+ * @param {{ repo: string, pulls: number[], firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, row: number, key?: string }} known
  * @param {{ repo: string, number: number, openedAt: number, mergedAt: number }} next
  */
 function laterMerge(known, next) {
@@ -218,8 +270,8 @@ export function reviewerTarget(session, rowRepo) {
  * The row a worker wake belongs to: the latest-claimed row at or before it, among the rows of an instance that had not yet ended.
  * @param {Wake} wake
  * @param {Instance[]} instances every instance of this session
- * @param {Map<number, number | null>} claimedAt row -> claim time, null when unread
- * @returns {{ row: number } | { reason: string }}
+ * @param {Map<RowRef, number | null>} claimedAt row -> claim time, null when unread
+ * @returns {{ row: RowRef } | { reason: string }}
  */
 export function workerRowFor(wake, instances, claimedAt) {
   const live = instances.filter((instance) => instance.endedAt === null || wake.at < instance.endedAt);
@@ -230,33 +282,36 @@ export function workerRowFor(wake, instances, claimedAt) {
 }
 
 /**
- * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
+ * @typedef {{ row: number, key?: string, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
  * @typedef {Wake & { cause: string, typedAt: number, session: string }} SessionWake
- * @typedef {{ row: number, repo: string, measured: boolean, unmeasured?: string, wakes: number, workerWakes: number, reviewerWakes: number,
+ * @typedef {{ tracker: string, reason: string }} UnreadClaims a declared tracker whose claim records could not be read, and why: its rows fall back to "from the instance's start"
+ * @typedef {{ row: number, key?: string, repo: string, measured: boolean, unmeasured?: string, wakes: number, workerWakes: number, reviewerWakes: number,
  *   afterOpened: number, afterMerged: number, stale: number, bytes: number, causes: Record<string, number>, mergedAt: number }} RowReading
  */
 
 /**
  * @param {{ window: { from: number, to: number }, pulls: PullRequest[], transcripts: Transcript[], ledger: LedgerEntry[], instances: Instance[],
- *   claimedAt: Map<number, number | null>, rowRepo: string, codexRollouts?: number }} input
+ *   claimedAt: Map<RowRef, number | null>, rowRepo: string, trackers?: TrackerRef[], unreadClaims?: UnreadClaims[], codexRollouts?: number }} input
+ * `trackers` (#4080) are every declared tracker; without it the one tracker at `rowRepo` is read, as before. `unreadClaims` are the trackers whose claim records could not be read.
  */
 export function measure(input) {
   const { window, pulls, transcripts, ledger, instances, claimedAt, rowRepo } = input;
-  const rows = mergedRows(pulls, window, rowRepo);
+  const trackers = input.trackers ?? [{ key: "", repo: rowRepo }];
+  const rows = mergedTrackerRows(pulls, window, trackers);
   const bySession = wakesBySession(transcripts, ledger);
-  const claimants = new Map(rows.map((row) => [row.row, instances.filter((instance) => instance.rows.includes(row.row))]));
-  const readings = new Map(rows.map((row) => [row.row, emptyReading(row, claimants.get(row.row) ?? [], bySession, transcripts)]));
+  const claimants = new Map(rows.map((row) => [refOf(row), instances.filter((instance) => instance.rows.includes(refOf(row)))]));
+  const readings = new Map(rows.map((row) => [refOf(row), emptyReading(row, claimants.get(refOf(row)) ?? [], bySession, transcripts)]));
   /** @type {{ wake: SessionWake, reason: string }[]} */
   const remainder = [];
   for (const [session, wakes] of bySession.wakes) {
     for (const wake of wakes) {
-      const placed = place(wake, { session, instances, claimedAt, rows, pulls, rowRepo });
+      const placed = place(wake, { session, instances, claimedAt, rows, pulls, rowRepo, trackers });
       const reading = "row" in placed ? readings.get(placed.row) : undefined;
-      if (reading && "row" in placed) addWake(reading, wake, rows.find((row) => row.row === placed.row), placed.as);
+      if (reading && "row" in placed) addWake(reading, wake, rows.find((row) => refOf(row) === placed.row), placed.as);
       else if (wake.at >= window.from && wake.at < window.to) remainder.push({ wake, reason: "reason" in placed ? placed.reason : "on-a-row-not-merged-in-the-window" });
     }
   }
-  return report({ window, readings: [...readings.values()], remainder, transcripts, bySession, codexRollouts: input.codexRollouts ?? null });
+  return report({ window, readings: [...readings.values()], remainder, transcripts, bySession, codexRollouts: input.codexRollouts ?? null, unreadClaims: input.unreadClaims ?? [] });
 }
 
 /**
@@ -285,8 +340,8 @@ function wakesBySession(transcripts, ledger) {
 
 /**
  * @param {SessionWake} wake
- * @param {{ session: string, instances: Instance[], claimedAt: Map<number, number | null>, rows: MergedRow[], pulls: PullRequest[], rowRepo: string }} context
- * @returns {{ row: number, as: "worker" | "reviewer" } | { reason: string }}
+ * @param {{ session: string, instances: Instance[], claimedAt: Map<RowRef, number | null>, rows: MergedRow[], pulls: PullRequest[], rowRepo: string, trackers: TrackerRef[] }} context
+ * @returns {{ row: RowRef, as: "worker" | "reviewer" } | { reason: string }}
  */
 function place(wake, context) {
   const target = reviewerTarget(context.session, context.rowRepo);
@@ -295,21 +350,21 @@ function place(wake, context) {
   if (mine.length === 0) return { reason: `standing:${context.session}` };
   const chosen = workerRowFor(wake, mine, context.claimedAt);
   if ("reason" in chosen) return chosen;
-  return context.rows.some((row) => row.row === chosen.row) ? { row: chosen.row, as: "worker" } : { reason: "on-a-row-not-merged-in-the-window" };
+  return context.rows.some((row) => refOf(row) === chosen.row) ? { row: chosen.row, as: "worker" } : { reason: "on-a-row-not-merged-in-the-window" };
 }
 
 /**
  * @param {SessionWake} wake
  * @param {{ repo: string, number: number }} target
- * @param {{ rows: MergedRow[], pulls: PullRequest[], rowRepo: string }} context
+ * @param {{ rows: MergedRow[], pulls: PullRequest[], trackers: TrackerRef[] }} context
  */
 function placeReviewer(wake, target, context) {
   const pull = context.pulls.find((candidate) => candidate.repo === target.repo && candidate.number === target.number);
   if (!pull) return { reason: "reviewer-of-a-pull-request-that-did-not-merge" };
-  const closed = rowsClosedBy(pull.body, context.rowRepo).find((row) => context.rows.some((merged) => merged.row === row));
-  if (closed === undefined) return { reason: "reviewer-of-a-pull-request-closing-no-merged-row" };
+  const closing = rowsClosedInTrackers(pull.body, context.trackers).find((row) => context.rows.some((merged) => refOf(merged) === rowRef(row.key, row.row)));
+  if (closing === undefined) return { reason: "reviewer-of-a-pull-request-closing-no-merged-row" };
   const inside = wake.at >= Date.parse(pull.createdAt) && wake.at <= Date.parse(pull.mergedAt);
-  return inside ? { row: closed, as: /** @type {const} */ ("reviewer") } : { reason: "reviewer-outside-its-pull-request-window" };
+  return inside ? { row: rowRef(closing.key, closing.row), as: /** @type {const} */ ("reviewer") } : { reason: "reviewer-outside-its-pull-request-window" };
 }
 
 /**
@@ -320,7 +375,7 @@ function placeReviewer(wake, target, context) {
  * @returns {RowReading}
  */
 function emptyReading(row, claimants, bySession, transcripts) {
-  const base = { row: row.row, repo: row.repo, mergedAt: row.mergedAt, wakes: 0, workerWakes: 0, reviewerWakes: 0, afterOpened: 0, afterMerged: 0, stale: 0, bytes: 0, causes: {} };
+  const base = { row: row.row, ...(row.key ? { key: row.key } : {}), repo: row.repo, mergedAt: row.mergedAt, wakes: 0, workerWakes: 0, reviewerWakes: 0, afterOpened: 0, afterMerged: 0, stale: 0, bytes: 0, causes: {} };
   if (claimants.length === 0) return { ...base, measured: false, unmeasured: "no claimant recorded for the row" };
   for (const { session } of claimants) {
     const own = transcripts.filter((transcript) => transcript.session === session);
@@ -365,7 +420,7 @@ export function median(values) {
 
 /**
  * @param {{ window: { from: number, to: number }, readings: RowReading[], remainder: { wake: SessionWake, reason: string }[], transcripts: Transcript[],
- *   bySession: { ledgerOnly: number }, codexRollouts: number | null }} input
+ *   bySession: { ledgerOnly: number }, codexRollouts: number | null, unreadClaims: UnreadClaims[] }} input
  */
 function report(input) {
   const measured = input.readings.filter((reading) => reading.measured);
@@ -374,10 +429,10 @@ function report(input) {
   const totalBytes = measured.reduce((sum, reading) => sum + reading.bytes, 0);
   return {
     window: input.window,
-    rows: input.readings.sort((a, b) => a.row - b.row),
+    rows: input.readings.sort((a, b) => a.row - b.row || (a.key ?? "").localeCompare(b.key ?? "")),
     mergedRows: input.readings.length,
     measuredRows: measured.length,
-    unmeasured: input.readings.filter((reading) => !reading.measured).map((reading) => ({ row: reading.row, reason: reading.unmeasured })),
+    unmeasured: input.readings.filter((reading) => !reading.measured).map((reading) => ({ row: reading.row, ...(reading.key ? { key: reading.key } : {}), reason: reading.unmeasured })),
     attributedWakes: totalWakes,
     wakesPerRow: { mean: mean(wakes), median: median(wakes) },
     afterOpened: measured.reduce((sum, reading) => sum + reading.afterOpened, 0),
@@ -395,6 +450,8 @@ function report(input) {
     unreadableTranscripts: input.transcripts.filter((transcript) => !transcript.ok).map((transcript) => ({ file: transcript.file, session: transcript.session, reason: transcript.ok ? "" : transcript.reason })),
     compactions: input.transcripts.reduce((sum, transcript) => sum + (transcript.ok ? transcript.compactions : 0), 0),
     codexRollouts: input.codexRollouts,
+    // Only when a claim record could not be read, so a reading in which every one was read is the one it always was (#4080).
+    ...(input.unreadClaims.length > 0 ? { unreadClaims: input.unreadClaims } : {}),
   };
 }
 
@@ -454,7 +511,8 @@ export function renderReading(reading) {
     `REMAINDER (no merged row): ${reading.remainder.total} wakes; by session ${JSON.stringify(reading.remainder.bySession)}; by reason ${JSON.stringify(reading.remainder.byReason)}`,
     `ledger lines with no transcript wake: ${reading.ledgerOnly}; Codex reviewer rollouts (own line, not folded in): ${reading.codexRollouts ?? "not read"}`,
   ];
-  for (const entry of reading.unmeasured) lines.push(`UNMEASURED row #${entry.row}: ${entry.reason}`);
+  for (const entry of reading.unmeasured) lines.push(`UNMEASURED row ${rowName(entry.key ?? "", entry.row)}: ${entry.reason}`);
+  for (const entry of reading.unreadClaims ?? []) lines.push(`UNREAD claim records of tracker ${entry.tracker}: ${entry.reason}`);
   for (const entry of reading.unreadableTranscripts) lines.push(`UNREADABLE transcript ${entry.file} (${entry.session ?? "session unknown"}): ${entry.reason}`);
   return lines.join("\n");
 }
@@ -489,19 +547,43 @@ export async function readMergedPulls(repo, window, ghJson = (args) => JSON.pars
 }
 
 /**
- * When a row was claimed: the claim record the claim writes. `null` when it cannot be read, which the attribution takes as "from the instance's start".
+ * When a row was claimed: the claim record the claim writes. `null` when the row has no claim record; a read that FAILS throws, because "no record" and "could not
+ * read it" are different answers (`readClaims` records the second against the tracker it came from).
  * @param {number} row
  * @param {string} rowRepo
  * @returns {number | null}
  */
 export function readClaimedAt(row, rowRepo) {
-  try {
-    const out = gh(["api", "--paginate", `repos/${rowRepo}/issues/${row}/comments?per_page=${SEARCH_PAGE}`, "--jq", `.[] | select(.body | startswith("${CLAIM_MARKER}")) | .created_at`]);
-    const first = out.split("\n").find(Boolean);
-    return first ? Date.parse(first) : null;
-  } catch {
-    return null;
+  const out = gh(["api", "--paginate", `repos/${rowRepo}/issues/${row}/comments?per_page=${SEARCH_PAGE}`, "--jq", `.[] | select(.body | startswith("${CLAIM_MARKER}")) | .created_at`]);
+  const first = out.split("\n").find(Boolean);
+  return first ? Date.parse(first) : null;
+}
+
+/**
+ * The claim time of every merged row, each read from ITS OWN tracker's repository (#4080). A read that fails is recorded once per tracker, naming it, and leaves the
+ * row `null` ("from the instance's start", as a failed read always did), so one tracker's refusal never hides the other's rows.
+ * @param {{ row: number, key?: string }[]} rows
+ * @param {TrackerRef[]} trackers
+ * @param {(row: number, repo: string) => number | null} [read]
+ * @returns {{ claimedAt: Map<RowRef, number | null>, unreadClaims: UnreadClaims[] }}
+ */
+export function readClaims(rows, trackers, read = readClaimedAt) {
+  /** @type {Map<RowRef, number | null>} */
+  const claimedAt = new Map();
+  /** @type {Map<string, UnreadClaims>} */
+  const unread = new Map();
+  for (const entry of rows) {
+    const tracker = trackers.find((candidate) => candidate.key === (entry.key ?? ""));
+    if (!tracker) continue;
+    try {
+      claimedAt.set(refOf(entry), read(entry.row, tracker.repo));
+    } catch (cause) {
+      claimedAt.set(refOf(entry), null);
+      const name = tracker.key === "" ? tracker.repo : `${tracker.key} (${tracker.repo})`;
+      if (!unread.has(name)) unread.set(name, { tracker: name, reason: (cause instanceof Error ? cause.message : String(cause)).split("\n")[0] });
+    }
   }
+  return { claimedAt, unreadClaims: [...unread.values()] };
 }
 
 /**
@@ -535,7 +617,7 @@ function readOneTranscript(file) {
 /**
  * Instances from the two org records: `spare-cycles` (one line per ending) and `spare-instances.json` (the live ones).
  * @param {string} cache
- * @returns {Instance[]}
+ * @returns {Instance[]} `rows` are what the org recorded: bare numbers of the project's own tracker today, and `key#n` for a keyed one the day it records them
  */
 export function readInstances(cache) {
   /** @type {Instance[]} */
@@ -546,7 +628,7 @@ export function readInstances(cache) {
     instances.push({ session: ended.role, rows, spawnedAt: null, endedAt: ended.at });
   }
   const live = JSON.parse(readFileSync(join(cache, "spare-instances.json"), "utf8"));
-  for (const [session, instance] of Object.entries(/** @type {Record<string, { spawnedAt: number, rows: number[] }>} */ (live))) {
+  for (const [session, instance] of Object.entries(/** @type {Record<string, { spawnedAt: number, rows: RowRef[] }>} */ (live))) {
     instances.push({ session, rows: instance.rows, spawnedAt: instance.spawnedAt, endedAt: null });
   }
   return instances;
@@ -582,19 +664,19 @@ export function parseArgs(argv) {
   return { window: { from, to }, repos: flags.repos ? flags.repos.split(",") : null, json: flags.json === "1" };
 }
 
-/** The repositories to read and the one rows live in come from the project's declaration: this tool names no project. */
+/** The repositories to read and the trackers rows live in come from the project's declaration: this tool names no project. */
 async function main() {
   const { window, repos: flagged, json } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("./project-config.mjs");
   const declaration = homeProjectDeclaration();
-  const rowRepo = declaration.tracker[0].repo;
+  const trackers = declaration.tracker.map(({ key, repo }) => ({ key, repo }));
+  const rowRepo = /** @type {TrackerRef} */ (trackers.find((tracker) => tracker.key === "")).repo;
   const repos = flagged ?? declaration.code.map((code) => code.repo);
   const cache = join(homedir(), ".cache", "a11ign");
   const pulls = (await Promise.all(repos.map((repo) => readMergedPulls(repo, window)))).flat();
-  const rows = mergedRows(pulls, window, rowRepo).map((row) => row.row);
-  const claimedAt = new Map(rows.map((row) => [row, readClaimedAt(row, rowRepo)]));
+  const { claimedAt, unreadClaims } = readClaims(mergedTrackerRows(pulls, window, trackers), trackers);
   const reading = measure({
-    window, pulls, claimedAt, rowRepo,
+    window, pulls, claimedAt, rowRepo, trackers, unreadClaims,
     transcripts: readTranscripts(join(homedir(), ".claude", "projects"), window.from),
     ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")),
     instances: readInstances(cache),

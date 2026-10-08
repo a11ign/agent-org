@@ -74,7 +74,7 @@ const PAGE_SIZE = 100;
 
 /** @typedef {{ minute: number, hour: number, weekday: number }} Slot a cron slot in UTC; weekday 0 is Sunday */
 /** @typedef {{ id: number, event: string, created_at: string, conclusion?: string | null, status?: string | null }} Run */
-/** @typedef {{ repo: string, workflow: string, issue: number }} Declared */
+/** @typedef {{ repo: string, workflow: string, issue: number, key?: string }} Declared one tracker's repository to look in; `key` is the tracker's (#4080), absent for a flag-named one */
 
 /** @param {Date} date @returns {string} `YYYY-MM-DD` in UTC */
 const dayOf = (date) => date.toISOString().slice(0, "YYYY-MM-DD".length);
@@ -159,30 +159,35 @@ export function ciHealthLiveness({ now, slot, runs, comments, workflowState = nu
     detail: `${ran} exists and "${heading}" is not on the report issue${stillInGrace ? `; grace ends ${graceEndsAt.toISOString()}` : ""}` };
 }
 
-/** One line a person or a tick log can read. @param {Reading} reading */
-export function readingLine(reading) {
-  return `ci-health liveness: ${reading.verdict}${reading.slotAt ? ` -- slot ${reading.slotAt}` : ""}: ${reading.detail}`;
+/**
+ * One line a person or a tick log can read. `repo` names the tracker's repository when more than one is read (#4080), so two lines are told apart; with one it is left out
+ * and the line is the one it always was.
+ * @param {Reading} reading @param {string} [repo]
+ */
+export function readingLine(reading, repo = "") {
+  return `ci-health liveness${repo === "" ? "" : ` (${repo})`}: ${reading.verdict}${reading.slotAt ? ` -- slot ${reading.slotAt}` : ""}: ${reading.detail}`;
 }
 
 /**
- * THE GATE'S OFFER to `product-manager`, in `rowOffBoardOrders`'s shape. Only SILENT and NO COMMENT are offered: PRESENT and NOT YET
+ * THE GATE'S OFFER to `product-manager`, in `rowOffBoardOrders`'s shape. `repo` (#4080) is the tracker's repository when several are read: it joins the key, so a miss in
+ * each tracker is its own question, and it is named in the prompt. Only SILENT and NO COMMENT are offered: PRESENT and NOT YET
  * are nothing to do, and CANNOT TELL is not a finding about the week (the tick prints it on stderr), so no order is raised for it.
  *
  * KEYED ON THE SLOT AND THE VERDICT, so a settled question is the same string and the wake ledger does not re-ask it, while a
  * SILENT week that becomes NO COMMENT (or a new week) is a new question.
- * @param {Reading} reading
+ * @param {Reading} reading @param {string} [repo]
  * @returns {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string }[]}
  */
-export function ciHealthOrders(reading) {
+export function ciHealthOrders(reading, repo = "") {
   if (reading.verdict !== VERDICT.SILENT && reading.verdict !== VERDICT.NO_COMMENT) return [];
   const half = reading.verdict === VERDICT.SILENT ? "the `schedule` run" : "the comment on the report issue";
-  const discriminator = `${reading.slotAt}/${reading.verdict.replace(" ", "-").toLowerCase()}`;
+  const discriminator = `${repo === "" ? "" : `${repo}/`}${reading.slotAt}/${reading.verdict.replace(" ", "-").toLowerCase()}`;
   return [{
     session: "product-manager",
     cause: "ci-health-missing",
     subject: "ci-health",
     discriminator,
-    prompt: `The week's CI-health report did not arrive: ${half} is missing (${reading.verdict}).\n${readingLine(reading)}\n`
+    prompt: `The week's CI-health report did not arrive: ${half} is missing (${reading.verdict}).\n${readingLine(reading, repo)}\n`
       + `A finding is a row: file it \`${READY_LABEL}\` with the cause named (a schedule GitHub disabled after 60 days without activity, a run that failed, `
       + "a comment the script refused) and its owner. THIS ORDER DOES NOT FIX THE SCHEDULE, and it is not raised again for the same slot and verdict.",
     causeKey: `product-manager/ci-health-missing/${discriminator}`,
@@ -231,19 +236,22 @@ export function readFacts({ repo, workflow, issue }, now, { gh = defaultGh } = {
 
 /**
  * The project's declaration of WHICH workflow and WHICH issue, beside `units.traceWeeklyIssue`'s own: `units.ciHealthWorkflow` and
- * `units.ciHealthIssue`, with the repository `tracker[0].repo`. An absent or malformed declaration is a reason, never a default.
- * @param {string} text the project's `.agent-org/project.json` @returns {{ declared: Declared } | { refusal: string }}
+ * `units.ciHealthIssue`, looked for in the repository of EVERY declared tracker (#4080), each answering for itself. An absent or malformed declaration is a reason, never a default.
+ * @param {string} text the project's `.agent-org/project.json` @returns {{ declared: Declared[] } | { refusal: string }}
  */
 export function declarationFrom(text) {
   /** @type {any} */
   let parsed;
   try { parsed = JSON.parse(text); } catch { return { refusal: "the project declaration (it is not valid JSON)" }; }
-  const repo = parsed?.tracker?.[0]?.repo;
+  /** @type {any[]} */
+  const trackers = Array.isArray(parsed?.tracker) ? parsed.tracker : [];
   const { ciHealthWorkflow: workflow, ciHealthIssue: issue } = parsed?.units ?? {};
-  if (typeof repo !== "string" || repo === "") return { refusal: "the project declaration (it does not declare tracker[0].repo)" };
+  if (trackers.length === 0 || trackers.some((tracker) => typeof tracker?.repo !== "string" || tracker.repo === "")) {
+    return { refusal: "the project declaration (it does not declare a `repo` for every entry of `tracker`)" };
+  }
   if (typeof workflow !== "string" || workflow === "") return { refusal: "the project declaration (it does not declare units.ciHealthWorkflow, the workflow file name)" };
   if (!Number.isInteger(issue) || issue <= 0) return { refusal: "the project declaration (it does not declare units.ciHealthIssue, the report issue as a positive integer)" };
-  return { declared: { repo, workflow, issue } };
+  return { declared: trackers.map((tracker) => ({ key: typeof tracker.key === "string" ? tracker.key : "", repo: tracker.repo, workflow, issue })) };
 }
 
 /**
@@ -255,7 +263,36 @@ export function readCiHealth(where, now, deps) {
   return ciHealthLiveness({ now, ...readFacts(where.declared, now, deps) });
 }
 
-/** The project's declaration, from the host's primary project's checkout. @returns {{ declared: Declared } | { refusal: string }} */
+/**
+ * One reading per declared tracker (#4080), in declaration order. A tracker whose lookup fails is CANNOT TELL for THAT tracker, and the others are read all the same:
+ * a refusal on one repository is never allowed to hide another's verdict.
+ * @param {{ declared: Declared[] } | { refusal: string }} where @param {Date} now @param {{ gh?: Gh }} [deps]
+ * @returns {{ repo: string, reading: Reading }[]} `repo` is `""` for a refusal, which belongs to no tracker
+ */
+export function readCiHealthAll(where, now, deps) {
+  if ("refusal" in where) return [{ repo: "", reading: readCiHealth(where, now, deps) }];
+  return where.declared.map((declared) => {
+    try {
+      return { repo: declared.repo, reading: readCiHealth({ declared }, now, deps) };
+    } catch (cause) {
+      return { repo: declared.repo, reading: cannotTell([`the lookup in ${declared.repo} (${cause instanceof Error ? cause.message.split("\n")[0] : String(cause)})`]) };
+    }
+  });
+}
+
+/**
+ * THE EXIT OF SEVERAL READINGS: the most alarming one decides, so a healthy tracker never excuses another. A finding (SILENT, NO COMMENT) is KNOWN to be wrong and outranks
+ * CANNOT TELL, which may be nothing; CANNOT TELL outranks NOT YET, which is only early; only all PRESENT is a pass. One reading gives the code it always did.
+ * @param {Reading[]} readings @returns {number}
+ */
+export function exitFor(readings) {
+  const code = { [VERDICT.PRESENT]: EXIT.PRESENT, [VERDICT.NOT_YET]: EXIT.NOT_YET, [VERDICT.SILENT]: EXIT.SILENT,
+    [VERDICT.NO_COMMENT]: EXIT.NO_COMMENT, [VERDICT.CANNOT_TELL]: EXIT.CANNOT_TELL };
+  const rank = [EXIT.PRESENT, EXIT.NOT_YET, EXIT.CANNOT_TELL, EXIT.SILENT];
+  return readings.map((reading) => code[/** @type {keyof typeof code} */ (reading.verdict)]).reduce((worst, next) => (rank.indexOf(next) > rank.indexOf(worst) ? next : worst), EXIT.PRESENT);
+}
+
+/** The project's declaration, from the host's primary project's checkout. @returns {{ declared: Declared[] } | { refusal: string }} */
 function declaredByProject() {
   const host = homeHostConfig();
   const checkout = host.projects.find((p) => p.id === host.primary)?.checkout;
@@ -267,22 +304,24 @@ function declaredByProject() {
   }
 }
 
-/** @returns {{ declared: Declared } | { refusal: string }} the three flags together override the declaration, so a live reading needs no a11ign edit */
+/** @returns {{ declared: Declared[] } | { refusal: string }} the three flags together override the declaration, so a live reading needs no a11ign edit */
 function declaredByFlags() {
   const [repo, workflow, issue] = ["repo", "workflow", "issue"].map((name) => flagValue(process.argv.slice(2), name));
   if (repo === undefined && workflow === undefined && issue === undefined) return declaredByProject();
   if (!repo || !workflow || !/^[1-9]\d*$/.test(issue ?? "")) return { refusal: "the flags (--repo, --workflow and --issue must be given together, the issue a positive integer)" };
-  return { declared: { repo, workflow, issue: Number(issue) } };
+  return { declared: [{ repo, workflow, issue: Number(issue) }] };
 }
 
 function main() {
   refuseUnknownFlags(["--repo=", "--workflow=", "--issue="], { entry: import.meta.url, command: "node src/ci-health-liveness.mjs" });
-  const reading = readCiHealth(declaredByFlags(), new Date());
-  console.log(readingLine(reading));
-  for (const order of ciHealthOrders(reading)) console.log(`gate offer to ${order.session} [${order.causeKey}]: ${order.prompt.split("\n")[0]}`);
-  const code = { [VERDICT.PRESENT]: EXIT.PRESENT, [VERDICT.NOT_YET]: EXIT.NOT_YET, [VERDICT.SILENT]: EXIT.SILENT,
-    [VERDICT.NO_COMMENT]: EXIT.NO_COMMENT, [VERDICT.CANNOT_TELL]: EXIT.CANNOT_TELL }[reading.verdict];
-  process.exit(code);
+  const readings = readCiHealthAll(declaredByFlags(), new Date());
+  const several = readings.length > 1;
+  for (const { repo, reading } of readings) {
+    const named = several ? repo : "";
+    console.log(readingLine(reading, named));
+    for (const order of ciHealthOrders(reading, named)) console.log(`gate offer to ${order.session} [${order.causeKey}]: ${order.prompt.split("\n")[0]}`);
+  }
+  process.exit(exitFor(readings.map(({ reading }) => reading)));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

@@ -394,3 +394,65 @@ test("the standalone read asks for blockedBy, so the seventh question is read th
   readBoardFacts("a/b", { run: (args) => { asked.push(args.join(" ")); return "[]"; }, agents: () => [] });
   assert.ok(asked.some((a) => /issue list --state open .*blockedBy/.test(a)));
 });
+
+// --- #4080 (row 2 of #4056): the audit reads EVERY declared tracker --------------------------------------------------------------
+
+const HOME_TRACKER = { key: "", repo: "a/home" };
+const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
+/** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
+const gh = (/** @type {Record<string, any[]>} */ rowsOf, /** @type {string[]} */ refuse = []) => (/** @type {string[]} */ args) => {
+  const repo = args[args.indexOf("--repo") + 1];
+  if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
+  if (args[0] === "pr") return "[]";
+  return JSON.stringify(args.includes("open") ? (rowsOf[repo] ?? []) : []);
+};
+/** A complete herdr listing (standing panes present), so the live sessions are READ and a test of another question is not muddied by that one being unread. */
+const ORG_SEATS = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
+const twoTrackers = (/** @type {Record<string, any[]>} */ rowsOf, refuse = /** @type {string[]} */ ([])) =>
+  readBoardFacts("a/home", { run: gh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
+    openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
+
+test("#4080 CONTROL: with ONE declared tracker the table is the one it always printed (a recorded snapshot), and no other tracker is asked", () => {
+  const audit = boardTruthAudit(facts({ openRows: [row(10, ["ready"], { body: "the work" }), row(13, []), row(12, ["parked"], { body: "Waiting-for: closed #50" })],
+    closedRows: [row(50, [], { state: "CLOSED", stateReason: "COMPLETED" })], mergedPrs: [{ number: 900, body: "Closes #10" }],
+    waitFacts: { items: { "#50": { state: "closed", labels: [], resolvedAt: NOW, changedAt: NOW } } } }));
+  assert.equal(boardTruthTable(audit, DAY), "### Board against reality, 2026-10-08\n\n**3 disagree**\n\n| row | question | field to fix | what disagrees | to |\n|---|---|---|---|---|\n"
+    + "| #10 | closing-pr-merged | state (open) | merged PR #900 says `Closes #10` | product-manager |\n"
+    + "| #12 | wait-already-true | `Waiting-for: closed #50` line | the condition is already true, so the row waits on nothing | product-manager |\n"
+    + "| #13 | state-label | labels | carries none of ready, in-progress, backlog, parked, epic, blocked | product-manager |");
+  const asked = [];
+  readBoardFacts("a/home", { run: (args) => { asked.push(args[args.indexOf("--repo") + 1]); return "[]"; }, agents: () => [], trackers: [HOME_TRACKER] });
+  assert.deepEqual([...new Set(asked)], ["a/home"]);
+});
+
+test("#4080: a row that exists ONLY in the second tracker is audited, and the table names it `agent-org#7`", () => {
+  const audit = boardTruthAudit(twoTrackers({ "a/home": [row(10, ["ready"])], "a/org": [row(7, [])] }));
+  assert.deepEqual(audit.findings.map((f) => [f.key ?? "", f.number, f.question]), [["agent-org", 7, QUESTIONS.STATE_LABEL]]);
+  const table = boardTruthTable(audit, DAY);
+  assert.match(table, /\*\*1 disagree\*\*/);
+  assert.match(table, /^\| agent-org#7 \| state-label \|/m);
+});
+
+test("#4080: the same number in both trackers stays TWO rows, `#7` and `agent-org#7`", () => {
+  const audit = boardTruthAudit(twoTrackers({ "a/home": [row(7, [])], "a/org": [row(7, [])] }));
+  const table = boardTruthTable(audit, DAY);
+  assert.match(table, /^\| #7 \| state-label \|/m);
+  assert.match(table, /^\| agent-org#7 \| state-label \|/m);
+  assert.equal(audit.findings.length, 2);
+});
+
+test("#4080: a read that fails on the second tracker NAMES that tracker as unread and the first tracker's rows are still reported", () => {
+  const audit = boardTruthAudit(twoTrackers({ "a/home": [row(13, [])], "a/org": [row(7, [])] }, ["a/org"]));
+  assert.deepEqual(audit.findings.map((f) => [f.key ?? "", f.number]), [["", 13]]);
+  assert.deepEqual(audit.unread, ["agent-org: the open rows (HTTP 502 from a/org)"]);
+  assert.match(boardTruthTable(audit, DAY), /NOT READ, so not counted as agreeing: agent-org: the open rows/);
+});
+
+test("#4080: the wait facts are the gate's, read for the first tracker only, so the second is NOT ASKED -- said in the table, and it does not stop the day's table being posted", () => {
+  const audit = boardTruthAudit(twoTrackers({ "a/home": [], "a/org": [row(7, ["ready"])] }));
+  assert.deepEqual(audit.unread, []);
+  assert.deepEqual(audit.notAsked, ["agent-org: wait-already-true"]);
+  assert.match(boardTruthTable(audit, DAY), /\*\*0 disagree\*\* -- NOT ASKED: agent-org: wait-already-true/);
+  const posted = [];
+  assert.equal(postDaysTable({ audit, day: DAY, repo: "a/home", run: (args) => { posted.push(args[0]); return ""; } }), "posted");
+});
