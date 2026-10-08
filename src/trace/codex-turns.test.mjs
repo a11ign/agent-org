@@ -50,7 +50,7 @@ test("TRANSCRIPT ID (#3589): a turn carries the uuid ending its rollout's file n
   assert.equal("transcript" in read(REVIEWER, "rollout-a.jsonl").events[0], false, "no uuid, no key: never a guessed one");
 });
 
-test("TURNS: one per model request (not per running total), keyed to the pull request the reviewer was reviewing, with tokens, model and no invented cost", () => {
+test("TURNS: one per model request (not per running total), keyed to the pull request the reviewer was reviewing, with tokens, model and the sourced cost", () => {
   const { session, events } = read(REVIEWER);
   assert.equal(session, "reviewer-9100");
   assert.equal(events.length, 2, "two requests are two turns; the two `token_count` totals are not read");
@@ -58,7 +58,7 @@ test("TURNS: one per model request (not per running total), keyed to the pull re
   assert.deepEqual([first.id, first.kind, first.source, first.harness, first.pr, first.repo, first.row], ["codex-turn:resp_a", "turn", "transcript", "codex", 9100, null, null]);
   assert.deepEqual(first.tokens, { input: 13027 - 9984, output: 213, cacheRead: 9984, cacheWrite5m: 0, cacheWrite1h: 0 }, "input is the UNCACHED part: Codex counts cached tokens inside it");
   assert.equal(first.model, "gpt-5.6-luna");
-  assert.equal(first.costUsd, null, "PRICES has no row for the model: unknown, never 0");
+  assert.equal(first.costUsd, Math.round((3043 * 0.2 + 213 * 1.2 + 9984 * 0.02) * 100) / 1e8, "priced from the sourced `gpt-5.6-luna` row (#4076): uncached input, output and cached input at OpenAI's three rates");
   assert.equal(first.at, Date.parse("2026-10-04T20:09:13.069Z"));
   assert.equal(first.wallClockMs, 13069 - 10400, "from the last record sent TO the model (the order) to the usage record");
   assert.equal(second.wallClockMs, 17000 - 16000, "after a tool's output, from that output");

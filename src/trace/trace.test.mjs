@@ -104,7 +104,7 @@ test("COST (#3582): claude-sonnet-5 and claude-opus-5 are priced at their own ra
   assert.equal(costOf("claude-opus-5", tokens), 5 + 25 + 0.5);
   assert.equal(costOf("claude-opus-5-5", tokens), 4 + 20 + 0.2, "5.5 is not priced as 5: the shorter prefix must stand after the longer");
   assert.equal(costOf("claude-sonnet-5-5", tokens), 2 + 10 + 0.1, "5.5 is not priced as 5: Sonnet 5.5 reads at $0.10 and Sonnet 5 at $0.20");
-  assert.equal(costOf("gpt-5.6-luna", tokens), null, "no Codex rate is sourced: unknown, never 0");
+  assert.equal(costOf("gpt-5.6-terra", tokens), null, "a Codex model with no sourced row: unknown, never 0 (gpt-5.6-luna has one since #4076)");
   assert.equal(costOf("claude-opus-4-8", tokens), null, "a model still without a row stays null");
 });
 
@@ -527,7 +527,7 @@ test("STORE: a corrected copy of an event supersedes the stored one by being APP
 
 test("REPORT: the totals are per actor, a Codex reviewer is its own actor, and the footer says from when each KIND of actor is held", () => {
   const codex = { id: "codex-turn:r1", kind: "turn", source: "transcript", at: at("2026-10-04T11:00:00Z"), session: "reviewer-9100", row: null, pr: 9100, repo: null, cause: null, causeKey: null,
-    wakeId: null, model: "gpt-5.6-luna", tokens: { input: 1, output: 40, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }, costUsd: null, wallClockMs: null, harness: "codex" };
+    wakeId: null, model: "gpt-5.6-terra", tokens: { input: 1, output: 40, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }, costUsd: null, wallClockMs: null, harness: "codex" };
   const events = [...readPm().events, codex];
   const text = render({ number: 9100, rows: [], prs: [9100], events: eventsForRow(events, { rows: [9002], prs: [9100] }), held: events });
   assert.match(text, /per actor on this row:\n/);
@@ -545,7 +545,7 @@ const storedTurn = (id, model, costUsd, extra = {}) => ({ id, kind: "turn", sour
 test("REPRICED: repriceEvents prices from PRICES now, never from the line, and leaves a model with no price null and every other event alone", () => {
   const late = storedTurn("turn:late", "claude-sonnet-5", null);
   const wrong = storedTurn("turn:wrong", "claude-sonnet-5", 99);
-  const codex = storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex" });
+  const codex = storedTurn("codex-turn:r1", "gpt-5.6-terra", null, { harness: "codex" });
   const synthetic = storedTurn("turn:syn", "<synthetic>", null);
   const wake = { id: "wake:1", kind: "wake", source: "wake-ledger", at: 1, session: "x", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: "wake:1" };
   const [a, b, c, d, e] = repriceEvents([late, wrong, codex, synthetic, wake]);
@@ -573,16 +573,16 @@ test("REPRICED: a changed price in PRICES moves a turn stored at the old one", (
 });
 
 test("REPRICED: the report prints a turn stored null at its price (per line and per actor), and the Codex turn beside it is still $? and unpriced", () => {
-  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex", at: at("2026-10-04T11:05:00Z") })];
+  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-terra", null, { harness: "codex", at: at("2026-10-04T11:05:00Z") })];
   const text = render({ number: 9100, rows: [], prs: [9100], events, held: events });
   assert.match(text, /turn\s+\?\s+\$0\.0070\s.*claude-sonnet-5\n/, "the line shows dollars");
-  assert.match(text, /turn\s+\?\s+\$\?\s.*gpt-5\.6-luna\n/, "the Codex line stays unpriced");
+  assert.match(text, /turn\s+\?\s+\$\?\s.*gpt-5\.6-terra\n/, "the Codex line stays unpriced");
   assert.match(text, /\n {2}reviewer-9100\s+1 turns\s+\$0\.0070 over 1 priced\s+out 500\n/);
   assert.match(text, /\n {2}reviewer-9100 \(codex\)\s+1 turns\s+\$0\.0000 over 0 priced\s+out 500\n/);
 });
 
 test("REPRICED: the waterfall's dollars are at PRICES too (a turn stored null of a model priced since is in them, a Codex turn is counted unpriced)", () => {
-  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-luna", null, { harness: "codex" })];
+  const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-terra", null, { harness: "codex" })];
   const [{ waterfall: drawn }] = waterfallsOf({ rows: [], prs: [9100], number: 9100, events, now: at("2026-10-05T00:00:00Z") });
   assert.equal(drawn.spend.dollars, (1000 * 2 + 500 * 10) / 1e6);
   assert.deepEqual([drawn.spend.priced, drawn.spend.unpriced], [1, 1]);
