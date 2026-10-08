@@ -50,7 +50,7 @@ test("#3444 (1) the blocker-cleared follow-up is within the bound, names what cl
   assert.ok(bytes(BLOCKER_CLEARED) <= FOLLOW_UP_BOUND, `${bytes(BLOCKER_CLEARED)} bytes (was 926)`);
   assert.doesNotMatch(BLOCKER_CLEARED, ISO_DATE);
   for (const gone of [...QUOTED_INCIDENTS, STILL_STAND]) assert.ok(!BLOCKER_CLEARED.includes(gone), gone);
-  assert.ok(BLOCKER_CLEARED.startsWith("You are `worker-3390`"), "attribution survives");
+  assert.ok(BLOCKER_CLEARED.startsWith("[session:worker-3390 "), "attribution survives");
 });
 
 test("#3444 (1) the claim-stalled nudge is within the bound, still names every field a wait can be put in, and carries no incident", () => {

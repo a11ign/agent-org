@@ -19,6 +19,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { sessionOf as sessionOfOrder } from "./token-audit.mjs";
 
 export const DEFINITIONS = [
   "WAKE: a delivery that starts a model turn in a session -- a transcript `user` record wrapped in `<pasted_content`. /compact, /clear, local-command echoes, the continuation summary and tool results are not wakes.",
@@ -33,7 +34,6 @@ export const DEFINITIONS = [
 
 /** A wake is a transcript user record whose text starts with this (leading whitespace is part of the real shape). */
 const WAKE_WRAPPER = /^\s*<pasted_content/;
-const SESSION_NAME = /You are `([^`]+)`/;
 /** The ledger stamps a wake when `wake` TYPES it; the transcript stamps it when the harness DELIVERS it (34s later after a `/compact` in the measured case). */
 const LEDGER_LEAD_MS = 10 * 60 * 1000;
 const LEDGER_SKEW_MS = 2000;
@@ -86,26 +86,16 @@ export function parseTranscript(text, file) {
     try {
       record = JSON.parse(line);
     } catch (cause) {
-      return { ok: false, file, session: sessionHint(text), reason: `line ${index + 1} is not JSON (${/** @type {Error} */ (cause).message})` };
+      return { ok: false, file, session: sessionOfOrder(text), reason: `line ${index + 1} is not JSON (${/** @type {Error} */ (cause).message})` };
     }
     if (record?.isCompactSummary === true) compactions += 1;
     if (!isWake(record)) continue;
     const at = Date.parse(record.timestamp);
-    if (Number.isNaN(at)) return { ok: false, file, session: sessionHint(text), reason: `a wake at line ${index + 1} has no readable timestamp` };
-    wakes.push({ at, bytes: Buffer.byteLength(record.message.content), session: sessionOf(record.message.content) });
+    if (Number.isNaN(at)) return { ok: false, file, session: sessionOfOrder(text), reason: `a wake at line ${index + 1} has no readable timestamp` };
+    wakes.push({ at, bytes: Buffer.byteLength(record.message.content), session: sessionOfOrder(record.message.content) });
   }
   const session = wakes.map((wake) => wake.session).find(Boolean) ?? null;
   return { ok: true, file, session, wakes, compactions };
-}
-
-/** @param {string} content */
-function sessionOf(content) {
-  return SESSION_NAME.exec(content)?.[1] ?? null;
-}
-
-/** An unreadable file can still say who it was: the first order names its session. @param {string} text */
-function sessionHint(text) {
-  return SESSION_NAME.exec(text)?.[1] ?? null;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------

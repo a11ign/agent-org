@@ -1,0 +1,35 @@
+[Unit]
+# THE OTEL RECEIVER -- a11ign/a11ign#4071 (#4055 step zero, last item). Claude Code's own OpenTelemetry events, received on LOOPBACK and appended to the trace store as
+# `source: "otel"`, one record per API request, carrying the `org.role` the process was launched with. `src/trace/otel-receiver.mjs` has the design.
+#
+# A LONG-RUNNING SERVICE NO CLOCK STARTS, like `chairman-listen.service` (`LONG_RUNNING_TEMPLATES`): `enable --now` on the SERVICE is what runs it. It listens on
+# 127.0.0.1:4318 (OTLP/HTTP's port) and nowhere else, with no flag to change the address; a process reaches it only by being launched with
+# `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318` (and the rest of the variables the program's header lists), which is a launch-environment step this unit does NOT take. A pane
+# already running keeps the environment it started with and is not seen.
+Description=a11ign: receive Claude Code's OpenTelemetry on loopback and append one trace-store record per API request (#4071)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@@checkout@@
+
+# SAME REASON EVERY OTHER SHIPPED SERVICE DECLARES THEM: a systemd unit gets no login shell's PATH and no HOME. HOME is where the store is (`~/.cache/a11ign/trace`).
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOME=@@home@@
+
+# V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp -- #2458; `host-units.test.ts` pins it on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# THE WORKERS ACCOUNT, DECLARED THOUGH THIS PROGRAM MAKES NO `gh` CALL: a shipped service that names no account is a finding (#3643), because the first script it grows
+# a `gh` call in would act as a person.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+ExecStart=/usr/bin/node packages/agent-org/src/trace/otel-receiver.mjs
+
+# RESTART WHAT FAILED. A port already taken is a failure that mends when the other listener goes, and the program reads a store it can lose without losing anything: the ids it
+# refuses are in the file, scanned again at each start.
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

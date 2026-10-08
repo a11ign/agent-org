@@ -39,6 +39,7 @@ const BOARD = {
     row(11, ["in-progress", "session:worker-11"], { comments: [claimRecord(11, 600)] }),
     row(12, ["parked"], { body: "Waiting-for: closed #50" }),
     row(13, []),
+    row(15, ["parked"], { body: "lifts when the thing is done", blockedBy: { nodes: [] } }),
     row(14, ["backlog"], { title: "Chairman messaging for agent-org, Telegram first: the design and the sequence" }),
   ],
   closedRows: [row(50, ["ready"], { state: "CLOSED", stateReason: "COMPLETED" }),
@@ -47,7 +48,7 @@ const BOARD = {
   waitFacts: { items: { "#50": { state: "closed", labels: [], resolvedAt: NOW, changedAt: NOW } } },
 };
 
-test("emptiness control: the seeded board is found on all six questions, so the empty results below are readings", () => {
+test("emptiness control: the seeded board is found on all seven questions, so the empty results below are readings", () => {
   const audit = boardTruthAudit(facts({ ...BOARD, liveSessions: ["ceo"] }));
   assert.deepEqual([...new Set(audit.findings.map((f) => f.question))].sort(), Object.values(QUESTIONS).sort());
   assert.deepEqual(audit.unread, []);
@@ -114,6 +115,30 @@ test("(5) a row with no state label and one with two are found; one with exactly
   assert.deepEqual(found({ openRows: [row(17, ["parked", "lane:any"])] }, QUESTIONS.STATE_LABEL), []);
 });
 
+test("(5) #4048: a row with no state label created 13 s ago is NOT found and is counted as filing; the same row 10 minutes old IS found and is not", () => {
+  const at = (secondsAgo) => new Date(NOW - secondsAgo * 1000).toISOString();
+  const young = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(13) })] }));
+  assert.deepEqual(young.findings, []);
+  assert.equal(young.filing, 1);
+  const old = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(600) })] }));
+  assert.deepEqual(old.findings.map((f) => f.number), [4047]);
+  assert.equal(old.filing, 0);
+  assert.deepEqual(found({ openRows: [row(9, ["backlog", "parked"], { createdAt: at(13) })] }, QUESTIONS.STATE_LABEL), [9], "two states are found at any age");
+  assert.deepEqual(found({ openRows: [row(10, ["meta"])] }, QUESTIONS.STATE_LABEL), [10], "no createdAt is judged");
+  assert.deepEqual(found({ openRows: [row(11, ["meta"], { createdAt: "not a date" })] }, QUESTIONS.STATE_LABEL), [11], "an unparseable one is judged");
+});
+
+test("#4048: the table says `N filing, not judged` for the excused rows, does not count them as disagreeing, and says `0 disagree` when that is all there is", () => {
+  const createdAt = new Date(NOW - 13_000).toISOString();
+  const only = boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt }), row(4048, ["meta"], { createdAt })] })), DAY);
+  assert.match(only, /\*\*0 disagree\*\*, 2 filing, not judged$/);
+  const mixed = boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt }), row(13, [])] })), DAY);
+  assert.match(mixed, /\*\*1 disagree\*\*, 1 filing, not judged/);
+  assert.doesNotMatch(mixed, /\| #4047 \|/, "the excused row has no line");
+  assert.doesNotMatch(boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"], { createdAt })] })), DAY), /filing/, "CONTROL: none excused, nothing said");
+  assert.match(boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt })], closedRows: null })), DAY), /0 disagree\*\*, 1 filing, not judged -- NOT READ/);
+});
+
 test("(6) a near-duplicate of a closed row, a near-duplicate of an older open row, and `Superseded by` a completed row are found; their negatives are not", () => {
   const title = "org-health reads the board against reality every day and raises every row that disagrees";
   const closed = row(40, [], { state: "CLOSED", stateReason: "COMPLETED", title });
@@ -139,7 +164,7 @@ test("the table puts the count first, names the field and the reader, and an all
   assert.match(lines[2], /^\*\*\d+ disagree\*\*$/);
   assert.match(table, /\| #2899 \| epic-all-closed \| state \(open\) \|.*\| product-manager \|/);
   assert.match(table, /\| #3425 \| no-live-claimant \| label `no-code-left` \|/);
-  const agreeing = boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"]), row(11, ["parked"])] })), DAY);
+  const agreeing = boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"]), row(11, ["parked"], { body: "Not-before: 2099-01-01", blockedBy: { nodes: [] } })] })), DAY);
   assert.match(agreeing, /\*\*0 disagree\*\*/);
   assert.doesNotMatch(agreeing, /NOT READ/);
   const unread = boardTruthTable(boardTruthAudit(facts({ closedRows: null })), DAY);
@@ -315,4 +340,57 @@ test("no test above reached a remote: the recording gh was never called", () => 
   assert.equal(existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8") : "", "");
   assert.throws(() => execFileSync("sh", ["-c", "gh positive-control"], { stdio: "ignore" }), "resolved through PATH by the shell, so the test spawns no `gh` itself");
   assert.match(readFileSync(GH_LOG, "utf8"), /positive-control/, "the control: a call that IS made is logged, so the empty log above was a reading");
+});
+
+// ---- the seventh question: a `parked` row with no condition the gate can read (a11ign/a11ign#4049, chairman rule 1, 2026-10-08) ----
+/** @param {number} number @param {string[]} labels @param {Record<string, any>} [more] a row read WITH its `blockedBy` edges, as the tick reads them */
+const edged = (number, labels, more = {}) => row(number, labels, { blockedBy: { nodes: [] }, ...more });
+const bare = (over) => found({ openRows: [edged(3449, ["parked"], over)] }, QUESTIONS.PARKED_BARE);
+
+test("(1) a parked row with no condition of any kind is a finding owned by product-manager: the positive control for every emptiness below", () => {
+  const audit = boardTruthAudit(facts({ openRows: [edged(3449, ["parked", "lane:any"], { body: "lifts once the aged-backlog order is settled" })] }));
+  const [one, ...rest] = audit.findings.filter((f) => f.question === QUESTIONS.PARKED_BARE);
+  assert.deepEqual(rest, []);
+  assert.equal(one.number, 3449);
+  assert.equal(one.route, "product-manager");
+  assert.match(one.detail, /needs:chairman/, "and the finding says the other way out");
+  assert.deepEqual(audit.unread, [], "the edges were read, so the question is a reading");
+  assert.match(boardTruthTable(audit, DAY), /\| #3449 \| parked-without-condition \|.*\| product-manager \|/);
+});
+
+test("(2) a Not-before line, a Waiting-for line, an open blockedBy edge and an answer:<session> label are each a condition, so none is a finding", () => {
+  assert.deepEqual(bare({ body: "Not-before: 2099-01-01" }), []);
+  assert.deepEqual(bare({ body: "Not-before: 2099-01-01T09:00:00Z" }), []);
+  assert.deepEqual(bare({ body: "Waiting-for: closed #50" }), []);
+  assert.deepEqual(bare({ body: "Waiting-for: soon" }), [], "a Waiting-for outside the grammar is wait-without-reason's defect, not this one's");
+  assert.deepEqual(bare({ blockedBy: { nodes: [{ number: 50, state: "OPEN" }] } }), []);
+  assert.deepEqual(found({ openRows: [edged(3449, ["parked", "answer:product-manager"])] }, QUESTIONS.PARKED_BARE), []);
+  assert.deepEqual(bare({ blockedBy: { nodes: [{ number: 50, state: "CLOSED" }] } }), [3449], "a CLOSED blocker is a condition that has cleared, so the row is bare again");
+  assert.deepEqual(bare({ body: "see Not-before: later" }), [3449], "prose is not the field");
+});
+
+test("(3) a parked row carrying needs:chairman is not a finding; the same row without it is", () => {
+  assert.deepEqual(found({ openRows: [edged(3449, ["parked", "needs:chairman"])] }, QUESTIONS.PARKED_BARE), []);
+  assert.deepEqual(found({ openRows: [edged(3449, ["parked"])] }, QUESTIONS.PARKED_BARE), [3449]);
+});
+
+test("(4) a backlog row, a ready row and a claimed row with no condition are not findings: the rule is about parked", () => {
+  for (const state of ["backlog", "ready", "in-progress"]) assert.deepEqual(found({ openRows: [edged(7, [state])] }, QUESTIONS.PARKED_BARE), [], state);
+});
+
+test("(5) a parked row read without its blockedBy edges is UNREAD, never agreeing, and the table says so", () => {
+  const audit = boardTruthAudit(facts({ openRows: [row(3449, ["parked"])] }));
+  assert.deepEqual(audit.findings.filter((f) => f.question === QUESTIONS.PARKED_BARE), [], "it cannot call a row condition-less without its edges");
+  assert.deepEqual(audit.unread, [QUESTIONS.PARKED_BARE]);
+  const table = boardTruthTable(audit, DAY);
+  assert.match(table, /NOT READ, so not counted as agreeing: parked-without-condition/);
+  assert.doesNotMatch(table, /0 disagree\*\*$/m, "never the bare count a clean board prints");
+  const decided = boardTruthAudit(facts({ openRows: [row(3449, ["parked"], { body: "Waiting-for: closed #50" }), row(7, ["ready"])] }));
+  assert.deepEqual(decided.unread, [], "a row whose body already carries a condition needs no edge read, so the question is read");
+});
+
+test("the standalone read asks for blockedBy, so the seventh question is read there too", () => {
+  const asked = [];
+  readBoardFacts("a/b", { run: (args) => { asked.push(args.join(" ")); return "[]"; }, agents: () => [] });
+  assert.ok(asked.some((a) => /issue list --state open .*blockedBy/.test(a)));
 });
