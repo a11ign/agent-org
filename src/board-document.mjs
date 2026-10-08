@@ -26,6 +26,7 @@ import path from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { collect, readSetIsNotMain, ROOT, REPO, MILESTONE, HOURS_MS, issues, outOfRelease, unclassified, achievementsWhoseWorldMoved,
   realPageCaptureAge, worstVerdict } from "./board-data.mjs";
+import { foundByChairmanLine } from "./found-by-chairman.mjs";
 import { toHtml } from "./board-markdown.mjs";
 import { editionDay, publishEdition, todaysEditionExists } from "./board-discussion.mjs";
 import { productHome, PRODUCT_HOME_SOURCE } from "./lib/product-home.mjs";
@@ -506,6 +507,10 @@ function sourceTable(d) {
   push("Changes carrying the wrong author", String(d.strays.length),
     `the project's own version history, over the SAME window as the merge count above (since `
     + `${d.since}); the cause is diagnosed and the record is kept by decision`);
+  // THE CHAIRMAN FINDING A THING IS COUNTED, with the target zero beside it (#4124). The appendix, not the body: sections one to five are capped in words.
+  push("Rows the chairman found, last seven UTC days", foundByChairmanLine(d.foundByChairman),
+    "the project's issue tracker: rows labelled `found-by-chairman`, counted in the week their opening falls in. The label is applied by hand "
+    + "from the chairman's own message or answer, so a row whose origin is not shown is not counted; the target is zero");
   const captureAge = d.latestGate ? realPageCaptureAge(d.latestGate.output) : null;
   // THE VERDICT COMES FIRST, because the board could not previously see one. This row quoted the COMMAND
   // and the capture spread; whether the check PASSED appeared nowhere in the document, while

@@ -25,6 +25,13 @@ import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-cal
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
 
+/**
+ * A `node -e` script that runs until the CHILD has used `ms` of its own CPU. Looping on `Date.now()` times the wall clock, and a child descheduled on a
+ * loaded runner gets less CPU than wall: a 400 ms wall loop read 260 ms of CPU (run 37800171274). `process.cpuUsage()` is in microseconds.
+ */
+const burnCpu = (ms: number): string =>
+  `const budget = ${ms * 1000}; while (process.cpuUsage().user + process.cpuUsage().system < budget);`;
+
 type Tick = { gate: string; wake?: string; costIsADirectory?: boolean; ticks?: number };
 
 /** The same checkout-of-one-file's-worth as `packaging/work-tick-completion-record.test.ts`, returning the cost lines the tick left beside its ledger. */
@@ -151,7 +158,7 @@ test("#3566: children's CPU is read from /proc/self/stat past a command name wit
   const stat = `4242 (a (b) c) ${fields.slice(2).join(" ")}\n`;
   assert.equal(childrenCpuMs(() => stat), 2000);
   const before = childrenCpuMs();
-  spawnSync(process.execPath, ["-e", "const end = Date.now() + 300; while (Date.now() < end);"]);
+  spawnSync(process.execPath, ["-e", burnCpu(300)]);
   assert.ok(childrenCpuMs() - before >= 150, `a 300 ms busy child moved children CPU by ${childrenCpuMs() - before} ms`);
 });
 
@@ -176,7 +183,8 @@ test("#3566: the census records each synchronous spawn's CPU, so a busy child an
     const driver = join(dir, "driver.mjs");
     writeFileSync(driver, [
       `import { spawnSync } from "node:child_process";`,
-      `spawnSync(process.execPath, ["-e", "const end = Date.now() + 400; while (Date.now() < end);"]);`,
+      // Burn 400 ms of CPU, not of wall: a descheduled child on a loaded runner gets less CPU than wall (260 of 400, run 37800171274).
+      `spawnSync(process.execPath, ["-e", ${JSON.stringify(burnCpu(400))}]);`,
       `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 400);"]);`,
     ].join("\n"));
     const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
