@@ -817,7 +817,7 @@ export function withFiledBy(argv, session, body) {
     const arg = argv[i];
     if (arg === "--body" || arg === "--body-file" || arg === "--session") { i += 1; continue; }
     if (arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
-      || arg.startsWith(TRACKER_FLAG) || arg === READY_FLAG) continue;
+      || arg.startsWith(TRACKER_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
     kept.push(arg);
   }
   kept.push("--body", appendFiledBy(body, session));
@@ -838,6 +838,72 @@ const TRACKER_FLAG = "--tracker=";
 const KIND_FLAG = "--kind";
 /** The labels a `--kind` value adds, by value. */
 const KIND_LABELS = Object.freeze({ defect: DEFECT_LABEL });
+
+// #4294: THE FOURTH FLAG THIS FILE OWNS. A filing run launched twice filed three layout rows twice, 18 s apart (#4223 = #4222, #4225 = #4224, #4228 = #4227),
+// and nothing here asked whether an OPEN row already had the title. `--allow-same-title` is the one override; stripped before `gh` sees it, as `--ready` is.
+const ALLOW_SAME_TITLE_FLAG = "--allow-same-title";
+
+/**
+ * The title this invocation would file, in every spelling `gh issue create` takes: `--title X`, `--title=X`, `-t X`, `-t=X`, `-tX`. The last one
+ * given wins, as `gh` takes it. `null` when there is none (`--web`/`--editor` file nothing from argv): then there is no title to compare.
+ * @param {string[]} argv
+ * @returns {string | null}
+ */
+export function titleFromArgv(argv) {
+  let title = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--title" || arg === "-t") title = argv[i + 1] ?? title;
+    else if (arg.startsWith("--title=")) title = arg.slice("--title=".length);
+    else if (arg.startsWith("-t=")) title = arg.slice("-t=".length);
+    else if (/^-t[^-=]/.test(arg)) title = arg.slice("-t".length);
+  }
+  return title;
+}
+
+/** The comparison form of a title: surrounding space trimmed, inner runs of space collapsed, case folded. @param {string} title @returns {string} */
+const comparableTitle = (title) => title.trim().replace(/\s+/g, " ").toLowerCase();
+
+const OPEN_TITLE_READ_LIMIT = 100;
+
+/**
+ * The OPEN row in `repo` whose title equals `title` (trimmed, case-folded), as `{ number }`; `null` when there is none; `"unreadable"` when GitHub
+ * could not be asked. ONE `gh issue list` call per filing: the search narrows to rows whose title holds the phrase, the exact comparison is ours
+ * (a search match is fuzzy; a refusal must not be). A CLOSED row is never asked for -- a reopened-and-refiled row is legitimate.
+ * @param {string} title @param {string} repo @param {(cmd: string, args: string[]) => string} run
+ * @returns {{ number: number } | null | "unreadable"}
+ */
+function openRowTitled(title, repo, run) {
+  try {
+    const rows = JSON.parse(run("gh", ["issue", "list", "--repo", repo, "--state", "open", "--search", `"${title.trim().replace(/"/g, " ")}" in:title`,
+      "--limit", String(OPEN_TITLE_READ_LIMIT), "--json", "number,title"]));
+    if (!Array.isArray(rows)) return "unreadable";
+    const wanted = comparableTitle(title);
+    const hit = rows.find((row) => typeof row?.title === "string" && comparableTitle(row.title) === wanted);
+    return hit ? { number: Number(hit.number) } : null;
+  } catch {
+    return "unreadable"; // an outage is CANNOT_ASK, never "no duplicate"
+  }
+}
+
+/**
+ * #4294: THE REFUSAL AT THE DOOR for a title an open row in the SAME tracker already carries -- the second copy of a filing run launched twice.
+ * `null` lets the filing go on: no title, the override given, or no open row has it. A read that failed refuses: it cannot say there is no twin.
+ * @param {string[]} argv @param {Tracker} tracker @param {(cmd: string, args: string[]) => string} run
+ * @returns {string | null}
+ */
+export function duplicateTitleRefusal(argv, tracker, run) {
+  const title = titleFromArgv(argv);
+  if (title === null || argv.includes(ALLOW_SAME_TITLE_FLAG)) return null;
+  const found = openRowTitled(title, tracker.repo, run);
+  if (found === null) return null;
+  if (found === "unreadable") {
+    return `row-file: REFUSING to file -- the open rows of ${tracker.repo} could not be read, so whether one already has the title "${title.trim()}" is unknown. `
+      + `Nothing was filed. Run it again; to file without the check, pass \`${ALLOW_SAME_TITLE_FLAG}\` (#4294).`;
+  }
+  return `row-file: REFUSING to file -- an open row #${found.number} already has this title ("${title.trim()}") in ${tracker.repo}. If this is a retry, `
+    + `#${found.number} is the row you filed. To file a second row on purpose, change the title or pass \`${ALLOW_SAME_TITLE_FLAG}\`. Nothing was filed (#4294).`;
+}
 
 /**
  * Every `--kind` value given, in either spelling (`--kind X`, `--kind=X`); a `--kind` with nothing after it is the empty string.
@@ -1665,6 +1731,11 @@ export function createIssue(argv, deps = {}) {
     process.stderr.write(`${undeclaredReleaseRefusal(tracker, declaration, { run, milestones })}\n`);
     return 1;
   }
+  const duplicate = duplicateTitleRefusal(argv, tracker, run); // #4294: before the create call, so a refusal leaves nothing behind
+  if (duplicate) {
+    process.stderr.write(`${duplicate}\n`);
+    return 1;
+  }
   const boarding = boardingFor(argv);
   // #844: THE BOARD LABEL IS NOT ADDED HERE -- see `boardAndVerify`'s own header for why it has to wait
   // until AFTER the Project Status is set, not merely after the issue exists. The lane label(s) travel
@@ -2419,7 +2490,7 @@ export function boardRow(argv, deps = {}) {
 }
 
 function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`, ALLOW_SAME_TITLE_FLAG],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.

@@ -172,7 +172,7 @@ function fileWith(extra, { labelsOnRow = null } = {}) {
     const withKind = extra.length > 0;
     const code = createIssue(argv, {
       spawnGh: (a) => { created.push(...a); return FILED_URL; },
-      run: (_cmd, args) => (args.includes("milestone") ? "CI reset" : args.includes("body") ? `${FILING_BODY}\n\nFiled-by: worker-1\n` : ""),
+      run: (_cmd, args) => (args[0] === "issue" && args[1] === "list" ? "[]" : args.includes("milestone") ? "CI reset" : args.includes("body") ? `${FILING_BODY}\n\nFiled-by: worker-1\n` : ""),
       fetchBoardStatus: () => "Backlog",
       fetchLabels: () => ({ number: 900, title: "a defect", labels: labelsOnRow ?? ["backlog", "lane:any", ...(withKind ? ["defect"] : [])] }),
       moveStatus: () => ({ moved: true }), milestones: () => ["CI reset"], loadLanesConfig: () => ({ lanes: [] }),

@@ -439,6 +439,7 @@ function afterRun(body: string, milestone = "CI reset") {
   // #1011: the read-back now asks for the milestone as well as the body -- `gh` ACCEPTING `--milestone` is
   // not evidence the field is set. A fixture that answers only the body would report the row unverified.
   return (_cmd: string, args: string[]) => {
+    if (args[0] === "issue" && args[1] === "list") return "[]"; // #4294: the duplicate-title read -- no open row has the title
     if (args.includes("milestone")) return milestone;
     return args.includes("body") ? body : "";
   };
@@ -610,6 +611,7 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, {
     spawnGh: () => { throw Object.assign(new Error("gh failed"), { status: 7 }); },
+    run: afterRun(""), // #4294: the duplicate-title read must not reach a real `gh`
   });
   assert.equal(code, 7);
 });
@@ -617,7 +619,7 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
 test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is not a real issue URL "
   + "is refused distinctly -- filed, but unboardable and unverifiable", () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  const code = createIssue(argv, { spawnGh: () => "not a url at all" });
+  const code = createIssue(argv, { spawnGh: () => "not a url at all", run: afterRun("") });
   assert.equal(code, 2);
 });
 
@@ -632,7 +634,7 @@ test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distin
       ...happyDeps("worker-contracts", "backlog"),
       run: (_cmd: string, args: string[]) => {
         if (args[1] === "item-add") throw new Error("gh: could not add item");
-        return "";
+        return args[0] === "issue" && args[1] === "list" ? "[]" : "";
       },
     });
     assert.equal(code, 2);
