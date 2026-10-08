@@ -1,4 +1,4 @@
-// no-token: every `gh` call in this file is an injected fake tracker; the live read is run by hand and pasted on the pull request
+// no-token: gh -- every `gh` call in this file is an injected fake tracker; the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4126)
 // #4126 (child B of #4122): a second closed row under one `class:<id>` label is a repeat, and org-health offers it to `ceo` ONCE.
 //
 // THE FAKE TRACKER HONOURS `state` AND `labels`, because a fake that answers every argv accepts a query that asks for the wrong thing (the row's own warning).
