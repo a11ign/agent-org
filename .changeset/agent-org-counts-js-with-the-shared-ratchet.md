@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The count of `.js`/`.mjs`/`.cjs` source files the tool has is now judged by `@a11ign/toolchain`'s `checkMjsRatchet` (a11ign/a11ign#4249, adopting #4243), and the old pin is gone. `src/packaging/mjs-ratchet.test.ts` calls it against `mjs-ratchet.baseline.json` at the repository root, which lists the 315 files of agent-org at `9799faf` by basename (so a layout flatten that moves a file edits nothing) and needs no exception. It replaces `src/packaging/mjs-source-count.test.ts`, its `SOURCE_MJS_PIN` and `TEST_MJS_PIN`, and the rise rule under which a new `.mjs` that a shipped command imports could raise the pin: 18 of its last 30 rises used it, because node on the host cannot run a `.ts`, and how host-run code runs is the ADR 0043 amendment (a11ign/a11ign#4246). The test reads the same in a checkout and in the copy the gate lays: where `AGENT_ORG_TOOL_REPO` names the checkout it came from, that checkout is judged, so a project's helpers under `src/packaging/` are never counted. `@a11ign/toolchain` is `^0.1.4`, the release that exports `./mjs-ratchet`. No workflow file is edited.
