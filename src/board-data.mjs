@@ -152,9 +152,9 @@ const ISSUES_QUERY = "query($owner:String!,$name:String!,$after:String){reposito
 // A backstop against a cursor that never ends, not a cap on the tracker: 500 pages is 50,000 issues.
 const MAX_ISSUE_PAGES = 500;
 
-/** @param {(args: string[]) => string} run @param {string | null} after */
-function issuePage(run, after) {
-  const [owner, name] = REPO.split("/");
+/** @param {(args: string[]) => string} run @param {string | null} after @param {string} repo `owner/name` */
+function issuePage(run, after, repo) {
+  const [owner, name] = repo.split("/");
   const args = ["api", "graphql", "-f", `query=${ISSUES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`];
   if (after) args.push("-f", `after=${after}`);
   const body = JSON.parse(run(args));
@@ -181,14 +181,15 @@ function issueRow(node) {
 
 /** Every issue in the repository, open and closed, or a thrown refusal that names why it could not prove
  * the listing complete.
- * @param {{run?: (args: string[]) => string}} [deps] `run` is the `gh` call; a test hands in recorded pages. */
-export function issues({ run = gh } = {}) {
+ * @param {{run?: (args: string[]) => string, repo?: string}} [deps] `run` is the `gh` call; a test hands in recorded pages. `repo` (#4080) is the tracker
+ * asked, `owner/name`: the edition reads every declared tracker, and left out it is `REPO`, the home tracker, exactly as before. */
+export function issues({ run = gh, repo = REPO } = {}) {
   /** @type {any[]} */ const nodes = [];
   let after = null;
   let totalCount = 0;
   try {
     for (let n = 0; n < MAX_ISSUE_PAGES; n++) {
-      const page = issuePage(run, after);
+      const page = issuePage(run, after, repo);
       totalCount = page.totalCount;
       nodes.push(...page.nodes);
       if (!page.pageInfo.hasNextPage) break;

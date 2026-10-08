@@ -68,7 +68,8 @@ const SOURCE_MJS_PIN = 227;
 // 53 to 54 (a11ign/a11ign#4043): `board-truth-audit.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 54 to 55 (a11ign/a11ign#4046): `host-kernel.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 55 to 56 (a11ign/a11ign#4068): `wake-order-id.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 56;
+// 56 to 58 (a11ign/a11ign#4080): `ready-label-audit.test.mjs` and `board-report-trackers.test.mjs` are two of the test files the row's Acceptance command names (run under plain `node --test`), so they are `.mjs`.
+const TEST_MJS_PIN = 58;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
