@@ -122,7 +122,7 @@ import { CLAIM_LABEL, READY_LABEL, STATE_LABELS } from "./claim-labels.mjs";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, the release label and
 // milestone, the `lane:` prefix and the lanes-file path, and the template's own field/question names.
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX,
-  LANE_ANY_LABEL, LANES_FILE_PATH, ACCEPTANCE_FIELD, FLEET_QUESTION } from "./project-vocabulary.mjs";
+  LANE_ANY_LABEL, LANES_FILE_PATH, ACCEPTANCE_FIELD, FLEET_QUESTION, ANSWER_PREFIX } from "./project-vocabulary.mjs";
 
 /** @type {(cmd: string, args: string[]) => string} */
 const defaultRun = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" });
@@ -670,7 +670,7 @@ export function unreadableWaitReason(body) {
   return `row-file: REFUSING to file -- ${quoted} is outside the grammar the gate reads, so nothing would ever lift this wait: the row would stand on a sentence for ever `
     + "(#4090 was parked ten hours on one after its condition was true). Write the condition as one of `closed #n`, `merged #n`, `labelled|unlabelled <label> #n`, "
     + "`published <pkg>@<dist-tag>`, `<pkg> latest = next`, `tagged <tag>`, or `manual` (a wait no field can express, counted). "
-    + "A wait on a SESSION's act is not a `Waiting-for:` line: put the `answer:<session>` label on the row, and removing it IS the answer. Nothing was filed.";
+    + `A wait on a SESSION's act is not a \`Waiting-for:\` line: put the \`${ANSWER_PREFIX}<session>\` label on the row, and removing it IS the answer. Nothing was filed.`;
 }
 
 /**
