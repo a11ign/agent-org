@@ -20,6 +20,8 @@ import { claimRecordOf } from "../claim-stall.mjs";
 import { idleClaimantReading } from "../idle-claimant.mjs";
 import { familyNumber } from "../arm-pr.mjs";
 import { readAgents } from "../herdr-agents.mjs";
+import { boardTruthAudit, readBoardFacts, postDaysTable } from "../board-truth-audit.mjs";
+import { editionDay } from "../board-discussion.mjs";
 import { idleWithOpenRowsReading } from "../idle-with-open-rows.mjs";
 import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
@@ -467,14 +469,15 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
  *           readReleaseRuns?: () => import("../org-health.mjs").ReleaseRuns | null | undefined,
- *           teamAccess?: () => import("../org-health.mjs").TeamAccessFact | undefined }} [io] `readReleaseRuns` (#4001) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes the real one (ONE `gh api` call a tick, three while the newest release is a failure), so no test reaches a remote; `teamAccess` (#3634) is the team-level read, ONE `gh api` call per declared team each tick (the 2-minute tick is 30 calls an hour of a 5,000-an-hour core pool, 0.6% per team, the same price as `lastMergedAt`), and NO CALL AT ALL for a project that declares no `teamAccess`; a test that must reach no remote passes `() => undefined` `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
+ *           teamAccess?: () => import("../org-health.mjs").TeamAccessFact | undefined,
+ *           readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined }} [io] `readBoardTruth` (#4045) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes `boardTruthNow`, which reads the closed rows, the merged PRs and herdr (a fixed three calls a tick) and posts the day's table, so no test reaches a remote; `readReleaseRuns` (#4001) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes the real one (ONE `gh api` call a tick, three while the newest release is a failure), so no test reaches a remote; `teamAccess` (#3634) is the team-level read, ONE `gh api` call per declared team each tick (the 2-minute tick is 30 calls an hour of a 5,000-an-hour core pool, 0.6% per team, the same price as `lastMergedAt`), and NO CALL AT ALL for a project that declares no `teamAccess`; a test that must reach no remote passes `() => undefined` `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined,
-    teamAccess = () => readTeamAccess(defaultRun) } = {}) {
+    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
@@ -499,10 +502,60 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
     ...toolAgreementFact(readToolAgreement()),
     ...releaseRunsFact(readReleaseRuns()), // #4001
     ...teamAccessFact(teamAccess()),
+    ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   }, { ...(log && { log }), ...(readCopies && { readCopies }) });
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
   return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap)];
+}
+
+/**
+ * @typedef {{ openRowsRead: any[], claimedComments?: any[] | null, waitFacts: import("../wait-condition.mjs").WaitFacts | null, now: number }} BoardTruthInput
+ */
+
+/**
+ * #4045: THE `boardTruth` FACT, from the rows the tick already read. OMITTED when the caller passes no open rows (it does not ask), `null` when the open-row read was
+ * refused (unknown, never "nothing disagrees"), else the audit `read` makes.
+ * @param {Omit<BoardTruthInput, "openRowsRead"> & { openRowsRead: any[] | null | undefined }} input
+ * @param {(input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined} read
+ * @returns {{ boardTruth?: ReturnType<typeof boardTruthAudit> | null }}
+ */
+export function boardTruthFact({ openRowsRead, ...rest }, read) {
+  if (openRowsRead === undefined) return {};
+  const audit = openRowsRead === null ? null : read({ openRowsRead, ...rest });
+  return audit === undefined ? {} : { boardTruth: audit };
+}
+
+/**
+ * #4045: THE OPEN ROWS AS THE AUDIT READS THEM: the tick's list has no `state` and no `comments`, and `claimedComments` (`readClaimedRowComments`) holds the comments of the
+ * claimed rows only. `liveSessions` is read only when every claimed row has its comments: a claimed row without them would read as "no claim record", so a refused or
+ * capped page would call a live claim dead. @param {any[]} openRowsRead @param {any[] | null | undefined} claimedComments
+ * @returns {{ openRows: any[], commentsComplete: boolean }}
+ */
+export function boardRowsOf(openRowsRead, claimedComments) {
+  const byNumber = new Map((claimedComments ?? []).map((r) => [r.number, r.comments]));
+  const openRows = openRowsRead.map((row) => ({ ...row, state: "OPEN", comments: byNumber.get(row.number) ?? [] }));
+  const claimed = openRows.filter((row) => row.labels.some((/** @type {{ name: string }} */ l) => (l.name ?? l) === CLAIM_LABEL));
+  return { openRows, commentsComplete: claimed.every((row) => byNumber.has(row.number)) };
+}
+
+/**
+ * #4045: READ THE BOARD AGAINST REALITY AND POST THE DAY'S TABLE: the gate's `readBoardTruth`. The closed rows, the merged PRs and the herdr listing are read here (each a
+ * refused read is `null`, unread); everything else is the tick's. THE POST IS BEST EFFORT AND NEVER STOPS THE TICK: a failure is said on stderr (the next tick asks again,
+ * since the record is the state) and the audit is returned all the same, because the signal does not depend on the post.
+ * @param {BoardTruthInput} input
+ * @param {{ repo?: string, run?: (args: string[]) => string, agents?: typeof readAgents, post?: typeof postDaysTable, log?: (line: string) => void }} [io]
+ */
+export function boardTruthNow({ openRowsRead, claimedComments, waitFacts, now }, { repo = repoNow(), run = defaultRun, agents = readAgents, post = postDaysTable, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  const { openRows, commentsComplete } = boardRowsOf(openRowsRead, claimedComments);
+  const read = readBoardFacts(repo, { run, agents, now, openRows, waitFacts });
+  const audit = boardTruthAudit(commentsComplete ? read : { ...read, liveSessions: null });
+  try {
+    post({ audit, day: editionDay(new Date(now)), repo, run });
+  } catch (error) {
+    log(`board-truth: the day's table was not posted (${error instanceof Error ? error.message.split("\n")[0] : error}); the next tick asks again`);
+  }
+  return audit;
 }
 
 /**

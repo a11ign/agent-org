@@ -18,8 +18,8 @@
 // ABSENCE IS NOT PROOF: a fact that could not be read is `null`, and its question is listed as UNREAD, never counted as agreeing. The
 // table says `0 disagree` only for a board every question read and found true, so silence cannot be read as health.
 //
-// NOT A COMMAND YET: this module is the rule and the reader (`readBoardFacts`); the tick that supplies it (`org-health`'s `boardTruth` fact) and the poster of
-// the day's table on #928 are the gate's, outside this row's Region, and filed as their own row.
+// THE TICK SUPPLIES IT (#4045): `work-gate/org-health.mjs` passes `boardTruth` to `org-health` from the rows the tick already read, and `postDaysTable` (below) comments
+// the day's table on #928 once per edition day.
 // A LEAF, as `org-health.mjs` (which imports it) is: relative imports of leaves only, never `close-rows-for-merged-pr.mjs`, `row-claim.mjs` or anything that reaches `wake.mjs`.
 import { execFileSync } from "node:child_process";
 import { STATE_LABELS, CLAIM_LABEL, CLAIM_RECORD_MARKER, STARTED_LABEL, stateLabelFindings } from "./claim-labels.mjs";
@@ -48,6 +48,7 @@ const DUPLICATE_SIMILARITY = 0.8;
 const DUPLICATE_MIN_WORDS = 6;
 const PARKED_STATES = Object.freeze(["parked", BACKLOG_LABEL]);
 const PRODUCT_MANAGER = "product-manager";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{ number: number, title?: string, body?: string, state?: string, stateReason?: string, labels?: (string | { name?: string })[],
@@ -209,6 +210,9 @@ export function boardTruthAudit(facts) {
   return { findings, unread: READERS.filter(([, , read]) => !read(facts)).map(([question]) => question) };
 }
 
+/** The first line of a table, which is what a second tick looks for on #928. @param {string} day */
+const tableHeading = (day) => `### Board against reality, ${day}`;
+
 /**
  * THE DAY'S TABLE: the count first, then one line per finding with the field to fix and who reads it. `0 disagree` is stated when it is true.
  * @param {{ findings: Finding[], unread: string[] }} audit @param {string} day `YYYY-MM-DD`
@@ -216,7 +220,7 @@ export function boardTruthAudit(facts) {
  */
 export function boardTruthTable({ findings, unread }, day) {
   const unreadNote = unread.length === 0 ? "" : ` -- NOT READ, so not counted as agreeing: ${unread.join(", ")}`;
-  const head = [`### Board against reality, ${day}`, "", `**${findings.length} disagree**${unreadNote}`];
+  const head = [tableHeading(day), "", `**${findings.length} disagree**${unreadNote}`];
   if (findings.length === 0) return head.join("\n");
   const rows = findings.map((f) => `| #${f.number} | ${f.question} | ${f.field} | ${f.detail} | ${f.route} |`);
   return [...head, "", "| row | question | field to fix | what disagrees | to |", "|---|---|---|---|---|", ...rows].join("\n");
@@ -228,18 +232,45 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256
 /**
  * THE READS THE SIX QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
  * UNREAD too (it would read every holder as gone). Merged PRs are the newest 200 and closed rows the newest 500, which cover a day's closers and the rows a duplicate is
- * likely to repeat. The wait facts need the gate's own item read, which this reader does not repeat: they stay `null` here, and the tick that has them passes them in.
+ * likely to repeat. The closed rows ask for no body (2.4 MB of the 2.5 MB the read measured on 2026-10-08, and no question reads it).
+ * #4045: THE TICK HANDS ITS OWN READS IN. `openRows` is the open list the gate already holds (so the 1000-row read, comments and all, is not made a second time) and `waitFacts` the
+ * facts its wait pass built; a caller that gives neither gets the old behaviour, the open rows read here and the wait facts `null` (unread).
  * @param {string} repo `owner/name`
- * @param {{ run?: (args: string[]) => string, agents?: typeof readAgents, now?: number }} [io]
+ * @param {{ run?: (args: string[]) => string, agents?: typeof readAgents, now?: number, openRows?: BoardRow[], waitFacts?: BoardFacts["waitFacts"] }} [io]
  * @returns {BoardFacts} `openRows` is not guarded: a refused open-row read throws, because there is no board to read without it
  */
-export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date.now() } = {}) {
+export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null } = {}) {
   const json = (/** @type {string[]} */ args) => JSON.parse(run([...args, "--repo", repo]));
   const orUnread = (/** @type {string[]} */ args) => { try { return json(args); } catch { return null; } };
-  const openRows = json(["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,state,comments,subIssuesSummary"]);
-  const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,body,state,stateReason"]);
+  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,state,comments,subIssuesSummary"]);
+  const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
   const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body"]);
   const listed = agents();
   const liveSessions = listed !== null && listingIsComplete(listed) ? listed.map((a) => a.label) : null;
-  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts: null };
+  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts };
+}
+
+/** The record the day's table is posted on (#4045). A row the org owns, not a pull request: it is `ceo`'s and the chairman's reading place. */
+export const TABLE_ROW = "928";
+/** Comments on the record from the day before, so the look-back is one page whatever the row's length; the heading carries the exact day. @param {string} day */
+const lookBackFrom = (day) => new Date(Date.parse(`${day}T00:00:00Z`) - DAY_MS).toISOString().replace(/\.\d+Z$/, "Z");
+
+/**
+ * ONE TABLE PER EDITION DAY ON #928, posted by the tick (#4045). A day is posted once: the record is asked first (a REST `since=` page, so a long row costs one call), and a
+ * table whose heading is already there is not posted again, so a restart, a second host or a tick a minute later posts nothing. The ask is the whole state: nothing is
+ * kept locally to disagree with the row.
+ * ONLY A COMPLETE READING IS POSTED: the day's table cannot be replaced, and a table carrying `NOT READ` at 00:02 because one call was refused would stand for the day. The
+ * unread audit is the org-health signal's to say (`unknown`), so it is not posted and the next tick reads again. A failed ask posts nothing for the same reason in the other
+ * direction: it could not tell whether the table is there.
+ * @param {{ audit: { findings: Finding[], unread: string[] } | null, day: string, repo: string, run?: (args: string[]) => string }} input
+ * @returns {"posted" | "already-posted" | "unread" | "no-audit"} what was done; a failed ask or post THROWS, and the caller says so
+ */
+export function postDaysTable({ audit, day, repo, run = gh }) {
+  if (audit === null) return "no-audit";
+  if (audit.unread.length > 0) return "unread";
+  const path = `repos/${repo}/issues/${TABLE_ROW}/comments?per_page=100&since=${lookBackFrom(day)}`;
+  const ids = run(["api", "--paginate", path, "--jq", `.[] | select(.body | startswith("${tableHeading(day)}")) | .id`]).trim();
+  if (ids !== "") return "already-posted";
+  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(audit, day)}\n\n_Read by the work-gate tick, once per edition day (a11ign/a11ign#4045)._`]);
+  return "posted";
 }
