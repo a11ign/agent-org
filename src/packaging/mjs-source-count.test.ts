@@ -53,7 +53,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 222 to 223 (a11ign/a11ign#3943): `src/idle-with-open-rows.mjs` is a NEW source file that a shipped command imports (`org-health.mjs`, a leaf `work-gate.mjs` runs with plain `node` before any build), so it cannot be `.ts`. It is the pure reading of "no engineer holds a row, and why each open row is not being built"; its tests are `src/idle-with-open-rows.test.ts` (a `.ts`), so TEST_MJS_PIN stays 52.
 // 223 to 224 (a11ign/a11ign#4005): `src/work-gate/held-on-satisfied-orders.mjs` is a NEW source file that a shipped command imports (`work-gate/org-health.mjs`, which the work tick runs with plain `node` before any build), so it cannot be `.ts`. It is the registry and remote reads a release-state `Waiting-for:` needs and the two orders for a row held on a satisfied condition or an umbrella edge; its tests are `.ts` (`wait-release-states.test.ts`, `work-gate-held-on-satisfied.test.ts`), so TEST_MJS_PIN stays 52.
 // 224 to 225 (a11ign/a11ign#4020): `src/work-gate/chairman-ask-orders.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build, and `row-file.mjs`), so it cannot be `.ts` (node on the host has no TypeScript). It is the leaf that raises `needs:chairman` for a row whose declared `Waiting-for:` conditions are all true; its tests are `.ts` (`chairman-ask-on-clear.test.ts`), so TEST_MJS_PIN stays 52.
-const SOURCE_MJS_PIN = 225;
+// 225 to 226 (a11ign/a11ign#4043): `src/board-truth-audit.mjs` is a NEW source file that a shipped command imports (`org-health.mjs`, which `work-gate.mjs` imports and the work tick runs with plain `node` before any build), so it cannot be `.ts`. It is the leaf holding the six board-against-reality questions.
+const SOURCE_MJS_PIN = 226;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
@@ -63,7 +64,8 @@ const SOURCE_MJS_PIN = 225;
 // 50 to 51 (a11ign/a11ign#3515): `publish.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 51 to 52 (a11ign/a11ign#3540): `selftest.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 52 to 53 (a11ign/a11ign#3982): `forme-button.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 53;
+// 53 to 54 (a11ign/a11ign#4043): `board-truth-audit.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 54;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");

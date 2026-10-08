@@ -55,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.mjs";
+import { boardTruthTable } from "./board-truth-audit.mjs";
 // The checkout the tool serves and the project's own words are read from where they are declared (`standalone-roots.test.ts`, `project-vocabulary.test.ts`).
 import { HOME_CHECKOUT } from "./project-config.mjs";
 import { ANSWER_PREFIX, BACKLOG_LABEL } from "./project-vocabulary.mjs";
@@ -192,10 +193,11 @@ export const SIGNALS = Object.freeze({
   STATE_LABEL: "row-without-exactly-one-state",
   IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
   RELEASE_FAILED: "release-run-failed",
+  BOARD_TRUTH: "board-disagrees-with-reality",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
-const FIRST_READERS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER }));
+const FIRST_READERS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER }));
 
 /**
  * @typedef {{ signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null,
@@ -672,6 +674,26 @@ export function stateLabelReading({ rows }) {
 }
 
 /**
+ * SIGNAL: THE BOARD DISAGREES WITH REALITY (#4043, the chairman, 2026-10-08): an open epic whose children are all closed, a row a merged PR closes, a claim with nobody
+ * holding it, a wait already true, a row in no state or two, a duplicate. `audit` is `boardTruthAudit`'s answer over rows the caller already read; `null` is a refused read,
+ * which is unknown and never clear. The detail IS the day's table, count first (`boardTruthTable`), so the order carries each row and the field to fix. It trips the tick a
+ * row disagrees and is KEYED ON THE ROW AND QUESTION PAIRS, so one standing set is one order however many ticks it lasts. An UNREAD question alone does not trip: it is named
+ * in the table's count line and reported UNKNOWN here so it is said, not assumed clear.
+ * @param {{ audit: { findings: { question: string, number: number }[], unread: string[] } | null, day?: string }} input
+ * @returns {Reading}
+ */
+export function boardTruthReading({ audit, day = "today" }) {
+  if (audit === null) return unknown(SIGNALS.BOARD_TRUTH, "the board could not be read, so no row is known to agree with reality");
+  if (audit.findings.length === 0) {
+    return audit.unread.length === 0 ? clear(SIGNALS.BOARD_TRUTH)
+      : unknown(SIGNALS.BOARD_TRUTH, `0 disagree on what was read, but ${audit.unread.join(", ")} could not be read`);
+  }
+  return { signal: SIGNALS.BOARD_TRUTH, status: "tripped", firstTrippedAt: null,
+    discriminator: `${SIGNALS.BOARD_TRUTH}@${audit.findings.map((f) => `${f.number}${f.question}`).join(",")}`,
+    detail: `\n${boardTruthTable(/** @type {any} */ (audit), day)}\n` };
+}
+
+/**
  * SIGNAL: THE ORG IS IDLE WHILE ROWS ARE OPEN (#3943). `idle` is `idleWithOpenRowsReading`'s answer over the open rows the tick already read, so it costs no call:
  * `null` is an engineer holding a row (clear); `{ kind: "unread" }` is a read that did not return, which is unknown and NEVER an idle org; an idle org
  * with nothing unoffered is finished and clear. It trips THE TICK THE CONDITION HOLDS, with no grace (the chairman's order: within one tick), and clears the tick an
@@ -1105,7 +1127,7 @@ function tryJson(read) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null }} facts `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"] }} facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -1123,6 +1145,7 @@ export function orgHealthReadings(facts) {
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows }));
+  if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
   return readings;
@@ -1176,6 +1199,9 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "the comparison could not be made (`cannot-tell`), so idle workers stay powered ON. It is loud by design and was unread: 2,569 refusals over twelve hours on 2026-10-06. READ THE REASON AND DETAIL "
     + "above, then have `orchestrator` (the first reader for fleet questions) bring the control plane's checkout to `main` or fix the fetch. DO NOT RUN `fleet:*` YOURSELF, and do not clear the record by "
     + "hand: it clears when a tick proceeds. Say on #928 what the refusal was and what ended it.",
+  [SIGNALS.BOARD_TRUTH]: "Each row in the table disagrees with what is true of it, and the table names the FIELD that does. `product-manager` reads it first and fixes what a field fixes: CLOSE an epic whose "
+    + "children are closed or a row whose closing PR merged, LIFT a wait that is already true, keep the ONE state label that is true. A row marked for its owner needs a judgment (a claim nobody holds, a duplicate): "
+    + "release the claim or close the duplicate with the reason on the row. Do not script the repair, and post the day's table on #928 so a count of 0 is a statement and not silence.",
   [SIGNALS.STATE_LABEL]: `A row is in exactly ONE of ${STATE_LABELS.map((l) => `\`${l}\``).join(", ")}, and each row named is in none or in several. A row in none is absent from the `
     + "Ready lane, the claim pool and every label-keyed count, and `ready:audit`'s `labelless rows` could not see it while it held any other label at all. `product-manager` reads it first: PROMOTE a row in none "
     + `(\`${READY_LABEL}\` if it is startable, else \`${BACKLOG_LABEL}\`), and for a row in several keep the ONE that is true (\`parked\` and \`epic\` REPLACE \`${BACKLOG_LABEL}\`), by hand with the reason on the row. `
