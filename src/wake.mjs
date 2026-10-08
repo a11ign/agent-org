@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
-import { profileFor, agentArgs, armOf, ARM, CALM_FINISH_PARAGRAPH } from "./worker-profile.mjs";
+import { profileFor, agentArgs, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
   from "./work-gate.mjs";
@@ -3763,7 +3763,7 @@ export function addressed(order, label,
   if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label, { orderId, cause: order.cause })}${staleReadingsClause(label, context)}\n\n${prompt}`;
   const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`;
-  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}${calmTail(spawned.row)}`;
+  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}${calmTail(spawned.row)}${tripsTail(spawned.row)}`;
   return `${identity}${prompt}\n\n${engineerBriefLine(label, engineers, families)}${autonomyParagraphs(order, label)}`;
 }
 
@@ -3774,6 +3774,15 @@ export function addressed(order, label,
  */
 function calmTail(row) {
   return armOf(row) === ARM.CALM ? `\n\n${CALM_FINISH_PARAGRAPH}` : "";
+}
+
+/**
+ * THE ROUND-TRIPS PARAGRAPH, AFTER THE CALM ONE, FOR A `batched`-ARM ROW'S FIRST-CONTACT PREAMBLE AND NOTHING ELSE (#4182): empty for a `control` row, so a
+ * control row's preamble is byte-identical to the calm A/B's. The arm is {@link tripsArmOf}'s, assigned from a different bit of the row number than {@link armOf}'s.
+ * @param {number} row
+ */
+function tripsTail(row) {
+  return tripsArmOf(row) === TRIPS_ARM.BATCHED ? `\n\n${ROUND_TRIPS_PARAGRAPH}` : "";
 }
 
 /**
@@ -5447,7 +5456,8 @@ function continuationNote(continuation) {
 
 /**
  * WHAT A LANDED DELIVERY WRITES TO THE CLAIM-ORDERS RECORD (#4070): one `continuation` line for a numbered repeat order (claim, cause, number, and who
- * got it), and one `arm` line for a worker this delivery STARTED -- written at the spawn, once, so a report groups by arm without recomputing it.
+ * got it), and one `arm` line for a worker this delivery STARTED -- written at the spawn, once, so a report groups by arm without recomputing it. The line carries BOTH
+ * arms (`arm`, the calm A/B's, and `tripsArm`, the round-trips A/B's, #4182), so the 2 by 2 is read from one record.
  * @param {ClaimOrders | undefined} claimOrders
  * @param {{gateOrder: {session: string, cause?: string, causeKey: string}, target: {label: string, profile?: object, claimed?: ClaimedRow},
  *   continuation: {claim: string, number: number} | null, at: number}} delivery
@@ -5460,7 +5470,8 @@ function noteClaimOrders(claimOrders, { gateOrder, target, continuation, at }) {
       session: gateOrder.session, to: target.label, causeKey: gateOrder.causeKey });
   }
   if (target.profile !== undefined && target.claimed !== undefined) {
-    claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, arm: armOf(target.claimed.row) });
+    claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, arm: armOf(target.claimed.row),
+      tripsArm: tripsArmOf(target.claimed.row) });
   }
 }
 

@@ -123,6 +123,22 @@ export function armOf(row) {
   return row % 2 === 0 ? ARM.CALM : ARM.CONTROL;
 }
 
+/** The two prompt arms of the round-trips A/B (#4182, #4055 next wave item 3). */
+export const TRIPS_ARM = Object.freeze({ BATCHED: "batched", CONTROL: "control" });
+
+/**
+ * THE ROUND-TRIPS ARM OF A NEW PER-ROW WORKER IS THE SECOND BIT OF ITS ROW NUMBER: `batched` when `Math.floor(row / 2)` is even, `control` otherwise.
+ * {@link armOf} already spends the first bit on the calm A/B, whose comparison is still running; reusing it would put this paragraph on exactly the
+ * rows that carry the calm one and neither result could be read. Over any four consecutive row numbers each of the four cells (calm or control by
+ * `armOf`, batched or control here) occurs once, so the two assignments are independent by construction, are fixed by the row, and are readable from
+ * the session name (`worker-<row>`) with no field to lose. Read the results as a 2 by 2, never as two A/Bs.
+ * @param {number} row
+ * @returns {"batched" | "control"}
+ */
+export function tripsArmOf(row) {
+  return Math.floor(row / 2) % 2 === 0 ? TRIPS_ARM.BATCHED : TRIPS_ARM.CONTROL;
+}
+
 /**
  * The calm finish paragraph, appended LAST to a `calm` worker's first-contact preamble and to nothing else. The text is #4055 move 2's own, kept
  * with its reason sentences and without capitals: the org's ALL-CAPS end-of-turn rules are what the report reads as a fight against early stops. The report's saving is Anthropic's, at max effort, on Anthropic's tasks; this arm exists to
@@ -133,6 +149,18 @@ export const CALM_FINISH_PARAGRAPH = "No one watches this session live. A questi
   + "task log, and keep going. Stop to ask only when nothing can move without an answer, or before a destructive\n"
   + "or irreversible step. When the work in the order is done and its checks pass, stop and report what changed,\n"
   + "the evidence (test output, PR link) and anything left open. Don't start extra rounds of review or polish.";
+
+/**
+ * The round-trips paragraph, appended AFTER the calm paragraph (when the row has one) on a `batched` worker's first-contact preamble and on nothing
+ * else (#4182). Two lines, each with its reason, and no capitals for emphasis. THE FIRST LINE IS ANTHROPIC'S: the "Optimize parallel tool calling"
+ * section of https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices (fetched 2026-10-08) says "when
+ * reading 3 files, run 3 tool calls in parallel" and that independent calls should be made in parallel. THE SECOND LINE IS NOT ON THAT PAGE: it is the
+ * chairman's direction of 2026-10-08 (#4055 next wave, item 3), so it is not Anthropic's wording and no figure of theirs is claimed for it. The page's
+ * "about 100%" is a rate of parallel calling under its sample prompt, not a saving; this arm exists to measure what the lines do here.
+ */
+export const ROUND_TRIPS_PARAGRAPH = "Every tool call is a round trip that reads the whole conversation again, so fewer round trips cost less. When you\n"
+  + "intend to call several tools and none depends on another's result, issue them all in the same turn rather than one at a time.\n"
+  + "For fan-out work, such as the same read over many files or rows, write one script that prints a summary instead of making one call per item.";
 
 /**
  * CAUSE -> the worker that should take it.

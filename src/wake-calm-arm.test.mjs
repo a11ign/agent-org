@@ -18,7 +18,8 @@ import { MAX_CONTINUATIONS } from "./claim-stall.mjs";
 const AT = 1_791_000_000_000;
 /** An EMPTY transcript root, so a real label this file reuses is never compacted by a coincidence of a live session's own transcript. */
 const NO_TRANSCRIPTS = join(tmpdir(), "a11y-4070-no-transcripts");
-const CALM_ROW = 4048;
+// 4046 is calm AND not batched (floor(4046 / 2) is odd), 4047 control AND not batched: this file reads the calm arm alone, so neither row may carry the round-trips paragraph (#4182).
+const CALM_ROW = 4046;
 const CONTROL_ROW = 4047;
 const FIRST_SENTENCE = "No one watches this session live.";
 
@@ -103,10 +104,10 @@ test("#4070 through deliver: a started calm worker is typed the paragraph last, 
     const calm = spawnFor(CALM_ROW, dir);
     assert.deepEqual(calm.got.refused, []);
     assert.ok(calm.typed?.endsWith(CALM_FINISH_PARAGRAPH), "THE POSITIVE CONTROL: the order WAS typed, and ends with the paragraph");
-    assert.deepEqual(calm.lines, [{ kind: "arm", at: AT, session: `worker-${CALM_ROW}`, row: CALM_ROW, arm: "calm" }]);
+    assert.deepEqual(calm.lines, [{ kind: "arm", at: AT, session: `worker-${CALM_ROW}`, row: CALM_ROW, arm: "calm", tripsArm: "control" }]);
     const control = spawnFor(CONTROL_ROW, dir);
     assert.ok(control.typed && !control.typed.includes(FIRST_SENTENCE));
-    assert.deepEqual(control.lines.slice(1), [{ kind: "arm", at: AT, session: `worker-${CONTROL_ROW}`, row: CONTROL_ROW, arm: "control" }]);
+    assert.deepEqual(control.lines.slice(1), [{ kind: "arm", at: AT, session: `worker-${CONTROL_ROW}`, row: CONTROL_ROW, arm: "control", tripsArm: "control" }]);
     assert.equal(control.lines.length, 2, "one line per spawn, and no other line");
     const other = scratch();
     try {
