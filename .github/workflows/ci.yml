@@ -44,6 +44,8 @@ env:
 on:
   pull_request:
     branches: [main]
+    # `edited`: the `no-release:` line that excuses a change with no changeset is added by editing the pull request body, and the `changeset` job must re-read it.
+    types: [opened, synchronize, reopened, edited]
   # A merge queue tests the queue's merge commit and waits for a check reporting on THIS event; without it a queued pull request never merges.
   merge_group:
   # A run on `main` itself, so "green on main" is a run and not an inference from a pull request's merge ref.
@@ -180,21 +182,36 @@ jobs:
           echo "tsc program: $count files outside node_modules"
           test "$count" -ge 440
 
+  # A PULL REQUEST THAT CHANGES `src/` MUST CARRY A CHANGESET OR A `no-release:` LINE (a11ign/a11ign#4084, adoption row #4129 of the shared check #4127). screenreader-worker#25 and #26 merged
+  # shipped code with no changeset and nothing released them; this repository's per-merge release releases a changeset, so a change with none is invisible to it. The decision lives in
+  # a11ign/toolchain's `changeset-required.yml`, pinned by FULL SHA (Dependabot's `github-actions` entry moves the pin); this job only names the paths.
+  #
+  # `releasable-paths` IS THE `dora` ENTRY's `releasablePaths` for a11ign/agent-org in a11ign/a11ign `.agent-org/project.json`, joined by a space: a path that matches nothing passes every
+  # pull request, so move this value when that entry moves. `permissions` is the caller's to grant: a called workflow cannot hold more than its caller gives, and without them the whole
+  # run is a `startup_failure`. On a `merge_group` entry the called job SUCCEEDS WITHOUT EVALUATING (the pull request's own run decided), so `gate` below stays green in the queue.
+  changeset:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@745b552ed550f44cc15c9d797718d350730540ce
+    with:
+      releasable-paths: src/
+
   # THE ONE CONTEXT `main` REQUIRES (a11ign/a11ign#3986), and the only way `typecheck` is required without an admin's act. `typecheck` is a job of its own so a type error does not wait
   # for the suite, but a job nobody requires is advisory: `rules/branches/main` listed `gate` alone and whether classic protection listed `typecheck` is admin-only to read, so the
   # repository-settings table read it CANNOT_TELL. Requiring it by a `needs:` on `gate` puts it where any token reads it, and keeps the name every other reader
   # of `gate` already holds (`release.yml`'s `gate-check`, `auto-arm.yml`).
   #
   # `if: always() && !cancelled()` IS THE POINT, not decoration: with the default `success()` a failing `typecheck` SKIPS `gate`, and a skipped required check counts as passing, so a type
-  # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is NOT accepted: neither job here has an `if:`, so a skip means a job that
+  # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is NOT accepted: none of the jobs here has an `if:`, so a skip means a job that
   # did not run for a reason nobody wrote, and the only green is `success` from both.
   gate:
-    needs: [suite, typecheck]
+    needs: [suite, typecheck, changeset]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
-      - name: The suite and the typecheck both succeeded
+      - name: The suite, the typecheck and the changeset check all succeeded
         run: |
-          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}"; do
+          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "${{ needs.changeset.result }}"; do
             [ "$result" = "success" ] || { echo "::error::a job reported '$result', not success"; exit 1; }
           done
