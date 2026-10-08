@@ -151,6 +151,32 @@ test("(6) a near-duplicate of a closed row, a near-duplicate of an older open ro
   assert.deepEqual(found(superseded("NOT_PLANNED"), QUESTIONS.DUPLICATE), []);
 });
 
+/** The adoption rows of a11ign/a11ign#4127 as filed: one title, six repositories. @param {string} repo */
+const adoptionTitle = (repo) => `Adopt the shared changeset-required check in a11ign/${repo}: a pull request changing its releasable paths with no changeset and no no-release: line fails its gate (adoption of #4127, class fix for #4084)`;
+const ADOPTION_ROWS = [[4129, "agent-org"], [4130, "screenreader-worker"], [4132, "screenreader-fleet"], [4133, "documents"], [4134, "lab"], [4135, "control"]];
+
+test("sibling adoption rows naming different repositories are not near-duplicates (#4137)", () => {
+  const siblings = ADOPTION_ROWS.map(([number, repo]) => row(number, ["ready"], { title: adoptionTitle(repo) }));
+  assert.deepEqual(found({ openRows: siblings }, QUESTIONS.DUPLICATE), [], "the real titles of #4129-#4135 are six rows, not one");
+  // POSITIVE CONTROL for the line above: with the repository name taken out of the titles the same six rows ARE read as one, so the empty result is a reading.
+  const unnamed = ADOPTION_ROWS.map(([number]) => row(number, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") }));
+  assert.deepEqual(found({ openRows: unnamed }, QUESTIONS.DUPLICATE), [4130, 4132, 4133, 4134, 4135]);
+  // a title naming the same repository and one word more is still a real twin
+  const twin = row(4136, ["ready"], { title: `${adoptionTitle("screenreader-worker")} again` });
+  assert.deepEqual(found({ openRows: [siblings[1], twin] }, QUESTIONS.DUPLICATE), [4136]);
+  assert.deepEqual(found({ openRows: [siblings[1], row(4136, ["ready"], { title: adoptionTitle("Screenreader-Worker") })] }, QUESTIONS.DUPLICATE), [4136], "a repository name is compared lower-cased");
+  assert.deepEqual(found({ openRows: [siblings[1], row(4136, ["ready"], { title: adoptionTitle("screenreader-worker").replace("a11ign/screenreader-worker:", "a11ign/screenreader-worker,") })] }, QUESTIONS.DUPLICATE), [4136], "a trailing `:` or `,` is not part of the name");
+  assert.deepEqual(found({ openRows: [siblings[4], row(4136, ["ready"], { title: adoptionTitle("lab").replace("a11ign/lab:", "a11ign/lab.") })] }, QUESTIONS.DUPLICATE), [4136], "a trailing `.` is not part of the name");
+  // a title naming a repository against one naming none is compared as before
+  const prose = row(4137, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") });
+  assert.deepEqual(found({ openRows: [prose, row(4138, ["ready"], { title: adoptionTitle("lab") })] }, QUESTIONS.DUPLICATE), [4138]);
+  // against a closed row: the same repository is the question, a different one is not
+  const lab = (/** @type {number} */ number, /** @type {string} */ repo) => row(number, ["ready"], { title: `Repair the ${repo} stability gate reading in a11ign/${repo} so that every corpus run is read once` });
+  const closed = { ...lab(50, "lab"), state: "CLOSED", stateReason: "COMPLETED" };
+  assert.deepEqual(found({ openRows: [lab(51, "lab")], closedRows: [closed] }, QUESTIONS.DUPLICATE), [51]);
+  assert.deepEqual(found({ openRows: [lab(51, "control")], closedRows: [{ ...closed, title: lab(50, "lab").title.replace("lab stability", "control stability") }] }, QUESTIONS.DUPLICATE), [], "a11ign/lab against a11ign/control");
+});
+
 test("a fact that could not be read is UNREAD and never counted as agreeing", () => {
   const audit = boardTruthAudit(facts({ closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null }));
   assert.deepEqual(audit.unread.sort(), [QUESTIONS.CLOSER_MERGED, QUESTIONS.DUPLICATE, QUESTIONS.NO_CLAIMANT, QUESTIONS.WAIT_TRUE].sort());

@@ -170,10 +170,23 @@ function similarity(a, b) {
   return shared / (a.size + b.size - shared);
 }
 
+/** Only the `a11ign/<name>` form is a repository: free prose is not read for one. A trailing `.` is the sentence's, `:` and `,` are not in a name. @param {string | undefined} title @returns {Set<string>} */
+const reposNamedBy = (title) => new Set([...String(title ?? "").toLowerCase().matchAll(/\ba11ign\/([a-z0-9][a-z0-9._-]*)/g)].map((m) => m[1].replace(/\.+$/, "")));
+
+/**
+ * Two titles that each name a repository and name different ones are two rows (#4137: the six per-repository adoption rows of #4127 differ in one word of thirty). A title naming none,
+ * or two naming the same set, are compared by words alone: a real twin filed twice under one epic is the case the question exists for.
+ * @param {BoardRow} row @param {BoardRow} other @returns {boolean}
+ */
+function namesDifferentRepos(row, other) {
+  const [a, b] = [reposNamedBy(row.title), reposNamedBy(other.title)];
+  return a.size > 0 && b.size > 0 && (a.size !== b.size || [...a].some((name) => !b.has(name)));
+}
+
 /** @param {BoardRow} row @param {BoardRow} other @returns {boolean} */
 function nearDuplicates(row, other) {
   const [a, b] = [wordsOf(row.title), wordsOf(other.title)];
-  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY;
+  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY && !namesDifferentRepos(row, other);
 }
 
 /** @param {BoardRow} row @param {Map<number, BoardRow>} known @returns {Finding[]} */
