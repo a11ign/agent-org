@@ -185,6 +185,31 @@ test("a remainder wake outside the window is not counted in it", () => {
   assert.equal(run({ transcripts: [parseTranscript(worker3390Transcript(), "a"), parseTranscript(lead, "ceo.jsonl")] }).remainder.total, 0);
 });
 
+// ---- (4b) a transcript is named by its first order, whichever form the order opens on (#4083, after #4068) ----------------------------------------------
+const followUpHeader = (session, body = "a follow-up order.") => user("2026-10-04T10:37:49.502Z", `\n\n<pasted_content id="f278">\n[order:wake:${session}:1791110269175 session:${session} cause:blocker-cleared]\n\n${body}\n</pasted_content>`);
+const NAMELESS = user("2026-10-04T10:37:49.502Z", `\n\n<pasted_content id="f279">\nan order that names nobody.\n</pasted_content>`);
+
+test("#4083 a transcript whose only wake is a follow-up header is named, and so is one on the old phrase", () => {
+  assert.equal(parseTranscript(followUpHeader("worker-3390"), "f.jsonl").session, "worker-3390", "the new header");
+  assert.equal(parseTranscript(user("2026-10-04T10:37:49.502Z", FIRST_ORDER), "o.jsonl").session, "worker-3390", "CONTROL: the old phrase still names it");
+  assert.equal(parseTranscript(NAMELESS, "n.jsonl").session, null, "CONTROL: an order that names nobody is not attributed, so the two above prove the readers");
+});
+
+test("#4083 the earlier of two forms names the transcript, in either order", () => {
+  const headerThenPhrase = [followUpHeader("worker-1"), user("2026-10-04T10:38:00.000Z", wakeText("worker-2", "a later order."))].join("\n");
+  const phraseThenHeader = [user("2026-10-04T10:37:00.000Z", wakeText("worker-2", "an earlier order.")), followUpHeader("worker-1")].join("\n");
+  assert.equal(parseTranscript(headerThenPhrase, "a.jsonl").session, "worker-1");
+  assert.equal(parseTranscript(phraseThenHeader, "b.jsonl").session, "worker-2");
+});
+
+test("#4083 an UNREADABLE transcript opening on a follow-up header still says whose it was", () => {
+  const broken = `${followUpHeader("worker-3390")}\n{"type":"user","timestamp":`;
+  const transcript = parseTranscript(broken, "broken.jsonl");
+  assert.equal(transcript.ok, false);
+  assert.equal(transcript.session, "worker-3390");
+  assert.equal(parseTranscript(`${NAMELESS}\n{"type":"user","timestamp":`, "broken2.jsonl").session, null, "CONTROL: an unreadable nameless one stays unnamed");
+});
+
 // ---- (5) unreadable is UNMEASURED, never zero ----------------------------------------------------------------------------------------------------------
 test("an unreadable transcript is reported unreadable and its row UNMEASURED, never zero wakes", () => {
   const broken = `${user("2026-10-04T10:37:49.502Z", FIRST_ORDER)}\n{"type":"user","timestamp":`;

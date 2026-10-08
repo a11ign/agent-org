@@ -28,6 +28,7 @@
 // transcript is walked here once more for the records this store needs; the wake record it yields is `isWake`'s, the same test.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { sessionOf } from "../token-audit.mjs";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.mjs";
 
 export const DEFINITIONS = [
@@ -203,8 +204,6 @@ export function eventsOfDeferrals(spans, rowRepo) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Reading a transcript into events
 
-const SESSION_NAME = /You are `([^`]+)`/;
-
 /**
  * A message whose last block is younger than this may still be gaining blocks, and its turn is built from the LAST one, so it is held back to the next run.
  * Measured 2026-10-04 on 80 transcripts (1,985 messages): the longest gap between two blocks of one message was 47 s, and blocks of one message are sometimes
@@ -309,7 +308,7 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   const settled = records.filter(({ start }) => start < boundary);
   const wakeRecords = settled.filter(({ record }) => isWake(record) && !Number.isNaN(Date.parse(record.timestamp)));
   // The session's name is the first ORDER's, never a mention of one further down (a tool result can quote another session's brief).
-  const named = wakeRecords.map(({ record }) => SESSION_NAME.exec(record.message.content)?.[1]).find(Boolean) ?? null;
+  const named = wakeRecords.map(({ record }) => sessionOf(record.message.content)).find(Boolean) ?? null;
   const session = carry?.session ?? named ?? `unnamed:${file.split("/").pop()}`;
   const wakes = wakeRecords.map(({ record }) => ({ at: Date.parse(record.timestamp), bytes: Buffer.byteLength(record.message.content), session }));
   const used = carry?.used ?? [];
