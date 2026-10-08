@@ -6,7 +6,7 @@
 // window action. A second seat (`orchestrator`) has turns that name no transcript, so what a wake did to its window cannot be told and must print `not derivable`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION, DEFINITIONS, GAP, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.mjs";
+import { ACTION, DEFINITIONS, GAP, isCold, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.mjs";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const minute = (n) => T0 + n * 60_000;
@@ -14,10 +14,10 @@ const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9,
 const WINDOW = { from: minute(0), to: minute(500) };
 
 const wake = (id, session, at) => ({ id, kind: "wake", source: "wake-ledger", at: minute(at), session, row: null, pr: null, repo: null, cause: "x", causeKey: null, wakeId: id });
-/** `write` is the 1-hour cache write; `cost` null is an unpriced turn. */
-const turn = ({ id, session = "ceo", wakeId, at, transcript, write, read = 0, cost, sidechain = false, harness }) => ({
+/** `write` is the 1-hour cache write and `write5m` the 5-minute one; `input` is the uncached input; `cost` null is an unpriced turn. */
+const turn = ({ id, session = "ceo", wakeId, at, transcript, write, write5m = 0, input = 2, read = 0, cost, sidechain = false, harness }) => ({
   id: `turn:${id}`, kind: "turn", source: "transcript", at: minute(at), session, row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId, ...(transcript ? { transcript } : {}),
-  model: "claude-fable-5-1", tokens: { input: 2, output: 10, cacheRead: read, cacheWrite5m: 0, cacheWrite1h: write }, costUsd: cost, sidechain, ...(harness ? { harness } : {}),
+  model: "claude-fable-5-1", tokens: { input, output: 10, cacheRead: read, cacheWrite5m: write5m, cacheWrite1h: write }, costUsd: cost, sidechain, ...(harness ? { harness } : {}),
 });
 const compaction = (at) => ({ id: `compaction:ceo:${at}`, kind: "compaction", source: "transcript", at: minute(at), session: "ceo", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: null });
 
@@ -55,13 +55,22 @@ const LIAISON = [
   wake("lw3", "liaison", 106), turn({ id: "l3a", session: "liaison", wakeId: "lw3", at: 110, transcript: "L", write: 900, cost: 0.01 }),
 ];
 
+/**
+ * A seat that writes the 5-minute kind, and sits on the cold boundary (#4062). Both first requests have a context of input + read + write = 1,000, so half is 500.
+ * pw1: 100 + 400 + 500 = 1,000, write 500 is EXACTLY half (not cold). pw2: 100 + 399 + 501 = 1,000, write 501 is over half (cold).
+ */
+const PRODUCT_MANAGER = [
+  wake("pw1", "product-manager", 10), turn({ id: "p1a", session: "product-manager", wakeId: "pw1", at: 11, transcript: "P", input: 100, read: 400, write: 0, write5m: 500, cost: 0.01 }),
+  wake("pw2", "product-manager", 13), turn({ id: "p2a", session: "product-manager", wakeId: "pw2", at: 14, transcript: "P", input: 100, read: 399, write: 501, cost: 0.01 }),
+];
+
 const CODEX = [
   turn({ id: "c1", session: "reviewer-9", wakeId: null, at: 30, write: 0, read: 10_000, cost: null, harness: "codex" }),
   turn({ id: "c2", session: "reviewer-9", wakeId: null, at: 31, write: 0, read: 11_000, cost: null, harness: "codex" }),
   turn({ id: "c3", session: "reviewer-12", wakeId: null, at: 32, write: 0, read: 12_000, cost: null, harness: "codex" }),
 ];
 
-const EVENTS = [...CEO, ...ORCHESTRATOR, ...LIAISON, ...CODEX];
+const EVENTS = [...CEO, ...PRODUCT_MANAGER, ...ORCHESTRATOR, ...LIAISON, ...CODEX];
 const report = wakeCache({ events: EVENTS, window: WINDOW });
 const seat = (name, from = report) => from.seats.find((candidate) => candidate.seat === name);
 const action = (name, which) => seat(name).actions.find((candidate) => candidate.action === which);
@@ -161,4 +170,75 @@ test("an empty window is 0 wakes for a seat, never a figure invented from nothin
   assert.equal(none.wakes, 0);
   assert.equal(seat("ceo", none).share, NOT_DERIVABLE);
   assert.equal((none.seats[0].actions.find((a) => a.action === ACTION.CLEARED)).wakes, 0);
+});
+
+test("the 5-minute and the 1-hour cache writes are two totals, and 5m 0 is a reading beside a seat that has some (positive control: a constant split is RED)", () => {
+  // ceo's turns carry only the 1-hour kind: every non-sidechain turn in the window, 133,600 (the same sum as `allWrite`), and no 5-minute token
+  assert.deepEqual(seat("ceo").writesByTtl, { fiveMinute: 0, oneHour: 133_600 });
+  // product-manager: p1a wrote 500 as 5-minute tokens, p2a 501 as 1-hour tokens
+  assert.deepEqual(seat("product-manager").writesByTtl, { fiveMinute: 500, oneHour: 501 });
+  const text = renderWakeCache(report);
+  assert.match(text, /\nceo: [\s\S]*?\n {2}cache writes of the seat's turns in the window: 5m 0 {2}1h 133,600\n/);
+  assert.match(text, /\nproduct-manager: [\s\S]*?\n {2}cache writes of the seat's turns in the window: 5m 500 {2}1h 501\n/);
+  for (const name of ["ceo", "product-manager", "orchestrator", "liaison"]) {
+    const { fiveMinute, oneHour } = seat(name).writesByTtl;
+    assert.equal(fiveMinute + oneHour, seat(name).allWrite, name); // the two kinds are the whole of what the seat wrote
+  }
+});
+
+test("a first request is cold when its write is MORE than half of input + read + write, and exactly half is not", () => {
+  // 100 + 400 + 500 = 1,000: half is 500, and 500 is not more than 500
+  assert.equal(isCold({ input: 100, read: 400, write: 500 }), false);
+  // 100 + 399 + 501 = 1,000: 501 is more than 500
+  assert.equal(isCold({ input: 100, read: 399, write: 501 }), true);
+  // 2 + 0 + 500 = 502: half is 251, a write of 500 is cold; and a request with nothing in it is not cold
+  assert.equal(isCold({ input: 2, read: 0, write: 500 }), true);
+  assert.equal(isCold({ input: 0, read: 0, write: 0 }), false);
+  // the same two requests through the report: pw1 (exact half) is the product-manager's `not derivable`-action wake, pw2 (501) is its kept one
+  assert.equal(action("product-manager", ACTION.UNKNOWN).cold.cold, 0);
+  assert.equal(action("product-manager", ACTION.KEPT).cold.cold, 1);
+});
+
+test("the cold rate is printed per window action, and a kept wake after a gap over 5 minutes is not cold unless the 1-hour cache lapsed too", () => {
+  // first requests: w1 30,000 write of 53,713 (cold), w2 1,000 of 56,002 (not), w3 2,000 of 58,002 (not), w4 29,000 of 52,713 (cold), w5 31,000 of 31,002 (cold),
+  // w6 33,000 of 56,713 (cold), w8 500 of 502 (cold: 500 is over 251)
+  const rate = (which, bucket) => (bucket ? gap("ceo", which, bucket) : action("ceo", which)).cold;
+  assert.deepEqual([rate(ACTION.KEPT).cold, rate(ACTION.KEPT).wakes], [1, 3]); // only w5
+  near(rate(ACTION.KEPT).rate, 1 / 3);
+  assert.deepEqual([rate(ACTION.COMPACTED).cold, rate(ACTION.COMPACTED).wakes], [1, 1]);
+  assert.deepEqual([rate(ACTION.CLEARED).cold, rate(ACTION.CLEARED).wakes], [3, 3]); // w1, w4, w8
+  // the lapse-versus-cleared distinction: kept at 5 min to 1 h (w3, 14 min) is warm; kept past 1 h (w5, 180 min) is the one cold kept wake
+  assert.deepEqual([rate(ACTION.KEPT, GAP.LONG).cold, rate(ACTION.KEPT, GAP.LONG).wakes], [0, 1]);
+  assert.deepEqual([rate(ACTION.KEPT, GAP.SHORT).cold, rate(ACTION.KEPT, GAP.SHORT).wakes], [0, 1]);
+  assert.deepEqual([rate(ACTION.KEPT, GAP.LAPSED).cold, rate(ACTION.KEPT, GAP.LAPSED).wakes], [1, 1]);
+  // the seat as a whole: 5 of the 7 first requests with a turn (w7 started none)
+  assert.deepEqual([seat("ceo").cold.cold, seat("ceo").cold.wakes], [5, 7]);
+  assert.match(renderWakeCache(report), /\n {2}kept {11}3 wakes .*? 1 of 3 cold \(33\.3%\)/);
+  assert.match(renderWakeCache(report), /\n {2}cleared {8}3 wakes .*? 3 of 3 cold \(100\.0%\)/);
+  assert.match(renderWakeCache(report), /cold-wake rate over all first requests \(write over half the context\): 5 of 7 cold \(71\.4%\)/);
+});
+
+test("a seat or a class with no first request prints `not derivable` for the rate, never 0%", () => {
+  assert.equal(action("ceo", ACTION.UNKNOWN).cold.rate, NOT_DERIVABLE); // every ceo wake had a previous turn, so none is unplaced: "0 wakes" and no rate
+  assert.equal(action("orchestrator", ACTION.KEPT).cold.rate, NOT_DERIVABLE); // no wake of the seat could be placed as kept
+  near(seat("orchestrator").cold.rate, 1 / 2); // o1 30,000 of 53,713 (cold), o2 1,000 of 81,002 (not)
+  // a window holding only w7, which started no turn: a wake, and no first request, and no turn of the seat to total either
+  const noTurn = wakeCache({ events: EVENTS, window: { from: minute(299), to: minute(301) } });
+  assert.equal(seat("ceo", noTurn).wakes, 1);
+  assert.equal(seat("ceo", noTurn).cold.rate, NOT_DERIVABLE);
+  assert.deepEqual(seat("ceo", noTurn).writesByTtl, { fiveMinute: NOT_DERIVABLE, oneHour: NOT_DERIVABLE });
+  const text = renderWakeCache(noTurn);
+  assert.match(text, /cold-wake rate over all first requests \(write over half the context\): not derivable: the seat has no first request in the window/);
+  assert.match(text, /5m not derivable {2}1h not derivable/);
+  assert.doesNotMatch(text.slice(text.indexOf("\nwindow ")), /\(0\.0%\)|\b0%/); // the DEFINITIONS above say "never 0%" and are not a figure
+  // an empty window: every seat
+  const none = wakeCache({ events: EVENTS, window: { from: minute(1_000), to: minute(2_000) } });
+  for (const each of none.seats) assert.equal(each.cold.rate, NOT_DERIVABLE, each.seat);
+});
+
+test("DEFINITIONS states the cold rule in #4055's words", () => {
+  const rule = DEFINITIONS.find((line) => line.startsWith("COLD-WAKE RATE"));
+  assert.ok(rule, "no COLD-WAKE RATE definition");
+  assert.ok(rule.includes("the share of first requests after an order whose `cache_creation_input_tokens` exceed half the context"));
+  assert.ok(DEFINITIONS.some((line) => line.startsWith("CACHE WRITES BY TTL")));
 });

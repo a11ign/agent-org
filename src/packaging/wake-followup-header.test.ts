@@ -60,6 +60,8 @@ function recorder() {
 }
 
 const ORDER_TEXT = "#2537 at `b778b0cb` has FAILING checks and is blocked.";
+/** #4068: the instant `deliver` mints the order id at, injected so the header can be pinned whole. */
+const DELIVERED_AT = 1_791_000_000_000;
 const order = (session: string, extra: object = {}) => ({ session, cause: "pr-checks-failing",
   causeKey: `${session}/pr-checks-failing/pr-2537/b778b0cb`, prompt: ORDER_TEXT, ...extra });
 
@@ -89,7 +91,7 @@ test("#2538 a CLEARED standing singleton gets the FULL preamble -- the positive 
 test("#2538 an UNCLEARED instance's order is one header line and the order, and carries none of the three phrases", () => {
   for (const label of ["worker-2443", "worker-4", "reviewer-2537"]) {
     const r = recorder();
-    const got = deliver([order(label)], agents([label]), ROSTER, { run: r.run });
+    const got = deliver([order(label)], agents([label]), ROSTER, { run: r.run, now: () => DELIVERED_AT });
     assert.deepEqual(got.refused, [], label);
     assert.deepEqual(r.cleared(), [], `${label}: not cleared (#2483)`);
     const [typed] = r.ordered(label);
@@ -98,7 +100,7 @@ test("#2538 an UNCLEARED instance's order is one header line and the order, and 
     // A reviewer's order also says its tree was re-pointed (#2771); nothing else rides along for anyone.
     const repointed = label.startsWith("reviewer-")
       ? `\n\nYour checkout of #2537, \`/fake-reviews/${label}\`, has just been re-pointed to the pull request's current head \`${FAKE_HEAD.slice(0, 8)}\`.` : "";
-    assert.equal(typed, `You are \`${label}\` -- a follow-up order to your session.\n\n${ORDER_TEXT}${repointed}`,
+    assert.equal(typed, `[order:wake:${label}:${DELIVERED_AT} session:${label} cause:pr-checks-failing]\n\n${ORDER_TEXT}${repointed}`,
       `${label}: exactly the header, a blank line and the order, pinned whole`);
     assert.ok(!typed.includes("still stand"), `${label}: the header no longer says what the window already holds (#3444)`);
     assert.ok(typed.length < ORDER_TEXT.length + repointed.length + 150, `${label}: nothing else rode along (${typed.length} chars)`);
@@ -112,7 +114,8 @@ test("#2538 a RESUMED standing seat keeps its context (#2470), so it gets the he
   assert.deepEqual(r.cleared(), [], "a resume is never preceded by a clear");
   const [typed] = r.ordered("worker-tooling");
   assert.deepEqual(counts(typed), [0, 0, 0]);
-  assert.ok(typed.startsWith("You are `worker-tooling` -- a follow-up"));
+  assert.ok(typed.startsWith("[order:wake:worker-tooling:"));
+  assert.ok(!typed.includes("You are"), "a follow-up restates no identity (#4068)");
 });
 
 test("#2538 a process this tick STARTED for a resume is NEW, and is briefed in full", () => {
@@ -140,7 +143,7 @@ test("#2538 clearThenPrompt: an instance gets the header; a standing seat, clear
   assert.equal(clearThenPrompt(instance.run, "worker-2443", "Rebase on main.", { sender: "ceo" }), null);
   const [typedToInstance] = instance.ordered("worker-2443");
   assert.deepEqual(counts(typedToInstance), [0, 0, 0]);
-  assert.ok(typedToInstance.startsWith("You are `worker-2443` -- a follow-up"));
+  assert.ok(typedToInstance.startsWith("[session:worker-2443 cause:none]"), "a `prompt:session` order has no ledger line, so it names no order id");
   assert.ok(typedToInstance.includes("Sent to you by `ceo`"), "the asker still travels");
 
   const standing = recorder();

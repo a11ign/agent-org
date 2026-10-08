@@ -2064,6 +2064,8 @@ test("the gate's read count is counted, not remembered", () => {
   const openRead: string[][] = [];
   readOpenRows((args: string[]) => { openRead.push(args); return "[]"; });
   assert.match(openRead[0][openRead[0].indexOf("--json") + 1], /subIssuesSummary/, "or epicRowsOf would find no epic to be finished");
+  // #4048: `createdAt` rides it too, or `stateLabelFindings` has no age to tell a row being filed from a row in no state and the grace excuses nothing.
+  assert.match(openRead[0][openRead[0].indexOf("--json") + 1], /createdAt/, "or the tick cannot tell a filing from a stateless row");
   assert.ok(GH_READS.conditionalOnRed.includes("requiredCheckNames"));
   // #2110: THE CLAIMED-ROW READ IS CONDITIONAL AND SERVER-SIDE FILTERED, and both halves are pinned
   // because both are what keep it bounded. `--label in-progress` is the filter; without it this would be
