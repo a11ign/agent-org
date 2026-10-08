@@ -14,7 +14,7 @@
 // cause is. The rows are shown in a seeded SHUFFLE, so their position says nothing about their cause. The wake id is kept on the row (`wakeId`) so a posted label can be joined back; the
 // printed sheet does not show it.
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -209,31 +209,167 @@ export function renderProvenance(sample, { seed, from, to }) {
   ].join("\n");
 }
 
-/** @param {string[]} argv @returns {{ seed: string, size: number, from: number, to: number, store: string, json: boolean }} */
+// ---- a11ign/a11ign#4183: score a small model's triage against #4074's hand labels. Routes nothing, and never draws: it reads the FROZEN fixture, because the sample is deterministic only for an unchanged store.
+//
+// THE BAR IS DECLARED HERE, BEFORE ANY RUN, so a result cannot be argued into it: a cause class is a `candidate` for a small model when it has at least `BAR.minRows` labelled READABLE rows and the
+// model missed none of its `wake` rows. The error that matters is a MISSED wake (labelled `wake`, predicted `digest` or `drop`): that is an order nobody acts on, where an over-wake costs a turn.
+// With n this small a pass is a `candidate`, never proved, and a switch is a separate row and `ceo`'s. A class with NO wake row passes the second half vacuously; its verdict says so.
+//
+// THE SIX UNREADABLE ROWS (`excluded`: no ledger line, so no cause) were labelled `wake` so that an event nobody can read is not dropped. They are evidence of nothing, so every figure is given WITH and WITHOUT them,
+// and they belong to no cause class. THE SAMPLE IS STRATIFIED, not proportional: the label shares are not the population's, and nothing here scales them up or prices anything.
+export const BAR = Object.freeze({ minRows: 5 });
+const LABELS_FILE = new URL("./triage-labels-4074.json", import.meta.url);
+const PERCENT = 100;
+const PERCENT_DECIMALS = 1;
+
+/** @typedef {{ position: number, session: string, cause: string, causeKey: string, cost: string, label: string, excluded: boolean }} LabelRow */
+/** @typedef {{ n: number, agree: number, confusion: Record<string, Record<string, number>>, missedWakes: number[] }} Figures */
+
+/** @param {URL} [file] @returns {{ definitions: Record<string, string>, rows: LabelRow[] }} the frozen #4074 sheet and labels */
+export function loadLabels(file = LABELS_FILE) {
+  return JSON.parse(readFileSync(file, "utf8"));
+}
+
+/**
+ * What the model is shown: the three label definitions and the printed columns of every row, in the sheet's order. Exactly what the labeller had, so a disagreement is not explained by information
+ * the labeller lacked: no order text, no state, no label, no `excluded` mark.
+ * @param {{ definitions: Record<string, string>, rows: LabelRow[] }} labels @returns {string}
+ */
+export function renderPrompt({ definitions, rows }) {
+  const rules = LABELS.map((label) => `- ${label}: ${definitions[label]}`).join("\n");
+  const lines = rows.map((row) => `${String(row.position).padStart(3)}.  ${row.session}  ${row.cause}  ${row.causeKey}  cost ${row.cost}`);
+  return [
+    `Each line below is one wake of a manager seat in an agent organisation: position, session, cause, cause key, and what the wake cost. Label each wake as one of: ${LABELS.join(" | ")}.`,
+    rules,
+    `Answer with ONLY a JSON array of ${rows.length} objects, one per line below and in order, like [{"position": 1, "label": "wake"}]. No other text.`,
+    "", ...lines, "",
+  ].join("\n");
+}
+
+/**
+ * Refuse what cannot be scored honestly: a score over a partial or duplicated file reads as a score over the sample.
+ * @param {LabelRow[]} rows @param {unknown} predictions @returns {Map<number, string>} the predicted label by position
+ */
+function predictedBy(rows, predictions) {
+  if (!Array.isArray(predictions)) throw new Error("predictions must be a JSON array of { position, label }");
+  if (predictions.length !== rows.length) throw new Error(`${predictions.length} predictions for ${rows.length} rows: a partial file is not scored`);
+  const known = new Set(rows.map((row) => row.position));
+  const predicted = new Map();
+  for (const entry of predictions) {
+    if (!known.has(entry?.position)) throw new Error(`position ${entry?.position} is not a row of the sheet`);
+    if (predicted.has(entry.position)) throw new Error(`position ${entry.position} is predicted twice`);
+    if (!LABELS.includes(entry.label)) throw new Error(`position ${entry.position}: label ${JSON.stringify(entry.label)} is not one of ${LABELS.join(" | ")}`);
+    predicted.set(entry.position, entry.label);
+  }
+  return predicted;
+}
+
+/** @param {LabelRow[]} rows @param {Map<number, string>} predicted @returns {Figures} */
+function figuresOf(rows, predicted) {
+  const confusion = Object.fromEntries(LABELS.map((label) => [label, Object.fromEntries(LABELS.map((guess) => [guess, 0]))]));
+  for (const row of rows) confusion[row.label][/** @type {string} */ (predicted.get(row.position))] += 1;
+  const missedWakes = rows.filter((row) => row.label === "wake" && predicted.get(row.position) !== "wake").map((row) => row.position);
+  return { n: rows.length, agree: LABELS.reduce((sum, label) => sum + confusion[label][label], 0), confusion, missedWakes };
+}
+
+/** @param {{ n: number, wakeRows: number, missed: number }} cause @returns {{ passed: boolean, verdict: string }} the declared bar, applied */
+function barFor({ n, wakeRows, missed }) {
+  if (missed > 0) return { passed: false, verdict: "fail: missed a wake" };
+  if (n < BAR.minRows) return { passed: false, verdict: `fail: fewer than ${BAR.minRows} readable rows` };
+  return { passed: true, verdict: wakeRows === 0 ? "candidate (no wake row in the class: the no-miss half is untested)" : "candidate" };
+}
+
+/** @param {LabelRow[]} readable @param {Map<number, string>} predicted */
+function classesOf(readable, predicted) {
+  /** @type {Map<string, LabelRow[]>} */
+  const byCause = new Map();
+  for (const row of readable) byCause.set(row.cause, [...(byCause.get(row.cause) ?? []), row]);
+  return [...byCause].map(([cause, rows]) => {
+    const missedWakes = figuresOf(rows, predicted).missedWakes;
+    const wakeRows = rows.filter((row) => row.label === "wake").length;
+    return { cause, n: rows.length, wakeRows, missedWakes, bar: barFor({ n: rows.length, wakeRows, missed: missedWakes.length }) };
+  }).sort((a, b) => b.n - a.n || byText(a.cause, b.cause));
+}
+
+/**
+ * Score predictions against the labels.
+ * @param {LabelRow[]} labels the frozen rows @param {unknown} predictions `[{ position, label }]`, one per row
+ */
+export function scoreTriage(labels, predictions) {
+  const predicted = predictedBy(labels, predictions);
+  const readable = labels.filter((row) => !row.excluded);
+  const excluded = labels.filter((row) => row.excluded);
+  return {
+    withExcluded: figuresOf(labels, predicted),
+    withoutExcluded: figuresOf(readable, predicted),
+    excluded: { positions: excluded.map((row) => row.position), predicted: excluded.map((row) => ({ position: row.position, label: row.label, predicted: predicted.get(row.position) })) },
+    classes: classesOf(readable, predicted),
+    bar: BAR,
+  };
+}
+
+/** @param {number} part @param {number} whole @returns {string} */
+const percent = (part, whole) => `${((PERCENT * part) / whole).toFixed(PERCENT_DECIMALS)}%`;
+
+/** @param {string} title @param {Figures} figures @returns {string[]} */
+function figureLines(title, { n, agree, confusion, missedWakes }) {
+  const rows = LABELS.map((label) => `  labelled ${label.padEnd("digest".length)} -> ${LABELS.map((guess) => `${guess} ${String(confusion[label][guess]).padStart(2)}`).join("  ")}`);
+  return [`${title}: n ${n}, agreement ${agree}/${n} (${percent(agree, n)}), missed wakes ${missedWakes.length}${missedWakes.length > 0 ? ` (positions ${missedWakes.join(", ")})` : ""}`, ...rows];
+}
+
+/** @param {ReturnType<typeof scoreTriage>} score @returns {string} */
+export function renderScore(score) {
+  const classes = score.classes.map((one) => `  ${one.cause.padEnd(Math.max(...score.classes.map((c) => c.cause.length)))}  n ${String(one.n).padStart(2)}  wake rows ${String(one.wakeRows).padStart(2)}  missed ${one.missedWakes.length}  ${one.bar.verdict}`);
+  const apart = score.excluded.predicted.map((one) => `  ${one.position}: labelled ${one.label}, predicted ${one.predicted}`);
+  return [
+    ...figureLines("WITH the six unreadable rows", score.withExcluded),
+    ...figureLines("WITHOUT them (the figure to read)", score.withoutExcluded),
+    "",
+    `the six unreadable rows, apart (positions ${score.excluded.positions.join(", ")}):`, ...apart,
+    "",
+    `the bar, per cause class (>= ${score.bar.minRows} readable rows and no missed wake; a pass is a candidate, never proved):`, ...classes, "",
+  ].join("\n");
+}
+
+/** @param {string[]} argv @returns {{ seed: string, size: number, from: number, to: number, store: string, json: boolean, score: string | null, prompt: boolean }} */
 export function parseArgs(argv) {
   const flags = new Map();
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (!flag.startsWith("--")) throw new Error(`unexpected argument ${flag}`);
-    const boolean = flag === "--json";
+    const boolean = flag === "--json" || flag === "--prompt";
     flags.set(flag.slice(2), boolean ? "true" : argv[++i]);
   }
   const to = flags.has("to") ? Date.parse(flags.get("to")) : Date.now();
   const from = flags.has("from") ? Date.parse(flags.get("from")) : to - WEEK_DAYS * MS_PER_DAY;
   if (Number.isNaN(to) || Number.isNaN(from)) throw new Error("--from and --to take an ISO time, e.g. 2026-10-01T08:40:00Z");
+  if (flags.has("score") && !flags.get("score")) throw new Error("--score takes a predictions file");
   return {
     seed: flags.get("seed") ?? "", size: flags.has("size") ? Number(flags.get("size")) : DEFAULT_SIZE, from, to,
     store: flags.get("store") ?? join(homedir(), ".cache", "a11ign", "trace", "events.ndjson"), json: flags.has("json"),
+    score: flags.get("score") ?? null, prompt: flags.has("prompt"),
   };
+}
+
+/** @param {ReturnType<typeof parseArgs>} args @returns {string} the sampler's output: it is the only mode that reads the store */
+function sampled(args) {
+  const sample = drawTriageSample({ events: readStore(args.store), seed: args.seed, size: args.size, from: args.from, to: args.to });
+  return args.json ? `${JSON.stringify(sample, null, 2)}\n` : `${renderProvenance(sample, args)}\n\n${renderSheet(sample)}`;
+}
+
+/** @param {string} predictionsPath @param {boolean} json @returns {string} the frozen labels and the predictions file only: no store, no sampler */
+function scored(predictionsPath, json) {
+  const result = scoreTriage(loadLabels().rows, JSON.parse(readFileSync(predictionsPath, "utf8")));
+  return json ? `${JSON.stringify(result, null, 2)}\n` : renderScore(result);
 }
 
 async function main() {
   try {
     const args = parseArgs(process.argv.slice(2));
-    const sample = drawTriageSample({ events: readStore(args.store), seed: args.seed, size: args.size, from: args.from, to: args.to });
-    process.stdout.write(args.json ? `${JSON.stringify(sample, null, 2)}\n` : `${renderProvenance(sample, args)}\n\n${renderSheet(sample)}`);
+    if (args.prompt) process.stdout.write(renderPrompt(loadLabels()));
+    else process.stdout.write(args.score === null ? sampled(args) : scored(args.score, args.json));
   } catch (error) {
-    process.stderr.write(`triage-sample: ${error instanceof Error ? error.message : String(error)}\nusage: node src/trace/triage-sample.mjs --seed <text> [--size 100] [--from <iso>] [--to <iso>] [--store <path>] [--json]\n`);
+    process.stderr.write(`triage-sample: ${error instanceof Error ? error.message : String(error)}\nusage: node src/trace/triage-sample.mjs --seed <text> [--size 100] [--from <iso>] [--to <iso>] [--store <path>] [--json]\n       node src/trace/triage-sample.mjs --score <predictions.json> [--json]   (the frozen #4074 labels; never draws)\n       node src/trace/triage-sample.mjs --prompt   (what a model is shown)\n`);
     process.exitCode = 1;
   }
 }
