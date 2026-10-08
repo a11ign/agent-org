@@ -1,4 +1,4 @@
-// no-token: deliver -- every herdr call is the injected `run`; nothing here reaches gh
+// no-token: clearContext -- every herdr call is the injected `run`; nothing here reaches gh
 /**
  * #4068 (#4055 move 5): A FOLLOW-UP ORDER OPENS WITH AN ORDER ID, NOT AN IDENTITY LINE, and the transcript's session is read from that id.
  *
