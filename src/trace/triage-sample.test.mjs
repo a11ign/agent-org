@@ -6,10 +6,10 @@
 // in; at size 151 their share exceeds what they have, so they give ALL of it. The hand-computed quotas are in the comments beside each test.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { allocate, COST, drawTriageSample, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.mjs";
 
@@ -17,6 +17,9 @@ const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");
 const SPAN = TO - FROM;
 const MINUTE = 60_000;
+
+const made = [];
+after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
 
 let serial = 0;
 /** A manager wake at `at` ms from FROM. `cause` null is a wake whose ledger line named none. */
@@ -156,6 +159,7 @@ test("it refuses what it cannot do honestly", () => {
 
 test("the command prints a sheet from a store file, the same twice, and refuses without a seed", () => {
   const dir = mkdtempSync(join(tmpdir(), "triage-sample-"));
+  made.push(dir);
   const store = join(dir, "events.ndjson");
   writeFileSync(store, `${EVENTS.map((event) => JSON.stringify(event)).join("\n")}\n`);
   const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
