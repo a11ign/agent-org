@@ -47,6 +47,7 @@ import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.mjs";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS } from "./worker-profile.mjs";
 import { readAgents, absentSeats } from "./herdr-agents.mjs";
 import { persistentRoles } from "./project-roles.mjs";
+import { kernelFindings, kernelNotes } from "./host-kernel.mjs";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.mjs";
 
@@ -1809,7 +1810,7 @@ export function toolVersionNotes(reading) {
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
 function hostNotes() {
-  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...persistentSeatNotes(), ...windowEndNotes()];
+  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...persistentSeatNotes(), ...windowEndNotes(), ...kernelNotes()];
 }
 
 /**
@@ -2905,7 +2906,7 @@ function jsonReport() {
  * that function is pure of the running org -- twenty tests hand it a fixture host -- while this one reads whoever is running.
  */
 function hostFindings() {
-  return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift()];
+  return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift(), ...kernelFindings()];
 }
 
 function main() {
