@@ -929,11 +929,6 @@ const NOT_A_DURATION_CLAIM: Record<string, string> = {
     "#1060: one-time SETUP times in a routing table (about twenty minutes with a Windows machine, 1.5-2 "
     + "hours to build a VM), the same class as 'Getting one takes ~20 minutes' above and for the same "
     + "reason: no capture gate has ever measured, or should measure, a one-time Windows setup step.",
-  "unreachable in a user's first ten minutes":
-    "Newly discovered by #324's V1 rehearsal, which added examples/workflow.yml to CLAIM_FILES for the "
-    + "first time -- this describes how quickly a PAST defect (probe-forms silently off) would have been "
-    + "noticed, not a promise about how long using this tool takes. There is no duration claim here for a "
-    + "gate to source.",
 };
 
 function assertDurationClaimSourced(file: string): void {
