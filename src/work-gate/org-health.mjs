@@ -628,6 +628,11 @@ const CLOCK_OWES = /** @type {Readonly<Record<string, (suffix: string) => string
  * @param {any} row @param {number} now @returns {import("../org-health.mjs").ClockRow}
  */
 function clockRowOf(row, now) {
+  return { ...clockRowState(row, now), epic: labelsOf(row).includes("epic") }; // the epic flag is for the NAMING (`milestoneClockReading` skips epics), not for the state
+}
+
+/** @param {any} row @param {number} now @returns {Omit<import("../org-health.mjs").ClockRow, "epic">} */
+function clockRowState(row, now) {
   const labels = labelsOf(row);
   const createdAt = epochOrNull(row.createdAt);
   const claimed = labels.some((l) => l.startsWith(SESSION_PREFIX)) || labels.includes(CLAIM_LABEL);

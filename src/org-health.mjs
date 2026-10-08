@@ -1252,7 +1252,7 @@ function classRepeatTripped(signal, group, beside) {
 }
 
 /**
- * @typedef {{ number: number, createdAt: number | null, claimed: boolean, state: string, owes: string }} ClockRow
+ * @typedef {{ number: number, createdAt: number | null, claimed: boolean, state: string, owes: string, epic?: boolean }} ClockRow
  * One OPEN row of the primary milestone. `state` is why nobody is building it (`parked`, `date-held`, `blocked by #7`, `ready, unclaimed` ...) and `owes` who owes its next move.
  * @typedef {{ primaries: { number: number, title: string }[], rows: ClockRow[], prsClose: number[] | null, endedAt: number | null }} MilestoneClockFact
  * `primaries` are the milestones marked `Primary: yes` that the open rows name, `rows` the open rows of the one primary (empty unless there is exactly one), `prsClose` the row
@@ -1262,7 +1262,7 @@ function classRepeatTripped(signal, group, beside) {
 /**
  * SIGNAL: THE PRIMARY MILESTONE HAS OPEN ROWS AND NOTHING CLAIMED OR IN A PULL REQUEST FOR `MILESTONE_CLOCK_MINUTES` (#4231). The outcome clock runs on open PRs and CLAIMED
  * rows, so a milestone whose rows are all unclaimed, parked or date-held had no clock at all: v3 sat that way for hours on 2026-10-08 and the chairman found it. THIS ONE
- * CLOCKS THE MILESTONE AND NOT AN ITEM, and names the oldest open row with its state and whose move it is.
+ * CLOCKS THE MILESTONE AND NOT AN ITEM, and names the oldest open row with its state and whose move it is: the oldest that is not an `epic`, and the oldest epic only when every open row is one (product-manager's ruling on #4231).
  *
  * THE CLOCK STARTS AT THE LATER OF the last claim or pull request ending (`endedAt`) and the milestone's newest row opening: a row filed ten minutes ago has not been idle.
  * EACH REFUSED READ IS TESTED ONLY WHEN IT COULD MATTER, as `noMergeReading` tests its gap first: a start that has not reached the bound is clear whatever the pull-request
@@ -1296,7 +1296,8 @@ export function milestoneClockReading({ now, fact }) {
   if (fact.prsClose === null) return unknown(signal, `milestone ${primary.number} looks idle, but the open pull requests could not be read`);
   const owned = new Set(fact.rows.map((r) => r.number));
   if (fact.prsClose.some((n) => owned.has(n))) return clear(signal);
-  const oldest = [...fact.rows].sort((a, b) => /** @type {number} */ (a.createdAt) - /** @type {number} */ (b.createdAt) || a.number - b.number)[0];
+  const byAge = [...fact.rows].sort((a, b) => /** @type {number} */ (a.createdAt) - /** @type {number} */ (b.createdAt) || a.number - b.number);
+  const oldest = byAge.find((row) => row.epic !== true) ?? byAge[0]; // an epic is a container, not the next move: named only when every open row is one
   const tripAt = since + bound;
   return { signal, status: "tripped", firstTrippedAt: tripAt, discriminator: `${signal}/${primary.number}@${oldest.number}`,
     detail: `milestone ${primary.number} (${primary.title}) has ${fact.rows.length} open row(s) and none is claimed or in a pull request for ${ageText(since, now)} (since ${isoOf(since)}, bound `
