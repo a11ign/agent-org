@@ -55,7 +55,7 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 224 to 225 (a11ign/a11ign#4020): `src/work-gate/chairman-ask-orders.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build, and `row-file.mjs`), so it cannot be `.ts` (node on the host has no TypeScript). It is the leaf that raises `needs:chairman` for a row whose declared `Waiting-for:` conditions are all true; its tests are `.ts` (`chairman-ask-on-clear.test.ts`), so TEST_MJS_PIN stays 52.
 // 225 to 226 (a11ign/a11ign#4043): `src/board-truth-audit.mjs` is a NEW source file that a shipped command imports (`org-health.mjs`, which `work-gate.mjs` imports and the work tick runs with plain `node` before any build), so it cannot be `.ts`. It is the leaf holding the six board-against-reality questions.
 // 226 to 227 (a11ign/a11ign#4046): `src/host-kernel.mjs` is a NEW source file that a shipped command imports (`host-units.mjs`, which `host:check` runs with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript). It reads the running and installed kernels and does the drained reboot; it is also run directly (`node src/host-kernel.mjs --reboot`).
-// 227 to 228 (a11ign/a11ign#4050): `src/unpark-satisfied.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript). It un-parks a parked row whose every condition is true, on the tick; its test is `unpark-satisfied.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 55 to 56 below.
+// 227 to 228 (a11ign/a11ign#4050): `src/unpark-satisfied.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript). It un-parks a parked row whose every condition is true, on the tick; its test is `unpark-satisfied.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 56 to 57 below.
 const SOURCE_MJS_PIN = 228;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
@@ -68,8 +68,9 @@ const SOURCE_MJS_PIN = 228;
 // 52 to 53 (a11ign/a11ign#3982): `forme-button.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 53 to 54 (a11ign/a11ign#4043): `board-truth-audit.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 54 to 55 (a11ign/a11ign#4046): `host-kernel.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-// 55 to 56 (a11ign/a11ign#4050): `unpark-satisfied.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 56;
+// 55 to 56 (a11ign/a11ign#4068): `wake-order-id.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+// 56 to 57 (a11ign/a11ign#4050): `unpark-satisfied.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 57;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");

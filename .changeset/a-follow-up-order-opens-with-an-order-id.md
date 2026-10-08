@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A follow-up order opens with an order id, not an identity line (a11ign/a11ign#4068, #4055 move 5). The header `wake.mjs` types to a session whose window was kept is now `[order:wake:<session>:<ms> session:<session> cause:<cause>]` instead of "You are `<session>` -- a follow-up order to your session."; the staleness clause of a kept or compacted standing seat follows it unchanged. `deliver` mints the id from its clock (new `now` dep) before it prompts and hands the same instant to the ledger writer as a fourth argument to `record`, so the id typed into the header is the number in the ledger line. `token-audit`'s `sessionOf` reads `session:` from the new header and still reads the old "You are `<session>`" phrase, taking whichever comes first in the text, so a transcript that opens on either form stays attributed. A `prompt:session` follow-up is never recorded in the ledger, so its header names no `order:`. A first-contact order is unchanged. `src/trace/store.mjs` and `src/wakes-per-row.mjs` keep their own copy of the old phrase and are not touched here.
