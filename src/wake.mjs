@@ -4261,8 +4261,11 @@ export function stuckRowOf(causeKey) {
   return subject?.repoKey === "" ? subject.number : null;
 }
 
-/** `row-<n>`, `pr-<n>` or `pr-<key>#<n>` (a pull request or row), or `trunk-<key>-<sha8>` (a red with no merged pull request known). */
-const STUCK_SUBJECT = /\/(?:(?:row|pr)-(?:([a-z][\w-]*)#)?(\d+)|trunk-([a-z][\w-]*)-([0-9a-f]{8}))(?:\/|$)/;
+/**
+ * `row-<n>`, `pr-<n>` or `pr-<key>#<n>` (a pull request or row), `epic-<n>` or `epic-<key>#<n>` (an epic: `epic-finished` and
+ * `epic-unfiled` subject it so, #4044), or `trunk-<key>-<sha8>` (a red with no merged pull request known).
+ */
+const STUCK_SUBJECT = /\/(?:(?:row|pr|epic)-(?:([a-z][\w-]*)#)?(\d+)|trunk-([a-z][\w-]*)-([0-9a-f]{8}))(?:\/|$)/;
 
 /**
  * What a cause key's subject names: the primary's row (`repoKey` empty), a pull request of a keyed repository, or a keyed
@@ -4366,6 +4369,8 @@ function escalationTargetOf(key, repoOf) {
     const row = /** @type {number} */ (subject.number);
     return { ref: `#${row}`, row, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
   }
+  // A keyed EPIC is not a red: the row filed below says `main` is red, which it is not, and its label cannot be set from the primary's tracker.
+  if (/\/epic-/.test(key)) return null;
   const repo = repoOf(subject.repoKey);
   if (repo === null) return null;
   const ref = subject.number === null ? `${subject.repoKey}@${subject.sha8}` : subjectMention({ repoKey: subject.repoKey, number: subject.number });

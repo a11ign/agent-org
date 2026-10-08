@@ -117,3 +117,35 @@ test("stuckSubjectOf reads each shape, and a hex primary subject is not mistaken
   assert.equal(stuckSubjectOf(`worker-3075/trunk-red/trunk-${SHA}/${SHA}`), null, "the primary's own unknown-merge subject names no row, as before");
   assert.equal(stuckSubjectOf("ceo/chairman-blocked/0"), null);
 });
+
+/** #4044: an unanswered `epic-finished` / `epic-unfiled` order carries `epic-<n>` (`subjectRef` writes `epic-<key>#<n>` for a keyed tracker). */
+const EPIC_CAUSES = ["epic-finished", "epic-unfiled"];
+const epicKey = (cause: string, ref: string) => `product-manager/${cause}/epic-${ref}`;
+
+test("an unanswered epic-finished or epic-unfiled order labels the epic answer:ceo", () => {
+  for (const cause of EPIC_CAUSES) {
+    const key = epicKey(cause, "1317");
+    assert.equal(stuckRowOf(key), 1317, `${cause}: the epic's number is the row to label`);
+    const { calls, labelled } = escalate([key]);
+    assert.deepEqual(calls, [["issue", "edit", "1317", "--add-label", ESCALATION_LABEL]], `${cause}: labelled, nothing filed`);
+    assert.deepEqual(labelled, [1317]);
+  }
+});
+
+test("a keyed epic is read as the keyed repository's, and is never labelled on the primary nor filed as a red", () => {
+  for (const cause of EPIC_CAUSES) {
+    const key = epicKey(cause, "agent-org#12");
+    assert.deepEqual(stuckSubjectOf(key), { repoKey: "agent-org", number: 12, sha8: null });
+    assert.equal(stuckRowOf(key), null, "the primary's #12 is another row");
+    const { calls, log } = escalate([key]);
+    assert.deepEqual(calls, [], `${cause}: no label, and no 'Stuck trunk-red' row for something that is not a red`);
+    assert.match(log, /STUCK .*cannot be escalated/);
+  }
+});
+
+test("CONTROLS for the epic reading: row-<n> still reads as <n>, and a day-number or count key still reads as null", () => {
+  assert.equal(stuckRowOf("product-manager/answer-owed/row-5"), 5);
+  assert.equal(stuckRowOf("product-manager/epic-unfiled/epics/16"), null, "the retired day-number form names no row");
+  assert.equal(stuckRowOf("product-manager/epic-finished/16"), null);
+  assert.equal(stuckRowOf("ceo/chairman-blocked/0"), null);
+});
