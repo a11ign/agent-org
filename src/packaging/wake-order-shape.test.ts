@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { addressed, resumePrompt, ENGINEER_BRIEF } from "../wake.mjs";
 import { sessionOf } from "../token-audit.mjs";
+import { CALM_FINISH_PARAGRAPH } from "../worker-profile.mjs";
 import { idleNudgePrompt, WAIT_FIELDS } from "../idle-claimant.mjs";
 import { staleWaitOrders } from "../work-gate/org-health.mjs";
 import { primaryStaleOrders, blockedReferentOrders, answerOrders, blockerClearedOrders, unclaimedBlockerClearedOrders, claimedRowAmendedOrders,
@@ -82,7 +83,10 @@ test("#3444 (2) a spawned engineer's first order is its identity, row, worktree,
     assert.ok(text.includes(must), `carries ${must}`);
   }
   for (const paragraph of THREE_PARAGRAPHS) assert.ok(!text.includes(paragraph), `does not repeat: ${paragraph}`);
-  assert.ok(bytes(text) <= MEASURED_SPAWNED_BYTES, `${bytes(text)} bytes (was 1,714)`);
+  // #4070: ROW 3390 IS EVEN, SO THIS IS A CALM-ARM PREAMBLE, which ends with one more paragraph. The bound is on the preamble itself, so the paragraph is
+  // taken off before it is read; a preamble that grew elsewhere still breaks it, and the paragraph's own shape is pinned in `wake-calm-arm.test.mjs`.
+  const calmTail = text.endsWith(CALM_FINISH_PARAGRAPH) ? bytes(`\n\n${CALM_FINISH_PARAGRAPH}`) : 0;
+  assert.ok(bytes(text) - calmTail <= MEASURED_SPAWNED_BYTES, `${bytes(text) - calmTail} bytes without the calm paragraph (was 1,714)`);
 });
 
 test("#3444 (2) the brief is told to a spawned label the roster does not know, because the paragraphs are no longer there to cover for it", () => {

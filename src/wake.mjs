@@ -30,7 +30,7 @@
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
   fstatSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir, loadavg, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 // `work-gate.mjs` and `org-watch.mjs` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
-import { profileFor, agentArgs } from "./worker-profile.mjs";
+import { profileFor, agentArgs, armOf, ARM, CALM_FINISH_PARAGRAPH } from "./worker-profile.mjs";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
   from "./work-gate.mjs";
@@ -79,7 +79,7 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
-  INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions }
+  INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions, CONTINUATION_CAUSES, MAX_CONTINUATIONS }
   from "./claim-stall.mjs";
 // THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.mjs` can read it
 // too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
@@ -3763,8 +3763,17 @@ export function addressed(order, label,
   if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label, { orderId, cause: order.cause })}${staleReadingsClause(label, context)}\n\n${prompt}`;
   const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`;
-  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}`;
+  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}${calmTail(spawned.row)}`;
   return `${identity}${prompt}\n\n${engineerBriefLine(label, engineers, families)}${autonomyParagraphs(order, label)}`;
+}
+
+/**
+ * THE CALM FINISH PARAGRAPH, LAST, FOR A `calm`-ARM ROW'S FIRST-CONTACT PREAMBLE AND NOTHING ELSE (#4070, #4055 move 2): empty for a `control` row, so
+ * the two arms' preambles are byte-identical up to it, and a follow-up never reaches this (`addressed` returns before). The arm is {@link armOf}'s.
+ * @param {number} row
+ */
+function calmTail(row) {
+  return armOf(row) === ARM.CALM ? `\n\n${CALM_FINISH_PARAGRAPH}` : "";
 }
 
 /**
@@ -5277,6 +5286,122 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
   return untaken === null ? null : `${untaken}${abandonedStart(target, { run, claimer, env })}`;
 }
 
+// --- #4070: THE CALM-FINISH A/B'S RECORD, AND THE CAP ON A CLAIM'S REPEAT ORDERS (#4055 move 2) ---
+
+/** The session an order goes to instead of the worker once its claim has been sent {@link MAX_CONTINUATIONS} gate orders. */
+export const CONTINUATION_ESCALATE_TO = "orchestrator";
+
+/**
+ * Where the arm of each new per-row worker and every continuation are written: a file BESIDE the wake ledger, one JSON object per line. NOT A LINE IN
+ * THE LEDGER ITSELF, because every reader of that file splits a line on tabs and reads the first field as a cause key, so a line of another shape would
+ * be counted as a cause (`deliveryCounts`) and could be taken for a marker; the ledger's directory is still the one place a report looks.
+ */
+export const CLAIM_ORDERS_FILE = "claim-orders";
+
+/** @typedef {{counts: Map<string, number>, append: (entry: Record<string, unknown>) => void}} ClaimOrders gate orders sent so far per claim, and the writer of the next line */
+
+/** @param {string} ledgerPath */
+export function claimOrdersPath(ledgerPath) {
+  return `${dirname(ledgerPath)}/${CLAIM_ORDERS_FILE}`;
+}
+
+/**
+ * THE CLAIM-ORDERS RECORD, READ: how many gate orders each claim has been sent, and the way to write the next line. A line that does not parse is SKIPPED
+ * WITH A WARNING, not dropped silently: a skipped continuation undercounts, which lets a claim take one more order than the cap, and the warning is how
+ * that is seen. A missing file is an empty record; any other read failure propagates.
+ * @param {string} path
+ * @param {{read?: typeof readFileSync, append?: typeof appendFileSync, warn?: (line: string) => void}} [io]
+ * @returns {ClaimOrders}
+ */
+export function claimOrdersIn(path, { read = readFileSync, append = appendFileSync, warn = (line) => process.stderr.write(line) } = {}) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  let raw = "";
+  try {
+    raw = String(read(path, "utf8"));
+  } catch (/** @type {any} */ err) {
+    if (err?.code !== "ENOENT") throw new Error(`cannot read ${path}`, { cause: err });
+  }
+  for (const line of raw.split("\n").filter(Boolean)) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.kind === "continuation") counts.set(entry.claim, (counts.get(entry.claim) ?? 0) + 1);
+    } catch (/** @type {any} */ err) {
+      warn(`claim-orders: skipped an unreadable line in ${path} (${firstLine(err)}); its claim may be undercounted\n`);
+    }
+  }
+  return { counts, append: (entry) => append(path, `${JSON.stringify(entry)}\n`) };
+}
+
+/**
+ * THE CLAIM A GATE ORDER BELONGS TO, or `null` when it is not a repeat order to a LIVE worker on one (#4070). Asked of the order's addressee before it is
+ * routed: a spare instance holds exactly one row and is named for it (`worker-<row>`), so its claim IS the row; a standing engineer seat holds
+ * successive claims, so its claim is the seat and the order's subject. Counting by the SESSION would charge one claim's orders to the next row the same
+ * seat takes, and counting by the cause would give each cause its own allowance; neither is the claim.
+ * @param {{session: string, cause?: string, subject?: string}} order @param {{label: string}[]} live @param {string[]} roster
+ * @returns {string | null}
+ */
+function claimOfOrder(order, live, roster) {
+  if (!CONTINUATION_CAUSES.includes(String(order.cause)) || !live.some((a) => a.label === order.session)) return null;
+  const row = familyNumber(order.session, SPARE_FAMILIES);
+  if (row !== null) return `row-${row}`;
+  return roster.includes(order.session) ? `${order.session}/${order.subject ?? order.cause}` : null;
+}
+
+/**
+ * The order `orchestrator` receives in place of the worker's nth: the same cause and key, a new addressee, and the sentence that says why it is not the
+ * worker's. The dead-owner fallback and `resume` are the worker's own routing and are dropped with it.
+ * @param {{session: string, prompt: string, cause?: string, causeKey: string, fallback?: string, fallbackPrompt?: string, fallbackOnlyIfAbsent?: boolean, resume?: boolean}} order
+ * @param {{claim: string, number: number}} continuation
+ */
+function escalatedContinuation(order, { claim, number }) {
+  const { fallback, fallbackPrompt, fallbackOnlyIfAbsent, resume, ...kept } = order;
+  return { ...kept, session: CONTINUATION_ESCALATE_TO,
+    prompt: `\`${order.session}\` HAS NOW BEEN SENT ${number - 1} GATE ORDERS ON ONE CLAIM (\`${claim}\`; the cap is ${MAX_CONTINUATIONS}, #4070), so the ${number}th comes to you `
+      + "and not to it again: a third copy of a reminder the worker has not acted on costs it another full-context turn and has not moved it twice. Read the row and "
+      + "its pull request, find what stops it, and either unblock it, release the claim or say on the row why it waits.\n\n"
+      + `The order, as the worker would have received it (cause \`${order.cause}\`, key \`${order.causeKey}\`):\n\n${order.prompt}` };
+}
+
+/**
+ * The number of this order on its claim, or `null` when it is not a repeat order to a live worker's claim or no record is kept: `number` is the nth gate
+ * order to the claim (the record's count plus this one) and `escalated` is whether it is at or past {@link MAX_CONTINUATIONS}. Counted from what was
+ * DELIVERED, so an order a refusal sends back is the same number on the next tick.
+ * @param {{session: string, cause?: string, subject?: string}} order @param {{label: string}[]} live @param {string[]} roster @param {ClaimOrders | undefined} claimOrders
+ * @returns {{claim: string, number: number, escalated: boolean} | null}
+ */
+function continuationOf(order, live, roster, claimOrders) {
+  const claim = claimOrders === undefined ? null : claimOfOrder(order, live, roster);
+  if (claim === null || claimOrders === undefined) return null;
+  const number = (claimOrders.counts.get(claim) ?? 0) + 1;
+  return { claim, number, escalated: number >= MAX_CONTINUATIONS };
+}
+
+/** The tick-log suffix of a numbered repeat order. @param {{number: number, escalated: boolean} | null} continuation */
+function continuationNote(continuation) {
+  if (continuation === null) return "";
+  return ` [continuation ${continuation.number}${continuation.escalated ? ` -> ${CONTINUATION_ESCALATE_TO}` : ""}]`;
+}
+
+/**
+ * WHAT A LANDED DELIVERY WRITES TO THE CLAIM-ORDERS RECORD (#4070): one `continuation` line for a numbered repeat order (claim, cause, number, and who
+ * got it), and one `arm` line for a worker this delivery STARTED -- written at the spawn, once, so a report groups by arm without recomputing it.
+ * @param {ClaimOrders | undefined} claimOrders
+ * @param {{gateOrder: {session: string, cause?: string, causeKey: string}, target: {label: string, profile?: object, claimed?: ClaimedRow},
+ *   continuation: {claim: string, number: number} | null, at: number}} delivery
+ */
+function noteClaimOrders(claimOrders, { gateOrder, target, continuation, at }) {
+  if (claimOrders === undefined) return;
+  if (continuation !== null) {
+    claimOrders.counts.set(continuation.claim, continuation.number);
+    claimOrders.append({ kind: "continuation", at, claim: continuation.claim, cause: gateOrder.cause, continuation: continuation.number,
+      session: gateOrder.session, to: target.label, causeKey: gateOrder.causeKey });
+  }
+  if (target.profile !== undefined && target.claimed !== undefined) {
+    claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, arm: armOf(target.claimed.row) });
+  }
+}
+
 /**
  * Deliver each order, and say what happened to every one of them.
  *
@@ -5295,7 +5420,8 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, hostLoad?: () => HostLoad, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
  *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
- *          relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>, now?: () => number} & Partial<ReviewerDeps>} [deps]
+ *          relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>, now?: () => number,
+ *          claimOrders?: ClaimOrders} & Partial<ReviewerDeps>} [deps]
  *   `relane` (#3465) is {@link relaneTarget}'s clock and the deferral record: a declared finishing order over the bound goes to a free engineer. Absent, none is re-laned.
  *   `clock` is the standing seats' last-order record and the time ({@link OrderClock}, #3440); absent, no seat's window is kept for
  *   being recent. `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
@@ -5309,7 +5435,9 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
  *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
  *   asks about a standing session's worktree; `codexConfig` reads the reviewer's codex config for a keyed reviewer's trust note (#3264);
- *   `now` is the clock that mints each delivery's order id, which `record` receives as `at` (#4068)
+ *   `now` is the clock that mints each delivery's order id, which `record` receives as `at` (#4068);
+ *   `claimOrders` (#4070) is {@link claimOrdersIn}'s record: the arm of every worker this call STARTS is written to it, and the nth repeat order to a live
+ *   worker's claim is numbered, logged and, from the {@link MAX_CONTINUATIONS}th on, sent to {@link CONTINUATION_ESCALATE_TO}. Absent, no order is counted or capped
  * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[], settled: string[], goneSeats: Map<string, string>}}
  *   `settled` (#3568) is one line per order addressed to a seat that ended this tick -- DROPPED (derived) or LEFT QUEUED (authored) -- and is not a refusal;
  *   `goneSeats` is every seat the tick found ended, label to the reason, for the next delivery of the same tick
@@ -5319,7 +5447,7 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats,
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders,
     now = Date.now } = {}) {
   const sent = [];
   const refused = [];
@@ -5334,7 +5462,10 @@ export function deliver(orders, agents, roster,
   const outaged = [];
   const live = agents.filter((a) => !gone.has(a.label)).map((a) => ({ ...a }));
   let spawned = 0;
-  for (const order of orders) {
+  for (const gateOrder of orders) {
+    // A REPEAT ORDER TO A LIVE WORKER'S CLAIM IS NUMBERED BEFORE IT IS ROUTED (#4070), and the cap's order is the one that is routed, so everything below reads `order`.
+    const continuation = continuationOf(gateOrder, live, roster, claimOrders);
+    const order = continuation?.escalated ? escalatedContinuation(gateOrder, continuation) : gateOrder;
     // A CAUSE THAT KEEPS COMING BACK IS NOT A TIMING PROBLEM. Offering it a seventh time would be the
     // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
     // busy. Naming it and stopping is the only answer that reaches a person.
@@ -5399,12 +5530,13 @@ export function deliver(orders, agents, roster,
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
-    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined, noClear, at);
+    if (record) record(order.causeKey, target.label !== gateOrder.session ? target.label : undefined, noClear, at);
+    noteClaimOrders(claimOrders, { gateOrder, target, continuation, at });
     // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
     // line is unchanged, and an instance's says it was left alone -- so the tick log shows no `/clear` to one.
     sent.push(target.profile
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
-      : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}`);
+      : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}${continuationNote(continuation)}`);
   }
   return { sent, refused, stuck, outaged, settled, goneSeats: gone };
 }
@@ -7635,6 +7767,7 @@ function main() {
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
   const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     goneSeats: handed.goneSeats,
+    claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
