@@ -186,9 +186,11 @@ test("the per-row disallowed-tools list strips cost, not judgment, and keeps Age
 // headroom always equals it exactly, whatever value it holds; a mutation check on this file, dropping
 // `MIN_WORKING_ROOM_TOKENS` to 20,000 to re-create #2717's own regression, confirmed this and still
 // passed 15/15 before this floor was made independent). Chosen well clear of the ~22k that actually
-// thrashed, and well under production's current 200k, so a deliberate future retune of the production
-// floor does not have to touch this assertion too.
-const MIN_ACCEPTABLE_HEADROOM_TOKENS = 150_000;
+// thrashed. #4180 moved it from 150,000 to 100,000 with production's `MIN_WORKING_ROOM_TOKENS` (200,000 to
+// 100,000, the window 300,000 to 200,000): 100,000 is 4.5 times the ~22k that thrashed, and no worker turn in the
+// week of 2026-10-01 to 2026-10-08 carried more than 300k of context. If a row thrashes at 200,000, put both
+// constants back (one line each).
+const MIN_ACCEPTABLE_HEADROOM_TOKENS = 100_000;
 
 /**
  * #2717's REGRESSION (2026-09-28, worker-2623): the window passed to `--autocompact` is not the trigger.
@@ -212,6 +214,15 @@ test("the autocompact window clears the measured base plus real working room, no
 
   const codex = agentArgs({ kind: "codex", model: "gpt-5.6-luna", effort: "medium" });
   assert.ok(!codex.includes("--autocompact"), "codex is a different product and carries no such flag");
+});
+
+// #4180: the headroom test above derives its window from the constant, so it cannot say what the window IS.
+test("the pane form launches a per-row Claude worker with --autocompact 200000 (#4180)", () => {
+  const claude = agentArgs({ kind: "claude", model: "sonnet", effort: "high" });
+  assert.equal(claude[claude.indexOf("--autocompact") + 1], "200000");
+  assert.equal(AUTOCOMPACT_WINDOW_TOKENS, 200_000);
+  // negative control: the comparison can fail, because the window the row replaced is not this one.
+  assert.notEqual(claude[claude.indexOf("--autocompact") + 1], "300000");
 });
 
 test("an effort valid for one product is REFUSED for the other", () => {
