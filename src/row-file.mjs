@@ -110,7 +110,7 @@ import { DEFECT_LABEL } from "./defect-class-line.mjs"; // #4123
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { rowTracker, trackerNamed } from "./row-tracker.mjs"; // #4078
-import { umbrellaEdge } from "./wait-condition.mjs";
+import { parseWaits, umbrellaEdge } from "./wait-condition.mjs";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.mjs"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.mjs";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
@@ -656,6 +656,24 @@ export function filingWarnings(body, argv) {
 }
 
 /**
+ * #4229: A `Waiting-for:` THE GATE CANNOT READ IS REFUSED WHERE IT IS WRITTEN. `parseWaits` keeps a line outside its grammar as `unreadable` and
+ * no gate acts on one: #4090 was parked on "ceo's dispatched run ... ends", the condition was true 45 minutes later and the row sat about ten hours.
+ * The reader is `wait-condition.mjs`'s own, so this cannot drift from what the gate reads, and a line inside a fence is not read (the reader skips it).
+ * `manual` is a readable wait (signal 9 counts it). `null` means proceed.
+ * @param {string} body
+ * @returns {string | null}
+ */
+export function unreadableWaitReason(body) {
+  const unreadable = parseWaits(body).filter((wait) => wait.state === "unreadable");
+  if (unreadable.length === 0) return null;
+  const quoted = unreadable.map((wait) => `\`Waiting-for: ${wait.text}\``).join(", ");
+  return `row-file: REFUSING to file -- ${quoted} is outside the grammar the gate reads, so nothing would ever lift this wait: the row would stand on a sentence for ever `
+    + "(#4090 was parked ten hours on one after its condition was true). Write the condition as one of `closed #n`, `merged #n`, `labelled|unlabelled <label> #n`, "
+    + "`published <pkg>@<dist-tag>`, `<pkg> latest = next`, `tagged <tag>`, or `manual` (a wait no field can express, counted). "
+    + "A wait on a SESSION's act is not a `Waiting-for:` line: put the `answer:<session>` label on the row, and removing it IS the answer. Nothing was filed.";
+}
+
+/**
  * THE VERDICT, PURE -- `null` means proceed. Reuses #707's `missingTemplateFields` outright rather than
  * re-deriving it; see this file's header for why that matters here specifically.
  * @param {string | null} body
@@ -681,6 +699,8 @@ export function fileRefusalReason(body) {
       + "`gh issue create`. Add the missing section(s) as a `## <Field>` heading with real content under "
       + "it, then file again -- whoever claims this row later has less context than you have right now.";
   }
+  const unreadableWait = unreadableWaitReason(body);
+  if (unreadableWait) return unreadableWait;
   const region = regionRefusalReason(body);
   if (region) return `row-file: ${region}`;
   const bareKeyed = bareKeyedRegionReason(body);
