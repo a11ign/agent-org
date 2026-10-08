@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`org-health` raises `release-behind-main` (signal 21) when a `dora` repository's `main` holds a commit on its `releasablePaths` that no release carries and the oldest such commit is over 24 hours old, naming the repository, the latest release (name, version, time), the oldest unreleased commit (sha, time, pull request) and how many more there are. It sees what `release-run-failed` cannot: a release that never started (a repository that has not adopted `changeset-required`, a wrong `no-release:` line, a release that fails after the merge), the class behind a11ign/a11ign#4084. A test file, `.changeset/` and a merge commit do not count; a commit whose pull request body has `no-release: <reason>` is read as declared and named; a refused read of one repository is `unknown` and the others are still read; a repository with no release says `never released`. The facts are read at most once an hour (`release-behind-main.json` in the state directory) and judged against the clock on every tick. a11ign/a11ign#4128.

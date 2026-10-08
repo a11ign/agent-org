@@ -67,6 +67,7 @@ import { brokenChecks } from "./red-pr.mjs";
 import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.mjs";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
 import { IDLE_REASONS, idleLine } from "./idle-with-open-rows.mjs";
+import { repoVerdict } from "./release-behind-main.mjs";
 import { CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, CLASS_LABEL_PREFIX, groupByClass } from "./class-repeat.mjs";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
@@ -196,6 +197,7 @@ export const SIGNALS = Object.freeze({
   STATE_LABEL: "row-without-exactly-one-state",
   IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
   RELEASE_FAILED: "release-run-failed",
+  RELEASE_BEHIND_MAIN: "release-behind-main",
   BOARD_TRUTH: "board-disagrees-with-reality",
   CLASS_REPEAT: "class-repeat",
 });
@@ -1176,6 +1178,25 @@ function tryJson(read) {
 }
 
 /**
+ * SIGNAL 21 (#4128, class fix for a11ign/a11ign#4084): A DORA REPOSITORY'S `main` HOLDS A SHIPPED-PATH COMMIT THAT NO RELEASE CARRIES, AND THE OLDEST IS OVER 24 HOURS OLD. Beside
+ * `release-run-failed` (signal 18), which sees a release that ran and failed; this sees one that never started. ONE READING PER TRIPPED REPOSITORY, each with its own discriminator
+ * (`release-behind-main@<repo>@<oldest sha>`), so a later commit does not re-raise it and one repository's order does not re-key another's. The verdicts are `release-behind-main.mjs`'s.
+ * A repository whose read was refused is UNKNOWN, never clear, and its being unknown does not hide another's trip: a trip and the unknowns are both returned.
+ * @param {{ now: number, behind: import("./release-behind-main.mjs").RepoFact[] | null }} input
+ * @returns {Reading[]}
+ */
+export function releaseBehindReadings({ now, behind }) {
+  const signal = SIGNALS.RELEASE_BEHIND_MAIN;
+  if (behind === null) return [unknown(signal, "the dora repositories could not be listed, so no repository is known to be level with its releases")];
+  const verdicts = behind.map((fact) => repoVerdict(fact, now));
+  const tripped = verdicts.flatMap((v) => (v.verdict === "tripped"
+    ? [{ signal, status: /** @type {const} */ ("tripped"), firstTrippedAt: v.firstTrippedAt, discriminator: `${signal}@${v.discriminator}`, detail: v.detail }] : []));
+  const unread = verdicts.filter((v) => v.verdict === "unknown");
+  const unreadReading = unread.length === 0 ? [] : [unknown(signal, `${unread.map((v) => v.detail).join("; ")}, so those repositories are not known to be level with their releases`)];
+  return tripped.length === 0 && unread.length === 0 ? [{ ...clear(signal), detail: verdicts.map((v) => v.detail).join("; ") }] : [...tripped, ...unreadReading];
+}
+
+/**
  * SIGNAL 20 (#4126, child B of #4122): A SECOND CLOSED ROW UNDER ONE `class:<id>` LABEL, WHICH MEANS THE CLASS'S GUARD FAILED. One reading PER CLASS, so each class has its own
  * discriminator and a class whose offer lapses cannot re-key another's. THE DISCRIMINATOR IS THE CLASS AND ITS NEWEST ROW (`class-repeat/<id>@<number>`): the same newest row is the
  * same order, and a THIRD row is a new newest row and a new offer. A closed row stays closed, so the condition never clears on its own and an order for it would be re-sent every
@@ -1231,7 +1252,7 @@ function classRepeatTripped(signal, group, beside) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.mjs").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
  *           classRepeat?: import("./class-repeat.mjs").ClassRepeatFact | null }} facts `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
@@ -1253,6 +1274,7 @@ export function orgHealthReadings(facts) {
   if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
+  if (facts.releaseBehind !== undefined) readings.push(...releaseBehindReadings({ now: facts.now, behind: facts.releaseBehind }));
   if (facts.classRepeat !== undefined) readings.push(...classRepeatReadings({ now: facts.now, classRepeat: facts.classRepeat }));
   return readings;
 }
@@ -1322,6 +1344,11 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "`gh run rerun <run id> --failed -R <the repository in the URL above>`. A cause FIXED ON `main` since (the run is at an older sha) needs a NEW run, which a rerun of the old one does not give: "
     + "`gh workflow run release.yml --ref main -R <repository>`. If the cause is not fixed yet, FILE THE FIX `" + READY_LABEL + "` WITH AN OWNER in this turn. "
     + "Do not wait for the next changeset: a run is only ever started by a merge that carries one, so waiting leaves it red for as long as nobody merges one. It clears the tick a later run succeeds.",
+  [SIGNALS.RELEASE_BEHIND_MAIN]: "A repository's `main` holds a commit on a releasable path that no release carries, and the oldest is over a day old: a consumer is on the old version. The release, the oldest commit "
+    + "and its pull request are named above. FIND WHY IT WAS NOT RELEASED before choosing: the pull request carried no changeset (`changeset-required` is the gate that stops that, and this repository may not have adopted it), "
+    + "a release run failed after the merge (`release-run-failed` would be tripped too), or the change should not ship and its pull request lacks a `no-release: <reason>` line. Then ADD THE CHANGESET in a pull request "
+    + "(`.changeset/<name>.md`) so the release run takes it, or put `no-release: <reason>` in the pull request's body if the change ships nothing, and FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn. "
+    + "It clears the tick a release is newer than the commit, and a commit a `no-release:` line declares is not counted.",
   [SIGNALS.CLASS_REPEAT]: "A class of failure in `" + FAILURE_CLASSES_PATH + "` now has a SECOND closed row, and a repeat means THE GUARD THE INDEX NAMES FAILED (or, where the guard is `null`, was never in force). "
     + "Do NOT fix the newest instance and stop: that is what the first one got. READ BOTH ROWS and the guard above, and decide which it is: the guard exists and did not fire (find why and fix it, so the NEXT instance is stopped), "
     + "the guard covers a narrower population than the class (widen it), or the second row is not the class at all (remove its `" + CLASS_LABEL_PREFIX + "<id>` label and say why on the row). "
