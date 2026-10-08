@@ -173,6 +173,12 @@ jobs:
         run: npm install --no-package-lock
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
+      # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain` 0.1.5). This repository is the standard's model -- one package at the root, one
+      # README, no workspace file -- so the step is the negative control that lives in a real repository: it must PASS here, and a change that makes this a monorepo would turn `gate` red. It runs in this job
+      # because `gate` waits for it and the install above already holds the pinned `@a11ign/toolchain`. The published one-liner (`npx --package @a11ign/toolchain layout-check`) does NOT run on Linux
+      # as of 0.1.5: `dist/layout-check.mjs` has no `#!` line, so the shell reads its `import` lines (`import: not found`, exit 2). Node runs the file, and the same file's main guard fires, so call it by path.
+      - name: The layout check -- a single-package repository has its package at the root, with no workspace file
+        run: node node_modules/@a11ign/toolchain/dist/layout-check.mjs
       # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 429 files were in the
       # program when this job was added (201 of the 227 `*.test.ts`, 195 of the 219 `@ts-check` `.mjs`) and 473 once the burn-down of a11ign/a11ign#3571 left four files in `exclude`; the
       # floor is below that so a deletion does not trip it, and an `exclude` that swallows a hundred files does. Raise it as the list shrinks.

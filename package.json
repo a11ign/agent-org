@@ -15,7 +15,7 @@
     "node": ">=22"
   },
   "devDependencies": {
-    "@a11ign/toolchain": "^0.1.4",
+    "@a11ign/toolchain": "^0.1.5",
     "@rstest/core": "^0.12.3",
     "@types/node": "^22.20.5",
     "tsx": "^4.22.4",
