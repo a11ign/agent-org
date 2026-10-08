@@ -11,8 +11,9 @@
 // A ROW IS COUNTED IN THE WEEK ITS OPENING FALLS IN, not the week it was labelled or closed: the label is applied after the fact, so a
 // count by labelling date would move the week a finding belongs to.
 //
-// ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A refused read, or a labelled row whose opening cannot be read, makes the count
-// `null` and the line says `unknown`; only a read that succeeded may print `0`. The previous week says `no baseline` when it begins before
+// ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A refused tracker listing never reaches this module: `board-data.mjs`'s `issues()` throws,
+// so the document is not built and no `0` is printed. What can reach it is a labelled row whose opening cannot be read; that makes the count
+// `null` and the line says `unknown`, because only a read that succeeded may print `0`. The previous week says `no baseline` when it begins before
 // the label was first applied, because a zero from a week nobody was labelling is not a reading.
 import { verdictFor } from "./org-retro.mjs";
 
@@ -55,20 +56,19 @@ function opened(rows, week) {
 }
 
 /**
- * @param {Row[] | null} rows every issue of the tracker, or `null` when the listing was refused
+ * @param {Row[]} rows every issue of the tracker, the listing `issues()` proved complete
  * @param {Date} now
  * @returns {{ week: Week, previousWeek: Week, count: number | null, numbers: number[], previousCount: number | null, verdict: string }}
  */
 export function foundByChairman(rows, now) {
   const { current, previous } = weeksBefore(now);
-  const numbers = rows === null ? null : opened(rows, current);
-  const previousNumbers = rows === null ? null : opened(rows, previous);
+  const numbers = opened(rows, current);
+  const previousNumbers = opened(rows, previous);
   const count = numbers === null ? null : numbers.length;
   // A week that began before the first labelling is not a baseline, whatever it counts.
   const previousCount = previousNumbers === null || previous.since < LABELLED_FROM ? null : previousNumbers.length;
   const prior = { status: previous.since < LABELLED_FROM ? "none" : "read", numbers: { [COUNT_ID]: previousCount } };
-  const unreadable = rows === null || previousNumbers === null;
-  const verdict = verdictFor({ better: "lower", previous: unreadable ? { status: "unreadable" } : prior, id: COUNT_ID, current: count });
+  const verdict = verdictFor({ better: "lower", previous: previousNumbers === null ? { status: "unreadable" } : prior, id: COUNT_ID, current: count });
   return { week: current, previousWeek: previous, count, numbers: numbers ?? [], previousCount, verdict };
 }
 

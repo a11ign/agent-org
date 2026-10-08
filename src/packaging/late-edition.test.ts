@@ -20,6 +20,7 @@ import {
   lateEditionRefusal, minutesOfDay, document,
   LATE_EDITION_EARLIEST, LATE_EDITION_CUTOFF,
 } from "../board-document.mjs";
+import { foundByChairman } from "../found-by-chairman.mjs";
 
 const ok = {
   summary: { text: "Written at 08:05 on 9 September.\n\nSomething happened." },
@@ -37,7 +38,7 @@ test("a summary written at 08:05, no release, 08:25 London: it renders", () => {
 test("the document says of ITSELF that it is late, in its own header", () => {
   const base = {
     since: "2026-01-01T00:00:00Z", all: [], open: [], closed: [], milestones: [], release: null,
-    merges: [], unpushed: 0, strays: [], latestGate: null, gateIsFresh: false,
+    merges: [], unpushed: 0, strays: [], latestGate: null, gateIsFresh: false, foundByChairman: foundByChairman([], new Date()),
     fleetHours: { status: "not instrumented", note: "no total exists." }, achievements: [],
   };
   const md = document(base as never, { text: "x" }, { lateAt: "08:25" });

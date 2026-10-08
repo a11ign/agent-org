@@ -60,20 +60,16 @@ test("a week that begins before the label's first use has no baseline, not a zer
   assert.doesNotMatch(line, /previous week[^;]*: 0/);
 });
 
-test("a refused read prints unknown, never 0", () => {
-  const refused = foundByChairmanLine(foundByChairman(null, NOW));
-  assert.match(refused, /: unknown \(target 0\)/);
-  assert.doesNotMatch(refused, /: 0 \(target 0\)/);
-  assert.equal(foundByChairman(null, NOW).count, null);
+test("a labelled row whose opening cannot be read prints unknown, never 0", () => {
   const noDate = foundByChairman([row(4101, "2026-10-03T09:00:00Z"), { number: 4104, labelNames: [LABEL] }], NOW);
   assert.equal(noDate.count, null, "a labelled row whose opening cannot be read makes the week unreadable, not smaller");
-  assert.match(foundByChairmanLine(noDate), /unknown/);
+  assert.match(foundByChairmanLine(noDate), /: unknown \(target 0\)/);
+  assert.doesNotMatch(foundByChairmanLine(noDate), /: 0 \(target 0\)/);
 });
 
-test("a week with no labelled rows prints 0 only when the read succeeded", () => {
+test("a week with no labelled rows prints 0 over a listing that was read", () => {
   const read = foundByChairmanLine(foundByChairman([row(4103, "2026-10-04T09:00:00Z", ["ready"])], NOW));
   assert.match(read, /: 0 \(target 0\)/);
   assert.doesNotMatch(read, /unknown \(target/);
-  assert.match(foundByChairmanLine(foundByChairman(null, NOW)), /unknown \(target 0\)/);
   assert.equal(foundByChairman([], LATER).count, 0);
 });

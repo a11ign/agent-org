@@ -706,7 +706,7 @@ export function collect(since) {
     release: milestone(),
     ...mergeState(since),
     strays: misAuthored(since),
-    // `issues()` throws rather than return a partial listing, so a `null` here is a read nobody made and the count says `unknown`.
+    // `issues()` throws rather than return a partial listing, so a refused read ABORTS the document: there is no count to print, and none prints 0.
     foundByChairman: foundByChairman(all, new Date()),
     ...reported(),
   };
