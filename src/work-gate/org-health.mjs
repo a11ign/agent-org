@@ -20,12 +20,12 @@ import { claimRecordOf } from "../claim-stall.mjs";
 import { idleClaimantReading } from "../idle-claimant.mjs";
 import { familyNumber } from "../arm-pr.mjs";
 import { readAgents } from "../herdr-agents.mjs";
-import { boardTruthAudit, readBoardFacts, postDaysTable } from "../board-truth-audit.mjs";
+import { boardTruthAudit, readBoardFacts, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.mjs";
 import { editionDay } from "../board-discussion.mjs";
 import { idleWithOpenRowsReading, IDLE_REASONS } from "../idle-with-open-rows.mjs";
 import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
-import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.mjs";
+import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.mjs";
 import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, readLatestMerge, orgHealthTick,
   primaryStandingSince, readTeamAccess, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders } from "../org-health.mjs";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.mjs";
@@ -656,6 +656,31 @@ export function boardRowsOf(openRowsRead, claimedComments) {
 }
 
 /**
+ * #4250: THE FLAG SENDS THE ORDER. A handoff written as a sentence (`handoff-in-prose`) or a reading with no `Defect-row:` line moves nobody from a table read once a day, so each finding's
+ * row gets `answer:<route>` (`proseAudit` raises exactly those two questions; the session the comment's first words name, else the row's owner), ONCE per row and route however many comments name it. This wraps `readProseFacts` because
+ * `postDaysTable` calls it exactly once per edition day, after its ask finds the table absent: a second tick that finds the table posted reads no comments and labels nothing. THE LABEL GOES
+ * BEFORE THE TABLE and `POST /issues/{n}/labels` is idempotent (and creates a label that does not exist yet, which `--add-label` refuses), so a table that fails to post is retried
+ * without a second label. An unreadable comment list is `null` and labels nothing, as it posts no table. One label that is refused is said on `log` and the rest still go.
+ * @param {{ repo: string, log: (line: string) => void }} io @returns {typeof readProseFacts}
+ */
+function readProseAndOrder({ repo, log }) {
+  return (input) => {
+    const prose = readProseFacts(input);
+    if (prose === null) return null;
+    const audited = proseAudit(prose);
+    const owed = new Map(audited.findings.map((f) => [`${f.number} ${f.route}`, f]));
+    for (const { number, route } of owed.values()) {
+      try {
+        input.run(["api", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${ANSWER_PREFIX}${route}`]);
+      } catch (error) {
+        log(`board-truth: ${ANSWER_PREFIX}${route} was not added to #${number} (${error instanceof Error ? error.message.split("\n")[0] : error})`);
+      }
+    }
+    return prose;
+  };
+}
+
+/**
  * #4045: READ THE BOARD AGAINST REALITY AND POST THE DAY'S TABLE: the gate's `readBoardTruth`. The closed rows, the merged PRs and the herdr listing are read here (each a
  * refused read is `null`, unread); everything else is the tick's. THE POST IS BEST EFFORT AND NEVER STOPS THE TICK: a failure is said on stderr (the next tick asks again,
  * since the record is the state) and the audit is returned all the same, because the signal does not depend on the post.
@@ -667,7 +692,7 @@ export function boardTruthNow({ openRowsRead, claimedComments, waitFacts, now },
   const read = readBoardFacts(repo, { run, agents, now, openRows, waitFacts });
   const audit = boardTruthAudit(commentsComplete ? read : { ...read, liveSessions: null });
   try {
-    post({ audit, day: editionDay(new Date(now)), repo, run });
+    post({ audit, day: editionDay(new Date(now)), repo, run, readProse: readProseAndOrder({ repo, log }) });
   } catch (error) {
     log(`board-truth: the day's table was not posted (${error instanceof Error ? error.message.split("\n")[0] : error}); the next tick asks again`);
   }
