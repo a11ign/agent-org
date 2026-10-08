@@ -108,6 +108,7 @@ import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "./project-identity.mjs";
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+import { rowTracker, trackerNamed } from "./row-tracker.mjs"; // #4078
 import { umbrellaEdge } from "./wait-condition.mjs";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.mjs"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.mjs";
@@ -749,10 +750,10 @@ export function blockedByRefusal(body, argv, { read }) {
   return null;
 }
 
-/** @param {number} number @param {(cmd: string, args: string[]) => string} run @returns {{ state: string, body: string } | null} the blocker, `null` when it cannot be read */
-function readBlocker(number, run) {
+/** @param {number} number @param {(cmd: string, args: string[]) => string} run @param {string} repo the tracker the new row is filed in, where its blocker lives @returns {{ state: string, body: string } | null} the blocker, `null` when it cannot be read */
+function readBlocker(number, run, repo) {
   try {
-    const row = JSON.parse(run("gh", ["issue", "view", String(number), "--repo", REPO, "--json", "state,body"]));
+    const row = JSON.parse(run("gh", ["issue", "view", String(number), "--repo", repo, "--json", "state,body"]));
     return typeof row?.state === "string" ? { state: row.state, body: String(row.body ?? "") } : null;
   } catch {
     return null; // an unreadable blocker is an unknown, never an umbrella
@@ -783,7 +784,7 @@ export function appendFiledBy(body, session) {
 
 /**
  * `argv` with any `--body`/`--body-file` form removed and replaced by a single `--body <augmentedBody>`,
- * and `--session=`/`--ready` removed entirely -- `gh issue create` knows neither and would refuse them
+ * and `--session=`/`--ready`/`--tracker=` removed entirely -- `gh issue create` knows neither and would refuse them
  * as unknown flags. Every other argument (title, labels, ...) passes through in its original position,
  * unchanged.
  * @param {string[]} argv @param {string} session @param {string} body the body BEFORE augmentation
@@ -795,7 +796,7 @@ export function withFiledBy(argv, session, body) {
     const arg = argv[i];
     if (arg === "--body" || arg === "--body-file" || arg === "--session") { i += 1; continue; }
     if (arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
-      || arg === READY_FLAG) continue;
+      || arg.startsWith(TRACKER_FLAG) || arg === READY_FLAG) continue;
     kept.push(arg);
   }
   kept.push("--body", appendFiledBy(body, session));
@@ -805,6 +806,23 @@ export function withFiledBy(argv, session, body) {
 // #844: THE ONE FLAG THIS FILE OWNS, NOT `gh`'s -- stripped by `withFiledBy` above the same way
 // `--session=` is, so `refuseUnknownFlags`'s own gh-facing list never needs to know it.
 const READY_FLAG = "--ready";
+
+// #4078: THE SECOND FLAG THIS FILE OWNS. `--tracker=<key>` overrides the tracker `rowTracker` reads off the Region; stripped by
+// `withFiledBy`, which is also why it is not in the gh-facing list above.
+const TRACKER_FLAG = "--tracker=";
+
+/** @typedef {import("./project-config.mjs").Tracker} Tracker */
+
+/**
+ * #4078: THE PROJECT'S OWN TRACKER -- the first declared, which is also what `REPO`, `PROJECT_OWNER` and `PROJECT_NUMBER` name. Promotion
+ * (`--promote=`) and `--board=` act on a row that ALREADY EXISTS, found by its number in this tracker, and take it; filing takes the one
+ * `rowTracker` names.
+ * @returns {Tracker}
+ */
+const homeTracker = () => homeProjectDeclaration().tracker[0];
+
+/** @param {Tracker} a @param {Tracker} b @returns {boolean} */
+const sameTracker = (a, b) => a.repo === b.repo && a.board.owner === b.board.owner && a.board.number === b.board.number;
 
 /**
  * #844: which label -- and which Project 2 Status option, by the SAME name -- this filing gets.
@@ -949,11 +967,11 @@ export function declaresRelease(argv) {
  * The repository's own open milestones, FETCHED rather than listed here -- a literal list is a second copy
  * of something GitHub already holds, and the day it drifts the refusal names milestones that do not exist.
  * `null` when the list could not be read: the RULE still stands, only the SUGGESTION degrades.
- * @param {{ run?: typeof defaultRun }} [deps] @returns {string[] | null}
+ * @param {{ run?: typeof defaultRun, repo?: string }} [deps] `repo` is the tracker the row is filed in (#4078) @returns {string[] | null}
  */
-export function openMilestones({ run = defaultRun } = {}) {
+export function openMilestones({ run = defaultRun, repo = REPO } = {}) {
   try {
-    const raw = run("gh", ["api", `repos/${REPO}/milestones`, "--jq", ".[].title"]);
+    const raw = run("gh", ["api", `repos/${repo}/milestones`, "--jq", ".[].title"]);
     const titles = raw.split("\n").map((t) => t.trim()).filter(Boolean);
     return titles.length > 0 ? titles : null;
   } catch {
@@ -968,15 +986,16 @@ export function openMilestones({ run = defaultRun } = {}) {
  * IT NEVER GUESSES ONE. A milestone chosen by a tool looks decided, and a wrong one is worse than an
  * absent one because the health check goes quiet. Nothing in a row -- its labels, its parent, its Region --
  * determines a release; a person picks.
- * @param {string[] | null} milestones @returns {string}
+ * @param {string[] | null} milestones @param {string} [repo] the tracker whose milestones these are (#4078); the home repository by default
+ * @returns {string}
  */
-export function milestoneRefusal(milestones) {
+export function milestoneRefusal(milestones, repo = REPO) {
   // THE UNREADABLE CASE GETS ITS OWN LINE, not the list's slot -- worker-capture's review of #1016. Reading
   // `--milestone <one of the milestone list could not be read, so pick from ...>` is garbage inside angle
   // brackets, and it is the one case where the reader cannot see the list either, so the message is doing
   // the most work exactly where it read worst.
   const either = milestones === null
-    ? `  Either: --milestone <a milestone> -- the list could not be read from here; \`gh api repos/${REPO}`
+    ? `  Either: --milestone <a milestone> -- the list could not be read from here; \`gh api repos/${repo}`
       + "/milestones --jq '.[].title'` prints it"
     : `  Either: --milestone <one of ${milestones.map((m) => `"${m}"`).join(", ")}>`;
   return "row-file: REFUSING to file a row that declares no release -- nothing was sent to GitHub.\n"
@@ -1185,7 +1204,8 @@ export function issueNumberFromUrl(output) {
  * @param {{ labels: string[], body: string | null, boardStatus: string | null,
  *           milestone?: string | null }} after
  * @param {{ session: string | null, label: string, status: string, laneLabels: string[],
- *           milestone?: string | null, releaseLabel?: string | null }} expected `session: null` is a
+ *           milestone?: string | null, releaseLabel?: string | null, projectNumber?: number }} expected `projectNumber` is the
+ *   board the filing was added to (#4078), the home board by default; `session: null` is a
  *   row someone else filed (`--board=`), whose Filed-by line this act did not write and does not assert
  * @returns {string[]} empty when everything is confirmed
  */
@@ -1211,9 +1231,10 @@ export function unverifiedFilingFields(after, expected) {
       : `the milestone (reads "${after.milestone}", not "${expected.milestone}")`);
   }
   if (after.boardStatus !== expected.status) {
+    const board = expected.projectNumber ?? PROJECT_NUMBER;
     missing.push(after.boardStatus === null
-      ? `Project ${PROJECT_NUMBER} membership`
-      : `Project ${PROJECT_NUMBER} Status (reads "${after.boardStatus}", not "${expected.status}")`);
+      ? `Project ${board} membership`
+      : `Project ${board} Status (reads "${after.boardStatus}", not "${expected.status}")`);
   }
   return missing;
 }
@@ -1223,15 +1244,15 @@ const PROJECT_ITEMS_PAGE = 100;
 
 /**
  * One page of the issue's `projectItems`. Throws, never guesses, on a failed call or an unexpected shape.
- * @param {number} issueNumber @param {string | null} cursor @param {typeof defaultRun} run
+ * @param {number} issueNumber @param {string | null} cursor @param {typeof defaultRun} run @param {string} repo the tracker the issue lives in
  * @returns {{ nodes: any[], hasNextPage: boolean, endCursor: string | null }}
  */
-function projectItemsPage(issueNumber, cursor, run) {
-  const [owner, name] = REPO.split("/");
+function projectItemsPage(issueNumber, cursor, run, repo) {
+  const [owner, name] = repo.split("/");
   const after = cursor === null ? "" : `, after: "${cursor}"`;
   const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issueNumber}) `
     + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
-    + `nodes { project { number } fieldValueByName(name: "Status") `
+    + `nodes { project { number owner { ... on Organization { login } ... on User { login } } } fieldValueByName(name: "Status") `
     + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
   /** @type {string} */
   let raw;
@@ -1272,20 +1293,31 @@ function projectItemsPage(issueNumber, cursor, run) {
  * #3330: PAGED. `null` means "not among ALL the issue's project items", because `--board=` writes on it: a
  * `first: 10` read returned `null` for an issue on Project 1 at position 11, and boarding on that
  * duplicated the item. Stops at the first page that holds Project 1.
+ *
+ * #4078: THE BOARD IS THE TRACKER'S, and a read of the OTHER tracker's board does not satisfy it. A board is its owner AND its number: two
+ * trackers may each have a Project 1, so the number alone would read the wrong board's item as this one's. (The owner is compared when the
+ * response carries one, which GitHub's always does.)
  * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun }} [deps]
- * @returns {string | null} the Status option name, or `null` if the issue is not on this Project at all
+ * @param {{ run?: typeof defaultRun, tracker?: Tracker }} [deps]
+ * @returns {string | null} the Status option name, or `null` if the issue is not on this tracker's Project at all
  */
-export function fetchIssueBoardStatus(issueNumber, { run = defaultRun } = {}) {
+export function fetchIssueBoardStatus(issueNumber, { run = defaultRun, tracker = homeTracker() } = {}) {
   /** @type {string | null} */
   let cursor = null;
   do {
-    const page = projectItemsPage(issueNumber, cursor, run);
-    const onThisProject = page.nodes.find((n) => n?.project?.number === PROJECT_NUMBER);
+    const page = projectItemsPage(issueNumber, cursor, run, tracker.repo);
+    const onThisProject = page.nodes.find((n) => isBoardOf(tracker, n?.project));
     if (onThisProject) return onThisProject.fieldValueByName?.name ?? null;
     cursor = page.hasNextPage ? page.endCursor : null;
   } while (cursor !== null);
   return null;
+}
+
+/** @param {Tracker} tracker @param {{ number?: unknown, owner?: { login?: unknown } } | undefined} project @returns {boolean} */
+function isBoardOf(tracker, project) {
+  if (project?.number !== tracker.board.number) return false;
+  const login = project.owner?.login;
+  return typeof login !== "string" || login.toLowerCase() === tracker.board.owner.toLowerCase();
 }
 
 /**
@@ -1408,6 +1440,70 @@ function disagreementLine({ declared, routed, reason }) {
 }
 
 /**
+ * #4078: THE TRACKER THIS ROW IS FILED IN -- `--tracker=<key>` when given, else the one `rowTracker` reads off its Region. A key the
+ * project does not declare is refused before anything is filed, naming the keys it does.
+ *
+ * `note` is the one line printed when the Region COULD NOT BE READ and a choice was actually made: with one declared tracker there is no
+ * choice and nothing to say, and an explicit `--tracker=` has not read the Region at all.
+ * @param {string[]} argv @param {string} body @param {Parameters<typeof rowTracker>[1] & { tracker: Tracker[] }} declaration
+ * @returns {{ tracker: Tracker, note: string | null } | { refusal: string }}
+ */
+function chooseTracker(argv, body, declaration) {
+  const key = flagValue(argv, "tracker");
+  if (key !== undefined) {
+    const named = trackerNamed(declaration.tracker, key);
+    return "refusal" in named ? named : { tracker: named.tracker, note: null };
+  }
+  const { tracker, unreadable } = rowTracker(declaredRegionFiles(body), declaration, declaration.tracker);
+  const note = unreadable && declaration.tracker.length > 1
+    ? `row-file: the Region could not be read (it names no path), so the row went to the org tracker, ${tracker.repo}. `
+      + `Name the tracker with \`${TRACKER_FLAG}<key>\` if that is wrong.`
+    : null;
+  return { tracker, note };
+}
+
+/**
+ * #4078: A TRACKER'S MILESTONES ARE THE HOME TRACKER'S ALONE (the declaration's first). The release the milestone names is the product's, and an org row's release is
+ * `--label out-of-release` and nothing else: the agent-org tracker has no "Out of release" milestone, so asking `gh` for one fails the
+ * filing. So the home tracker keeps the milestone rule exactly as it was and any other tracker NEITHER reads its milestones NOR writes one.
+ * @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration @returns {boolean}
+ */
+const usesMilestones = (tracker, { tracker: trackers }) => sameTracker(tracker, trackers[0]);
+
+/** @param {string[]} argv @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration @returns {string[]} */
+const releaseArgvFor = (argv, tracker, declaration) => (usesMilestones(tracker, declaration) ? outOfReleaseArgv(argv) : argv);
+
+/**
+ * The refusal for a filing that declares no release: the milestone one, naming the home tracker's milestones, or for any other tracker
+ * the label-only one, which reads nothing.
+ * @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration @param {{ run: typeof defaultRun, milestones: typeof openMilestones }} deps @returns {string}
+ */
+function undeclaredReleaseRefusal(tracker, declaration, { run, milestones }) {
+  if (usesMilestones(tracker, declaration)) return milestoneRefusal(milestones({ run, repo: tracker.repo }), tracker.repo);
+  return `row-file: REFUSING to file a row that declares no release -- nothing was sent to GitHub.\n`
+    + `  ${tracker.repo} has no release milestone: an org row says it is outside the release with \`--label ${OUT_OF_RELEASE}\`.`;
+}
+
+/**
+ * `gh issue create` is told the tracker's repository unless the filing is in the home tracker, where it runs as it always did. Ours is
+ * appended last, and `gh` takes the last `--repo`, so a filer's own `--repo` cannot send the row somewhere its labels and board are not.
+ * @param {string[]} argv @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration @returns {string[]}
+ */
+const filedInTracker = (argv, tracker, declaration) => (usesMilestones(tracker, declaration) ? argv : [...argv, "--repo", tracker.repo]);
+
+/**
+ * #4078: THE LABEL THE CREATE ITSELF CARRIES MUST EXIST IN THE TARGET before `gh issue create` names it, which refuses an unknown one. The
+ * board and lane labels are made later by `boardAndVerify`; this is the one this tool writes at creation. Only for another tracker: the
+ * home tracker has it, and creating the filer's OTHER labels would turn a typo into a new label.
+ * @param {string[]} filedArgv @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration
+ * @param {{ run: typeof defaultRun, ensureLabels: typeof ensureLabelsOn }} deps
+ */
+function ensureReleaseLabel(filedArgv, tracker, declaration, { run, ensureLabels }) {
+  if (usesMilestones(tracker, declaration) || !labelsOutOfRelease(filedArgv)) return;
+  ensureLabels([OUT_OF_RELEASE], { run, repo: tracker.repo });
+}
+
+/**
  * Checks, then (only if it passes) files, with `Filed-by:` and a board label appended into the body/argv
  * that actually reach `gh`, adds the new issue to Project 2 with a matching Status, and REFUSES to
  * report success until a fresh read-back confirms all three landed -- #844: `row-file` used to hand a
@@ -1423,8 +1519,9 @@ function disagreementLine({ declared, routed, reason }) {
  * @param {string[]} argv
  * @param {{ spawnGh?: (argv: string[]) => string, run?: typeof defaultRun,
  *   fetchBoardStatus?: typeof fetchIssueBoardStatus, fetchLabels?: typeof fetchIssueLabels,
- *   moveStatus?: typeof moveProjectStatus, ensureLabels?: typeof ensureLabelsExist,
- *   loadLanesConfig?: typeof loadLanes }} deps
+ *   moveStatus?: typeof moveTrackerStatus, ensureLabels?: typeof ensureLabelsOn,
+ *   loadLanesConfig?: typeof loadLanes, declaration?: Parameters<typeof rowTracker>[1] & { tracker: Tracker[] } }} deps
+ *   `declaration` (#4078) is the project's `tracker`, `code` and `dora` lists, which `rowTracker` reads; the home project's by default
  * @returns {number} the process exit code
  */
 export function createIssue(argv, deps = {}) {
@@ -1435,10 +1532,10 @@ export function createIssue(argv, deps = {}) {
   // board-add call, the Status move, and the read-back -- without spawning a real `gh`, reaching GitHub,
   // or reading a real `docs/lane-ownership.json`.
   const { spawnGh, run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels, loadLanesConfig,
-    milestones } = {
+    milestones, declaration } = {
     spawnGh: spawnGhIssueCreate, run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus,
-    fetchLabels: fetchIssueLabels, moveStatus: moveProjectStatus, ensureLabels: ensureLabelsExist,
-    loadLanesConfig: loadLanes, milestones: openMilestones, ...deps,
+    fetchLabels: fetchIssueLabels, moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn,
+    loadLanesConfig: loadLanes, milestones: openMilestones, declaration: homeProjectDeclaration(), ...deps,
   };
   const session = sessionFromArgv(argv);
   if (!session) {
@@ -1452,13 +1549,22 @@ export function createIssue(argv, deps = {}) {
     process.stderr.write(`${reason}\n`);
     return 1;
   }
+  // #4078: THE TRACKER, chosen before anything reads a repository: the blocker below lives in it, and so do the milestone read, the
+  // labels and the board.
+  const chosen = chooseTracker(argv, /** @type {string} */ (body), declaration);
+  if ("refusal" in chosen) {
+    process.stderr.write(`${chosen.refusal}\n`);
+    return 1;
+  }
+  const { tracker } = chosen;
+  if (chosen.note !== null) process.stderr.write(`${chosen.note}\n`);
   // #1158: AFTER the refusals and BEFORE anything is filed. None of these stops the filing -- see
   // `unrecognisedRegionWarning` for why a warning rather than a refusal -- but the author sees them while they
   // still have the body in front of them, which is the only moment each line is cheap to act on. They answer
   // different questions about one body and a body can trip several: all are printed, never chosen between.
   // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
   // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
-  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run) }) ?? chairmanAskRefusal(/** @type {string} */ (body)); // #4020: a declared ask that could never raise one
+  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run, tracker.repo) }) ?? chairmanAskRefusal(/** @type {string} */ (body)); // #4020: a declared ask that could never raise one
   if (umbrella) {
     process.stderr.write(`${umbrella}\n`);
     return 1;
@@ -1476,7 +1582,7 @@ export function createIssue(argv, deps = {}) {
   const laneLabels = laneResult.laneLabels;
   // #1011: BEFORE `gh issue create`, so a refusal leaves nothing behind. See `milestoneRefusal`.
   if (!declaresRelease(argv)) {
-    process.stderr.write(`${milestoneRefusal(milestones({ run }))}\n`);
+    process.stderr.write(`${undeclaredReleaseRefusal(tracker, declaration, { run, milestones })}\n`);
     return 1;
   }
   const boarding = boardingFor(argv);
@@ -1486,12 +1592,13 @@ export function createIssue(argv, deps = {}) {
   // #1130: the label alone must not leave the row out of the milestone that says the same thing.
   // #1322: the board and lane labels are this tool's to apply, after the Status move. A filer's copy of either is
   // dropped from the create call rather than landing at creation beside them -- a `ready` there is #867's refusal.
-  const filedArgv = withFiledBy(withoutLabels(outOfReleaseArgv(argv), [...BOARD_LABELS, ...laneLabels]), session,
-    /** @type {string} */ (body));
+  const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(argv, tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
+    /** @type {string} */ (body)), tracker, declaration);
 
   /** @type {string} */
   let url;
   try {
+    ensureReleaseLabel(filedArgv, tracker, declaration, { run, ensureLabels });
     url = spawnGh(filedArgv);
   } catch (error) {
     process.stderr.write(`row-file: gh issue create failed -- nothing was filed. `
@@ -1505,14 +1612,46 @@ export function createIssue(argv, deps = {}) {
     return 2;
   }
 
-  const result = boardAndVerify({ issueNumber, url, boarding, session, laneLabels,
+  const result = boardAndVerify({ issueNumber, url, boarding, session, laneLabels, tracker,
     ...releaseExpectation(filedArgv) }, { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels });
   if (!result.ok) {
     process.stderr.write(`row-file: ${result.message}\n`);
     return 2;
   }
-  process.stdout.write(`https://github.com/${REPO}/issues/${issueNumber}\n`);
+  process.stdout.write(`https://github.com/${tracker.repo}/issues/${issueNumber}\n`);
   return 0;
+}
+
+/**
+ * #4078: THE STATUS MOVE, ON THE TRACKER'S BOARD. The home tracker's is `moveProjectStatus` exactly as it was, with its pre-write snapshot of
+ * the home board (#399, #747's floor). Another tracker's board is not that board, and the snapshot reads the home one, so a move on it is the
+ * one `item-edit` and its failure, stated rather than guarded by a reading of the wrong board.
+ * @param {number} issueNumber @param {string} statusName
+ * @param {{ run?: typeof defaultRun, tracker?: Tracker }} [deps]
+ * @returns {ReturnType<typeof moveProjectStatus>}
+ */
+export function moveTrackerStatus(issueNumber, statusName, { run = defaultRun, tracker = homeTracker() } = {}) {
+  if (sameTracker(tracker, homeTracker())) return moveProjectStatus(issueNumber, statusName, { run });
+  try {
+    run("gh", ["project", "item-edit", String(tracker.board.number), "--owner", tracker.board.owner,
+      "--url", `https://github.com/${tracker.repo}/issues/${issueNumber}`, "--field", "Status", "--value", statusName]);
+    return { moved: true };
+  } catch (error) {
+    const message = /** @type {Error} */ (error).message;
+    return { moved: false, notOnBoard: /is not an item in project/.test(message),
+      reason: `could not move #${issueNumber}'s Status to "${statusName}" on ${tracker.board.owner}/projects/${tracker.board.number} -- ${message}` };
+  }
+}
+
+/**
+ * #4078: THE LABELS, ENSURED IN THE REPOSITORY THE ROW IS FILED IN. `ensureLabelsExist` creates them in the home repository only, so a row
+ * filed elsewhere would be refused its `lane:*` and `ready`/`backlog` by `gh issue edit --add-label` (#749). The home repository keeps
+ * `ensureLabelsExist` exactly as it was.
+ * @param {string[]} labels @param {{ run?: typeof defaultRun, repo?: string }} [deps]
+ */
+export function ensureLabelsOn(labels, { run = defaultRun, repo = REPO } = {}) {
+  if (repo === REPO) return ensureLabelsExist(labels, { run });
+  for (const label of labels) run("gh", ["label", "create", label, "--repo", repo, "--force"]);
 }
 
 /**
@@ -1522,18 +1661,19 @@ export function createIssue(argv, deps = {}) {
  * TWO steps rather than one, so it is the only refusal in the ladder that has to describe a repair in
  * three parts. Reported by worker-capture on #1250 -- the first #1249 fix reached the Status rung, which
  * is the one the FILING author hit, and left this one, which is the rung the reviewer's own filing hit.
- * @param {{ issueNumber: number, url: string, boarding: { status: string, label: string },
+ * @param {{ issueNumber: number, url: string, boarding: { status: string, label: string }, tracker: Tracker,
  *           allLabels: string[], repairLabels: string, lead: string }} row
  * @param {unknown} error
  */
-function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels, lead }, error) {
-  return `${lead}, but could NOT add it to Project ${PROJECT_NUMBER} -- refusing to `
+function boardAddRefusal({ issueNumber, url, boarding, tracker, allLabels, repairLabels, lead }, error) {
+  const { number: boardNumber, owner: boardOwner } = tracker.board;
+  return `${lead}, but could NOT add it to Project ${boardNumber} -- refusing to `
     + `report success for a row nothing else can find. ${/** @type {Error} */ (error).message}\n  `
     + `AND neither the Status "${boarding.status}" nor ${allLabels.map((l) => `\`${l}\``).join("/")} `
     + `were applied, because both steps sit behind the board add and neither ran. Adding it by hand `
     + `alone leaves this row on the board with no Status and no labels. Apply all three:\n`
-    + `    gh project item-add ${PROJECT_NUMBER} --owner ${PROJECT_OWNER} --url ${url}\n`
-    + `    gh project item-edit ${PROJECT_NUMBER} --owner ${PROJECT_OWNER} --url ${url} `
+    + `    gh project item-add ${boardNumber} --owner ${boardOwner} --url ${url}\n`
+    + `    gh project item-edit ${boardNumber} --owner ${boardOwner} --url ${url} `
     + `--field Status --value "${boarding.status}"\n`
     + `    ${repairLabels}`;
 }
@@ -1555,25 +1695,29 @@ function boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels, 
  * or fully consistent (labelled AND Statused) by the time anything could ask.
  * `--board=` (a row somebody else filed) calls this too: `session: null` skips the Filed-by read-back and
  * `lead` replaces the "FILED as #n" every refusal opens with, which would be false of a row that already existed.
+ * #4078: `tracker` is the tracker the row lives in -- its repository for every label and read, its board for the item-add, the Status move and
+ * the read-back, which asks the SAME board it wrote. The home tracker by default, which is what `--board=` and `--promote=` mean.
  * @param {{ issueNumber: number, url: string, boarding: { label: string, status: string },
  *   session: string | null, laneLabels: string[], milestone: string | null,
- *   releaseLabel?: string | null, lead?: string }} filed
+ *   releaseLabel?: string | null, lead?: string, tracker?: Tracker }} filed
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
- *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
- *   ensureLabels: typeof ensureLabelsExist }} deps
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveTrackerStatus,
+ *   ensureLabels: typeof ensureLabelsOn }} deps
  * @returns {{ ok: true } | { ok: false, message: string }}
  */
 export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels, milestone,
-  releaseLabel = null, lead = `FILED as #${issueNumber}` },
+  releaseLabel = null, lead = `FILED as #${issueNumber}`, tracker = homeTracker() },
 { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
+  const { repo } = tracker;
+  const { number: boardNumber, owner: boardOwner } = tracker.board;
   // #1249: `allLabels` is derived HERE, above the first step that can fail, so every refusal below can
   // name the labels it skipped. An operator cannot derive them -- they come from the Region -- so a
   // message that says "the labels" instead of `backlog`/`lane:any` is one they have to reconstruct.
   const allLabels = [boarding.label, ...laneLabels];
-  const repairLabels = `gh issue edit ${issueNumber} --repo ${REPO} `
+  const repairLabels = `gh issue edit ${issueNumber} --repo ${repo} `
     + `${allLabels.map((l) => `--add-label ${l}`).join(" ")}`;
   try {
-    run("gh", ["project", "item-add", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url]);
+    run("gh", ["project", "item-add", String(boardNumber), "--owner", boardOwner, "--url", url]);
   } catch (error) {
     // #1249, SECOND RUNG: this one skips TWO steps, not one. item-add is the first of three, and the
     // Status and the labels below both sit behind it -- so an operator who follows this message exactly
@@ -1581,9 +1725,9 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // ladder exists to refuse, one rung up. Reported by worker-capture on #1250, whose point was that
     // the first fix reached the rung MY filing hit and not the rung THEIRS did.
     return { ok: false,
-      message: boardAddRefusal({ issueNumber, url, boarding, allLabels, repairLabels, lead }, error) };
+      message: boardAddRefusal({ issueNumber, url, boarding, tracker, allLabels, repairLabels, lead }, error) };
   }
-  const statusResult = moveStatus(issueNumber, boarding.status, { run });
+  const statusResult = moveStatus(issueNumber, boarding.status, { run, tracker });
   if (!statusResult.moved) {
     // #1249: NAME EVERY STEP THIS SKIPS, not only the one that failed.
     //
@@ -1596,7 +1740,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // row on a Status failure, which is friendlier -- but it makes the Status the partial half instead,
     // and the board is what the org reads for what is claimable. A report that describes ALL of what is
     // missing is what must survive, whichever half is written first.
-    return { ok: false, message: `${lead} and added to Project ${PROJECT_NUMBER}, but `
+    return { ok: false, message: `${lead} and added to Project ${boardNumber}, but `
       + `its Status could not be set to "${boarding.status}" -- ${statusResult.reason}\n  `
       + `AND ${allLabels.map((l) => `\`${l}\``).join("/")} were NOT applied, because the Status failed `
       + `first and the label step never ran. Fixing only the Status leaves this row unlabelled and `
@@ -1607,8 +1751,8 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // Region maps to -- and #749's own lesson applies identically here: `gh issue edit --add-label`
     // refuses a label that does not already exist in the repository. `ensureLabels` (row-claim.mjs's own
     // `ensureLabelsExist`, reused rather than a second copy) creates it idempotently first.
-    ensureLabels(allLabels, { run });
-    run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
+    ensureLabels(allLabels, { run, repo });
+    run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
       ...allLabels.flatMap((l) => ["--add-label", l])]);
   } catch (error) {
     return { ok: false, message: `${lead}, boarded with Status "${boarding.status}", `
@@ -1619,7 +1763,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   /** @type {string | null} */
   let bodyAfter;
   try {
-    bodyAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body",
+    bodyAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body",
       "--jq", ".body"]);
   } catch {
     bodyAfter = null; // read-back failure reads as "cannot confirm the Filed-by line", not a crash
@@ -1627,19 +1771,20 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   /** @type {string | null} */
   let milestoneAfter;
   try {
-    milestoneAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "milestone",
+    milestoneAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "milestone",
       "--jq", ".milestone.title // \"\""]).trim() || null;
   } catch {
     milestoneAfter = null; // unreadable reads as "cannot confirm", which `unverifiedFilingFields` names
   }
   const after = {
-    labels: fetchLabels(issueNumber, { run }).labels,
+    labels: fetchLabels(issueNumber, { run, repo }).labels,
     body: bodyAfter,
-    boardStatus: fetchBoardStatus(issueNumber, { run }),
+    boardStatus: fetchBoardStatus(issueNumber, { run, tracker }),
     milestone: milestoneAfter,
   };
   const missing = unverifiedFilingFields(after,
-    { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel });
+    { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel,
+      projectNumber: boardNumber });
   if (missing.length > 0) {
     return { ok: false, message: `${lead}, but the read-back does not confirm it -- `
       + `missing: ${missing.join(", ")}. Refusing to report success for a row it could not fully board.` };
@@ -1945,7 +2090,7 @@ function freshLabelsForWrite(issueNumber, { run, fetchLabels }) {
  * is both "written" and "there was nothing to write".
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels,
- *   ensureLabels: typeof ensureLabelsExist }} deps
+ *   ensureLabels: typeof ensureLabelsOn }} deps
  * @returns {{ ok: false, code: number, message: string } | null}
  */
 function writePromotionLabels(issueNumber, deps) {
@@ -1990,8 +2135,8 @@ function writePromotionLabels(issueNumber, deps) {
  * run that lands.
  * @param {number} issueNumber @param {string | null} session
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
- *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
- *   ensureLabels: typeof ensureLabelsExist }} deps
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveTrackerStatus,
+ *   ensureLabels: typeof ensureLabelsOn }} deps
  * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
  */
 function writePromotion(issueNumber, session, deps) {
@@ -2018,8 +2163,8 @@ function writePromotion(issueNumber, session, deps) {
  * need, so exporting this as well would be a second front door onto one act.
  * @param {number} issueNumber @param {string | null} session
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
- *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
- *   ensureLabels: typeof ensureLabelsExist }} deps
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveTrackerStatus,
+ *   ensureLabels: typeof ensureLabelsOn }} deps
  * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
  */
 function promoteAndVerify(issueNumber, session, deps) {
@@ -2033,13 +2178,13 @@ function promoteAndVerify(issueNumber, session, deps) {
  * written and could not be confirmed -- `createIssue`'s own two codes, meaning the same two things.
  * @param {string[]} argv
  * @param {{ run?: typeof defaultRun, fetchBoardStatus?: typeof fetchIssueBoardStatus,
- *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveProjectStatus,
- *   ensureLabels?: typeof ensureLabelsExist }} [deps]
+ *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveTrackerStatus,
+ *   ensureLabels?: typeof ensureLabelsOn }} [deps]
  * @returns {number} the process exit code
  */
 export function promoteRow(argv, deps = {}) {
   const merged = { run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus, fetchLabels: fetchIssueLabels,
-    moveStatus: moveProjectStatus, ensureLabels: ensureLabelsExist, ...deps };
+    moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn, ...deps };
   const stray = promoteArgvRefusal(argv);
   if (stray) {
     process.stderr.write(`${stray}\n`);
@@ -2132,8 +2277,8 @@ function boardLane(argv, loadLanesConfig) {
  * this row is not being promoted from `backlog` and keeps `regression`, `out-of-release` and the rest).
  * @param {string[]} argv
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
- *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveProjectStatus,
- *   ensureLabels: typeof ensureLabelsExist, loadLanesConfig: typeof loadLanes }} deps
+ *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveTrackerStatus,
+ *   ensureLabels: typeof ensureLabelsOn, loadLanesConfig: typeof loadLanes }} deps
  * @returns {{ ok: true, message: string } | { ok: false, code: number, message: string }}
  */
 function boardExisting(argv, deps) {
@@ -2175,13 +2320,13 @@ function boardExisting(argv, deps) {
  * confirmed (`promoteRow`'s own two codes); exit 0 is boarded OR already boarded, which the line says.
  * @param {string[]} argv
  * @param {{ run?: typeof defaultRun, fetchBoardStatus?: typeof fetchIssueBoardStatus,
- *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveProjectStatus,
- *   ensureLabels?: typeof ensureLabelsExist, loadLanesConfig?: typeof loadLanes }} [deps]
+ *   fetchLabels?: typeof fetchIssueLabels, moveStatus?: typeof moveTrackerStatus,
+ *   ensureLabels?: typeof ensureLabelsOn, loadLanesConfig?: typeof loadLanes }} [deps]
  * @returns {number} the process exit code
  */
 export function boardRow(argv, deps = {}) {
   const merged = { run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus, fetchLabels: fetchIssueLabels,
-    moveStatus: moveProjectStatus, ensureLabels: ensureLabelsExist, loadLanesConfig: loadLanes, ...deps };
+    moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn, loadLanesConfig: loadLanes, ...deps };
   const stray = boardArgvRefusal(argv);
   const result = stray ? { ok: false, code: 1, message: stray } : boardExisting(argv, merged);
   if (!result.ok) {
@@ -2193,7 +2338,7 @@ export function boardRow(argv, deps = {}) {
 }
 
 function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane="],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
