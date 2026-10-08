@@ -111,17 +111,20 @@ export function acceptanceEnv(env) {
  * `diff` is what `mutationRecordReport` needs and the only thing a body check reads from the tree. A caller that has
  * none gets `UNCHECKED`, which is loud and not a refusal, exactly as CI treats a diff it could not read.
  * @param {string} body
- * @param {{ run?: (command: string) => number, diff?: import("./acceptance-commands.mjs").DiffReading }} [deps]
+ * #4123: `rowLabels` is the reader of a closed row's labels, for the `Class:` line a defect row's pull request owes; a caller with none gets
+ * `CLASS: NOT CHECKED`, printed.
+ * @param {{ run?: (command: string) => number, diff?: import("./acceptance-commands.mjs").DiffReading,
+ *   rowLabels?: import("./acceptance-commands.mjs").BodyReportInput["rowLabels"] }} [deps]
  * @returns {{ ok: boolean, lines: string[] }}
  */
-export function checkBody(body, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" } } = {}) {
+export function checkBody(body, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels } = {}) {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
   // anything from first. The same `allLeaksIn` predicate the tree-wide guards already drive, never
   // restated.
   const leak = leakRefusalReason(body);
   if (leak) return { ok: false, lines: [leak] };
-  return runCiBodyReports({ body, run, diff });
+  return runCiBodyReports({ body, run, diff, rowLabels });
 }
 
 /**
@@ -828,7 +831,8 @@ export function main(argv = process.argv.slice(2),
   // #2417: before checkBody for the same reason, and before anything is sent.
   const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, out, err });
   if (outsideRegion !== null) return outsideRegion;
-  const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git) });
+  const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git),
+    rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)) }); // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
     err(`pr-open: REFUSED -- this body would fail CI's own acceptance job; fix it before `

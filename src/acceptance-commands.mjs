@@ -75,6 +75,7 @@ import { changedFiles } from "./lib/changed-files.mjs";
 import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
 import { toolImports } from "./lib/installed-tool-imports.mjs";
 import { resolveTypescript } from "./lib/resolve-typescript.mjs";
+import { defectClassReport } from "./defect-class-line.mjs"; // #4123
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
 import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./project-vocabulary.mjs";
@@ -3688,7 +3689,9 @@ export function wholeSuiteNote(commands) {
 }
 
 /**
- * @typedef {{ body: string, run: (command: string) => number, diff: DiffReading }} BodyReportInput
+ * @typedef {{ body: string, run: (command: string) => number, diff: DiffReading,
+ *   rowLabels?: (row: { repo: string | null, number: number }) => string[] }} BodyReportInput `rowLabels` is the caller's reader of a row's labels
+ *   (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.mjs` prints as NOT CHECKED
  * @typedef {{ name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } }} BodyReport
  */
 
@@ -3711,9 +3714,38 @@ export const CI_BODY_REPORTS = [
     return { ok: report.ok, lines: [...report.lines, ...notes] };
   } },
   { name: "closes", report: ({ body }) => oneLine(closesDeclarationReport(body)) },
+  { name: "class", report: ({ body, rowLabels }) => oneLine(defectClassReport({ body, rows: closedRowsOf(body), rowLabels })) },
   { name: "mutation", report: ({ body, diff }) => oneLine(mutationRecordReport({ body, diff })) },
   { name: "measured", report: ({ body }) => oneLine(measuredSectionReport(body)) },
 ];
+
+/**
+ * #4123: the rows the body's `Closes` names, none for `Closes: none`, missing or malformed (the `closes` report refuses those itself).
+ * @param {string} body
+ * @returns {{ repo: string | null, number: number }[]}
+ */
+function closedRowsOf(body) {
+  const declaration = extractClosesDeclaration(body);
+  return declaration.kind === "closes" ? closesReferences(declaration) : [];
+}
+
+/**
+ * #4123: THE LABELS CI'S ACCEPTANCE STEP IS GIVEN, NOT ONES IT FETCHES. That step runs the author's own command and is tracker-less on purpose
+ * (`reusable-acceptance.yml`: no `GH_TOKEN`), so it cannot ask GitHub. A step BEFORE it, which runs no author code, may write
+ * `ACCEPTANCE_ROW_LABELS={"owner/repo#7":["defect",...]}`; with none set there is no reader, and the class report says NOT CHECKED rather than pass.
+ * A row the map does not name THROWS, so a half-filled map is UNKNOWN for that row and not "no defect label".
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {((row: { repo: string | null, number: number }) => string[]) | undefined}
+ */
+export function rowLabelsFromEnv(env) {
+  if (!env.ACCEPTANCE_ROW_LABELS) return undefined;
+  const supplied = JSON.parse(env.ACCEPTANCE_ROW_LABELS);
+  return (row) => {
+    const key = `${row.repo ?? env.GITHUB_REPOSITORY ?? ""}#${row.number}`;
+    if (!Array.isArray(supplied[key])) throw new Error(`ACCEPTANCE_ROW_LABELS names no labels for ${key}`);
+    return supplied[key];
+  };
+}
 
 /** @param {{ ok: boolean, line: string }} verdict */
 function oneLine({ ok, line }) {
@@ -3739,7 +3771,7 @@ function main() {
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.
   const body = process.env.PR_BODY ?? "";
-  const result = runCiBodyReports({ body, run: runForReal, diff: changedFilesOfThisPullRequest() });
+  const result = runCiBodyReports({ body, run: runForReal, diff: changedFilesOfThisPullRequest(), rowLabels: rowLabelsFromEnv(process.env) });
   for (const line of result.lines) console.log(line);
   process.exit(result.ok ? 0 : 1);
 }

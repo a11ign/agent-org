@@ -106,6 +106,7 @@ import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensure
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.mjs";
 import { launchGate } from "./board-snapshot-scope.mjs";
 import { REPO } from "./project-identity.mjs";
+import { DEFECT_LABEL } from "./defect-class-line.mjs"; // #4123
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
 import { rowTracker, trackerNamed } from "./row-tracker.mjs"; // #4078
@@ -811,6 +812,48 @@ const READY_FLAG = "--ready";
 // `withFiledBy`, which is also why it is not in the gh-facing list above.
 const TRACKER_FLAG = "--tracker=";
 
+// #4123: THE THIRD FLAG THIS FILE OWNS. `--kind defect` (or `--kind=defect`) marks a row as a defect at filing: it adds the `defect` label, which
+// is what makes a pull request that closes the row owe a `Class:` line (`defect-class-line.mjs`). Stripped before `gh` sees it, as `--ready` is.
+// ONE KIND TODAY, and any other value is refused before anything is filed: a typo must not file an unmarked row the check then never reads.
+const KIND_FLAG = "--kind";
+/** The labels a `--kind` value adds, by value. */
+const KIND_LABELS = Object.freeze({ defect: DEFECT_LABEL });
+
+/**
+ * Every `--kind` value given, in either spelling (`--kind X`, `--kind=X`); a `--kind` with nothing after it is the empty string.
+ * @param {string[]} argv
+ * @returns {string[]}
+ */
+export function kindValuesFromArgv(argv) {
+  return argv.flatMap((arg, i) => arg === KIND_FLAG ? [argv[i + 1] ?? ""] : arg.startsWith(`${KIND_FLAG}=`) ? [arg.slice(KIND_FLAG.length + 1)] : []);
+}
+
+/**
+ * The refusal for a `--kind` this tool does not know, or null. Before anything is filed.
+ * @param {string[]} argv
+ * @returns {string | null}
+ */
+export function kindRefusal(argv) {
+  const unknown = kindValuesFromArgv(argv).filter((value) => !Object.hasOwn(KIND_LABELS, value));
+  if (unknown.length === 0) return null;
+  return `row-file: REFUSING to file -- \`--kind ${unknown.join(", ")}\` is not a kind this tool knows (${Object.keys(KIND_LABELS).join(", ")}). `
+    + "Nothing was filed (#4123).";
+}
+
+/**
+ * `argv` with `--kind` taken out (`gh issue create` would refuse it) and the label it means put in, once: a filer who also wrote
+ * `--label defect` does not get it twice.
+ * @param {string[]} argv
+ * @returns {string[]}
+ */
+export function withKindLabel(argv) {
+  const labels = kindValuesFromArgv(argv).map((value) => KIND_LABELS[/** @type {keyof typeof KIND_LABELS} */ (value)]).filter(Boolean);
+  if (labels.length === 0) return argv;
+  const kept = argv.filter((arg, i) => arg !== KIND_FLAG && argv[i - 1] !== KIND_FLAG && !arg.startsWith(`${KIND_FLAG}=`));
+  const given = labelValuesFromArgv(kept).map((label) => label.toLowerCase());
+  return [...kept, ...labels.filter((label) => !given.includes(label)).flatMap((label) => ["--label", label])];
+}
+
 /** @typedef {import("./project-config.mjs").Tracker} Tracker */
 
 /**
@@ -901,11 +944,20 @@ export function outOfReleaseArgv(argv) {
  * milestone `outOfReleaseArgv` just asked for. That leaves the remedy for the drift unverified, which is
  * the drift wearing the remedy's clothes.
  * @param {string[]} filedArgv the argv that reached `gh issue create`
- * @returns {{ milestone: string | null, releaseLabel: string | null }}
+ * @returns {{ milestone: string | null, releaseLabel: string | null, kindLabel: string | null }}
  */
 function releaseExpectation(filedArgv) {
   return { milestone: milestoneFromArgv(filedArgv),
-    releaseLabel: labelsOutOfRelease(filedArgv) ? OUT_OF_RELEASE : null };
+    releaseLabel: labelsOutOfRelease(filedArgv) ? OUT_OF_RELEASE : null, kindLabel: kindLabelOf(filedArgv) };
+}
+
+/**
+ * #4123: the `defect` label the filing carries, read from what was FILED (as `releaseExpectation` is), so the read-back asks for it.
+ * @param {string[]} filedArgv
+ * @returns {string | null}
+ */
+function kindLabelOf(filedArgv) {
+  return labelValuesFromArgv(filedArgv).some((label) => sameLabel(label, DEFECT_LABEL)) ? DEFECT_LABEL : null;
 }
 
 /**
@@ -1204,7 +1256,7 @@ export function issueNumberFromUrl(output) {
  * @param {{ labels: string[], body: string | null, boardStatus: string | null,
  *           milestone?: string | null }} after
  * @param {{ session: string | null, label: string, status: string, laneLabels: string[],
- *           milestone?: string | null, releaseLabel?: string | null, projectNumber?: number }} expected `projectNumber` is the
+ *           milestone?: string | null, releaseLabel?: string | null, kindLabel?: string | null, projectNumber?: number }} expected `projectNumber` is the
  *   board the filing was added to (#4078), the home board by default; `session: null` is a
  *   row someone else filed (`--board=`), whose Filed-by line this act did not write and does not assert
  * @returns {string[]} empty when everything is confirmed
@@ -1217,6 +1269,9 @@ export function unverifiedFilingFields(after, expected) {
   // the tracker compares. Half of it landing silently is the drift, not a smaller version of it.
   if (expected.releaseLabel != null && !after.labels.some((l) => sameLabel(l, expected.releaseLabel ?? ""))) {
     missing.push(`the \`${expected.releaseLabel}\` label`);
+  }
+  if (expected.kindLabel != null && !after.labels.some((l) => sameLabel(l, expected.kindLabel ?? ""))) {
+    missing.push(`the \`${expected.kindLabel}\` label`); // #4123: the mark that makes the closing pull request owe a `Class:` line
   }
   const missingLanes = expected.laneLabels.filter((l) => !after.labels.includes(l));
   if (missingLanes.length > 0) missing.push(`${missingLanes.map((l) => `\`${l}\``).join("/")} label(s)`);
@@ -1538,6 +1593,11 @@ export function createIssue(argv, deps = {}) {
     loadLanesConfig: loadLanes, milestones: openMilestones, declaration: homeProjectDeclaration(), ...deps,
   };
   const session = sessionFromArgv(argv);
+  const unknownKind = kindRefusal(argv);
+  if (unknownKind) {
+    process.stderr.write(`${unknownKind}\n`);
+    return 1;
+  }
   if (!session) {
     process.stderr.write("row-file: --session=<name> is required -- Filed-by: is taken from the session "
       + "filing the row, never guessed and never left blank.\n");
@@ -1592,13 +1652,14 @@ export function createIssue(argv, deps = {}) {
   // #1130: the label alone must not leave the row out of the milestone that says the same thing.
   // #1322: the board and lane labels are this tool's to apply, after the Status move. A filer's copy of either is
   // dropped from the create call rather than landing at creation beside them -- a `ready` there is #867's refusal.
-  const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(argv, tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
+  const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(withKindLabel(argv), tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
     /** @type {string} */ (body)), tracker, declaration);
 
   /** @type {string} */
   let url;
   try {
     ensureReleaseLabel(filedArgv, tracker, declaration, { run, ensureLabels });
+    if (kindLabelOf(filedArgv) !== null) ensureLabels([DEFECT_LABEL], { run, repo: tracker.repo }); // #4123: `gh issue create` refuses a label the repository lacks
     url = spawnGh(filedArgv);
   } catch (error) {
     process.stderr.write(`row-file: gh issue create failed -- nothing was filed. `
@@ -1699,14 +1760,14 @@ function boardAddRefusal({ issueNumber, url, boarding, tracker, allLabels, repai
  * the read-back, which asks the SAME board it wrote. The home tracker by default, which is what `--board=` and `--promote=` mean.
  * @param {{ issueNumber: number, url: string, boarding: { label: string, status: string },
  *   session: string | null, laneLabels: string[], milestone: string | null,
- *   releaseLabel?: string | null, lead?: string, tracker?: Tracker }} filed
+ *   releaseLabel?: string | null, kindLabel?: string | null, lead?: string, tracker?: Tracker }} filed
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
  *   fetchLabels: typeof fetchIssueLabels, moveStatus: typeof moveTrackerStatus,
  *   ensureLabels: typeof ensureLabelsOn }} deps
  * @returns {{ ok: true } | { ok: false, message: string }}
  */
 export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels, milestone,
-  releaseLabel = null, lead = `FILED as #${issueNumber}`, tracker = homeTracker() },
+  releaseLabel = null, kindLabel = null, lead = `FILED as #${issueNumber}`, tracker = homeTracker() },
 { run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels }) {
   const { repo } = tracker;
   const { number: boardNumber, owner: boardOwner } = tracker.board;
@@ -1783,7 +1844,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     milestone: milestoneAfter,
   };
   const missing = unverifiedFilingFields(after,
-    { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel,
+    { session, label: boarding.label, status: boarding.status, laneLabels, milestone, releaseLabel, kindLabel,
       projectNumber: boardNumber });
   if (missing.length > 0) {
     return { ok: false, message: `${lead}, but the read-back does not confirm it -- `
@@ -2338,7 +2399,7 @@ export function boardRow(argv, deps = {}) {
 }
 
 function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
