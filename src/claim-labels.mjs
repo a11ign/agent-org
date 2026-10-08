@@ -59,17 +59,57 @@ export const CLAIM_RECORD_MARKER = "<!-- row-claim: claim record -->";
 export const STATE_LABELS = Object.freeze([READY_LABEL, CLAIM_LABEL, "backlog", "parked", "epic", "blocked"]);
 
 /**
+ * A row younger than this is BEING FILED, not stateless -- #4048. `row-file` adds the state label LAST on purpose (an unfinished row must never be
+ * offered), so every filing has a 12 to 13 second gap with no state label, and a tick that read in it tripped `row-without-exactly-one-state` and
+ * `board-disagrees-with-reality` three times on 2026-10-08 (#4043, #4044, #4047), each clearing itself and costing two sessions a turn. Five minutes is
+ * longer than a filing and shorter than a tick pair, so a row that really lacks a state is found by the second tick. The ORDER of `row-file` stays;
+ * the reader learns that a row is new.
+ */
+export const FILING_GRACE_MS = 5 * 60 * 1000;
+
+/** @param {{ labels?: (string | { name?: string })[] }} row @returns {string[]} the held state labels, in `STATE_LABELS` order */
+function heldStatesOf(row) {
+  const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
+  return STATE_LABELS.filter((state) => names.includes(state));
+}
+
+/**
+ * ABSENCE IS NOT PROOF: a `createdAt` that is missing or does not parse is NOT "new", so a malformed read judges the row and never hides it. The age is read as
+ * a distance, so a host clock a few seconds behind GitHub's does not turn a filing into a finding; a `createdAt` further than the grace from `now` either way is judged.
+ * @param {{ createdAt?: string }} row @param {number | undefined} now epoch ms; absent means no row is excused
+ */
+function isBeingFiled(row, now) {
+  if (now === undefined) return false;
+  const created = Date.parse(row.createdAt ?? "");
+  return Number.isFinite(created) && Math.abs(now - created) < FILING_GRACE_MS;
+}
+
+/**
  * Pure: the open rows that are not in exactly one state. `NONE` is the row no state-keyed check can see (the Ready lane, the claim
  * pool, every label-keyed count); `MANY` is two states at once, which each reader resolves its own way. A CLOSED row is skipped:
  * it has no lane to be in, and a row whose `state` is not given is read as open (the gate's own `--state open` list carries none).
  * `labels` may be names or `{ name }` objects, as `gh` returns them.
- * @param {{ number: number, state?: string, labels?: (string | { name?: string })[] }[]} openRows
+ * #4048: GIVEN `now`, a `NONE` row younger than `FILING_GRACE_MS` is not a finding (see `rowsBeingFiled`, which names those). `MANY` is a finding at any age: a
+ * row `row-file` is still filing holds no state, never two. A caller that gives no `now` excuses nothing, which is every caller that asks about ONE row it just wrote.
+ * @param {{ number: number, state?: string, createdAt?: string, labels?: (string | { name?: string })[] }[]} openRows
+ * @param {{ now?: number }} [when]
  * @returns {{ number: number, labels: string[], kind: "NONE" | "MANY" }[]} the held state labels, in `STATE_LABELS` order
  */
-export function stateLabelFindings(openRows) {
+export function stateLabelFindings(openRows, { now } = {}) {
   return openRows.filter((row) => row.state !== "CLOSED").flatMap((row) => {
-    const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
-    const held = STATE_LABELS.filter((state) => names.includes(state));
-    return held.length === 1 ? [] : [{ number: row.number, labels: held, kind: held.length === 0 ? /** @type {const} */ ("NONE") : /** @type {const} */ ("MANY") }];
+    const held = heldStatesOf(row);
+    if (held.length === 1 || (held.length === 0 && isBeingFiled(row, now))) return [];
+    return [{ number: row.number, labels: held, kind: held.length === 0 ? /** @type {const} */ ("NONE") : /** @type {const} */ ("MANY") }];
   });
+}
+
+/**
+ * Pure: the open rows `stateLabelFindings` excuses at `now` -- no state label and younger than the grace. A reader that excuses a row says so (#4048): the daily table
+ * counts them as `N filing, not judged`, so the exclusion is stated and never silent.
+ * @param {{ number: number, state?: string, createdAt?: string, labels?: (string | { name?: string })[] }[]} openRows
+ * @param {{ now: number }} when
+ * @returns {number[]} the row numbers
+ */
+export function rowsBeingFiled(openRows, { now }) {
+  return openRows.filter((row) => row.state !== "CLOSED" && heldStatesOf(row).length === 0 && isBeingFiled(row, now)).map((row) => row.number);
 }

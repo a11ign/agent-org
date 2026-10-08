@@ -178,18 +178,18 @@ test("LOOPS: review -> rework -> review, queue -> eject -> queue and wake -> com
   assert.equal(loop(m, "queue").count, 1);
   near(loop(m, "queue").dollars, 0.25);
   assert.equal(loop(m, "queue").floor, true);
-  // compaction: one, priced at the INPUT side of the next turn of worker-101 (1000 input at $2/M + 100000 cache read at $0.20/M = 0.002 + 0.02), not its 4.0.
+  // compaction: one, priced at the INPUT side of the next turn of worker-101 (1000 input at $2/M + 100000 cache read at $0.10/M = 0.002 + 0.01), not its 4.0.
   assert.equal(loop(m, "compaction").count, 1);
-  near(loop(m, "compaction").dollars, 0.022);
+  near(loop(m, "compaction").dollars, 0.012);
   assert.equal(m.wakes, 4, "wake, beside compaction: the wakes on the rows (101 has two, 102 and 201 one each)");
 });
 
 test("LOOPS: a compaction is priced at the session's own next turn, never a subagent's (sidechain) turn between", () => {
-  // A subagent turn 30 minutes after the compaction, with a window an order of magnitude larger than the session's own: were it taken, the loop would cost $2.00 and not $0.022.
+  // A subagent turn 30 minutes after the compaction, with a window an order of magnitude larger than the session's own: were it taken, the loop would cost $2.00 and not $0.012.
   const subagent = turn("2026-09-22T11:30:00Z", "worker-101", 1, { row: 101, sidechain: true, tokens: { input: 1000000, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 } });
   const m = model({}, [...EVENTS, subagent]);
   assert.equal(loop(m, "compaction").count, 1);
-  near(loop(m, "compaction").dollars, 0.022);
+  near(loop(m, "compaction").dollars, 0.012);
   assert.equal(loop(m, "compaction").floor, false);
   // The positive control: the same turn NOT marked sidechain is the next turn, and is priced, so the guard above is what kept it out.
   near(loop(model({}, [...EVENTS, { ...subagent, sidechain: false }]), "compaction").dollars, 2);
