@@ -87,9 +87,11 @@ jobs:
         run: node scripts/lay-layer.mjs lab # in-project
       # `tsx`, `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
+      # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
+      # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.1.5 is the last version that ships `dist/`; move this pin deliberately, to a release that does.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
-          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@^0.1.2"
+          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.1.5"
           mv node_modules project/node_modules
       - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
         run: |
@@ -170,7 +172,8 @@ jobs:
         with:
           node-version: 22.22.1
       - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml, tsx)
-        run: npm install --no-package-lock
+        # The toolchain is named EXACT beside `package.json`'s `^0.1.5` for the same reason as in `suite` (a11ign/a11ign#4308): the range resolved 0.1.6, which has no `dist/`.
+        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.1.5"
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
       # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain` 0.1.5). This repository is the standard's model -- one package at the root, one
