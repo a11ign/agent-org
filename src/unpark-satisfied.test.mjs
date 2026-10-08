@@ -4,12 +4,17 @@
 // THE POSITIVE CONTROL for every "writes nothing" below is the first test: the SAME harness (`world`, `run`) un-parks a row there, so an empty `calls` is a reading of a wired pass and not of
 // a pass that cannot write. Each "untouched" case differs from a transitioning one by ONE fact.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { boardTruthAudit, QUESTIONS } from "./board-truth-audit.mjs";
 import { PARKED_LABEL } from "./work-gate.mjs";
 import { MUTEX_LABELS } from "./ready-label-audit.mjs";
-import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import * as unpark from "./unpark-satisfied.mjs";
+import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, githubIo, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.mjs";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
 const PASSED = "2026-10-11T00:00:00Z";
@@ -246,4 +251,108 @@ test("the merged-closer read: only MERGED pull requests count, and a refused or 
   assert.deepEqual(mergedClosersOf(5, answer([])), [], "none is a reading when the shape is right");
   assert.throws(() => mergedClosersOf(5, () => "{}"), /#5 could not be read/);
   assert.throws(() => mergedClosersOf(5, () => { throw new Error("HTTP 502"); }), /HTTP 502/);
+});
+
+// --- a11ign/a11ign#4202: THE PROMOTION RUNS FROM A LINKED WORKTREE THE TICK OWNS ---
+//
+// THE REAL SHAPE, not a stub that returns the refusal: a PRIMARY-checkout fixture (`git init`, so its `.git` is a directory, as the tool checkout's is) is the tick's working directory, and the
+// REAL `row-file.mjs` is spawned. `gh` on the PATH is a fake that fails every call, so a launch that gets past the guard stops at its first read and writes nothing to GitHub.
+/** @param {string[]} args @param {string} cwd */
+const git = (args, cwd) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8", env: sandboxGitEnv() }).trim();
+
+/** @returns {{ root: string, primary: string, fakeBin: string }} a primary checkout with one commit, and a `gh` that always fails */
+function fixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "unpark-4202-")));
+  const primary = join(root, "agent-org");
+  mkdirSync(primary);
+  git(["init", "-q", "-b", "main"], primary);
+  writeFileSync(join(primary, "f.txt"), "x\n");
+  git(["add", "f.txt"], primary);
+  git(["commit", "-q", "-m", "one"], primary);
+  const fakeBin = join(root, "bin");
+  mkdirSync(fakeBin);
+  writeFileSync(join(fakeBin, "gh"), "#!/bin/sh\necho 'fake gh: refused' >&2\nexit 1\n");
+  chmodSync(join(fakeBin, "gh"), 0o755);
+  return { root, primary, fakeBin };
+}
+
+/**
+ * The tick's promotion of row 1 with `launchDir` as the tick's working directory. Returns what the promotion said and what the process wrote to stderr (the which-worktree log line).
+ * @param {{ primary: string, fakeBin: string }} fx @param {{ worktree?: () => any }} [deps]
+ */
+function promoteFromPrimary(fx, deps) {
+  const was = { cwd: process.cwd(), path: process.env.PATH, write: process.stderr.write };
+  /** @type {string[]} */
+  const logged = [];
+  process.chdir(fx.primary);
+  process.env.PATH = `${fx.fakeBin}:${was.path}`;
+  process.stderr.write = /** @type {any} */ ((/** @type {string} */ chunk) => { logged.push(String(chunk)); return true; });
+  try {
+    const answer = githubIo(() => "", deps).promote(1);
+    return { answer, logged: logged.join("") };
+  } catch (error) {
+    return { answer: { thrown: error instanceof Error ? error.message : String(error) }, logged: logged.join("") };
+  } finally {
+    process.stderr.write = was.write;
+    process.env.PATH = was.path;
+    process.chdir(was.cwd);
+  }
+}
+
+test("(#4202) CONTROL: row-file launched from a checkout whose .git is a directory is refused -- the guard stays, and the refusal is what the tick met", () => {
+  const fx = fixture();
+  try {
+    const ran = (() => { try { execFileSync(process.execPath, [new URL("./row-file.mjs", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String(/** @type {any} */ (error).stderr); } })();
+    assert.match(ran, /REFUSED -- launched from .*which is not a linked worktree: its \.git is a directory/, "the primary-checkout fixture is the real refused shape");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("(#4202) the tick's promotion, launched from a primary checkout, is run from a linked worktree it owns -- and is not refused for where it ran", () => {
+  const fx = fixture();
+  try {
+    const { answer, logged } = promoteFromPrimary(fx, { worktree: () => (unpark.tickWorktree?.({ codeDir: fx.primary }) ?? { refusal: "tickWorktree is not exported" }) });
+    const said = JSON.stringify(answer);
+    assert.doesNotMatch(said, /not a linked worktree/, `the promotion was refused for the place it ran: ${said}`);
+    const owned = join(fx.root, "role-work-gate");
+    assert.ok(logged.includes(`runs from the tick's worktree ${owned}`), `the log names the worktree that ran the script: ${logged}`);
+    assert.equal(git(["rev-parse", "--git-dir"], owned).includes("worktrees"), true, "the owned tree is a LINKED worktree (its .git is a file pointing into the primary)");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("(#4202) the owned worktree is created once, reused, moved to HEAD, and a directory that is not a worktree is never touched", () => {
+  const fx = fixture();
+  try {
+    const first = unpark.tickWorktree({ codeDir: fx.primary });
+    assert.deepEqual(first, { dir: join(fx.root, "role-work-gate") });
+    assert.deepEqual(unpark.tickWorktree({ codeDir: fx.primary }), first, "a second call reuses it");
+    writeFileSync(join(fx.primary, "g.txt"), "y\n");
+    git(["add", "g.txt"], fx.primary);
+    git(["commit", "-q", "-m", "two"], fx.primary);
+    unpark.tickWorktree({ codeDir: fx.primary });
+    assert.equal(git(["rev-parse", "HEAD"], first.dir), git(["rev-parse", "HEAD"], fx.primary), "a detached clean tree follows the checkout's HEAD");
+    rmSync(first.dir, { recursive: true });
+    assert.deepEqual(unpark.tickWorktree({ codeDir: fx.primary }), first, "STALE: a registration whose directory is gone is pruned and the tree made again");
+    rmSync(first.dir, { recursive: true });
+    git(["worktree", "prune"], fx.primary);
+    mkdirSync(first.dir);
+    writeFileSync(join(first.dir, "mine.txt"), "not yours\n");
+    const refused = unpark.tickWorktree({ codeDir: fx.primary });
+    assert.match(/** @type {any} */ (refused).refusal, /exists and is not a worktree of/);
+    assert.equal(readFileSync(join(first.dir, "mine.txt"), "utf8"), "not yours\n", "the foreign directory was left alone");
+  } finally { rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("(#4202) no tree to run from is a refusal the row is routed with, never a throw that leaves a plain backlog row", () => {
+  assert.deepEqual(unpark.promoteViaModule(7, () => ({ refusal: "disk full" })), { ok: false, refusal: "the tick has no linked worktree to run `row-file --promote=7` from: disk full" });
+});
+
+test("(#4202) PIN: every script the gate starts that carries a launch guard is run with a working directory of its own -- the list, from the source", () => {
+  const read = (/** @type {string} */ f) => readFileSync(new URL(f, import.meta.url), "utf8");
+  const spawned = (/** @type {string} */ f) => [...read(f).matchAll(/new URL\("\.\/([a-z-]+\.mjs)", import\.meta\.url\)/g)].map((m) => m[1]);
+  const children = [...new Set(["./work-gate.mjs", "./unpark-satisfied.mjs"].flatMap(spawned))].sort();
+  const guarded = children.filter((c) => /\blaunchGate\(/.test(read(`./${c}`)));
+  // The positive control: the scan finds the children (update-primary, host-units, row-file) and finds row-file guarded.
+  assert.deepEqual(children, ["host-units.mjs", "row-file.mjs", "update-primary.mjs"]);
+  assert.deepEqual(guarded, ["row-file.mjs"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
+  assert.match(read("./unpark-satisfied.mjs"), /spawnSync\(process\.execPath, \[ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
 });
