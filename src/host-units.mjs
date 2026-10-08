@@ -100,6 +100,10 @@ export const TOOL_ENTRIES = Object.freeze([
   "trace-publish.service.in", "trace-publish.timer.in",
   // a11ign/a11ign#3849: the /tmp fixture janitor's pair, and the user-level tmpfiles rule that ages the private tmp root out (not a unit: `installTmpfiles` copies it).
   "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
+  // a11ign/a11ign#4071: the OTel receiver's service, a long-running one (`LONG_RUNNING_TEMPLATES`) with no timer, as the chairman listener's is.
+  "otel-receiver.service.in",
+  // a11ign/a11ign#4053: the drained kernel reboot's pair. The service runs `host-kernel.mjs --reboot`; the timer is the hour `ceo` named and has NO `Requires=`, so `host:install` never reboots.
+  "kernel-reboot.service.in", "kernel-reboot.timer.in",
 ]);
 
 /**
@@ -374,6 +378,14 @@ const OTHER_TOOL_FORMS = Object.freeze({
   ],
   "chairman-watch.service.in": [
     [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node src/messaging/watch.mjs"],
+  ],
+  // THE OTEL RECEIVER (a11ign/a11ign#4071): run from the tool's checkout, like the trace pages' script.
+  "otel-receiver.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node src/trace/otel-receiver.mjs"],
+  ],
+  // THE DRAINED KERNEL REBOOT (a11ign/a11ign#4053): run from the tool's checkout, like the receiver above.
+  "kernel-reboot.service.in": [
+    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/host-kernel\.mjs --reboot$/m, "ExecStart=/usr/bin/node src/host-kernel.mjs --reboot"],
   ],
   "shadow-window.service.in": [
     [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/shadow-window\.mjs /m, "ExecStart=/usr/bin/node src/shadow-window.mjs "],

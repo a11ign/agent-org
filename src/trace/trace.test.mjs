@@ -65,6 +65,24 @@ const worker = () => read(WORKER, "w.jsonl");
 const orchestrator = () => read(ORCHESTRATOR, "o.jsonl");
 const turns = (events) => events.filter((event) => event.kind === "turn");
 
+/** A follow-up order as #4068 types it: no identity sentence, the session in the header. */
+const followUp = (timestamp, session, body = "a follow-up order.") => JSON.stringify({
+  type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="2">\n[order:wake:${session}:${at(timestamp)} session:${session} cause:blocker-cleared]\n\n${body}\n</pasted_content>` },
+});
+const nameless = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: '\n\n<pasted_content id="3">\nan order that names nobody.\n</pasted_content>' } });
+const NAMING_BLOCK = block("2026-10-04T10:00:04.000Z", "msg_n", "claude-sonnet-5-5", usage(2, 20, 6448, 20554));
+
+test("#4083 NAMING: a transcript whose only wake is a follow-up header belongs to that session, as one on the old phrase does; one with neither is unnamed", () => {
+  const sessionOfText = (text, file) => read(text, file).session;
+  assert.equal(sessionOfText([followUp("2026-10-04T10:00:00.000Z", "worker-9001"), NAMING_BLOCK].join("\n"), "f.jsonl"), "worker-9001", "the new header");
+  assert.equal(sessionOfText([wake("2026-10-04T10:00:00.000Z", "worker-9001"), NAMING_BLOCK].join("\n"), "o.jsonl"), "worker-9001", "CONTROL: the old phrase");
+  assert.equal(sessionOfText([nameless("2026-10-04T10:00:00.000Z"), NAMING_BLOCK].join("\n"), "n.jsonl"), "unnamed:n.jsonl", "CONTROL: neither form");
+  const headerFirst = [followUp("2026-10-04T10:00:00.000Z", "worker-1"), wake("2026-10-04T10:05:00.000Z", "worker-2"), NAMING_BLOCK].join("\n");
+  const phraseFirst = [wake("2026-10-04T10:00:00.000Z", "worker-2"), followUp("2026-10-04T10:05:00.000Z", "worker-1"), NAMING_BLOCK].join("\n");
+  assert.equal(sessionOfText(headerFirst, "a.jsonl"), "worker-1", "the earlier form wins: header first");
+  assert.equal(sessionOfText(phraseFirst, "b.jsonl"), "worker-2", "the earlier form wins: phrase first");
+});
+
 test("COST: the price table reproduces Claude Code's own cost_usd on the Haiku request it was checked against; Sonnet 5.5 is the page's rate, not the client's", () => {
   // From `CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=console claude -p ...`, 2026-10-04: api_request.cost_usd.
   assert.equal(costOf("claude-haiku-4-5-20251001", tokensOf(usage(10, 43, 12548, 9289))), 0.0200578);

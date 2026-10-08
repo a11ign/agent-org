@@ -29,7 +29,7 @@ export const HOST_DECLARATION_PATH = ".agent-org/host.json";
  * that runs it. Everything else `host-units.mjs` asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
  * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
  */
-export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in"]);
+export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in", "otel-receiver.service.in"]);
 
 /** A template is this suffix on the shipped name; the rendered name is `<prefix><name>` without it. */
 export const TEMPLATE_SUFFIX = ".in";

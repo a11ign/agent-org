@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
-  existsSync } from "node:fs";
+  existsSync, copyFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
@@ -181,11 +181,14 @@ test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
   assert.ok(copied.length > 0, "it copied the units it found");
   assert.deepEqual(calls[0], ["daemon-reload"], "reload BEFORE enabling, or systemd enables a stale unit");
   const enables = calls.filter((c) => c[0] === "enable");
+  const longRunning = LONG_RUNNING_TEMPLATES.map((template) => `a11ign-${template.replace(/\.in$/, "")}`);
   assert.ok(enables.length > 0, "and it enabled the timers");
   for (const call of enables) {
     assert.deepEqual(call.slice(0, 2), ["enable", "--now"], `bare enable in ${JSON.stringify(call)}`);
-    assert.match(call[2], /\.timer$/, "only timers are enabled -- a oneshot service is pulled by its timer");
+    // A oneshot service is pulled by its timer; a LONG-RUNNING one (`LONG_RUNNING_TEMPLATES`, #3025, #4071) has none, so `enable --now` on the service is what starts it.
+    assert.ok(/\.timer$/.test(call[2]) || longRunning.includes(call[2]), `only timers and the long-running services are enabled, not ${call[2]}`);
   }
+  assert.ok(enables.some((call) => call[2] === "a11ign-otel-receiver.service"), "POSITIVE CONTROL: the OTel receiver (#4071) is started by the install, not left installed and stopped");
 });
 
 test("#1858: every unit this repository ships is discovered -- against the real directory", () => {
@@ -853,7 +856,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1292,13 +1295,15 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
+    // a11ign/a11ign#4053: the kernel reboot's timer. Its service REBOOTS THE HOST, so a start at `host:install` would reboot it at an operator's keystroke; the hour is the clock's alone.
+    "a11ign-kernel-reboot.timer",
     // a11ign/a11ign#3627: the weekly token-efficiency post, on the board edition's side for the board edition's reason: it POSTS A REPORT.
     "a11ign-trace-weekly.timer",
   ], "THE CONTROL, and a measured one rather than a fixture: at the 2026-09-22 21:03Z `host:install` the "
     + "four above each started their service in that second and board-report did not, though the same run "
     + "reinstalled it. It activates its service by name alone, ON PURPOSE: it dispatches a board edition, "
     + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock. "
-    + "The weekly report's timer is the second member: its service comments on the record issue");
+    + "The weekly report's timer is the second member: its service comments on the record issue. The kernel reboot's is the third: its service reboots the host");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
@@ -2535,7 +2540,7 @@ function withListenerHome(body: (home: { shippedDir: string, installedDir: strin
 test("#3025: the listener's template is classified as the tool's and optional on `messaging`, so it is never UNCLASSIFIED", () => {
   assert.ok(TOOL_ENTRIES.includes("chairman-listen.service.in"));
   assert.equal(OPTIONAL_UNITS["chairman-listen.service.in"], "messaging");
-  assert.deepEqual(LONG_RUNNING_TEMPLATES, ["chairman-listen.service.in"]);
+  assert.deepEqual(LONG_RUNNING_TEMPLATES, ["chairman-listen.service.in", "otel-receiver.service.in"]);
   withListenerHome(({ shippedDir }) => {
     assert.deepEqual(unclassifiedEntries({ shippedDir, projectUnitsDir: null }), []);
     writeFileSync(join(shippedDir, "stray-listener.service.in"), LISTENER_TEMPLATE);
@@ -2858,6 +2863,30 @@ test("#3515: installed as the tool, the trace pages' service runs publish.mjs fr
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
   assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/publish\.mjs$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
+});
+
+test("#4071: the OTel receiver's unit is listed where this guard looks -- classified as the tool's, long-running with no timer, installed as the tool runs it", () => {
+  assert.ok(TOOL_ENTRIES.includes("otel-receiver.service.in"));
+  assert.ok(LONG_RUNNING_TEMPLATES.includes("otel-receiver.service.in"), "`enable --now` on the SERVICE is what starts it: no timer does");
+  assert.ok(!TOOL_ENTRIES.includes("otel-receiver.timer.in"));
+  const listed = shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "a11ign-", declaredKeys: new Set() });
+  assert.ok(listed.includes("a11ign-otel-receiver.service"), "and `host:check` / `host:install` see it");
+  assert.deepEqual(unclassifiedEntries({ shippedDir: SHIPPED_DIR, projectUnitsDir: null }), [], "and nothing in the host directory is classified nowhere");
+
+  // POSITIVE CONTROL for that empty list: the same directory plus a stray copy of the unit under a name nobody classified IS refused.
+  const stray = tmpDir("otel-shipped-");
+  for (const name of TOOL_ENTRIES) if (existsSync(join(SHIPPED_DIR, name))) copyFileSync(join(SHIPPED_DIR, name), join(stray, name));
+  assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }), []);
+  copyFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), join(stray, "stray-otel.service.in"));
+  assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }).map((finding) => finding.unit), ["stray-otel.service.in"]);
+
+  const rendered = readFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), "utf8")
+    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  const installed = toolForm("otel-receiver.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/otel-receiver\.mjs$/m);
+  assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit");
 });
 
 // --- #3702: A CLONE `host.json` DECLARES MUST BE ONE THE REVIEWER'S CODEX TRUSTS -----------------------------------------------------------
