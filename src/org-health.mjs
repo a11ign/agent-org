@@ -65,6 +65,7 @@ import { brokenChecks } from "./red-pr.mjs";
 import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.mjs";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
 import { IDLE_REASONS, idleLine } from "./idle-with-open-rows.mjs";
+import { CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, CLASS_LABEL_PREFIX, groupByClass } from "./class-repeat.mjs";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
 export const NO_MERGE_HOURS = 3;
@@ -194,6 +195,7 @@ export const SIGNALS = Object.freeze({
   IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
   RELEASE_FAILED: "release-run-failed",
   BOARD_TRUTH: "board-disagrees-with-reality",
+  CLASS_REPEAT: "class-repeat",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
@@ -1152,6 +1154,53 @@ function tryJson(read) {
 }
 
 /**
+ * SIGNAL 20 (#4126, child B of #4122): A SECOND CLOSED ROW UNDER ONE `class:<id>` LABEL, WHICH MEANS THE CLASS'S GUARD FAILED. One reading PER CLASS, so each class has its own
+ * discriminator and a class whose offer lapses cannot re-key another's. THE DISCRIMINATOR IS THE CLASS AND ITS NEWEST ROW (`class-repeat/<id>@<number>`): the same newest row is the
+ * same order, and a THIRD row is a new newest row and a new offer. A closed row stays closed, so the condition never clears on its own and an order for it would be re-sent every
+ * two hours; it is therefore TRIPPED only while the newest instance closed within `CLASS_REPEAT_WINDOW_MS` (see there), and is `clear` after, which is what makes it one offer.
+ *
+ * WHAT IT WILL NOT DO. A label naming no class in the index is `unknown class`, reported by name and in no way a class (a typo must not invent a repeat, and must not hide one: the row
+ * stays unread until relabelled). A refused read of the labels or the file is `unknown`, never "no repeats". An OPEN row is not an instance (`readClassRepeat` lists closed rows only).
+ * The detail ends with the instance counts of every class read, so "which class has the most" is printed beside the offer.
+ * @param {{ now: number, classRepeat: import("./class-repeat.mjs").ClassRepeatFact | null }} input
+ * @returns {Reading[]}
+ */
+export function classRepeatReadings({ now, classRepeat }) {
+  const signal = SIGNALS.CLASS_REPEAT;
+  if (classRepeat === null) return [unknown(signal, "the closed rows labelled class:<id> could not be read, so no class is known to be free of a repeat")];
+  if ("unreadable" in classRepeat) return [unknown(signal, `${classRepeat.unreadable}, so no class is known to be free of a repeat`)];
+  const groups = groupByClass(classRepeat.index, classRepeat.rows);
+  const undated = groups.flatMap((g) => g.rows).filter((row) => row.closedAt === null);
+  if (undated.length > 0) return [unknown(signal, `closed row(s) ${[...new Set(undated.map((r) => `#${r.number}`))].join(", ")} carry a class label and no close time, so their order cannot be read`)];
+  const strangers = groups.filter((g) => g.entry === null);
+  const tripped = groups.filter((g) => g.entry !== null && g.rows.length >= 2 && now - /** @type {number} */ (g.rows[0].closedAt) <= CLASS_REPEAT_WINDOW_MS);
+  const counts = classCountsText(groups);
+  const strangerText = strangers.map((g) => `\`${CLASS_LABEL_PREFIX}${g.id}\` on ${rowsText(g.rows)}`).join("; ");
+  const unknownClass = `unknown class (in no way a class, tripping nothing): ${strangerText} (not in ${FAILURE_CLASSES_PATH}: fix the label or add the class)`;
+  if (tripped.length > 0) return tripped.map((g) => classRepeatTripped(signal, g, [counts, ...(strangers.length > 0 ? [unknownClass] : [])].join("; ")));
+  if (strangers.length > 0) return [unknown(signal, unknownClass)];
+  return [clear(signal)];
+}
+
+/** @param {import("./class-repeat.mjs").ClassRow[]} rows @returns {string} */
+const rowsText = (rows) => rows.map((r) => `#${r.number}`).join(", ");
+
+/** @param {import("./class-repeat.mjs").ClassGroup[]} groups @returns {string} every class read with its instance count, the most first */
+function classCountsText(groups) {
+  const counted = groups.filter((g) => g.entry !== null).sort((a, b) => b.rows.length - a.rows.length || a.id.localeCompare(b.id));
+  return `instances per class, most first: ${counted.map((g) => `${g.id} ${g.rows.length}`).join(", ")}`;
+}
+
+/** @param {string} signal @param {import("./class-repeat.mjs").ClassGroup} group @param {string} beside @returns {Reading} */
+function classRepeatTripped(signal, group, beside) {
+  const entry = /** @type {import("./class-repeat.mjs").FailureClass} */ (group.entry);
+  const guard = entry.guard ?? `NONE IN FORCE (${entry.guardNote ?? "the index says nothing more"}), so the first thing to fix is that there is no guard`;
+  return { signal, status: "tripped", firstTrippedAt: group.rows[0].closedAt, discriminator: `${signal}/${group.id}@${group.rows[0].number}`,
+    detail: `THE GUARD FAILED: class \`${group.id}\` (${entry.name}) has ${group.rows.length} closed rows, ${rowsText(group.rows)}, newest first, and a second closed row under one class is a repeat. `
+      + `Its guard: ${guard}. ${beside}` };
+}
+
+/**
  * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
@@ -1160,7 +1209,8 @@ function tryJson(read) {
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"] }} facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
+ *           classRepeat?: import("./class-repeat.mjs").ClassRepeatFact | null }} facts `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -1181,6 +1231,7 @@ export function orgHealthReadings(facts) {
   if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
+  if (facts.classRepeat !== undefined) readings.push(...classRepeatReadings({ now: facts.now, classRepeat: facts.classRepeat }));
   return readings;
 }
 
@@ -1249,6 +1300,11 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "`gh run rerun <run id> --failed -R <the repository in the URL above>`. A cause FIXED ON `main` since (the run is at an older sha) needs a NEW run, which a rerun of the old one does not give: "
     + "`gh workflow run release.yml --ref main -R <repository>`. If the cause is not fixed yet, FILE THE FIX `" + READY_LABEL + "` WITH AN OWNER in this turn. "
     + "Do not wait for the next changeset: a run is only ever started by a merge that carries one, so waiting leaves it red for as long as nobody merges one. It clears the tick a later run succeeds.",
+  [SIGNALS.CLASS_REPEAT]: "A class of failure in `" + FAILURE_CLASSES_PATH + "` now has a SECOND closed row, and a repeat means THE GUARD THE INDEX NAMES FAILED (or, where the guard is `null`, was never in force). "
+    + "Do NOT fix the newest instance and stop: that is what the first one got. READ BOTH ROWS and the guard above, and decide which it is: the guard exists and did not fire (find why and fix it, so the NEXT instance is stopped), "
+    + "the guard covers a narrower population than the class (widen it), or the second row is not the class at all (remove its `" + CLASS_LABEL_PREFIX + "<id>` label and say why on the row). "
+    + "FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn, and say on #928 which class it was. It is offered ONCE for this newest row: a third row under the class is a new offer, "
+    + "and it stops being repeated after ninety minutes whether or not anyone acted, so the row you file is the record.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",

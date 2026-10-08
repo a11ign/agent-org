@@ -62,8 +62,9 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 231 to 232 (a11ign/a11ign#4073): `src/trace/growth.mjs` is a NEW source file that is a command run with plain `node` (`node src/trace/growth.mjs --from=… --to=…`, the table the row posts on #4055), so it cannot be `.ts` (node on the host has no TypeScript).
 // 232 to 233 (a11ign/a11ign#4074): `src/trace/triage-sample.mjs` is a NEW source file the row's Acceptance command runs under plain `node` (a module `trace` can import and a command that runs on its own), so it cannot be `.ts`.
 // 233 to 234 (a11ign/a11ign#4123): `src/defect-class-line.mjs` is the leaf the row's Region names, and shipped commands import it (`pr-open.mjs`, `row-file.mjs`, `acceptance-commands.mjs`, run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript). It is the one parse of a defect row's `Class:` line, shared by `pr:open` and CI.
-// 234 to 235 (a11ign/a11ign#4124): `src/found-by-chairman.mjs` is a NEW source file that a shipped command imports (`board-data.mjs`, which `board-document.mjs` and `board-report.mjs` run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
-const SOURCE_MJS_PIN = 235;
+// 234 to 235 (a11ign/a11ign#4126): `src/class-repeat.mjs` is a NEW source file that a shipped command imports (`org-health.mjs`, a leaf `work-gate.mjs` runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript).
+// 235 to 236 (a11ign/a11ign#4124): `src/found-by-chairman.mjs` is a NEW source file that a shipped command imports (`board-data.mjs`, which `board-document.mjs` and `board-report.mjs` run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
+const SOURCE_MJS_PIN = 236;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
@@ -87,8 +88,9 @@ const SOURCE_MJS_PIN = 235;
 // 65 to 66 (a11ign/a11ign#4073): `growth.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`, which cannot import a `.ts`), so it is `.mjs`.
 // 66 to 67 (a11ign/a11ign#4074): `triage-sample.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 67 to 68 (a11ign/a11ign#4123): `defect-class-line.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-// 68 to 69 (a11ign/a11ign#4124): `found-by-chairman.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 69;
+// 68 to 69 (a11ign/a11ign#4126): `class-repeat.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+// 69 to 70 (a11ign/a11ign#4124): `found-by-chairman.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 70;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
