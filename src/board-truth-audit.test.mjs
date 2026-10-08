@@ -5,11 +5,16 @@
 // never fires is red in the first. The chairman's two cases are fixtures: #2899 (an epic, 13 of 13 children closed, open) and the #3425 shape (`ready` carrying `no-code-left`).
 // `emptiness` is the control for every `[]` here: the same audit finds each of the seven rows in `BOARD` below, so an empty result is a reading and not an unwired reader.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { CLAIM_FRESH_MS, QUESTIONS, boardTruthAudit, boardTruthTable, closesOf, readBoardFacts } from "./board-truth-audit.mjs";
+import { after, test } from "node:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CLAIM_FRESH_MS, QUESTIONS, TABLE_ROW, boardTruthAudit, boardTruthTable, closesOf, postDaysTable, readBoardFacts } from "./board-truth-audit.mjs";
 import { declaredRowsFromBody } from "./close-rows-for-merged-pr.mjs";
 import { boardTruthReading, orgHealthOrders, orgHealthReadings, SIGNALS } from "./org-health.mjs";
 import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall.mjs";
+import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.mjs";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const MINUTE = 60_000;
@@ -179,4 +184,135 @@ test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a part
   assert.equal(readBoardFacts("a/b", { run, agents: () => [{ label: "worker-11", status: "working" }], now: NOW }).liveSessions, null, "no standing pane is not a listing of the org");
   assert.equal(readBoardFacts("a/b", { run, agents: () => null, now: NOW }).liveSessions, null);
   assert.throws(() => readBoardFacts("a/b", { run: () => { throw new Error("HTTP 502"); }, agents: () => null }), /502/);
+});
+
+// --- #4045: the tick passes `boardTruth`, and one table a day is posted on #928 ---------------------------------------------------
+
+// A RECORDING `gh`, first on PATH and failing every call, so a call the tick makes through ANY seam (`defaultRun` is `execFileSync("gh", ...)`) is counted and the last test asserts none.
+const SCRATCH = mkdtempSync(join(tmpdir(), "board-truth-tick-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const GH_LOG = join(SCRATCH, "gh-calls.log");
+writeFileSync(join(SCRATCH, "gh"), `#!/bin/sh\necho "$@" >> "${GH_LOG}"\nexit 1\n`);
+chmodSync(join(SCRATCH, "gh"), 0o755);
+process.env.PATH = `${SCRATCH}:${process.env.PATH}`;
+
+/** @param {any[] | null} openRowsRead @param {Record<string, any>} [io] the whole tick, every read a seam: nothing here reaches GitHub, herdr or the fleet */
+function tick(openRowsRead, io = {}) {
+  const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: openRowsRead ?? [], primaryDrift: null, claimRefusals: [] };
+  const waits = { facts: { items: {} }, stale: [], bare: [], manual: [], umbrella: [] };
+  return orgHealthNow(/** @type {any} */ ({ prsRead: [], readyRead: [], openRowsRead, decideArgs, decided: [] }), /** @type {any} */ ({ now: NOW, lastMergedAt: () => NOW,
+    readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined, readWaits: () => waits,
+    readHolderAgents: () => null, ...io }));
+}
+/** @param {any[]} orders */
+const boardTruthOrders = (orders) => orders.filter((o) => o.subject === SIGNALS.BOARD_TRUTH);
+const wire = (/** @type {any} */ over = {}) => ({ repo: "a/b", run: () => "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
+/** The tick's row as `readOpenRows` returns it: labels are objects, and there is no `state` and no `comments`. */
+const tickRow = (/** @type {number} */ number, /** @type {string[]} */ labels, /** @type {Record<string, any>} */ more = {}) => ({ number, title: `row ${number}`, body: "", labels: labels.map((name) => ({ name })), ...more });
+
+test("tick: rows that disagree pass a boardTruth that trips, rows that agree pass one that is clear, a refused open-row read passes null (unknown), and a caller that does not ask gets none", () => {
+  const real = (/** @type {any} */ over = {}) => ({ readBoardTruth: (/** @type {any} */ input) => boardTruthNow(input, wire(over)) });
+  const trips = boardTruthOrders(tick([tickRow(13, ["lane:any"])], real()));
+  assert.deepEqual(trips.map((o) => o.session).sort(), ["ceo", "product-manager"]);
+  assert.match(trips[0].prompt, /#13/);
+  assert.deepEqual(boardTruthOrders(tick([tickRow(10, ["ready"])], real())), [], "an agreeing board raises nothing");
+  const readings = (/** @type {any} */ rows, /** @type {any} */ io) => orgHealthReadings(/** @type {any} */ ({ now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: [], drift: null, since: null,
+    ...boardTruthFact({ openRowsRead: rows, waitFacts: null, now: NOW }, io) })).find((r) => r.signal === SIGNALS.BOARD_TRUTH);
+  const audit = (/** @type {any} */ input) => boardTruthNow(input, wire());
+  assert.equal(readings([tickRow(13, ["lane:any"])], audit)?.status, "tripped");
+  assert.equal(readings([tickRow(10, ["ready"])], (/** @type {any} */ input) => boardTruthNow({ ...input, waitFacts: { items: {} } }, wire()))?.status, "clear");
+  assert.equal(readings(null, () => { throw new Error("a refused read is not read"); })?.status, "unknown");
+  assert.equal(readings(undefined, audit), undefined, "OMITTED when the caller does not ask");
+  assert.equal(tick([tickRow(13, ["lane:any"])]).some((r) => r.signal === SIGNALS.BOARD_TRUTH), false, "the seam's default asks for nothing");
+});
+
+test("tick: the wait facts the gate built are PASSED, so wait-already-true is read and a wait already true is found", () => {
+  const parked = tickRow(12, ["parked"], { body: "Waiting-for: closed #50" });
+  const viaTick = (/** @type {string} */ state) => boardTruthOrders(tick([parked], { readBoardTruth: (/** @type {any} */ input) => boardTruthNow(input, wire()),
+    readWaits: () => ({ facts: { items: { "#50": { state, labels: [] } } }, stale: [], bare: [], manual: [], umbrella: [] }) }));
+  assert.match(viaTick("closed")[0].prompt, /#12 \| wait-already-true/, "the facts the tick's own wait pass built reach the audit");
+  assert.deepEqual(viaTick("open"), [], "the twin: the wait is still true of the world");
+  const passed = (/** @type {any} */ waitFacts) => boardTruthNow({ openRowsRead: [parked], waitFacts, now: NOW }, wire());
+  assert.ok(passed(null).unread.includes(QUESTIONS.WAIT_TRUE));
+  const closed = passed({ items: { "#50": { state: "closed", labels: [] } } });
+  assert.ok(!closed.unread.includes(QUESTIONS.WAIT_TRUE));
+  assert.deepEqual(closed.findings.filter((f) => f.question === QUESTIONS.WAIT_TRUE).map((f) => f.number), [12]);
+  const open = passed({ items: { "#50": { state: "open", labels: [] } } });
+  assert.deepEqual(open.findings.filter((f) => f.question === QUESTIONS.WAIT_TRUE), [], "the twin: the wait is still true of the world");
+});
+
+test("tick: the open rows are the tick's own (no second open-list read), and a claimed row is judged only when its comments came with the page", () => {
+  const calls = [];
+  const run = (/** @type {string[]} */ args) => { calls.push(args); return "[]"; };
+  boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
+  assert.ok(calls.length > 0 && calls.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
+  const closedRead = calls.find((args) => args.includes("closed"));
+  assert.ok(closedRead && !/body/.test(closedRead[closedRead.indexOf("--json") + 1]), "the closed rows ask for no body");
+  const claimed = tickRow(11, ["in-progress", "session:worker-99"]);
+  const judged = (/** @type {any} */ page) => boardTruthNow({ openRowsRead: [claimed], claimedComments: page, waitFacts: null, now: NOW }, wire());
+  assert.deepEqual(judged([{ number: 11, comments: [claimRecord(11, 600)] }]).findings.map((f) => f.number), [11], "a stale record and no live holder is found");
+  assert.deepEqual(judged([{ number: 11, comments: [claimRecord(11, 5)] }]).findings, [], "the twin: a fresh record keeps the claim");
+  assert.deepEqual(judged(null).findings, [], "no comments page is not a dead claim");
+  assert.ok(judged(null).unread.includes(QUESTIONS.NO_CLAIMANT), "and it says it did not read");
+  assert.equal(boardRowsOf([claimed], [{ number: 11, comments: [claimRecord(11, 5)] }]).commentsComplete, true);
+  assert.equal(boardRowsOf([claimed], []).commentsComplete, false);
+  assert.equal(boardRowsOf([tickRow(10, ["ready"])], null).commentsComplete, true, "no claimed row needs no page");
+});
+
+test("the poster: a table is posted once per edition day -- count first, `0 disagree` stated -- and a second tick, a restart or a second host posts nothing", () => {
+  const posted = [];
+  let onRecord = "";
+  const run = (/** @type {string[]} */ args) => {
+    if (args[0] === "api") return onRecord;
+    posted.push(args);
+    onRecord = "4242\n";
+    return "";
+  };
+  const clear = boardTruthAudit(facts({ openRows: [row(10, ["ready"])] }));
+  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b", run }), "posted");
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0].slice(0, 4), ["issue", "comment", TABLE_ROW, "--repo"]);
+  const body = posted[0][posted[0].indexOf("--body") + 1];
+  assert.match(body, /^### Board against reality, 2026-10-08\n\n\*\*0 disagree\*\*/);
+  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b", run }), "already-posted");
+  assert.equal(posted.length, 1, "the second tick of the day posts nothing");
+  onRecord = "";
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-09", repo: "a/b", run }), "posted");
+  assert.equal(posted.length, 2, "the twin: the next edition day is a new table");
+});
+
+test("the poster asks the record by the day's own heading, and posts nothing it could not decide on", () => {
+  const asked = [];
+  const run = (/** @type {string[]} */ args) => { asked.push(args); return ""; };
+  postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run });
+  assert.match(asked[0].join(" "), /repos\/a\/b\/issues\/928\/comments\?per_page=100&since=2026-10-07T00:00:00Z/);
+  assert.match(asked[0].join(" "), /startswith\("### Board against reality, 2026-10-08"\)/);
+  const calls = [];
+  const quiet = (/** @type {string[]} */ args) => { calls.push(args); return ""; };
+  assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b", run: quiet }), "no-audit");
+  assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b", run: quiet }), "unread", "a table carrying NOT READ would stand for the day");
+  assert.deepEqual(calls, [], "neither asked nor posted");
+  const refusedAsk = (/** @type {string[]} */ args) => { calls.push(args); throw new Error("HTTP 403"); };
+  assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run: refusedAsk }), /403/);
+  assert.equal(calls.length, 1, "a record that could not be asked is not posted to: it might be there already");
+});
+
+test("the tick posts through boardTruthNow once, a failed post never stops the tick, and the gate really passes it", () => {
+  const posts = [];
+  const post = (/** @type {any} */ input) => { posts.push(input.day); return "posted"; };
+  const audit = boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: { items: {} }, now: Date.parse("2026-10-08T23:30:00Z") }, wire({ post }));
+  assert.deepEqual(posts, ["2026-10-09"], "the day is London's: 23:30 UTC on 8 October is already the 9th in BST");
+  assert.equal(audit.findings.length, 0);
+  const said = [];
+  const failing = boardTruthNow({ openRowsRead: [tickRow(13, [])], waitFacts: null, now: NOW }, wire({ post: () => { throw new Error("HTTP 502\nbody"); }, log: (/** @type {string} */ l) => said.push(l) }));
+  assert.equal(failing.findings.length, 1, "the audit is returned all the same");
+  assert.match(said.join(""), /not posted \(HTTP 502\); the next tick asks again/);
+  const gate = readFileSync(new URL("./work-gate.mjs", import.meta.url), "utf8");
+  assert.match(gate, /orgHealthNow\([^]*readBoardTruth: boardTruthNow/, "a gate that never passed it would leave the signal dead, as #2980's fleet facts did");
+});
+
+test("no test above reached a remote: the recording gh was never called", () => {
+  assert.equal(existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8") : "", "");
+  assert.throws(() => execFileSync("gh", ["positive-control"], { stdio: "ignore" }));
+  assert.match(readFileSync(GH_LOG, "utf8"), /positive-control/, "the control: a call that IS made is logged, so the empty log above was a reading");
 });
