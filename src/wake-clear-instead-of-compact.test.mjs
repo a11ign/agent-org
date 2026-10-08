@@ -10,7 +10,7 @@
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareContext, stateFileVerdict, orderClockIn, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, STATE_FILE_MAX_BYTES } from "./wake.mjs";
@@ -133,4 +133,24 @@ test("the default state directory is `state/` beside the record directory, one f
   const ledgerDir = fresh("ledger");
   const clock = orderClockIn(join(ledgerDir, "last-order"));
   assert.equal(clock.stateFile(LEAD), join(ledgerDir, "state", `${LEAD}.md`));
+});
+
+test("a DIRECTORY at the state file's path is not a state: compacted, and it says it is not a regular file", () => {
+  const dir = fresh("state");
+  mkdirSync(join(dir, `${LEAD}.md`));
+  const clock = clockWith(10 * MINUTE, dir);
+  const calls = [];
+  const got = prepareContext((args) => { calls.push(args); return "{}"; }, LEAD,
+    { sleep: () => {}, contextRoot: transcriptRoot(OVER), sessions: ROSTER, clock });
+  assert.equal(got.action, CONTEXT_ACTION.COMPACTED);
+  assert.deepEqual(calls.filter((c) => c[3] === "prompt").map((c) => String(c[5])), ["/compact"]);
+  assert.match(got.stateRefusal, /is not a regular file/);
+});
+
+test("a file that cannot be opened is not a state either (skipped when the process can read anything, as root)", { skip: process.getuid?.() === 0 ? "running as root: mode 000 does not stop the read" : false }, () => {
+  const dir = stateDirWith(1_000);
+  chmodSync(join(dir, `${LEAD}.md`), 0o000);
+  const verdict = stateFileVerdict(LEAD, orderClockIn(fresh("clock"), () => NOW, dir));
+  assert.equal(verdict.usable, false);
+  assert.match(verdict.refusal, /could not be read/);
 });

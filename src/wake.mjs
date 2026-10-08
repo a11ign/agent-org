@@ -4930,6 +4930,24 @@ export function orderClockIn(dir, now = Date.now, stateDir = join(dirname(dir), 
 const NO_CLOCK = { now: Date.now, lastOrderAt: () => null, recordOrder: () => {} };
 
 /**
+ * THE SIZE OF A STATE FILE THAT IS A REGULAR FILE AND CAN BE OPENED, or why it is not one (#4072). `stat` alone answers for a directory, a
+ * socket or an unreadable file, and a clear that nothing can rehydrate from is the loss this check exists to prevent. ABSENT is a
+ * `null` refusal: the ordinary state before a seat writes one.
+ * @param {string} file @returns {{ bytes: number } | { refusal: string | null }}
+ */
+function regularFileSize(file) {
+  try {
+    const stat = statSync(file);
+    if (!stat.isFile()) return { refusal: `state file ${file} is not a regular file, so the window is compacted` };
+    closeSync(openSync(file, "r"));
+    return { bytes: stat.size };
+  } catch (/** @type {any} */ err) {
+    return err?.code === "ENOENT" ? { refusal: null }
+      : { refusal: `state file ${file} could not be read (${String(err?.code ?? err).slice(0, 60)}), so the window is compacted` };
+  }
+}
+
+/**
  * CAN THIS SEAT BE CLEARED INSTEAD OF COMPACTED (#4072): only if the state it would be rehydrated from exists and is within
  * {@link STATE_FILE_MAX_BYTES}. ABSENT, EMPTY, UNREADABLE AND OVERSIZED ARE FOUR DIFFERENT ANSWERS and none is a pass, because a clear
  * that nothing rehydrates throws away what a compaction would have summarised. An oversized file is REFUSED WITH ITS SIZE and never
@@ -4941,11 +4959,9 @@ const NO_CLOCK = { now: Date.now, lastOrderAt: () => null, recordOrder: () => {}
 export function stateFileVerdict(label, clock) {
   const file = clock.stateFile?.(label) ?? null;
   if (file === null) return { usable: false, refusal: null };
-  let bytes;
-  try { bytes = statSync(file).size; } catch (/** @type {any} */ err) {
-    return err?.code === "ENOENT" ? { usable: false, refusal: null }
-      : { usable: false, refusal: `state file ${file} could not be read (${String(err?.code ?? err).slice(0, 60)}), so the window is compacted` };
-  }
+  const read = regularFileSize(file);
+  if ("refusal" in read) return { usable: false, refusal: read.refusal };
+  const { bytes } = read;
   if (bytes === 0) return { usable: false, refusal: `state file ${file} is empty, so the window is compacted` };
   if (bytes > STATE_FILE_MAX_BYTES) {
     return { usable: false, refusal: `state file ${file} is ${bytes} bytes, over the ${STATE_FILE_MAX_BYTES}-byte cap (not truncated), so the window is compacted` };
