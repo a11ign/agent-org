@@ -171,6 +171,13 @@ const COPY_HEADER_CHANGES = /CHANGED FROM THE ORIGINAL(?:,\s*(?:(\d+) NAMED LINE
  */
 export const OVERDUE_PR_MINUTES = 100;
 export const OVERDUE_ROW_MINUTES = 135;
+/**
+ * THE MILESTONE CLOCK'S BOUND (#4231): the chairman's, not a percentile ("if the primary milestone has open rows and none is claimed or in a pull request for more
+ * than 2 hours, that is an alarm to `ceo` with the row named", 2026-10-08, root cause 3).
+ */
+export const MILESTONE_CLOCK_MINUTES = 120;
+/** The line of a milestone's description that makes it THE primary one (#4231): data `ceo` sets on the milestone, never a number this file knows. A line of its own, so a sentence that mentions it is not it. */
+export const PRIMARY_MILESTONE_LINE = /^[ \t]*Primary:[ \t]*yes[ \t]*$/im;
 /** The session every signal is offered to. */
 const OFFERED_TO = "ceo";
 /** #3942: the first reader of rows (`.claude/rules/org-routing-and-timers.md`), who is told of a row-state signal BEFORE `ceo` is, and in the same tick. */
@@ -200,6 +207,7 @@ export const SIGNALS = Object.freeze({
   RELEASE_BEHIND_MAIN: "release-behind-main",
   BOARD_TRUTH: "board-disagrees-with-reality",
   CLASS_REPEAT: "class-repeat",
+  MILESTONE_CLOCK: "primary-milestone-idle",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
@@ -1244,6 +1252,58 @@ function classRepeatTripped(signal, group, beside) {
 }
 
 /**
+ * @typedef {{ number: number, createdAt: number | null, claimed: boolean, state: string, owes: string }} ClockRow
+ * One OPEN row of the primary milestone. `state` is why nobody is building it (`parked`, `date-held`, `blocked by #7`, `ready, unclaimed` ...) and `owes` who owes its next move.
+ * @typedef {{ primaries: { number: number, title: string }[], rows: ClockRow[], prsClose: number[] | null, endedAt: number | null }} MilestoneClockFact
+ * `primaries` are the milestones marked `Primary: yes` that the open rows name, `rows` the open rows of the one primary (empty unless there is exactly one), `prsClose` the row
+ * numbers open pull requests declare they close (`null`: the pull requests were not read), and `endedAt` when the last claim or pull request ended (`null`: not read).
+ */
+
+/**
+ * SIGNAL: THE PRIMARY MILESTONE HAS OPEN ROWS AND NOTHING CLAIMED OR IN A PULL REQUEST FOR `MILESTONE_CLOCK_MINUTES` (#4231). The outcome clock runs on open PRs and CLAIMED
+ * rows, so a milestone whose rows are all unclaimed, parked or date-held had no clock at all: v3 sat that way for hours on 2026-10-08 and the chairman found it. THIS ONE
+ * CLOCKS THE MILESTONE AND NOT AN ITEM, and names the oldest open row with its state and whose move it is.
+ *
+ * THE CLOCK STARTS AT THE LATER OF the last claim or pull request ending (`endedAt`) and the milestone's newest row opening: a row filed ten minutes ago has not been idle.
+ * EACH REFUSED READ IS TESTED ONLY WHEN IT COULD MATTER, as `noMergeReading` tests its gap first: a start that has not reached the bound is clear whatever the pull-request
+ * read says, so a refusal cannot turn a healthy tick into an unknown. Past it, an unread `endedAt` or an unread pull-request list is UNKNOWN: either could be what restarts it.
+ *
+ * NO PRIMARY MILESTONE IS CLEAR AND SAYS SO, and so is a primary milestone with no open row (nothing to alarm about). TWO marked primary is UNKNOWN: the rule is one at a time,
+ * and a clock that picked one would be answering for `ceo`. THE KEY IS THE MILESTONE AND THE NAMED ROW, so a changed named row re-asks and a later tick naming the same one does not.
+ *
+ * @param {{ now: number, fact: MilestoneClockFact | null }} input `fact` is `null` for an open-row list that was not read
+ * @returns {Reading}
+ */
+export function milestoneClockReading({ now, fact }) {
+  const signal = SIGNALS.MILESTONE_CLOCK;
+  if (fact === null) return unknown(signal, "the open rows could not be read, so the primary milestone's rows are not known");
+  if (fact.primaries.length > 1) {
+    return unknown(signal, `milestones ${fact.primaries.map((m) => m.number).join(" and ")} are all marked \`Primary: yes\`: the rule is one at a time, so the clock does not choose`);
+  }
+  const [primary] = fact.primaries;
+  if (primary === undefined) {
+    return { signal, status: "clear", detail: "no open row belongs to a milestone marked `Primary: yes` (none is marked, or the marked one has no open row)" };
+  }
+  if (fact.rows.length === 0) return { signal, status: "clear", detail: `milestone ${primary.number} has no open row` };
+  if (fact.rows.some((r) => r.claimed)) return clear(signal);
+  if (fact.rows.some((r) => r.createdAt === null)) return unknown(signal, `a row of milestone ${primary.number} carries no creation time, so when it opened is not known`);
+  const rowsOpened = Math.max(...fact.rows.map((r) => /** @type {number} */ (r.createdAt)));
+  const bound = MILESTONE_CLOCK_MINUTES * MS_PER_MINUTE;
+  if (now - rowsOpened < bound) return clear(signal);
+  if (fact.endedAt === null) return unknown(signal, `milestone ${primary.number} has been unclaimed since its newest row opened, but when the last claim or pull request ended was not read`);
+  const since = Math.max(rowsOpened, fact.endedAt);
+  if (now - since < bound) return clear(signal);
+  if (fact.prsClose === null) return unknown(signal, `milestone ${primary.number} looks idle, but the open pull requests could not be read`);
+  const owned = new Set(fact.rows.map((r) => r.number));
+  if (fact.prsClose.some((n) => owned.has(n))) return clear(signal);
+  const oldest = [...fact.rows].sort((a, b) => /** @type {number} */ (a.createdAt) - /** @type {number} */ (b.createdAt) || a.number - b.number)[0];
+  const tripAt = since + bound;
+  return { signal, status: "tripped", firstTrippedAt: tripAt, discriminator: `${signal}/${primary.number}@${oldest.number}`,
+    detail: `milestone ${primary.number} (${primary.title}) has ${fact.rows.length} open row(s) and none is claimed or in a pull request for ${ageText(since, now)} (since ${isoOf(since)}, bound `
+      + `${MILESTONE_CLOCK_MINUTES} min). The oldest open row is #${oldest.number}, ${oldest.state}; the next move is owed by ${oldest.owes}` };
+}
+
+/**
  * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
@@ -1253,7 +1313,7 @@ function classRepeatTripped(signal, group, beside) {
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
  *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.mjs").IdleRows, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.mjs").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
- *           classRepeat?: import("./class-repeat.mjs").ClassRepeatFact | null }} facts `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           classRepeat?: import("./class-repeat.mjs").ClassRepeatFact | null, milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null }} facts `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts) {
@@ -1276,6 +1336,7 @@ export function orgHealthReadings(facts) {
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
   if (facts.releaseBehind !== undefined) readings.push(...releaseBehindReadings({ now: facts.now, behind: facts.releaseBehind }));
   if (facts.classRepeat !== undefined) readings.push(...classRepeatReadings({ now: facts.now, classRepeat: facts.classRepeat }));
+  if (facts.milestoneClock !== undefined) readings.push(milestoneClockReading({ now: facts.now, fact: facts.milestoneClock === null ? null : { ...facts.milestoneClock, endedAt: facts.lastMergedAt } }));
   return readings;
 }
 
@@ -1354,6 +1415,10 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
     + "the guard covers a narrower population than the class (widen it), or the second row is not the class at all (remove its `" + CLASS_LABEL_PREFIX + "<id>` label and say why on the row). "
     + "FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn, and say on #928 which class it was. It is offered ONCE for this newest row: a third row under the class is a new offer, "
     + "and it stops being repeated after ninety minutes whether or not anyone acted, so the row you file is the record.",
+  [SIGNALS.MILESTONE_CLOCK]: "The primary milestone is the chairman's goal, and for longer than two hours no row of it has been claimed or in a pull request: the outcome clock cannot see that, because it clocks only items that are being worked. "
+    + "The oldest open row is named with its state and who owes its next move: THAT SESSION READS THIS ALARM, so route it (`" + ANSWER_PREFIX + "<session>` on the row), and do not act on the row yourself unless it is yours. "
+    + "A parked or backlog row needs `product-manager` to PROMOTE it or say why not; a date-held row is correctly waiting, so ask whether another row of the milestone could start now; a blocked row's blocker is the row to read. "
+    + "It is keyed on the milestone and the named row, so it is re-asked when the named row changes, and it clears the tick a row is claimed or a pull request opens against one.",
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*` or the blocked label) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours. A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",

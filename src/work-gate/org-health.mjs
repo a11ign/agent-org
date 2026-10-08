@@ -22,12 +22,13 @@ import { familyNumber } from "../arm-pr.mjs";
 import { readAgents } from "../herdr-agents.mjs";
 import { boardTruthAudit, readBoardFacts, postDaysTable } from "../board-truth-audit.mjs";
 import { editionDay } from "../board-discussion.mjs";
-import { idleWithOpenRowsReading } from "../idle-with-open-rows.mjs";
+import { idleWithOpenRowsReading, IDLE_REASONS } from "../idle-with-open-rows.mjs";
 import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
-import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
-import { FLEET_IDLE_HOURS, readLatestMerge, orgHealthTick,
+import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.mjs";
+import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, readLatestMerge, orgHealthTick,
   primaryStandingSince, readTeamAccess } from "../org-health.mjs";
+import { declaredClosedRows } from "../row-claim/file-overlap-rule.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
 import { subjectRef, subjectMention } from "../review-attribution.mjs";
@@ -516,6 +517,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     waits,
     ...(openRowsRead !== undefined && { stateRows: openRowsRead }), // #3942: the rows this tick already read, so the signal costs no call
     ...(openRowsRead !== undefined && { idle: idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) }), // #3943: the same rows, and the gate's own shelving list
+    ...(openRowsRead !== undefined && { milestoneClock: milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now }) }), // #4231: the same rows and PRs, and no call of its own
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
     ...releaseRunsFact(readReleaseRuns()), // #4001
@@ -607,6 +609,58 @@ function idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) {
   const { prFiles, rowBranches, openRows, readyRows } = decideArgs;
   const shelved = new Map(partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).blocked.map((b) => [b.number, b.reason]));
   return idleWithOpenRowsReading({ now, engineers: engineerSeats(openRowsRead), openRows: openRowsRead, shelved });
+}
+
+/**
+ * #4231: WHAT AN IDLE REASON IS CALLED IN THE MILESTONE ALARM, and who owes the row's next move when the reason alone says. A `lane:<owner>` label outranks both (`ceo`'s epic is `ceo`'s),
+ * and an answer owed names its session. Every reason this table lacks is printed as `IDLE_REASONS` spells it, and owed by `product-manager`, the first reader for rows.
+ */
+const CLOCK_STATE = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ [IDLE_REASONS.READY_UNOFFERED]: "ready, unclaimed", [IDLE_REASONS.SHELVED]: "ready, shelved by the gate" }));
+const CLOCK_OWES = /** @type {Readonly<Record<string, (suffix: string) => string>>} */ (Object.freeze({
+  [IDLE_REASONS.BLOCKED_BY]: (suffix) => `the owner of ${suffix}, the blocking row`,
+  [IDLE_REASONS.ANSWER_OWED]: (suffix) => suffix,
+  [IDLE_REASONS.WAITING_FOR]: () => "the session that set the wait",
+}));
+
+/**
+ * #4231: ONE OPEN ROW OF THE PRIMARY MILESTONE AS THE CLOCK READS IT. Claimed is `session:*` OR a bare `in-progress`: an unnamed holder is not proof of an idle milestone (`idle-with-open-rows` reads
+ * it the same way). The state is `idleWithOpenRowsReading`'s own, asked of this one row with no engineer roster: a row's reason for not being built is decided once, there.
+ * @param {any} row @param {number} now @returns {import("../org-health.mjs").ClockRow}
+ */
+function clockRowOf(row, now) {
+  const labels = labelsOf(row);
+  const createdAt = epochOrNull(row.createdAt);
+  const claimed = labels.some((l) => l.startsWith(SESSION_PREFIX)) || labels.includes(CLAIM_LABEL);
+  if (claimed) return { number: row.number, createdAt, claimed, state: "claimed", owes: "its claimant" };
+  const idle = idleWithOpenRowsReading({ now, engineers: [], openRows: [row] });
+  const lane = labels.filter((l) => l.startsWith(LANE_PREFIX)).map((l) => l.slice(LANE_PREFIX.length)).find((owner) => owner !== "any");
+  const finding = idle?.kind === "idle" ? idle.findings[0] : undefined;
+  if (finding === undefined) {
+    const date = notBeforeDate(row.body);
+    return { number: row.number, createdAt, claimed, state: date === null ? "date-held" : `date-held until ${date}`, owes: lane ?? "product-manager, who decides whether another row can start meanwhile" };
+  }
+  const suffix = finding.reason.slice(finding.kind.length);
+  const state = `${CLOCK_STATE[finding.kind] ?? finding.kind.toLowerCase().replace(/_/g, " ")}${CLOCK_STATE[finding.kind] === undefined ? suffix : ""}`;
+  return { number: row.number, createdAt, claimed, state, owes: lane ?? CLOCK_OWES[finding.kind]?.(suffix.trim()) ?? "product-manager" };
+}
+
+/**
+ * #4231: THE PRIMARY MILESTONE'S CLOCK FACT, from the open rows and pull requests the tick already read. THE MILESTONE IS DATA: the one whose description carries the `Primary: yes` line, found through
+ * the `milestone` field of the open-row read, so a milestone with no open row is not seen here and reads as "no open row belongs to a primary milestone". A refused open-row read is `null` (unknown),
+ * a refused pull-request list is `prsClose: null`. A pull request counts for the rows it DECLARES it closes (`Closes #n`, the merge-blocking field, read by the one reader the claim uses), in the
+ * repository whose rows they are: the keyed code repositories' pull requests count too, since a row of this tracker is built in `agent-org`.
+ * It carries no `endedAt`: `orgHealthReadings` fills it from the last merge the tick read (`lastMergedAt`), which is ONE PROXY FOR TWO EVENTS and not the milestone's own: it is later than the
+ * milestone's last claim or pull request ending whenever anything else merged since, so it errs SILENT, never loud. It stays out of this call so the tick's merge read keeps ONE caller (#4047).
+ * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, keyedPrsRead?: any[], now: number }} input
+ * @returns {Omit<import("../org-health.mjs").MilestoneClockFact, "endedAt"> | null}
+ */
+export function milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead = [], now }) {
+  if (openRowsRead === null) return null;
+  const marked = new Map(openRowsRead.map((row) => row.milestone).filter((m) => m && PRIMARY_MILESTONE_LINE.test(String(m.description ?? ""))).map((m) => [Number(m.number), String(m.title ?? "")]));
+  const primaries = [...marked].map(([number, title]) => ({ number, title }));
+  const rows = primaries.length === 1 ? openRowsRead.filter((row) => Number(row.milestone?.number) === primaries[0].number).map((row) => clockRowOf(row, now)) : [];
+  const closing = (/** @type {any} */ pr) => declaredClosedRows(pr.body, { prRepo: pr.repo ?? repoNow() });
+  return { primaries, rows, prsClose: prsRead === null ? null : [...prsRead, ...keyedPrsRead].flatMap(closing) };
 }
 
 /**

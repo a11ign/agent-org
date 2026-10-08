@@ -46,6 +46,7 @@ export const ORG_HEALTH_CLASSES = Object.freeze({
   "red-pr-unattended": PAGE,
   "ready-row-refused": PAGE,
   "primary-not-at-main": PAGE,
+  "primary-milestone-idle": PAGE,
   "fleet-idle-while-work-waits": PAGE,
   "copies-drifted": PAGE,
   "team-access-drifted": PAGE,
