@@ -29,7 +29,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { STATE_LABELS, stateLabelFindings } = await import("./claim-labels.mjs");
+const { STATE_LABELS, FILING_GRACE_MS, stateLabelFindings, rowsBeingFiled } = await import("./claim-labels.mjs");
 const { declineRow, claimRecordComment } = await import("./row-claim.mjs");
 const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.mjs");
 const { PARKED_LABEL } = await import("./work-gate.mjs");
@@ -76,6 +76,50 @@ test("a CLOSED row carrying none is NOT a finding (it has no lane to be in), and
   assert.deepEqual(stateLabelFindings([row(5, ["out-of-release"], "CLOSED")]), []);
   assert.equal(stateLabelFindings([row(5, ["out-of-release"], "OPEN")]).length, 1, "CONTROL: the same labels on an open row are found");
   assert.equal(stateLabelFindings([row(5, ["out-of-release"])]).length, 1);
+});
+
+// --- a row being filed is not a row in no state (#4048) ------------------------------------------------------------------------------
+
+// `row-file` adds the state label last, so a filing has a 12 to 13 s gap with none; the tick read in it three times on 2026-10-08 (#4043, #4044, #4047).
+// MUTATIONS, run by hand and recorded on the row: the grace never excusing (the 13 s case goes red), always excusing (the 10-minute, MANY and malformed-`createdAt`
+// controls go red), `MANY` excused too (the two-state case goes red), an unparseable `createdAt` read as new (the malformed case goes red).
+const NOW = Date.parse("2026-10-08T06:03:46Z");
+const created = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOString();
+const dated = (number: number, labels: string[], createdAt?: string) => ({ number, labels, ...(createdAt === undefined ? {} : { createdAt }) });
+
+test("a row with no state label created 13 seconds ago is not a finding; the same row 10 minutes old is NONE", () => {
+  assert.deepEqual(stateLabelFindings([dated(4043, ["meta"], created(13))], { now: NOW }), []);
+  assert.deepEqual(stateLabelFindings([dated(4043, ["meta"], created(600))], { now: NOW }), [{ number: 4043, labels: [], kind: "NONE" }], "CONTROL: only the age differs");
+});
+
+test("the grace is five minutes: just inside excuses, just outside judges", () => {
+  assert.equal(FILING_GRACE_MS, 5 * 60 * 1000);
+  assert.deepEqual(stateLabelFindings([dated(1, [], created(FILING_GRACE_MS / 1000 - 1))], { now: NOW }), []);
+  assert.equal(stateLabelFindings([dated(1, [], created(FILING_GRACE_MS / 1000))], { now: NOW }).length, 1);
+});
+
+test("a row with two state labels created 13 seconds ago is still MANY", () => {
+  assert.deepEqual(stateLabelFindings([dated(9, ["backlog", "parked"], created(13))], { now: NOW }), [{ number: 9, labels: ["backlog", "parked"], kind: "MANY" }]);
+});
+
+test("a row with no `createdAt`, or one that does not parse, is judged and never excused", () => {
+  assert.equal(stateLabelFindings([dated(2, ["meta"])], { now: NOW }).length, 1, "absent");
+  assert.equal(stateLabelFindings([dated(3, ["meta"], "yesterday-ish")], { now: NOW }).length, 1, "unparseable");
+  assert.equal(stateLabelFindings([dated(4, ["meta"], "")], { now: NOW }).length, 1, "empty");
+  assert.equal(stateLabelFindings([dated(5, ["meta"], created(13))], { now: NOW }).length, 0, "CONTROL: the same row with a good date is excused");
+});
+
+test("a caller that gives no `now` excuses nothing (row-claim's one-row re-read), and a clock a few seconds behind GitHub's still excuses a filing", () => {
+  assert.equal(stateLabelFindings([dated(6, ["meta"], created(13))]).length, 1);
+  assert.deepEqual(stateLabelFindings([dated(7, ["meta"], created(-8))], { now: NOW }), [], "createdAt 8 s AFTER now");
+  assert.equal(stateLabelFindings([dated(8, ["meta"], created(-3600))], { now: NOW }).length, 1, "CONTROL: an hour in the future is a bad read, judged");
+});
+
+test("`rowsBeingFiled` names exactly the rows the grace excused, so a reader can count them", () => {
+  const rows = [dated(10, ["meta"], created(13)), dated(11, ["meta"], created(600)), dated(12, ["ready"], created(13)), dated(13, ["backlog", "epic"], created(13)),
+    { ...dated(14, ["meta"], created(13)), state: "CLOSED" }, dated(15, ["meta"])];
+  assert.deepEqual(rowsBeingFiled(rows, { now: NOW }), [10], "no state AND young AND open: the old, the stated, the two-state, the closed and the undated are not");
+  assert.deepEqual(stateLabelFindings(rows, { now: NOW }).map((f) => f.number), [11, 13, 15], "and the findings are the complement");
 });
 
 // --- the decline path never writes a row to no state --------------------------------------------------------------------------------

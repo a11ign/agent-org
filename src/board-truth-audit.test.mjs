@@ -114,6 +114,30 @@ test("(5) a row with no state label and one with two are found; one with exactly
   assert.deepEqual(found({ openRows: [row(17, ["parked", "lane:any"])] }, QUESTIONS.STATE_LABEL), []);
 });
 
+test("(5) #4048: a row with no state label created 13 s ago is NOT found and is counted as filing; the same row 10 minutes old IS found and is not", () => {
+  const at = (secondsAgo) => new Date(NOW - secondsAgo * 1000).toISOString();
+  const young = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(13) })] }));
+  assert.deepEqual(young.findings, []);
+  assert.equal(young.filing, 1);
+  const old = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(600) })] }));
+  assert.deepEqual(old.findings.map((f) => f.number), [4047]);
+  assert.equal(old.filing, 0);
+  assert.deepEqual(found({ openRows: [row(9, ["backlog", "parked"], { createdAt: at(13) })] }, QUESTIONS.STATE_LABEL), [9], "two states are found at any age");
+  assert.deepEqual(found({ openRows: [row(10, ["meta"])] }, QUESTIONS.STATE_LABEL), [10], "no createdAt is judged");
+  assert.deepEqual(found({ openRows: [row(11, ["meta"], { createdAt: "not a date" })] }, QUESTIONS.STATE_LABEL), [11], "an unparseable one is judged");
+});
+
+test("#4048: the table says `N filing, not judged` for the excused rows, does not count them as disagreeing, and says `0 disagree` when that is all there is", () => {
+  const createdAt = new Date(NOW - 13_000).toISOString();
+  const only = boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt }), row(4048, ["meta"], { createdAt })] })), DAY);
+  assert.match(only, /\*\*0 disagree\*\*, 2 filing, not judged$/);
+  const mixed = boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt }), row(13, [])] })), DAY);
+  assert.match(mixed, /\*\*1 disagree\*\*, 1 filing, not judged/);
+  assert.doesNotMatch(mixed, /\| #4047 \|/, "the excused row has no line");
+  assert.doesNotMatch(boardTruthTable(boardTruthAudit(facts({ openRows: [row(10, ["ready"], { createdAt })] })), DAY), /filing/, "CONTROL: none excused, nothing said");
+  assert.match(boardTruthTable(boardTruthAudit(facts({ openRows: [row(4047, [], { createdAt })], closedRows: null })), DAY), /0 disagree\*\*, 1 filing, not judged -- NOT READ/);
+});
+
 test("(6) a near-duplicate of a closed row, a near-duplicate of an older open row, and `Superseded by` a completed row are found; their negatives are not", () => {
   const title = "org-health reads the board against reality every day and raises every row that disagrees";
   const closed = row(40, [], { state: "CLOSED", stateReason: "COMPLETED", title });
