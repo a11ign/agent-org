@@ -174,3 +174,136 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
   assert.match(unseeded.stderr, /seed is required/);
   assert.equal(parseArgs(["--seed", "s", "--to", "2026-10-08T00:00:00Z"]).from, TO - 7 * 86_400_000, "the default window is the seven days before `--to`");
 });
+
+// ---- a11ign/a11ign#4183: the scorer, over the FROZEN #4074 fixture and fake predictions. No model, no `gh`, no store, no sampler.
+import { readFileSync } from "node:fs";
+import { BAR, loadLabels, renderPrompt, renderScore, scoreTriage } from "./triage-sample.mjs";
+
+const { rows: SHEET, definitions: DEFINITIONS } = loadLabels();
+const UNREADABLE = [3, 44, 45, 57, 88, 98];
+const asPredictions = (rows = SHEET) => rows.map((row) => ({ position: row.position, label: row.label }));
+/** The predictions with `position` answered `label`. */
+const answering = (position, label) => asPredictions().map((one) => (one.position === position ? { ...one, label } : one));
+const tally = (rows, key) => rows.reduce((counts, row) => ({ ...counts, [row[key]]: (counts[row[key]] ?? 0) + 1 }), {});
+const classOf = (score, cause) => score.classes.find((one) => one.cause === cause);
+/** A readable `wake` row of a class that passes the bar when nothing is missed: `answer-owed` has 14 of them. */
+const A_WAKE = SHEET.find((row) => row.cause === "answer-owed" && row.label === "wake" && !row.excluded);
+
+test("the fixture is the 100 rows of #4074: 60 wake, 36 digest, 4 drop, and exactly six unreadable ones", () => {
+  assert.equal(SHEET.length, 100);
+  assert.deepEqual(tally(SHEET, "label"), { wake: 60, digest: 36, drop: 4 });
+  assert.deepEqual(SHEET.filter((row) => row.excluded).map((row) => row.position), UNREADABLE);
+  assert.deepEqual(SHEET.map((row) => row.position), Array.from({ length: 100 }, (_, i) => i + 1), "positions are the sheet's numbering, 1 to 100");
+  assert.ok(SHEET.filter((row) => row.excluded).every((row) => row.causeKey === "(no ledger line)" && row.label === "wake"), "an unreadable row is exactly one with no ledger line, labelled wake");
+  assert.ok(SHEET.filter((row) => !row.excluded).every((row) => row.causeKey !== "(no ledger line)"));
+  assert.notDeepEqual(tally(SHEET.slice(1), "label"), { wake: 60, digest: 36, drop: 4 }, "control: losing a row changes the count this test reads");
+  assert.deepEqual(Object.keys(DEFINITIONS), ["wake", "digest", "drop"]);
+});
+
+test("predictions equal to the labels score 100% and 0 missed wakes, with and without the unreadable rows", () => {
+  const score = scoreTriage(SHEET, asPredictions());
+  assert.equal(score.withExcluded.n, 100);
+  assert.equal(score.withExcluded.agree, 100);
+  assert.equal(score.withoutExcluded.n, 94);
+  assert.equal(score.withoutExcluded.agree, 94);
+  assert.deepEqual([score.withExcluded.missedWakes, score.withoutExcluded.missedWakes], [[], []]);
+  assert.match(renderScore(score), /agreement 100\/100 \(100\.0%\).*missed wakes 0/);
+  assert.notEqual(scoreTriage(SHEET, answering(A_WAKE.position, "digest")).withExcluded.agree, 100, "control: a changed row moves the agreement");
+});
+
+test("ONE wake predicted digest is exactly one missed wake, in that row's class, and that class's bar reads fail", () => {
+  const before = scoreTriage(SHEET, asPredictions());
+  assert.equal(classOf(before, "answer-owed").bar.passed, true, "positive control: the class passes when nothing is missed");
+  const after = scoreTriage(SHEET, answering(A_WAKE.position, "digest"));
+  assert.deepEqual(after.withExcluded.missedWakes, [A_WAKE.position]);
+  assert.deepEqual(classOf(after, "answer-owed").missedWakes, [A_WAKE.position]);
+  assert.deepEqual(classOf(after, "answer-owed").bar, { passed: false, verdict: "fail: missed a wake" });
+  assert.deepEqual(after.classes.filter((one) => one.missedWakes.length > 0).map((one) => one.cause), ["answer-owed"], "no other class is touched");
+  assert.deepEqual(after.classes.filter((one) => one.cause !== "answer-owed").map((one) => one.bar), before.classes.filter((one) => one.cause !== "answer-owed").map((one) => one.bar));
+  assert.deepEqual(scoreTriage(SHEET, answering(A_WAKE.position, "drop")).withExcluded.missedWakes, [A_WAKE.position], "a wake predicted drop is missed too");
+  assert.equal(after.withExcluded.confusion.wake.digest, 1);
+});
+
+test("an OVER-wake is not a miss: a digest row predicted wake changes the agreement and no bar", () => {
+  const digest = SHEET.find((row) => row.label === "digest" && row.cause === "org-health");
+  const score = scoreTriage(SHEET, answering(digest.position, "wake"));
+  assert.equal(score.withExcluded.missedWakes.length, 0);
+  assert.equal(score.withExcluded.agree, 99);
+  assert.deepEqual(score.classes.map((one) => one.bar), scoreTriage(SHEET, asPredictions()).classes.map((one) => one.bar));
+});
+
+test("the bar: five readable rows and no miss; a class under five fails and says why; no wake row is a pass that says it is untested", () => {
+  const score = scoreTriage(SHEET, asPredictions());
+  assert.equal(BAR.minRows, 5);
+  const readable = (cause) => SHEET.filter((row) => row.cause === cause && !row.excluded).length;
+  assert.deepEqual([readable("pr-codeowner-review-missing"), readable("row-call-count-signal")], [5, 4], "the two sides of the boundary exist in the fixture");
+  assert.equal(classOf(score, "row-call-count-signal").bar.verdict, "fail: fewer than 5 readable rows");
+  assert.match(classOf(score, "pr-codeowner-review-missing").bar.verdict, /^candidate \(no wake row in the class/);
+  assert.equal(classOf(score, "answer-owed").bar.verdict, "candidate");
+  assert.equal(classOf(score, "org-health").wakeRows, 3);
+  assert.deepEqual(score.classes.filter((one) => one.bar.passed).map((one) => one.cause).sort(), ["answer-owed", "org-health", "pr-checks-failing", "pr-codeowner-review-missing"]);
+  assert.equal(classOf(score, "(no cause)"), undefined, "the unreadable rows are in no class");
+});
+
+test("a prediction file that is partial, duplicated, outside the sheet or off the labels is REFUSED, not scored", () => {
+  assert.equal(scoreTriage(SHEET, asPredictions()).withExcluded.n, 100, "positive control: the same rows, whole, score");
+  assert.throws(() => scoreTriage(SHEET, asPredictions().slice(1)), /99 predictions for 100 rows/);
+  const duplicated = asPredictions();
+  duplicated[99] = { ...duplicated[0] };
+  assert.throws(() => scoreTriage(SHEET, duplicated), /position 1 is predicted twice/, "100 rows with a duplicate, so one position is missing");
+  assert.throws(() => scoreTriage(SHEET, answering(7, "maybe")), /position 7: label "maybe" is not one of wake \| digest \| drop/);
+  assert.throws(() => scoreTriage(SHEET, answering(7, undefined)), /position 7/);
+  assert.throws(() => scoreTriage(SHEET, [...asPredictions().slice(1), { position: 101, label: "wake" }]), /position 101 is not a row/);
+  assert.throws(() => scoreTriage(SHEET, { rows: [] }), /must be a JSON array/);
+  assert.throws(() => scoreTriage(SHEET, [...asPredictions().slice(1), null]), /position undefined is not a row/);
+});
+
+test("the figures with and without the unreadable rows differ by exactly those rows", () => {
+  const score = scoreTriage(SHEET, answering(UNREADABLE[0], "digest"));
+  assert.equal(score.withExcluded.n - score.withoutExcluded.n, UNREADABLE.length);
+  assert.equal(score.withExcluded.agree - score.withoutExcluded.agree, UNREADABLE.length - 1, "five of the six agree");
+  assert.equal(score.withExcluded.confusion.wake.wake - score.withoutExcluded.confusion.wake.wake, UNREADABLE.length - 1);
+  assert.equal(score.withExcluded.confusion.wake.digest - score.withoutExcluded.confusion.wake.digest, 1);
+  assert.deepEqual([score.withExcluded.missedWakes, score.withoutExcluded.missedWakes], [[UNREADABLE[0]], []], "a miss among the unreadable rows counts only WITH them");
+  assert.deepEqual(score.excluded.positions, UNREADABLE);
+  assert.deepEqual(score.excluded.predicted[0], { position: UNREADABLE[0], label: "wake", predicted: "digest" });
+  assert.ok(score.classes.every((one) => one.missedWakes.length === 0), "and in no class's bar");
+  const printed = renderScore(score);
+  assert.match(printed, /WITH the six unreadable rows: n 100/);
+  assert.match(printed, /WITHOUT them .*: n 94/);
+});
+
+test("the model is shown the three definitions and the five printed columns, and nothing else", () => {
+  const prompt = renderPrompt({ definitions: DEFINITIONS, rows: SHEET });
+  const lines = prompt.split("\n\n")[1].trimEnd().split("\n");
+  assert.equal(lines.length, 100);
+  assert.deepEqual(lines, SHEET.map((row) => `${String(row.position).padStart(3)}.  ${row.session}  ${row.cause}  ${row.causeKey}  cost ${row.cost}`));
+  for (const label of ["wake", "digest", "drop"]) assert.ok(prompt.includes(`- ${label}: ${DEFINITIONS[label]}`), `definition of ${label}`);
+  assert.doesNotMatch(prompt, /excluded|unreadable|6062884|#4074|stratified/, "no label, no exclusion mark, no provenance");
+  assert.ok(renderPrompt({ definitions: DEFINITIONS, rows: SHEET.map((row) => ({ ...row, causeKey: `${row.causeKey} CHANGED` })) }).includes("CHANGED"), "control: the lines are built from the rows given");
+});
+
+test("--score reads the frozen labels and the predictions file, and never the store or the sampler", () => {
+  const dir = mkdtempSync(join(tmpdir(), "triage-score-"));
+  made.push(dir);
+  const [store, good, bad] = ["events.ndjson", "good.json", "bad.json"].map((name) => join(dir, name));
+  writeFileSync(store, "this is not json\n");
+  writeFileSync(good, JSON.stringify(answering(A_WAKE.position, "digest")));
+  writeFileSync(bad, JSON.stringify(asPredictions().slice(1)));
+  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
+  const run = (...args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+  const sampler = run("--seed", "4074", "--store", store);
+  assert.equal(sampler.status, 1, "positive control: the sampler DOES read this store, and it cannot");
+  assert.match(sampler.stderr, /JSON/);
+  const scored = run("--score", good, "--store", store);
+  assert.equal(scored.status, 0, scored.stderr);
+  assert.match(scored.stdout, /WITHOUT them .*missed wakes 1 \(positions /);
+  assert.equal(JSON.parse(run("--score", good, "--json").stdout).withoutExcluded.missedWakes.length, 1);
+  const refused = run("--score", bad);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /99 predictions for 100 rows/);
+  assert.equal(refused.stdout, "", "a refused file prints no score");
+  assert.equal(run("--score").status, 1, "--score without a file is refused");
+  assert.equal(run("--prompt").stdout, renderPrompt(loadLabels()));
+  assert.equal(readFileSync(new URL("./triage-labels-4074.json", import.meta.url), "utf8").includes('"label":"wake"'), true);
+});
