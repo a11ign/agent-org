@@ -35,6 +35,8 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
 import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, doraNumbers, doraDeclarations } from "./dora.mjs";
 import { homeProjectDeclaration } from "./project-config.mjs";
+// THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
+import { unwaitedStockRows, unwaitedLines, ghTrackerReader } from "./unwaited-stock-rows.mjs";
 
 /** The cause this file feeds (`cause-declaration.mjs` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
@@ -287,7 +289,9 @@ export function tokenStats(turns, { since, until }) {
  * Every number, each `unknown` when its source was refused. `reads` holds the RAW reads (`null` for a refused one), so what is
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, mergedRepositories?: ReturnType<typeof readMerged> | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
- *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null }} reads
+ *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null,
+ *   unwaited?: ReturnType<typeof unwaitedStockRows> | null }} reads
+ * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
  * `merged` is the PRIMARY repository's list alone, the count's definition before #3593, and `mergedRepositories` is every declared one: absent is a project read
  * the old way (the total IS `merged`), `null` is a declaration that could not be read.
@@ -309,6 +313,7 @@ export function buildReport(reads, now) {
     red: redPrStats(reads.openPrs, now),
     tokens: tokenStats(reads.turns, window),
     handFixes: reads.handFixes,
+    unwaited: reads.unwaited ?? null,
     dora: reads.dora,
   };
   // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
@@ -342,6 +347,7 @@ export const NUMBERS = Object.freeze([
   { id: "tokensPerMergedPr", label: "Tokens per merged PR", better: "lower",
     of: (r) => (r.tokens && r.merged && r.merged.count > 0 ? Math.round(r.tokens.total / r.merged.count) : null) },
   { id: "handFixes", label: "Hand fixes (last 14d)", better: "lower", of: (r) => r.handFixes?.count ?? null },
+  { id: "unwaitedStockRows", label: "Unwaited stock rows", better: "lower", of: (r) => (r.unwaited?.status === "read" ? r.unwaited.count : null) },
 ]);
 
 /** @param {object} report the report before `numbers` is attached @returns {Record<string, number | null>} */
@@ -567,7 +573,7 @@ export function renderReport(report) {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -761,12 +767,13 @@ function readJournal(unit) {
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
  * THE DORA READ IS THE DECLARATION'S (`dora.mjs`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
- *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
+ *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
  * MERGED PRS ARE READ FROM EVERY DECLARED REPOSITORY (`readMerged`, #3593), each named with `-R`; `merged` stays the PRIMARY's list, the definition the count had before.
  */
 export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
   readMergedRepositories = (at) => readMerged({ declaration: homeProjectDeclaration(), since: at - WINDOW_MS }),
   readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
+  readUnwaited = (at) => unwaitedStockRows({ reader: ghTrackerReader(homeProjectDeclaration().repo), now: at }),
   readDoraReport = readDeclaredDora }) {
   const since = now - WINDOW_MS;
   const mergedRepositories = attemptDora(() => readMergedRepositories(now));
@@ -779,6 +786,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     turns: readTurns(since),
     readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
+    unwaited: attemptDora(() => readUnwaited(now)), // a declaration that will not parse is a refused read, like the DORA one
     dora: attemptDora(() => readDoraReport(now)),
   };
 }

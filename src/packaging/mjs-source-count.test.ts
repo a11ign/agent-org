@@ -66,7 +66,8 @@ import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 // 235 to 236 (a11ign/a11ign#4124): `src/found-by-chairman.mjs` is a NEW source file that a shipped command imports (`board-data.mjs`, which `board-document.mjs` and `board-report.mjs` run with plain `node`), so it cannot be `.ts` (node on the host has no TypeScript).
 // 236 to 237 (a11ign/a11ign#4148): `src/tick-snapshot.mjs` is a NEW source file that a shipped command imports (`work-tick.mjs`, run with plain `node` by the work-tick unit), so it cannot be `.ts` (node on the host has no TypeScript loader).
 // 237 to 238 (a11ign/a11ign#4065): `src/work-gate/org-health-suppression.mjs` is a NEW source file that a shipped command imports (`work-gate.mjs`, which the work tick runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript). It holds the `org-health` orders to `ceo` that repeat and carries the rest as a digest; its test is `org-health-suppression.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 70 to 71 below.
-const SOURCE_MJS_PIN = 238;
+// 238 to 239 (a11ign/a11ign#4175): `src/unwaited-stock-rows.mjs` is a NEW source file that a shipped command imports (`org-retro.mjs`, which `work-gate.mjs` runs with plain `node` before any build), so it cannot be `.ts` (node on the host has no TypeScript). It reads the backlog or parked rows no wait moves for the daily retrospective; its test is `unwaited-stock-rows.test.mjs`, named by the row's Acceptance command, so TEST_MJS_PIN rises 71 to 72 below.
+const SOURCE_MJS_PIN = 239;
 // 44 to 45 (a11ign/a11ign#3563): `wake-cache.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
 // 45 to 46 (a11ign/a11ign#3425): `walk.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 46 to 47 (a11ign/a11ign#3510): `deferral-log.test.mjs` is the test file the row's Acceptance command names, so it is `.mjs`.
@@ -93,7 +94,8 @@ const SOURCE_MJS_PIN = 238;
 // 68 to 69 (a11ign/a11ign#4126): `class-repeat.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 69 to 70 (a11ign/a11ign#4124): `found-by-chairman.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 70 to 71 (a11ign/a11ign#4065): `org-health-suppression.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 71;
+// 71 to 72 (a11ign/a11ign#4175): `unwaited-stock-rows.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 72;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
