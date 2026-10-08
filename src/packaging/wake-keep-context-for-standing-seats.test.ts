@@ -66,7 +66,7 @@ const agents = (labels: string[]) => labels.map((label) => ({ label, status: "id
 const order = (session: string) => ({ session, cause: "changes-requested", causeKey: `${session}/changes-requested/pr-3440/k`,
   prompt: "Your PR has a refusal to answer." });
 const FIRST_CONTACT = /an org session in this repository/;
-const FOLLOW_UP = /a follow-up order to your session/;
+const FOLLOW_UP = /\[(?:order:\S+ )?session:[a-z0-9-]+ cause:\S+\]/;
 
 /** One scenario, run through BOTH callers: what the window was done to, what was typed. */
 type Scenario = { name: string; ago: number | null; tokens: number | null; action: string };
@@ -139,7 +139,7 @@ test("#3440 (3) a refused /compact is reported and the order still goes (mirrors
   assert.deepEqual(got.refused, [], "one order, one status: delivered, so not also UNDELIVERED (#3546)");
   assert.equal(got.sent.length, 1, `reported on the delivered line: ${JSON.stringify(got)}`);
   assert.match(got.sent[0], /\[.*\/compact refused/);
-  assert.equal(r.typed().at(-1)?.startsWith(`${LEAD}: You are`), true, "and the order was typed after the refused /compact");
+  assert.equal(r.typed().at(-1)?.startsWith(`${LEAD}: [order:wake:${LEAD}:`), true, "and the order was typed after the refused /compact");
   const c = recorder(["/compact"]);
   const report = clearThenPrompt(c.run, LEAD, "x", { sleep: noSettle, contextRoot: rootFor(s), clock: clockWith(LEAD, s.ago) });
   assert.match(String(report), /compact/);

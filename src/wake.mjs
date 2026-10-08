@@ -3747,18 +3747,20 @@ const ENGINEER_BRIEF_SENTENCE = `Before you start, read \`${ENGINEER_BRIEF}\`: t
  *
  * @param {{session: string, prompt: string, title?: string, causeKey?: string, cause?: string}} order
  * @param {string} label the concrete session this went to
- * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, context?: string, engineers?: string[],
+ * `orderId` (#4068) is the wake id the follow-up header names and the ledger line for this delivery records; see {@link FOLLOW_UP_HEADER}.
+ *
+ * @param {LaunchFacts & {spawned?: ClaimedRow, followUp?: boolean, context?: string, orderId?: string, engineers?: string[],
  *   families?: readonly import("./arm-pr.mjs").SpareFamily[]}} [facts]
  */
 export function addressed(order, label,
-  { spawned, followUp = false, context, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
+  { spawned, followUp = false, context, orderId, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch } = {}) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
   // an agent that has been told its name still has to edit the command it was handed. Handing it a
   // command it can run is the difference between an instruction and a task.
   const prompt = spawned ? spawnedPrompt(order, spawned)
     : order.prompt.replaceAll("<you>", label).replaceAll(LAUNCH_PLACEHOLDER, launchAdvice(label, launch))
       .replaceAll(CONTEXT_PLACEHOLDER, contextSentence(context));
-  if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label)}${staleReadingsClause(label, context)}\n\n${prompt}`;
+  if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label, { orderId, cause: order.cause })}${staleReadingsClause(label, context)}\n\n${prompt}`;
   const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`;
   if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}`;
@@ -3795,11 +3797,24 @@ function autonomyParagraphs(order, label) {
  * preamble is already in the window and a repeat is a copy that stays: ~1,640 chars per order, four copies on a PR with three
  * review rounds.
  *
- * IT KEEPS THE WORDS `You are \`<session>\`` because `token-audit`'s `sessionOf` attributes a transcript to a session by that
- * exact phrase; a header that dropped them would leave a transcript that opens on a follow-up unattributed spend.
+ * IT IS AN ORDER ID, NOT AN IDENTITY SENTENCE (#4068, #4055 move 5): `[order:<wake id> session:<session> cause:<cause>]`. The session
+ * already knows who it is; what no order carried was an id the ledger's line for it can be joined to a turn by. `token-audit`'s
+ * `sessionOf` reads `session:` from this header, and still reads the old "You are \`<session>\`" phrase, so a transcript that opens on
+ * either form stays attributed. `order:` is left out when the caller has no ledger line to name (a `prompt:session` order is typed by a
+ * person or a peer and is never recorded), rather than carrying an id that joins nothing.
  * @param {string} label
+ * @param {{orderId?: string, cause?: string}} [order]
  */
-const FOLLOW_UP_HEADER = (label) => `You are \`${label}\` -- a follow-up order to your session.`;
+const FOLLOW_UP_HEADER = (label, { orderId, cause } = {}) => {
+  const fields = [...(orderId ? [["order", orderId]] : []), ["session", label], ["cause", headerToken(cause)]];
+  return `[${fields.map(([name, value]) => `${name}:${value}`).join(" ")}]`;
+};
+
+/** A header field is one token: a cause with a space or a bracket in it would end the header early for `sessionOf`. @param {string | undefined} value */
+const headerToken = (value) => (value ?? "").replace(/[\s\]]+/g, "-") || "none";
+
+/** The wake id a delivery's order header and its ledger line share: `wake:<session>:<epoch ms>`, the trace store's own spelling (#4068). @param {string} label @param {number} at */
+export const wakeIdOf = (label, at) => `wake:${label}:${at}`;
 
 /** Where {@link addressed} writes what THIS delivery did to the window into an order whose text was composed before the delivery (#3440). */
 export const CONTEXT_PLACEHOLDER = "@@CONTEXT@@";
@@ -5241,17 +5256,17 @@ function recordCapped({ stuck, outaged }, order, already) {
  * @param {{causeKey: string, session: string, prompt: string}} order
  * @param {{label: string, profile?: object, claimed?: ClaimedRow, workspace?: string, order?: {prompt: string}}} target
  * @param {{run: (args: string[]) => string, sleep?: (ms: number) => void, launch?: LaunchFacts, context: string,
- *   claimer?: SpawnClaimer, env?: Record<string, string>}} how
+ *   claimer?: SpawnClaimer, env?: Record<string, string>, orderId?: string}} how `orderId` is the wake id the follow-up header names (#4068)
  * @returns {string | null} why the order is UNDELIVERED, or `null` when it landed
  */
-function promptTarget(order, target, { run, sleep = sleepSync, launch, context, claimer, env }) {
+function promptTarget(order, target, { run, sleep = sleepSync, launch, context, claimer, env, orderId }) {
   const started = target.profile !== undefined;
   const notReady = started ? notReadyWhy(run, target.label, sleep) : null;
   if (notReady !== null) return `${notReady}${abandonedStart(target, { run, claimer, env })}`;
   try {
     run(["--session", "org", "agent", "prompt", target.label,
       addressed(carriedOrder(order, target), target.label,
-        { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context })]);
+        { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context, orderId })]);
   } catch (err) {
     // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
     // session under a roster label, so the next tick's `route` offers it this same order by the ordinary
@@ -5274,13 +5289,13 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *   (#2685) is `work-gate.mjs`'s reading that GitHub itself refused several of THIS TICK's own reads together
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
- * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean) => void,
+ * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void,
  *          counts?: Map<string, number>, ineligibleReason?: (label: string) => string | null,
  *          env?: Record<string, string>, registerSpawn?: (role: string) => void, drained?: readonly string[],
  *          claimable?: (order: {causeKey: string}) => string | null, claimer?: SpawnClaimer,
  *          memory?: () => string | null, hostLoad?: () => HostLoad, launch?: LaunchFacts, unavailable?: (label: string) => string | null,
  *          sleep?: (ms: number) => void, contextRoot?: string, clock?: OrderClock,
- *          relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>} & Partial<ReviewerDeps>} [deps]
+ *          relane?: {deferredSince: Map<string, number>, now: number}, goneSeats?: ReadonlyMap<string, string>, now?: () => number} & Partial<ReviewerDeps>} [deps]
  *   `relane` (#3465) is {@link relaneTarget}'s clock and the deferral record: a declared finishing order over the bound goes to a free engineer. Absent, none is re-laned.
  *   `clock` is the standing seats' last-order record and the time ({@link OrderClock}, #3440); absent, no seat's window is kept for
  *   being recent. `sleep` is the clear's settle ({@link clearContext}): real by default, injected only by a test that is not about the delay (#2546);
@@ -5293,7 +5308,8 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  *   back now, which a spawn must not start into; `claimable` is the spawn's precheck ({@link spawnClaimability});
  *   `claimer` claims the row for a spawn before its pane opens ({@link spawnClaimer}); `memory` is the hold
  *   for a host short of memory, asked before either kind of NEW process (#2508); `launch` is what `addressed`
- *   asks about a standing session's worktree; `codexConfig` reads the reviewer's codex config for a keyed reviewer's trust note (#3264)
+ *   asks about a standing session's worktree; `codexConfig` reads the reviewer's codex config for a keyed reviewer's trust note (#3264);
+ *   `now` is the clock that mints each delivery's order id, which `record` receives as `at` (#4068)
  * @returns {{sent: string[], refused: string[], stuck: string[], outaged: string[], settled: string[], goneSeats: Map<string, string>}}
  *   `settled` (#3568) is one line per order addressed to a seat that ended this tick -- DROPPED (derived) or LEFT QUEUED (authored) -- and is not a refusal;
  *   `goneSeats` is every seat the tick found ended, label to the reason, for the next delivery of the same tick
@@ -5303,7 +5319,8 @@ function promptTarget(order, target, { run, sleep = sleepSync, launch, context, 
  */
 export function deliver(orders, agents, roster,
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats } = {}) {
+    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats,
+    now = Date.now } = {}) {
   const sent = [];
   const refused = [];
   /** @type {string[]} */
@@ -5360,7 +5377,10 @@ export function deliver(orders, agents, roster,
     }
     const { action: context, note } = before;
     const noClear = context !== CONTEXT_ACTION.CLEARED;
-    const failure = promptTarget(order, target, { run, sleep, launch, context, claimer, env });
+    // THE ORDER ID IS THE LEDGER LINE'S OWN TIMESTAMP, minted before the prompt and handed to `record` after it (#4068): the id typed into the
+    // header and the id the ledger records for this delivery are one number, so a turn's header joins its line exactly.
+    const at = now();
+    const failure = promptTarget(order, target, { run, sleep, launch, context, claimer, env, orderId: wakeIdOf(target.label, at) });
     if (failure !== null) {
       refused.push(`${order.causeKey}: ${failure}`);
       noteGoneSeat(live, gone, target.label, failure);
@@ -5379,7 +5399,7 @@ export function deliver(orders, agents, roster,
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
-    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined, noClear);
+    if (record) record(order.causeKey, target.label !== order.session ? target.label : undefined, noClear, at);
     // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
     // line is unchanged, and an instance's says it was left alone -- so the tick log shows no `/clear` to one.
     sent.push(target.profile
@@ -7598,9 +7618,9 @@ function main() {
   const { orders: todo, rides } = ridingGateOrders(
     undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o)), fyis.held);
   mkdirSync(dirname(ledgerPath), { recursive: true });
-  /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] */
-  const record = (key, recipient, noClear) => {
-    writeFileSync(ledgerPath, ledgerLine(Date.now(), key, recipient, noClear), { flag: "a" });
+  /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] @param {number} [at] the instant `deliver` named in the order's header (#4068) */
+  const record = (key, recipient, noClear, at = Date.now()) => {
+    writeFileSync(ledgerPath, ledgerLine(at, key, recipient, noClear), { flag: "a" });
     retireRiddenFyis(rides.get(key), recipient, queuePath);
   };
 
