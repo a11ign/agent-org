@@ -297,6 +297,21 @@ describe("the read-back after boot", () => {
     assert.match(finding.detail, /--read-back/);
   });
 
+  test("a boot time that cannot be read is a NOT READ finding, not an exception that crashes host:check (#367 review)", () => {
+    const refused = () => { throw new Error("EACCES: /proc/uptime"); };
+    const base = { uname: () => "7.0.0-38-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: refused };
+    const [finding, ...rest] = kernelFindings({ ...base, store: () => ({ read: () => record, write: () => {} }) });
+    assert.equal(finding.problem, "NOT READ");
+    assert.match(finding.detail, /boot time could not be read/);
+    assert.deepEqual(rest, []);
+    // negative controls: with no record, or one already read back, the boot time is never asked for and the host is silent
+    assert.deepEqual(kernelFindings({ ...base, store: () => ({ read: () => null, write: () => {} }) }), []);
+    assert.deepEqual(kernelFindings({ ...base, store: () => ({ read: () => ({ ...record, readBackAt: NOW }), write: () => {} }) }), []);
+    // the loop guard still speaks when the boot time cannot be read
+    const looped = kernelFindings({ ...base, uname: () => "7.0.0-34-generic", store: () => ({ read: () => ({ ...record, at: NOW - 2 * HOUR }), write: () => {} }) });
+    assert.deepEqual(looped.map((f) => f.problem), ["NOT READ", "REBOOTED INSIDE 24 H, NEWER KERNEL STILL NOT RUNNING"]);
+  });
+
   /** @param {Partial<Parameters<typeof readBack>[0]>} [over] */
   const deps = (over = {}) => ({
     run: (/** @type {string[]} */ argv) => (argv.includes("show") ? "747554924\n" : "active\n"),

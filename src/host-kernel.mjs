@@ -146,10 +146,24 @@ export function kernelFindings({ uname = realUname, bootEntries = realBootEntrie
   try { record = store().read(); } catch (cause) {
     return [{ unit: "kernel", problem: "NOT READ", detail: `the record of the last reboot could not be read (${describe(cause)}), so the 24 h loop guard is blind.` }];
   }
-  const owed = readBackOwed(record, bootedAt()) ? [{ unit: "kernel", problem: "REBOOT NOT READ BACK",
-    detail: `the host rebooted at ${new Date(record?.at ?? 0).toISOString()} (${record?.from} to ${record?.to}) and nothing has posted the reading yet: \`node src/host-kernel.mjs --read-back\`.` }] : [];
   const older = stillOlderFinding(record, kernelReading(uname, bootEntries), now());
-  return [...owed, ...older === null ? [] : [older]];
+  return [...readBackFindings(record, bootedAt), ...older === null ? [] : [older]];
+}
+
+/**
+ * THE READ-BACK FINDING. A refused /proc/uptime read is `NOT READ` rather than an exception, since `host:check` must not crash on it, and it is
+ * raised only while a record with no read-back exists: with none, there is nothing the boot time could make owed.
+ * @param {RebootRecord | null} record @param {() => number} bootedAt @returns {Finding[]}
+ */
+function readBackFindings(record, bootedAt) {
+  if (record === null || record.readBackAt !== undefined) return [];
+  let booted;
+  try { booted = bootedAt(); } catch (cause) {
+    return [{ unit: "kernel", problem: "NOT READ", detail: `the boot time could not be read (${describe(cause)}), so whether the reboot recorded at ${new Date(record.at).toISOString()} has been read back is not known.` }];
+  }
+  if (!readBackOwed(record, booted)) return [];
+  return [{ unit: "kernel", problem: "REBOOT NOT READ BACK",
+    detail: `the host rebooted at ${new Date(record.at).toISOString()} (${record.from} to ${record.to}) and nothing has posted the reading yet: \`node src/host-kernel.mjs --read-back\`.` }];
 }
 
 /** @returns {number} when this boot happened, in ms */
