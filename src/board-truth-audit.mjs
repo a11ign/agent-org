@@ -13,6 +13,7 @@
 //                         (`started`, `session:*`, `no-code-left`) on a row that is not `in-progress`          -> the row's owner
 //   wait-already-true     a `parked`/`backlog` row whose `Waiting-for:`/`Not-before:` is already true -> product-manager (lift it)
 //   state-label           no state label, or two (`stateLabelFindings`, the leaf the tick reads too)  -> product-manager
+//                         a row younger than the filing grace is not judged (#4048) and is COUNTED, `N filing, not judged`
 //   duplicate-or-superseded  a near-duplicate title of another row, or `Superseded by #n` with #n closed completed -> the row's owner
 //
 // ABSENCE IS NOT PROOF: a fact that could not be read is `null`, and its question is listed as UNREAD, never counted as agreeing. The
@@ -22,7 +23,7 @@
 // the day's table on #928 once per edition day.
 // A LEAF, as `org-health.mjs` (which imports it) is: relative imports of leaves only, never `close-rows-for-merged-pr.mjs`, `row-claim.mjs` or anything that reaches `wake.mjs`.
 import { execFileSync } from "node:child_process";
-import { STATE_LABELS, CLAIM_LABEL, CLAIM_RECORD_MARKER, STARTED_LABEL, stateLabelFindings } from "./claim-labels.mjs";
+import { STATE_LABELS, CLAIM_LABEL, CLAIM_RECORD_MARKER, STARTED_LABEL, stateLabelFindings, rowsBeingFiled } from "./claim-labels.mjs";
 import { conditionHolds, declaredWaitsOf, waitItemOf } from "./wait-condition.mjs";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.mjs";
 import { BACKLOG_LABEL, LANE_ANY_LABEL, LANE_PREFIX, SESSION_PREFIX } from "./project-vocabulary.mjs";
@@ -52,7 +53,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {{ number: number, title?: string, body?: string, state?: string, stateReason?: string, labels?: (string | { name?: string })[],
- *             comments?: { body?: string, createdAt?: string }[], subIssuesSummary?: { total: number, completed: number } | null }} BoardRow
+ *             comments?: { body?: string, createdAt?: string }[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string }} BoardRow
  * @typedef {{ number: number, body?: string }} MergedPr
  * @typedef {{ now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null,
  *             waitFacts: import("./wait-condition.mjs").WaitFacts | null }} BoardFacts
@@ -147,9 +148,9 @@ function waitsTrue(facts) {
 }
 
 /** @param {BoardFacts} facts @returns {Finding[]} */
-function stateLabels({ openRows }) {
+function stateLabels({ openRows, now }) {
   const byNumber = new Map(openRows.map((row) => [row.number, row]));
-  return stateLabelFindings(openRows).map((f) => finding(/** @type {BoardRow} */ (byNumber.get(f.number)), QUESTIONS.STATE_LABEL, "labels",
+  return stateLabelFindings(openRows, { now }).map((f) => finding(/** @type {BoardRow} */ (byNumber.get(f.number)), QUESTIONS.STATE_LABEL, "labels",
     f.kind === "NONE" ? `carries none of ${STATE_LABELS.join(", ")}` : `carries ${f.labels.join(" and ")}: keep the one that is true`));
 }
 
@@ -203,11 +204,12 @@ const READERS = [
  * ASK ALL SIX QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no
  * fact) and is named in `unread`, so the table never states health it did not read.
  * @param {BoardFacts} facts
- * @returns {{ findings: Finding[], unread: string[] }}
+ * `filing` is how many rows were EXCUSED from the state-label question because they are being filed (#4048), so the table can say it rather than read them as agreeing.
+ * @returns {{ findings: Finding[], unread: string[], filing: number }}
  */
 export function boardTruthAudit(facts) {
   const findings = READERS.flatMap(([, ask]) => ask(facts)).sort((a, b) => a.number - b.number || a.question.localeCompare(b.question));
-  return { findings, unread: READERS.filter(([, , read]) => !read(facts)).map(([question]) => question) };
+  return { findings, unread: READERS.filter(([, , read]) => !read(facts)).map(([question]) => question), filing: rowsBeingFiled(facts.openRows, facts).length };
 }
 
 /** The first line of a table, which is what a second tick looks for on #928. @param {string} day */
@@ -215,12 +217,14 @@ const tableHeading = (day) => `### Board against reality, ${day}`;
 
 /**
  * THE DAY'S TABLE: the count first, then one line per finding with the field to fix and who reads it. `0 disagree` is stated when it is true.
- * @param {{ findings: Finding[], unread: string[] }} audit @param {string} day `YYYY-MM-DD`
+ * A row EXCUSED as being filed (#4048) is named `N filing, not judged` beside the count: it is neither a disagreement nor an agreement.
+ * @param {{ findings: Finding[], unread: string[], filing?: number }} audit @param {string} day `YYYY-MM-DD`
  * @returns {string}
  */
-export function boardTruthTable({ findings, unread }, day) {
+export function boardTruthTable({ findings, unread, filing = 0 }, day) {
+  const filingNote = filing === 0 ? "" : `, ${filing} filing, not judged`;
   const unreadNote = unread.length === 0 ? "" : ` -- NOT READ, so not counted as agreeing: ${unread.join(", ")}`;
-  const head = [tableHeading(day), "", `**${findings.length} disagree**${unreadNote}`];
+  const head = [tableHeading(day), "", `**${findings.length} disagree**${filingNote}${unreadNote}`];
   if (findings.length === 0) return head.join("\n");
   const rows = findings.map((f) => `| #${f.number} | ${f.question} | ${f.field} | ${f.detail} | ${f.route} |`);
   return [...head, "", "| row | question | field to fix | what disagrees | to |", "|---|---|---|---|---|", ...rows].join("\n");
@@ -242,7 +246,7 @@ const gh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256
 export function readBoardFacts(repo, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null } = {}) {
   const json = (/** @type {string[]} */ args) => JSON.parse(run([...args, "--repo", repo]));
   const orUnread = (/** @type {string[]} */ args) => { try { return json(args); } catch { return null; } };
-  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,state,comments,subIssuesSummary"]);
+  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", "number,title,body,labels,state,comments,subIssuesSummary,createdAt"]);
   const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
   const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body"]);
   const listed = agents();
