@@ -14,7 +14,7 @@
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
 // import and its one caller stay together. `work-gate.mjs` re-exports every name this file exports that it exported before.
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
-  shouldBeMerging, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers } from "../work-gate.mjs";
+  shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers } from "../work-gate.mjs";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.mjs";
 import { claimRecordOf } from "../claim-stall.mjs";
 import { idleClaimantReading } from "../idle-claimant.mjs";
@@ -26,7 +26,7 @@ import { idleWithOpenRowsReading } from "../idle-with-open-rows.mjs";
 import { roleBriefPath } from "../project-roles.mjs";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.mjs";
 import { NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
-import { FLEET_IDLE_HOURS, readLastMergedAt, orgHealthTick,
+import { FLEET_IDLE_HOURS, readLatestMerge, orgHealthTick,
   primaryStandingSince, readTeamAccess } from "../org-health.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.mjs";
 import { withoutHold } from "../red-pr.mjs";
@@ -450,6 +450,20 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
 }
 
 /**
+ * Every repository the tick reads pull requests for (#4047): the project's own, then each keyed code repository the declaration lists.
+ * The org's work lands in all of them (a row's code merges in `agent-org`), so its last merge is the latest of them.
+ * @returns {string[]}
+ */
+const mergeRepositories = () => [repoNow(), ...scopesOf([homeProjectDeclaration()]).flatMap((scope) => (scope.key !== "" && scope.code !== null ? [scope.code.repo] : []))];
+
+/**
+ * The facts a last-merge read becomes: a bare time (what a caller that names no repository hands back) or `{ at, repo }`.
+ * @param {number | { at: number, repo: string } | null} read
+ * @returns {{ lastMergedAt: number | null, lastMergedIn: string | null }}
+ */
+const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastMergedAt: read.at, lastMergedIn: read.repo } : { lastMergedAt: read, lastMergedIn: null });
+
+/**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
@@ -465,7 +479,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  * decided not to act on. NOTHING IS RECORDED: the next tick with the incident gone holds nothing, so the same red counts again by itself. `undefined` is a caller with no hold.
  * #3448: `pools` IS THE API BUDGETS THIS TICK'S OWN READS NAMED (`readRowsOffBoard` leaves the GraphQL one); EMPTY IS A REFUSED READ AND THE SIGNAL SAYS IT WAS NOT READ, never clear.
  * @param {{ prsRead: any[] | null, readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.mjs").PoolReading[] }} tick
- * @param {{ now?: number, lastMergedAt?: () => number | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
+ * @param {{ now?: number, lastMergedAt?: () => number | { at: number, repo: string } | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
  *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.mjs").readToolAgreement,
  *           readReleaseRuns?: () => import("../org-health.mjs").ReleaseRuns | null | undefined,
@@ -475,7 +489,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }, { stateDir = REV
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
  */
 export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
-  { now = Date.now(), lastMergedAt = () => readLastMergedAt(defaultRun, repoNow()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
+  { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined } = {}) {
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
@@ -485,7 +499,7 @@ export function orgHealthNow({ prsRead, readyRead, openRowsRead, claimedComments
   const { holdStands, stale } = waitStanding(waits, now);
   const readings = orgHealthTick({
     now,
-    lastMergedAt: lastMergedAt(),
+    ...lastMerge(lastMergedAt()),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
     redPrs: prsRead === null ? null : redPrFacts(withoutHeld(prs, held), decided, { holdStands }),
     overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now,
