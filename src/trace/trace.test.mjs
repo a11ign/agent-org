@@ -12,8 +12,9 @@ import { parseLedger } from "../wakes-per-row.mjs";
 import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
 import { aggregate, weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, meteredGhApi, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { readValidators, saveValidators } from "./publish.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso) => Date.parse(iso);
@@ -765,6 +766,115 @@ test("NAMED (#3688): a subject GitHub refuses is named with the reason and the n
   assert.deepEqual([...new Set(events.map((event) => event.row ?? `pr ${event.pr}`))].sort(), [14, "pr 5"], "the subjects after the refused one were read");
   assert.deepEqual(unread, [], "a refusal that is not the budget is not the budget's stop");
   assert.equal(underlying.seen.filter((path) => /issues\/14$/.test(path)).length, 1, "row 14 is named by two keys and read once");
+});
+
+// CONDITIONAL READS (#4097). One map render spent 105 of its 123 calls re-reading the open rows and unmerged pull requests the wakes name; the ETag of a row's own record and of a head's check-runs
+// was measured to hold, and the timeline's and a list's was not (see VALIDATED_READS).
+/** A GitHub that answers `pages` (path before the `?` -> `{ etag, body }`) and a 304 to a request carrying the ETag it holds; `asked` is every argument list that reached it. */
+function fakeGithub(pages) {
+  const asked = [];
+  const run = (args) => {
+    asked.push(args);
+    const sent = args[0] === "-H" ? args[1].replace("If-None-Match: ", "") : null;
+    const page = pages[args.find((arg) => arg.startsWith("repos/")).split("?")[0]];
+    if (!page) throw Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stdout: "HTTP/2.0 404 Not Found\n\n", stderr: "gh: Not Found (HTTP 404)\n" });
+    const rate = "X-Ratelimit-Remaining: 4000\nX-Ratelimit-Resource: core";
+    return sent === page.etag ? `HTTP/2.0 304 Not Modified\n${rate}\n\n` : `HTTP/2.0 200 OK\nEtag: ${page.etag}\n${rate}\n\n${JSON.stringify(page.body)}`;
+  };
+  return { run, asked };
+}
+const ROW_12 = "repos/a11ign/a11ign/issues/12";
+const rowPages = (etag = 'W/"a"', timeline = []) => ({ [ROW_12]: { etag, body: { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } } }, [`${ROW_12}/timeline`]: { etag: 'W/"t"', body: timeline } });
+
+test("VALIDATED (#4097): a row's own record is asked with the ETag it was given, a 304 reads nothing again, and a changed reply replaces what was kept", () => {
+  const github = fakeGithub(rowPages());
+  const held = {};
+  const first = meteredGhApi({ held, now: 1, run: github.run });
+  assert.equal(first([ROW_12]).user.login, "someone");
+  assert.deepEqual(github.asked[0], ["-i", ROW_12], "NEGATIVE CONTROL: with nothing held the request carries no validator");
+  const second = meteredGhApi({ held, now: 2, run: github.run });
+  assert.equal(second([ROW_12]).user.login, "someone", "the 304 is answered from the body kept with the ETag");
+  assert.deepEqual(github.asked[1], ["-H", 'If-None-Match: W/"a"', "-i", ROW_12], "the validator is sent, and `-H` comes first so the gh ledger's first two words (`api -H`) count it apart");
+  assert.equal(second.validators.unchanged(ROW_12), true);
+  assert.deepEqual(second.rate, { remaining: 4000, resource: "core" }, "a 304 still reports the pool, which the floor and the pool check read");
+  const third = meteredGhApi({ held, now: 3, run: fakeGithub(rowPages('W/"b"')).run });
+  assert.equal(third([ROW_12]).user.login, "someone");
+  assert.equal(third.validators.unchanged(ROW_12), false, "POSITIVE CONTROL: a changed record is a 200, read whole");
+  assert.equal(held[ROW_12].etag, 'W/"b"', "and the new ETag replaces the old");
+});
+
+test("VALIDATED (#4097): a timeline and a list are never sent a validator, even when one is held for the path", () => {
+  const github = fakeGithub({ ...rowPages(), "repos/a11ign/a11ign/pulls": { etag: 'W/"l"', body: [] } });
+  const timeline = `${ROW_12}/timeline?per_page=100&page=1`;
+  const stale = (etag) => ({ etag, value: ["stale"], used: 1 });
+  const held = { [timeline]: stale('W/"t"'), "repos/a11ign/a11ign/pulls": stale('W/"l"'), [ROW_12]: stale('W/"a"') };
+  const gh = meteredGhApi({ held, now: 2, run: github.run });
+  assert.deepEqual(gh([timeline]), [], "the timeline came whole, not the stale copy");
+  assert.deepEqual(gh(["-X", "GET", "repos/a11ign/a11ign/pulls", "-f", "state=closed"]), [], "so did the list");
+  assert.equal(gh([ROW_12, "-f", "per_page=1"]).user.login, "someone", "a record's path WITH parameters came whole too");
+  assert.equal(github.asked.every((args) => args[0] === "-i"), true, "none of the three carried If-None-Match, though a validator was held for each path: a validator is keyed by path alone, so a request with parameters is not the one it was kept for");
+  assert.equal(gh.validators.unchanged(timeline), false);
+});
+
+test("VALIDATED (#4097): a missing or corrupt store of validators asks for everything, and says so when it was there", () => {
+  const dir = tmpDir("validators-");
+  assert.deepEqual(readValidators(dir), {}, "no file: no validators");
+  writeFileSync(join(dir, ".validators.json"), "{not json");
+  const said = [];
+  const original = console.error;
+  console.error = (line) => said.push(line);
+  try {
+    assert.deepEqual(readValidators(dir), {});
+  } finally {
+    console.error = original;
+  }
+  assert.match(said.join(""), /unreadable/, "a corrupt store is named, not swallowed");
+  const github = fakeGithub(rowPages());
+  meteredGhApi({ held: readValidators(dir), run: github.run })([ROW_12]);
+  assert.deepEqual(github.asked[0], ["-i", ROW_12], "it fell back to an unconditional request, never to a skipped read");
+  const held = {};
+  meteredGhApi({ held, now: 1, run: github.run })([ROW_12]);
+  saveValidators({ out: dir, held, now: 1 });
+  assert.equal(readValidators(dir)[ROW_12].etag, 'W/"a"', "POSITIVE CONTROL: a store that was written is read back");
+});
+
+/** Rows 12 and 14 and agent-org's pull request 5, the three subjects `NAMING_WAKES` name, behind a fake GitHub. */
+const namedPages = (etag = 'W/"a"', timeline = []) => ({ ...rowPages(etag, timeline),
+  "repos/a11ign/a11ign/issues/14": { etag: 'W/"14"', body: { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } } }, "repos/a11ign/a11ign/issues/14/timeline": { etag: 'W/"t"', body: [] },
+  "repos/a11ign/agent-org/pulls/5": { etag: 'W/"5"', body: { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } } }, "repos/a11ign/agent-org/issues/5/timeline": { etag: 'W/"t"', body: [] } });
+test("SKIPPED (#4097): a row whose record answers 304 and whose first reading the store holds costs one call, a changed row is read whole, and a pull request is read whole either way", () => {
+  const held = {};
+  const readWith = ({ pages, filedRows = [12, 14] }) => {
+    const github = fakeGithub(pages);
+    const gh = meteredGhApi({ held, now: 2, run: github.run });
+    const bounded = budgetedGh({ gh, budget: 100 });
+    const filed = filedRows.map((row) => ({ kind: "filed", source: "github", row, pr: null, repo: null }));
+    return { github, bounded, ...githubEventsOfNamed({ held: [...NAMING_WAKES, ...filed], since: NAMED_WEEK, rowRepo: NAMED_ROW_REPO, gh: bounded, validators: gh.validators }) };
+  };
+  const cold = readWith({ pages: namedPages(), filedRows: [] });
+  assert.equal(cold.bounded.calls, 6, "COLD: nothing held, so each of the three subjects costs its record and its timeline");
+  const warm = readWith({ pages: namedPages() });
+  assert.equal(warm.bounded.calls, 4, "WARM: rows 12 and 14 answered 304 and were skipped (one call each); the pull request cost its record and its timeline");
+  assert.deepEqual(warm.events.filter((event) => event.row !== null), [], "and a skipped row adds nothing");
+  const unfiled = readWith({ pages: namedPages(), filedRows: [14] });
+  assert.equal(unfiled.bounded.calls, 5, "NEGATIVE CONTROL: a 304 for a row whose first reading the store does not hold is read whole (12: two calls)");
+  const moved = readWith({ pages: namedPages('W/"b"', [blockedAt("2026-09-29T11:10:00Z")]) });
+  assert.equal(moved.bounded.calls, 5, "a row whose record moved is read whole (12: two calls) and only that one; 14 is still one call, and the pull request two");
+  assert.deepEqual(moved.events.filter((event) => event.kind === "labeled").map((event) => event.row), [12], "the event the timeline gained arrives");
+});
+
+test("SKIPPED (#4097): a row whose reading the budget cut off forgets its validator, so the next run asks for it whole", () => {
+  const held = {};
+  const full = fakeGithub(namedPages());
+  const warm = meteredGhApi({ held, now: 1, run: full.run });
+  warm([ROW_12]);
+  assert.ok(held[ROW_12], "the record of row 12 was read, and its validator kept");
+  const github = fakeGithub(namedPages('W/"b"', [blockedAt("2026-09-29T11:10:00Z")]));
+  const gh = meteredGhApi({ held, now: 2, run: github.run });
+  const bounded = budgetedGh({ gh, budget: 1 });
+  const { unread } = githubEventsOfNamed({ held: [...NAMING_WAKES, { kind: "filed", source: "github", row: 12, pr: null, repo: null }], since: NAMED_WEEK, rowRepo: NAMED_ROW_REPO, gh: bounded, validators: gh.validators });
+  assert.ok(unread.includes("row 12"), "the budget stopped it between the record and the timeline");
+  assert.equal(held[ROW_12], undefined, "so no validator is kept for a row whose new events were not read");
 });
 
 test("NAMED (#3688): the footer says how many subjects the wakes name that were not read, and which could not be", () => {
