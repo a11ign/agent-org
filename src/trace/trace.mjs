@@ -901,14 +901,20 @@ const replaying = ({ path, reply, gh }) => (/** @type {string[]} */ args) => (ar
 /** What of GitHub's reading of a subject a run may take as read: `unchanged(path)` is true when the run got a 304 for it, `forget(path)` drops the validator of a subject whose reading did not finish. */
 const NO_VALIDATORS = { unchanged: (/** @type {string} */ _path) => false, forget: (/** @type {string} */ _path) => {} };
 
+/** The repository a named subject lives in: the row repository unless the wake named another of the owner's. @param {{ subject: Named, rowRepo: string }} input */
+const repoOfNamed = ({ subject, rowRepo }) => (subject.repo === null ? rowRepo : `${rowRepo.split("/")[0]}/${subject.repo}`);
+
+/** The path of the record a subject's reading starts from, which is the key its validator is kept under: `pulls/N` for a pull request, `issues/N` for a row. @param {{ subject: Named, rowRepo: string }} input */
+const recordPathOf = ({ subject, rowRepo }) => `repos/${repoOfNamed({ subject, rowRepo })}/${subject.isPull ? "pulls" : "issues"}/${subject.number}`;
+
 /**
  * A ROW whose own record answers 304 and whose `filed` event the store holds has nothing new in its timeline: every event the store takes from it (a label, a claim comment, a close) moves the
  * issue's ETag, so its timeline read (51 of the 105 calls a map render spent on the subjects the wakes name, #4097) is skipped. A pull request is read whole: a check-run finishing moves no ETag of the pull request.
  * @param {{ subject: Named, rowRepo: string, gh: (args: string[]) => any, filedRows: Set<number>, validators: typeof NO_VALIDATORS }} input
  */
 function readNamed({ subject, rowRepo, gh, filedRows, validators }) {
-  if (subject.isPull) return pullEventsOf({ pull: { number: subject.number, repo: subject.repo === null ? rowRepo : `${rowRepo.split("/")[0]}/${subject.repo}` }, rowRepo, gh });
-  const path = `repos/${rowRepo}/issues/${subject.number}`;
+  if (subject.isPull) return pullEventsOf({ pull: { number: subject.number, repo: repoOfNamed({ subject, rowRepo }) }, rowRepo, gh });
+  const path = recordPathOf({ subject, rowRepo });
   const reply = gh([path]);
   if (validators.unchanged(path) && filedRows.has(subject.number)) return [];
   return readGithubEvents({ rows: [subject.number], prs: [], repo: rowRepo, gh: replaying({ path, reply, gh }) });
@@ -939,7 +945,7 @@ export function githubEventsOfNamed({ held, since, rowRepo, gh, validators = NO_
     try {
       events.push(...readNamed({ subject, rowRepo, gh, filedRows, validators }));
     } catch (error) {
-      validators.forget(`repos/${rowRepo}/issues/${subject.number}`); // read to the end or not at all: a validator kept for a half-read row would let the next run take it as read
+      validators.forget(recordPathOf({ subject, rowRepo })); // read to the end or not at all: a validator kept for a half-read row would let the next run take it as read
       if (isSpent(error)) unread.push(nameOf(subject));
       else failed.push({ subject: nameOf(subject), message: String(/** @type {Error} */ (error).message) });
     }

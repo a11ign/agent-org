@@ -877,6 +877,25 @@ test("SKIPPED (#4097): a row whose reading the budget cut off forgets its valida
   assert.equal(held[ROW_12], undefined, "so no validator is kept for a row whose new events were not read");
 });
 
+test("SKIPPED (#4097): a pull request whose reading the budget cut off forgets the validator of ITS record (pulls/N), and no other subject's", () => {
+  const held = {};
+  const PULL_5 = "repos/a11ign/agent-org/pulls/5";
+  const pullWakes = repeated("worker-13/pr-review-blocked/pr-agent-org#5");
+  const filed = [12, 14].map((row) => ({ kind: "filed", source: "github", row, pr: null, repo: null }));
+  const read = ({ pages, budget }) => {
+    const gh = meteredGhApi({ held, now: 1, run: fakeGithub(pages).run });
+    const bounded = budgetedGh({ gh, budget });
+    return githubEventsOfNamed({ held: [...NAMING_WAKES, ...filed], since: NAMED_WEEK, rowRepo: NAMED_ROW_REPO, gh: bounded, validators: gh.validators });
+  };
+  read({ pages: namedPages(), budget: 100 });
+  assert.ok(held[PULL_5], "POSITIVE CONTROL: a whole reading keeps the pull request's validator");
+  const gh = meteredGhApi({ held, now: 2, run: fakeGithub({ ...namedPages(), [PULL_5]: { etag: 'W/"5b"', body: { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } } } }).run });
+  const { unread } = githubEventsOfNamed({ held: [...pullWakes, ...filed], since: NAMED_WEEK, rowRepo: NAMED_ROW_REPO, gh: budgetedGh({ gh, budget: 1 }), validators: gh.validators });
+  assert.deepEqual(unread, ["agent-org#5"], "the budget stopped it between the record and the timeline");
+  assert.equal(held[PULL_5], undefined, "so the validator of the record it used is dropped, not the issue key it never used");
+  assert.ok(held[ROW_12], "NEGATIVE CONTROL: a subject this run did not touch keeps its validator");
+});
+
 test("NAMED (#3688): the footer says how many subjects the wakes name that were not read, and which could not be", () => {
   const github = { calls: 12, read: 30, added: 4, remaining: { first: 1749, last: 1737 }, stopped: null };
   assert.equal(githubSummary({ github, budget: 1500, unread: 0 }), "GitHub: 12 REST calls (gh api, pool core, budget 1500); X-Ratelimit-Remaining 1749 at the first reply, 1737 at the last; 30 events read, 4 new to the store; rows whose GitHub events are not yet read: 0", "a run that did not read them says nothing of them");
