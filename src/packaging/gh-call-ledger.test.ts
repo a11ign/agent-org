@@ -56,7 +56,8 @@ const host = () => {
     `exit \${STUB_STATUS:-0}`, ""].join("\n"), { mode: 0o755 });
   const ledger = join(cfg, "gh-calls.tsv");
   const env = (extra: Record<string, string> = {}) => ({ PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg,
-    A11Y_GH_LEDGER_NOW: NOW, STUB_BODY: GRAPHQL_BODY, ...extra });
+    // (#4148) the read cache is OFF here: this file pins the LEDGER, and a cached read repeats stdout but not the stderr of the call that filled it (`gh-read-cache.test.ts` pins that)
+    A11Y_GH_LEDGER_NOW: NOW, A11Y_GH_READ_CACHE: "off", STUB_BODY: GRAPHQL_BODY, ...extra });
   const run = (extra: Record<string, string>, ...args: string[]) => {
     const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: env(extra), input: "" });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };

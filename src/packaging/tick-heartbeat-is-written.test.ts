@@ -60,7 +60,8 @@ function runTick({ gate, wakeExit = 0, ghFails = false as Fails, recordIsADirect
     writeFileSync(join(bin, "gh"), ghStub(log, record, ghFails));
     chmodSync(join(bin, "gh"), 0o755);
     const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`], {
-      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: bin },
+      // (#4148) NO GH_CONFIG_DIR: with one the tick's snapshot refresh makes its own (read-only) `gh` probes and writes under that account's config, and this test counts the tick's WRITES.
+      encoding: "utf8", cwd: dir, env: { ...process.env, PATH: bin, GH_CONFIG_DIR: "" },
     });
     const calls: Call[] = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
     return { ran, calls, record: !recordIsADirectory && existsSync(record) ? readCompletion(record) : null };

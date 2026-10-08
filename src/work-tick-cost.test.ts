@@ -47,6 +47,7 @@ function runTick({ gate, wake = "process.exit(0);", costIsADirectory = false, ti
     if (costIsADirectory) mkdirSync(cost);
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: join(dir, "empty") };
     delete env.INVOCATION_ID; // a test run under systemd would otherwise ask systemd about ITS unit
+    delete env.GH_CONFIG_DIR; // (#4148) the tick's snapshot refresh probes GitHub and writes under the account's config: with none, it says SNAPSHOT OFF and starts nothing, which is what these tests count
     const run = () => spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`], { encoding: "utf8", cwd: dir, env });
     let ran = run();
     for (let tick = 1; tick < ticks; tick += 1) ran = run();

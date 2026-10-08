@@ -50,9 +50,11 @@
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports this, and it runs before any `pnpm install`/build.
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { spenderPhrase } from "./gh-ledger.mjs";
 // A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.mjs";
 import { boardTruthTable } from "./board-truth-audit.mjs";
@@ -639,10 +641,14 @@ export function readAutoOffRefusal({ root = DEFAULT_ROOT, read = (path) => readF
  *
  * A POOL AT EXACTLY THE FRACTION IS NOT RAISED (at or above clears), and a limit of 0 is unread and never a divide. Keyed on the account, the pool and the
  * reset time, so one spent window is one signal however many ticks it lasts and the next window starts a new one.
- * @param {{ pools: PoolReading[] | null }} input
+ *
+ * (#4148) A LOW POOL NAMES ITS SPENDER: for a GRAPHQL pool the detail adds who spent that account's last hour, off the `host/gh` ledger beside the config this tick ran under
+ * (`spenderOf`; the default reads it). "Low" with no name is a signal nobody can act on, and the first reading of the burner took a hand-run awk. Only the DETAIL carries it:
+ * the discriminator is unchanged, so one spent window is still one signal. A ledger that cannot be read leaves the detail as it was and says so, never a guess.
+ * @param {{ pools: PoolReading[] | null, spenderOf?: (account: string) => string | null }} input
  * @returns {Reading}
  */
-export function poolLowReading({ pools }) {
+export function poolLowReading({ pools, spenderOf = ledgerSpender }) {
   if (pools === null) return unknown(SIGNALS.POOL_LOW, "no API pool was read this tick");
   const low = pools.filter((p) => p.limit > 0 && p.remaining / p.limit < POOL_LOW_FRACTION).sort((a, b) => `${a.account}/${a.resource}`.localeCompare(`${b.account}/${b.resource}`));
   if (low.length === 0) return clear(SIGNALS.POOL_LOW);
@@ -650,7 +656,23 @@ export function poolLowReading({ pools }) {
     + ` (${Math.round((p.remaining / p.limit) * 100)}%), resetting ${p.resetAt ?? "at a time the answer did not give"}`);
   const key = low.map((p) => `${p.account}/${p.resource}/${p.resetAt}`).join(",");
   return { signal: SIGNALS.POOL_LOW, status: "tripped", firstTrippedAt: null, discriminator: `${SIGNALS.POOL_LOW}@${key}`,
-    detail: `${low.length} API pool(s) are below ${Math.round(POOL_LOW_FRACTION * 100)}% of their limit: ${named.join("; ")}` };
+    detail: `${low.length} API pool(s) are below ${Math.round(POOL_LOW_FRACTION * 100)}% of their limit: ${named.join("; ")}${spendersOf(low, spenderOf)}` };
+}
+
+/** The config directory `host/gh` writes this process's ledger under: the one `gh` itself reads, else the default. */
+const ledgerDir = () => process.env.GH_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "gh");
+
+/** @param {string} account @returns {string | null} */
+const ledgerSpender = (account) => spenderPhrase(join(ledgerDir(), "gh-calls.tsv"), account);
+
+/**
+ * `. Spender: ...` for each low GRAPHQL pool whose account is named, else "". An account the ledger cannot say anything of reads `UNREADABLE`, because the omission would look
+ * like a clean answer. @param {PoolReading[]} low @param {(account: string) => string | null} spenderOf
+ */
+function spendersOf(low, spenderOf) {
+  const accounts = [...new Set(low.filter((p) => p.resource === "graphql" && p.account !== null).map((p) => /** @type {string} */ (p.account)))];
+  if (accounts.length === 0) return "";
+  return `. Spender: ${accounts.map((a) => spenderOf(a) ?? `${a}'s call ledger could not be read, so the spender is UNREADABLE`).join("; ")}`;
 }
 
 /**
