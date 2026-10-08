@@ -78,10 +78,13 @@ function windowBreak(record) {
   return record?.type === "user" && typeof content === "string" && content.includes("<command-name>/clear</command-name>") ? NOT_DERIVABLE.AFTER_CLEAR : null;
 }
 
-/** @param {import("./store.mjs").Rec[]} records @param {{ from: number, to: number }} span the records strictly between two messages of the main thread @returns {string | null} */
-function breakBetween(records, { from, to }) {
+/**
+ * A marker resets the window of the thread it is written in: a subagent has a window of its own, so the parent's compaction does not reset it and its compaction does not reset the parent.
+ * @param {import("./store.mjs").Rec[]} records @param {{ from: number, to: number, side: boolean }} span the records strictly between two messages of one thread @returns {string | null}
+ */
+function breakBetween(records, { from, to, side }) {
   for (const { record } of records.slice(from + 1, to)) {
-    const found = windowBreak(record);
+    const found = (record?.isSidechain === true) === side ? windowBreak(record) : null;
     if (found !== null) return found;
   }
   return null;
@@ -141,7 +144,7 @@ export function requestsOf(text, session) {
   const states = { main: null, side: null };
   return messagesOf(records).map((message) => {
     const state = states[message.thread];
-    const reset = state === null ? NOT_DERIVABLE.FIRST : message.thread === "main" ? breakBetween(records, { from: state.prior.last, to: message.first }) : null;
+    const reset = state === null ? NOT_DERIVABLE.FIRST : breakBetween(records, { from: state.prior.last, to: message.first, side: message.thread === "side" });
     if (state === null || reset !== null) {
       states[message.thread] = { prior: message, writer: START_OF_WINDOW, writerCalls: [], priorShrank: false };
       return requestOf(session, message, { reason: reset });

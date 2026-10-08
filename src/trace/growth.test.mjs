@@ -191,3 +191,25 @@ test("the report names its window, its population and what it could not read", (
   assert.match(text, /\| Bash \| 1 \| 250 \| 61\.0% \| 250 \|/);
   assert.ok(DEFINITIONS.some((definition) => definition.includes("never 0")));
 });
+
+test("a marker resets the window of the thread it is written in: a subagent's own compaction or clear is not derivable, and neither thread's is the other's", () => {
+  const side = (marker) => ({ ...marker, isSidechain: true });
+  const run = (marker) => byId(requestsOf(lines([
+    order(0),
+    ...step(1, { id: "m0", read: 0, tools: ["Agent"] }),
+    ...step(1.2, { id: "s0", read: 100, tools: ["Read"], sidechain: true }),
+    marker,
+    ...step(1.6, { id: "s1", read: 110, tools: ["Read"], sidechain: true }),
+    ...step(2, { id: "m1", read: 100, tools: ["Bash"] }),
+    ...step(3, { id: "m2", read: 150 }),
+  ]), "worker-9"));
+  for (const [name, marker, why] of [["summary", compaction(1.4), NOT_DERIVABLE.AFTER_COMPACTION], ["boundary", boundary(1.4), NOT_DERIVABLE.AFTER_COMPACTION], ["clear", cleared(1.4), NOT_DERIVABLE.AFTER_CLEAR]]) {
+    const own = run(side(marker));
+    assert.deepEqual([own.s1.growth, own.s1.reason], [null, why], name); // 110 - 100 would be 10 tokens of growth from before the reset
+    assert.deepEqual([own.m1.growth, own.m2.growth], [100, 50], name); // and the parent is unreset by it
+    // NEGATIVE CONTROL: the same marker written in the parent's thread leaves the subagent's window alone and resets the parent's.
+    const parents = run(marker);
+    assert.deepEqual([parents.s1.growth, parents.s1.reason], [10, null], name);
+    assert.deepEqual([parents.m1.growth, parents.m1.reason], [null, why], name);
+  }
+});
