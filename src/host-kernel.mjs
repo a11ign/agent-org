@@ -31,6 +31,11 @@ import { stateEntryPath } from "./host-config.mjs";
 /** The timer that starts a tick. STOPPED, never disabled: a boot starts it again, which is the whole point of stopping it. */
 export const TICK_TIMER = "a11ign-work-tick.timer";
 const TICK_SERVICE = "a11ign-work-tick.service";
+/**
+ * THE UNIT THAT RUNS `--reboot` ON A CLOCK (`host/kernel-reboot.service.in`, a11ign/a11ign#4053). A oneshot shows as `activating` while it runs, which is exactly
+ * what {@link whatHolds} counts as a host job, so unexcused it would hold ITS OWN reboot for the whole drain bound and defer every scheduled run.
+ */
+export const REBOOT_SERVICE = "a11ign-kernel-reboot.service";
 /** THE ONE PRIVILEGED COMMAND the host grants. A new element here is a new sudoers line, which is `ceo`'s and the chairman's to give. */
 export const REBOOT_ARGV = Object.freeze(["sudo", "systemctl", "reboot"]);
 const MINUTE_MS = 60_000;
@@ -185,12 +190,13 @@ export function runPrivileged(argv, run) {
  * @returns {string[]}
  */
 export function whatHolds({ agents, run, ignoreSeats = [], ignoreUnits = [] }) {
+  const unexcused = (/** @type {string} */ unit) => unit && unit !== REBOOT_SERVICE && !ignoreUnits.includes(unit);
   const seats = agents();
   const held = seats === null ? ["NOT READ: herdr's workspace listing"]
     : seats.filter((a) => a.status === "working" && !ignoreSeats.includes(a.label)).map((a) => `seat ${a.label} is mid-turn`);
   try {
     const listing = run(["systemctl", "--user", "list-units", "a11ign-*.service", "--state=activating", "--no-legend", "--plain"]);
-    const jobs = listing.split("\n").map((l) => l.trim().split(/\s+/)[0]).filter((u) => u && !ignoreUnits.includes(u));
+    const jobs = listing.split("\n").map((l) => l.trim().split(/\s+/)[0]).filter(unexcused);
     return [...held, ...jobs.map((u) => `host job ${u} is running`)];
   } catch (cause) { return [...held, `NOT READ: the host jobs (${describe(cause)})`]; }
 }
