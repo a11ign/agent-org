@@ -31,7 +31,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
-  fstatSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
+  fstatSync, statSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir, loadavg, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -4874,6 +4874,13 @@ export const CONTEXT_WINDOW_TOKENS = 200_000;
 export const KEEP_FILL_FRACTION = 0.5;
 export const KEEP_FILL_TOKENS = CONTEXT_WINDOW_TOKENS * KEEP_FILL_FRACTION;
 
+/**
+ * THE LARGEST STATE FILE A CLEAR WILL REHYDRATE FROM (#4072): 8 KiB, about 2,000 tokens, so a cleared seat restarts on a small floor rather
+ * than on a second window. AN UNMEASURED STARTING CONSTANT. WOULD CHANGE ON: the size of the state files managers actually write, read
+ * from `state/`, and the first one that is refused at this size for being useful rather than bloated.
+ */
+export const STATE_FILE_MAX_BYTES = 8 * 1024;
+
 /** What was done to a seat's window before an order -- the one word every caller's wording is read from (#3440). */
 export const CONTEXT_ACTION = Object.freeze({ KEPT: "kept", COMPACTED: "compacted", CLEARED: "cleared" });
 
@@ -4883,7 +4890,9 @@ export const CONTEXT_ACTION = Object.freeze({ KEPT: "kept", COMPACTED: "compacte
  *
  * A DIRECTORY THE CALLER NAMES, NEVER A DEFAULT: a test that delivers to `ceo` would otherwise stamp the host's real record and
  * keep the real `ceo`'s window. Without a clock the answer is "cannot tell", which is a clear.
- * @typedef {{ now: () => number, lastOrderAt: (label: string) => number | null, recordOrder: (label: string) => void }} OrderClock
+ * `stateFile` is where the seat's own end-of-wake state lives (#4072), `null` when the caller names no directory for it.
+ * @typedef {{ now: () => number, lastOrderAt: (label: string) => number | null, recordOrder: (label: string) => void,
+ *   stateFile?: (label: string) => string | null }} OrderClock
  */
 
 /** @param {string} dir @param {string} label */
@@ -4891,11 +4900,14 @@ const lastOrderFile = (dir, label) => join(dir, `last-order-${label.replaceAll(/
 
 /**
  * @param {string} dir where the per-seat records live (the ledger's directory)
- * @param {() => number} [now] @returns {OrderClock}
+ * @param {() => number} [now]
+ * @param {string} [stateDir] where `<label>.md` state files live; beside `dir`, as `state/`, unless a caller says otherwise (#4072)
+ * @returns {OrderClock}
  */
-export function orderClockIn(dir, now = Date.now) {
+export function orderClockIn(dir, now = Date.now, stateDir = join(dirname(dir), "state")) {
   return {
     now,
+    stateFile: (label) => join(stateDir, `${label.replaceAll(/[^\w.-]/g, "_")}.md`),
     lastOrderAt(label) {
       try {
         const at = Number(readFileSync(lastOrderFile(dir, label), "utf8").trim());
@@ -4918,18 +4930,64 @@ export function orderClockIn(dir, now = Date.now) {
 const NO_CLOCK = { now: Date.now, lastOrderAt: () => null, recordOrder: () => {} };
 
 /**
+ * THE SIZE OF A STATE FILE THAT IS A REGULAR FILE AND CAN BE OPENED, or why it is not one (#4072). `stat` alone answers for a directory, a
+ * socket or an unreadable file, and a clear that nothing can rehydrate from is the loss this check exists to prevent. ABSENT is a
+ * `null` refusal: the ordinary state before a seat writes one.
+ * @param {string} file @returns {{ bytes: number } | { refusal: string | null }}
+ */
+function regularFileSize(file) {
+  try {
+    const stat = statSync(file);
+    if (!stat.isFile()) return { refusal: `state file ${file} is not a regular file, so the window is compacted` };
+    closeSync(openSync(file, "r"));
+    return { bytes: stat.size };
+  } catch (/** @type {any} */ err) {
+    return err?.code === "ENOENT" ? { refusal: null }
+      : { refusal: `state file ${file} could not be read (${String(err?.code ?? err).slice(0, 60)}), so the window is compacted` };
+  }
+}
+
+/**
+ * CAN THIS SEAT BE CLEARED INSTEAD OF COMPACTED (#4072): only if the state it would be rehydrated from exists and is within
+ * {@link STATE_FILE_MAX_BYTES}. ABSENT, EMPTY, UNREADABLE AND OVERSIZED ARE FOUR DIFFERENT ANSWERS and none is a pass, because a clear
+ * that nothing rehydrates throws away what a compaction would have summarised. An oversized file is REFUSED WITH ITS SIZE and never
+ * truncated: half of a state file is a state nobody wrote.
+ * @param {string} label @param {OrderClock} clock
+ * @returns {{ usable: true } | { usable: false, refusal: string | null }} `refusal` is null for an absent file, which is the ordinary
+ *   state before any seat writes one and is not worth a line
+ */
+export function stateFileVerdict(label, clock) {
+  const file = clock.stateFile?.(label) ?? null;
+  if (file === null) return { usable: false, refusal: null };
+  const read = regularFileSize(file);
+  if ("refusal" in read) return { usable: false, refusal: read.refusal };
+  const { bytes } = read;
+  if (bytes === 0) return { usable: false, refusal: `state file ${file} is empty, so the window is compacted` };
+  if (bytes > STATE_FILE_MAX_BYTES) {
+    return { usable: false, refusal: `state file ${file} is ${bytes} bytes, over the ${STATE_FILE_MAX_BYTES}-byte cap (not truncated), so the window is compacted` };
+  }
+  return { usable: true };
+}
+
+/**
  * THE RECENT-ORDER DECISION FOR A STANDING SEAT THAT IS NOT PERSISTENT (#3440): `kept` when its previous order was at or under
- * {@link KEEP_WITHIN_MS} ago and its window at or under {@link KEEP_FILL_TOKENS}, `compacted` when recent and over, `cleared` otherwise.
+ * {@link KEEP_WITHIN_MS} ago and its window at or under {@link KEEP_FILL_TOKENS}, `cleared` when recent and over AND a state file within its cap
+ * exists to rehydrate from ({@link stateFileVerdict}, #4072) and `compacted` when it does not, `cleared` otherwise.
  * EVERY UNREADABLE FACT IS A CLEAR: no previous order on record, a transcript that cannot be read, a record dated in the future.
+ * `stateRefusal` is why a recent, over-full window was compacted rather than cleared, when that is worth saying.
  * @param {string} label @param {OrderClock} clock @param {string} [contextRoot]
+ * @returns {{ action: string, stateRefusal: string | null }}
  */
 function recentOrderAction(label, clock, contextRoot) {
   const last = clock.lastOrderAt(label);
   const age = last === null ? null : clock.now() - last;
-  if (age === null || age < 0 || age > KEEP_WITHIN_MS) return CONTEXT_ACTION.CLEARED;
+  if (age === null || age < 0 || age > KEEP_WITHIN_MS) return { action: CONTEXT_ACTION.CLEARED, stateRefusal: null };
   const tokens = instanceCacheRead(label, contextRoot);
-  if (tokens === null) return CONTEXT_ACTION.CLEARED;
-  return tokens > KEEP_FILL_TOKENS ? CONTEXT_ACTION.COMPACTED : CONTEXT_ACTION.KEPT;
+  if (tokens === null) return { action: CONTEXT_ACTION.CLEARED, stateRefusal: null };
+  if (tokens <= KEEP_FILL_TOKENS) return { action: CONTEXT_ACTION.KEPT, stateRefusal: null };
+  const state = stateFileVerdict(label, clock);
+  return state.usable ? { action: CONTEXT_ACTION.CLEARED, stateRefusal: null }
+    : { action: CONTEXT_ACTION.COMPACTED, stateRefusal: state.refusal };
 }
 
 /**
@@ -4946,12 +5004,16 @@ function recentOrderAction(label, clock, contextRoot) {
  * @param {{sleep?: (ms: number) => void, contextRoot?: string, sessions?: string | URL, clock?: OrderClock}} [deps]
  *   `sleep` is `clearContext`'s settle, passed on as it came; `contextRoot` is {@link instanceCacheRead}'s transcript root;
  *   `sessions` the roster {@link isPersistentRole} reads; `clock` the seat's last-order record and the time, all injectable
- * @returns {{action: string, refusal: string | null}} what was done ({@link CONTEXT_ACTION}), and the refusal of the command that did it
+ * @returns {{action: string, refusal: string | null, stateRefusal?: string}} what was done ({@link CONTEXT_ACTION}), the refusal of
+ *   the command that did it, and why a state file kept a clear from being chosen (#4072)
  */
 export function prepareContext(run, label, { sleep, contextRoot, sessions = SESSIONS_FILE, clock = NO_CLOCK } = {}) {
-  const action = keepsContext(label, sessions) ? overThreshold(label, contextRoot) : recentOrderAction(label, clock, contextRoot);
-  if (action === CONTEXT_ACTION.CLEARED) return { action, refusal: clearContext(run, label, sleep) };
-  if (action === CONTEXT_ACTION.COMPACTED) return { action, refusal: compactContext(run, label, sleep) };
+  const { action, stateRefusal } = keepsContext(label, sessions)
+    ? { action: overThreshold(label, contextRoot), stateRefusal: null } : recentOrderAction(label, clock, contextRoot);
+  // `stateRefusal` rides along only when there is one, so every caller and test that reads the old two-key shape reads it unchanged.
+  const why = stateRefusal === null ? {} : { stateRefusal };
+  if (action === CONTEXT_ACTION.CLEARED) return { action, refusal: clearContext(run, label, sleep), ...why };
+  if (action === CONTEXT_ACTION.COMPACTED) return { action, refusal: compactContext(run, label, sleep), ...why };
   return { action, refusal: null };
 }
 
@@ -5112,8 +5174,8 @@ const AGENT_ABSENT = /agent_not_found/;
 function contextBefore(order, { run, sleep, contextRoot, clock, target }) {
   if (order.resume === true) return { action: CONTEXT_ACTION.KEPT, note: null };
   if (target.profile) return { action: CONTEXT_ACTION.CLEARED, note: null };
-  const { action, refusal } = prepareContext(run, target.label, { sleep, contextRoot, clock });
-  if (refusal === null) return { action, note: null };
+  const { action, refusal, stateRefusal } = prepareContext(run, target.label, { sleep, contextRoot, clock });
+  if (refusal === null) return { action, note: stateRefusal ?? null };
   return AGENT_ABSENT.test(refusal) ? { undelivered: refusal } : { action, note: refusal };
 }
 

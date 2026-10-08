@@ -93,7 +93,8 @@ const SOURCE_MJS_PIN = 238;
 // 68 to 69 (a11ign/a11ign#4126): `class-repeat.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 69 to 70 (a11ign/a11ign#4124): `found-by-chairman.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
 // 70 to 71 (a11ign/a11ign#4065): `org-health-suppression.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
-const TEST_MJS_PIN = 71;
+// 71 to 72 (a11ign/a11ign#4072): `wake-clear-instead-of-compact.test.mjs` is the test file the row's Acceptance command names (run under plain `node --test`), so it is `.mjs`.
+const TEST_MJS_PIN = 72;
 
 const ROOTS = ["src", "host", ".github"];
 const isTest = (path: string): boolean => path.endsWith(".test.mjs");
