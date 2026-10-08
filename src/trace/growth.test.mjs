@@ -9,11 +9,12 @@
 //   m4 cr 410  calls nothing         growth 410-400 = 10, written by m3, caused by m2's tool: Grep
 // A reading that blamed the tool called by the request BEFORE the one measured would call m3's 250 `Grep`; the assertions on it are the negative control of the attribution.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, START_OF_WINDOW, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
+import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const stamp = (n) => new Date(T0 + n * 1000).toISOString();
@@ -26,11 +27,11 @@ const compaction = (n) => ({ type: "user", timestamp: stamp(n), isCompactSummary
 const cleared = (n) => ({ type: "user", timestamp: stamp(n), isMeta: true, message: { role: "user", content: "<command-name>/clear</command-name>" } });
 const boundary = (n) => ({ type: "system", subtype: "compact_boundary", timestamp: stamp(n) });
 /** One API message; `blocks` > 1 writes it once per content block, as the harness does. `usage.cache_read_input_tokens` is what the fixture is about. */
-const message = (n, { id, read, tools = [], output = 5, sidechain = false, blocks = 1 }) => Array.from({ length: blocks }, (_, block) => ({
+const message = (n, { id, read, tools = [], commands = [], output = 5, sidechain = false, blocks = 1 }) => Array.from({ length: blocks }, (_, block) => ({
   type: "assistant", timestamp: stamp(n + block / 10), isSidechain: sidechain,
   message: {
     id, model: "claude-sonnet-5-5", role: "assistant",
-    content: [...tools.map((name) => ({ type: "tool_use", id: `u-${id}-${name}`, name, input: {} })), ...(tools.length === 0 ? [{ type: "text", text: "done" }] : [])],
+    content: [...tools.map((name, i) => ({ type: "tool_use", id: `u-${id}-${name}-${i}`, name, input: name === "Bash" && commands[i] !== undefined ? { command: commands[i] } : {} })), ...(tools.length === 0 ? [{ type: "text", text: "done" }] : [])],
     usage: { input_tokens: 2, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: 1000 },
   },
 }));
@@ -211,5 +212,88 @@ test("a marker resets the window of the thread it is written in: a subagent's ow
     const parents = run(marker);
     assert.deepEqual([parents.s1.growth, parents.s1.reason], [10, null], name);
     assert.deepEqual([parents.m1.growth, parents.m1.reason], [null, why], name);
+  }
+});
+
+// THE BY-COMMAND FIXTURE `SHELL`: every request's writer is a Bash call with a command of its own, one per kind the row names. Cache reads rise by 10 each request, so each request's growth is 10 and
+// the command that wrote it is the one called two requests before. Request k is therefore blamed on the command of request k-2 (see the attribution comment at the top of `growth.mjs`).
+const COMMANDS = ["git status", "gh issue view 12 --json title", "gh pr list --state open", "grep -rn foo src | head -20", "cd /tmp/x && git log -3", "S=/tmp/y; sed -n '1,5p' f", "echo \"unclosed", "git status", "git diff", "ls", "ls"];
+const SHELL = lines([
+  order(0),
+  ...COMMANDS.flatMap((command, i) => step(i + 1, { id: `b${i}`, read: i * 10, tools: ["Bash"], commands: [command] })),
+  ...step(COMMANDS.length + 1, { id: "tail0", read: COMMANDS.length * 10 }),
+  ...step(COMMANDS.length + 2, { id: "tail1", read: COMMANDS.length * 10 + 10 }),
+]);
+
+test("the first command of a Bash call names it: `gh` and `git` by their first subcommand, a chain by its first command, setup skipped, and what cannot be read is (unparsed)", () => {
+  const named = Object.fromEntries(COMMANDS.map((command) => [command, commandName(command)]));
+  assert.equal(named["git status"], "git status");
+  assert.equal(named["gh issue view 12 --json title"], "gh issue");
+  assert.equal(named["gh pr list --state open"], "gh pr");
+  assert.equal(named["grep -rn foo src | head -20"], "grep"); // a pipe is its first command, not `head`
+  assert.equal(commandName("ls && rm x"), "ls");
+  assert.equal(named["cd /tmp/x && git log -3"], "git log"); // `cd` is setup: the row's unskipped reading put 48% of a week's Bash growth under `cd`
+  assert.equal(named["S=/tmp/y; sed -n '1,5p' f"], "sed"); // and so is a bare assignment
+  assert.equal(named["echo \"unclosed"], UNPARSED); // an open quote is unreadable, and is not `echo`
+  assert.deepEqual([commandName("git -C /w log"), commandName("gh -R a/b pr view 3"), commandName("/usr/bin/git diff"), commandName("FOO=1 pnpm run lint"), commandName("(pnpm install 2>&1 | tail)")], ["git log", "gh pr", "git diff", "pnpm run", "pnpm install"]);
+  assert.deepEqual([commandName("node -e 'x'"), commandName("node src/a.mjs"), commandName("cd /x"), commandName(""), commandName("$(foo)")], ["node -e", "node a.mjs", "cd", UNPARSED, UNPARSED]);
+  // NEGATIVE CONTROL: the quotes hide an operator, so a `|` inside them does not end the command.
+  assert.equal(commandName("grep -n 'a|b' f"), "grep");
+  assert.equal(commandName("git commit -m \"a; b\""), "git commit");
+});
+
+test("parallel Bash calls of different commands are `(several commands)`, and the same command twice is that command", () => {
+  const request = (commands) => ({ commands });
+  assert.equal(commandOf(request(["git status", "gh pr list"])), SEVERAL_COMMANDS);
+  assert.equal(commandOf(request(["git status", "git status -s"])), "git status");
+  assert.equal(commandOf(request([])), UNPARSED);
+});
+
+test("--by-command splits the Bash row, and its rows SUM to the Bash line of the table over the same requests", () => {
+  const requests = requestsOf(SHELL, "worker-9");
+  const summary = summarise(requests);
+  const bash = summary.byTool.find((row) => row.name === "Bash");
+  const sum = (rows, field) => rows.reduce((total, row) => total + row[field], 0);
+  assert.equal(sum(summary.byCommand, "tokens"), bash.tokens);
+  assert.equal(sum(summary.byCommand, "requests"), bash.requests);
+  assert.equal(summary.bashTokens, bash.tokens);
+  // by hand: b0 is the first request and b1's writer was the system prompt, so b2..b10 and tail0, tail1 (11 requests of 10 tokens) are blamed on the commands of b0..b10, in order, and `ls` was called twice.
+  const named = Object.fromEntries(summary.byCommand.map((row) => [row.name, row.requests]));
+  assert.deepEqual(named, { "git status": 2, "gh issue": 1, "gh pr": 1, grep: 1, "git log": 1, sed: 1, [UNPARSED]: 1, "git diff": 1, ls: 2 });
+  assert.equal(sum(summary.byCommand, "share").toFixed(9), "1.000000000"); // a share of the Bash growth, so the rows are all of it
+  // NEGATIVE CONTROL: a by-command list that lost one row does not sum to the Bash line, and the printed sum check says so; the assertions above are a check and not an identity.
+  const lossy = { ...summary, byCommand: summary.byCommand.slice(1) };
+  assert.notEqual(sum(lossy.byCommand, "tokens"), bash.tokens);
+  assert.match(renderGrowth(lossy, { from: T0, to: T0 + 86_400_000, root: "/r", sessions: "x", transcripts: 1, byCommand: true }), /NOT EQUAL/);
+  assert.match(renderGrowth(summary, { from: T0, to: T0 + 86_400_000, root: "/r", sessions: "x", transcripts: 1, byCommand: true }), /: EQUAL\./);
+});
+
+test("without --by-command the printed table is the one it always was; with it, the same text plus the Bash section", () => {
+  const summary = summarise(requestsOf(WORKER, "worker-9"));
+  const reading = { from: T0, to: T0 + 86_400_000, root: "/r", sessions: "^worker-[0-9]+$", transcripts: 1 };
+  const plain = renderGrowth(summary, reading);
+  assert.doesNotMatch(plain, /Bash by command/);
+  const split = renderGrowth(summary, { ...reading, byCommand: true });
+  assert.match(split, /## Bash by command/);
+  assert.equal(split.replace(/## Bash by command[\s\S]*?(?=## By session)/, ""), plain); // nothing else moves
+});
+
+test("the command refuses a flag it does not know and names --by-command as one it does", () => {
+  const root = mkdtempSync(join(tmpdir(), "growth-cli-"));
+  try {
+    mkdirSync(join(root, "p"));
+    writeFileSync(join(root, "p", "s.jsonl"), SHELL);
+    const run = (...flags) => spawnSync(process.execPath, [new URL("./growth.mjs", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
+    const split = run("--by-command");
+    assert.equal(split.status, 0, split.stderr);
+    assert.match(split.stdout, /\| git status \| 2 \|/);
+    assert.match(split.stdout, /: EQUAL\./);
+    const typo = run("--by-comand");
+    assert.notEqual(typo.status, 0);
+    assert.match(typo.stderr, /--by-comand/);
+    assert.match(typo.stderr, /--by-command/); // and it is the suggestion, which is how a flag the guard knows reads
+    assert.doesNotMatch(run().stdout, /Bash by command/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
