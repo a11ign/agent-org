@@ -1,0 +1,23 @@
+[Unit]
+# THE CLOCK BEHIND THE DRAINED KERNEL REBOOT -- a11ign/a11ign#4053. See @@prefix@@kernel-reboot.service for what it runs.
+#
+# NO `Requires=` ON THE SERVICE, AND IT IS LOAD-BEARING. `host:install` runs `enable --now` over every shipped `.timer`, and `Requires=` in a timer's [Unit] makes
+# that start job start the service too (measured, @@prefix@@worktree-prune.timer; `host-units.test.ts` pins the partition). For the prune that is an install-time
+# prune; here it would be an install-time REBOOT onto a newer kernel at whatever hour somebody ran `host:install`. Of every timer this tool ships this is the
+# one that must not run on activation, and `host-kernel.test.mjs` pins the absence.
+Description=a11ign: daily 05:30 London drained reboot onto a newer installed kernel (#4053)
+
+[Timer]
+# 05:30 LONDON, `ceo`'s hour (a11ign/a11ign#4053, 2026-10-08), with the timezone in the expression for the reason @@prefix@@board-report.timer gives. Read on the host
+# that day: the Sunday e2scrub/xfs_scrub timers run at 04:10, `apt-daily-upgrade` at about 07:05 and the board edition at 07:10, so 05:30 leaves about
+# 1 h 35 min for the drain and the boot before either, and a kernel the 07:05 upgrade installs is loaded the next morning. A reading at a moment, not a promise
+# about other units: one line to move.
+OnCalendar=*-*-* 05:30:00 Europe/London
+
+# NO `Persistent=true`, unlike the other calendar timers, and that is a decision. Their point is that a missed firing is a missed PUBLICATION. A missed reboot
+# is not lost, it is tomorrow's, and the catch-up would fire at BOOT (a host that was down at 05:30 has just come up), when `herdr` is restoring the seats and the
+# boot is the one moment a second reboot is least wanted. The procedure's 24 h loop guard would refuse a repeat, but a unit that needs its guard to stay harmless
+# at boot is better off not starting then.
+
+[Install]
+WantedBy=timers.target
