@@ -536,15 +536,21 @@ function writePagedFilesCache(/** @type {string} */ path, /** @type {Record<stri
  * it was attached to was inherited, and this constant exists so the next person inherits a count that is
  * checked instead.
  *
- * The conditional reads are deliberately NOT in this number: `readEpics` is paid only by a tick that
- * found an empty Ready shelf, and `requiredCheckNames` only by one that saw a settled-red check.
+ * The conditional reads are deliberately NOT in this number: `requiredCheckNames` is paid only by a tick
+ * that saw a settled-red check.
  *
  * THERE IS NO LONGER A SILENCE-CONDITIONAL READ, and its removal is #1938. `readOpenRowState` used to
  * ask for `number,body,blockedBy` over the same 500 open rows the UNCONDITIONAL `readOpenRows` had
  * already fetched in the same process, one tick earlier -- a strict subset of a list the gate held in
  * hand. `openRowState` now derives the same answer from those rows without asking again. The key that
- * named it is gone rather than emptied, so nothing reads a stale name; `readEpics` takes its place here
- * because it was the third conditional read all along and this constant had never said so.
+ * named it is gone rather than emptied, so nothing reads a stale name.
+ *
+ * THERE IS NO LONGER AN EMPTY-SHELF-CONDITIONAL READ EITHER, and its removal is #4042. `readEpics` (`issue list
+ * --label epic`) was paid only by a tick that found no Ready row, so a finished epic reached nobody while a
+ * single row was Ready (#2899 sat at 13 of 13 for three days). `readOpenRows` now carries `subIssuesSummary`
+ * and `epicRowsOf` filters the epics out of it: the unconditional count is UNCHANGED at the number the test
+ * pins, and the conditional read is gone, so a tick makes one `gh` call fewer on an empty shelf and none more
+ * on a busy one.
  */
 export const GH_READS = Object.freeze({
   // #3674: ONE `pr list` PER CODE REPOSITORY (readPrs, at `OPEN_PRS_FIRST_PAGE`, 1 point each), the primary's here and the others' in `perOtherCodeRepositoryOpenList`.
@@ -569,7 +575,6 @@ export const GH_READS = Object.freeze({
     // #4001: ONE REST CALL on the core pool -- the 30 newest `release.yml` runs on `main` (readReleaseRuns -- org-health's release-run-failed). While the newest verdict is a failure it makes TWO
     // MORE (that run's jobs, and `.changeset/` on `main`), which are the failure's detail and are not counted here.
     "api repos/{repo}/actions/workflows/release.yml/runs (readReleaseRuns -- org-health's release-run-failed)"],
-  conditionalOnEmptyShelf: "issue list --label epic (readEpics)",
   // #3535: ONE GRAPHQL CALL, ONLY WHEN HERDR LISTS AT LEAST ONE `worker-<n>`, for THOSE rows' numbers (one aliased `issue(number: n)` each, state, labels and comments), asked with the
   // follow-ups' wave (`readOpenRowFollowUps`) so its wall time overlaps theirs. A row CLOSED while it still carries the claim is in none of the open lists above, and the instance
   // holding it is only ever visible in herdr; an org running no per-row instance pays nothing. NOT `issue list --state closed --label in-progress`: 264 rows today, none a live claim.
@@ -1516,7 +1521,7 @@ export function baseTipWhenRed(prs, run = defaultRun) {
 }
 
 /**
- * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenNeeded`/`epicsWhenShelfEmpty` shape: the
+ * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenNeeded` shape: the
  * condition is derived from rows already in hand, so an org holding nothing makes no call.
  *
  * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
@@ -1542,31 +1547,6 @@ function claimedCommentsForClock(openRows, claimedComments) {
 }
 
 /**
- * The open epics, with the one field that says whether anyone has filed them.
- *
- * PAID ONLY BY AN EMPTY SHELF. `main` asks this only when there are no Ready rows -- the single state in
- * which an unfiled epic is the org's most urgent fact. A busy org never pays it, the same bargain
- * `requiredCheckNames` already makes.
- *
- * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a
- * dependency edge; sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using
- * the wrong one would have read #68 -- which blocks nothing and parents nothing -- as filed.
- *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when refused, never `[]`
- */
-export function readEpics(run = defaultRun) {
-  try {
-    // `body` AND `blockedBy` RIDE THE SAME CALL so `waitingOn` can be asked -- see `unfiledEpics`.
-    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--label", "epic",
-      "--limit", "200", "--json", "number,title,labels,subIssuesSummary,body,blockedBy"]));
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Every open row that carries an `answer:` label, and nothing else.
  *
  * SERVER-SIDE IS NOT AVAILABLE HERE. `gh issue list --label` matches one exact label, and this is a
@@ -1582,11 +1562,12 @@ export function readEpics(run = defaultRun) {
  */
 export function readOpenRows(run = defaultRun) {
   try {
-    // ONE READ, TWO CAUSES. `answer-owed` needs the labels and `blocked-without-a-referent` needs
+    // ONE READ, SEVERAL CAUSES. `answer-owed` needs the labels and `blocked-without-a-referent` needs
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
-    // count where `GH_READS` says it is.
+    // count where `GH_READS` says it is. #4042: `subIssuesSummary` RIDES THIS READ so the epic causes
+    // (`epicRowsOf`) are answered from rows already in hand on every tick, not by a second call.
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt"]));
+      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary"]));
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -3886,22 +3867,25 @@ export function finishedEpics(epics, today = todayIso()) {
  * built from the COUNT is re-minted every time an unrelated epic closes, so a judgment already made gets
  * re-litigated on someone else's progress.
  *
- * SHELF-EMPTY, LIKE `epicOrders`, AND THAT IS A REAL BOUND RATHER THAN A CONVENIENCE. Epics are read at
- * all only when the shelf is empty (`epicsWhenShelfEmpty`), so firing this unconditionally would add an
- * unconditional `gh` read to every tick and `GH_READS` would have to grow. It costs nothing here because
- * the moment the padding actually does harm -- somebody asking why nothing is running -- is exactly the
- * moment the shelf is empty. A padded backlog misleads all the time; it only MISLEADS ABOUT ANYTHING
- * THAT MATTERS when the queue has run dry.
+ * WHATEVER IS READY (#4042). It was shelf-empty until 2026-10-08, on #1848's argument that a padded backlog only
+ * MISLEADS ABOUT ANYTHING THAT MATTERS when the queue has run dry. That was wrong in the case that cost us: the
+ * chairman reads the board when the queue is NOT dry, and a finished epic is a false row on it on every tick it sits
+ * there -- #2899 at 13 of 13 for three days, and #69 (23 of 23) until he pushed. The cost bound the argument leaned on
+ * is gone with the read (`epicRowsOf` filters the all-open list the tick already holds), so nothing is left to trade.
+ * `epicOrders` keeps ITS shelf bound: an unfiled epic is a supply question and matters when nothing is claimable.
+ *
+ * THE ORDER NAMES WHAT IS LEFT: the epic's own `## Done-when` lines (the body is on the read) beside the children count,
+ * so the answer is to each done-when and not only "are the children closed". Still an ASK. Keyed per epic, so a judgment
+ * already made is not re-litigated on someone else's progress.
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * measured 2026-09-21, nine of the org's thirteen open epics were finished and the backlog read three times deeper than it was.
  *
- * @param {any[]} epics @param {any[]} readyRows
+ * @param {any[]} epics
  * @returns {{session: string, cause: string, subject: string, discriminator: string,
  *            prompt: string, causeKey: string}[]}
  */
-export function finishedEpicOrders(epics, readyRows) {
-  if (readyRows.length > 0) return [];
+export function finishedEpicOrders(epics) {
   return finishedEpics(epics).slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e) => ({
     session: "product-manager",
     cause: "epic-finished",
@@ -3909,6 +3893,7 @@ export function finishedEpicOrders(epics, readyRows) {
     discriminator: subjectRef(e.repoKey, e.number),
     prompt: `${subjectMention(e)}${e.title ? ` (${e.title})` : ""} IS AN OPEN EPIC WHOSE EVERY CHILD IS CLOSED `
       + `(${e?.subIssuesSummary?.completed ?? 0} of ${e?.subIssuesSummary?.total ?? 0}).\n`
+      + doneWhenNote(e.body)
       + "TWO ANSWERS, AND THE ORDER DOES NOT PRESUME WHICH. Either the line of work is FINISHED -- close "
       + "the epic -- or the next tranche of children has simply never been filed, which is the more "
       + "valuable answer because it is unfiled WORK, invisible to every other cause since `epic` means "
@@ -3923,17 +3908,60 @@ export function finishedEpicOrders(epics, readyRows) {
   }));
 }
 
+/** The label `epic` carries: a container, NOT PICKABLE (it is in `NOT_PICKABLE`). */
+const EPIC_LABEL = "epic";
+
 /**
- * The epics, but only when there is nothing on the shelf -- an unfiled epic is the org's most urgent
- * fact only in that state, and a busy tick must not pay to ask.
+ * The open epics, out of the all-open list the tick already holds -- no call of its own (#4042; it was `readEpics`, paid
+ * only on an empty shelf). `epic` means NOT PICKABLE, so an epic is never in the Ready list and this is the only place
+ * the gate sees one.
  *
- * (Extracted from `main`, which reached `complexity` 16 with the ternary inline -- the same seam the
- * dead man's switch and the required-check read each took, and for the same reason.)
+ * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a dependency edge;
+ * sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using the wrong one would have read #68
+ * -- which blocks nothing and parents nothing -- as filed.
  *
- * @param {any[]} readyRows
+ * @param {any[]} openRows
  */
-function epicsWhenShelfEmpty(readyRows) {
-  return readyRows.length === 0 ? readEpics() ?? [] : [];
+export function epicRowsOf(openRows) {
+  return openRows.filter((r) => labelsOf(r).includes(EPIC_LABEL));
+}
+
+/** The longest a quoted `## Done-when` may run: the order quotes the epic's own words, and an epic's section can be a page. */
+const DONE_WHEN_MAX_LINES = 12;
+const DONE_WHEN_MAX_LINE_CHARS = 400;
+
+/**
+ * The lines of an epic body's `## Done-when` section, up to the next heading. Fenced-code delimiters and blank lines are dropped;
+ * the rest is quoted as written, capped so one long epic cannot flood the order. `[]` when the body has no such section.
+ *
+ * @param {string | null | undefined} body
+ * @returns {string[]}
+ */
+export function doneWhenLines(body) {
+  const lines = String(body ?? "").split(/\r\n|\r|\n/);
+  const start = lines.findIndex((l) => /^\s*#{1,6}\s+done[- ]when\b/i.test(l));
+  if (start === -1) return [];
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^\s*#{1,6}\s/.test(l));
+  return (end === -1 ? rest : rest.slice(0, end))
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !l.startsWith("```"))
+    .slice(0, DONE_WHEN_MAX_LINES)
+    .map((l) => (l.length > DONE_WHEN_MAX_LINE_CHARS ? `${l.slice(0, DONE_WHEN_MAX_LINE_CHARS)}...` : l));
+}
+
+/**
+ * The part of a finished-epic order that says what is LEFT: the epic's done-when, to be answered line by line. An epic with
+ * no such section says so, because "nothing to check against" is itself a finding for the reader.
+ * @param {string | null | undefined} body
+ */
+function doneWhenNote(body) {
+  const lines = doneWhenLines(body);
+  if (lines.length === 0) {
+    return "THIS EPIC HAS NO `## Done-when` SECTION, so there is nothing recorded to check the closed children against.\n";
+  }
+  return "ITS OWN DONE-WHEN -- answer EACH line (met, or what is left), not only \"are the children closed\":\n"
+    + `${lines.map((l) => `  > ${l}`).join("\n")}\n`;
 }
 
 /**
@@ -6197,8 +6225,8 @@ export function performActions(orders, run = defaultRun, log = (line) => process
  *        `wake.mjs` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
  *        "could not be read", which counts EVERY check as before this existed.
- *        `epics` are the open `epic` rows with their `subIssuesSummary` (`readEpics`); `[]` when
- *        refused or when the shelf was not empty enough to ask.
+ *        `epics` are the open `epic` rows with their `subIssuesSummary` (`epicRowsOf`, out of the all-open list), `[]` when
+ *        that list was refused. `epicOrders` still fires only on an empty shelf; `finishedEpicOrders` fires whatever is Ready (#4042).
  *        `promotableRows` are the backlog rows carrying no unpickable label; `chairmanBlocked` are
  *        the rows waiting on the chairman, oldest first. `[]` for either when refused or empty.
  *        `prFiles` is `comparablePrFiles(prs)` -- the open PRs B4 may be asked about. It DEFAULTS TO
@@ -6312,7 +6340,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   orders.push(...epicOrders(epics, readyRows));
   // AFTER the unfiled epics. An epic with NO children is work nobody has filed at all; one whose children
   // are all closed may only need closing. The more likely supply of real work goes first.
-  orders.push(...finishedEpicOrders(epics, readyRows));
+  orders.push(...finishedEpicOrders(epics)); // whatever is Ready (#4042): the board is read when the queue is NOT dry
   orders.push(...blockedReferentOrders(openRows, readyRows), ...rowCallCountOrders(callCountSignals)); // #2691 beside it: also a JUDGMENT over a row already claimed
   // THE BATCH THAT USED TO BE A 01:00 TIMER. Placed here rather than first: a named row to fix
   // outranks a standing sweep, and `orchestrator` gets one order per tick either way.
@@ -7042,7 +7070,7 @@ export function scopeTick(scope, drain, read = readLanes(scope), readings = { co
   const rows = readyRows ?? [];
   const allOpen = openRows ?? [];
   const code = inRepo(read.codeRepo, () => readings.code(openPrs, scope));
-  const tracker = scope.tracker === null ? NO_TRACKER_READINGS : inRepo(read.trackerRepo, () => readings.tracker({ rows, allOpen }));
+  const tracker = scope.tracker === null ? NO_TRACKER_READINGS : inRepo(read.trackerRepo, () => readings.tracker({ allOpen }));
   const prFiles = comparablePrFiles([...openPrs, ...(read.siblingPrs ?? [])], { trackerRepo: scope.tracker?.repo });
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
@@ -7096,10 +7124,10 @@ const NO_TRACKER_READINGS = { claimedComments: [], epics: [], closedRows: [], cl
 
 /**
  * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
- * @param {{ rows: any[], allOpen: any[] }} lists
+ * @param {{ allOpen: any[] }} lists
  */
-function trackerReadings({ rows, allOpen }) {
-  return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicsWhenShelfEmpty(rows),
+function trackerReadings({ allOpen }) {
+  return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicRowsOf(allOpen),
     closedRows: closedAnswerRows(readClosedAnswerRows()), closings: closingsWhenRowsCleared(allOpen) };
 }
 
@@ -7662,7 +7690,7 @@ function main() {
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
   const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
-    epics: epicsWhenShelfEmpty(rows),
+    epics: epicRowsOf(allOpen),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),
     openRows: allOpen,
     // #2110: CONDITIONAL, and the condition is answered for free from the list already in hand --
