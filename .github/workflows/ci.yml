@@ -37,9 +37,9 @@ name: ci
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
 env:
-  # a11ign/a11ign at the commit the tool's suite was last run against (4da77f552, 2026-10-08, a11ign/a11ign main after #4089 rewrote `examples/workflow.yml`; moved from 9915703d6 (2026-10-06) because `public-claim.test.ts` reads that file and no entry can match both versions of it). A sha and never a branch:
+  # a11ign/a11ign at the commit the tool's suite was last run against (9915703d6, 2026-10-06, the last one before the run of agent-org `7592fcc` at 20:23Z). A sha and never a branch:
   # a branch moves under a pull request that did not touch it.
-  PROJECT_REF: 4da77f552065129addaa51e8d54d0deb21014b97
+  PROJECT_REF: 9915703d61d1e8e56968afe8574bf0b24927c076
 
 on:
   pull_request:
