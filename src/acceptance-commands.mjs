@@ -3745,3 +3745,4 @@ function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
+// throwaway: exercises the changeset-required check (a11ign/a11ign#4129); never merged
