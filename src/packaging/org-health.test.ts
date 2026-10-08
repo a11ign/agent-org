@@ -41,7 +41,7 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 process.chdir(PROJECT);
 
 const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
-  primaryReading, primaryStandingSince, readLastMergedAt, orgHealthReadings,
+  primaryReading, primaryStandingSince, readLastMergedAt, readLatestMerge, orgHealthReadings,
   orgHealthOrders, orgHealthTick } = await import("../org-health.mjs");
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts } =
   await import("../work-gate.mjs");
@@ -223,6 +223,67 @@ test("readLastMergedAt: the latest merged_at, ONE call; a refusal, `null` and no
   assert.equal(readLastMergedAt(answers("null\n"), "a/b"), null, "no merged PR among the newest-updated");
   assert.equal(readLastMergedAt(answers("not a date"), "a/b"), null);
   assert.equal(readLastMergedAt(() => { throw new Error("HTTP 403"); }, "a/b"), null);
+});
+
+// --- (#4047) the org's latest merge, across the project and agent-org ------------------------------------------------
+
+const PROJECT_REPO = "a11ign/a11ign";
+const TOOL_REPO = "a11ign/agent-org";
+/** A fake `gh`: each repository answers with its own newest `merged_at` (raw, as `--jq` prints it), `"refused"` throws, and every call is kept. */
+const mergesOf = (byRepo: Record<string, string>, calls: string[] = []) => (args: string[]) => {
+  const repo = /repos\/([^/]+\/[^/]+)\/pulls/.exec(args.join(" "))?.[1] ?? "";
+  calls.push(repo);
+  if (byRepo[repo] === "refused") throw new Error("HTTP 403");
+  return `${byRepo[repo]}\n`;
+};
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+const CLAIMABLE = { greenPrs: 0, claimableRows: 1 };
+/** The reading the tick makes of a last merge `readLatestMerge` found: the facts the gate builds, handed to the same decider. */
+const readingOf = (last: { at: number, repo: string } | null) =>
+  noMergeReading({ now: NOW, lastMergedAt: last?.at ?? null, lastMergedIn: last?.repo ?? null, work: CLAIMABLE });
+
+test("#4047: a project merge at T-7h and an agent-org merge at T-10min is a last merge of T-10min, so a claimable row does not trip", () => {
+  const calls: string[] = [];
+  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(10 * MINUTE_MS) }, calls), [PROJECT_REPO, TOOL_REPO]);
+  assert.deepEqual(last, { at: NOW - 10 * MINUTE_MS, repo: TOOL_REPO });
+  assert.deepEqual(calls, [PROJECT_REPO, TOOL_REPO], "ONE call per repository");
+  assert.equal(readingOf(last).status, "clear");
+});
+
+test("#4047: the reverse order picks the project's merge, and the detail of a trip names the repository of the last merge", () => {
+  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(20 * MINUTE_MS), [TOOL_REPO]: ago(7 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  assert.deepEqual(last, { at: NOW - 20 * MINUTE_MS, repo: PROJECT_REPO });
+  assert.equal(readingOf(last).status, "clear");
+  const old = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(5 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  assert.match(readingOf(old).detail, new RegExp(`\\(.* in ${TOOL_REPO}\\)`), "the later of the two is named");
+  assert.doesNotMatch(noMergeReading({ now: NOW, lastMergedAt: NOW - 4 * HOUR_MS, work: CLAIMABLE }).detail, / in /, "a caller that names none says none");
+});
+
+test("#4047 POSITIVE CONTROL: both repositories' merges older than 3 h with a claimable row still trips", () => {
+  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  const reading = readingOf(last);
+  assert.equal(reading.status, "tripped");
+  assert.equal(reading.firstTrippedAt, NOW - 4 * HOUR_MS + 3 * HOUR_MS, "the gap runs from the NEWER merge");
+});
+
+test("#4047: a refused read of EITHER repository is unknown, never the other's time; a repository with no merged PR is skipped, and none anywhere is unknown", () => {
+  const fresh = ago(10 * MINUTE_MS);
+  for (const refused of [PROJECT_REPO, TOOL_REPO]) {
+    const answers = { [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(7 * HOUR_MS), [refused]: "refused" };
+    assert.equal(readLatestMerge(mergesOf(answers), [PROJECT_REPO, TOOL_REPO]), null, `${refused} refused`);
+    assert.equal(readingOf(null).status, "unknown");
+  }
+  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "not a date", [TOOL_REPO]: fresh }), [PROJECT_REPO, TOOL_REPO]), null, "unparseable is a refusal too");
+  assert.deepEqual(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: fresh }), [PROJECT_REPO, TOOL_REPO]), { at: NOW - 10 * MINUTE_MS, repo: TOOL_REPO },
+    "an empty repository says nothing about the others");
+  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: "null" }), [PROJECT_REPO, TOOL_REPO]), null);
+  assert.equal(readLatestMerge(mergesOf({}), []), null, "no repository to ask is no answer");
+});
+
+test("#4047: the tick's default reads every declared code repository through readLatestMerge, and hands its repository on", () => {
+  const source = readFileSync(fileURLToPath(new URL("../work-gate/org-health.mjs", import.meta.url)), "utf8");
+  assert.match(source, /lastMergedAt = \(\) => readLatestMerge\(defaultRun, mergeRepositories\(\)\)/);
+  assert.match(source, /\.\.\.lastMerge\(lastMergedAt\(\)\)/);
 });
 
 // --- orders and the tick --------------------------------------------------------------------------------------------

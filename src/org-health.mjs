@@ -233,10 +233,12 @@ const clear = (signal) => ({ signal, status: "clear", detail: "" });
  * org with an empty queue is finished, not stalled, so the gap alone is never a trip. THE GAP IS TESTED FIRST: a merge inside N
  * hours is clear whatever the work reading says, so a refused work read cannot turn a healthy tick into an unknown.
  *
- * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null }} input
+ * `lastMergedIn` (#4047) is the repository that merge was in, named in the detail when the caller knows it.
+ *
+ * @param {{ now: number, lastMergedAt: number | null, lastMergedIn?: string | null, work: { greenPrs: number, claimableRows: number } | null }} input
  * @returns {Reading}
  */
-export function noMergeReading({ now, lastMergedAt, work }) {
+export function noMergeReading({ now, lastMergedAt, lastMergedIn = null, work }) {
   if (lastMergedAt === null) return unknown(SIGNALS.NO_MERGE, "the last merge could not be read, so the gap is not known");
   const tripAt = lastMergedAt + NO_MERGE_HOURS * MS_PER_HOUR;
   if (now < tripAt) return clear(SIGNALS.NO_MERGE);
@@ -244,7 +246,7 @@ export function noMergeReading({ now, lastMergedAt, work }) {
   if (work.greenPrs + work.claimableRows === 0) return clear(SIGNALS.NO_MERGE);
   return {
     signal: SIGNALS.NO_MERGE, status: "tripped", firstTrippedAt: tripAt, discriminator: `${SIGNALS.NO_MERGE}@${hourOf(tripAt)}`,
-    detail: `${ageText(lastMergedAt, now)} since the last merge (${isoOf(lastMergedAt)}); ${work.greenPrs} green unheld PR(s) and `
+    detail: `${ageText(lastMergedAt, now)} since the last merge (${isoOf(lastMergedAt)}${lastMergedIn === null ? "" : ` in ${lastMergedIn}`}); ${work.greenPrs} green unheld PR(s) and `
       + `${work.claimableRows} claimable Ready row(s) exist`,
   };
 }
@@ -1021,6 +1023,25 @@ export function primaryStandingSince(drift, { root, run = (args) => execFileSync
 }
 
 /**
+ * THE LAST MERGE OF ONE REPOSITORY: `{ at }` (`at` is `null` for a repository with no merged PR among the newest-updated), or `null` when the
+ * read was refused or unparseable. The two are told apart because only the second says nothing about the repository.
+ * @param {(args: string[]) => string} run @param {string} repo
+ * @returns {{ at: number | null } | null}
+ */
+function askLastMerge(run, repo) {
+  try {
+    const out = run(["api", `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MERGED_WINDOW}`,
+      "--jq", "[.[] | select(.merged_at != null) | .merged_at] | max"]);
+    // `gh --jq` prints a string RAW (no quotes) and the word `null` for an empty list, both of which `Date.parse` reads as NaN or a time.
+    if (out.trim() === "null") return { at: null };
+    const at = Date.parse(out.trim());
+    return Number.isFinite(at) ? { at } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * THE LAST MERGE, as epoch ms, or `null`. ONE REST CALL on the core pool: the newest-UPDATED closed PRs, of which the latest
  * `merged_at` is the answer (merging updates the PR, so every recent merge is among them). `null` -- refused, unparseable, or no
  * merged PR in the window -- is a stated unknown, never "long ago": a refusal says nothing about when the last merge was.
@@ -1028,15 +1049,26 @@ export function primaryStandingSince(drift, { root, run = (args) => execFileSync
  * @returns {number | null}
  */
 export function readLastMergedAt(run, repo) {
-  try {
-    const out = run(["api", `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MERGED_WINDOW}`,
-      "--jq", "[.[] | select(.merged_at != null) | .merged_at] | max"]);
-    // `gh --jq` prints a string RAW (no quotes) and the word `null` for an empty list, both of which `Date.parse` reads as NaN or a time.
-    const at = Date.parse(out.trim());
-    return Number.isFinite(at) ? at : null;
-  } catch {
-    return null;
+  return askLastMerge(run, repo)?.at ?? null;
+}
+
+/**
+ * THE ORG'S LATEST MERGE across `repos` (#4047): the work that could land includes rows whose code merges in `agent-org`, so a gap measured
+ * in the project's repository alone tripped `no-merge-while-work-exists` falsely twice in a day. ONE call per repository. A repository
+ * whose read is refused makes the answer `null` (unknown): the others' older times would put a merge further back than it may be, and that
+ * is a false trip. A repository with no merged PR in its window says nothing and is skipped; none anywhere is `null` too.
+ * @param {(args: string[]) => string} run @param {readonly string[]} repos
+ * @returns {{ at: number, repo: string } | null}
+ */
+export function readLatestMerge(run, repos) {
+  const asked = repos.map((repo) => ({ repo, merge: askLastMerge(run, repo) }));
+  if (asked.some(({ merge }) => merge === null)) return null;
+  /** @type {{ at: number, repo: string } | null} */
+  let latest = null;
+  for (const { repo, merge } of asked) {
+    if (merge?.at != null && (latest === null || merge.at > latest.at)) latest = { at: merge.at, repo };
   }
+  return latest;
 }
 
 /** How many of the newest `release.yml` runs on `main` the release read looks at: the `status` runs it skips on every commit crowd the list, so the window is wide. */
@@ -1122,7 +1154,7 @@ function tryJson(read) {
  * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
- * @param {{ now: number, lastMergedAt: number | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
+ * @param {{ now: number, lastMergedAt: number | null, lastMergedIn?: string | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
  *           refusals: Record<string, { reason: string, ticks: number }> | null,
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
