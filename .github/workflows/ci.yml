@@ -37,9 +37,9 @@ name: ci
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
 
 env:
-  # a11ign/a11ign at the commit the tool's suite was last run against (4649f4d93, 2026-10-08, the #4177 merge, which carries the `ceo.md` bound for `unwaitedStockRows` that `org-retro.test.ts` requires (#4175); before it 4da77f552, after #4089 rewrote `examples/workflow.yml`; moved from 9915703d6 of 2026-10-06 because `public-claim.test.ts` reads that
+  # a11ign/a11ign at the commit the tool's suite was last run against (1d11a3726, 2026-10-09, which contains #4287's Octo STS `auto-arm.yml` that `auto-arm-token.test.ts` pins (a11ign/a11ign#4288); before it 4649f4d93, 2026-10-08, the #4177 merge, which carries the `ceo.md` bound for `unwaitedStockRows` that `org-retro.test.ts` requires (#4175); before it 4da77f552, after #4089 rewrote `examples/workflow.yml`; moved from 9915703d6 of 2026-10-06 because `public-claim.test.ts` reads that
   # file and no allow-list entry matches both versions). A sha and never a branch: a branch moves under a pull request that did not touch it.
-  PROJECT_REF: 4649f4d93a8d29ccb8f5e66d73028a9a5c788449
+  PROJECT_REF: 1d11a372687d052e5d44ed769e6cb5764d3c665d
 
 on:
   pull_request:
