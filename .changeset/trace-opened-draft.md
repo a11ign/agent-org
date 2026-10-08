@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The trace store's `opened` record for a pull request now carries `draft`: `true` when it was OPENED as a draft, `false` when it was opened ready, `null` when this read cannot say (a11ign/a11ign#3670, follow-up of #3511). The pull object's own `draft` is the state NOW, so a draft marked ready later reads `false` there; the timeline's first `ready_for_review` (a draft) or `convert_to_draft` (ready) event says what it was at the opening, and only a pull request with neither takes the pull object's value, `null` when the object has none (never `false` for "not read"). The waterfall's verify phase reads it: with no `ready_for_review` event it prints "opened ready, no draft stage" only for `draft: false` (queued or not), "still a draft" for `true`, says the ready mark is missing for a draft that was queued or merged without one, and keeps saying the store does not know for `null`. An `opened` written before this change has no `draft` and reads as `null`; the store is not re-ingested.
