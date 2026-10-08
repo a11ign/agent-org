@@ -132,6 +132,7 @@ import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "
 // #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.mjs`, which imports the shared reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.mjs` changes.
 import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.mjs";
+import { quietOrgHealth } from "./work-gate/org-health-suppression.mjs"; // #4065
 import { unparkingWaits } from "./unpark-satisfied.mjs"; // #4050: a parked row whose every condition is true is un-parked where the tick reads the waits
 import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.mjs"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
 // #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
@@ -7749,7 +7750,9 @@ function main() {
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }), ...retrospectiveTick()); // #2938: AFTER the switch, which reads `orders` -- a once-a-day offer must not mask a stall
-  for (const order of orders) process.stdout.write(`${JSON.stringify(order)}\n`);
+  // #4065: LAST, and AFTER the switch above: a stuck org that found something is not a quiet org, even when `ceo` is not woken for it. Only the `org-health` orders to `ceo` are held, and the digest rides the first order `ceo` still gets.
+  const emitted = quietOrgHealth(orders, { dir: REVIEWER_STATE_DIR });
+  for (const order of emitted) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
@@ -7758,10 +7761,10 @@ function main() {
     ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
 
   const unread = unreadLanes({ prs, readyRows, others });
-  if (unread.length > 0) exitPartial(unread, orders.length);
+  if (unread.length > 0) exitPartial(unread, emitted.length);
   // PERFORMED COUNTS AS WORK. A tick that marked a draft ready did something, and exiting QUIET would
   // report it as an idle org to every reader of this exit code.
-  process.exit(orders.length > 0 || performed > 0 ? EXIT.WORK : EXIT.QUIET);
+  process.exit(emitted.length > 0 || performed > 0 ? EXIT.WORK : EXIT.QUIET);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
