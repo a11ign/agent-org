@@ -66,6 +66,60 @@ test("each of the four waits, added to the same fixture, takes it out of the num
   }
 });
 
+const SENTENCE = "Waiting-for: ceo's dispatched run ... ends";
+/** #4090 as the order read it: `parked`, labelled 34 hours before the reading, parked on a sentence outside the grammar and nothing else. */
+const ROW_4090 = Object.freeze({ ...ROW_4122, number: 4090, labels: [{ name: "parked" }], body: `## What it is\n\n${SENTENCE}\n` });
+const TIMELINE_4090 = { 4090: [labeled("parked", ago(34))] };
+const withSentence = (extra) => ({ ...ROW_4090, body: `${ROW_4090.body}\n${extra}\n` });
+
+test("#4237 positive control: a row parked on a SENTENCE is counted and named with `unreadable wait`, and the population is not empty", () => {
+  const rows = [ROW_4090];
+  assert.ok(rows.length > 0, "the fixture population is non-empty, so an empty answer cannot pass for 'no unwaited rows'");
+  const stock = reading(rows, TIMELINE_4090);
+  assert.deepEqual(numbersOf(stock), [4090]);
+  assert.equal(stock.rows[0].unreadableWait, true);
+  assert.match(unwaitedLines(stock)[0], /: 1: #4090 \(parked since 2026-10-07T08:00Z, unreadable wait\)$/);
+  assert.doesNotMatch(unwaitedLines(reading([ROW_4122]))[0], /unreadable wait/, "a row with no wait line at all is not blamed on a sentence");
+});
+
+test("#4237: the same fixture with the sentence replaced by each READABLE form, or by `manual`, is not counted", () => {
+  const readable = ["closed #4081", "merged a11ign/agent-org#401", "labelled ready #4081", "unlabelled hold:ceo #4081", "published agent-org@next", "tagged v0.85.8", "manual"];
+  for (const form of readable) {
+    const row = { ...ROW_4090, body: `Waiting-for: ${form}\n` };
+    assert.deepEqual(numbersOf(reading([row], TIMELINE_4090)), [], `Waiting-for: ${form} is a wait`);
+  }
+});
+
+test("#4237: the sentence KEPT beside a real wait is not counted, and beside a wait that ended it is", () => {
+  const live = {
+    "an OPEN blocked-by edge": { ...ROW_4090, blockedBy: { nodes: [{ number: 4081, state: "OPEN" }] } },
+    "an answer:* label": { ...ROW_4090, labels: [...ROW_4090.labels, { name: "answer:ceo" }] },
+    "a FUTURE Not-before:": withSentence("Not-before: 2026-10-20"),
+    "a readable Waiting-for: line": withSentence("Waiting-for: closed #4081"),
+  };
+  for (const [name, row] of Object.entries(live)) assert.deepEqual(numbersOf(reading([row], TIMELINE_4090)), [], `${name} still moves the row`);
+  const ended = {
+    "a CLOSED edge": { ...ROW_4090, blockedBy: { nodes: [{ number: 4081, state: "CLOSED" }] } },
+    "a PAST Not-before:": withSentence("Not-before: 2026-10-01"),
+  };
+  for (const [name, row] of Object.entries(ended)) {
+    const stock = reading([row], TIMELINE_4090);
+    assert.deepEqual(numbersOf(stock), [4090], `${name} has ended, so the sentence is all that is left`);
+    assert.equal(stock.rows[0].unreadableWait, true);
+  }
+});
+
+test("#4237: a Waiting-for: sentence inside a code fence is not a line, so that fixture has none and is not named for one", () => {
+  const stock = reading([{ ...ROW_4090, body: `\`\`\`\n${SENTENCE}\n\`\`\`\n` }], TIMELINE_4090);
+  assert.deepEqual(numbersOf(stock), [4090]);
+  assert.equal(stock.rows[0].unreadableWait, false);
+  assert.doesNotMatch(unwaitedLines(stock)[0], /unreadable wait/);
+});
+
+test("#4237: Waits-on-done-when: stays counted as a wait beside a sentence", () => {
+  assert.deepEqual(numbersOf(reading([withSentence("Waits-on-done-when: 3778.1")], TIMELINE_4090)), []);
+});
+
 test("a CLOSED edge and a PAST Not-before are waits that ended, so they count as none", () => {
   const closedEdge = { ...ROW_4122, blockedBy: { nodes: [{ number: 4081, state: "CLOSED" }] } };
   assert.deepEqual(numbersOf(reading([closedEdge])), [4122]);

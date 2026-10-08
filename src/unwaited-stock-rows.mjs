@@ -7,8 +7,11 @@
 // A ROW IS UNWAITED WHEN ALL OF THESE HOLD, and each is a field a reader can see, never a sentence (`waiting-conditions.md`):
 //   - it is open and carries `backlog` or `parked`, and the label was applied MORE THAN 24 HOURS before the reading. The age is the timeline's `labeled`
 //     event, not `createdAt` and not `updatedAt`: a comment must not reset it, and a row filed `ready` and parked last week is not new.
-//   - no `answer:*` label, no OPEN native `blockedBy` edge (a closed one is a wait that ended), no `Waiting-for:` line, no `Waits-on-done-when:` line, and
-//     no `Not-before:` still in the future (a past one is a wait that ended). `waitingOn` and `parseWaits` ARE those readers; nothing here re-spells them.
+//   - no `answer:*` label, no OPEN native `blockedBy` edge (a closed one is a wait that ended), no READABLE `Waiting-for:` line, no `Waits-on-done-when:`
+//     line, and no `Not-before:` still in the future (a past one is a wait that ended). `waitingOn` and `parseWaits` ARE those readers; nothing here re-spells them.
+//   - A `Waiting-for:` line is readable when `parseWaits` gives it a state other than `unreadable` (`manual` is one: a wait said out loud). A row parked on a
+//     SENTENCE ("ceo's dispatched run ... ends") has a field no one can ever clear, so it is counted, and `unwaitedLines` names it `unreadable wait` so the
+//     reader knows which sentence to turn into a field (#4237; #4090 sat ten hours on one). A real wait beside the sentence still moves the row.
 //
 // A READ THE TOOL COULD NOT MAKE IS `unknown`, NEVER 0 (`org-retro.mjs`'s header, #1286). A refused list, a missing edge field or a refused timeline makes the
 // whole reading `unknown` and NAMES the read; it does not drop the row, because a dropped row is the org's idleness reported as health by an absence.
@@ -36,22 +39,27 @@ const MAX_BUFFER = 64 * 1024 * 1024;
  *   blockedBy?: { nodes?: { number?: number, state?: string }[] } | null }} StockRow an open issue as `gh issue list --json number,title,body,labels,blockedBy` returns it
  * @typedef {{ event?: string, created_at?: string, label?: { name?: string } | null }} TimelineEvent one raw timeline entry; only `labeled` ones are read
  * @typedef {{ listRows: () => StockRow[], timeline: (number: number) => TimelineEvent[] }} TrackerReader THE SEAM: each member THROWS for a refused read
- * @typedef {{ number: number, title: string, state: string, since: number }} UnwaitedRow `since` is when the stock label was applied
+ * @typedef {{ number: number, title: string, state: string, since: number, unreadableWait: boolean }} UnwaitedRow `since` is when the stock label was applied;
+ *   `unreadableWait` is whether a `Waiting-for:` line outside the grammar is what the row is parked on
  * @typedef {{ status: "read", count: number, rows: UnwaitedRow[] } | { status: "unknown", reads: string[] }} UnwaitedStock
  */
 
 const labelNames = (/** @type {StockRow} */ row) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
 
 /**
- * Whether anything declares a wait on the row. `waitingOn` is the reader for an OPEN `blockedBy` edge, a FUTURE `Not-before:` (a past one is none) and an
- * `answer:*` label; the two lines are `parseWaits`'s `Waiting-for:` and `namedDoneWhens`'s `Waits-on-done-when:`, both read outside code fences.
+ * Whether anything declares a wait that can end. `waitingOn` is the reader for an OPEN `blockedBy` edge, a FUTURE `Not-before:` (a past one is none) and an
+ * `answer:*` label; the two lines are `parseWaits`'s `Waiting-for:` and `namedDoneWhens`'s `Waits-on-done-when:`, both read outside code fences. An
+ * `unreadable` `Waiting-for:` is `parseWaits` KEEPING a sentence as a wait that says nothing, so it is not one here (#4237).
  * @param {StockRow} row @param {number} now @returns {boolean}
  */
 function waits(row, now) {
   return waitingOn({ ...row, blockedBy: row.blockedBy ?? undefined }, new Date(now).toISOString().slice(0, 10), now) !== null
-    || parseWaits(row.body).length > 0
+    || parseWaits(row.body).some((wait) => wait.state !== "unreadable")
     || namedDoneWhens(String(row.body ?? "")).length > 0;
 }
+
+/** @param {StockRow} row @returns {boolean} the row carries a `Waiting-for:` line outside the grammar; only asked of a row that `waits` found no wait for */
+const hasUnreadableWait = (row) => parseWaits(row.body).some((wait) => wait.state === "unreadable");
 
 /**
  * WHEN THE ROW'S STOCK LABEL WAS APPLIED: the newest `labeled` event among the stock labels it still carries, so a row that left `backlog` and came back
@@ -104,7 +112,7 @@ function ageCandidates({ candidates, reader, now }) {
   for (const row of candidates) {
     const aged = ageOf(row, reader);
     if (typeof aged === "string") refused.push(aged);
-    else if (now - aged > UNWAITED_AFTER_MS) rows.push({ number: row.number, title: String(row.title ?? ""), state: labelNames(row).find((l) => STOCK_LABELS.includes(l)) ?? "", since: aged });
+    else if (now - aged > UNWAITED_AFTER_MS) rows.push({ number: row.number, title: String(row.title ?? ""), state: labelNames(row).find((l) => STOCK_LABELS.includes(l)) ?? "", since: aged, unreadableWait: hasUnreadableWait(row) });
   }
   if (refused.length > 0) return { status: "unknown", reads: refused };
   rows.sort((a, b) => a.since - b.since);
@@ -131,7 +139,7 @@ export function unwaitedLines(stock) {
   if (stock === null || stock === undefined) return [`- ${label}: unknown (the tracker was not read)`];
   if (stock.status === "unknown") return [`- ${label}: unknown (could not read ${stock.reads.join("; ")})`];
   if (stock.count === 0) return [`- ${label}: 0`];
-  const each = stock.rows.map((r) => `#${r.number} (${r.state} since ${new Date(r.since).toISOString().slice(0, 16)}Z)`);
+  const each = stock.rows.map((r) => `#${r.number} (${r.state} since ${new Date(r.since).toISOString().slice(0, 16)}Z${r.unreadableWait ? ", unreadable wait" : ""})`);
   return [`- ${label}: ${stock.count}: ${each.join("; ")}`];
 }
 
