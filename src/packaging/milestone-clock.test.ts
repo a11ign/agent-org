@@ -116,7 +116,7 @@ test("the oldest row's state is said: parked, date-held, backlog, blocked by #n,
     ["backlog", row(201, { labels: ["backlog", "lane:any"], createdMinutesAgo: 500 }), /backlog/i, /product-manager/],
     ["blocked", row(201, { labels: ["ready", "lane:any"], createdMinutesAgo: 500, blockedBy: [77] }), /blocked by #77/i, /#77/],
     ["ready", row(201, { labels: ["ready", "lane:any"], createdMinutesAgo: 500 }), /ready, unclaimed/i, /engineer|product-manager/],
-    ["lane", row(201, { labels: ["epic", "lane:ceo"], createdMinutesAgo: 500 }), /epic/i, /\bceo\b/],
+    ["lane", row(201, { labels: ["parked", "lane:ceo"], createdMinutesAgo: 500 }), /parked/i, /\bceo\b/],
   ];
   for (const [name, oldest, state, owes] of cases) {
     const { clock } = tick({ rows: [oldest, row(202, { labels: ["backlog"], createdMinutesAgo: 130 })] });
@@ -125,6 +125,18 @@ test("the oldest row's state is said: parked, date-held, backlog, blocked by #n,
     assert.match(clock[0].prompt, state, `${name}: state`);
     assert.match(clock[0].prompt, new RegExp(`owed by[^\\n]*${owes.source}`), `${name}: who owes the next move`);
   }
+});
+
+test("an EPIC is not named while any other row is open: the oldest non-epic row is (#4084 is the live case), and the oldest epic only when every open row is one", () => {
+  const epic = row(300, { labels: ["epic", "lane:ceo"], createdMinutesAgo: 900 });
+  const mixed = tick({ rows: [epic, ...threeRows(121)] });
+  assert.equal(mixed.clock.length, 1, "positive control: the milestone trips with an epic among its rows");
+  assert.match(mixed.clock[0].prompt, /#101\b/, "the oldest NON-epic row is named, though the epic is older");
+  assert.doesNotMatch(mixed.clock[0].prompt, /#300\b/, "the epic is not named");
+  assert.match(mixed.clock[0].prompt, /4 open row/, "but it still counts as an open row");
+  const alone = tick({ rows: [epic, row(301, { labels: ["epic", "lane:ceo"], createdMinutesAgo: 200 })] });
+  assert.match(alone.clock[0].prompt, /#300\b/, "negative control: when every open row is an epic, the oldest epic is named");
+  assert.match(alone.clock[0].prompt, /owed by[^\n]*ceo/);
 });
 
 test("the order is keyed on the milestone and the named row, so a changed named row re-asks and the same one does not", () => {
