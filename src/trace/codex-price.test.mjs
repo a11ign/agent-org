@@ -41,10 +41,11 @@ test("RATE: gpt-5.6-luna costs OpenAI's quoted $0.20 input, $0.02 cached input a
   assert.equal(costOf("gpt-5.6-luna", tokens(0, 0)), 0, "a priced model with no tokens costs 0: that is a price, not an unknown");
 });
 
-test("LONG CONTEXT: a request whose whole prompt is above 272K tokens pays the page's long-context rates for the full request, and 272K exactly does not", () => {
+test("ABOVE 272K: the page states a different rate there and not the cached one, so a request whose whole prompt is above 272K tokens is null, and 272K exactly is priced", () => {
   assert.equal(costOf("gpt-5.6-luna", tokens(272_000, 0)), rounded(272_000 * 0.2 / 1e6));
-  assert.equal(costOf("gpt-5.6-luna", tokens(272_001, 0)), rounded(272_001 * 0.4 / 1e6));
-  assert.equal(costOf("gpt-5.6-luna", tokens(100_000, 1_000_000, 172_001)), (100_000 * 0.4 + 1_000_000 * 1.8 + 172_001 * 0.04) / 1e6, "cached tokens count toward the prompt");
+  assert.equal(costOf("gpt-5.6-luna", tokens(272_001, 0)), null);
+  assert.equal(costOf("gpt-5.6-luna", tokens(100_000, 1_000, 172_001)), null, "cached tokens count toward the prompt");
+  assert.equal(costOf("gpt-5.6-luna", tokens(100_000, 1_000_000, 172_000)), rounded((100_000 * 0.2 + 1_000_000 * 1.2 + 172_000 * 0.02) / 1e6), "output does not");
 });
 
 test("EXACT NAME: only the name the entry carries is priced; a neighbour (gpt-5.6-luna-pro, gpt-5.6-terra, a Claude-looking prefix) stays null, never the neighbour's rate", () => {

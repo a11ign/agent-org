@@ -45,7 +45,7 @@ export const DEFINITIONS = [
   "KEY: row, pr and repo come from the order's cause key, else the session's name (worker-<n> is row n, reviewer-<n> is pull request n). An event with none is kept, with row null.",
   "SEVERAL ROWS (`rows`, `prs`): a cause key that lists rows (`row-call-count-signal/3125,3404`) puts the wake and its turns on EACH of them and leaves `row` null; a turn is then on every row it is listed under, so the cost of such a turn is in each of those rows' totals and the totals of two rows are not to be added.",
   "TOUCHED (`touchedRows`, `touchedPrs`, inferred): the rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr edit|comment|close|reopen|ready|merge|review <n>`, read off the command text. A `gh issue view` is not a write; a command that names another clone or another `--repo`, and a `gh api` write, are not read. It puts a ruling's turn on the row ruled on when the order that woke the seat named another subject, or none (an order typed by `prompt:session` has no ledger line).",
-  "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null: PRICES has no row for the model (no rate for a Codex model is sourced). Its wall-clock runs from the last record sent to the model.",
+  "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null when PRICES has no row for the model (only `gpt-5.6-luna` has one, quoted from OpenAI's model page) or the request's prompt is above that row's `maxPrompt`. Its wall-clock runs from the last record sent to the model.",
   "DEFERRAL (`kind: deferral`, `source: deferral-log`, #3510): one wait of an order for a busy seat, written by the gate's own tick when it ENDED (`wake-deferral-log`, beside `wake-deferred`): `startedAt` is the tick that first found the order deferred, `completedAt` (and `at`) the tick that found it no longer deferred, so each end is at most one tick late, and `how` is `delivered` (the ledger holds that cause key at or after the start) or `gone` (it left with no delivery: the order stopped being true). `session` is the addressee in the key. KEYED BY THE CAUSE KEY'S ROW OR PULL REQUEST (`subjectOf`), else the session's name. A wait still OPEN is not here (the log holds ended ones), and a wait that ended before the first tick to write the log is in no record: it can only be inferred from the review event, the ledger's delivery and the seat's own turns.",
   "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED BY THE LINE'S SESSION ID (#3589): `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) on each call, which is the file name of its transcript, and a turn carries its transcript's id; a call is on that session and, through the session's next turn, on a row (`keyedBy: session`). A line with no id (a unit or script outside any session, or a line written before the wrapper named its session) is `unkeyed: script`; one whose session has no later turn in the store yet is `unkeyed: no-turn`; either way the call's session is `gh-ledger` and it has no row. A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
   "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
@@ -62,9 +62,9 @@ const WRITE_1H_FACTOR = 2;
  * A row is NOT verified when it disagrees with the page: `cost_usd` is the client's estimate and the page is the billing rate (Sonnet 5.5, which `cost_usd` priced at the old $0.20).
  * A Claude row matches by `prefix` (ids carry dated suffixes). A row of any OTHER vendor matches by `model`, the EXACT name, and carries `source` (the URL it was quoted from) and `fetched`
  * (the date), because a rate borrowed from a neighbouring model is an invention with a citation on it (#4076, #4055 move 10): `gpt-5.6-luna-pro` is a different model with a different price.
- * `longContext` is the tier a request pays when its whole prompt is above `above` tokens: the rates there replace these for the full request.
+ * `maxPrompt` is the largest prompt (input + cached + cache writes) the listed rates are quoted for: a request above it costs `null`, because the page states a different rate there and not all of it.
  * @typedef {{ input: number, output: number, cacheRead: number, verified: boolean }} Rates
- * @type {(Rates & { prefix?: string, model?: string, source?: string, fetched?: string, longContext?: { above: number } & Omit<Rates, "verified"> })[]}
+ * @type {(Rates & { prefix?: string, model?: string, source?: string, fetched?: string, maxPrompt?: number })[]}
  */
 export const PRICES = [
   // `claude-fable-5-1` stands BEFORE `claude-fable-5`: the page lists them apart, and `costOf` takes the first prefix that matches.
@@ -78,10 +78,10 @@ export const PRICES = [
   { prefix: "claude-opus-5", input: 5, output: 25, cacheRead: 0.5, verified: false },
   { prefix: "claude-sonnet-5", input: 2, output: 10, cacheRead: 0.2, verified: false },
   { prefix: "claude-haiku-4-5", input: 1, output: 5, cacheRead: 0.1, verified: true },
-  // The Codex reviewers' model (#4076). OpenAI's own pricing page, Standard table, row `gpt-5.6-luna`: $0.20 input, $0.02 cached input, $1.20 output; above 272K prompt tokens $0.40, $0.04, $1.80
-  // for the full request. Not checked against an invoice. No Codex request in the 7 days before 2026-10-08 reached 272K (the largest was 159,638), so the tier is the page's rule, not a measured case.
-  { model: "gpt-5.6-luna", input: 0.2, output: 1.2, cacheRead: 0.02, verified: false, source: "https://developers.openai.com/api/docs/pricing", fetched: "2026-10-08",
-    longContext: { above: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04 } },
+  // The Codex reviewers' model (#4076). OpenAI's model page, "Text tokens": Input $0.2, Cached input $0.02, Output $1.2 per 1M tokens (curl the URL below; the pricing page's Standard table carries the same three).
+  // The page adds "Prompts with >272K input tokens are priced at 2x input and 1.5x output for the full request" and says nothing of the cached rate there, so a request above 272K is `null`, never a guess.
+  // Not checked against an invoice. No Codex request in the 7 days before 2026-10-08 reached 272K (the largest was 159,638).
+  { model: "gpt-5.6-luna", input: 0.2, output: 1.2, cacheRead: 0.02, verified: false, source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna.md", fetched: "2026-10-08", maxPrompt: 272_000 },
 ];
 
 /**
@@ -96,12 +96,6 @@ export const PRICES = [
 
 /** @typedef {{ tool: "Read" | "Grep" | "Glob" | "mixed", tokens: number | null }} ToolRead */
 
-/** The rates one request pays: a row's `longContext` ones when its whole prompt is above the row's threshold. @param {typeof PRICES[number]} price @param {Tokens} tokens */
-function ratesFor(price, tokens) {
-  const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
-  return price.longContext && prompt > price.longContext.above ? price.longContext : price;
-}
-
 /**
  * Cost of a turn, or `null` when the model has no price: an unpriced turn is unknown, and 0 would say it was free.
  * @param {string | undefined} model @param {Tokens} tokens
@@ -110,9 +104,9 @@ function ratesFor(price, tokens) {
 export function costOf(model, tokens) {
   const price = PRICES.find((entry) => (entry.model === undefined ? model?.startsWith(entry.prefix ?? "") : model === entry.model));
   if (!price) return null;
-  const rate = ratesFor(price, tokens);
-  const dollars = (tokens.input * rate.input + tokens.output * rate.output + tokens.cacheRead * rate.cacheRead
-    + tokens.cacheWrite5m * rate.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * rate.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
+  if (price.maxPrompt !== undefined && tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h > price.maxPrompt) return null;
+  const dollars = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead
+    + tokens.cacheWrite5m * price.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * price.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
   return Math.round(dollars * COST_PRECISION) / COST_PRECISION;
 }
 
