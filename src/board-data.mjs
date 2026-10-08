@@ -39,6 +39,7 @@ import { READY_LABEL } from "./claim-labels.mjs";
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.
 import { latestVerdictGate } from "./board-gates.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { foundByChairman } from "./found-by-chairman.mjs";
 export { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "./board-gates.mjs";
 
 // RE-EXPORTED, not restated -- issue #92. Five other modules import `REPO` from here, so it stays exported
@@ -147,7 +148,7 @@ export function misAuthored(since) {
 // matches is proof; a page that fails, a cursor that stops advancing, or a shortfall is a REFUSAL, never
 // the pages that were read. That refusal is the part that cannot rot.
 const ISSUES_QUERY = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){"
-  + "issues(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{number title state closedAt url "
+  + "issues(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{number title state createdAt closedAt url "
   + "labels(first:100){totalCount nodes{name}} milestone{number title description dueOn}}}}}";
 // A backstop against a cursor that never ends, not a cap on the tracker: 500 pages is 50,000 issues.
 const MAX_ISSUE_PAGES = 500;
@@ -705,6 +706,8 @@ export function collect(since) {
     release: milestone(),
     ...mergeState(since),
     strays: misAuthored(since),
+    // `issues()` throws rather than return a partial listing, so a `null` here is a read nobody made and the count says `unknown`.
+    foundByChairman: foundByChairman(all, new Date()),
     ...reported(),
   };
 }
