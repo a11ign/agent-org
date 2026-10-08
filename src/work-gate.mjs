@@ -5986,6 +5986,35 @@ export function openRowState(rows, today = todayIso()) {
 }
 
 /**
+ * The reachable open rows that are IN MOTION: a claimed row (a `session:` label) whose session herdr's listing reads `working` (#4205).
+ *
+ * `openRowState` counts every row that declares no wait and reads no claim, so on 2026-10-08T19:05Z nine claimed rows, two of their workers started minutes before,
+ * paged `ceo` as "could move and are not moving". A claimed row with a working session IS moving. The listing is the one the follow-ups' wave already read for
+ * `closedClaimsWhenWorkerListed` (the claim-stall tick's own liveness read), handed in, so this makes no call.
+ *
+ * ONLY A READ `working` LEAVES A ROW OUT. A session that is idle, `blocked`, absent from the listing, or a listing that could not be read (`null`) leaves the row
+ * counted: an unreadable liveness is not "working", and a stall under a dead claim must still page. A row that waits is not reachable and is not subtracted twice.
+ * @param {any[] | null | undefined} rows the un-coalesced `readOpenRows` result
+ * @param {{ label: string, status: string }[] | null | undefined} agents herdr's listing, `null` when herdr could not be asked
+ * @param {string} [today] an ISO `YYYY-MM-DD`
+ * @returns {any[]}
+ */
+export function workingClaims(rows, agents, today = todayIso()) {
+  if (!Array.isArray(rows) || !Array.isArray(agents)) return [];
+  const working = new Set(agents.filter((a) => a.status === "working").map((a) => a.label));
+  return rows.filter((r) => waitingOn(r, today) === null
+    && labelsOf(r).some((/** @type {string} */ n) => n.startsWith(SESSION_PREFIX) && working.has(n.slice(SESSION_PREFIX.length))));
+}
+
+/**
+ * Says how many claimed rows were left out of the reachable count (#4205), so a reader can tell "nothing moves" from "everything that moves is claimed".
+ * @param {number} leftOut
+ */
+function leftOutParagraph(leftOut) {
+  return leftOut > 0 ? `NOT IN THAT COUNT: ${leftOut} claimed row(s) with a working session were left out, because a claim whose session is working is moving.\n` : "";
+}
+
+/**
  * The open rows that ARE waiting, grouped by what they wait on.
  *
  * GROUPED BY DATE RATHER THAN LISTED PER ROW, because the aggregate is the fact nobody could see. Every
@@ -6145,9 +6174,9 @@ function waitingParagraph(waiting, reachable) {
  * again whenever any blocker anywhere changed shape without the org becoming any more reachable.
  *
  * @param {{ orders: unknown[], openRows: number | null,
- *           waiting?: ReturnType<typeof waitingBreakdown> | null }} state
+ *           waiting?: ReturnType<typeof waitingBreakdown> | null, leftOut?: number }} state `leftOut` (#4205): the claimed rows whose sessions are working, which `openRows` does not count
  */
-export function stalledOrder({ orders, openRows, waiting = null }) {
+export function stalledOrder({ orders, openRows, waiting = null, leftOut = 0 }) {
   // ONLY WHEN NOTHING ELSE FIRED. One order anywhere means some cause can still reach the org.
   if (orders.length > 0) return null;
   // A REFUSED READ IS NOT AN EMPTY TRACKER (#1286), and an empty one is not a stall: an org with no open
@@ -6163,6 +6192,7 @@ export function stalledOrder({ orders, openRows, waiting = null }) {
       + "verdict, no row is claimable, no check is red, nothing is promotable.\n"
       + "That is NOT the org being finished. It means every one of those rows carries something that "
       + `stops it -- \`${BLOCKED_LABEL}\`, \`fleet-gated\`, \`epic\`, a lane, a claim -- and no cause can see past it.\n`
+      + leftOutParagraph(leftOut)
       + waitingParagraph(waiting, openRows)
       + "READ THE BACKLOG AND SAY WHY, then act. Shapes measured here in the last two days: a gate whose "
       + "condition became TRUE and nobody lifted the label; a row waiting on a capability that has since "
@@ -6815,10 +6845,12 @@ const herdrRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeo
  * tick that asked and found a finished org. `main` already refuses to report a refused read as quiet for
  * the pull-request and Ready lanes (`CANNOT ASK` / `PARTIAL`); this is the same rule for this lane.
  *
+ * A CLAIMED ROW WITH A WORKING SESSION IS NOT COUNTED (#4205): `agents` is herdr's listing, the one the tick already read, and `null` or absent leaves every row counted.
+ *
  * @param {{ orders: unknown[], drain: boolean, performed?: number, openRows: any[] | null,
- *           log?: (line: string) => void }} state
+ *           agents?: { label: string, status: string }[] | null, log?: (line: string) => void }} state
  */
-export function deadMansSwitch({ orders, drain, performed = 0, openRows,
+export function deadMansSwitch({ orders, drain, performed = 0, openRows, agents = null,
   log = (line) => process.stderr.write(line) }) {
   // A PERFORMED ACTION IS ACTIVITY. Without this the gate could mark a draft ready, emit no order, and
   // then announce the org as stalled in the same tick -- reporting the one thing it just did as nothing.
@@ -6831,7 +6863,8 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows,
     log("CANNOT ASK whether the org is stalled: the open-rows read was refused this tick. "
       + "This silence is NOT a quiet queue, and the dead man's switch did NOT examine anything.\n");
   }
-  const stalled = stalledOrder({ orders, openRows: state?.reachable ?? null, waiting: state?.waiting });
+  const leftOut = state === null ? 0 : workingClaims(openRows, agents).length;
+  const stalled = stalledOrder({ orders, openRows: state === null ? null : state.reachable - leftOut, waiting: state?.waiting, leftOut });
   return stalled ? [stalled] : [];
 }
 
@@ -7681,6 +7714,7 @@ export function readOpenRowFollowUps(allOpen, run = defaultRun, batch = run === 
     closings: closingsWhenRowsCleared(allOpen, read),
     closedClaims: closedClaimsWhenWorkerListed(agents, read),
     closedClaimLabels: closedClaimLabelsWhenListed(listWorkspaces === undefined ? null : agents, read), // #3883: the SAME listing, never a second read of herdr
+    agents: listWorkspaces === undefined ? null : agents, // #4205: and the dead man's switch reads the same listing; `null` is "not asked", which counts every claim
   }), run, batch);
 }
 
@@ -7717,7 +7751,7 @@ function main() {
   // there; the dead man's switch needs to tell "refused" from "empty", so it is handed the raw result.
   // Both names exist so neither reader has to infer which of the two it was given (#1938).
   const allOpen = promotedWhenUnblocked(openRowsRead ?? []); // #4064: BEFORE any cause reads the rows, so a row promoted here is not offered to `product-manager` as unpromoted
-  const { claimedComments, closedRows, closings, closedClaims, closedClaimLabels } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
+  const { claimedComments, closedRows, closings, closedClaims, closedClaimLabels, agents: herdrListing } = readOpenRowFollowUps(allOpen); // #3566: asked together, each still conditional on the rows in hand
   const strippedClosedClaims = stripClosedClaims(closedClaimLabels); // #3883: the closed rows whose holder herdr does not list lose their claim labels, in the tick that read them
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
@@ -7768,7 +7802,7 @@ function main() {
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
   orders.unshift(...diskOrders);
-  orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead }), ...retrospectiveTick()); // #2938: AFTER the switch, which reads `orders` -- a once-a-day offer must not mask a stall
+  orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead, agents: herdrListing }), ...retrospectiveTick()); // #2938: AFTER the switch, which reads `orders` -- a once-a-day offer must not mask a stall
   // #4065: LAST, and AFTER the switch above: a stuck org that found something is not a quiet org, even when `ceo` is not woken for it. Only the `org-health` orders to `ceo` are held, and the digest rides the first order `ceo` still gets.
   const emitted = quietOrgHealth(orders, { dir: REVIEWER_STATE_DIR });
   for (const order of emitted) process.stdout.write(`${JSON.stringify(order)}\n`);
