@@ -663,6 +663,20 @@ export function isPilotOrder(order: { session: string; cause?: string; }) {
 }
 
 /**
+ * Does this order ask for a fresh engineer ABOVE the pilot's pace limits (#4524, the chairman, 2026-10-09)?
+ *
+ * `work-gate` puts `startFresh: true` on the order of a row the CHAIRMAN labelled `priority:chairman` (`isChairmanRow`, which has already ignored
+ * the label from anyone else). Until this read it, the field was half a change: the gate said "start one" and nothing in the spawner listened, so
+ * #4588 sat on `UNDELIVERED ... no engineer is idle and allowed to claim` for five ticks. ONLY A PILOT ORDER QUALIFIES -- the flag on an order
+ * `isPilotOrder` refuses buys nothing -- and it lifts exactly the two PACE limits: {@link MAX_SPAWNS_PER_TICK} and {@link hostLoadRefusal}. It
+ * lifts none of the SAFETY checks (the memory floor, the claim's own eligibility, an address that already holds a process), and the address is
+ * named for the row ({@link spareLabelForRow}), so the start is at most ONE per row however many ticks offer it.
+ */
+export function startsFresh(order: { session: string; cause?: string; startFresh?: boolean; }): boolean {
+  return order.startFresh === true && isPilotOrder(order);
+}
+
+/**
  * Which engineer ROLE a refused order may be given a fresh process for, or why none may.
  *
  * A ROLE, NOT AN INSTANCE NAME, AND THAT IS #1951's RULING RATHER THAN A SHORTCUT HERE. `session:<name>` is
@@ -4876,7 +4890,7 @@ export function hostLoadRefusal(reading: HostLoad | undefined): string | null {
  */
 function targetFor(order: {
         session: string; causeKey: string; prompt: string; cause?: string; title?: string; fallback?: string;
-        fallbackPrompt?: string;
+        fallbackPrompt?: string; startFresh?: boolean;
     }, live: { label: string; status: string; }[], roster: string[], deps: {
         run: (args: string[]) => string; spawned: number; ineligibleReason?: (label: string) => string | null;
         relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>;
@@ -4905,11 +4919,13 @@ function targetFor(order: {
   const relaned = relaneTarget(order, { deferredSince: undefined, now: Date.now(), ...deps.relane, live, roster, ineligibleReason: deps.ineligibleReason, goneSeats: deps.goneSeats });
   if (relaned !== null) return "label" in relaned ? relaned : { refusal: `${routed.refusal}; not re-laned: ${relaned.refusal}` };
   if (!isPilotOrder(order)) return { refusal: routed.refusal };
-  if (deps.spawned >= MAX_SPAWNS_PER_TICK) {
+  // #4524: A CHAIRMAN ROW'S START IS NOT HELD BY THE TICK'S ALLOWANCE OR THE HOST'S LOAD; the memory floor, the claim's own checks (B4) and the address still are.
+  const fresh = startsFresh(order);
+  if (!fresh && deps.spawned >= MAX_SPAWNS_PER_TICK) {
     return { refusal: `${routed.refusal}, and this tick has already started ${deps.spawned} `
       + `(MAX_SPAWNS_PER_TICK is ${MAX_SPAWNS_PER_TICK})` };
   }
-  const overloaded = hostLoadRefusal(deps.hostLoad?.());
+  const overloaded = fresh ? null : hostLoadRefusal(deps.hostLoad?.());
   if (overloaded !== null) return { refusal: `${routed.refusal}; ${overloaded}` };
   const spawn = spawnWorker(order, live, roster,
     { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer,
@@ -5276,7 +5292,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
  *   marked `outageNow`: several of THIS TICK's own reads were refused together, so several causes reaching the cap
  *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
-export function deliver(orders: { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; }[], agents: { label: string; status: string; }[], roster: string[],
+export function deliver(orders: { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders,
     now = Date.now }: {
