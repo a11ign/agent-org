@@ -65,7 +65,7 @@ const CLAIM_ONLY = (label: string) => label === STARTED_LABEL || label === NO_CO
 /** A claim record newer than this keeps a row claimed: the claim-stall's untold-release bound (4 h), pinned equal by the test. */
 export const CLAIM_FRESH_MS = 240 * 60 * 1000;
 /** Title words in common, over all words, at or above which two rows are the same row; and the fewest words a title needs to say so. */
-const DUPLICATE_SIMILARITY = 0.8;
+export const DUPLICATE_SIMILARITY = 0.8;
 const DUPLICATE_MIN_WORDS = 6;
 const PARKED_LABEL = "parked";
 const PARKED_STATES = Object.freeze([PARKED_LABEL, BACKLOG_LABEL]);
@@ -214,10 +214,10 @@ function stateLabels({ openRows, now }: BoardFacts): Finding[] {
 }
 
 /** @param {string | undefined} title @returns {Set<string>} */
-const wordsOf = (title: string | undefined): Set<string> => new Set(String(title ?? "").toLowerCase().match(/[a-z0-9][a-z0-9-]*/g) ?? []);
+export const wordsOf = (title: string | undefined): Set<string> => new Set(String(title ?? "").toLowerCase().match(/[a-z0-9][a-z0-9-]*/g) ?? []);
 
 /** @param {Set<string>} a @param {Set<string>} b @returns {number} words in common over all words */
-function similarity(a: Set<string>, b: Set<string>): number {
+export function similarity(a: Set<string>, b: Set<string>): number {
   const shared = [...a].filter((w) => b.has(w)).length;
   return shared / (a.size + b.size - shared);
 }
@@ -230,7 +230,7 @@ const reposNamedBy = (title: string | undefined): Set<string> => new Set([...Str
  * or two naming the same set, are compared by words alone: a real twin filed twice under one epic is the case the question exists for.
  * @param {BoardRow} row @param {BoardRow} other @returns {boolean}
  */
-function namesDifferentRepos(row: BoardRow, other: BoardRow): boolean {
+export function namesDifferentRepos(row: BoardRow, other: BoardRow): boolean {
   const [a, b] = [reposNamedBy(row.title), reposNamedBy(other.title)];
   return a.size > 0 && b.size > 0 && (a.size !== b.size || [...a].some((name) => !b.has(name)));
 }
