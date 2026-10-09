@@ -52,11 +52,11 @@ function tracker(issues: object[], { labelFails = "" }: { labelFails?: string } 
 }
 
 /** A filer that records what it was given and answers like `row-file` (the new row's URL on its last line), or throws what a refusal throws. */
-function filer({ refuse = "", number = 4500 }: { refuse?: string; number?: number } = {}) {
+function filer({ refuse = "", number = 4500, notice = "" }: { refuse?: string; number?: number; notice?: string } = {}) {
   const argvs: string[][] = [];
   const fileRow = (argv: string[]) => {
     argvs.push(argv);
-    if (refuse) throw Object.assign(new Error(`Command failed: row-file\n${refuse}\nsecond line`), { stderr: `${refuse}\nsecond line\n` });
+    if (refuse || notice) throw Object.assign(new Error(`Command failed: row-file\n${notice}${refuse}\nsecond line`), { stderr: `${notice}${refuse}\nsecond line\n` });
     return `warning: a line before the url\nhttps://github.com/${REPO}/issues/${number}\n`;
   };
   return { fileRow, argvs };
@@ -173,6 +173,26 @@ test("a refused filing keeps the order to ceo, says it was refused and why, and 
   const retry = filer();
   tick({ state, fileRow: retry.fileRow });
   assert.equal(retry.argvs.length, 1, "positive control: the next tick tries again");
+});
+
+const LAUNCH_NOTICE = "row-file: launched outside a linked worktree, proceeding anyway -- A11Y_POLICY_LAUNCH_REASON=\"class-repeat files the class row\"\n";
+
+test("a refusal that follows the launch notice is logged as the refusal, never as the notice (#4615)", () => {
+  const refusing = filer({ notice: LAUNCH_NOTICE, refuse: "row-file: REFUSING to file -- milestone 'Self-healing org' not found" });
+  const { fact, logs } = tick({ state: freshState(), fileRow: refusing.fileRow });
+  assert.deepEqual(filingsOf(fact), { x: { refused: "row-file: REFUSING to file -- milestone 'Self-healing org' not found" } }, "the first line after the notice");
+  assert.ok(logs.every((l) => !l.includes("proceeding anyway")), "the override notice is not the reason");
+  const bare = filer({ notice: LAUNCH_NOTICE });
+  const silent = tick({ state: freshState(), fileRow: (argv) => { try { return bare.fileRow(argv); } catch (err) { throw Object.assign(err as Error, { stderr: LAUNCH_NOTICE, status: 1 }); } } });
+  const [said] = Object.values(filingsOf(silent.fact) as Record<string, { refused: string }>);
+  assert.match(said.refused, /wrote nothing after the launch notice/, "when only the notice was written, its absence of a reason is what is said");
+  assert.ok(!said.refused.includes("proceeding anyway"));
+});
+
+test("the class row is filed in the HOME tracker whatever Region its body names (#4615)", () => {
+  const { fileRow, argvs } = filer();
+  tick({ state: freshState(), fileRow });
+  assert.ok(argvs[0].includes("--tracker="), "row-file sends a `.agent-org/` Region to a11ign/agent-org unless told the home tracker, whose key is empty");
 });
 
 test("a label that cannot be made is a refused filing, and row-file is never called", () => {

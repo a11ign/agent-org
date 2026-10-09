@@ -243,10 +243,20 @@ export function liveClassRepeatIo(): ClassRepeatIo {
   return { ledgerPath: stateEntryPath(FAILURE_LEDGER_FILE), fileRow: runRowFile, statePath: stateEntryPath(FILED_CLASSES_STATE) };
 }
 
-/** The reason a refused `row-file` gave: its stderr's first line when it wrote one (`execFileSync` puts the whole stderr in the message), else the error's first line. */
+/** The line `primaryLaunchDecision` prints before `row-file` does anything, when the gate runs from the primary checkout: it says the launch was allowed, never why a filing was refused. */
+const LAUNCH_NOTICE = /launched outside a linked worktree, proceeding anyway/;
+
+/**
+ * The reason a refused `row-file` gave: the first line of its stderr that is not the launch-override notice (`execFileSync` puts the whole stderr in the message). The notice is always
+ * first from the gate's checkout, so reading the first line logged every real refusal as "proceeding anyway" and sent a reader to a worktree rule that was already satisfied (#4615).
+ * When the notice is all it wrote, that is said rather than the notice; with no stderr at all, the error's first line.
+ */
 function refusalOf(err: unknown): string {
-  const stderr = String((err as { stderr?: unknown })?.stderr ?? "").split("\n").find((line) => line.trim() !== "");
-  return stderr === undefined ? firstLine(err) : stderr.trim().slice(0, MAX_REASON_CHARS);
+  const lines = String((err as { stderr?: unknown })?.stderr ?? "").split("\n").filter((line) => line.trim() !== "");
+  const reason = lines.find((line) => !LAUNCH_NOTICE.test(line));
+  if (reason !== undefined) return reason.trim().slice(0, MAX_REASON_CHARS);
+  if (lines.length === 0) return firstLine(err);
+  return `row-file refused and wrote nothing after the launch notice (exit status ${(err as { status?: unknown })?.status ?? "unknown"})`;
 }
 
 /** The row number a successful `row-file` printed (its last line is the new row's URL), else the line itself so the memory is never empty. */
@@ -295,9 +305,13 @@ export function classRowBody(group: ClassGroup): string {
 /** The title is stable per class, so `row-file`'s own refusal of a title an OPEN row already has backs up the memory if the memory is lost. */
 const classRowTitle = (group: ClassGroup): string => `Failure class ${group.id} repeated: make its guard stop it everywhere`.slice(0, MAX_TITLE_CHARS);
 
-/** The argv `row-file` is given for one class: a defect (so the closing pull request owes a `Class:` line), in the self-healing milestone, labelled with the class. */
+/**
+ * The argv `row-file` is given for one class: a defect (so the closing pull request owes a `Class:` line), in the self-healing milestone, labelled with the class.
+ * `--tracker=` (the home tracker's key is the empty string) because the body's Region is the index under `.agent-org/`, which `rowTracker` reads as an org row and files in a11ign/agent-org,
+ * where neither the milestone nor the class labels exist: the create was refused every tick (#4615).
+ */
 export function classRowArgv(group: ClassGroup, session: string = FILER_SESSION): string[] {
-  return ["--kind", "defect", "--milestone", CLASS_ROW_MILESTONE, "--label", `${CLASS_LABEL_PREFIX}${group.id}`, `--session=${session}`, "--title", classRowTitle(group), "--body", classRowBody(group)];
+  return ["--kind", "defect", "--tracker=", "--milestone", CLASS_ROW_MILESTONE, "--label", `${CLASS_LABEL_PREFIX}${group.id}`, `--session=${session}`, "--title", classRowTitle(group), "--body", classRowBody(group)];
 }
 
 /** Whether a repeat is worth a row THIS tick: a class with no guard always (it is filed once and remembered), one with a guard only while the repeat is fresh, as the order is. */
