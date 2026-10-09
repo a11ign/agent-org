@@ -12,6 +12,7 @@
 // more than `MAX_TICK_GAP_MS` (a restart, an outage): minutes nobody observed are not counted as shelved, so an incident never rests on a guess.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { deadlockLine, deadlocksOf, type Deadlock } from "./b4-cycle.ts";
 import { FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts";
 
 export const BLOCKING_MIN_ROWS = 5;
@@ -29,6 +30,10 @@ const NAMED_ROWS = 12;
 /** What a held row or pull request resolves to: the session holding it, and the row it stands for (a pull request's `Closes`), or `null` when none is known. */
 export type Held = { holder: string; row: number | null };
 export type Ref = { number: number; repo?: string };
+/** What a deadlock needs and a holder does not: the open pull request a ref names (its display name and the rows it declares it closes), and the open rows a row waits on (`b4-cycle.ts`). */
+export type Waits = { prOf: (ref: Ref) => { pr: string; closes: number[] } | null; blockersOf: (row: number) => number[] };
+/** `waits` is absent on a resolver written without the edges (a test's table), which finds no deadlock. */
+export type Resolver = ((ref: Ref) => Held | null) & { waits?: Waits };
 export type Shelved = { number: number; reason: string };
 /** One holder's shelving at one tick: the shelved rows, and the held rows that shelve them. */
 export type Holding = { rows: number[]; heldRows: number[] };
@@ -53,31 +58,61 @@ export function heldRefOf(reason: string): Ref | null {
 /**
  * WHO HOLDS THE THING A REASON NAMES. A bare `#N` is a claimed ROW first (its own `session:` label, and it stands for itself), then an open pull request of the home repository (its label, and the row
  * its body `Closes`); `#N in <repo>` is a pull request of that repository only. `null` is a thing nobody is known to hold, which `holdingsOf` counts as unattributed.
- * @param {{ rows: { number: number }[], prs: { number: number, repo?: string }[], sessionOf: (item: any) => string | null, closesOf: (pr: any) => number[] }} open
+ * The resolver also carries `waits` (the pull request's whole `Closes` and the rows' `blockedBy` edges, held or not), which is what `deadlocksOf` reads.
+ * @param {{ rows: { number: number, blockedBy?: unknown }[], prs: { number: number, repo?: string }[], sessionOf: (item: any) => string | null, closesOf: (pr: any) => number[] }} open
  */
-export function resolverOf({ rows, prs, sessionOf, closesOf }: { rows: { number: number }[]; prs: { number: number; repo?: string }[]; sessionOf: (item: any) => string | null; closesOf: (pr: any) => number[] }): (ref: Ref) => Held | null {
-  return ({ number, repo }) => {
+export function resolverOf({ rows, prs, sessionOf, closesOf }: { rows: { number: number; blockedBy?: unknown }[]; prs: { number: number; repo?: string }[]; sessionOf: (item: any) => string | null; closesOf: (pr: any) => number[] }): Resolver {
+  const prNamed = ({ number, repo }: Ref) => prs.find((p) => Number(p.number) === number && p.repo === repo);
+  const resolve = ({ number, repo }: Ref): Held | null => {
     const row = repo === undefined ? rows.find((r) => Number(r.number) === number) : undefined;
     const rowHolder = row === undefined ? null : sessionOf(row);
     if (rowHolder !== null) return { holder: rowHolder, row: number };
-    const pr = prs.find((p) => Number(p.number) === number && p.repo === repo);
+    const pr = prNamed({ number, repo });
     const prHolder = pr === undefined ? null : sessionOf(pr);
     return pr === undefined || prHolder === null ? null : { holder: prHolder, row: closesOf(pr)[0] ?? null };
   };
+  const prOf = (ref: Ref) => {
+    const pr = prNamed(ref);
+    return pr === undefined ? null : { pr: ref.repo === undefined ? `#${ref.number}` : `${ref.repo.split("/").pop()}#${ref.number}`, closes: closesOf(pr) };
+  };
+  return Object.assign(resolve, { waits: { prOf, blockersOf: (row: number) => openBlockersOf(rows.find((r) => Number(r.number) === row)) } });
+}
+
+/** The OPEN rows a row's `blockedBy` edge names. `nodes` keeps closed blockers, which are waits that have cleared; a node with no `state` is read as open (`arm-pr.ts`'s `openBlockersOf`, which drags in the arming path and is not imported here). */
+function openBlockersOf(row: any): number[] {
+  const nodes: any[] = Array.isArray(row?.blockedBy?.nodes) ? row.blockedBy.nodes : [];
+  return nodes.filter((node) => String(node?.state ?? "OPEN").toUpperCase() === "OPEN").map((node) => Number(node?.number));
+}
+
+/**
+ * THE DEADLOCKS AMONG THIS TICK'S SHELVINGS (#4625): a row shelved by a pull request that closes a row waiting on it. A shelving whose reason names no open pull request the resolver can read (a
+ * claimed row, a template gap, a pull request outside the open list) is not one, because no path was read.
+ * @param {Shelved[]} blocked @param {Resolver} resolve
+ */
+export function deadlocksAmong(blocked: Shelved[], resolve: Resolver): Deadlock[] {
+  const waits = resolve.waits;
+  if (waits === undefined) return [];
+  const shelvings = blocked.flatMap(({ number, reason }) => {
+    const ref = heldRefOf(reason);
+    const named = ref === null ? null : waits.prOf(ref);
+    return named === null ? [] : [{ shelved: number, ...named }];
+  });
+  return deadlocksOf(shelvings, waits.blockersOf);
 }
 
 /**
  * Per holder, the rows the gate shelves behind it THIS tick. A shelving whose reason names no held thing, or names one nobody is known to hold, belongs to no holder and is
- * COUNTED in `unattributed` rather than dropped, so a resolver that cannot place anything shows as a number and not as an empty gridlock.
+ * COUNTED in `unattributed` rather than dropped, so a resolver that cannot place anything shows as a number and not as an empty gridlock. `named` is the shelved rows another line already
+ * names (a DEADLOCK, #4625), which are not counted again as unattributed.
  * @param {Shelved[]} blocked @param {(ref: Ref) => Held | null} resolve
  */
-export function holdingsOf(blocked: Shelved[], resolve: (ref: Ref) => Held | null): { holdings: Map<string, Holding>; unattributed: number } {
+export function holdingsOf(blocked: Shelved[], resolve: (ref: Ref) => Held | null, named: ReadonlySet<number> = new Set()): { holdings: Map<string, Holding>; unattributed: number } {
   const holdings = new Map<string, Holding>();
   let unattributed = 0;
   for (const { number, reason } of blocked) {
     const ref = heldRefOf(reason);
     const held = ref === null ? null : resolve(ref);
-    if (held === null) { if (ref !== null) unattributed += 1; continue; }
+    if (held === null) { if (ref !== null && !named.has(number)) unattributed += 1; continue; }
     const prior = holdings.get(held.holder) ?? { rows: [], heldRows: [] };
     holdings.set(held.holder, {
       rows: [...prior.rows, number].sort((a, b) => a - b),
@@ -230,12 +265,14 @@ function raise(incident: Incident, { logPath, now, io }: { logPath: string; now:
  * writes no row comment, which would otherwise be repeated every tick.
  * @param {{ blocked: Shelved[], resolve: (ref: Ref) => Held | null, stateDir: string, now: number } & BlockingIo} tick
  */
-export function blockingImpactTick({ blocked, resolve, stateDir, now, ...seams }: { blocked: Shelved[]; resolve: (ref: Ref) => Held | null; stateDir: string; now: number } & BlockingIo): BlockingOrder[] {
+export function blockingImpactTick({ blocked, resolve, stateDir, now, ...seams }: { blocked: Shelved[]; resolve: Resolver; stateDir: string; now: number } & BlockingIo): BlockingOrder[] {
   const io: Required<BlockingIo> = { read: readText, write: writeAtomic, comment: () => {}, record: recordFailure, log: logToStderr, ...seams };
   const path = `${stateDir}/${BLOCKING_FILE}`;
   try {
-    const { holdings, unattributed } = holdingsOf(blocked, resolve);
+    const deadlocks = deadlocksAmong(blocked, resolve);
+    const { holdings, unattributed } = holdingsOf(blocked, resolve, new Set(deadlocks.map((d) => d.shelved)));
     const { record, incidents } = advance(previousRecord(path, io), { now, holdings });
+    for (const deadlock of deadlocks) io.log(deadlockLine(deadlock));
     for (const line of holdingLines(holdings, { episodes: record.episodes, unattributed })) io.log(line);
     const kept = persisted(path, record, io);
     return incidents.map((incident) => raise(incident, { logPath: `${stateDir}/${FAILURE_LEDGER_FILE}`, now, io: kept ? io : { ...io, comment: () => {} } }));
