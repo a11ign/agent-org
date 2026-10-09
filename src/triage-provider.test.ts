@@ -95,6 +95,12 @@ test("Jev enabled: drop and digest at 0.95 route; drop at 0.89 under a 0.9 floor
   assert.equal((await triageOrder(ORDER, exactlyAtFloor.deps)).route, "drop", "the floor is inclusive");
 });
 
+test("a hand-built host that omits minConfidence gets the declared 0.9 floor, not 1", async () => {
+  const handBuilt = (reply: Reply) => ({ ...rig(JEV, reply).deps, host: { triage: { provider: "jev", keyPath: KEY_PATH } } });
+  assert.equal((await triageOrder(ORDER, handBuilt({ body: answer("drop", 0.95) }))).route, "drop");
+  assert.equal((await triageOrder(ORDER, handBuilt({ body: answer("drop", 0.89) }))).route, "wake", "CONTROL: under 0.9 it still wakes");
+});
+
 test("the request is the one-question choice the row describes", async () => {
   const { deps, net } = rig(JEV, { body: answer("wake", 1) });
   await triageOrder(ORDER, deps);

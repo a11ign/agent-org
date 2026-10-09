@@ -10,6 +10,7 @@
 // THE KEY is read by `readKey(path)` at call time, once per process, and lives only in the closure that builds the request header. It is never printed, logged or
 // returned; a key that cannot be read is recorded as the reason `triage-unavailable` and nothing else (not the error's text, which names the path).
 import { readFileSync } from "node:fs";
+import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.mjs";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -117,7 +118,7 @@ function readAnswer(answer: unknown): { label: Label; confidence: number } | und
  */
 export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise<Triage> {
   const { host, fetch: fetchFn = fetch, readKey = readKeyFile, diagnostic = (line: string) => console.error(line), state = processState, timeoutMs = TIMEOUT_MS } = deps;
-  const { provider, keyPath, minConfidence = 1 } = host.triage ?? { provider: "none" };
+  const { provider, keyPath, minConfidence = DEFAULT_TRIAGE_MIN_CONFIDENCE } = host.triage ?? { provider: "none" };
   if (provider !== "jev" || keyPath === undefined) return wake("none", "no triage provider is declared");
   if (!hasCause(order)) return wake("none", "the order has no cause, and an order that cannot be read is never routed");
   const key = keyFor(keyPath, { readKey, diagnostic, state });
