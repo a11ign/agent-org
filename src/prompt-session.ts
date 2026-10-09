@@ -28,6 +28,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
@@ -36,6 +37,7 @@ import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, que
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
 import { ANSWER_PREFIX } from "./project-vocabulary.ts";
+import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, recordFailure } from "./failure-ledger.ts";
 
 /**
  * `1` the order is LOST -- nothing holds it and nothing will retry it; `2` it was not delivered now and
@@ -570,6 +572,42 @@ export function recordDirectDelivery(queuePath: string, { label, text, sender, c
   }
 }
 
+/** Where an order's class is recorded, beside the queue as the direct record is (the gate's recorders write `<stateDir>/failure-ledger`, and the queue lives in that directory). */
+export function failureLedgerPath(queuePath: string): string {
+  return `${dirname(queuePath)}/${FAILURE_LEDGER_FILE}`;
+}
+
+/** `Class: main-red`, alone on a line. A kebab-case key only: the key becomes a ledger field, and anything else is not a class. */
+const CLASS_TOKEN = /^[ \t]*Class:[ \t]*([a-z0-9][a-z0-9-]*)[ \t]*$/im;
+
+/**
+ * PURE. The class the order declares, or `unclassified` (#4452). THE TOKEN IS THE SENDER'S WORD AND NOTHING MORE: `chairman-correction` is a key for a caller AUTHENTICATED as the
+ * chairman, so an order that names it (or any other seeded key it has no business choosing for itself) is `unclassified`, not that. Identity is never self-declared.
+ */
+export function orderClass(text: string): string {
+  const key = CLASS_TOKEN.exec(text)?.[1];
+  return key === undefined || key === "chairman-correction" || key === UNIDENTIFIED_CALLER_KIND ? UNCLASSIFIED_KIND : key;
+}
+
+/** The ledger keys an order is recorded under: its class, and `unidentified-caller-order` when {@link resolveSender} found no session (the measurable proxy for a chairman-session correction). */
+export function orderKeys(text: string, sender: string | null): string[] {
+  return sender === null ? [orderClass(text), UNIDENTIFIED_CALLER_KIND] : [orderClass(text)];
+}
+
+/** The order's identity in the ledger: the addressee, when, and a digest of the text, so two orders to one session are two events and the text itself is not copied. */
+const orderRef = (label: string, text: string, now: number): string => `${label}/${now}-${createHash("sha1").update(text).digest("hex").slice(0, 8)}`;
+
+type LedgerIo = { append?: typeof appendFileSync; report?: (line: string) => void };
+
+/**
+ * Record an order that was queued or delivered. NEVER THROWS and never changes the exit code: a refused append is one stderr line (`recordFailure` reports it), and the order has gone.
+ * (There is no `chairman-correction` here: the host runs every session as one uid and carries no root-owned file naming the chairman, so nothing an agent cannot write authenticates a caller; see `FAILURE_KINDS`.)
+ */
+function recordOrder(queuePath: string, { label, text, sender, now, io }: { label: string; text: string; sender: string | null; now: number; io: LedgerIo }): void {
+  const ref = orderRef(label, text, now);
+  for (const classKey of orderKeys(text, sender)) recordFailure({ logPath: failureLedgerPath(queuePath), classKey, ref, now, ...io });
+}
+
 /** What `prompt:session` tells its sender the window now is, per {@link CONTEXT_ACTION} (#3440): said of THIS delivery, never of the seat's kind. */
 const CONTEXT_WORDS = Object.freeze({
   [CONTEXT_ACTION.KEPT]: "context kept (not cleared)",
@@ -589,11 +627,24 @@ const CONTEXT_WORDS = Object.freeze({
  *   `clock` is the seat's last-order record, beside the queue by default (#3440), and `contextRoot` the transcript root it is read against; `sleep` is the clear's settle, passed to {@link clearThenPrompt} (#2546); `checkout` is {@link repointedForReviewer}'s seams
  * @returns {number}
  */
-export function promptOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout, contextRoot, clock = orderClockIn(`${dirname(path)}/last-order`) }: {
+type PromptOrder = {
         run: (args: string[]) => string; label: string; text: string; agents: { label: string; status: string; }[] | null;
         path: string; stance: Stance; sender: string | null; sleep?: (ms: number) => void;
         checkout?: import("./wake.ts").CheckoutDeps; contextRoot?: string; clock?: import("./wake.ts").OrderClock;
-    }): number {
+    };
+
+/**
+ * {@link deliverOrQueue}, and the order's class in the failure ledger (#4452) once it has gone: every order that was queued or delivered, whoever sent it. A refused order
+ * (`EXIT.REFUSED`) is recorded nowhere, as it is in no queue. `ledger` and `now` are for a test.
+ */
+export function promptOrQueue(order: PromptOrder & { ledger?: LedgerIo; now?: number }): number {
+  const { ledger = {}, now = Date.now(), ...delivery } = order;
+  const code = deliverOrQueue(delivery);
+  if (code !== EXIT.REFUSED) recordOrder(order.path, { label: order.label, text: order.text, sender: order.sender, now, io: ledger });
+  return code;
+}
+
+function deliverOrQueue({ run, label, text, agents, path, stance, sender, sleep, checkout, contextRoot, clock = orderClockIn(`${dirname(path)}/last-order`) }: PromptOrder): number {
   // BEFORE `promptable`, because an FYI is held for an IDLE seat too: waking it is the cost this declaration exists to refuse (#3562). A name the org does
   // not know is still refused first, inside `holdFyi`, as for any queued order.
   if ((stance === STANCE.FYI || stance === STANCE.UNDECLARED) && isLeadSeat(label)) return holdFyi({ label, text, agents, path, stance, sender });

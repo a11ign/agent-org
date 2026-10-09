@@ -17,8 +17,15 @@ import { dirname } from "node:path";
 /** The log's file name, beside `wake-deferral-log`. */
 export const FAILURE_LEDGER_FILE = "failure-ledger";
 
-/** The event kinds of the epic's move 1. `pr-red`, `worker-excluded` and `chairman-correction` are seeded keys only: their recorders are later rows. */
+/**
+ * The event kinds of the epic's move 1. `pr-red`, `worker-excluded` and `chairman-correction` are seeded keys only: their recorders are later rows.
+ * `chairman-correction` is written by NO recorder yet and `prompt-session.ts` refuses it as a `Class:` token: it needs a caller authenticated by something the agent accounts cannot write (#4452).
+ */
 export const FAILURE_KINDS = Object.freeze(["main-red", "pr-red", "owner-unresolved", "worker-excluded", "hand-reroute", "chairman-correction"]);
+
+/** What `prompt:session` records (#4452): an order from a caller it could not identify (the PROXY for the chairman), and an order that carried no `Class:` token. Not seeded in the index: the daily pass groups them. */
+export const UNIDENTIFIED_CALLER_KIND = "unidentified-caller-order";
+export const UNCLASSIFIED_KIND = "unclassified";
 
 export type FailureEntry = { classKey: string, at: number, ref: string };
 /** `at` is epoch ms; absent means the tick's own `now` (an event dated by its source, such as a hand fix, carries its own) */
