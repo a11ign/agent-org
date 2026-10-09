@@ -12,7 +12,9 @@ Done-when 2 (read-only over today's open `tier:haiku` claims, 2026-10-09): there
 
 Assumptions: the 300-turn cap is the author's choice, from the 2026-10-09 local trace store (1,182 worker sessions: p50 118, p90 372, p95 512 turns; the 14 Haiku trial sessions peaked at 129 turns and 1 compaction), and the decision log's `escalate` lines are what to tune it from. Compactions escalate AT 10, where the report's stop rule trips above 10, so the per-row decision lands before the report's stop. A "CI failure" is a distinct red head the worker was told of since its newest `arm` line.
 
-Acceptance: `cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.ts src/engineer-escalation.test.ts`
+Acceptance: `npx rstest run --config scripts/rstest/rstest.config.ts src/engineer-escalation.test.ts`
+
+Mutation: 11 mutants, each killed by a test, both directions (Sonnet start escalates; cap `>=` read as `>`; once-per-row ignored; always-escalate control; null count as a hit; escalation recorded before the pane closes; no route override; arm line drops `model`; restart releases the claim; brief without the note; compaction cap forgotten). Sources restored byte-identical with `cp` and `diff`.
 
 Closes a11ign/a11ign#4630
 
