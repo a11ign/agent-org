@@ -27,9 +27,12 @@
  */
 
 import { conditionHolds, declaredWaitsOf, hoursSince, waitItemOf, MANUAL_WAIT_HOURS } from "./wait-condition.ts";
+import { CLAIM_LABEL } from "./claim-labels.ts";
+import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
 export type Wait = import("./wait-condition.ts").Wait;
 export type WaitFacts = import("./wait-condition.ts").WaitFacts;
+export type RefFact = import("./wait-condition.ts").RefFact;
 
 /**
  * THE LABEL PREFIX THAT IS A HOLD ON A PR. Exported, because it is now the ONLY spelling: three copies
@@ -97,6 +100,79 @@ export function holdExcused(pr: { body?: string; comments?: any[]; labels?: any[
   if (hold.reason === "until") return !hold.waits.some((w) => conditionHolds(w, facts) === true);
   const quietSince = hold.reason === "manual" ? hold.since : waitItemOf(pr, "pr").updatedAt;
   return quietSince === null || hoursSince(quietSince, now) < MANUAL_WAIT_HOURS;
+}
+
+/** The class a hold on a row nobody is working is recorded under (chairman, 2026-10-09, #4661). */
+export const IDLE_HOLD_CLASS = "hold-on-idle-row";
+
+/** How long a held PR's target may sit with no claim before the hold is an incident. The chairman's number, so it is named here rather than quoted in a comment. */
+export const IDLE_HOLD_MINUTES = 15;
+
+const MS_PER_MINUTE = 60_000;
+
+/** A pull request that closes the target: `repo` is `owner/repo`. */
+export type PullRequestRef = { number: number, repo: string };
+
+/**
+ * WHAT A `closed #N` HOLD WAITS FOR, as the caller read it: the condition (its `repo` already resolved, a bare `#n` naming the held PR's own repository) and the
+ * target's state, labels and last change. `fact` is `wait-condition.ts`'s own `RefFact`, so the gate's reading and the take-time reading are one shape.
+ */
+export type HoldTarget = { wait: Wait, fact: RefFact };
+
+/**
+ * IS THE ROW THIS HOLD WAITS FOR ONE NOBODY IS WORKING? A REASON when it is, `null` when it is not or when the question does not apply (#4661).
+ *
+ * agent-org#550 was green and approved and held `--until closed #4524` under "the chairman row lands first". #4524 was `ready` and unclaimed with no pull request,
+ * so the condition could not come true: no session was on it and nothing would ever close it. **A hold that waits for a row nobody is working never ends.**
+ *
+ * The question applies only to a `closed` wait on an OPEN row. A `merged`, `labelled` or `unlabelled` condition, `manual`, or a target already closed is not
+ * "waiting for a claimant", and a refusal there would be a rule about something else. CLAIMED is the claim vocabulary's own: `in-progress`, or any `session:` label
+ * (a claim recorded before its owner is named has the first and not the second, and is still a claim). `openPullRequests` are the pull requests that close the
+ * target: a row with one is in flight whoever claimed it.
+ * @param {HoldTarget} target
+ * @param {{ openPullRequests: PullRequestRef[] }} facts what the caller read; this calls nothing
+ * @returns {string | null}
+ */
+export function holdTargetIdleReason(target: HoldTarget, { openPullRequests }: { openPullRequests: PullRequestRef[]; }): string | null {
+  const { wait, fact } = target;
+  if (wait.state !== "closed" || fact.state !== "open") return null;
+  if (fact.labels.some((label) => label === CLAIM_LABEL || label.startsWith(SESSION_PREFIX))) return null;
+  if (openPullRequests.length > 0) return null;
+  return `${wait.key} is OPEN, nobody holds it (no \`${CLAIM_LABEL}\` and no \`${SESSION_PREFIX}*\` label) and no open pull request closes it, so the condition cannot come true `
+    + "while it stays so: the held pull request would sit green until somebody happens to claim the row";
+}
+
+/** A hold already in force on a target nobody is working. `key` is stable for one hold, so a detector that sees it twice files it once. */
+export type IdleHoldIncident = { class: typeof IDLE_HOLD_CLASS, key: string, pr: PullRequestRef, target: string, minutes: number, reason: string };
+
+/**
+ * IS THIS HOLD, ALREADY IN FORCE, AN INCIDENT? The detector the chairman asked for (#4661): a held PR whose target has had no claim for more than
+ * `IDLE_HOLD_MINUTES` (strictly: at the bound it is not one). `null` below the bound, for a PR that is not held, for a target the rule does not apply to, and
+ * when the hold has no date, because an age nobody can read is an unknown and never "long enough" (the same rule `holdExcused` keeps).
+ *
+ * THE CLOCK STARTS AT THE LATER OF THE HOLD AND THE TARGET'S LAST CHANGE, so a claim that was just released, or a row somebody just commented on, restarts it.
+ * That can only make an incident late, never wrong: GitHub carries no "unclaimed since", and a detector that calls an incident early files noise nobody reads.
+ *
+ * The call site (the gate's hold-lift, which also lifts the label) is NOT here: this reads facts passed in and calls nothing.
+ * @param {{ pr: PullRequestRef, labels: string[], since: number | null }} hold `since` is the hold marker's date, `holdReasonOf`'s
+ * @param {HoldTarget} target
+ * @param {{ now: number, openPullRequests: PullRequestRef[] }} facts
+ * @returns {IdleHoldIncident | null}
+ */
+export function idleHoldIncident(hold: { pr: PullRequestRef; labels: string[]; since: number | null; }, target: HoldTarget,
+  { now, openPullRequests }: { now: number; openPullRequests: PullRequestRef[]; }): IdleHoldIncident | null {
+  if (holdersOf(hold.labels).length === 0 || hold.since === null) return null;
+  const reason = holdTargetIdleReason(target, { openPullRequests });
+  if (reason === null) return null;
+  const targetKey = "key" in target.wait ? target.wait.key : target.wait.text;
+  const idleSince = Math.max(hold.since, target.fact.changedAt ?? hold.since);
+  const minutes = (now - idleSince) / MS_PER_MINUTE;
+  if (minutes <= IDLE_HOLD_MINUTES) return null;
+  return {
+    class: IDLE_HOLD_CLASS,
+    key: `${IDLE_HOLD_CLASS}:${hold.pr.repo}#${hold.pr.number}:${targetKey}:${hold.since}`,
+    pr: hold.pr, target: targetKey, minutes: Math.floor(minutes), reason,
+  };
 }
 
 /**

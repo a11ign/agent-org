@@ -16,6 +16,8 @@
  *                                                 # `.agent-org/project.json`'s `code` gives it, or `owner/repo#n`. Absent is the first
  *                                                 # repository, so every call without it is what it always was. A key the project does
  *                                                 # not declare is REFUSED, naming the declared ones, and nothing is written.
+ *   `--until="closed #N"` is REFUSED while #N is open, has no `in-progress` or `session:` label and no open pull request closes it (#4661):
+ *                                                 # nobody is working it, so the condition cannot come true. `manual` is the way out.
  *
  * **THERE IS NO `pr-release.mjs`.** `pr:release` is this file with `--release` (see `package.json`), and
  * the two being named as a pair everywhere else makes a sibling script the natural thing to go looking
@@ -46,8 +48,9 @@
  * ## Exit codes (#1481)
  *
  *   0  DONE -- the hold was taken or released as asked, or (no --session) reported
- *   1  REFUSED -- somebody else holds it and --steal was not passed; nothing was written. An unexpected
- *      failure BEFORE any label is written also exits 1, Node's own, with nothing written.
+ *   1  REFUSED -- somebody else holds it and --steal was not passed, or `--until=closed #N` names a row that is open, unclaimed
+ *      and has no open pull request (#4661); nothing was written. An unexpected failure BEFORE any label is written also
+ *      exits 1, Node's own, with nothing written.
  *   2  CANNOT_ASK -- usage, a repository the project does not declare, a lookup that could not be answered, or a write whose
  *      read-back disagreed; each message names the state it found
  *   3  DISPLACED_NOT_HELD -- a --steal REMOVED another session's hold, and a later label write then failed,
@@ -60,8 +63,9 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
-import { disarmVerdict, armVerdict, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.ts";
-import { parseWaits, WAIT_MARKER } from "./wait-condition.ts";
+import { disarmVerdict, armVerdict, holdTargetIdleReason, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.ts";
+import type { PullRequestRef, RefFact } from "./pr-hold-state.ts";
+import { parseWaits, WAIT_MARKER, MANUAL_WAIT_HOURS } from "./wait-condition.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
@@ -253,6 +257,12 @@ function main() {
     process.stderr.write(`${until.error}\n`);
     process.exit(EXIT.CANNOT_ASK);
   }
+  const releasing = process.argv.includes("--release");
+  const refusal = flagValue(process.argv, "session") && !releasing ? idleTargetRefusal(pr, until.value) : null;
+  if (refusal) {
+    process.stderr.write(`${refusal}\n`);
+    process.exit(EXIT.REFUSED);
+  }
   const labels = prLabels(pr.number, pr.repo);
   if (labels === null) {
     process.stderr.write(`CANNOT SAY who holds ${mention(pr)}: could not read its labels. This is `
@@ -272,9 +282,56 @@ function main() {
     process.exit(EXIT.DONE);
   }
 
-  process.exit(process.argv.includes("--release")
+  process.exit(releasing
     ? releaseHold(pr, session, holders)
     : takeHold(pr, session, holders, { steal: process.argv.includes("--steal"), until: until.value }));
+}
+
+/**
+ * A HOLD THAT WAITS FOR A ROW NOBODY IS WORKING NEVER ENDS, SO THE TAKE REFUSES IT (#4661, class `hold-on-idle-row`, chairman). `--until=closed #N` where #N is
+ * open, has no claim and has no open pull request closing it is refused, naming the way out. The reading is `holdTargetIdleReason`'s; this only fetches the facts.
+ *
+ * ABSENCE IS NOT PROOF, so only a POSITIVE reading refuses. A target that cannot be read (a pull request number, a repository this token cannot see, a failed
+ * call) leaves the hold taken as it always was, with a note on stderr, and the gate's detector (`idleHoldIncident`) is what catches it later. Refusing on
+ * a failed lookup would make every network error a refused hold. Runs BEFORE the first write for the reason `untilOf` does: a refusal after the label was taken
+ * would leave a hold nobody can read.
+ * @param {HeldPr} pr @param {string | null} until the validated `--until` value
+ * @returns {string | null} the refusal text, or `null` to go on
+ */
+function idleTargetRefusal(pr: HeldPr, until: string | null): string | null {
+  const [parsed] = until === null ? [] : parseWaits(`Waiting-for: ${until}`);
+  if (parsed?.state !== "closed") return null;
+  // A bare `#n` names the held pull request's own repository (`wait-condition.ts`'s `ownedBy`), so it is resolved the same way here.
+  const repo = parsed.repo ?? pr.repo;
+  const target = { ...parsed, repo, key: `${repo}#${parsed.number}` };
+  const facts = readTargetFacts(target);
+  if (facts === null) {
+    process.stderr.write(`NOTE: could not read ${target.key}, so whether anybody is working it was not checked; the hold is taken as asked.\n`);
+    return null;
+  }
+  const reason = holdTargetIdleReason({ wait: target, fact: facts.fact }, { openPullRequests: facts.openPullRequests });
+  if (reason === null) return null;
+  return `REFUSING --until=${JSON.stringify(until)}: ${reason}. Nothing was written. Merge ${mention(pr)} and let the row rebase when it lands (a row that lands `
+    + `after you has nothing to wait for), or take the hold with \`--until=manual\`, which is counted and expires after ${MANUAL_WAIT_HOURS} hours.`;
+}
+
+/**
+ * THE TARGET ROW'S STATE, LABELS AND CLOSING PULL REQUESTS, in one `gh issue view`, or `null` when it could not be had. `closedByPullRequestsReferences` lists a
+ * pull request that is open or MERGED (measured on #4641, closed by merged agent-org#556), and a merged one has closed the row, so on an OPEN row every
+ * reference is an open pull request. A pull request number fails `gh issue view` and reads `null`, which is not a refusal.
+ * @param {{ repo: string, number: number }} target @returns {{ fact: RefFact, openPullRequests: PullRequestRef[] } | null}
+ */
+function readTargetFacts(target: { repo: string; number: number; }): { fact: RefFact; openPullRequests: PullRequestRef[]; } | null {
+  try {
+    const row = JSON.parse(gh(["issue", "view", String(target.number), "--repo", target.repo, "--json", "state,labels,closedByPullRequestsReferences"]));
+    const state = String(row.state ?? "").toLowerCase();
+    if (!["open", "closed"].includes(state) || !Array.isArray(row.labels) || !Array.isArray(row.closedByPullRequestsReferences)) return null;
+    const openPullRequests = row.closedByPullRequestsReferences.map((ref: { number: number; repository?: { name?: string; owner?: { login?: string; }; }; }) =>
+      ({ number: ref.number, repo: `${ref.repository?.owner?.login}/${ref.repository?.name}` }));
+    return { fact: { state: state as RefFact["state"], labels: row.labels.map((l: { name: string; }) => l.name), resolvedAt: null, changedAt: null }, openPullRequests };
+  } catch {
+    return null;
+  }
 }
 
 /**
