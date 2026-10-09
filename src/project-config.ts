@@ -46,7 +46,7 @@ export type DoraRelease = { kind: "npm", package: string } | { kind: "tag" };
  * tooling): the PRIMARY milestone's rule reads it, and nothing else does. ABSENT means `true` and is not filled in, so a declaration that never names it reads exactly as before.
  */
 export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[], adopterFacing?: boolean };
-export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number };
+export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], offerMilestones: string[], repo: string, boardOwner: string, boardNumber: number };
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
 export class ProjectDeclarationRefusal extends Error {
@@ -232,6 +232,26 @@ function readDora(declaration: Record<string, unknown>, source: string): DoraRep
 }
 
 /**
+ * #4524: THE CHAIRMAN'S MILESTONE RANKING for the gate's offer hierarchy, primary milestone first: each entry names a milestone by its number or its title
+ * (a string either way, so a later tracker's project identifier fits the same list). An ABSENT field reads as an empty list, for the reason `leakPatterns` does: it
+ * orders offers and answers no question about WHICH project this is, and with no ranking every row is in the same tier as before. A PRESENT field is held to the
+ * rule of every other: a list of non-empty strings, none twice, since a milestone ranked twice has no single rank.
+ * @param {Record<string, unknown>} declaration @param {string} source
+ * @returns {string[]}
+ */
+function readOfferMilestones(declaration: Record<string, unknown>, source: string): string[] {
+  if (!Object.hasOwn(declaration, "offerMilestones")) return [];
+  const list = declaration.offerMilestones;
+  if (!Array.isArray(list)) throw new ProjectDeclarationRefusal("offerMilestones", `it must be a list, not ${describe(list)}`, source);
+  list.forEach((entry, index) => {
+    if (typeof entry !== "string" || entry === "") throw new ProjectDeclarationRefusal(`offerMilestones[${index}]`, "it must be a non-empty string naming a milestone", source);
+  });
+  const repeated = list.find((entry, index) => list.indexOf(entry) !== index);
+  if (repeated !== undefined) throw new ProjectDeclarationRefusal("offerMilestones", `\`${repeated}\` is ranked twice`, source);
+  return list;
+}
+
+/**
  * Parse one declaration's text. PURE: no file is read, so a test drives every refusal with a string.
  * The FIRST tracker and the FIRST code repository are the project's own (decision 2: the empty key belongs to the primary
  * project's first of each), so `repo`, `boardOwner` and `boardNumber` are those entries' values.
@@ -258,6 +278,7 @@ export function parseProjectDeclaration(text: string, source: string = PROJECT_D
     code,
     leakPatterns: readLeakPatterns(parsed, source),
     dora: readDora(parsed, source),
+    offerMilestones: readOfferMilestones(parsed, source),
     repo: code[0].repo,
     boardOwner: tracker[0].board.owner,
     boardNumber: tracker[0].board.number,

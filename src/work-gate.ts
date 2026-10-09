@@ -1194,7 +1194,7 @@ export function readPromotableRows(run: (args: string[]) => string = defaultRun)
 export function readReadyRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
     const out = run(["issue", "list", "--state", "open", "--label", READY_LABEL, "--limit", "100",
-      "--json", "number,title,labels,body,blockedBy"]);
+      "--json", "number,title,labels,body,blockedBy,milestone"]);
     const parsed = JSON.parse(out);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
@@ -1427,6 +1427,9 @@ const templateGapText = (missing: string[]): string => `its body has no ${missin
  *        waiting on the row asked about. ABSENT, no held PR is excluded and B4 refuses exactly as before.
  *        It is also where #3475 reads the rows already CLAIMED (`in-progress`), whose Regions hold their files before any pull request
  *        exists: a Ready row sharing a file with one is shelved, naming it. ABSENT, no row is shelved for it.
+ *        `chairmanRows` (#4524) is `readChairmanPriority`'s verified set. A row in it is NOT shelved by B4 against a holder that is not itself a chairman row (a claimed
+ *        row, or a pull request closing no chairman row): it is offered, and the holder is returned in `yielding` so `decide` can tell it to rebase. Every other
+ *        shelving reason binds it as before. ABSENT, no row is the chairman's and B4 refuses exactly as it did.
  *        `clock` is injected the way `partitionFleetBatch` already injects one, and #2113 is why this
  *        path needs one at all: a `Not-before:` may now name an HOUR, so whether a row is offerable can
  *        change within a single day and a test cannot pin that against the host clock.
@@ -1438,9 +1441,11 @@ export function partitionUnclaimed(readyRows: any[], prFiles: { number: number; 
         rowBranches?: { branch: string; head: string; row: number; }[] | null;
         branchPrs?: { branch: string; number: number; state: string; }[] | null;
         clock?: { today?: string; nowMs?: number; };
-    }): { offerable: any[]; blocked: { number: number; owner: string | null; reason: string; }[]; } {
+        chairmanRows?: ReadonlySet<number>;
+    }): { offerable: any[]; blocked: { number: number; owner: string | null; reason: string; }[]; yielding: Yielding[]; } {
   const offerable = [];
   const blocked = [];
+  const yielding: Yielding[] = [];
   const { today = todayIso(), nowMs = Date.now() } = options?.clock ?? {};
   const onOrigin = branchIndex(options?.rowBranches);
   const replaceable = branchesToReplace(options?.rowBranches, options?.branchPrs);
@@ -1492,11 +1497,36 @@ export function partitionUnclaimed(readyRows: any[], prFiles: { number: number; 
         reason: `${describeWaiting(waiting)} -- declared on the row, and it clears itself` });
       continue;
     }
-    const reason = blockedOnOpenPr(row, prFiles, { ...options, blockersOf }) ?? blockedOnClaimedRow(row, claimed, { ...options, blockersOf, openPrs: prFiles });
+    const { reason, yielded } = overlapVerdict(row, { prFiles, claimed, options: { ...options, blockersOf } });
     if (reason) blocked.push({ number: Number(row.number), ...subjectIdentity(row), owner: laneOwnerOf(row), reason });
     else offerable.push(row);
+    if (!reason && yielded.length > 0) yielding.push({ row: Number(row.number), holders: yielded });
   }
-  return { offerable, blocked };
+  return { offerable, blocked, yielding };
+}
+
+/** #4524: a holder a chairman row was offered OVER: a claimed row, or a pull request. */
+export type Yielding = { row: number; holders: { kind: "row" | "pr"; number: number; }[]; };
+
+/**
+ * #4524: B4's verdict for one row, and for a CHAIRMAN row the holders it walked past. The chairman's amendment of 2026-10-09 ("trumps everything else ... I don't want
+ * to wait"): an overlap with a holder that is not itself a chairman row does not shelve the row; the holder rebases onto it, and the merge queue already serialises the
+ * merges. TWO CHAIRMAN ROWS STILL EXCLUDE EACH OTHER -- the same file edited by two sessions at once is a conflict whichever of them is the chairman's. A holder is a
+ * chairman row's own when it is a claimed chairman row, or a pull request declaring `Closes` on one.
+ * @param {any} row @param {{ prFiles: Parameters<typeof partitionUnclaimed>[1], claimed: { number: number, files: string[] }[], options: Parameters<typeof blockedOnClaimedRow>[2] }} ask
+ * @returns {{ reason: string | null, yielded: Yielding["holders"] }}
+ */
+function overlapVerdict(row: any, { prFiles, claimed, options }: { prFiles: Parameters<typeof partitionUnclaimed>[1]; claimed: { number: number; files: string[]; }[]; options: Parameters<typeof blockedOnClaimedRow>[2] & { chairmanRows?: ReadonlySet<number>; }; }): { reason: string | null; yielded: Yielding["holders"]; } {
+  const refusal = (prs: typeof prFiles, rows: typeof claimed) => blockedOnOpenPr(row, prs, options) ?? blockedOnClaimedRow(row, rows, { ...options, openPrs: prs });
+  const full = refusal(prFiles, claimed);
+  if (full === null || !isChairmanRow(row, options.chairmanRows)) return { reason: full, yielded: [] };
+  const holdsChairmanRow = (n: number) => options.chairmanRows?.has(n) === true;
+  const remaining = refusal(prFiles.filter((pr) => (pr.closes ?? []).some(holdsChairmanRow)), claimed.filter((holder) => holdsChairmanRow(holder.number)));
+  if (remaining !== null) return { reason: remaining, yielded: [] };
+  return { reason: null, yielded: [
+    ...claimed.filter((holder) => refusal([], [holder]) !== null).map((holder) => ({ kind: "row" as const, number: holder.number })),
+    ...prFiles.filter((pr) => refusal([pr], []) !== null).map((pr) => ({ kind: "pr" as const, number: pr.number })),
+  ] };
 }
 
 /**
@@ -4963,22 +4993,91 @@ export function stampLookup(read: () => Map<string, string> | null = readWorktre
 }
 
 /**
- * THE `priority` LABEL ORDERS OFFERS, AND DOES NOT GRANT (#2296). `ceo` created it 2026-09-24 as "offer this
- * row before others"; nothing read it, so a priority row waited its turn by row number like any other.
- * Labelled rows go AHEAD of the rest and this runs BEFORE the per-tick slice, or a high-numbered priority
- * row would be cut by the very cap it exists to beat. A row `partitionUnclaimed` shelved never reaches
- * here, so the label cannot walk a row past B4 or a claim label.
+ * ONE OFFER HIERARCHY (#4524, the chairman's direction of 2026-10-09: "there should also be a 'chairman wants' priority ... that trumps everything else ... I don't
+ * want to have to wait"). The order rows are offered in, each tier before the next:
  *
- * OLDEST FIRST WITHIN EACH GROUP, because a queue that hands out its newest rows first starves its oldest --
- * and the number is a row number, so ascending IS oldest. Hand assignment stays the fallback.
+ *   1. `priority:chairman` -- ONLY when the chairman's own login added the label (`readChairmanPriority`), which is why this reads the VERIFIED set and never the label.
+ *   2. `priority` (#2296), which also overrides the product-share floor (`offeredByShare`).
+ *   3. the declared milestone ranking, primary first (`offerMilestones`); a row in no ranked milestone, or in none, goes last.
+ *   4. oldest first -- the number is a row number, so ascending IS oldest, and a queue that hands out its newest rows first starves its oldest.
  *
- * @param {any[]} unclaimed
+ * Tiers 3 and 4 order WITHIN tiers 1 and 2 as well as among plain rows: a primary-milestone row beats a later-milestone row of the SAME tier. This runs BEFORE the
+ * per-tick slice, or a high-numbered priority row would be cut by the very cap it exists to beat. A row `partitionUnclaimed` shelved never reaches here, so a label
+ * cannot walk a row past a claim label or a template gap -- the one thing the hierarchy changes about eligibility is B4 against a NON-chairman holder (see there).
+ *
+ * @param {any[]} unclaimed @param {OfferHierarchy} [hierarchy] ABSENT MEANS NOT ASKED: `priority` first, then the lowest row number, exactly as before this existed
  */
-function offerOrder(unclaimed: any[]) {
-  const isPriority = (row: any) => labelsOf(row).includes(PRIORITY_LABEL);
-  return [...unclaimed].sort((a, b) =>
-    Number(isPriority(b)) - Number(isPriority(a)) || Number(a.number) - Number(b.number));
+function offerOrder(unclaimed: any[], hierarchy?: OfferHierarchy) {
+  const tier = (row: any) => (isChairmanRow(row, hierarchy?.chairmanRows) ? 0 : labelsOf(row).includes(PRIORITY_LABEL) ? 1 : 2);
+  const rank = (row: any) => milestoneRank(row, hierarchy?.milestoneRanking);
+  return [...unclaimed].sort((a, b) => tier(a) - tier(b) || rank(a) - rank(b) || Number(a.number) - Number(b.number));
 }
+
+/** The label the chairman puts on a row he wants picked up NEXT. Nothing but a label by `CHAIRMAN_LOGINS` makes a row one (#4524). */
+export const CHAIRMAN_PRIORITY_LABEL = "priority:chairman";
+
+/** What the offer hierarchy needs beyond the rows: who the chairman's rows are, whose label was refused, and the milestone ranking. EVERY FIELD IS OPTIONAL: absent is not asked. */
+export type OfferHierarchy = {
+  chairmanRows?: ReadonlySet<number>;
+  ignored?: { number: number; actor: string | null; }[];
+  milestoneRanking?: readonly string[];
+};
+
+const chairmanRowsOf = (hierarchy?: OfferHierarchy) => hierarchy?.chairmanRows;
+
+/** @param {any} row @param {ReadonlySet<number> | undefined} chairmanRows */
+const isChairmanRow = (row: any, chairmanRows: ReadonlySet<number> | undefined) => chairmanRows?.has(Number(row?.number)) === true;
+
+/**
+ * A row's place in the declared milestone ranking: its index, or `ranking.length` -- LAST -- for a row in no milestone and for one in a milestone nobody ranked.
+ * A ranking entry names a milestone by its number or its title, so a later tracker's project identifier fits the same list.
+ * @param {any} row @param {readonly string[]} [ranking]
+ */
+export function milestoneRank(row: any, ranking: readonly string[] = []): number {
+  const milestone = row?.milestone;
+  if (!milestone) return ranking.length;
+  const found = ranking.findIndex((entry) => entry === String(milestone.number) || entry === milestone.title);
+  return found === -1 ? ranking.length : found;
+}
+
+/**
+ * WHO PUT `priority:chairman` ON EACH ROW THAT CARRIES IT, read from the tracker's own history and not from the label (#4524). The newest `labeled` event decides:
+ * a label taken off and put on again is a new ask, as `needs:chairman` is. Added by a login in `CHAIRMAN_LOGINS` the row is the chairman's; by anyone else it is
+ * IGNORED -- said on stderr and returned for `decide` to report to `ceo`, never offered ahead of other work. A history that cannot be read FAILS CLOSED (the row is
+ * not the chairman's this tick) and is said, which costs one tick on a genuine label and cannot be forged by an outage.
+ * @param {any[]} rows the Ready rows @param {(args: string[]) => string} [run]
+ * @returns {{ chairmanRows: Set<number>, ignored: { number: number, actor: string | null }[], unread: number[] }}
+ */
+export function readChairmanPriority(rows: any[], run: (args: string[]) => string = defaultRun): { chairmanRows: Set<number>; ignored: { number: number; actor: string | null; }[]; unread: number[]; } {
+  const chairmanRows = new Set<number>();
+  const ignored: { number: number; actor: string | null; }[] = [];
+  const unread: number[] = [];
+  for (const row of rows.filter((candidate) => labelsOf(candidate).includes(CHAIRMAN_PRIORITY_LABEL))) {
+    const number = Number(row.number);
+    try {
+      const actor = newestLabeller(number, run);
+      if (actor !== null && CHAIRMAN_LOGINS.includes(actor)) chairmanRows.add(number);
+      else ignored.push({ number, actor });
+    } catch (err: any) {
+      unread.push(number);
+      process.stderr.write(`chairman-priority: could not read the history of #${number} (${String(err?.message ?? err).split("\n")[0]}); its \`${CHAIRMAN_PRIORITY_LABEL}\` is NOT honoured this tick\n`);
+    }
+  }
+  for (const { number, actor } of ignored) {
+    process.stderr.write(`chairman-priority: IGNORED the \`${CHAIRMAN_PRIORITY_LABEL}\` on #${number}: ${actor === null ? "no event shows who added it" : `${actor} added it, and only ${CHAIRMAN_LOGINS.join(", ")} counts`}\n`);
+  }
+  return { chairmanRows, ignored, unread };
+}
+
+/** The login that added `priority:chairman` to the row LAST, or `null` when the history shows no such event. @param {number} number @param {(args: string[]) => string} run */
+function newestLabeller(number: number, run: (args: string[]) => string): string | null {
+  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
+    `.[] | select(.event == "labeled" and .label.name == "${CHAIRMAN_PRIORITY_LABEL}") | .actor.login`]);
+  return out.split("\n").map((line) => line.trim()).filter((line) => line !== "").at(-1) ?? null;
+}
+
+/** #4524: a row the offer may not hold to the product-share floor -- the chairman's, or `priority`'s. @param {any} row @param {ReadonlySet<number> | undefined} chairmanRows */
+const exemptFromFloor = (row: any, chairmanRows: ReadonlySet<number> | undefined) => isChairmanRow(row, chairmanRows) || labelsOf(row).includes(PRIORITY_LABEL);
 
 /**
  * How a Ready row is CLAIMED, in words. The primary project's is exactly the sentence it always was.
@@ -5074,7 +5173,7 @@ export function productShare(starts: { at: number; kind: string; }[]): { product
  * @param {any[]} offerable @param {{ starts?: { at: number, kind: string }[], declaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} [read]
  *        `shareMemory` (#3929) is where the line is remembered so it prints when it CHANGES; omitted, it prints every time it is reached.
  */
-export function offeredByShare(offerable: any[], { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory }: { starts?: { at: number; kind: string; }[]; declaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; }; } = {}) {
+function offeredByFloor(offerable: any[], { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory }: { starts?: { at: number; kind: string; }[]; declaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; }; } = {}) {
   if (starts === undefined || declaration === undefined) return offerable;
   const { product, of } = productShare(starts);
   if (product >= PRODUCT_SHARE_FLOOR) {
@@ -5092,6 +5191,19 @@ export function offeredByShare(offerable: any[], { starts, declaration, shareLog
   const line = `NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`;
   if (shareLineDue(line, shareMemory)) shareLog(line);
   return offerable;
+}
+
+/**
+ * #4524: THE FLOOR BINDS PLAIN WORK ONLY. A `priority:chairman` row and a `priority` row are offered whatever the share is (the chairman's choice, of the three
+ * options put to him, for `priority`), and the floor above is applied to the REST. With nothing else on offer the floor is not asked at all: its
+ * `NO PRODUCT ROW OFFERABLE` line asks `product-manager` to stock a shelf that, with a priority row on it, is not empty.
+ * @param {any[]} offerable @param {Parameters<typeof offeredByFloor>[1] & { chairmanRows?: ReadonlySet<number> }} [read] `offeredByFloor`'s, and the verified chairman rows
+ */
+export function offeredByShare(offerable: any[], read: NonNullable<Parameters<typeof offeredByFloor>[1]> & { chairmanRows?: ReadonlySet<number>; } = {}) {
+  const exempt = offerable.filter((row) => exemptFromFloor(row, read.chairmanRows));
+  if (exempt.length === 0) return offeredByFloor(offerable, read);
+  const rest = offerable.filter((row) => !exempt.includes(row));
+  return [...exempt, ...(rest.length === 0 ? [] : offeredByFloor(rest, read))];
 }
 
 /**
@@ -5195,8 +5307,10 @@ function replacementSentence(row: { number: number; repoKey?: string; repo?: str
  *   this one discards (a shelved row is reported, not forgotten)
  * @param {Map<number, { branch: string, head: string, prs: number[] }[]>} [replacing] (#3892) `branchesToReplace`'s answer. A row in it is offered with the
  *   branches named and the `--adopt` claim, and the order carries them as `replaces` for the spawner (`claimTarget`).
+ * @param {OfferHierarchy} [hierarchy] (#4524) the order rows are offered in, and which are the chairman's. A chairman row's order carries `startFresh: true`: the spawner
+ *   starts ONE fresh engineer for it above the usual pool limit when none is idle, and never more than one per such row.
  */
-function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; head: string; prs: number[]; }[]> = new Map()) {
+function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; head: string; prs: number[]; }[]> = new Map(), hierarchy?: OfferHierarchy) {
   const orders = [];
   // UNCLAIMED IS `ready` WITHOUT `in-progress`, and since 2026-09-18 also WITHOUT a B4 overlap against an
   // open PR -- both decided by `partitionUnclaimed`. This is still a CANDIDATE, not a grant:
@@ -5213,7 +5327,7 @@ function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; he
   // Per-row orders also make the ledger do the right thing. `wake` marks an agent working the moment it
   // prompts it, so several orders in one tick fan out across whoever is free, and a row already woken
   // for is a `causeKey` already spent -- the same row cannot recruit a second engineer on the next tick.
-  for (const row of offerOrder(unclaimed).slice(0, MAX_ROW_ORDERS_PER_TICK)) {
+  for (const row of offerOrder(unclaimed, hierarchy).slice(0, MAX_ROW_ORDERS_PER_TICK)) {
     // NO SESSION NAMED. Which engineer takes it depends on who is idle RIGHT NOW, which only
     // `herdr agent list` knows -- so the order names the lane and `wake.ts` picks the body.
     // ROUTED BY LANE. Every ready row went to `engineers` regardless of its lane, so a `lane:ceo` row
@@ -5221,9 +5335,11 @@ function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; he
     // that lane. `lane:any` and no lane are the pool, which is what "engineers" means here.
     const owner = laneOwnerOf(row);
     const branches = replacing.get(Number(row.number));
+    const chairman = owner === null && isChairmanRow(row, chairmanRowsOf(hierarchy));
     orders.push({
       session: owner ?? "engineers",
       cause: "ready-row-unclaimed",
+      ...(chairman ? { startFresh: true } : {}),
       ...(branches === undefined ? {} : { replaces: branches.map(({ branch, head }) => ({ branch, head })) }),
       subject: `row-${subjectRef(row.repoKey, row.number)}`,
       // The spawner names the branch and the instance's first message from it (#2405).
@@ -5231,7 +5347,7 @@ function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; he
       // THE ROW IS THE DISCRIMINATOR NOW, not the queue depth. Keyed on the count, every claim rewrote
       // every remaining order's key and re-woke someone for rows already being offered.
       discriminator: subjectRef(row.repoKey, row.number),
-      prompt: `Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. ${branches === undefined ? claimSentence(row) : replacementSentence(row, branches)}\n`
+      prompt: `${chairman ? CHAIRMAN_ROW_BANNER : ""}Ready row ${subjectMention(row)} is unclaimed${row.title ? `: ${row.title}` : ""}. ${branches === undefined ? claimSentence(row) : replacementSentence(row, branches)}\n`
         // BOTH FLAGS OR NEITHER, and the primary refuses the work entirely: `row-claim` creates the
         // worktree from `--branch` AND `--worktree` together and refuses when given only one, and the
         // tooling will not run from the primary checkout at all. The first engineer woken by this
@@ -5251,6 +5367,62 @@ function rowOrders(unclaimed: any[], replacing: Map<number, { branch: string; he
   }
 
   return orders;
+}
+
+/** The first line of a chairman row's order: what it is, and that nothing the engineer is told elsewhere outranks it (#4524). */
+const CHAIRMAN_ROW_BANNER = `CHAIRMAN PRIORITY (the label was added by ${CHAIRMAN_LOGINS.join(", ")}): this row is to be picked up NEXT, ahead of every other row.\n`;
+
+type HierarchyOrder = { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; };
+
+/**
+ * #4524: EVERYTHING THE OFFER HIERARCHY SAYS TO SOMEBODY OTHER THAN THE ENGINEER IT OFFERS A ROW TO -- in three kinds, each one order per fact:
+ *   - a chairman row B4 (or any other shelving) REFUSED goes to `ceo` with the reason, at once, because the chairman's row must never wait in silence;
+ *   - a `priority:chairman` label somebody else added goes to `ceo` too: the label is ignored, and an actor forging the chairman's mark is an incident;
+ *   - a holder the chairman row was offered OVER is told to keep off its files and rebase after it lands.
+ * They reuse declared causes (`ready-row-unclaimable` for the first two, `claimed-row-amended` for the third) rather than add three to `cause-declaration.ts`: the
+ * recipient and the words are what differ, the profile asked of the woken session does not. All three are idempotent on their `causeKey`.
+ * @param {OfferHierarchy | undefined} hierarchy @param {{ blocked: { number: number, reason: string }[], yielding: Yielding[], openRows: any[], prs: any[] }} facts
+ */
+export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs }: { blocked: { number: number; reason: string; }[]; yielding: Yielding[]; openRows: any[]; prs: any[]; }): HierarchyOrder[] {
+  if (hierarchy === undefined) return [];
+  return [
+    ...blocked.filter((row) => hierarchy.chairmanRows?.has(row.number)).map(chairmanRefusedOrder),
+    ...(hierarchy.ignored ?? []).map(ignoredLabelOrder),
+    ...yielding.flatMap((entry) => entry.holders.flatMap((holder) => yieldOrder(entry.row, holder, { openRows, prs }))),
+  ];
+}
+
+/** @param {{ number: number, reason: string }} row */
+function chairmanRefusedOrder({ number, reason }: { number: number; reason: string; }): HierarchyOrder {
+  const discriminator = `${number}-${digestOf(reason)}`;
+  return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${number}`, discriminator,
+    prompt: `CHAIRMAN ROW REFUSED: #${number} carries \`${CHAIRMAN_PRIORITY_LABEL}\` and the gate is NOT offering it. The reason, quoted:\n\n> ${reason}\n\n`
+      + "The chairman asked for this row to be picked up next, so tell him now what is in the way and what would clear it, and do whatever in your lane clears it "
+      + "(every other eligibility check still binds a chairman row: template sections, holds, a B4 overlap with another chairman row).",
+    causeKey: `ceo/chairman-row-refused/${discriminator}` };
+}
+
+/** @param {{ number: number, actor: string | null }} ignored */
+function ignoredLabelOrder({ number, actor }: { number: number; actor: string | null; }): HierarchyOrder {
+  const discriminator = `${number}-${actor ?? "unknown"}`;
+  return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${number}`, discriminator,
+    prompt: `\`${CHAIRMAN_PRIORITY_LABEL}\` ON #${number} WAS NOT PUT THERE BY THE CHAIRMAN (${actor === null ? "no event in the row's history shows who added it" : `${actor} added it`}). `
+      + "The gate IGNORES it: the row is offered as its other labels say, and nothing is started for it. A label only the chairman's login may add, added by anyone else, "
+      + "is a ledger incident (#4437): record it as one, and take the label off if it should not stand.",
+    causeKey: `ceo/chairman-label-ignored/${discriminator}` };
+}
+
+/** The session holding `holder`, if the tick can name one. @param {number} row @param {{ kind: string, number: number }} holder @param {{ openRows: any[], prs: any[] }} facts */
+function yieldOrder(row: number, holder: { kind: "row" | "pr"; number: number; }, { openRows, prs }: { openRows: any[]; prs: any[]; }): HierarchyOrder[] {
+  const found = (holder.kind === "row" ? openRows : prs).find((candidate) => Number(candidate?.number) === holder.number);
+  const session = found === undefined ? null : sessionOf(found);
+  if (session === null) return [];
+  const noun = holder.kind === "row" ? "row" : "pull request";
+  return [{ session, cause: "claimed-row-amended", subject: `row-${row}`, discriminator: `${row}-over-${holder.kind}-${holder.number}`,
+    prompt: `CHAIRMAN ROW #${row} LANDS FIRST: it shares files with your ${noun} #${holder.number}. The chairman's direction is that a \`${CHAIRMAN_PRIORITY_LABEL}\` row `
+      + "is not held back by another row's Region, so the engineer on it is working in those files now. Keep off them until it merges, then rebase onto `main` (the merge queue "
+      + "serialises the merges, and yours follows). Nothing to answer.",
+    causeKey: `${session}/chairman-row-lands-first/${row}/${holder.kind}-${holder.number}` }];
 }
 
 // --- #2845: A READY ROW THE CLAIM REFUSES, TICK AFTER TICK -------------------------------------------------------------------
@@ -6322,6 +6494,8 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} state
  *        `engineerStarts` and `projectDeclaration` (#3820) are the last engineer starts and the declaration that says which rows are product; the engineer pool is
  *        offered product rows only while fewer than 6 of the last 10 starts were one (`offeredByShare`). OMITTED MEANS NOT ASKED: the offer is unrestricted.
+ *        `offerHierarchy` (#4524) is `readChairmanPriority`'s verified rows and the declared milestone ranking: the order rows are offered in, the chairman's exempt
+ *        from the product-share floor and from B4 against a holder that is not itself a chairman row. OMITTED MEANS NOT ASKED: `priority` first, then the lowest row number.
  *        `claimStalls` is `claimStallTick`'s orders (#2470): a nudge to a holder whose claim has not moved, or a release
  *        `wake.ts` performs. OMITTED MEANS NONE.
  *        `required` is the checks that can block a merge (`requiredCheckNames`), or `null` for
@@ -6389,7 +6563,7 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory }: {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy }: {
         prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
@@ -6407,6 +6581,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
         labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null;
         claimRefusals?: Record<string, { reason: string; ticks: number; }>;
         engineerStarts?: { at: number; kind: string; }[]; projectDeclaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; };
+        offerHierarchy?: OfferHierarchy;
     }): {
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
@@ -6434,9 +6609,10 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
   // causes above use: work that already EXISTS outranks work nobody has started.
-  const { offerable, blocked } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows });
+  const { offerable, blocked, yielding } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows, chairmanRows: chairmanRowsOf(offerHierarchy) });
   orders.push(...rowBranchOrders(readyRows, rowBranches, prs, branchPrs), ...incompleteRowOrders(readyRows)); // #2791, #3010, #3892
-  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory }), branchesToReplace(rowBranches, branchPrs)), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory, chairmanRows: chairmanRowsOf(offerHierarchy) }), branchesToReplace(rowBranches, branchPrs), offerHierarchy), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  orders.push(...hierarchyOrders(offerHierarchy, { blocked, yielding, openRows, prs })); // #4524: what the hierarchy says to the chairman's reader and to the holders it was offered over
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
@@ -7888,6 +8064,12 @@ export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?
   }), run, batch);
 }
 
+/** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows */
+function offerHierarchyNow(rows: any[]): OfferHierarchy {
+  const { chairmanRows, ignored } = readChairmanPriority(rows);
+  return { chairmanRows, ignored, milestoneRanking: homeProjectDeclaration().offerMilestones };
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -7925,6 +8107,7 @@ function main() {
   const strippedClosedClaims = stripClosedClaims(closedClaimLabels); // #3883: the closed rows whose holder herdr does not list lose their claim labels, in the tick that read them
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
+  const offerHierarchy = offerHierarchyNow(rows); // #4524: who the chairman's rows are, from the tracker's history, and the declared milestone ranking
   const rowBranches = readRowBranches(), branchPrs = readBranchPrsOfUnclaimed(rows, rowBranches); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
   const pools: import("./org-health.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
@@ -7947,7 +8130,7 @@ function main() {
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
-    unarmed: armingSplit === null ? null : armingSplit.unarmed, rowBranches, branchPrs, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen }),
+    unarmed: armingSplit === null ? null : armingSplit.unarmed, rowBranches, branchPrs, claimRefusals: offeredRefusalStreaks(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }), offerHierarchy,
     // #2174: A LOCAL READ, NOT AN API ONE -- a `readdir`, some `readFileSync` and one `systemctl` spawn
     // per shipped timer. It adds nothing to `GH_READS` and cannot be refused by an exhausted pool, which
     // is what lets the detection exist at all.
@@ -7981,7 +8164,7 @@ function main() {
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
-  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen }).blocked,
+  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }).blocked,
     ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
 
   const unread = unreadLanes({ prs, readyRows, others });
