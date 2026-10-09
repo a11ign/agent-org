@@ -700,7 +700,13 @@ const writeErr = (line: string) => { process.stderr.write(line); };
 const writeOut = (line: string) => { process.stdout.write(line); };
 
 /** @param {string[]} args */
-const defaultGh = (args: string[]) => { execFileSync("gh", args, { stdio: "inherit" }); };
+export const PR_OPEN_ENV = "A11Y_PR_OPEN";
+/**
+ * `host/gh` refuses `gh pr create` unless this variable is set (#4397), so the one create that may pass is this tool's. It is set on the `gh`
+ * child alone: the row's Acceptance command runs from `process.env`, which never carries it.
+ * @param {string[]} args
+ */
+export const defaultGh = (args: string[]) => { execFileSync("gh", args, { stdio: "inherit", env: { ...process.env, [PR_OPEN_ENV]: "1" } }); };
 /**
  * PR N's head, over REST (`gh api`, the core pool) rather than `gh pr view --json` (GraphQL, the pool that runs out).
  * @param {string} repo

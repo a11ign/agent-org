@@ -50,6 +50,19 @@ if [ -z "$GH_CONFIG_DIR" ]; then
   export GH_CONFIG_DIR
 fi
 
+# --- #4397: `gh pr create` IS OPENED BY `pr:open` ONLY ---------------------------------------------------------------
+#
+# `pr:open` labels the PR with its session, checks the body's `Acceptance:` and `Closes` with the parser CI uses, and refuses a
+# diff outside the row's Region; a raw create skips all three (agent-org#436 was opened that way: no label for 39 minutes, no
+# `Closes`). `engineer.md` says "never raw `gh pr create`" and that is a sentence; this is the one choke point every agent's `gh`
+# passes through. `pr:open` runs its `gh` child with `A11Y_PR_OPEN=1`, so the variable's absence is a create that did not come
+# through it. It binds agents only: a call with no workspace id is already refused above, and a runner has no wrapper. Like the
+# refusal above it exits before gh-real and BEFORE THE LEDGER, so it writes no line.
+if [ "$1 $2" = "pr create" ] && [ -z "${A11Y_PR_OPEN:-}" ]; then
+  echo "gh: refusing 'gh pr create': a pull request is opened with 'pnpm run pr:open', which labels it with your session and checks its Acceptance and Closes lines, and a raw create does neither." >&2
+  exit 1
+fi
+
 # --- #3466: THE CALL LEDGER -- which call spends which pool, so the burner can be NAMED -------------------------
 #
 # One TAB-separated line per call, appended to `$GH_CONFIG_DIR/gh-calls.tsv` (the account's own config dir, so a
