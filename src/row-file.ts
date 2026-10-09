@@ -115,6 +115,7 @@ import { PRIMARY_MILESTONE_LINE } from "./org-health.ts"; // #4378
 import { parseWaits, umbrellaEdge } from "./wait-condition.ts";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.ts"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.ts";
+import { blastRadiusGate, ghBlastReads, type BlastVerdict } from "./blast-radius.ts"; // #4601
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
 // enforces exactly this: a fresh local declaration of any of the four, anywhere in this directory, is a
@@ -1771,6 +1772,12 @@ export function createIssue(argv: string[], deps: {
     process.stderr.write(`${umbrella}\n`);
     return 1;
   }
+  const blast = blastRadiusOf((body as string), run, declaration); // #4601: before anything is filed, so a refusal leaves nothing behind
+  if (blast.refusal) {
+    process.stderr.write(`${blast.refusal}\n`);
+    return 1;
+  }
+  if (blast.warning) process.stderr.write(`${blast.warning}\n`);
   for (const warning of filingWarnings((body as string), argv)) {
     process.stderr.write(`row-file: ${warning}\n`);
   }
@@ -1828,8 +1835,17 @@ export function createIssue(argv: string[], deps: {
     process.stderr.write(`row-file: ${result.message}\n`);
     return 2;
   }
+  if (blast.note) process.stderr.write(`${blast.note}\n`);
   process.stdout.write(`https://github.com/${tracker.repo}/issues/${issueNumber}\n`);
   return 0;
+}
+
+/**
+ * #4601: HOW MUCH OF THE TREE THIS REGION RESERVES, judged by `blast-radius.ts`. Over 20 files or 5 open rows and pull requests refuses
+ * unless the body declares a sweep; the reads go through the injected `run`, so a test needs no network.
+ */
+function blastRadiusOf(body: string, run: typeof defaultRun, declaration: Parameters<typeof ghBlastReads>[1]): BlastVerdict {
+  return blastRadiusGate(body, ghBlastReads(run, declaration));
 }
 
 /**
