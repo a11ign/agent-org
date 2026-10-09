@@ -19,7 +19,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -90,9 +91,10 @@ test("the exports map holds exactly the declared subpaths", () => {
 
 test("Node resolves each declared subpath, through the package name, to the file the map names", () => {
   const map = readManifest(ROOT).exports ?? {};
+  // `createRequire`, not `import.meta.resolve`: rstest replaces the latter with an object that has no `resolve`, and Node's own resolver is the point.
+  const resolveFromPackage = createRequire(join(ROOT, "package.json")).resolve;
   for (const subpath of Object.keys(DECLARED_EXPORTS)) {
-    const resolved = import.meta.resolve(`agent-org${subpath.slice(1)}`);
-    assert.equal(resolved, pathToFileURL(join(ROOT, map[subpath] as string)).href, subpath);
+    assert.equal(resolveFromPackage(`agent-org${subpath.slice(1)}`), join(ROOT, map[subpath] as string), subpath);
   }
 });
 
