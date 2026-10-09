@@ -1,4 +1,3 @@
-// @ts-check
 // THE TELEGRAM PROVIDER'S LONG POLL AND THE LOOP THAT RUNS IT (a11ign/a11ign#2907; docs/messaging.md decision 1, "Long polling"). The
 // provider of send.mjs plus `poll`, so it is a provider by the same single definition (`runProviderConformance`, now with its `poll`
 // section RUN because `capabilities.conversation` is declared). **No inbound port: the listener asks Telegram, Telegram never calls it.**
@@ -40,7 +39,8 @@ const GROUP_CHAT_TYPES = new Set(["group", "supergroup", "channel"]);
 export const ALLOWED_UPDATES = Object.freeze(["message", "callback_query"]);
 
 export class TelegramApiError extends Error {
-  /** @param {string} message already scrubbed @param {{ status?: number }} [details] */
+  declare status?: number;
+  /** `message` is already scrubbed. */
   constructor(message: string, { status }: { status?: number; } = {}) {
     super(message);
     this.name = "TelegramApiError";
@@ -50,20 +50,20 @@ export class TelegramApiError extends Error {
 
 /** Telegram answered 409: somebody else is polling this bot (or a webhook is set on it). The listener refuses to run and says so. */
 export class PollConflictError extends TelegramApiError {
-  /** @param {string} message already scrubbed */
+  /** `message`: already scrubbed */
   constructor(message: string) {
     super(message, { status: CONFLICT });
     this.name = "PollConflictError";
   }
 }
 
-/** @param {unknown[]} updates @param {number | undefined} cursor @returns {number | undefined} the offset that confirms everything seen: the last id plus one, never lower than before */
+/** Returns the offset that confirms everything seen: the last id plus one, never lower than before */
 export function nextCursor(updates: unknown[], cursor: number | undefined): number | undefined {
-  const ids = updates.map((update) => /** @type {any} */ (update)?.update_id).filter(Number.isSafeInteger);
+  const ids = updates.map((update) => (update as { update_id?: unknown } | null | undefined)?.update_id).filter(Number.isSafeInteger) as number[];
   return ids.length === 0 ? cursor : Math.max(cursor ?? 0, ...ids.map((id) => id + 1));
 }
 
-/** @param {Response | Record<string, any>} response @returns {Promise<Record<string, any>>} the JSON body, or `{}` when there is none to read */
+/** Returns the JSON body, or `{}` when there is none to read */
 async function readBody(response: Response | Record<string, any>): Promise<Record<string, any>> {
   try {
     const body = await response.json();
@@ -74,17 +74,13 @@ async function readBody(response: Response | Record<string, any>): Promise<Recor
   }
 }
 
-/** @param {number} status @param {string} description @returns {string} what to do about a 409, which is the one failure with a remedy the operator owns */
+/** Returns what to do about a 409, which is the one failure with a remedy the operator owns */
 function conflictMessage(status: number, description: string): string {
   return `telegram answered ${status} Conflict (${description}): another process is polling this bot, or a webhook is set on it. `
     + "Stop the other poller (a second `messaging:listen`, a `messaging:pair` still running, or another host using this token) and start this one again.";
 }
 
-/**
- * One Telegram Bot API method, as a function. Every failure is scrubbed of the token and carries the status.
- * @param {{ token: import("../../secret.ts").Secret, fetch: typeof fetch, apiBase: string }} api
- * @returns {(method: string, payload: Record<string, unknown>, options?: { signal?: AbortSignal, timeoutMs?: number }) => Promise<any>}
- */
+/** One Telegram Bot API method, as a function. Every failure is scrubbed of the token and carries the status. */
 function callerFor({ token, fetch: fetchImpl, apiBase }: { token: import("../../secret.ts").Secret; fetch: typeof fetch; apiBase: string; }): (method: string, payload: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number; }) => Promise<any> {
   const guarded = redactingFetch(fetchImpl, token);
   return async (method, payload, { signal, timeoutMs = REQUEST_SLACK_MS } = {}) => {
@@ -105,9 +101,6 @@ function callerFor({ token, fetch: fetchImpl, apiBase }: { token: import("../../
 /**
  * The send-only provider plus the inbound half: `poll(cursor, signal)` per docs/messaging.md, and the four calls the listener makes in
  * answer to what `inbound.handle` says to do. `chatId` is the chairman's, which `send` speaks to.
- *
- * @param {{ token: import("../../secret.ts").Secret, chatId: number | string, fetch?: typeof fetch, sleep?: (ms: number) => Promise<void>,
- *   log?: (line: string) => void, apiBase?: string, listenSeconds?: number }} options
  */
 export function createTelegramPollingProvider(options: {
         token: import("../../secret.ts").Secret; chatId: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
@@ -120,9 +113,8 @@ export function createTelegramPollingProvider(options: {
     ...sender,
     capabilities: Object.freeze({ ...sender.capabilities, conversation: true }),
     /**
-     * @param {number | undefined} cursor the offset to ask from; undefined asks for whatever Telegram still holds
-     * @param {AbortSignal} [signal] aborted, the call returns at once with nothing: the listener's shutdown does not wait out a long poll
-     * @returns {Promise<{ updates: any[], cursor: number | undefined }>}
+     * `cursor`: the offset to ask from; undefined asks for whatever Telegram still holds
+     * `signal`: aborted, the call returns at once with nothing: the listener's shutdown does not wait out a long poll
      */
     async poll(cursor: number | undefined, signal?: AbortSignal): Promise<{ updates: any[]; cursor: number | undefined; }> {
       if (signal?.aborted) return { updates: [], cursor };
@@ -136,15 +128,13 @@ export function createTelegramPollingProvider(options: {
         throw error;
       }
     },
-    /** @param {string} callbackQueryId @returns {Promise<void>} stops the spinner; no text, so a stranger learns nothing from it */
+    /** Stops the spinner; no text, so a stranger learns nothing from it */
     async answerCallbackQuery(callbackQueryId: string): Promise<void> {
       await call("answerCallbackQuery", { callback_query_id: callbackQueryId });
     },
-    /** @param {number} chatId @returns {Promise<void>} */
     async leaveChat(chatId: number): Promise<void> {
       await call("leaveChat", { chat_id: chatId });
     },
-    /** @param {{ chatId: number, messageId: number | null }} message @returns {Promise<void>} */
     async deleteMessage({ chatId, messageId }: { chatId: number; messageId: number | null; }): Promise<void> {
       if (messageId === null) throw new TypeError("deleteMessage: the update named no message id to delete");
       await call("deleteMessage", { chat_id: chatId, message_id: messageId });
@@ -155,23 +145,19 @@ export function createTelegramPollingProvider(options: {
 /**
  * Where the offset is kept, so a restart asks from it. A corrupt or unreadable file is "no offset": the ledger's dedupe makes asking from
  * the beginning of what Telegram still holds safe, and a listener that refuses to start over a bad cache is worse than one that replays.
- *
- * @param {string} path @param {{ log?: (line: string) => void }} [deps]
- * @returns {{ path: string, read: () => number | undefined, write: (offset: number) => void }}
  */
 export function createOffsetStore(path: string, { log = () => {} }: { log?: (line: string) => void; } = {}): { path: string; read: () => number | undefined; write: (offset: number) => void; } {
   return {
     path,
     read() {
-      /** @type {unknown} */
       let stored: unknown;
       try {
         stored = JSON.parse(readFileSync(path, "utf8")).offset;
       } catch (error) {
-        if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") log(`offset file ${path} is unreadable (${/** @type {Error} */ (error).message}); asking from the start`);
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`offset file ${path} is unreadable (${(error as Error).message}); asking from the start`);
         return undefined;
       }
-      if (Number.isSafeInteger(stored) && /** @type {number} */ (stored) >= 0) return /** @type {number} */ (stored);
+      if (Number.isSafeInteger(stored) && (stored as number) >= 0) return stored as number;
       log(`offset file ${path} does not hold an offset; asking from the start`);
       return undefined;
     },
@@ -193,21 +179,18 @@ export function createOffsetStore(path: string, { log = () => {} }: { log?: (lin
   };
 }
 
-/** @typedef {ReturnType<typeof createTelegramPollingProvider>} PollingProvider */
+export type PollingProvider = ReturnType<typeof createTelegramPollingProvider>;
 
-/**
- * @param {{ provider: PollingProvider, chairman: { userId: number, chatId: number }, log: (line: string) => void }} context
- * @returns {(update: any) => Promise<void>} answers the update's button press, if it carries one
- */
+/** Answers the update's button press, if it carries one */
 function answererFor({ provider, log }: { provider: PollingProvider; chairman: { userId: number; chatId: number; }; log: (line: string) => void; }): (update: any) => Promise<void> {
   return async (update) => {
     const id = update?.callback_query?.id;
     if (typeof id !== "string") return;
-    await provider.answerCallbackQuery(id).catch((error) => log(`answerCallbackQuery failed: ${error.message}`));
+    await provider.answerCallbackQuery(id).catch((error: Error) => log(`answerCallbackQuery failed: ${error.message}`));
   };
 }
 
-/** @param {import("../../inbound.ts").Handled} action @param {number} chairmanChatId @returns {number | null} the chat to leave: a group, supergroup or channel that is not the chairman's */
+/** Returns the chat to leave: a group, supergroup or channel that is not the chairman's */
 function chatToLeave(action: import("../../inbound.ts").Handled, chairmanChatId: number): number | null {
   if (action.action !== "ignore" || action.chatId === null || action.chatId === chairmanChatId) return null;
   return action.chatType !== null && GROUP_CHAT_TYPES.has(action.chatType) ? action.chatId : null;
@@ -216,16 +199,11 @@ function chatToLeave(action: import("../../inbound.ts").Handled, chairmanChatId:
 /**
  * What the core said to do, done. A failure of one step is logged and does not stop the next: a secret that could not be deleted still
  * gets its reply, and one update's failure never keeps the offset from moving past it.
- *
- * @param {{ provider: PollingProvider, chairman: { userId: number, chatId: number }, onForward: (accepted: Readonly<Record<string, any>>) => Promise<void> | void,
- *   log: (line: string) => void }} context
- * @returns {(action: import("../../inbound.ts").Handled) => Promise<void>}
  */
 function performerFor({ provider, chairman, onForward, log }: {
         provider: PollingProvider; chairman: { userId: number; chatId: number; }; onForward: (accepted: Readonly<Record<string, any>>) => Promise<void> | void;
         log: (line: string) => void;
     }): (action: import("../../inbound.ts").Handled) => Promise<void> {
-  /** @param {string} what @param {() => Promise<unknown> | unknown} step */
   const attempt = async (what: string, step: () => Promise<unknown> | unknown) => {
     try {
       await step();
@@ -246,13 +224,7 @@ function performerFor({ provider, chairman, onForward, log }: {
   };
 }
 
-/**
- * One batch: every update through the core, its button answered, what the core said done. THE OFFSET IS NOT TOUCHED HERE.
- *
- * @param {any[]} updates
- * @param {{ inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled }, answer: (update: any) => Promise<void>,
- *   perform: (action: import("../../inbound.ts").Handled) => Promise<void> }} parts
- */
+/** One batch: every update through the core, its button answered, what the core said done. THE OFFSET IS NOT TOUCHED HERE. */
 async function handleBatch(updates: any[], { inbound, answer, perform }: {
         inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled; }; answer: (update: any) => Promise<void>;
         perform: (action: import("../../inbound.ts").Handled) => Promise<void>;
@@ -265,7 +237,7 @@ async function handleBatch(updates: any[], { inbound, answer, perform }: {
 
 /**
  * The next wait after a failure: 1, 2, 4 ... seconds up to the ceiling. PURE.
- * @param {number | null} previousMs the last wait, or null when the last call succeeded @returns {number}
+ * `previousMs`: the last wait, or null when the last call succeeded
  */
 export function nextBackoff(previousMs: number | null): number {
   return previousMs === null ? BACKOFF_INITIAL_MS : Math.min(previousMs * 2, BACKOFF_CEILING_MS);
@@ -274,12 +246,6 @@ export function nextBackoff(previousMs: number | null): number {
 /**
  * THE LISTENER'S LOOP. Returns when `signal` aborts; throws `PollConflictError` on a 409 and whatever the ledger or offset file throws
  * that cannot be retried past. Every other failure of a poll is waited out on `sleep` (the injected clock) and retried.
- *
- * @param {{ provider: PollingProvider, inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled },
- *   offsets: ReturnType<typeof createOffsetStore>, chairman: { userId: number, chatId: number },
- *   onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, sleep: (ms: number) => Promise<void>,
- *   signal?: AbortSignal, log?: (line: string) => void }} options
- * @returns {Promise<void>}
  */
 export async function runListener({ provider, inbound, offsets, chairman, onForward = () => {}, sleep, signal, log = () => {} }: {
         provider: PollingProvider; inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled; };
@@ -291,7 +257,6 @@ export async function runListener({ provider, inbound, offsets, chairman, onForw
     inbound, answer: answererFor({ provider, chairman, log }), perform: performerFor({ provider, chairman, onForward, log }),
   };
   let cursor = offsets.read();
-  /** @type {number | null} */
   let waited: number | null = null;
   while (signal?.aborted !== true) {
     try {

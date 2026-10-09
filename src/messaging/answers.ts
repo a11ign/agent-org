@@ -1,4 +1,3 @@
-// @ts-check
 // ANSWERS (a11ign/a11ign#2908, decision 2(c)): A BUTTON PRESS OR A REPLY RESOLVES A REQUEST ON ITS OWN ROW. The function that writes a
 // chairman-attributed row comment, so it is the one `isAccepted` (./inbound.ts) exists for.
 //
@@ -47,6 +46,9 @@
 // **THE CHAIRMAN'S TEXT IS QUOTED, NEVER PASTED.** Row comments are read by line-anchored parsers (`Not-before:`, `Acceptance:`) and by a
 // regex for the `chairman-options` HTML comment, so a reply is written as a blockquote with its HTML comment markers escaped.
 
+import type { Readers } from "./placeholders.ts";
+import type { Walk } from "./sources/requests.ts";
+import type { WalkReply } from "./walk.ts";
 import { FALLBACK_RECIPIENT, RECIPIENT } from "./converse.ts";
 import { actionData, isAccepted, optionData, parseButtonData } from "./inbound.ts";
 import { describeError, STATUS } from "./ledger.ts";
@@ -71,17 +73,15 @@ export const PROVENANCE = "Chairman answered via Telegram, verified id";
 /**
  * What a request message's button carries as `callback_data`. Only the option id: the row comes from the ledger, so the 64 bytes
  * Telegram allows are never the limit.
- *
- * @param {string} optionId @returns {string}
  */
 export function buttonData(optionId: string): string {
   return optionData(optionId);
 }
 
 /** The words a button may say, by the action it carries: the closed set of chairman point 5. */
-export const ACTION_LABELS = Object.freeze(/** @type {Record<string, string>} */ ({
+export const ACTION_LABELS = Object.freeze({
   approve: "Approve", done: "Done", stuck: "Stuck", later: "Later", explain: "Explain more", forme: "Do it for me",
-}));
+} as Record<string, string>);
 /** Presses that resolve the request, as an option does, and so carry an option of their own. */
 const RESOLVING = new Set(["approve", "done"]);
 /** Presses that leave the request asking. */
@@ -99,8 +99,7 @@ const MAX_BUTTON_LABEL = 64;
  * the keyboard has room for carries NO keyboard (all or nothing, as `parseChairmanOptions` is): typing an answer still works, and a row of buttons
  * missing the option the chairman meant is a quieter wrong than none. The room is counted WITH the act's button, so the button is never what is dropped.
  *
- * @param {{id: string, label: string}[]} options @param {string | null} [act] the act the brief names, from `parseChairmanAct`; null or absent draws no "Do it for me"
- * @returns {{label: string, data: string}[]}
+ * `act` is the act the brief names, from `parseChairmanAct`; null or absent draws no "Do it for me".
  */
 export function requestActions(options: { id: string; label: string; }[], act: string | null = null): { label: string; data: string; }[] {
   const names = act === null ? ["explain", "later"] : ["explain", "later", "forme"];
@@ -111,20 +110,19 @@ export function requestActions(options: { id: string; label: string; }[], act: s
   return [...answers, ...buttonsOf(names)];
 }
 
-/** @param {readonly string[]} names @returns {{label: string, data: string}[]} the buttons for these words, in this order */
+/** The buttons for these words, in this order. */
 function buttonsOf(names: readonly string[]): { label: string; data: string; }[] {
   return names.map((name) => ({ label: ACTION_LABELS[name], data: actionData(name) }));
 }
 
 /**
  * A walk step's keyboard: Done, Stuck and Explain more (a11ign/a11ign#3425, chairman point 3), or after a read that did not show the step, Done again, Stuck and Later.
- * @param {{retry?: boolean}} [which] @returns {{label: string, data: string}[]}
  */
 export function walkActions({ retry = false }: { retry?: boolean; } = {}): { label: string; data: string; }[] {
   return buttonsOf(retry ? RETRY_BUTTONS : STEP_BUTTONS);
 }
 
-/** @param {string} text @returns {string} the text as a blockquote that no parser reads as a line of its own or as an HTML comment */
+/** The text as a blockquote that no parser reads as a line of its own or as an HTML comment. */
 function quoted(text: string): string {
   const inert = text.replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;");
   return inert.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
@@ -132,38 +130,42 @@ function quoted(text: string): string {
 
 /**
  * The comment body. The first line is the provenance line the design specifies; a reply's text follows it quoted.
- *
- * @param {{ref: string, at: string, option: {id: string, label: string} | null, text: string | null}} parts @returns {string}
  */
 export function answerComment({ ref, at, option, text }: { ref: string; at: string; option: { id: string; label: string; } | null; text: string | null; }): string {
   const head = `${PROVENANCE}, message ${ref}, ${at}:`;
   return option ? `${head} ${option.id} (${option.label})` : `${head} reply\n\n${quoted(text ?? "")}`;
 }
 
+export type RowRef = { repo: string; number: number };
 /**
- * @typedef {{repo: string, number: number}} RowRef
- * @typedef {{
- *   readRow: (row: RowRef) => Promise<{state: string, labels: string[], comments: {body: string, createdAt: string, authorAssociation?: string}[]}>,
- *   comment: (row: RowRef, body: string) => Promise<void>,
- *   removeLabel: (row: RowRef, label: string) => Promise<void>,
- *   addLabel: (row: RowRef, label: string) => Promise<void>,
- * }} GithubWriter  what answers need of GitHub. `readRow` is read fresh for every answer (never remembered); `removeLabel` must resolve
- *   when the label is already absent, because a resumed answer may repeat it.
- *
- * @typedef {{
- *   liaison: (order: {text: string, messageRef: string}) => Promise<{queued: boolean, say: string, handoff: string | null, taker?: string | null, told?: string | null}>,
- * }} Orders  the one thing a press may ask the organisation for: an order to the liaison. `converse.mjs` is the only module that queues, so it builds this.
- *   `say` is the queue's own words, for the LEDGER only; `taker` is who holds the order (the fallback when the liaison's queue refused) and `told` is what the chairman is told when it
- *   went to the fallback.
- *
- * @typedef {{action: "not-an-answer"}
- *   | {action: "reply", reason: string, request: string | null, text: string, chatId: number, callbackQueryId: string | null, clearKeyboard: string | null,
- *      actions?: {label: string, data: string}[], recordSent?: (messageRef: string) => void}} Answered
- *   `clearKeyboard` is the bot message whose keyboard the caller takes off, or null: set when the message can no longer be answered, so a second press cannot happen. `actions` are the buttons the
- *   reply's own message carries (a walk's next step), and `recordSent` is called with that message's ref once it is sent, so the ledger knows what a press under it is about.
+ * What answers need of GitHub. `readRow` is read fresh for every answer (never remembered); `removeLabel` must resolve
+ * when the label is already absent, because a resumed answer may repeat it.
  */
+export type GithubWriter = {
+  readRow: (row: RowRef) => Promise<{ state: string; labels: string[]; comments: { body: string; createdAt: string; authorAssociation?: string }[] }>;
+  comment: (row: RowRef, body: string) => Promise<void>;
+  removeLabel: (row: RowRef, label: string) => Promise<void>;
+  addLabel: (row: RowRef, label: string) => Promise<void>;
+};
 
-/** @param {Record<string, any>[]} lines @param {string} ref @returns {Record<string, any> | null} the SENT line of message `ref`, when it is a request's */
+/**
+ * The one thing a press may ask the organisation for: an order to the liaison. `converse.mjs` is the only module that queues, so it builds this.
+ * `say` is the queue's own words, for the LEDGER only; `taker` is who holds the order (the fallback when the liaison's queue refused) and `told` is what the chairman is told when it
+ * went to the fallback.
+ */
+export type Orders = {
+  liaison: (order: { text: string; messageRef: string }) => Promise<{ queued: boolean; say: string; handoff: string | null; taker?: string | null; told?: string | null }>;
+};
+
+/**
+ * `clearKeyboard` is the bot message whose keyboard the caller takes off, or null: set when the message can no longer be answered, so a second press cannot happen. `actions` are the buttons the
+ * reply's own message carries (a walk's next step), and `recordSent` is called with that message's ref once it is sent, so the ledger knows what a press under it is about.
+ */
+export type Answered = { action: "not-an-answer" }
+  | { action: "reply"; reason: string; request: string | null; text: string; chatId: number; callbackQueryId: string | null; clearKeyboard: string | null;
+      actions?: { label: string; data: string }[]; recordSent?: (messageRef: string) => void };
+
+/** The SENT line of message `ref`, when it is a request's. */
 function sentRequest(lines: Record<string, any>[], ref: string): Record<string, any> | null {
   return lines.find((line) => line.direction !== "in" && line.direction !== ANSWER_DIRECTION && line.status === STATUS.sent
     && line.providerMessageId === ref && typeof line.key === "string" && parseRequestKey(line.key) !== null) ?? null;
@@ -171,12 +173,9 @@ function sentRequest(lines: Record<string, any>[], ref: string): Record<string, 
 
 /**
  * When `request`'s reminders are held back until, or null when they are not. A snooze ends when the request is ANSWERED or CLEARED after it: that
- * request is then a new ask, and 24 hours of silence earned by the old one must not swallow it.
- *
- * @param {Record<string, any>[]} lines @param {string} request @param {number} nowMs @returns {number | null} epoch milliseconds
+ * request is then a new ask, and 24 hours of silence earned by the old one must not swallow it. Epoch milliseconds.
  */
 export function snoozedUntil(lines: Record<string, any>[], request: string, nowMs: number): number | null {
-  /** @type {number | null} */
   let until: number | null = null;
   for (const line of lines) {
     if (line.direction === ANSWER_DIRECTION && line.request === request) {
@@ -189,45 +188,36 @@ export function snoozedUntil(lines: Record<string, any>[], request: string, nowM
   return until !== null && until > nowMs ? until : null;
 }
 
-/** @param {Record<string, any>[]} lines @param {string} request @param {string} ref @returns {{done: Set<string>, option: string | null}} */
 function progressOn(lines: Record<string, any>[], request: string, ref: string): { done: Set<string>; option: string | null; } {
   const mine = lines.filter((line) => line.direction === ANSWER_DIRECTION && line.request === request && line.messageRef === ref && STEPS.includes(line.step));
   return { done: new Set(mine.map((line) => line.step)), option: mine.find((line) => line.step === STEPS[0])?.option ?? null };
 }
 
 /**
- * @param {{ledger: {append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]},
- *          github: GithubWriter, chairman: {userId: number, chatId: number}, answerLabel: string, now: () => number, orders?: Orders,
- *          readers?: import("./placeholders.ts").Readers}} options
- *   `readers` are the checked-facts reads a walk's `Verify:` runs through; without them a procedure request is refused. `orders` is what `explain` and `stuck` ask the liaison through; without it those presses are told there is nobody to ask, and nothing is queued.
+ * `readers` are the checked-facts reads a walk's `Verify:` runs through; without them a procedure request is refused. `orders` is what `explain` and `stuck` ask the liaison through; without it those presses are told there is nobody to ask, and nothing is queued.
  *   `answerLabel` is the label that wakes `ceo` with the answer (the vocabulary's answer prefix + `ceo`). It is an INPUT, not a literal here,
  *   because the messaging modules are leaves that do not read the tool's vocabulary and `project-vocabulary.test.ts` refuses a copy in code.
  */
 export function createAnswers({ ledger, github, chairman, answerLabel, now, orders, readers }: {
         ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; };
         github: GithubWriter; chairman: { userId: number; chatId: number; }; answerLabel: string; now: () => number; orders?: Orders;
-        readers?: import("./placeholders.ts").Readers;
+        readers?: Readers;
     }) {
   // Refuses ids that are not integers now, rather than at the first answer: `isAccepted` throws for them.
   isAccepted(null, chairman);
   if (typeof answerLabel !== "string" || answerLabel === "") throw new TypeError("createAnswers needs the answerLabel to set (a non-empty string)");
   const walks = readers === undefined ? undefined : createWalk({ ledger, readers, now });
 
-  /**
-   * @param {Readonly<Record<string, any>>} accepted @param {string} reason @param {string | null} request @param {string} text
-   * @param {string | null} [clearKeyboard] the message to take the keyboard off
-   * @returns {Answered}
-   */
+  // `clearKeyboard` is the message to take the keyboard off.
   function reply(accepted: Readonly<Record<string, any>>, reason: string, request: string | null, text: string, clearKeyboard: string | null = null): Answered {
     return { action: "reply", reason, request, text, chatId: accepted.chatId, callbackQueryId: accepted.kind === "button" ? accepted.callbackQueryId : null, clearKeyboard };
   }
 
-  /** @param {{request: string, ref: string, step: string, via: string, option: string | null}} fields */
   function stepLine({ request, ref, step, via, option }: { request: string; ref: string; step: string; via: string; option: string | null; }) {
     ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via, option });
   }
 
-  /** The row as it is NOW: the answer to "what is asking" is read, never remembered. @param {string} name @param {{state: string, labels: string[]}} read */
+  /** The row as it is NOW: the answer to "what is asking" is read, never remembered. */
   function stateText(name: string, read: { state: string; labels: string[]; }) {
     const labels = read.labels.length === 0 ? "no labels" : read.labels.join(", ");
     return `${name} is not asking you anything now (${read.state.toLowerCase()}; ${labels}). Nothing was written.`;
@@ -236,9 +226,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
   /**
    * Does the steps `done` lacks, each recorded the moment it succeeds. A GitHub failure is recorded and returned, never thrown: the update
    * is already in the ledger (at-most-once), so the chairman is told and the next press resumes from the last recorded step.
-   *
-   * @param {{row: RowRef, request: string, ref: string, done: Set<string>, option: {id: string, label: string} | null, text: string | null}} job
-   * @returns {Promise<string | null>} the step that failed, or null
+   * Resolves to the step that failed, or null.
    */
   async function carryOut({ row, request, ref, done, option, text }: { row: RowRef; request: string; ref: string; done: Set<string>; option: { id: string; label: string; } | null; text: string | null; }): Promise<string | null> {
     const via = option ? "button" : "reply";
@@ -249,7 +237,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     };
     for (const step of STEPS.filter((candidate) => !done.has(candidate))) {
       try {
-        await writes[/** @type {keyof typeof writes} */ (step)]();
+        await writes[step as keyof typeof writes]();
       } catch (error) {
         ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via, error: describeError(error) });
         return step;
@@ -259,12 +247,11 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     return null;
   }
 
-  /** @param {number | null} id @returns {string | null} */
   const refOf = (id: number | null): string | null => (Number.isSafeInteger(id) ? String(id) : null);
 
-  /** @typedef {{accepted: Readonly<Record<string, any>>, request: string, ref: string, name: string, lines: Record<string, any>[], sent: Record<string, any>}} Press */
+  type Press = { accepted: Readonly<Record<string, any>>; request: string; ref: string; name: string; lines: Record<string, any>[]; sent: Record<string, any> };
 
-  /** `later`: one ledger line, and the row is untouched. @param {Press} press @returns {Answered} */
+  /** `later`: one ledger line, and the row is untouched. */
   function snooze({ accepted, request, ref, name, lines }: Press): Answered {
     const held = snoozedUntil(lines, request, now());
     if (held !== null) return reply(accepted, "already-snoozed", request, `Already snoozed until ${new Date(held).toISOString()}. ${name} still needs you.`);
@@ -276,8 +263,6 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
   /**
    * The order to the liaison, recorded when it is queued and a failure recorded as one: a press that failed is retried by the next, and one that
    * succeeded is not repeated. A walk's step is `walkStep`: it is asked ONCE PER STEP, because a step that was not seen is sent again under a message of its own, and its order names the step.
-   *
-   * @param {Press & {step: "explain" | "stuck", walkStep?: number, stepCount?: number}} press @returns {Promise<Answered>}
    */
   async function orderLiaison({ accepted, request, ref, name, lines, sent, step, walkStep, stepCount }: Press & { step: "explain" | "stuck"; walkStep?: number; stepCount?: number; }): Promise<Answered> {
     const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.request === request && line.step === step
@@ -286,7 +271,6 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     if (orders === undefined) return reply(accepted, "no-liaison", request, "I cannot reach the liaison from here. Nothing was sent.");
     const where = walkStep === undefined ? name : `step ${walkStep} of ${stepCount} of ${name}`;
     const lead = step === "explain" ? `the chairman asked for more on ${where}` : `the chairman is stuck at ${where}`;
-    /** @type {{queued: boolean, say: string, handoff: string | null, taker?: string | null, told?: string | null}} */
     let result: { queued: boolean; say: string; handoff: string | null; taker?: string | null; told?: string | null; };
     try {
       result = await orders.liaison({ text: `${lead}:\n\n${quoted(askOf(sent))}`, messageRef: ref });
@@ -304,7 +288,6 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
 
   /**
    * `forme`: one ledger line that `chairman:queue add` accepts as his OK for the message the press sat under; the row is untouched, because a press is a request and not an answer.
-   * @param {Press} press @returns {Answered}
    */
   function doItForMe({ accepted, request, ref, lines }: Press): Answered {
     const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.step === FORME_STEP && line.messageRef === ref);
@@ -313,24 +296,22 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     return reply(accepted, "queued-for-session", request, FORME_QUEUED);
   }
 
-  /** A press that leaves the request asking. @param {Press} press @param {string} action one of SIDE_ACTIONS @returns {Promise<Answered>} */
+  /** A press that leaves the request asking. `action` is one of SIDE_ACTIONS. */
   async function sideAction(press: Press, action: string): Promise<Answered> {
     if (action === "later") return snooze(press);
     if (action === "forme") return doItForMe(press);
-    return orderLiaison({ ...press, step: /** @type {"explain" | "stuck"} */ (action) });
+    return orderLiaison({ ...press, step: action as "explain" | "stuck" });
   }
 
-  /** @param {Readonly<Record<string, any>>} accepted @param {string} request @param {import("./walk.ts").WalkReply} walked @returns {Answered} what the walk said, with the keyboard it asks for and the hook that records its message */
-  function walkReply(accepted: Readonly<Record<string, any>>, request: string, { reason, text, buttons, recordSent, clearKeyboard = null }: import("./walk.ts").WalkReply): Answered {
+  /** What the walk said, with the keyboard it asks for and the hook that records its message. */
+  function walkReply(accepted: Readonly<Record<string, any>>, request: string, { reason, text, buttons, recordSent, clearKeyboard = null }: WalkReply): Answered {
     return { ...reply(accepted, reason, request, text, clearKeyboard), ...(buttons === undefined ? {} : { actions: buttonsOf(buttons) }), ...(recordSent === undefined ? {} : { recordSent }) };
   }
 
   /**
    * A press on a request whose brief is a procedure. Done is the walk's; Stuck is the liaison's, once per step; Later and Explain more are as they are everywhere; anything else is not a button of a walk.
-   *
-   * @param {Press & {walk: import("./sources/requests.ts").Walk, row: RowRef, done: Set<string>}} job @returns {Promise<Answered>}
    */
-  async function walkPress({ accepted, request, ref, name, lines, sent, walk, row, done }: Press & { walk: import("./sources/requests.ts").Walk; row: RowRef; done: Set<string>; }): Promise<Answered> {
+  async function walkPress({ accepted, request, ref, name, lines, sent, walk, row, done }: Press & { walk: Walk; row: RowRef; done: Set<string>; }): Promise<Answered> {
     if (accepted.kind !== "button") return { action: "not-an-answer" };
     const press = parseButtonData(accepted.data);
     if (walks === undefined) return reply(accepted, "no-walk", request, "I cannot read a step back from here, so I cannot walk you through this. Nothing was written.");
@@ -345,7 +326,6 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     return reply(accepted, "not-a-step-button", request, `That is not one of the buttons of this walk-through. Nothing was written.`);
   }
 
-  /** @param {Readonly<Record<string, any>>} accepted @returns {Promise<Answered>} */
   async function resolve(accepted: Readonly<Record<string, any>>): Promise<Answered> {
     const isButton = accepted.kind === "button";
     const ref = refOf(isButton ? accepted.messageId : accepted.replyToMessageId);
@@ -357,7 +337,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
     }
     const request = sent.key;
     const progress = progressOn(lines, request, ref);
-    const parsed = /** @type {RowRef} */ (parseRequestKey(request));
+    const parsed = parseRequestKey(request) as RowRef;
     const name = `${parsed.repo}#${parsed.number}`;
     if (progress.done.size === STEPS.length) {
       return reply(accepted, "already-answered", request, `${name} was already answered${progress.option ? ` (${progress.option})` : ""}. Nothing was written.`, ref);
@@ -381,13 +361,12 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
   let queue = Promise.resolve();
   return {
     /**
-     * @param {unknown} accepted  what `createInbound(...).handle` minted for THIS chairman; anything else is refused
-     * @returns {Promise<Answered>}
+     * `accepted` is what `createInbound(...).handle` minted for THIS chairman; anything else is refused.
      * @throws {TypeError} for a value `inbound.mjs` did not mint for this chairman
      */
     answer(accepted: unknown): Promise<Answered> {
       if (!isAccepted(accepted, chairman)) throw new TypeError("only a value minted by createInbound for this chairman may write to a row");
-      const value = /** @type {Readonly<Record<string, any>>} */ (accepted);
+      const value = accepted as Readonly<Record<string, any>>;
       // One at a time: two presses of one button must not both read "nothing done yet".
       const run = queue.then(() => resolve(value));
       queue = run.then(() => undefined, () => undefined);
@@ -396,7 +375,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
   };
 }
 
-/** @param {{body: string, createdAt: string, authorAssociation?: string}[]} comments @param {string} id @returns {{id: string, label: string} | null} the option the brief offers NOW */
+/** The option the brief offers NOW. */
 function offeredOption(comments: { body: string; createdAt: string; authorAssociation?: string; }[], id: string): { id: string; label: string; } | null {
   const brief = latestBrief(comments);
   return brief === null ? null : parseChairmanOptions(brief.body).options.find((option) => option.id === id) ?? null;
@@ -405,8 +384,6 @@ function offeredOption(comments: { body: string; createdAt: string; authorAssoci
 /**
  * The option a press resolves the request with: an option the brief offers NOW, or `approve` / `done`, which are answers in their own words. Null for a press
  * that resolves nothing (data outside the vocabulary, or a word that is not an answer).
- *
- * @param {ReturnType<typeof parseButtonData>} press @param {{body: string, createdAt: string, authorAssociation?: string}[]} comments @returns {{id: string, label: string} | null}
  */
 function optionFor(press: ReturnType<typeof parseButtonData>, comments: { body: string; createdAt: string; authorAssociation?: string; }[]): { id: string; label: string; } | null {
   if (press === null) return null;
@@ -414,13 +391,13 @@ function optionFor(press: ReturnType<typeof parseButtonData>, comments: { body: 
   return RESOLVING.has(press.name) ? { id: press.name, label: ACTION_LABELS[press.name] } : null;
 }
 
-/** @param {Record<string, any>} sent @returns {string} the ask as the chairman was shown it, on one line: what the order is about */
+/** The ask as the chairman was shown it, on one line: what the order is about. */
 function askOf(sent: Record<string, any>): string {
   const text = typeof sent.text === "string" ? sent.text : "";
   return text.replace(/\s+/g, " ").trim().slice(0, MAX_ASK_QUOTED);
 }
 
-/** @param {{option: string | null}} progress @returns {{id: string, label: string} | null} the option the started answer was made with; its comment is already written, so the label is not needed */
+/** The option the started answer was made with; its comment is already written, so the label is not needed. */
 function recordedOption({ option }: { option: string | null; }): { id: string; label: string; } | null {
   return option === null ? null : { id: option, label: "" };
 }

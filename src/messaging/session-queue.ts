@@ -1,4 +1,3 @@
-// @ts-check
 // `chairman:queue` (a11ign/a11ign#3427, D1 of epic #3409; chairman point 4): "CAN YOU DO IT FOR ME?" -- A QUEUE FOR THE CHAIRMAN'S OWN SESSION, WRITTEN ONLY AFTER HIS OK IN CHAT.
 //
 //   pnpm run chairman:queue -- add --message=45 --what=... --why=... --result-wanted=...   (the chairman's OK, as he wrote it, on stdin)
@@ -54,22 +53,21 @@ const ID_BYTES = 3;
 const MAX_FIELD = 1000;
 const TEXT_FIELDS = Object.freeze(["what", "why", "resultWanted"]);
 
-/** @param {string} home @returns {string} where the queue lives: beside the delivery log, in the same 0700 directory */
+/** Where the queue lives: beside the delivery log, in the same 0700 directory. */
 export function defaultQueuePath(home: string): string {
   return join(home, ".local", "state", "agent-org", "messaging", QUEUE_FILE);
 }
 
-/** @param {unknown} line @returns {boolean} whether a parsed line is exactly the closed schema, every field a string */
-function isAsk(line: unknown): boolean {
+/** Whether a parsed line is exactly the closed schema, every field a string. */
+function isAsk(line: unknown): line is Ask {
   if (line === null || typeof line !== "object") return false;
   const keys = Object.keys(line);
-  return keys.length === ASK_FIELDS.length && ASK_FIELDS.every((field) => keys.includes(field) && typeof /** @type {any} */ (line)[field] === "string");
+  return keys.length === ASK_FIELDS.length && ASK_FIELDS.every((field) => keys.includes(field) && typeof (line as Record<string, unknown>)[field] === "string");
 }
 
-/**
- * @typedef {{id: string, askedAt: string, approvedByMessage: string, what: string, why: string, resultWanted: string}} Ask
- * @param {string} path @returns {Ask[]} every ask, oldest first; none when there is no file. A line that is not an ask is a refusal and not a skip: a queue read past its own damage lies.
- */
+export type Ask = { id: string; askedAt: string; approvedByMessage: string; what: string; why: string; resultWanted: string };
+
+/** Every ask, oldest first; none when there is no file. A line that is not an ask is a refusal and not a skip: a queue read past its own damage lies. */
 export function readAsks(path: string): Ask[] {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8").split("\n").flatMap((text, index) => {
@@ -85,7 +83,7 @@ export function readAsks(path: string): Ask[] {
   });
 }
 
-/** @param {string} path @returns {string | null} why the file, or the directory it sits in, is not private to its owner, or null: a queue anyone can read is not the chairman's. A loose directory is refused and not repaired: it is shared with the ledger and is not this module's to re-mode. */
+/** Why the file, or the directory it sits in, is not private to its owner, or null: a queue anyone can read is not the chairman's. A loose directory is refused and not repaired: it is shared with the ledger and is not this module's to re-mode. */
 function modeProblem(path: string): string | null {
   const directory = dirname(path);
   if (existsSync(directory)) {
@@ -97,27 +95,21 @@ function modeProblem(path: string): string | null {
   return (mode & GROUP_AND_OTHER) === 0 ? null : `${path} has mode ${mode.toString(8)}, not 600, so nothing was written`;
 }
 
-/** @param {string} text @returns {string | null} the field's refusal, or null when its text is one the classifier would pass on as not a secret */
+/** The field's refusal, or null when its text is one the classifier would pass on as not a secret. */
 function secretProblem(text: string): string | null {
   const verdict = classifyText(text);
   return verdict.verdict === VERDICT.drop || verdict.verdict === VERDICT.withhold ? "it holds something shaped like a credential, so nothing was written; ask without it" : null;
 }
 
 /**
- * Is `ref` the chairman's OK? A press is a ledger line; a message needs his words.
- *
- * @param {Record<string, any>[]} lines the delivery ledger @param {{ref: string, words: string | null}} approval
- * @returns {{ok: true} | {ok: false, why: string}}
+ * Is `ref` the chairman's OK? A press is a ledger line; a message needs his words. `lines` is the delivery ledger.
  */
 export function verifyApproval(lines: Record<string, any>[], { ref, words }: { ref: string; words: string | null; }): { ok: true; } | { ok: false; why: string; } {
   if (lines.some((line) => line.direction === "answer" && line.step === FORME_STEP && line.via === "button" && line.messageRef === ref)) return { ok: true };
   return checkMessage(lines, { ref, text: words ?? "" });
 }
 
-/**
- * @param {{lines: Record<string, any>[], asks: Ask[], fields: Record<string, string>, ref: string, words: string | null}} input
- * @returns {string | null} why the ask is refused, or null
- */
+/** Why the ask is refused, or null. */
 function refusalOf({ lines, asks, fields, ref, words }: { lines: Record<string, any>[]; asks: Ask[]; fields: Record<string, string>; ref: string; words: string | null; }): string | null {
   for (const name of TEXT_FIELDS) {
     const value = fields[name];
@@ -131,7 +123,7 @@ function refusalOf({ lines, asks, fields, ref, words }: { lines: Record<string, 
   return asks.some((ask) => ask.approvedByMessage === ref) ? `message ${ref} already has an ask: one OK is one ask, so ask the chairman again` : null;
 }
 
-/** @param {Record<string, any>[]} lines @returns {Map<string, {taken: boolean, done: Record<string, any> | null}>} what has happened to each ask, folded from the ledger */
+/** What has happened to each ask, folded from the ledger. */
 function outcomes(lines: Record<string, any>[]): Map<string, { taken: boolean; done: Record<string, any> | null; }> {
   const folded = new Map();
   for (const line of lines.filter((candidate) => candidate.direction === QUEUE_DIRECTION && typeof candidate.id === "string")) {
@@ -143,7 +135,7 @@ function outcomes(lines: Record<string, any>[]): Map<string, { taken: boolean; d
   return folded;
 }
 
-/** @param {Record<string, any>[]} lines @returns {string | null} when the chairman's session last ran `list` or `take`, or null if it never has */
+/** When the chairman's session last ran `list` or `take`, or null if it never has. */
 export function lastRead(lines: Record<string, any>[]): string | null {
   const reads = lines.filter((line) => line.direction === QUEUE_DIRECTION && line.op === "read");
   return reads.length === 0 ? null : reads[reads.length - 1].ts;
@@ -151,8 +143,6 @@ export function lastRead(lines: Record<string, any>[]): string | null {
 
 /**
  * The liaison's status line. It never says the session is up, because that is not observable: it says what the file and the ledger show.
- *
- * @param {{asks: Ask[], lines: Record<string, any>[]}} state @returns {string}
  */
 export function statusLine({ asks, lines }: { asks: Ask[]; lines: Record<string, any>[]; }): string {
   const seen = outcomes(lines);
@@ -163,18 +153,13 @@ export function statusLine({ asks, lines }: { asks: Ask[]; lines: Record<string,
   return open.some((ask) => Date.parse(ask.askedAt) > Date.parse(read)) ? `${count}; not read since ${read}` : `${count}; last read ${read}`;
 }
 
-/**
- * @param {{path: string, ledger: {append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]}, now: () => number, newId?: () => string}} deps
- */
 export function createSessionQueue({ path, ledger, now, newId = () => `q-${randomBytes(ID_BYTES).toString("hex")}` }: { path: string; ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; }; now: () => number; newId?: () => string; }) {
-  /** @param {string} id @returns {{ask: Ask, taken: boolean, done: Record<string, any> | null} | null} */
   function find(id: string): { ask: Ask; taken: boolean; done: Record<string, any> | null; } | null {
     const ask = readAsks(path).find((candidate) => candidate.id === id);
     return ask === undefined ? null : { ask, ...(outcomes(ledger.read()).get(id) ?? { taken: false, done: null }) };
   }
 
   return {
-    /** @param {{ref: string, words: string | null, what: string, why: string, resultWanted: string}} input @returns {{outcome: "done" | "refused", say: string}} */
     add({ ref, words, ...fields }: { ref: string; words: string | null; what: string; why: string; resultWanted: string; }): { outcome: "done" | "refused"; say: string; } {
       const mode = modeProblem(path);
       if (mode !== null) return { outcome: "refused", say: mode };
@@ -187,7 +172,7 @@ export function createSessionQueue({ path, ledger, now, newId = () => `q-${rando
       return { outcome: "done", say: `queued ${ask.id} for the chairman's session. Nothing here acts on it; his session reads it.` };
     },
 
-    /** @returns {string[]} the open asks, oldest first, as lines; writes `lastRead` */
+    /** The open asks, oldest first, as lines; writes `lastRead`. */
     list(): string[] {
       ledger.append({ direction: QUEUE_DIRECTION, op: "read", via: "list" });
       const seen = outcomes(ledger.read());
@@ -195,7 +180,7 @@ export function createSessionQueue({ path, ledger, now, newId = () => `q-${rando
       return open.length === 0 ? ["nothing is open"] : open.map((ask) => `${ask.id}\t${seen.get(ask.id)?.taken ? "taken" : "open"}\t${ask.askedAt}\tapproved by message ${ask.approvedByMessage}\twhat: ${ask.what}\twhy: ${ask.why}\tresult wanted: ${ask.resultWanted}`);
     },
 
-    /** @param {string} id @returns {{outcome: "done" | "refused", say: string}} writes `lastRead` first, whatever the id */
+    /** Writes `lastRead` first, whatever the id. */
     take(id: string): { outcome: "done" | "refused"; say: string; } {
       ledger.append({ direction: QUEUE_DIRECTION, op: "read", via: "take" });
       const found = find(id);
@@ -206,7 +191,6 @@ export function createSessionQueue({ path, ledger, now, newId = () => `q-${rando
       return { outcome: "done", say: `took ${id}.` };
     },
 
-    /** @param {{id: string, result: string, handFix: boolean}} input @returns {{outcome: "done" | "refused", say: string}} */
     done({ id, result, handFix }: { id: string; result: string; handFix: boolean; }): { outcome: "done" | "refused"; say: string; } {
       const found = find(id);
       if (found === null) return { outcome: "refused", say: `no ask ${id} is in the queue` };
@@ -218,20 +202,18 @@ export function createSessionQueue({ path, ledger, now, newId = () => `q-${rando
       return { outcome: "done", say: `${id} done${handFix ? " (a hand-fix, counted in the measure)" : ""}. The liaison tells the chairman.` };
     },
 
-    /** @returns {string} */
     status: (): string => statusLine({ asks: readAsks(path), lines: ledger.read() }),
   };
 }
 
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), home: homedir(), now: Date.now, stdin: readStdin,
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 
-/** @returns {Promise<string>} what is on stdin; "" for a terminal, which would otherwise hang waiting for a person */
+/** What is on stdin; "" for a terminal, which would otherwise hang waiting for a person. */
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return "";
-  /** @type {Buffer[]} */
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
@@ -242,24 +224,18 @@ class Refusal extends Error {}
 
 const USAGE = "usage: chairman:queue add --message=<ref> --what=... --why=... --result-wanted=... | list | take <id> | done <id> --result=<one line> [--hand-fix] | status";
 
-/** @param {string[]} positionals @param {number} count @returns {string[]} */
 function expectArguments(positionals: string[], count: number): string[] {
   if (positionals.length !== count) throw new Refusal(USAGE);
   return positionals;
 }
 
-/** @param {Error} error @returns {number} */
 function exitCodeFor(error: Error): number {
-  const isUsage = /** @type {any} */ (error).code?.startsWith?.("ERR_PARSE_ARGS") === true;
+  const isUsage = (error as any).code?.startsWith?.("ERR_PARSE_ARGS") === true;
   return isUsage || error instanceof Refusal || error instanceof MessagingConfigRefusal ? EXIT.refused : EXIT.failed;
 }
 
-/**
- * @param {ReturnType<typeof createSessionQueue>} queue @param {{verb: string, positionals: string[], values: Record<string, any>, stdin: () => Promise<string>}} command
- * @returns {Promise<{lines: string[], code: number}>}
- */
 async function perform(queue: ReturnType<typeof createSessionQueue>, { verb, positionals, values, stdin }: { verb: string; positionals: string[]; values: Record<string, any>; stdin: () => Promise<string>; }): Promise<{ lines: string[]; code: number; }> {
-  const one = (/** @type {{outcome: string, say: string}} */ outcome: { outcome: string; say: string; }) => ({ lines: [outcome.say], code: outcome.outcome === "refused" ? EXIT.refused : EXIT.ok });
+  const one = (outcome: { outcome: string; say: string; }) => ({ lines: [outcome.say], code: outcome.outcome === "refused" ? EXIT.refused : EXIT.ok });
   if (verb === "list") return { lines: queue.list(), code: EXIT.ok };
   if (verb === "status") return { lines: [queue.status()], code: EXIT.ok };
   if (verb === "take") return one(queue.take(expectArguments(positionals, 1)[0]));
@@ -272,8 +248,7 @@ async function perform(queue: ReturnType<typeof createSessionQueue>, { verb, pos
 
 /**
  * Only `add` needs messaging switched on: it is the org's side. The chairman's session runs the rest on the same host and needs no declaration.
- *
- * @param {string[]} argv @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps] @returns {Promise<number>} the exit code
+ * Returns the exit code.
  */
 export async function main(argv: string[], deps: Partial<ReturnType<typeof DEFAULT_DEPS>> = {}): Promise<number> {
   const { root, home, now, stdin, out, err } = { ...DEFAULT_DEPS(), ...deps };

@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3519 (slice 2b of #3494): THE CODEX REVIEWERS' TURNS, read from `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` into the same turn events the Claude
 // transcripts give, so a pull request's trace holds the review that was run on it. A PURE READER: it is handed the text of a session file (or the part of one from a resume
 // point) and returns events; it opens no file and reads no home directory. The Codex session files are READ, never written.
@@ -18,10 +17,12 @@
 // completed. It includes the time the harness spent on the tool call that preceded it, as a Claude turn's does.
 import { basename } from "node:path";
 import { costOf, readRecords, subjectOfSession } from "./store.ts";
+import type { TraceEvent } from "./store.ts";
 
-/** @typedef {{ session: string | null, model: string | null, inputAt: number | null }} CodexCarry what a read leaves for the one that resumes after it */
+/** what a read leaves for the one that resumes after it */
+export type CodexCarry = { session: string | null; model: string | null; inputAt: number | null };
 
-/** `response_item` payloads that are sent TO the model as input: an order or developer message, or the output of a tool the model called. @param {any} record */
+/** `response_item` payloads that are sent TO the model as input: an order or developer message, or the output of a tool the model called. */
 function isModelInput(record: any) {
   const payload = record?.payload;
   if (record?.type === "event_msg") return payload?.type === "task_started";
@@ -30,10 +31,10 @@ function isModelInput(record: any) {
   return payload?.type === "custom_tool_call_output" || payload?.type === "function_call_output";
 }
 
-/** A rollout's id: the uuid ending its file name (`rollout-<time>-<uuid>.jsonl`), which is what `CODEX_THREAD_ID` holds in a shell that session started (measured 2026-10-05 in `~/.codex/sessions`), so `host/gh`'s id on a call names it (#3589). @param {string} file */
+/** A rollout's id: the uuid ending its file name (`rollout-<time>-<uuid>.jsonl`), which is what `CODEX_THREAD_ID` holds in a shell that session started (measured 2026-10-05 in `~/.codex/sessions`), so `host/gh`'s id on a call names it (#3589). */
 const rolloutId = (file: string) => basename(file).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
 
-/** The session's name from the directory it ran in. @param {string | undefined} cwd @param {string} file @param {string} rowRepo */
+/** The session's name from the directory it ran in. */
 function sessionNamed(cwd: string | undefined, file: string, rowRepo: string) {
   const name = cwd ? basename(cwd) : "";
   if (/^reviewer-/.test(name) && subjectOfSession(name, rowRepo).pr !== null) return name;
@@ -43,16 +44,13 @@ function sessionNamed(cwd: string | undefined, file: string, rowRepo: string) {
 /**
  * Every turn one Codex session file holds, or the part of it from a resume point. `consumed` is how many bytes of `text` are turned into events: a final line that is
  * not JSON yet (half written) is left for the next read. `carry` is `null` for a read from byte 0.
- * @param {{ text: string, file: string, rowRepo: string, carry?: CodexCarry | null }} input
- * @returns {{ session: string, events: import("./store.ts").TraceEvent[], unreadable: number, consumed: number, carry: CodexCarry }}
  */
-export function eventsOfCodexSession({ text, file, rowRepo, carry = null }: { text: string; file: string; rowRepo: string; carry?: CodexCarry | null; }): { session: string; events: import("./store.ts").TraceEvent[]; unreadable: number; consumed: number; carry: CodexCarry; } {
+export function eventsOfCodexSession({ text, file, rowRepo, carry = null }: { text: string; file: string; rowRepo: string; carry?: CodexCarry | null; }): { session: string; events: TraceEvent[]; unreadable: number; consumed: number; carry: CodexCarry; } {
   const { records, unreadable, end } = readRecords(text);
   let session = carry?.session ?? null;
   let model = carry?.model ?? null;
   let inputAt = carry?.inputAt ?? null;
-  /** @type {{ at: number, response: string, usage: any, model: string | null, since: number | null }[]} */
-  const requests: { at: number; response: string; usage: any; model: string | null; since: number | null; }[] = [];
+  const requests: { at: number; response: string; usage: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number }; model: string | null; since: number | null; }[] = [];
   for (const { record, at } of records) {
     if (record.type === "session_meta" && session === null) session = sessionNamed(record.payload?.cwd, file, rowRepo);
     if (record.type === "turn_context" && typeof record.payload?.model === "string") model = record.payload.model;
@@ -67,9 +65,9 @@ export function eventsOfCodexSession({ text, file, rowRepo, carry = null }: { te
     const cached = usage.cached_input_tokens ?? 0;
     const tokens = { input: Math.max(0, (usage.input_tokens ?? 0) - cached), output: usage.output_tokens ?? 0, cacheRead: cached, cacheWrite5m: 0, cacheWrite1h: 0 };
     return {
-      id: `codex-turn:${response}`, kind: /** @type {"turn"} */ ("turn"), source: /** @type {"transcript"} */ ("transcript"), at, session: named, ...(rolloutId(file) ? { transcript: rolloutId(file) } : {}), ...subject, cause: null, causeKey: null,
+      id: `codex-turn:${response}`, kind: "turn" as const, source: "transcript" as const, at, session: named, ...(rolloutId(file) ? { transcript: rolloutId(file) } : {}), ...subject, cause: null, causeKey: null,
       wakeId: null, model: used ?? undefined, tokens, costUsd: costOf(used ?? undefined, tokens), wallClockMs: since === null ? null : Math.max(0, at - since), sidechain: false,
-      harness: /** @type {"codex"} */ ("codex"),
+      harness: "codex" as const,
     };
   });
   return { session: named, events, unreadable: unreadable.length, consumed: end, carry: { session, model, inputAt } };

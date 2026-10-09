@@ -26,7 +26,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # EXACTLY `--reboot`, AND NOTHING THAT GRANTS MORE. The privileged command is a constant in the module (`REBOOT_ARGV`, compared by value before it spawns)
 # and the sudoers line is `/usr/bin/systemctl reboot` alone; a flag added here would be a second thing a unit can ask for, and `host-kernel.test.ts` pins
 # this line so that adding one is a reviewed change. `--self` and `--row` are for a session that runs it by hand.
-ExecStart=/usr/bin/node --import tsx packages/agent-org/src/host-kernel.ts --reboot
+ExecStart=%h/.local/bin/node packages/agent-org/src/host-kernel.ts --reboot
 
 # THE DRAIN IS THE LONG PART: the module waits up to `DRAIN_BOUND_MS` (30 min) for a seat mid-turn or a host job, then defers, plus the two `systemctl`
 # calls it times at 60 s each. A oneshot has no start timeout by default, so this states the bound and a hung `systemctl` cannot hold the unit forever.

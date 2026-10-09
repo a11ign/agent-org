@@ -3,7 +3,6 @@
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../../scripts/npm-cli-executable.mjs` and is now the tool's own copy beside it.
 // ==== end of copy header ====
-// @ts-check
 // command: run a test runner under a per-process memory cap (systemd-run MemoryMax) and say what the cap did
 //
 //   node packages/guards/src/test-memory-cap.mjs run <name> -- <command> [args...]
@@ -52,17 +51,13 @@ export const CAP_KILL_STATUS = 137;
 const MEMORY_MAX_PATTERN = /^[1-9]\d*[KMGT]?$/;
 
 /** The signals a supervisor passes on, because it is the process a `kill` aimed at the scope reaches first. */
-const FORWARDED_SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
+const FORWARDED_SIGNALS = (["SIGINT", "SIGTERM", "SIGHUP"] as const);
 
 /** A process killed by signal N exits 128 + N by the shell's convention, which is what `137` is. */
 const SIGNAL_EXIT_BASE = 128;
 const BYTES_PER_KIB = 1024;
 const UNITS = ["B", "K", "M", "G", "T"];
 
-/**
- * @param {Record<string, string | undefined>} env
- * @returns {{ memoryMax: string } | { refusal: string }}
- */
 export function memoryMaxFrom(env: Record<string, string | undefined>): { memoryMax: string; } | { refusal: string; } {
   const given = env[MEMORY_MAX_ENV];
   if (given === undefined || given === "") return { memoryMax: DEFAULT_MEMORY_MAX };
@@ -71,7 +66,6 @@ export function memoryMaxFrom(env: Record<string, string | undefined>): { memory
     + "K, M, G or T, such as 4G or 512M) -- refusing to guess a cap." };
 }
 
-/** @param {string} memoryMax */
 export function systemdRunArgs(memoryMax: string) {
   return ["--user", "--scope", "-q", "-p", `MemoryMax=${memoryMax}`, "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"];
 }
@@ -79,27 +73,23 @@ export function systemdRunArgs(memoryMax: string) {
 /**
  * Whether a capped scope can be started HERE, asked by starting one: the question is "does this scope start", not
  * "is systemd-run installed", and a runner with the binary and no user manager fails the second half of it.
- * @param {{ memoryMax: string, env?: NodeJS.ProcessEnv, spawner?: typeof spawnSync }} request
- * @returns {{ capped: true, memoryMax: string } | { capped: false, reason: string }}
  */
 export function probeCap({ memoryMax, env = process.env, spawner = spawnSync }: { memoryMax: string; env?: NodeJS.ProcessEnv; spawner?: typeof spawnSync; }): { capped: true; memoryMax: string; } | { capped: false; reason: string; } {
   const probe = spawner("systemd-run", [...systemdRunArgs(memoryMax), process.execPath, "-e", ""], { stdio: "ignore", env });
   if (probe.error) {
-    const code = /** @type {NodeJS.ErrnoException} */ (probe.error).code;
+    const code = (probe.error as NodeJS.ErrnoException).code;
     return { capped: false, reason: code === "ENOENT" ? "systemd-run absent" : `systemd-run unusable (${code})` };
   }
   if (probe.status !== 0) return { capped: false, reason: "no user manager answered" };
   return { capped: true, memoryMax };
 }
 
-/** @param {{ capped: true, memoryMax: string } | { capped: false, reason: string }} plan */
 export function capLine(plan: { capped: true; memoryMax: string; } | { capped: false; reason: string; }) {
   return plan.capped ? `memory cap: MemoryMax=${plan.memoryMax} via systemd-run` : `memory cap: none, ${plan.reason}`;
 }
 
 /**
  * The command that actually starts: the supervisor inside a scope where capped, the command itself where not.
- * @param {{ plan: { capped: boolean, memoryMax?: string }, name: string, command: string, args: string[] }} request
  */
 export function cappedCommand({ plan, name, command, args }: { plan: { capped: boolean; memoryMax?: string; }; name: string; command: string; args: string[]; }) {
   if (!plan.capped) return { command, args };
@@ -110,17 +100,13 @@ export function cappedCommand({ plan, name, command, args }: { plan: { capped: b
   };
 }
 
-/** @param {string | null} signal */
 function signalStatus(signal: string | null) {
-  return signal ? SIGNAL_EXIT_BASE + (osConstants.signals[/** @type {keyof typeof osConstants.signals} */ (signal)] ?? 0) : 1;
+  return signal ? SIGNAL_EXIT_BASE + (osConstants.signals[(signal as keyof typeof osConstants.signals)] ?? 0) : 1;
 }
 
 /**
  * THE ENTRY EVERY TEST RUN STARTS THROUGH. Prints which path it took, runs the command, returns the exit status to use.
  * `spawner` is the seam: a test injects one instead of removing `systemd-run` from the machine.
- * @param {{ name: string, command: string, args: string[], env?: NodeJS.ProcessEnv,
- *   spawner?: typeof spawnSync, stderr?: { write: (text: string) => unknown } }} request
- * @returns {number}
  */
 export function runUnderCap({ name, command, args, env = process.env, spawner = spawnSync, stderr = process.stderr }: {
         name: string; command: string; args: string[]; env?: NodeJS.ProcessEnv;
@@ -146,21 +132,20 @@ export function runUnderCap({ name, command, args, env = process.env, spawner = 
 }
 
 /**
- * @param {string} text the contents of `memory.events`
- * @returns {number | null} the `oom_kill` count, or null when the file does not carry one
+ * @param text the contents of `memory.events`
+ * @returns the `oom_kill` count, or null when the file does not carry one
  */
 export function parseOomKills(text: string): number | null {
   const match = /^oom_kill (\d+)$/m.exec(text);
   return match ? Number(match[1]) : null;
 }
 
-/** @param {string} procCgroup the contents of `/proc/self/cgroup` @returns {string | null} */
+/** @param procCgroup the contents of `/proc/self/cgroup` */
 export function cgroupDirectory(procCgroup: string): string | null {
   const match = /^0::(\/.*)$/m.exec(procCgroup);
   return match ? `/sys/fs/cgroup${match[1]}` : null;
 }
 
-/** @param {number} bytes */
 export function formatBytes(bytes: number) {
   let value = bytes;
   let unit = 0;
@@ -173,8 +158,6 @@ export function formatBytes(bytes: number) {
 
 /**
  * What the scope's cgroup says happened. `oomKills` null means it could not be read, which is not zero.
- * @param {string | null} directory
- * @returns {{ oomKills: number | null, peakBytes: number | null, unreadable?: string }}
  */
 export function readScope(directory: string | null): { oomKills: number | null; peakBytes: number | null; unreadable?: string; } {
   if (directory === null) return { oomKills: null, peakBytes: null, unreadable: "this process is not in a cgroup v2 hierarchy" };
@@ -183,14 +166,13 @@ export function readScope(directory: string | null): { oomKills: number | null; 
     const peak = Number(readFileSync(`${directory}/memory.peak`, "utf8"));
     return { oomKills, peakBytes: Number.isFinite(peak) ? peak : null };
   } catch (error) {
-    return { oomKills: null, peakBytes: null, unreadable: /** @type {Error} */ (error).message };
+    return { oomKills: null, peakBytes: null, unreadable: (error as Error).message };
   }
 }
 
 /**
  * The verdict, PURE. A kill is named by the command, the cap's value and the count the kernel kept, and is not mistaken
  * for a test failure; a run that stayed under says so too, so the absence of a kill line is never the only signal.
- * @param {{ name: string, memoryMax: string, scope: ReturnType<typeof readScope>, signal: string | null }} request
  */
 export function verdictLine({ name, memoryMax, scope, signal }: { name: string; memoryMax: string; scope: ReturnType<typeof readScope>; signal: string | null; }) {
   const peak = scope.peakBytes === null ? "peak unknown" : `peak ${formatBytes(scope.peakBytes)}`;
@@ -207,22 +189,17 @@ export function verdictLine({ name, memoryMax, scope, signal }: { name: string; 
 
 /**
  * Inside the scope: run the command, forward the signals aimed at this process, then read the scope BEFORE leaving it.
- * @param {{ name: string, memoryMax: string, command: string, args: string[], directory?: string | null,
- *   stderr?: { write: (text: string) => unknown } }} request
- * @returns {Promise<number>}
  */
 export async function supervise({ name, memoryMax, command, args, directory, stderr = process.stderr }: {
         name: string; memoryMax: string; command: string; args: string[]; directory?: string | null;
         stderr?: { write: (text: string) => unknown; };
     }): Promise<number> {
   const child = spawn(command, args, { stdio: "inherit" });
-  /** @type {Record<string, () => void>} */
   const handlers: Record<string, () => void> = {};
   for (const signal of FORWARDED_SIGNALS) {
     handlers[signal] = () => child.kill(signal);
     process.on(signal, handlers[signal]);
   }
-  /** @type {{ status: number | null, signal: NodeJS.Signals | null }} */
   const exit: { status: number | null; signal: NodeJS.Signals | null; } = await new Promise((resolve) => {
     child.on("error", (error) => {
       stderr.write(`memory cap: could not start ${name}: ${error.message}\n`);
@@ -239,8 +216,7 @@ export async function supervise({ name, memoryMax, command, args, directory, std
 
 /**
  * `<name> -- <command> [args...]`: split argv at the first `--` so a runner's own flags are never read here.
- * @param {string[]} argv everything after the subcommand
- * @returns {{ before: string[], after: string[] }}
+ * @param argv everything after the subcommand
  */
 export function splitAtDoubleDash(argv: string[]): { before: string[]; after: string[]; } {
   const at = argv.indexOf("--");
@@ -252,7 +228,6 @@ export function splitAtDoubleDash(argv: string[]): { before: string[]; after: st
  * fails on Windows (CVE-2024-27980) and the repo's own guard refuses one. The pre-push hook still names `npx`, so that
  * is `pnpm exec` here and `npm` is `pnpm`: no spelling of the old tool is ever spawned. The name stays `resolveNpmCommand`
  * because it resolves the npm-family spellings, and `pre-push`'s resolve-toward-main check pins exported names.
- * @param {string} command @param {string[]} args
  */
 export function resolveNpmCommand(command: string, args: string[]) {
   if (command === "npx") return pnpmCliInvocation(["exec", ...args]);

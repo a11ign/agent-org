@@ -1,4 +1,3 @@
-// @ts-check
 // `chairman:record` (a11ign/a11ign#3417, B4; epic #3409): THE LIAISON WRITES DOWN WHAT THE CHAIRMAN SAID, ATTRIBUTED TO THE LIAISON AND NEVER AS THE CHAIRMAN
 // (chairman point 1). It is also the home of what `correct.mjs` shares: the ledger check, the quoting, the steps and the command's plumbing.
 //
@@ -31,6 +30,7 @@ import { parseArgs } from "node:util";
 
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { createGithubWriter } from "./github-writer.ts";
+import type { GithubWriter, RowRef } from "./answers.ts";
 import { createLedger, describeError } from "./ledger.ts";
 import { requestKey } from "./sources/requests.ts";
 import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
@@ -39,33 +39,28 @@ export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const FAILED_STEP = "failed";
 const RECORD_DIRECTION = "record";
 
-/**
- * @typedef {import("./answers.ts").GithubWriter} GithubWriter
- * @typedef {import("./answers.ts").RowRef} RowRef
- * @typedef {{append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]}} Ledger
- * @typedef {{outcome: "done" | "already" | "refused" | "failed", say: string}} Outcome  `say` is what the command prints
- * @typedef {{direction: string, request: string, ref: string, extra?: Record<string, unknown>}} Job  one verb on one row for one message of the chairman's
- */
+export type Ledger = { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[] };
+/** `say` is what the command prints. */
+export type Outcome = { outcome: "done" | "already" | "refused" | "failed"; say: string };
+/** One verb on one row for one message of the chairman's. */
+export type Job = { direction: string; request: string; ref: string; extra?: Record<string, unknown> };
 
-/** @param {string} verb capitalised, past tense @param {string} ref @returns {string} the first line of every comment this file's commands write */
+/** The first line of every comment this file's commands write; `verb` is capitalised, past tense. */
 export function attribution(verb: string, ref: string): string {
   return `${verb} by liaison from the chairman's message ${ref}; not written by the chairman`;
 }
 
-/** @param {string} text @returns {string} the text as a blockquote that no parser reads as a line of its own or as an HTML comment */
+/** The text as a blockquote that no parser reads as a line of its own or as an HTML comment. */
 export function quoted(text: string): string {
   const inert = text.replaceAll("<!--", "&lt;!--").replaceAll("-->", "--&gt;");
   return inert.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
 }
 
-/** @param {string} text @returns {string} */
 const sha256Of = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
  * The words as the chairman wrote them: stdin gains a newline from `echo` and loses nothing else, so the text, without its last line break, and trimmed are each tried
- * against the receipt's hash. Whichever matches is what is quoted.
- *
- * @param {string} text @param {string} wanted the receipt's sha256 @returns {string | null}
+ * against the receipt's hash. Whichever matches is what is quoted. `wanted` is the receipt's sha256.
  */
 function wordsHashing(text: string, wanted: string): string | null {
   return [text, text.replace(/\r?\n$/, ""), text.trim()].find((candidate) => candidate !== "" && sha256Of(candidate) === wanted) ?? null;
@@ -73,9 +68,7 @@ function wordsHashing(text: string, wanted: string): string | null {
 
 /**
  * Is `ref` a message the ledger took in, and (when `text` is given) are those its words? Every refusal says which, so the liaison is told what to mend.
- *
- * @param {Record<string, any>[]} lines @param {{ref: string, text: string | null}} message `text` null: the words are not the chairman's (a brief), so only the ref is checked
- * @returns {{ok: true, at: string, words: string | null} | {ok: false, why: string}}
+ * `text` null: the words are not the chairman's (a brief), so only the ref is checked.
  */
 export function checkMessage(lines: Record<string, any>[], { ref, text }: { ref: string; text: string | null; }): { ok: true; at: string; words: string | null; } | { ok: false; why: string; } {
   const converse = lines.find((line) => line.direction === "in" && line.origin === "converse" && line.messageRef === ref);
@@ -88,7 +81,7 @@ export function checkMessage(lines: Record<string, any>[], { ref, text }: { ref:
   return words === null ? { ok: false, why: `the text given is not the words of message ${ref} (its hash differs from the ledger's), so it was not recorded` } : { ok: true, at: converse.ts, words };
 }
 
-/** @param {Record<string, any>[]} lines @param {Job} job @returns {Set<string>} the steps this verb on this row for this message has already done */
+/** The steps this verb on this row for this message has already done. */
 export function stepsDone(lines: Record<string, any>[], { direction, request, ref }: Job): Set<string> {
   const mine = lines.filter((line) => line.direction === direction && line.request === request && line.messageRef === ref && line.step !== FAILED_STEP);
   return new Set(mine.map((line) => line.step));
@@ -96,9 +89,7 @@ export function stepsDone(lines: Record<string, any>[], { direction, request, re
 
 /**
  * Does the steps `done` lacks, each recorded the moment it succeeds. A GitHub failure is recorded and returned, never thrown: the next call resumes from the last
- * recorded step, so the write before it is not made twice.
- *
- * @param {{ledger: Ledger, job: Job, steps: [string, () => Promise<void>][], done: Set<string>}} work @returns {Promise<string | null>} the step that failed, or null
+ * recorded step, so the write before it is not made twice. Returns the step that failed, or null.
  */
 export async function carryOut({ ledger, job, steps, done }: { ledger: Ledger; job: Job; steps: [string, () => Promise<void>][]; done: Set<string>; }): Promise<string | null> {
   const { direction, request, ref, extra = {} } = job;
@@ -114,7 +105,7 @@ export async function carryOut({ ledger, job, steps, done }: { ledger: Ledger; j
   return null;
 }
 
-/** @param {GithubWriter} github @param {RowRef} row @returns {Promise<{labels: string[]} | {refusal: string}>} the row as it is NOW, or why it cannot be read: a wrong number must not receive a comment */
+/** The row as it is NOW, or why it cannot be read: a wrong number must not receive a comment. */
 export async function readRowOrRefuse(github: GithubWriter, row: RowRef): Promise<{ labels: string[]; } | { refusal: string; }> {
   try {
     return await github.readRow(row);
@@ -123,7 +114,7 @@ export async function readRowOrRefuse(github: GithubWriter, row: RowRef): Promis
   }
 }
 
-/** @param {{row: RowRef, step: string | null, verb: string}} result @returns {Outcome} the outcome of a `carryOut` */
+/** The outcome of a `carryOut`. */
 export function finished({ row, step, verb }: { row: RowRef; step: string | null; verb: string; }): Outcome {
   const name = `${row.repo}#${row.number}`;
   return step === null
@@ -131,29 +122,20 @@ export function finished({ row, step, verb }: { row: RowRef; step: string | null
     : { outcome: "failed", say: `could not finish writing to ${name} (at ${step}). Call again to retry; nothing is written twice.` };
 }
 
-/** @param {{row: RowRef, verb: string}} what @returns {Outcome} */
 export function alreadyDone({ row, verb }: { row: RowRef; verb: string; }): Outcome {
   return { outcome: "already", say: `${verb} on ${row.repo}#${row.number} already. Nothing was written.` };
 }
 
 /**
  * The comment `chairman:record` writes: the attribution line, when and where he said it, then his words quoted.
- *
- * @param {{ref: string, at: string, words: string}} parts @returns {string}
  */
 export function recordComment({ ref, at, words }: { ref: string; at: string; words: string; }): string {
   return [attribution("Recorded", ref), "", `Telegram message ${ref}, ${at}, as the chairman wrote it:`, "", quoted(words)].join("\n");
 }
 
-/**
- * @param {{ledger: Ledger, github: GithubWriter}} ports
- */
 export function createRecorder({ ledger, github }: { ledger: Ledger; github: GithubWriter; }) {
   return {
-    /**
-     * @param {{row: RowRef, ref: string, text: string}} answer `text` is the chairman's words
-     * @returns {Promise<Outcome>} never throws for a refusal or a failed write: both are values
-     */
+    /** `text` is the chairman's words. Never throws for a refusal or a failed write: both are values. */
     async record({ row, ref, text }: { row: RowRef; ref: string; text: string; }): Promise<Outcome> {
       const checked = checkMessage(ledger.read(), { ref, text });
       if (!checked.ok) return { outcome: "refused", say: checked.why };
@@ -162,7 +144,7 @@ export function createRecorder({ ledger, github }: { ledger: Ledger; github: Git
       if (done.size > 0) return alreadyDone({ row, verb: "Recorded" });
       const read = await readRowOrRefuse(github, row);
       if ("refusal" in read) return { outcome: "refused", say: read.refusal };
-      const body = recordComment({ ref, at: checked.at, words: /** @type {string} */ (checked.words) });
+      const body = recordComment({ ref, at: checked.at, words: checked.words as string });
       const step = await carryOut({ ledger, job, steps: [["comment", () => github.comment(row, body)]], done });
       return finished({ row, step, verb: "Recorded" });
     },
@@ -171,12 +153,12 @@ export function createRecorder({ ledger, github }: { ledger: Ledger; github: Git
 
 /** What a caller may leave out. A spread and not parameter defaults, as `reply-cli.mjs` does. */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: /** @type {Record<string, string | undefined>} */ (process.env), home: homedir(), now: Date.now,
-  stdin: readStdin, github: /** @type {GithubWriter | undefined} */ (undefined),
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
+  root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now,
+  stdin: readStdin, github: undefined as GithubWriter | undefined,
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 
-/** @returns {Promise<string>} what is on stdin; "" for a terminal, which would otherwise hang waiting for a person */
+/** What is on stdin; "" for a terminal, which would otherwise hang waiting for a person. */
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return "";
   const chunks = [];
@@ -187,26 +169,20 @@ async function readStdin(): Promise<string> {
 /** Thrown for a command that cannot start (usage, config, no account): none of those mends itself by retrying. */
 class Refusal extends Error {}
 
-/** @param {string | undefined} value @param {string} repo @returns {RowRef} */
 function rowFrom(value: string | undefined, repo: string): RowRef {
   if (!/^[1-9]\d*$/.test(value ?? "")) throw new Refusal("--row=<number of a row in the tracker> is required");
   return { repo, number: Number(value) };
 }
 
-/** @param {Error} error @returns {number} */
 function exitCodeFor(error: Error): number {
-  const isUsage = /** @type {any} */ (error).code?.startsWith?.("ERR_PARSE_ARGS") === true;
+  const isUsage = (error as any).code?.startsWith?.("ERR_PARSE_ARGS") === true;
   return isUsage || error instanceof Refusal || error instanceof MessagingConfigRefusal ? EXIT.refused : EXIT.failed;
 }
 
 /**
  * The plumbing both commands share: arguments, the project's configuration, the declared GitHub account, the ledger, and the exit code of what `perform` says.
  * Messaging being OFF is a refusal here and not a silent success, as `chairman:reply`'s: a caller believes it is recording something.
- *
- * @param {{name: string, argv: string[], options?: Record<string, {type: "string"}>, deps?: Partial<ReturnType<typeof DEFAULT_DEPS>>,
- *   perform: (job: {values: Record<string, any>, row: RowRef, ref: string, text: string, ledger: Ledger, github: GithubWriter}) => Promise<Outcome>}} command
- *   `options` are the flags beyond `--row` and `--message`
- * @returns {Promise<number>} the exit code
+ * `options` are the flags beyond `--row` and `--message`. Returns the exit code.
  */
 export async function runCommand({ name, argv, options = {}, deps = {}, perform }: {
         name: string; argv: string[]; options?: Record<string, { type: "string"; }>; deps?: Partial<ReturnType<typeof DEFAULT_DEPS>>;
@@ -230,7 +206,7 @@ export async function runCommand({ name, argv, options = {}, deps = {}, perform 
   }
 }
 
-/** @param {string[]} argv @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps] @returns {Promise<number>} the exit code */
+/** Returns the exit code. */
 export function main(argv: string[], deps: Partial<ReturnType<typeof DEFAULT_DEPS>> = {}): Promise<number> {
   return runCommand({
     name: "chairman:record", argv, deps,

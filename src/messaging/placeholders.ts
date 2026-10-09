@@ -1,4 +1,3 @@
-// @ts-check
 // THE CLOSED VOCABULARY OF CHECKED FACTS (a11ign/a11ign#2910, row 11 of 13; design #2899 decision 2(e)). What a reply to the chairman may SAY
 // about the organisation is whatever one of these placeholders resolves to: each is RE-READ from its source at the moment of sending, so the
 // words are a reading and never a memory. `reply.mjs` is the sender; this file is the vocabulary, the parser and the reads.
@@ -43,27 +42,24 @@ const UNIT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.@-]*$/;
 /** `owner/name`, each part starting with a letter or digit, so it can never be read as a flag and cannot climb out of `repos/<owner>/<name>/`. */
 const REPOSITORY = /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/;
 
-/**
- * What a reader returns, by kind. Each method rejects when it cannot answer.
- *
- * @typedef {{
- *   issue: (number: number) => Promise<{number: number, state: string, labels: string[]}>,
- *   pr: (number: number) => Promise<{number: number, state: string, review: string}>,
- *   run: (id: number) => Promise<{status: string, conclusion: string | null}>,
- *   ready: () => Promise<{count: number}>,
- *   open: () => Promise<{count: number}>,
- *   lastMerge: () => Promise<{at: number}>,
- *   unit: (name: string) => Promise<{state: string}>,
- *   comment: (id: number) => Promise<{body: string, url: string}>,
- *   fleet: () => Promise<{up: string[], down: string[], polledAt: number}>,
- *   gate: () => Promise<{at: number}>,
- *   release: (repo: string) => Promise<{tag: string}>,
- * }} Readers
- *
- * @typedef {{raw: string, kind: string, id: string | null, field: string, fixed?: string}} Placeholder
- */
+/** What a reader returns, by kind. Each method rejects when it cannot answer. */
+export type Readers = {
+  issue: (number: number) => Promise<{ number: number; state: string; labels: string[] }>;
+  pr: (number: number) => Promise<{ number: number; state: string; review: string }>;
+  run: (id: number) => Promise<{ status: string; conclusion: string | null }>;
+  ready: () => Promise<{ count: number }>;
+  open: () => Promise<{ count: number }>;
+  lastMerge: () => Promise<{ at: number }>;
+  unit: (name: string) => Promise<{ state: string }>;
+  comment: (id: number) => Promise<{ body: string; url: string }>;
+  fleet: () => Promise<{ up: string[]; down: string[]; polledAt: number }>;
+  gate: () => Promise<{ at: number }>;
+  release: (repo: string) => Promise<{ tag: string }>;
+};
 
-/** @param {unknown} value @param {string} what @returns {string} `value`, which must be a non-empty string */
+export type Placeholder = { raw: string; kind: string; id: string | null; field: string; fixed?: string };
+
+/** Returns `value`, which must be a non-empty string. */
 function fieldValue(value: unknown, what: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${what} came back empty`);
   return value;
@@ -72,19 +68,18 @@ function fieldValue(value: unknown, what: string): string {
 /**
  * `{{run:ID.status}}`: where a run is while it runs (`queued`, `in_progress`), and its conclusion once it has one, so one field follows a run from start to end.
  * A run GitHub calls `completed` that carries no conclusion is a throw and not "completed": that word is the status, never a final state.
- * @param {{status: string, conclusion: string | null}} run @returns {string}
  */
 function runStatus({ status, conclusion }: { status: string; conclusion: string | null; }): string {
   return fieldValue(conclusion ?? (status === "completed" ? null : status), "the run's status");
 }
 
-/** @param {{status: string, conclusion: string | null}} run @returns {string} the conclusion, which a run still in progress does not have */
+/** The conclusion, which a run still in progress does not have. */
 function runConclusion({ status, conclusion }: { status: string; conclusion: string | null; }): string {
   if (conclusion === null || conclusion === undefined) throw new RangeError(`the run has not concluded (status ${status})`);
   return fieldValue(conclusion, "the conclusion");
 }
 
-/** @param {number} elapsedMs @returns {string} "3d 4h", "2h 15m" or "40m": the two most significant units, never a rounded-up one */
+/** "3d 4h", "2h 15m" or "40m": the two most significant units, never a rounded-up one. */
 export function describeAge(elapsedMs: number): string {
   if (!Number.isFinite(elapsedMs) || elapsedMs < 0) throw new RangeError(`an age of ${elapsedMs} ms is not an age`);
   const minutes = Math.floor(elapsedMs / MS_PER_MINUTE);
@@ -93,14 +88,14 @@ export function describeAge(elapsedMs: number): string {
   return hours > 0 ? `${hours}h ${minutes % MINUTES_PER_HOUR}m` : `${minutes}m`;
 }
 
-/** @param {{body: string, url: string}} comment @returns {string} the body quoted line by line, then the link: the one thing to act on */
+/** The body quoted line by line, then the link: the one thing to act on. */
 function quoteOf({ body, url }: { body: string; url: string; }): string {
   const text = fieldValue(body, "the comment's body").replace(/\r\n/g, "\n").trimEnd();
   if (text.length > QUOTE_LIMIT) throw new RangeError(`the comment is ${text.length} characters, over the ${QUOTE_LIMIT} a verbatim quote may be`);
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n${fieldValue(url, "the comment's link")}`;
 }
 
-/** @param {string[]} names @param {{polledAt: number}} value @param {number} at @returns {string} the names, and how old the poll is: the stamp is the send's, the reading is fleet-watch's */
+/** The names, and how old the poll is: the stamp is the send's, the reading is fleet-watch's. */
 function namesOf(names: string[], { polledAt }: { polledAt: number; }, at: number): string {
   return `${names.length === 0 ? "none" : names.join(", ")} (fleet-watch poll ${describeAge(at - polledAt)} ago)`;
 }
@@ -108,8 +103,6 @@ function namesOf(names: string[], { polledAt }: { polledAt: number; }, at: numbe
 /**
  * kind -> `id` (the shape its id must have, null when it takes none), `idName` (what the id is called in `PLACEHOLDER_NAMES`), `read` (what is fetched,
  * once per thing), `fields` (how each field renders).
- * @type {Readonly<Record<string, {id: RegExp | null, idName?: string, read: (readers: Readers, id: string | null) => Promise<any>,
- *   fields: Record<string, (value: any, at: number) => string>}>>}
  */
 const VOCABULARY: Readonly<Record<string, {
     id: RegExp | null; idName?: string; read: (readers: Readers, id: string | null) => Promise<any>;
@@ -150,7 +143,7 @@ export const PLACEHOLDER_NAMES = Object.freeze(
   Object.entries(VOCABULARY).flatMap(([kind, entry]) => Object.keys(entry.fields).map((field) => `${kind}${entry.id === null ? "" : `:<${entry.idName}>`}.${field}`)),
 );
 
-/** @param {string} raw @param {string} spec `kind[:id].field` @returns {Placeholder} @throws {TypeError} when `spec` is not in the vocabulary */
+/** `spec` is `kind[:id].field`. @throws {TypeError} when `spec` is not in the vocabulary */
 function parseSpec(raw: string, spec: string): Placeholder {
   const match = GRAMMAR.exec(spec);
   if (match === null) throw new TypeError(`${raw}: not of the form {{kind:id.field}} or {{kind.field}}`);
@@ -164,7 +157,7 @@ function parseSpec(raw: string, spec: string): Placeholder {
   return { raw, kind, id, field };
 }
 
-/** @param {string} raw `{{...}}` as written @param {string} inner what is between the braces @returns {Placeholder} @throws {TypeError} */
+/** `raw` is `{{...}}` as written; `inner` is what is between the braces. @throws {TypeError} */
 function parseOne(raw: string, inner: string): Placeholder {
   const match = /^unchecked:(.+)$/.exec(inner);
   if (match === null) return parseSpec(raw, inner);
@@ -173,18 +166,12 @@ function parseOne(raw: string, inner: string): Placeholder {
 }
 
 /**
- * Splits `text` into the words and the placeholders in them.
- *
- * @param {string} text
- * @returns {{segments: (string | Placeholder)[], masked: string, placeholders: Placeholder[], problems: {placeholder: string | null, reason: string}[]}}
- *   `masked` is `text` with each placeholder replaced by `MASK`; `problems` is every placeholder that is not in the vocabulary, and a stray brace.
+ * Splits `text` into the words and the placeholders in them. `masked` is `text` with each placeholder replaced by `MASK`; `problems` is every
+ * placeholder that is not in the vocabulary, and a stray brace.
  */
 export function parsePlaceholders(text: string): { segments: (string | Placeholder)[]; masked: string; placeholders: Placeholder[]; problems: { placeholder: string | null; reason: string; }[]; } {
-  /** @type {(string | Placeholder)[]} */
   const segments: (string | Placeholder)[] = [];
-  /** @type {Placeholder[]} */
   const placeholders: Placeholder[] = [];
-  /** @type {{placeholder: string | null, reason: string}[]} */
   const problems: { placeholder: string | null; reason: string; }[] = [];
   let masked = "";
   let cursor = 0;
@@ -198,7 +185,7 @@ export function parsePlaceholders(text: string): { segments: (string | Placehold
       placeholders.push(placeholder);
       segments.push(placeholder);
     } catch (error) {
-      problems.push({ placeholder: found[0], reason: /** @type {Error} */ (error).message });
+      problems.push({ placeholder: found[0], reason: (error as Error).message });
     }
   }
   segments.push(text.slice(cursor));
@@ -207,12 +194,12 @@ export function parsePlaceholders(text: string): { segments: (string | Placehold
   return { segments, masked, placeholders, problems };
 }
 
-/** @param {(string | Placeholder)[]} segments @param {Map<string, string>} values @returns {string} the words with each placeholder replaced by what was read */
+/** The words with each placeholder replaced by what was read. */
 export function renderSegments(segments: (string | Placeholder)[], values: Map<string, string>): string {
   return segments.map((segment) => (typeof segment === "string" ? segment : String(values.get(segment.raw)))).join("");
 }
 
-/** @param {string} thing `kind:id` @param {Readers} readers @returns {Promise<{value: any} | {error: unknown}>} the read, or why it failed: never a throw */
+/** `thing` is `kind:id`. Returns the read, or why it failed: never a throw. */
 async function readThing(thing: string, readers: Readers): Promise<{ value: any; } | { error: unknown; }> {
   const [kind, ...rest] = thing.split(":");
   const id = rest.join(":");
@@ -225,23 +212,17 @@ async function readThing(thing: string, readers: Readers): Promise<{ value: any;
 
 /**
  * Reads every thing the placeholders name, ONCE each, in parallel, and renders each placeholder's field. EVERY failure is collected: the caller is told
- * all of what could not be checked, not just the first.
- *
- * @param {Placeholder[]} placeholders @param {{readers: Readers, now: () => number}} deps
- * @returns {Promise<{values: Map<string, string>, failures: {placeholder: string, reason: string}[], at: number}>} `at` is when the reads finished
+ * all of what could not be checked, not just the first. `at` is when the reads finished.
  */
 export async function readPlaceholders(placeholders: Placeholder[], { readers, now }: { readers: Readers; now: () => number; }): Promise<{ values: Map<string, string>; failures: { placeholder: string; reason: string; }[]; at: number; }> {
   const reads = placeholders.filter((placeholder) => placeholder.fixed === undefined);
   const things = [...new Set(reads.map((placeholder) => `${placeholder.kind}:${placeholder.id ?? ""}`))];
-  /** @type {Map<string, {value: any} | {error: unknown}>} */
-  const settled: Map<string, { value: any; } | { error: unknown; }> = new Map(await Promise.all(things.map(async (thing) => /** @type {[string, {value: any} | {error: unknown}]} */ ([thing, await readThing(thing, readers)]))));
+  const settled: Map<string, { value: any; } | { error: unknown; }> = new Map(await Promise.all(things.map(async (thing) => [thing, await readThing(thing, readers)] as [string, { value: any; } | { error: unknown; }])));
   const at = now();
-  /** @type {Map<string, string>} */
   const values: Map<string, string> = new Map(placeholders.filter((placeholder) => placeholder.fixed !== undefined).map((placeholder) => [placeholder.raw, String(placeholder.fixed)]));
-  /** @type {{placeholder: string, reason: string}[]} */
   const failures: { placeholder: string; reason: string; }[] = [];
   for (const placeholder of reads) {
-    const outcome = /** @type {any} */ (settled.get(`${placeholder.kind}:${placeholder.id ?? ""}`));
+    const outcome = settled.get(`${placeholder.kind}:${placeholder.id ?? ""}`) as any;
     try {
       if ("error" in outcome) throw outcome.error;
       values.set(placeholder.raw, VOCABULARY[placeholder.kind].fields[placeholder.field](outcome.value, at));
@@ -255,7 +236,6 @@ export async function readPlaceholders(placeholders: Placeholder[], { readers, n
 /**
  * How many ROWS are open: the issues, never the pull requests the issues endpoint lists beside them (`repos/<repo>.open_issues_count` counts both, so it is
  * not this fact). Paged to the end, so a count over one page is the count and not the page's size.
- * @param {{api: (path: string) => Promise<any>}} github @param {string} repo @returns {Promise<number>}
  */
 async function countOpenRows(github: { api: (path: string) => Promise<any>; }, repo: string): Promise<number> {
   let count = 0;
@@ -267,7 +247,7 @@ async function countOpenRows(github: { api: (path: string) => Promise<any>; }, r
   }
 }
 
-/** @param {string} text `systemctl show` output, `Key=value` per line @returns {Record<string, string>} */
+/** `text` is `systemctl show` output, `Key=value` per line. */
 function parseProperties(text: string): Record<string, string> {
   return Object.fromEntries(text.split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 }
@@ -279,21 +259,18 @@ function parseProperties(text: string): Record<string, string> {
  *
  * `fleet` and `gate` read FILES, not GitHub, so the host that has them names them (`fleet`: the two files `fleet-watch` writes; `gateRecordPath`: the record
  * the tick writes at the end of `main()`). A host that names none gets a reader that refuses and says so, never a guess at a path.
- *
- * @param {{gh: (argv: string[]) => Promise<string>, systemctl: (argv: string[]) => Promise<string>, repo: string,
- *   fleet?: {statePath: string, capturesPath: string}, gateRecordPath?: string, now?: () => number}} deps @returns {Readers}
  */
 export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, now = Date.now }: {
         gh: (argv: string[]) => Promise<string>; systemctl: (argv: string[]) => Promise<string>; repo: string;
         fleet?: { statePath: string; capturesPath: string; }; gateRecordPath?: string; now?: () => number;
     }): Readers {
-  const github = { api: async (/** @type {string} */ path: string) => JSON.parse(await gh(["api", path])) };
+  const github = { api: async (path: string) => JSON.parse(await gh(["api", path])) };
   return {
     async issue(number) {
       const issue = await github.api(`repos/${repo}/issues/${number}`);
       // The issues endpoint answers for a pull request too, and "the row's state" of one would be a different fact than its pull request's.
       if (issue.pull_request !== undefined) throw new TypeError(`${number} is a pull request: ask for {{pr:${number}.state}}`);
-      return { number: issue.number, state: issue.state, labels: issue.labels.map((/** @type {any} */ label: any) => String(label?.name ?? label)) };
+      return { number: issue.number, state: issue.state, labels: issue.labels.map((label: any) => String(label?.name ?? label)) };
     },
     async pr(number) {
       const [pull, view] = await Promise.all([github.api(`repos/${repo}/pulls/${number}`), gh(["pr", "view", String(number), "--repo", repo, "--json", "reviewDecision"])]);

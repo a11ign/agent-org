@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // command: messaging:selftest -- send ONE synthetic inbound through the chairman's path (listen, queue, seat, back) and judge the result.
 // THE ORGANISATION CHECKS THE CHAIRMAN'S PATH ITSELF (a11ign/a11ign#3540). His first real message on it, at 19:44Z on 2026-10-04, was refused because the seat was absent,
 // and every test of the path had run against a fake queue, a fake roster or a fake provider. This sends one update through the REAL `createInbound(...).handle()`, the REAL
@@ -33,6 +32,7 @@ import { parseArgs } from "node:util";
 
 import { gitIn, liveToolVersion } from "../lib/tool-version.ts";
 import { ACKNOWLEDGEMENT, FALLBACK_RECIPIENT, RECIPIENT, createConverse, realQueue } from "./converse.ts";
+import type { QueuePort } from "./converse.ts";
 import { createInbound } from "./inbound.ts";
 import { createLedger, describeError } from "./ledger.ts";
 import { defaultLedgerPath } from "./state.ts";
@@ -57,7 +57,7 @@ const TEST_FILE = /\.test\.(mjs|ts)$/;
 /** Ids no real chairman has to share: the self-test pairs with nobody, it only has to match ITSELF. */
 const SYNTHETIC_CHAIRMAN = Object.freeze({ userId: 1, chatId: 1 });
 
-/** @param {readonly string[]} files @returns {boolean} some shipped file under a messaging path changed */
+/** Whether some shipped file under a messaging path changed. */
 export function touchesMessaging(files: readonly string[]): boolean {
   return files.some((file) => !TEST_FILE.test(file) && MESSAGING_PATH.test(file));
 }
@@ -66,9 +66,6 @@ export function touchesMessaging(files: readonly string[]): boolean {
  * WHETHER THE TICK RUNS THE SELF-TEST, a pure function of what it is told. `changedFiles` is `git diff --name-only <lastPassed> <current>`, or null when that could not be read:
  * not-knowing is a reason to run and never a reason not to. `settled` says the answer cannot change for this version (it passed, or it changed no messaging path), so the tick may
  * remember it and stop asking; a no-run for any other reason (a run waiting for the seat, a back-off) is not settled.
- *
- * @param {{ lastPassed: string | null, current: string | null, changedFiles: readonly string[] | null, pending: boolean, lastAttemptAt: number | null, now: number }} reading
- * @returns {{ run: boolean, settled: boolean, reason: string }}
  */
 export function selftestDue({ lastPassed, current, changedFiles, pending, lastAttemptAt, now }: { lastPassed: string | null; current: string | null; changedFiles: readonly string[] | null; pending: boolean; lastAttemptAt: number | null; now: number; }): { run: boolean; settled: boolean; reason: string; } {
   if (current === null) return { run: false, settled: false, reason: "the checkout is at no release tag, so there is no release to check" };
@@ -83,8 +80,6 @@ export function selftestDue({ lastPassed, current, changedFiles, pending, lastAt
 /**
  * THE TICK'S OWN QUESTION, before it spends a child process: is there anything for `--tick` to do? A quiet tick (every tick but the first after a release that matters) answers from the
  * state file and the tag alone, with no `node` started. `line` is the one line a red repeats on every tick until the retry, which is how a failure stays in the journal between runs.
- *
- * @param {{ state: ReturnType<typeof readState>, current: string | null, now: number }} reading @returns {{ spawn: boolean, line: string | null }}
  */
 export function worthAChild({ state, current, now }: { state: ReturnType<typeof readState>; current: string | null; now: number; }): { spawn: boolean; line: string | null; } {
   if (state.pending !== null) return { spawn: true, line: null };
@@ -97,11 +92,9 @@ export function worthAChild({ state, current, now }: { state: ReturnType<typeof 
 
 /** The recording provider: what the chairman WOULD have received, in an array. Its `send` is the only one `runSelftest` gives `converse`. */
 export function createRecorder() {
-  /** @type {{ messageRef: string, text: string, replyTo?: string }[]} */
   const sent: { messageRef: string; text: string; replyTo?: string; }[] = [];
   return {
     sent,
-    /** @param {{ text: string, replyTo?: string }} message */
     async send({ text, replyTo }: { text: string; replyTo?: string; }) {
       const messageRef = `selftest-${sent.length + 1}`;
       sent.push({ messageRef, text, replyTo });
@@ -110,18 +103,17 @@ export function createRecorder() {
   };
 }
 
-/** @param {number} runId @returns {string} the words the seat reads: synthetic first, and a request to do nothing at all */
+/** The words the seat reads: synthetic first, and a request to do nothing at all. */
 export function selftestText(runId: number): string {
   return `SYNTHETIC SELF-TEST ${runId}, NOT THE CHAIRMAN: agent-org messaging:selftest is checking the path from his chat to you. Take no action, send nothing to the chat and answer nobody; end your turn at once.`;
 }
 
-/** @param {{ updateId: number, text: string, at: number }} fields @returns {Record<string, any>} an update shaped as Telegram's `getUpdates` entry, from the synthetic chairman */
+/** An update shaped as Telegram's `getUpdates` entry, from the synthetic chairman. */
 export function syntheticUpdate({ updateId, text, at }: { updateId: number; text: string; at: number; }): Record<string, any> {
   const { userId, chatId } = SYNTHETIC_CHAIRMAN;
   return { update_id: updateId, message: { message_id: updateId, from: { id: userId, is_bot: false, first_name: "selftest" }, chat: { id: chatId, type: "private" }, date: Math.floor(at / 1000), text } };
 }
 
-/** @param {string} home @returns {{ ledger: string, state: string }} */
 export function selftestPaths(home: string): { ledger: string; state: string; } {
   const directory = dirname(defaultLedgerPath(home));
   return { ledger: join(directory, SELFTEST_LEDGER_FILE), state: join(directory, SELFTEST_STATE_FILE) };
@@ -130,16 +122,13 @@ export function selftestPaths(home: string): { ledger: string; state: string; } 
 /**
  * Send one synthetic update through the real path and return what happened, unjudged. `queue`, `agents` and `recorder` are for a test; left out they are the real queue, herdr's roster and
  * a fresh recorder. **Any other key in `deps` (a provider under any name) is not read.**
- *
- * @param {{ home?: string, now?: () => number, queue?: import("./converse.ts").QueuePort, queuePath?: string, agents?: () => {label: string, status: string}[] | null, recorder?: ReturnType<typeof createRecorder> }} [deps]
  */
-export async function sendSelftest({ home = homedir(), now = Date.now, queue, queuePath, agents, recorder = createRecorder() }: { home?: string; now?: () => number; queue?: import("./converse.ts").QueuePort; queuePath?: string; agents?: () => { label: string; status: string; }[] | null; recorder?: ReturnType<typeof createRecorder>; } = {}) {
+export async function sendSelftest({ home = homedir(), now = Date.now, queue, queuePath, agents, recorder = createRecorder() }: { home?: string; now?: () => number; queue?: QueuePort; queuePath?: string; agents?: () => { label: string; status: string; }[] | null; recorder?: ReturnType<typeof createRecorder>; } = {}) {
   const ledger = createLedger({ path: selftestPaths(home).ledger, now });
   const updateId = 1 + Math.max(0, ...ledger.read().map((line) => (Number.isSafeInteger(line.updateId) ? line.updateId : 0)));
   const port = queue ?? (await realQueue());
   const where = queuePath ?? port.defaultQueuePath?.();
   const handled = createInbound({ ledger, chairman: SYNTHETIC_CHAIRMAN }).handle(syntheticUpdate({ updateId, text: selftestText(updateId), at: now() }));
-  /** @type {string | null} */
   let thrown: string | null = null;
   if (handled.action === "forward") {
     const converse = createConverse({ chairman: SYNTHETIC_CHAIRMAN, queuePath: where, ledger, send: recorder.send, now, agents, queue: port });
@@ -150,16 +139,15 @@ export async function sendSelftest({ home = homedir(), now = Date.now, queue, qu
   return { updateId, handled: { action: handled.action, reason: "reason" in handled ? handled.reason : null }, thrown, line, recorded: recorder.sent, queue: port, queuePath: where, ledgerPath: ledger.path };
 }
 
-/** @typedef {{ name: string, ok: boolean | null, note: string }} Stage  ok null is "not reached" */
+/** `ok` null is "not reached". */
+type Stage = { name: string; ok: boolean | null; note: string };
 
-/** @param {Awaited<ReturnType<typeof sendSelftest>>} reading @returns {Stage} */
 function listenStage({ handled }: Awaited<ReturnType<typeof sendSelftest>>): Stage {
   return handled.action === "forward"
     ? { name: "listen", ok: true, note: "createInbound.handle forwarded the update" }
     : { name: "listen", ok: false, note: `createInbound.handle answered "${handled.action}"${handled.reason ? ` (${handled.reason})` : ""}, not forward` };
 }
 
-/** @param {Awaited<ReturnType<typeof sendSelftest>>} reading @returns {Stage} */
 function queueStage({ line, thrown }: Awaited<ReturnType<typeof sendSelftest>>): Stage {
   if (line === null) return { name: "queue", ok: false, note: `converse wrote no ledger line${thrown === null ? "" : `: ${thrown}`}` };
   if (line.verdict === "refused") return { name: "queue", ok: false, note: `neither ${RECIPIENT}'s queue nor ${FALLBACK_RECIPIENT}'s took it: ${line.refusals.join(" | ")}` };
@@ -168,7 +156,7 @@ function queueStage({ line, thrown }: Awaited<ReturnType<typeof sendSelftest>>):
   return { name: "queue", ok: true, note: `${line.taker} took it (${how})` };
 }
 
-/** @param {Record<string, any> | null} line @param {boolean | null} taken whether the queued entry has left the queue: null when that is not known yet @param {number} boundMs @returns {Stage} */
+/** `taken`: whether the queued entry has left the queue; null when that is not known yet. */
 export function seatStage(line: Record<string, any> | null, taken: boolean | null, boundMs: number = TAKEN_WITHIN_MS): Stage {
   if (line?.delivery === "delivered") return { name: "seat", ok: true, note: `${line.taker} was between tasks and was typed into at once` };
   if (line?.delivery !== "queued") return { name: "seat", ok: null, note: "no queue took the order, so no seat could" };
@@ -177,7 +165,6 @@ export function seatStage(line: Record<string, any> | null, taken: boolean | nul
   return { name: "seat", ok: null, note: `entry ${line.handoff} is waiting for ${line.taker} to take it` };
 }
 
-/** @param {Awaited<ReturnType<typeof sendSelftest>>} reading @returns {Stage} */
 function backStage({ line, recorded }: Awaited<ReturnType<typeof sendSelftest>>): Stage {
   const heard = recorded.some((message) => message.text === ACKNOWLEDGEMENT);
   if (line !== null && line.ackRef !== null && line.ackRef !== undefined && heard) return { name: "back", ok: true, note: `the acknowledgement came back through the recorder (${line.ackRef})` };
@@ -187,9 +174,6 @@ function backStage({ line, recorded }: Awaited<ReturnType<typeof sendSelftest>>)
 /**
  * THE JUDGE, pure: the first stage that failed is the red, and an order that `ceo` took and not the liaison is a DEGRADED pass naming `ceo`. `taken` is null when the entry is
  * still queued and the bound has not passed: the result is then `pending`, which only the tick's two-phase run ever sees.
- *
- * @param {Awaited<ReturnType<typeof sendSelftest>>} reading @param {boolean | null} taken
- * @returns {{ result: "pass" | "degraded" | "red" | "pending", stage: string | null, detail: string, stages: Stage[], degraded: boolean }}
  */
 export function judge(reading: Awaited<ReturnType<typeof sendSelftest>>, taken: boolean | null): { result: "pass" | "degraded" | "red" | "pending"; stage: string | null; detail: string; stages: Stage[]; degraded: boolean; } {
   const stages = [listenStage(reading), queueStage(reading), seatStage(reading.line, taken), backStage(reading)];
@@ -203,10 +187,8 @@ export function judge(reading: Awaited<ReturnType<typeof sendSelftest>>, taken: 
 
 /**
  * Whether a queued entry has left the queue. An entry the file does not hold is TAKEN, so a queue file that cannot be read is an error and never "taken".
- *
- * @param {{ queue: import("./converse.ts").QueuePort, queuePath?: string }} where @param {string} handoff @returns {boolean}
  */
-export function entryLeft({ queue, queuePath }: { queue: import("./converse.ts").QueuePort; queuePath?: string; }, handoff: string): boolean {
+export function entryLeft({ queue, queuePath }: { queue: QueuePort; queuePath?: string; }, handoff: string): boolean {
   const path = queuePath ?? queue.defaultQueuePath?.();
   if (path === undefined) throw new Error("selftest: the queue port names no queue file to read back");
   return !queue.readHandoffs(path).some((entry) => entry.id === handoff);
@@ -214,11 +196,8 @@ export function entryLeft({ queue, queuePath }: { queue: import("./converse.ts")
 
 /**
  * Judge a reading, waiting for a queued entry to be taken. `sleep` and `now` are injected so a test owns the clock.
- *
- * @param {Awaited<ReturnType<typeof sendSelftest>>} reading
- * @param {{ now?: () => number, sleep?: (ms: number) => Promise<void>, boundMs?: number }} [clock]
  */
-export async function judgeWaiting(reading: Awaited<ReturnType<typeof sendSelftest>>, { now = Date.now, sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }), boundMs = TAKEN_WITHIN_MS }: { now?: () => number; sleep?: (ms: number) => Promise<void>; boundMs?: number; } = {}) {
+export async function judgeWaiting(reading: Awaited<ReturnType<typeof sendSelftest>>, { now = Date.now, sleep = (ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }), boundMs = TAKEN_WITHIN_MS }: { now?: () => number; sleep?: (ms: number) => Promise<void>; boundMs?: number; } = {}) {
   const handoff = reading.line?.delivery === "queued" ? reading.line.handoff : null;
   const started = now();
   let taken = handoff === null ? null : entryLeft(reading, handoff);
@@ -229,25 +208,24 @@ export async function judgeWaiting(reading: Awaited<ReturnType<typeof sendSelfte
   return { ...judge(reading, handoff === null ? null : taken), waitedMs: now() - started };
 }
 
-/** @param {string} path @returns {{ lastPassed: string | null, decidedFor: string | null, lastAttemptAt: number | null, lastRed: string | null, lastReported: string | null, pending: Record<string, any> | null }} */
 export function readState(path: string): { lastPassed: string | null; decidedFor: string | null; lastAttemptAt: number | null; lastRed: string | null; lastReported: string | null; pending: Record<string, any> | null; } {
   const empty = { lastPassed: null, decidedFor: null, lastAttemptAt: null, lastRed: null, lastReported: null, pending: null };
   try {
     return { ...empty, ...JSON.parse(readFileSync(path, "utf8")) };
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return empty;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return empty;
     throw new Error(`${path} is not readable as the self-test's state`, { cause: error });
   }
 }
 
-/** @param {string} path @param {Record<string, unknown>} state write whole, then rename: a tick killed mid-write leaves the old state, never half of a new one */
+/** Write whole, then rename: a tick killed mid-write leaves the old state, never half of a new one. */
 function writeState(path: string, state: Record<string, unknown>) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(`${path}.tmp`, `${JSON.stringify(state)}\n`);
   renameSync(`${path}.tmp`, path);
 }
 
-/** @param {{ result: string, stage: string | null, detail: string }} verdict @param {string} version @returns {string} the report `ceo` reads; no clock in it, so a repeat of the same failure is the same words */
+/** The report `ceo` reads; no clock in it, so a repeat of the same failure is the same words. */
 export function reportText(verdict: { result: string; stage: string | null; detail: string; }, version: string): string {
   const head = verdict.result === "red" ? `RED at the ${verdict.stage} stage` : `DEGRADED, not green: the ${RECIPIENT} did not take it`;
   return [
@@ -258,7 +236,6 @@ export function reportText(verdict: { result: string; stage: string | null; deta
   ].join("\n");
 }
 
-/** @param {string} git @param {string} lastPassed @param {string} current @returns {string[] | null} */
 function filesChanged(git: string, lastPassed: string, current: string): string[] | null {
   try {
     return gitIn(git)(["diff", "--name-only", lastPassed, current]).split("\n").filter(Boolean);
@@ -268,10 +245,7 @@ function filesChanged(git: string, lastPassed: string, current: string): string[
   }
 }
 
-/**
- * @param {Record<string, any>} state @param {{ version: string, verdict: { result: string, stage: string | null, detail: string }, at: number }} outcome
- * @returns {{ state: Record<string, any>, report: string | null }} the state after a finished run, and the one report `ceo` is owed (null when it was told this already)
- */
+/** The state after a finished run, and the one report `ceo` is owed (null when it was told this already). */
 function afterRun(state: Record<string, any>, { version, verdict, at }: { version: string; verdict: { result: string; stage: string | null; detail: string; }; at: number; }): { state: Record<string, any>; report: string | null; } {
   const passed = verdict.result === "pass" || verdict.result === "degraded";
   const key = `${version}:${verdict.result}:${verdict.stage}`;
@@ -284,11 +258,8 @@ function afterRun(state: Record<string, any>, { version, verdict, at }: { versio
 
 /**
  * THE WORK TICK'S CALL: never waits. A queued entry is remembered in the state file and settled by a later tick; everything else is judged now.
- *
- * @param {{ home?: string, now?: () => number, current?: string | null, changedFiles?: (lastPassed: string, current: string) => string[] | null, queue?: import("./converse.ts").QueuePort, queuePath?: string, agents?: () => {label: string, status: string}[] | null, recorder?: ReturnType<typeof createRecorder> }} [deps]
- * @returns {Promise<{ lines: string[], report: string | null }>}
  */
-export async function tickSelftest({ home = homedir(), now = Date.now, current = liveToolVersion(), changedFiles, queue, queuePath, agents, recorder }: { home?: string; now?: () => number; current?: string | null; changedFiles?: (lastPassed: string, current: string) => string[] | null; queue?: import("./converse.ts").QueuePort; queuePath?: string; agents?: () => { label: string; status: string; }[] | null; recorder?: ReturnType<typeof createRecorder>; } = {}): Promise<{ lines: string[]; report: string | null; }> {
+export async function tickSelftest({ home = homedir(), now = Date.now, current = liveToolVersion(), changedFiles, queue, queuePath, agents, recorder }: { home?: string; now?: () => number; current?: string | null; changedFiles?: (lastPassed: string, current: string) => string[] | null; queue?: QueuePort; queuePath?: string; agents?: () => { label: string; status: string; }[] | null; recorder?: ReturnType<typeof createRecorder>; } = {}): Promise<{ lines: string[]; report: string | null; }> {
   const paths = selftestPaths(home);
   const state = readState(paths.state);
   const at = now();
@@ -308,10 +279,6 @@ export async function tickSelftest({ home = homedir(), now = Date.now, current =
   return finish({ paths, state, current, verdict, at, updateId: reading.updateId, lead: due.reason });
 }
 
-/**
- * @param {{ paths: { ledger: string, state: string }, state: Record<string, any>, current: string, verdict: { result: string, stage: string | null, detail: string }, at: number, updateId: number, lead: string }} run
- * @returns {{ lines: string[], report: string | null }}
- */
 function finish({ paths, state, current, verdict, at, updateId, lead }: { paths: { ledger: string; state: string; }; state: Record<string, any>; current: string; verdict: { result: string; stage: string | null; detail: string; }; at: number; updateId: number; lead: string; }): { lines: string[]; report: string | null; } {
   const done = afterRun(state, { version: current, verdict, at });
   writeState(paths.state, done.state);
@@ -319,11 +286,7 @@ function finish({ paths, state, current, verdict, at, updateId, lead }: { paths:
   return { lines: [`messaging selftest ${verdict.result.toUpperCase()}${verdict.stage ? ` at ${verdict.stage}` : ""} for ${current}: ${verdict.detail} (${lead})`], report: done.report };
 }
 
-/**
- * @param {{ paths: { ledger: string, state: string }, state: Record<string, any>, at: number, queue?: import("./converse.ts").QueuePort, queuePath?: string }} run
- * @returns {Promise<{ lines: string[], report: string | null }>}
- */
-async function settlePending({ paths, state, at, queue, queuePath }: { paths: { ledger: string; state: string; }; state: Record<string, any>; at: number; queue?: import("./converse.ts").QueuePort; queuePath?: string; }): Promise<{ lines: string[]; report: string | null; }> {
+async function settlePending({ paths, state, at, queue, queuePath }: { paths: { ledger: string; state: string; }; state: Record<string, any>; at: number; queue?: QueuePort; queuePath?: string; }): Promise<{ lines: string[]; report: string | null; }> {
   const { pending } = state;
   const port = queue ?? (await realQueue());
   const taken = entryLeft({ queue: port, queuePath }, pending.handoff);
@@ -334,9 +297,8 @@ async function settlePending({ paths, state, at, queue, queuePath }: { paths: { 
   return finish({ paths, state, current: pending.version, verdict, at, updateId: pending.updateId, lead: "settled" });
 }
 
-/** @param {Awaited<ReturnType<typeof judgeWaiting>>} verdict @param {Awaited<ReturnType<typeof sendSelftest>>} reading @returns {string[]} */
 export function formatReading(verdict: Awaited<ReturnType<typeof judgeWaiting>>, reading: Awaited<ReturnType<typeof sendSelftest>>): string[] {
-  const mark = (/** @type {boolean | null} */ ok: boolean | null) => (ok === null ? "not reached" : ok ? "ok" : "FAILED");
+  const mark = (ok: boolean | null) => (ok === null ? "not reached" : ok ? "ok" : "FAILED");
   return [
     `messaging:selftest ${verdict.result.toUpperCase()}${verdict.stage ? ` at the ${verdict.stage} stage` : ""}: ${verdict.detail}`,
     ...verdict.stages.map((stage) => `  ${stage.name.padEnd(6)} ${mark(stage.ok).padEnd(11)} ${stage.note}`),
@@ -346,12 +308,8 @@ export function formatReading(verdict: Awaited<ReturnType<typeof judgeWaiting>>,
   ];
 }
 
-/**
- * @param {string[]} argv `--tick` or nothing
- * @param {{ home?: string, now?: () => number, out?: (line: string) => void, err?: (line: string) => void, sleep?: (ms: number) => Promise<void>, queue?: import("./converse.ts").QueuePort, agents?: () => {label: string, status: string}[] | null }} [deps]
- * @returns {Promise<number>}
- */
-export async function main(argv: string[], { home = homedir(), now = Date.now, out = console.log, err = console.error, sleep, queue, agents }: { home?: string; now?: () => number; out?: (line: string) => void; err?: (line: string) => void; sleep?: (ms: number) => Promise<void>; queue?: import("./converse.ts").QueuePort; agents?: () => { label: string; status: string; }[] | null; } = {}): Promise<number> {
+/** `argv` is `--tick` or nothing. */
+export async function main(argv: string[], { home = homedir(), now = Date.now, out = console.log, err = console.error, sleep, queue, agents }: { home?: string; now?: () => number; out?: (line: string) => void; err?: (line: string) => void; sleep?: (ms: number) => Promise<void>; queue?: QueuePort; agents?: () => { label: string; status: string; }[] | null; } = {}): Promise<number> {
   try {
     const { values } = parseArgs({ args: argv, options: { tick: { type: "boolean" } } });
     if (values.tick) {

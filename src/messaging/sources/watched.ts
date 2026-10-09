@@ -1,4 +1,3 @@
-// @ts-check
 // THE WATCHED SOURCE (a11ign/a11ign#3418, A5; chairman point 2 of #3409): a thing the chairman asked to be kept posted on is read each tick, and when its state is not the
 // one he was last given the source offers `watch:<thing>` with the text `<what it is>: now <state>`. `watch-list.mjs` holds what is watched and why it ends; this file
 // only asks.
@@ -13,15 +12,11 @@
 // A LEAF and INJECTED, as `milestones.mjs` is: it imports siblings and node's own, and reads only through the placeholder `readers` it is handed.
 
 import { stateFingerprint } from "../event.ts";
+import type { Readers } from "../placeholders.ts";
+import type { Watch } from "../watch-list.ts";
 import { WATCHABLE, WATCH_KIND, activeWatches, readState, watchKey } from "../watch-list.ts";
 import { observe } from "./stall.ts";
 
-/** @typedef {import("../watch-list.ts").Watch} Watch */
-
-/**
- * @param {Watch} watch @param {string} state @param {{repo: string, at: number}} where
- * @returns {Record<string, unknown>}
- */
 function eventOf({ thing, kind, id }: Watch, state: string, { repo, at }: { repo: string; at: number; }): Record<string, unknown> {
   const { label, link } = WATCHABLE[kind];
   return {
@@ -32,12 +27,9 @@ function eventOf({ thing, kind, id }: Watch, state: string, { repo, at }: { repo
 
 /**
  * One event per watched thing whose state differs from the last the chairman was given, in the order they were added.
- *
- * @param {{ lines: Record<string, any>[], readers: import("../placeholders.ts").Readers, now: () => number, repo: string, log?: (line: string) => void }} input
- *   `lines` is the ledger as it stands: the watches and what they were last told are both read from it
- * @returns {Promise<{ events: Record<string, unknown>[], cannotAsk: { source: string, reason: string }[] }>}
+ * `lines` is the ledger as it stands: the watches and what they were last told are both read from it.
  */
-export async function observeWatched({ lines, readers, now, repo, log = () => {} }: { lines: Record<string, any>[]; readers: import("../placeholders.ts").Readers; now: () => number; repo: string; log?: (line: string) => void; }): Promise<{ events: Record<string, unknown>[]; cannotAsk: { source: string; reason: string; }[]; }> {
+export async function observeWatched({ lines, readers, now, repo, log = () => {} }: { lines: Record<string, any>[]; readers: Readers; now: () => number; repo: string; log?: (line: string) => void; }): Promise<{ events: Record<string, unknown>[]; cannotAsk: { source: string; reason: string; }[]; }> {
   const parts = await Promise.all(activeWatches(lines).map((watch) => observe(
     watchKey(watch.thing),
     async () => {

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { PROJECT_FILE } from "./config.ts";
 import { secretFileProblem, SecretFileRefusal } from "./secret.ts";
 
-/** @param {string} root @returns {string} the first tracker's repository: the rows the chairman is asked about are filed there */
+/** Returns the first tracker's repository: the rows the chairman is asked about are filed there */
 export function trackerRepo(root: string): string {
   const path = join(root, PROJECT_FILE);
   const declared = JSON.parse(readFileSync(path, "utf8"))?.tracker?.[0]?.repo;
@@ -17,17 +17,17 @@ export function trackerRepo(root: string): string {
   return declared;
 }
 
-/** @param {string} home @returns {string} where the delivery log lives: state, not configuration, so apart from the secrets' directory */
+/** Returns where the delivery log lives: state, not configuration, so apart from the secrets' directory */
 export function defaultLedgerPath(home: string): string {
   return join(home, ".local", "state", "agent-org", "messaging", "ledger.jsonl");
 }
 
-/** @param {Record<string, string | undefined>} env @returns {boolean} some account is DECLARED, so `gh` will not fall back to a person's */
+/** Whether some account is DECLARED, so `gh` will not fall back to a person's */
 export function accountIsDeclared(env: Record<string, string | undefined>): boolean {
   return Boolean(env.GH_CONFIG_DIR) || Boolean(env.HERDR_WORKSPACE_ID);
 }
 
-/** @param {string} path @returns {Record<string, unknown>} the file's JSON object, or a refusal: a file that is not JSON is not mended by a restart */
+/** Returns the file's JSON object, or a refusal: a file that is not JSON is not mended by a restart */
 function parsedIds(path: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -37,14 +37,11 @@ function parsedIds(path: string): Record<string, unknown> {
   }
 }
 
-/**
- * The chairman's ids, from the file `messaging:pair` wrote. Permissions are checked before the content is read.
- * @param {string} path @returns {{ userId: number, chatId: number }}
- */
+/** The chairman's ids, from the file `messaging:pair` wrote. Permissions are checked before the content is read. */
 export function readChairman(path: string): { userId: number; chatId: number; } {
   const problem = secretFileProblem(path);
   if (problem !== null) throw new SecretFileRefusal(path, `the chairman file is not usable (${problem}); has \`messaging:pair\` been run?`);
   const { userId, chatId } = parsedIds(path);
   if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(chatId)) throw new SecretFileRefusal(path, "it holds no integer userId and chatId; pair again");
-  return { userId, chatId };
+  return { userId: userId as number, chatId: chatId as number };
 }

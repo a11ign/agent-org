@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // RULE: DOES THE CLAIMING SESSION ALREADY HOLD A ROW IN BUILD? -- B2, #476, rewritten by #989.
 //
 // IT ASKED ABOUT A PULL REQUEST AND THE QUESTION IS ABOUT A ROW. Until #989 this refused while the
@@ -175,19 +174,19 @@ import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
  * A pull request that DECLARED it delivers this row without closing it, and whether it actually proposes
  * one of the row's own Region paths. Both halves are facts on the row, not steps in a lookup, so the
  * predicate below can be driven without a network at all.
- * @typedef {{ state: "OPEN" | "MERGED" | "CLOSED", proposesRegionPath: boolean }} DeliveringPr
  */
+type DeliveringPr = { state: "OPEN" | "MERGED" | "CLOSED", proposesRegionPath: boolean };
 
 /**
  * #2126: ONE SIDE OF A REVIEW AT ONE HEAD -- the GitHub review state, and the org session the verdict's
  * own opener line names. `by` is `null` when the opener named nobody, never defaulted to a name.
- * @typedef {{ state: string, by: string | null }} ReviewSide
  */
+type ReviewSide = { state: string, by: string | null };
 
 /**
  * #2126: CONTRADICTORY VERDICTS AT ONE HEAD, which is the escape rather than a refusal.
- * @typedef {{ head: string, approved: ReviewSide, refused: ReviewSide }} ReviewDispute
  */
+type ReviewDispute = { head: string, approved: ReviewSide, refused: ReviewSide };
 
 /**
  * #2126: ONE OPEN PULL REQUEST'S REVIEW HEALTH. `reviewDecision` is GitHub's own field, which outlives the
@@ -195,23 +194,20 @@ import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
  * #2254: `authorCommitsSinceReview` counts the NON-MERGE commits AUTHORED BY THE ANSWERER (the pull
  * request's author, or a session's `claude` co-author) committed after the latest refusal, which is what
  * tells "nobody has answered" from "answered, waiting on a re-read". Absent reads as zero.
- * @typedef {{ number: number, head: string, reviewDecision: string | null,
- *             dispute: ReviewDispute | null, authorCommitsSinceReview?: number }} PrReviewHealth
  */
+type PrReviewHealth = { number: number, head: string, reviewDecision: string | null,
+  dispute: ReviewDispute | null, authorCommitsSinceReview?: number };
 
-/**
- * @typedef {{ number: number, declaresPaths: boolean, subIssues: number,
- *             closingPr: { state: "OPEN" | "MERGED" | "CLOSED" } | undefined,
- *             deliveringPr?: DeliveringPr, openPrNumber?: number,
- *             openPrReview?: PrReviewHealth,
- *             body?: string, labels?: ({ name?: string } | string)[],
- *             blockedBy?: { nodes?: { number?: number, state?: string }[] } }} RowFacts
- */
+export type RowFacts = { number: number, declaresPaths: boolean, subIssues: number,
+  closingPr: { state: "OPEN" | "MERGED" | "CLOSED" } | undefined,
+  deliveringPr?: DeliveringPr, openPrNumber?: number,
+  openPrReview?: PrReviewHealth,
+  body?: string, labels?: ({ name?: string } | string)[],
+  blockedBy?: { nodes?: { number?: number, state?: string }[] } };
 
 /**
  * Is this row IN BUILD -- does somebody still owe a commit for it? See the file header for each clause and
  * what it is read from.
- * @param {RowFacts} row @returns {boolean}
  */
 export function isInBuild(row: RowFacts): boolean {
   if (row.closingPr && row.closingPr.state !== "CLOSED") return false; // proposed, or delivered
@@ -227,7 +223,6 @@ export function isInBuild(row: RowFacts): boolean {
  * and a declaration that changes no path the Region declares is an author's claim rather than a proposal.
  * #2026's own bar: a remedy must not let a row be cleared by a pull request that never proposed its
  * commits.
- * @param {DeliveringPr | undefined} delivering @returns {boolean}
  */
 function proposedByDeclaredDelivery(delivering: DeliveringPr | undefined): boolean {
   if (delivering === undefined) return false;
@@ -254,7 +249,6 @@ function proposedByDeclaredDelivery(delivering: DeliveringPr | undefined): boole
  * do today, exactly as a `CHANGES_REQUESTED` is, and this reads it as a wait like any other because
  * `waitingOn` does. The row names `answer:` among its three conditions, so that is the ruling taken; a
  * refinement that keys it on the claimant is a separate row.
- * @param {RowFacts} row @param {number} nowMs @returns {boolean}
  */
 function inBuildAndNotWaiting(row: RowFacts, nowMs: number): boolean {
   return isInBuild(row) && waitingOn(row, todayIso(new Date(nowMs)), nowMs) === null;
@@ -270,11 +264,10 @@ function inBuildAndNotWaiting(row: RowFacts, nowMs: number): boolean {
  * filed with `row-file --parent`, so a parent whose children were filed without it reads as in build.
  * `row-claim-own-pr-health-rule.test.ts` pins that as a known limitation rather than describing it.
  *
- * @param {readonly RowFacts[]} rows every OTHER row this session holds
- * @param {number} [nowMs] the caller's clock, injected the way `waitingOn` injects one -- a test moves time
+ * @param rows every OTHER row this session holds
+ * @param [nowMs] the caller's clock, injected the way `waitingOn` injects one -- a test moves time
  *   without a global stub, and a `Not-before:` timestamp is only in the future relative to SOME clock
- * @param {{ repo?: string }} [where] the TRACKER the rows are in -- it is named in the sub-issue remedy, which must run as printed
- * @returns {string | null}
+ * @param [where] the TRACKER the rows are in -- it is named in the sub-issue remedy, which must run as printed
  */
 export function inBuildReason(rows: readonly RowFacts[], nowMs: number = Date.now(), { repo = REPO }: { repo?: string; } = {}): string | null {
   const inBuild = rows.find((row) => inBuildAndNotWaiting(row, nowMs));
@@ -312,7 +305,6 @@ export function inBuildReason(rows: readonly RowFacts[], nowMs: number = Date.no
  * request that also changes a path the row's Region declares, and a remedy whose second half is a secret
  * is the #1161 shape again -- the reader follows it exactly, is refused anyway, and debugs the remedy
  * instead of doing the work.
- * @param {number} issueNumber @returns {string}
  */
 function deliversRemedy(issueNumber: number): string {
   return `\n  If a pull request ALREADY PROPOSES #${issueNumber}'s commits but must not auto-close it -- a `
@@ -329,7 +321,6 @@ function deliversRemedy(issueNumber: number): string {
  * whose row IS waiting on a machine run cannot tell which fact the guard got wrong. It names all three
  * conditions `waitingOn` reads, and that a PASSED `Not-before:` is no longer one, because a remedy whose
  * fine print is a secret is the #1161 shape again.
- * @param {number} issueNumber @returns {string}
  */
 function waitingRemedy(issueNumber: number): string {
   return `\n  If #${issueNumber} is genuinely WAITING on something no commit of yours can hasten -- a machine run, `
@@ -370,7 +361,6 @@ const CHANGES_REQUESTED = "CHANGES_REQUESTED";
  * meters WHICH ROW A SESSION MAY CLAIM, while `main` still requires an approving review, so a trivial commit
  * buys a second row in flight and no merge. It also corrects itself: a reviewer who re-refuses posts a
  * verdict AFTER that commit, and the count is taken from the latest refusal, so the cap returns.
- * @param {RowFacts} row @returns {PrReviewHealth | null}
  */
 export function unansweredRefusal(row: RowFacts): PrReviewHealth | null {
   const review = row.openPrReview;
@@ -394,14 +384,13 @@ const MERGE_HEADLINE = /^Merge (?:branch|pull request|remote-tracking branch)\b/
  */
 const SESSION_CO_AUTHOR_LOGIN = "claude";
 
-/** @typedef {{ messageHeadline?: string, committedDate?: string, authors?: { login?: string }[] }} PrCommit */
+type PrCommit = { messageHeadline?: string, committedDate?: string, authors?: { login?: string }[] };
 
 /**
  * #2254: WHETHER A COMMIT IS THE ANSWERER'S. A bot's or a maintainer's ordinary commit (`Automated
  * formatting` by `github-actions[bot]`, a human's push) is not the author answering the refusal, so it
  * carries neither the pull request's author login nor the session co-author and does not count. A commit
  * with no readable `authors` proves nothing, which is the safe direction: it reads as not an answer.
- * @param {PrCommit} commit @param {string | undefined} prAuthor @returns {boolean}
  */
 function isAnswererCommit(commit: PrCommit, prAuthor: string | undefined): boolean {
   return (commit.authors ?? []).some((author) => author.login !== undefined
@@ -424,10 +413,6 @@ function isAnswererCommit(commit: PrCommit, prAuthor: string | undefined): boole
  * or no `authors`, cannot be placed on the timeline or attributed and so proves no answer. Ties are not
  * answers either (`>`, not `>=`). `gh` returns at most the first hundred commits, so a longer pull request
  * can under-count -- also toward refusing.
- * @param {{ author?: { login?: string },
- *           reviews?: { state?: string, submittedAt?: string }[],
- *           commits?: PrCommit[] }} pr
- * @returns {number}
  */
 export function authorCommitsSinceRefusal(pr: {
         author?: { login?: string; };
@@ -453,7 +438,6 @@ export function authorCommitsSinceRefusal(pr: {
  * reasonably believe the refusal is stale; saying so here is the difference between a rule that is
  * followed and one that is worked around. And it names the escape, so a genuinely disputed pull request
  * is not read as this refusal with a broken remedy -- the #1161 shape this file has paid for once.
- * @param {readonly RowFacts[]} rows @returns {string | null}
  */
 function unansweredRefusalReason(rows: readonly RowFacts[]): string | null {
   const row = rows.find((candidate) => unansweredRefusal(candidate) !== null);
@@ -510,11 +494,6 @@ function unansweredRefusalReason(rows: readonly RowFacts[]): string | null {
  * A `COMMENTED` OR `DISMISSED` REVIEW SUPERSEDES NOTHING, because only verdicts are collapsed. GitHub
  * does not let running commentary clear an approval out of `reviewDecision` and neither does this: an
  * `APPROVED` followed by that same name's `COMMENTED` is still an approval, and still a live side.
- *
- * @param {{ headRefOid?: string,
- *           reviews?: { state?: string, body?: string, submittedAt?: string,
- *                       commit?: { oid?: string } }[] }} pr
- * @returns {ReviewDispute | null}
  */
 export function disputeAtHead(pr: {
         headRefOid?: string;
@@ -526,7 +505,7 @@ export function disputeAtHead(pr: {
   const head = pr.headRefOid ?? "";
   const named = oldestFirst((pr.reviews ?? [])
     .filter((review) => headMatches(review.commit?.oid ?? null, head)))
-    .map((review) => ({ state: /** @type {string} */ (review.state),
+    .map((review) => ({ state: (review.state as string),
       by: reviewVerdict(review.body ?? "").author }))
     // AN UNNAMED SIDE IS DROPPED BEFORE THE PAIRING, not compared as `null`: one named verdict against one
     // unattributed one would otherwise pair (`"reviewer" !== null`) and read as two reviewers, when it may
@@ -550,9 +529,8 @@ export function disputeAtHead(pr: {
  *
  * The fallback is not a shrug. A fixture that omits the stamp is asserting an ORDER rather than a time,
  * and re-sorting it by an absent field would silently reorder it; a live payload always has the field.
- * @template {{ submittedAt?: string }} T @param {T[]} reviews @returns {T[]}
  */
-function oldestFirst<T>(reviews: T[]): T[] {
+function oldestFirst<T extends { submittedAt?: string }>(reviews: T[]): T[] {
   if (!reviews.every((review) => typeof review.submittedAt === "string" && review.submittedAt !== "")) {
     return reviews;
   }
@@ -592,26 +570,16 @@ const LIST_FIELDS = "number,headRefOid,reviewDecision,reviews,author";
  * after the latest refusal and returns 0 for a pull request with no `CHANGES_REQUESTED` review, so only a
  * pull request GitHub itself reports as `CHANGES_REQUESTED` can have its answer read from here. Everything
  * else costs nothing extra: with none refused, the whole health read is still exactly one call.
- * @param {number} number @param {(args: string[]) => string} run @param {string} repo @returns {PrCommit[]}
  */
 function commitsOf(number: number, run: (args: string[]) => string, repo: string): PrCommit[] {
   const raw = run(["pr", "view", String(number), "--repo", repo, "--json", "commits"]);
-  /** @type {{ commits?: PrCommit[] }} */
   const parsed: { commits?: PrCommit[]; } = JSON.parse(raw);
   return parsed.commits ?? [];
 }
 
-/**
- * @param {(args: string[]) => string} run @param {string} repo
- * @returns {PrReviewHealth[]}
- */
 function readOpenPrReviewHealth(run: (args: string[]) => string, repo: string): PrReviewHealth[] {
   const raw = run(["pr", "list", "--repo", repo, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
     "--json", LIST_FIELDS]);
-  /** @type {{ number: number, headRefOid?: string, reviewDecision?: string | null,
-   *           reviews?: { state?: string, body?: string, submittedAt?: string,
-   *                       commit?: { oid?: string } }[],
-   *           author?: { login?: string } }[]} */
   const parsed: {
       number: number; headRefOid?: string; reviewDecision?: string | null;
       reviews?: {
@@ -631,10 +599,9 @@ function readOpenPrReviewHealth(run: (args: string[]) => string, repo: string): 
 /**
  * WHAT GITHUB SAID, rather than what `execFileSync` wrapped it in. A refused query's reason is on the
  * error's `stderr`; `message` is `Command failed: gh ...`, which would have hidden the node limit again.
- * @param {unknown} error @returns {string}
  */
 function reasonOf(error: unknown): string {
-  const stderr = /** @type {{ stderr?: unknown }} */ (error)?.stderr;
+  const stderr = (error as { stderr?: unknown })?.stderr;
   const text = String(stderr ?? "").trim() || (error instanceof Error ? error.message : String(error));
   return text.replace(/\s+/g, " ");
 }
@@ -651,8 +618,6 @@ function reasonOf(error: unknown): string {
  * own reason, because that is what turns a diagnosis from hours into minutes.
  * #2617: the pull requests read are the TRACKER's own (`repo`, default the first): B2 asks what a session's ROWS are doing, and a
  * row's pull request is the one its tracker's `closedByPullRequestsReferences` names.
- * @param {{ run?: (args: string[]) => string, log?: (line: string) => void, repo?: string }} [deps]
- * @returns {PrReviewHealth[] | null}
  */
 export function lookupOpenPrReviewHealth({ run = gh, log = (line) => process.stderr.write(`${line}\n`), repo = REPO }: { run?: (args: string[]) => string; log?: (line: string) => void; repo?: string; } = {}): PrReviewHealth[] | null {
   try {
@@ -668,16 +633,14 @@ export function lookupOpenPrReviewHealth({ run = gh, log = (line) => process.std
  * being claimed right now -- `null` on a failed lookup, never `[]`, the same convention every lookup in
  * this fleet uses: a network failure must never read as "holds nothing".
  *
- * @param {string} mySession
- * @param {number} excludeIssueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps] `repo` is the tracker whose rows are read
- * @returns {number[] | null}
+ *
+ *
+ * @param [deps] `repo` is the tracker whose rows are read
  */
 export function lookupOtherHeldIssues(mySession: string, excludeIssueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): number[] | null {
   return lookup(() => {
     const raw = run(["issue", "list", "--repo", repo, "--state", "open",
       "--label", CLAIM_LABEL, "--label", `${SESSION_PREFIX}${mySession}`, "--json", "number"]);
-    /** @type {{ number: number }[]} */
     const parsed: { number: number; }[] = JSON.parse(raw);
     return parsed.map((issue) => issue.number).filter((n) => n !== excludeIssueNumber);
   });
@@ -695,9 +658,8 @@ export function lookupOtherHeldIssues(mySession: string, excludeIssueNumber: num
  * differently: an abandoned (CLOSED) PR leaves the row in build, no PR at all likewise, a MERGED one does
  * not.
  *
- * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps] `repo` is the tracker the row lives in
- * @returns {{ number: number, state: "OPEN" | "MERGED" | "CLOSED" } | undefined | null}
+ *
+ * @param [deps] `repo` is the tracker the row lives in
  */
 export function lookupClosingPrHealth(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): { number: number; state: "OPEN" | "MERGED" | "CLOSED"; } | undefined | null {
   return lookup(() => {
@@ -707,7 +669,6 @@ export function lookupClosingPrHealth(issueNumber: number, { run = gh, repo = RE
       + "closedByPullRequestsReferences(first:5){nodes{number state headRefOid}}}}}";
     const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
       "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${issueNumber}`]));
-    /** @type {{ number: number, state: "OPEN" | "MERGED" | "CLOSED", headRefOid: string }[]} */
     const nodes: { number: number; state: "OPEN" | "MERGED" | "CLOSED"; headRefOid: string; }[] = data.data.repository.issue.closedByPullRequestsReferences.nodes;
     if (nodes.length === 0) return undefined;
     // MOST RECENT (last) reference wins -- an issue can accumulate more than one over its life (a
@@ -759,11 +720,10 @@ const ROW_REFERENCE = /#(\d+)\b/g;
  * commits, and a grammar that silently took only the first would clear one row and hold the other with
  * nothing to say why. `Delivers: none` yields no number and so declares nothing, which is what it says.
  *
- * @param {string} body a pull request body, possibly empty
- * @returns {number[]} every row number declared, in declaration order, without repeats
+ * @param body a pull request body, possibly empty
+ * @returns every row number declared, in declaration order, without repeats
  */
 export function deliveredRowsDeclaredBy(body: string): number[] {
-  /** @type {Set<number>} */
   const declared: Set<number> = new Set();
   for (const [, list] of (body ?? "").matchAll(DELIVERS_LINE)) {
     for (const [, number] of list.matchAll(ROW_REFERENCE)) declared.add(Number(number));
@@ -784,9 +744,8 @@ export function deliveredRowsDeclaredBy(body: string): number[] {
  * `null` on a failed lookup, `undefined` when nothing declared a delivery -- "could not ask" and "nobody
  * declared one" are different states, the same distinction `lookupClosingPrHealth` draws.
  *
- * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps] `repo` is the tracker the row lives in
- * @returns {{ number: number, state: "OPEN" | "MERGED" | "CLOSED", changedPaths: string[] } | undefined | null}
+ *
+ * @param [deps] `repo` is the tracker the row lives in
  */
 export function lookupDeliveringPr(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): { number: number; state: "OPEN" | "MERGED" | "CLOSED"; changedPaths: string[]; } | undefined | null {
   return lookup(() => {
@@ -799,8 +758,8 @@ export function lookupDeliveringPr(issueNumber: number, { run = gh, repo = REPO 
     // MOST RECENT (last) wins, the same reading `lookupClosingPrHealth` takes: a redone delivery declares
     // itself on a second pull request and the newest is the one that describes the tree now.
     const pr = declaring[declaring.length - 1];
-    const number = /** @type {number} */ (pr.number);
-    return { number, state: /** @type {any} */ (pr.state), changedPaths: changedPathsOf(number, { run, repo }) };
+    const number = (pr.number as number);
+    return { number, state: (pr.state as any), changedPaths: changedPathsOf(number, { run, repo }) };
   });
 }
 
@@ -824,30 +783,22 @@ const CHANGED_FILES_QUERY = "query($owner:String!,$name:String!,$number:Int!,$af
  * delivery -- so fetching a hundred paths for every unrelated cross-reference both cost more and made the
  * file list impossible to page (there is no single cursor across a hundred nested connections). Reading
  * the declaration first and the files second is what makes both reads complete.
- *
- * @param {number} issueNumber
- * @param {{ run: (args: string[]) => string, repo: string }} where
- * @returns {{ number?: number, state?: string, body?: string }[]}
  */
 function crossReferencingPrs(issueNumber: number, where: { run: (args: string[]) => string; repo: string; }): { number?: number; state?: string; body?: string; }[] {
   return everyNodeOf((cursor) => graphqlPage(where, CROSS_REFERENCE_QUERY, issueNumber, cursor)
     .data.repository.issue.timelineItems)
-    .map((/** @type {{ source?: object }} */ node: { source?: object; }) => node.source ?? {});
+    .map((node: { source?: object; }) => node.source ?? {});
 }
 
 /**
  * #2026: EVERY PATH ONE PULL REQUEST CHANGES, read to the end of the file list -- never the first page.
  * A wide rename is exactly the shape that both moves a row's declared paths and runs past a hundred
  * files, so a truncated list would refuse the delivery that proves the point.
- *
- * @param {number} prNumber
- * @param {{ run: (args: string[]) => string, repo: string }} where
- * @returns {string[]}
  */
 function changedPathsOf(prNumber: number, where: { run: (args: string[]) => string; repo: string; }): string[] {
   return everyNodeOf((cursor) => graphqlPage(where, CHANGED_FILES_QUERY, prNumber, cursor)
     .data.repository.pullRequest.files)
-    .map((/** @type {{ path: string }} */ file: { path: string; }) => file.path);
+    .map((file: { path: string; }) => file.path);
 }
 
 /**
@@ -855,11 +806,9 @@ function changedPathsOf(prNumber: number, where: { run: (args: string[]) => stri
  * cursor: an unsupplied nullable variable is `null`, which is where a connection starts -- and `-f after=`
  * would send the empty STRING instead, which is a cursor GitHub rejects.
  *
- * @param {{ run: (args: string[]) => string, repo: string }} where the runner, and the repository the query is about
- * @param {string} query
- * @param {number} number the issue or pull request the query is about
- * @param {string | null} cursor
- * @returns {any}
+ * @param where the runner, and the repository the query is about
+ *
+ * @param number the issue or pull request the query is about
  */
 function graphqlPage({ run, repo }: { run: (args: string[]) => string; repo: string; }, query: string, number: number, cursor: string | null): any {
   const [owner, name] = repo.split("/");
@@ -876,14 +825,9 @@ function graphqlPage({ run, repo }: { run: (args: string[]) => string; repo: str
  * A PAGE WITHOUT `pageInfo` THROWS rather than reading as the last one. Both queries ask for it, so its
  * absence means the response is not the shape this code believes it is -- and the one thing this read
  * must never do quietly is stop early, which is the defect it was written to fix.
- *
- * @param {(cursor: string | null) => { nodes?: any[], pageInfo?: { hasNextPage?: boolean, endCursor?: string | null } }} page
- * @returns {any[]}
  */
 function everyNodeOf(page: (cursor: string | null) => { nodes?: any[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null; }; }): any[] {
-  /** @type {any[]} */
   const all: any[] = [];
-  /** @type {string | null} */
   let cursor: string | null = null;
   for (let read = 0; read < MAX_PAGES; read += 1) {
     const { nodes, pageInfo } = page(cursor);
@@ -903,10 +847,8 @@ function everyNodeOf(page: (cursor: string | null) => { nodes?: any[]; pageInfo?
  * clause has to ask whether a pull request changes one of them, and re-parsing the body a second time is
  * how two readings of one Region drift apart (`row-reachability.ts` records that exact history).
  *
- * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps] `repo` is the tracker the row lives in
- * @returns {{ declaresPaths: boolean, declaredPaths: string[], subIssues: number, body: string,
- *   labels?: RowFacts["labels"], blockedBy?: RowFacts["blockedBy"] } | null}
+ *
+ * @param [deps] `repo` is the tracker the row lives in
  */
 export function lookupRowShape(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): {
     declaresPaths: boolean; declaredPaths: string[]; subIssues: number; body: string;
@@ -936,15 +878,13 @@ export function lookupRowShape(issueNumber: number, { run = gh, repo = REPO }: {
  * on ANY failed sub-lookup -- an inconclusive answer must never read as "nothing in build", which would
  * silently defeat the rule this file exists to enforce.
  *
- * @param {string} mySession
- * @param {number} excludeIssueNumber the row being claimed right now -- never checked against itself
- * @param {{ run?: (args: string[]) => string, log?: (line: string) => void, repo?: string }} [deps] `repo` is the tracker the rows are in (#2617)
- * @returns {RowFacts[] | null}
+ *
+ * @param excludeIssueNumber the row being claimed right now -- never checked against itself
+ * @param [deps] `repo` is the tracker the rows are in (#2617)
  */
 export function lookupHeldRows(mySession: string, excludeIssueNumber: number, deps: { run?: (args: string[]) => string; log?: (line: string) => void; repo?: string; } = {}): RowFacts[] | null {
   const otherHeld = lookupOtherHeldIssues(mySession, excludeIssueNumber, deps);
   if (otherHeld === null) return null;
-  /** @type {RowFacts[]} */
   const rows: RowFacts[] = [];
   for (const issueNumber of otherHeld) {
     const facts = rowFactsFor(issueNumber, deps);
@@ -965,9 +905,6 @@ export function lookupHeldRows(mySession: string, excludeIssueNumber: number, de
  * A FAILED READ CLEARS NOTHING AND REFUSES NOTHING. This clause can only ever CREATE a refusal, so an
  * unanswerable read must not manufacture one -- the same reasoning `rowFactsFor`'s delivery clause states
  * in the opposite direction for the opposite reason. B2's existing teeth do not depend on this call.
- *
- * @param {RowFacts[]} rows @param {{ run?: (args: string[]) => string, repo?: string }} deps
- * @returns {RowFacts[]}
  */
 function withReviewHealth(rows: RowFacts[], deps: { run?: (args: string[]) => string; repo?: string; }): RowFacts[] {
   if (!rows.some((row) => row.openPrNumber !== undefined)) return rows;
@@ -998,9 +935,9 @@ function withReviewHealth(rows: RowFacts[], deps: { run?: (args: string[]) => st
  * is. A FAILED WRITE NEVER FAILS THE CLAIM -- it is reported on stderr with the dispute in full, so the
  * session can put the label on by hand, which is the one thing a swallowed error would have cost.
  *
- * @param {RowFacts} row
- * @param {{ run?: (args: string[]) => string, log?: (line: string) => void, repo?: string }} [deps] `repo` is the tracker the row lives in
- * @returns {boolean} whether the label was written by THIS call
+ *
+ * @param [deps] `repo` is the tracker the row lives in
+ * @returns whether the label was written by THIS call
  */
 export function escalateDisputeToCeo(row: RowFacts, { run = gh, log = (line) => process.stderr.write(`${line}\n`), repo = REPO }: { run?: (args: string[]) => string; log?: (line: string) => void; repo?: string; } = {}): boolean {
   const review = row.openPrReview;
@@ -1019,7 +956,7 @@ export function escalateDisputeToCeo(row: RowFacts, { run = gh, log = (line) => 
     return true;
   } catch (error) {
     log(`row-claim: could not label #${row.number} \`${label}\` for the review dispute on #${review.number} `
-      + `at \`${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\` (${/** @type {Error} */ (error).message}). The claim still `
+      + `at \`${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\` (${(error as Error).message}). The claim still `
       + `proceeds; put \`${label}\` on #${row.number} by hand so ceo can see it.`);
     return false;
   }
@@ -1029,12 +966,9 @@ export function escalateDisputeToCeo(row: RowFacts, { run = gh, log = (line) => 
  * Whether a row already carries `label` -- ONE read, made only on the dispute path, so the common claim
  * pays nothing for it. Throws on a failure rather than reading as "not labelled", which would re-post the
  * dispute comment on every claim.
- * @param {number} issueNumber @param {string} label @param {{ run: (args: string[]) => string, repo: string }} where
- * @returns {boolean}
  */
 function alreadyLabelled(issueNumber: number, label: string, { run, repo }: { run: (args: string[]) => string; repo: string; }): boolean {
   const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "labels"]);
-  /** @type {{ labels?: { name?: string }[] }} */
   const parsed: { labels?: { name?: string; }[]; } = JSON.parse(raw);
   return (parsed.labels ?? []).some((entry) => entry?.name === label);
 }
@@ -1043,8 +977,6 @@ function alreadyLabelled(issueNumber: number, label: string, { run, repo }: { ru
  * #2126: THE DISPUTE, WRITTEN WHERE `ceo` READS IT. Names both verdicts, the head they share, and the
  * ruling's own sentence -- because the next reader's first question is whether the guard is broken, and the
  * answer is that it is doing exactly what it was told to do.
- * @param {number} issueNumber @param {PrReviewHealth} review @param {ReviewDispute} dispute
- * @returns {string}
  */
 function disputeComment(issueNumber: number, review: PrReviewHealth, dispute: ReviewDispute): string {
   return `**Two reviewers reached OPPOSITE verdicts on #${review.number} at the same head \``
@@ -1066,17 +998,12 @@ function disputeComment(issueNumber: number, review: PrReviewHealth, dispute: Re
  * whose answer changes nothing. The common case -- a session holding one row with an ordinary closing
  * pull request -- makes no extra call at all. #989 removed two calls per held row from this path for a
  * value nothing consumed; this adds one back only where it decides the verdict.
- *
- * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps]
- * @returns {RowFacts | null}
  */
 function rowFactsFor(issueNumber: number, deps: { run?: (args: string[]) => string; repo?: string; } = {}): RowFacts | null {
   const closing = lookupClosingPrHealth(issueNumber, deps);
   if (closing === null) return null;
   const shape = lookupRowShape(issueNumber, deps);
   if (shape === null) return null;
-  /** @type {RowFacts} */
   const facts: RowFacts = { number: issueNumber, declaresPaths: shape.declaresPaths, subIssues: shape.subIssues,
     // #2241: what `waitingOn` reads. An ABSENT `labels`/`blockedBy` reads as no wait, so a lookup that did
     // not carry them leaves the row in build -- fail closed, deliberately.
@@ -1117,10 +1044,6 @@ function rowFactsFor(issueNumber: number, deps: { run?: (args: string[]) => stri
  * own resolution and `Delivers:` is a body field this repository parses -- the stronger fact first. In
  * practice a row has at most one, since `Delivers:` exists precisely for rows whose pull request must say
  * `Closes: none`.
- *
- * @param {{ number: number, state: string } | undefined} closing
- * @param {{ number: number, state: string } | undefined} delivering
- * @returns {number | undefined}
  */
 function openPrNumberOf(closing: { number: number; state: string; } | undefined, delivering: { number: number; state: string; } | undefined): number | undefined {
   if (closing && closing.state === "OPEN") return closing.number;

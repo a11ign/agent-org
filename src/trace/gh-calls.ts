@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3516 (slice of #3494): THE `gh` CALL LEDGER AS A SOURCE OF THE TRACE STORE. `host/gh` appends one TAB-separated line per call to `gh-calls.tsv` in the calling account's config
 // directory (#3466); `../gh-ledger.ts` parses it and is imported here, never edited. Every call becomes ONE record, `source: "gh-ledger"`, so a row's trace can show the calls and the
 // GraphQL points beside its tokens and dollars. The ledger files are READ, never written.
@@ -15,11 +14,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { callerScript, parseLine } from "../gh-ledger.ts";
 import { fingerprint, HEAD_BYTES, planRead } from "./ingest-state.ts";
+import type { FileState, IngestState } from "./ingest-state.ts";
 import { appendToStore } from "./store.ts";
-
-/** @typedef {import("./ingest-state.ts").FileState} FileState
- * @typedef {import("./ingest-state.ts").IngestState} IngestState
- * @typedef {import("./store.ts").TraceEvent} TraceEvent */
+import type { openStore, TraceEvent } from "./store.ts";
 
 const MS_PER_SECOND = 1000;
 /** A second's lines are read together or not at all: a line is written when its call finishes, and identical lines of one second are told apart by their order, which a read that ended between them would break. */
@@ -31,13 +28,8 @@ const TOP_UNKEYED = 5;
 /** What `keyed` decides, so a record that is keyed again starts from none of it. */
 const PLACEMENT = ["session", "row", "pr", "repo", "rows", "prs", "keyedBy", "unkeyed", "candidates", "viaShell"]; // the last two are the time rule's, which a record of before #3589 still holds
 
-/**
- * Each transcript's turns, by its id, oldest first: what a call's session id is looked up in.
- * @param {TraceEvent[]} events
- * @returns {Map<string, TraceEvent[]>}
- */
+/** Each transcript's turns, by its id, oldest first: what a call's session id is looked up in. */
 export function turnsByTranscript(events: TraceEvent[]): Map<string, TraceEvent[]> {
-  /** @type {Map<string, TraceEvent[]>} */
   const byTranscript: Map<string, TraceEvent[]> = new Map();
   for (const event of events) if (event.kind === "turn" && event.transcript) byTranscript.set(event.transcript, [...(byTranscript.get(event.transcript) ?? []), event]);
   for (const turns of byTranscript.values()) turns.sort((a, b) => a.at - b.at);
@@ -48,7 +40,6 @@ export function turnsByTranscript(events: TraceEvent[]): Map<string, TraceEvent[
  * The turn that FOLLOWS a call: the first of `turns` (oldest first) that ended in a later second than the call's. The ledger's time is to the second, so a call logged at 10:00:20 finished at some point in 10:00:20.xxx, and
  * the turn that ISSUED it ended before it began, so it is in that second or earlier: starting from the next second can never pick it. The cost is a following turn that ended inside the same second, which is skipped for
  * the one after it, in the same wake and so on the same row.
- * @param {TraceEvent[]} turns @param {number} at
  */
 function turnAfter(turns: TraceEvent[], at: number) {
   const from = at + MS_PER_SECOND;
@@ -65,17 +56,15 @@ function turnAfter(turns: TraceEvent[], at: number) {
 /**
  * Put the keys on records, from the turns among `events`. A call whose line names a session is keyed to that session's next turn and so to its ROW, which `eventsForRow` finds; every other call is `session: "gh-ledger"`
  * with no row and says why (`unkeyed`): `script` for a line with no id, `no-turn` for one whose session has no later turn in `events` (yet).
- * @param {TraceEvent[]} calls @param {TraceEvent[]} events
- * @returns {TraceEvent[]}
  */
 export function keyed(calls: TraceEvent[], events: TraceEvent[]): TraceEvent[] {
   const turns = turnsByTranscript(events);
   return calls.map((call) => {
     const bare = { ...call };
-    for (const field of PLACEMENT) delete bare[/** @type {keyof TraceEvent} */ (field)];
+    for (const field of PLACEMENT) delete bare[field as keyof TraceEvent];
     const turn = call.sessionId ? turnAfter(turns.get(call.sessionId) ?? [], call.at) : undefined;
     if (!turn) return { ...bare, session: "gh-ledger", row: null, pr: null, repo: null, keyedBy: null, unkeyed: call.sessionId ? "no-turn" : "script" };
-    return { ...bare, session: turn.session, row: turn.row, pr: turn.pr, repo: turn.repo, ...(turn.rows ? { rows: turn.rows } : {}), ...(turn.prs ? { prs: turn.prs } : {}), keyedBy: /** @type {"session"} */ ("session") };
+    return { ...bare, session: turn.session, row: turn.row, pr: turn.pr, repo: turn.repo, ...(turn.rows ? { rows: turn.rows } : {}), ...(turn.prs ? { prs: turn.prs } : {}), keyedBy: "session" as const };
   });
 }
 
@@ -83,12 +72,9 @@ export function keyed(calls: TraceEvent[], events: TraceEvent[]): TraceEvent[] {
  * The records of one read of a ledger's lines, not yet keyed, and how many lines were no call (a half line left by a trim or a crash is skipped as `parseLine` skips it, never guessed at). A
  * record's id is made of the line and of how many identical lines (one call, three times, one second) came before it, so three identical calls are three records and a line read again is the
  * record already held.
- * @param {string} text @returns {{ calls: TraceEvent[], skipped: number }}
  */
 export function callsOfLedgerText(text: string): { calls: TraceEvent[]; skipped: number; } {
-  /** @type {Map<string, number>} */
   const seen: Map<string, number> = new Map();
-  /** @type {TraceEvent[]} */
   const calls: TraceEvent[] = [];
   let skipped = 0;
   for (const line of text.split("\n").filter((each) => each !== "")) {
@@ -111,7 +97,6 @@ export function callsOfLedgerText(text: string): { calls: TraceEvent[]; skipped:
 /**
  * Read one ledger from where the state says to; `null` when nothing is to be read. The file is read whole (it is bounded at 2 MiB) and parsed from the offset, up to the last whole line that is
  * older than `SETTLE_MS`: the lines after it are left for the next run and counted in `heldBack`.
- * @param {{ file: string, entry: FileState | undefined, now: number }} input
  */
 function readLedger({ file, entry, now }: { file: string; entry: FileState | undefined; now: number; }) {
   const stat = statSync(file);
@@ -121,39 +106,33 @@ function readLedger({ file, entry, now }: { file: string; entry: FileState | und
   const start = plan.action === "resume" && entry ? entry.offset : 0;
   const lines = bytes.subarray(start, bytes.lastIndexOf(NEWLINE) + 1).toString("utf8").split("\n").slice(0, -1);
   let heldBack = 0;
-  let settleAt = null;
+  let settleAt: number | null = null;
   while (lines.length > 0 && Date.parse(parseLine(lines[lines.length - 1])?.time ?? "") > now - SETTLE_MS) {
-    settleAt ??= Date.parse(/** @type {string} */ (parseLine(lines[lines.length - 1])?.time)) + SETTLE_MS; // the newest held line, and a quiet ledger is read again from then
+    settleAt ??= Date.parse(parseLine(lines[lines.length - 1])?.time as string) + SETTLE_MS; // the newest held line, and a quiet ledger is read again from then
     lines.pop();
     heldBack += 1;
   }
   const text = lines.map((line) => `${line}\n`).join("");
   const consumed = Buffer.byteLength(text);
   const head = start === 0 ? bytes.subarray(0, Math.min(HEAD_BYTES, consumed)) : null;
-  const next = /** @type {FileState} */ ({
+  const next: FileState = {
     offset: start + consumed, size: bytes.length, mtimeMs: stat.mtimeMs, firstReadAt: entry?.firstReadAt ?? now, settleAt, carry: NO_CARRY,
     headBytes: head ? head.length : (entry?.headBytes ?? 0), headHash: head ? fingerprint(head) : (entry?.headHash ?? fingerprint(Buffer.alloc(0))),
-  });
+  };
   return { text, next, heldBack, reread: plan.reason, bytes: consumed };
 }
 
-/**
- * @typedef {{ read: number, unchanged: number, absent: string[], failed: string[], calls: number, skippedLines: number, heldBack: number, bytes: number, reread: string[],
- *   added: number, rekeyed: number }} GhCallsReport
- */
+export type GhCallsReport = { read: number; unchanged: number; absent: string[]; failed: string[]; calls: number; skippedLines: number; heldBack: number; bytes: number; reread: string[];
+  added: number; rekeyed: number; };
 
 /**
  * Ingest the ledgers, and key. The new calls are appended to the open store as ONE batch together with the calls already in it that are still unkeyed and could be: one that names a session (its next turn
  * may have been ingested since: a message is held back for five minutes), and one the time rule left as `ambiguous` or `no-turn` before #3589, which is now `script`. A call keyed once is not asked again. The state returned is to be saved AFTER the append. A ledger that cannot be
  * read is listed, never skipped quietly; one that is absent (an account that never called) is listed apart.
- * @param {{ ledgers: string[], store: ReturnType<typeof import("./store.ts").openStore>, state: IngestState, now: number }} input
- * @returns {{ report: GhCallsReport, state: IngestState }}
  */
-export function ingestGhCalls({ ledgers, store, state, now }: { ledgers: string[]; store: ReturnType<typeof import("./store.ts").openStore>; state: IngestState; now: number; }): { report: GhCallsReport; state: IngestState; } {
+export function ingestGhCalls({ ledgers, store, state, now }: { ledgers: string[]; store: ReturnType<typeof openStore>; state: IngestState; now: number; }): { report: GhCallsReport; state: IngestState; } {
   const files = { ...state.files };
-  /** @type {GhCallsReport} */
   const report: GhCallsReport = { read: 0, unchanged: 0, absent: [], failed: [], calls: 0, skippedLines: 0, heldBack: 0, bytes: 0, reread: [], added: 0, rekeyed: 0 };
-  /** @type {Map<string, TraceEvent>} */
   const batch: Map<string, TraceEvent> = new Map(store.events.filter((event) => event.kind === "gh_call" && event.keyedBy === null && (event.sessionId || event.unkeyed !== "script")).map((event) => [event.id, event]));
   for (const file of ledgers) {
     if (!existsSync(file)) {
@@ -172,19 +151,18 @@ export function ingestGhCalls({ ledgers, store, state, now }: { ledgers: string[
       if (done.reread) report.reread.push(`${file}: ${done.reread}`);
       files[file] = done.next;
     } catch (cause) {
-      report.failed.push(`${file}: ${/** @type {Error} */ (cause).message}`);
+      report.failed.push(`${file}: ${(cause as Error).message}`);
     }
   }
   const { added, superseded } = appendToStore(store, keyed([...batch.values()], store.events));
   return { report: { ...report, added, rekeyed: superseded }, state: { ...state, files } };
 }
 
-/** @param {TraceEvent} call a call's GraphQL points: what its response carried, else ONE for a call known (`graphql`) or inferred (`graphql?`) to spend that pool: the floor `../gh-ledger.ts` reads it with */
+/** A call's GraphQL points: what its response carried, else ONE for a call known (`graphql`) or inferred (`graphql?`) to spend that pool: the floor `../gh-ledger.ts` reads it with */
 const pointsOf = (call: TraceEvent) => call.cost ?? (call.resource?.startsWith("graphql") ? 1 : 0);
 
 /**
  * The calls' own account of themselves: how many, which pool, and how many points were READ from a response against how many are the floor of one per call whose response carried none.
- * @param {TraceEvent[]} calls
  */
 export function summarize(calls: TraceEvent[]) {
   const graphql = calls.filter((call) => call.resource?.startsWith("graphql"));
@@ -195,22 +173,19 @@ export function summarize(calls: TraceEvent[]) {
   };
 }
 
-/** @param {ReturnType<typeof summarize>} s */
 const summaryText = (s: ReturnType<typeof summarize>) => `${s.calls} calls: ${s.graphql} on the GraphQL pool = ${s.points} points (${s.read} read from responses, ${s.floorCalls} calls FLOOR at 1 point each because the response carried no cost; `
   + `${s.inferredPool} of the pool assignments only inferred, \`graphql?\`), ${s.core} on core, ${s.other} other`;
 
-/** The earliest call per account the store holds: a ledger is bounded, so a call older than its trim is gone and an absence before it is not "nothing was called". @param {TraceEvent[]} everything */
+/** The earliest call per account the store holds: a ledger is bounded, so a call older than its trim is gone and an absence before it is not "nothing was called". */
 function heldFromLines(everything: TraceEvent[]) {
-  /** @type {Map<string, number>} */
   const first: Map<string, number> = new Map();
   for (const call of everything) if (call.kind === "gh_call") first.set(call.account ?? "?", Math.min(first.get(call.account ?? "?") ?? Number.POSITIVE_INFINITY, call.at));
-  const iso = (/** @type {number} */ ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM".length);
   return [...first].sort(([, a], [, b]) => a - b).map(([account, at]) => `  ${account.padEnd(22)} held from ${iso(at)}Z`);
 }
 
-/** @param {TraceEvent[]} unkeyed the calls of no row, ranked by points then calls: who burns the pool, by account and script */
+/** `unkeyed` is the calls of no row, ranked by points then calls: who burns the pool, by account and script */
 function topCallers(unkeyed: TraceEvent[]) {
-  /** @type {Map<string, TraceEvent[]>} */
   const byCaller: Map<string, TraceEvent[]> = new Map();
   for (const call of unkeyed) byCaller.set(`${call.account} ${call.script}`, [...(byCaller.get(`${call.account} ${call.script}`) ?? []), call]);
   return [...byCaller].map(([caller, calls]) => ({ caller, ...summarize(calls) })).sort((a, b) => b.points - a.points || b.calls - a.calls).slice(0, TOP_UNKEYED)
@@ -219,9 +194,7 @@ function topCallers(unkeyed: TraceEvent[]) {
 
 /**
  * The `gh` call half of a report: the calls keyed to this row and the points they spent, then every call the store holds that is keyed to NO row, listed apart and never dropped, then from when the store
- * holds calls. `held` is every event of the store.
- * @param {{ events: TraceEvent[], held?: TraceEvent[] }} input `events` are the row's
- * @returns {string[]}
+ * holds calls. `held` is every event of the store; `events` are the row's.
  */
 export function ghCallLines({ events, held }: { events: TraceEvent[]; held?: TraceEvent[]; }): string[] {
   const rowCalls = events.filter((event) => event.kind === "gh_call");
@@ -229,7 +202,7 @@ export function ghCallLines({ events, held }: { events: TraceEvent[]; held?: Tra
   if (!held) return out;
   const everyCall = held.filter((event) => event.kind === "gh_call");
   const unkeyed = everyCall.filter((call) => call.keyedBy === null);
-  const why = (/** @type {string} */ reason: string) => unkeyed.filter((call) => call.unkeyed === reason).length;
+  const why = (reason: string) => unkeyed.filter((call) => call.unkeyed === reason).length;
   out.push(`GH CALLS KEYED TO NO ROW, listed apart (${everyCall.length - unkeyed.length} of the store's ${everyCall.length} are keyed): ${unkeyed.length === 0 ? "none" : summaryText(summarize(unkeyed))}`,
     `  because: ${why("script")} carry no session id (a unit or script, or written before the wrapper named its session); ${why("no-turn")} name a session the store holds no later turn of yet`);
   if (unkeyed.length > 0) out.push("  the callers spending most of them, by account and script:", ...topCallers(unkeyed));
@@ -237,7 +210,7 @@ export function ghCallLines({ events, held }: { events: TraceEvent[]; held?: Tra
   return out;
 }
 
-/** The ledger half of the ingest footer. @param {GhCallsReport} report */
+/** The ledger half of the ingest footer. */
 export function ghIngestLines(report: GhCallsReport) {
   const lines = [`gh ledgers: ${report.read} read (${report.bytes} bytes parsed; ${report.unchanged} unchanged since the last run), ${report.calls} calls, ${report.skippedLines} lines skipped as no call, `
     + `${report.heldBack} lines of the last 2 s held back to the next run, ${report.added} new to the store, ${report.rekeyed} re-keyed or corrected`];

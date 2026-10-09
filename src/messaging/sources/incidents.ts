@@ -1,4 +1,3 @@
-// @ts-check
 // THE INCIDENT SOURCES (a11ign/a11ign#2904, row 5 of 13; design #2899): what has BROKEN, as opposed to what has stopped (`stall.mjs`).
 //
 //   incident:trunk-red       the newest verdict on `main` (trunk.yml) is a failure
@@ -15,6 +14,7 @@
 // A LEAF AND INJECTED, as `stall.mjs` is, and the same rule about a failed read: `cannot-ask`, no event, never a false clear.
 
 import { TICK_INTERVAL_MS, instant, observe, requireReader, span, withMeaning } from "./stall.ts";
+import type { FixRowReader, Observation } from "./stall.ts";
 
 const MINUTE_MS = 60_000;
 const SHA_LENGTH = 7;
@@ -35,21 +35,19 @@ export const DEFAULT_INCIDENT_CONFIG = Object.freeze({
 /**
  * The run's time as the condition's start: when it CONCLUDED if it says so (a red run is red from the moment it fails, not from the
  * moment the push started it).
- * @param {Record<string, any>} run @returns {number}
  */
 function concludedAt(run: Record<string, any>): number {
   return instant(run.updated_at ?? run.created_at, "run.updated_at");
 }
 
-/** @param {Record<string, any>[]} runs @returns {Record<string, any>[]} newest first, whatever order the reader returned */
+/** Newest first, whatever order the reader returned. */
 function newestFirst(runs: Record<string, any>[]): Record<string, any>[] {
   if (!Array.isArray(runs)) throw new TypeError("runs: an array is required");
   return [...runs].sort((a, b) => concludedAt(b) - concludedAt(a));
 }
 
 /**
- * The runs from the newest back, while each one is bad.
- * @param {Record<string, any>[]} runs newest first @param {(run: Record<string, any>) => boolean} isBad
+ * The runs from the newest back, while each one is bad. `runs` is newest first.
  */
 function currentStreak(runs: Record<string, any>[], isBad: (run: Record<string, any>) => boolean) {
   const streak = [];
@@ -65,8 +63,7 @@ function currentStreak(runs: Record<string, any>[], isBad: (run: Record<string, 
  * nothing about `main` and is looked through (`trunk-red.ts`'s rule, restated because a leaf cannot import it). No verdict at all is no
  * event: there is nothing to say and nothing to clear.
  *
- * @param {Record<string, any>[]} runs the runs of `trunk.yml` on `main`, any order
- * @param {number} now @returns {Record<string, unknown>[]}
+ * `runs` is the runs of `trunk.yml` on `main`, any order.
  */
 export function trunkRedEvents(runs: Record<string, any>[], now: number): Record<string, unknown>[] {
   const verdicts = newestFirst(runs).filter((run) => run.status === "completed" && ["success", "failure"].includes(run.conclusion));
@@ -83,18 +80,15 @@ export function trunkRedEvents(runs: Record<string, any>[], now: number): Record
 }
 
 /**
- * @typedef {{ failed: boolean, failedAt?: number | string, lastRecordAt: number | string, lastRunAt: number | string }} GateUnitReading
- *   `failed` is the unit's own failed state and `failedAt` when it entered it; `lastRecordAt` is when a tick last COMPLETED (the record the tick writes at the
+ * `failed` is the unit's own failed state and `failedAt` when it entered it; `lastRecordAt` is when a tick last COMPLETED (the record the tick writes at the
  *   end of `main()`), and `lastRunAt` when the unit last RAN, which a tick that died moves as well as one that finished
  */
+export type GateUnitReading = { failed: boolean; failedAt?: number | string; lastRecordAt: number | string; lastRunAt: number | string };
 
 /**
  * The gate crashing: the unit reads failed, or no tick has COMPLETED for N intervals. The second is the dead-man's switch, and it reads the completion
  * record and not the unit's own timestamp, which a crashed tick moves exactly as a good one (#3040). Either alone is enough, and the event's start is the
  * earlier of the two. The text says which kind of silence it is: ticks still starting and not finishing (a crash), or no tick starting at all.
- *
- * @param {GateUnitReading} unit @param {number} now @param {typeof DEFAULT_INCIDENT_CONFIG} config
- * @returns {Record<string, unknown>[]}
  */
 export function gateCrashEvents(unit: GateUnitReading, now: number, config: typeof DEFAULT_INCIDENT_CONFIG): Record<string, unknown>[] {
   if (unit === null || typeof unit !== "object" || typeof unit.failed !== "boolean") throw new TypeError("the unit reading needs a boolean `failed`");
@@ -116,12 +110,9 @@ export function gateCrashEvents(unit: GateUnitReading, now: number, config: type
     text: `The gate is down: ${reasons.map((reason) => reason.why).join(" and ")}.` }];
 }
 
-/**
- * @param {unknown} reading @param {number} now @param {typeof DEFAULT_INCIDENT_CONFIG} config
- * @returns {Record<string, number>} worker name to the time it went non-ready, validated
- */
+/** Worker name to the time it went non-ready, validated. */
 function readFleetSince(reading: unknown, now: number, config: typeof DEFAULT_INCIDENT_CONFIG): Record<string, number> {
-  const { state, writtenAt } = /** @type {{ state?: unknown, writtenAt?: unknown }} */ (reading ?? {});
+  const { state, writtenAt } = (reading ?? {}) as { state?: unknown; writtenAt?: unknown };
   if (state === null || typeof state !== "object" || Array.isArray(state)) throw new TypeError("the fleet-watch state must be an object of name to time");
   // Only when the reader knows when the file was written: a watcher that stopped leaves a clean-looking file, and a clean-looking file
   // is the false all-clear this module exists to refuse.
@@ -133,9 +124,6 @@ function readFleetSince(reading: unknown, now: number, config: typeof DEFAULT_IN
 
 /**
  * Host or fleet down, as `fleet-watch` already decided it: workers non-ready since a time, the file it writes.
- *
- * @param {{ state: Record<string, number | string>, writtenAt?: number | string }} reading
- * @param {number} now @param {typeof DEFAULT_INCIDENT_CONFIG} config @returns {Record<string, unknown>[]}
  */
 export function fleetDownEvents(reading: { state: Record<string, number | string>; writtenAt?: number | string; }, now: number, config: typeof DEFAULT_INCIDENT_CONFIG): Record<string, unknown>[] {
   const since = readFleetSince(reading, now, config);
@@ -148,7 +136,6 @@ export function fleetDownEvents(reading: { state: Record<string, number | string
     text: `The fleet is down: ${overdue.length} worker${overdue.length === 1 ? "" : "s"} not ready for over ${span(config.fleetThresholdMs)} (${names}${more}).` }];
 }
 
-/** @param {Record<string, any>} run @returns {boolean} */
 const hasPermissionAnnotation = (run: Record<string, any>): boolean =>
   Array.isArray(run.annotations) && run.annotations.some((note) => PERMISSION_ANNOTATION.test(String(note?.message ?? "")));
 
@@ -156,12 +143,10 @@ const hasPermissionAnnotation = (run: Record<string, any>): boolean =>
  * CI that cannot do what it is for: a workflow whose NEWEST completed run carries a `Resource not accessible` annotation. Per
  * workflow, so a fixed workflow stops counting while a still-broken one keeps the incident open.
  *
- * @param {Record<string, any>[]} runs completed runs of any workflow, any order, each with its `annotations`
- * @param {number} now @returns {Record<string, unknown>[]}
+ * `runs` is completed runs of any workflow, any order, each with its `annotations`.
  */
 export function ciPermissionEvents(runs: Record<string, any>[], now: number): Record<string, unknown>[] {
   const completed = newestFirst(runs).filter((run) => run.status === "completed");
-  /** @type {Map<string, Record<string, any>[]>} */
   const byWorkflow: Map<string, Record<string, any>[]> = new Map();
   for (const run of completed) byWorkflow.set(String(run.name), [...(byWorkflow.get(String(run.name)) ?? []), run]);
   const broken = [...byWorkflow.entries()]
@@ -176,21 +161,15 @@ export function ciPermissionEvents(runs: Record<string, any>[], now: number): Re
     text: `CI is refused a permission (\`Resource not accessible\`) in ${broken.map(({ name }) => name).join(", ")}, since ${span(now - since)} ago.` }];
 }
 
-/**
- * @param {{ now: () => number, config?: Partial<typeof DEFAULT_INCIDENT_CONFIG>, log?: (line: string) => void,
- *   readers: { readTrunkRuns?: Function, readGateUnit?: Function, readFleetState?: Function, readCiRuns?: Function,
- *   readFixRow?: import("./stall.ts").FixRowReader,
- *   readEpisodeStart?: (key: string) => Promise<number | null> | number | null } }} options
- * @returns {Promise<import("./stall.ts").Observation>} the four incident kinds, each independently able to fail to ask
- */
+/** The four incident kinds, each independently able to fail to ask. */
 export async function observeIncidents({ now, config: overrides = {}, log = console.error, readers }: {
         now: () => number; config?: Partial<typeof DEFAULT_INCIDENT_CONFIG>; log?: (line: string) => void;
         readers: {
             readTrunkRuns?: Function; readGateUnit?: Function; readFleetState?: Function; readCiRuns?: Function;
-            readFixRow?: import("./stall.ts").FixRowReader;
+            readFixRow?: FixRowReader;
             readEpisodeStart?: (key: string) => Promise<number | null> | number | null;
         };
-    }): Promise<import("./stall.ts").Observation> {
+    }): Promise<Observation> {
   const config = { ...DEFAULT_INCIDENT_CONFIG, ...overrides };
   const parts = await Promise.all([
     observe("incident:trunk-red", async () => withMeaning(trunkRedEvents(await requireReader(readers, "readTrunkRuns")(), now()), readers, log, now()), log),

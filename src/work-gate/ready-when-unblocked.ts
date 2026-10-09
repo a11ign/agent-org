@@ -1,4 +1,3 @@
-// @ts-check
 // A ROW WHOSE LAST BLOCKER CLOSED IS PROMOTED BY THE GATE, WITH NO MODEL, WHEN ITS FILER DECLARED IT SO (a11ign/a11ign#4064, #4055 move 1a).
 //
 // BEFORE THIS, every such row cost `product-manager` a wake (`unclaimed-blocker-cleared`: 118 wakes over 96 rows and $115.43 in the trace store, 2026-10-01..08) to answer a question the filer had
@@ -24,22 +23,18 @@ const DECLARATION = /^[ \t]*#{0,6}[ \t]*Ready-when-unblocked:[ \t]*yes[ \t]*$/im
 /** The log line's tail, which the Open-check's PROMOTED count greps for. */
 export const PROMOTED_REASON = "blockers cleared, Ready-when-unblocked";
 
-/**
- * @typedef {{ labels: string[], state: string, body: string, blockedBy: { nodes?: { number?: number, state?: string }[] } }} LiveRow
- * @typedef {{ read: (number: number) => LiveRow, mergedClosers: (number: number) => { number: number, mergedAt: string }[],
- *            promote: (number: number) => { ok: true } | { ok: false, refusal: string } }} ReadyIo
- * @typedef {{ promoted: number[], kept: { number: number, reason: string }[], errors: { number: number, message: string }[] }} ReadyResult
- */
+type LiveRow = { labels: string[], state: string, body: string, blockedBy: { nodes?: { number?: number, state?: string }[] } };
+export type ReadyIo = { read: (number: number) => LiveRow, mergedClosers: (number: number) => { number: number, mergedAt: string }[],
+           promote: (number: number) => { ok: true } | { ok: false, refusal: string } };
+export type ReadyResult = { promoted: number[], kept: { number: number, reason: string }[], errors: { number: number, message: string }[] };
 
-/** @param {unknown} body @returns {boolean} does the row declare that it is complete except for its edges */
+/** @returns does the row declare that it is complete except for its edges */
 export const declaresReadyWhenUnblocked = (body: unknown): boolean => DECLARATION.test(String(body ?? ""));
 
-/** @param {any} row @returns {string[]} */
-const labelsOf = (row: any): string[] => (row?.labels ?? []).map((/** @type {any} */ l: any) => String(l?.name ?? l));
+const labelsOf = (row: any): string[] => (row?.labels ?? []).map((l: any) => String(l?.name ?? l));
 
 /**
  * WHY A FRESHLY READ ROW IS NOT THIS MODULE'S TO PROMOTE, or `null`. The tick's copy is seconds old; a label or an amendment made since is exactly the "since" the body check exists for.
- * @param {number} number @param {LiveRow} live @param {readonly string[]} notStartable @param {number} now @returns {string | null}
  */
 function notPromotable(number: number, live: LiveRow, notStartable: readonly string[], now: number): string | null {
   if (live.state !== "OPEN") return `#${number} is ${live.state}`;
@@ -54,7 +49,7 @@ function notPromotable(number: number, live: LiveRow, notStartable: readonly str
 
 /**
  * ONE ROW: the checks, then the promotion. THROWS on a failed read or an unexpected promote failure, which the caller records NAMING the row.
- * @param {{ row: any }} clearing @param {ReadyIo} io @param {readonly string[]} notStartable @param {number} now @returns {string | null} why the row was left alone, or `null` when promoted
+ *     @returns why the row was left alone, or `null` when promoted
  */
 function tryPromote({ row }: { row: any; }, io: ReadyIo, notStartable: readonly string[], now: number): string | null {
   const number = Number(row.number);
@@ -68,10 +63,8 @@ function tryPromote({ row }: { row: any; }, io: ReadyIo, notStartable: readonly 
 /**
  * PROMOTE EVERY CLEARED ROW THAT DECLARED `Ready-when-unblocked: yes` AND STILL PASSES. A row without the line is not mentioned at all (today's order for it is unchanged). A failure on one row is an
  * error NAMING it and the pass goes on. The tick's own row object gets the labels it now has, so the order cause that runs next in the same tick does not offer the row it has just promoted.
- * @param {{ clearings: { row: any }[], notStartable: readonly string[], now: number }} input @param {ReadyIo} io @returns {ReadyResult}
  */
 export function promoteReadyWhenUnblocked({ clearings, notStartable, now }: { clearings: { row: any; }[]; notStartable: readonly string[]; now: number; }, io: ReadyIo): ReadyResult {
-  /** @type {ReadyResult} */
   const result: ReadyResult = { promoted: [], kept: [], errors: [] };
   for (const clearing of clearings) {
     if (!declaresReadyWhenUnblocked(clearing.row.body)) continue;
@@ -89,7 +82,6 @@ export function promoteReadyWhenUnblocked({ clearings, notStartable, now }: { cl
   return result;
 }
 
-/** @param {ReadyResult} result @param {(line: string) => void} log */
 export function reportReadyWhenUnblocked(result: ReadyResult, log: (line: string) => void) {
   for (const number of result.promoted) log(`PROMOTED #${number} (${PROMOTED_REASON})\n`);
   for (const { number, reason } of result.kept) log(`NOT PROMOTED #${number} (Ready-when-unblocked declared): ${reason.split("\n")[0]} -- product-manager is asked as before\n`);
@@ -98,14 +90,13 @@ export function reportReadyWhenUnblocked(result: ReadyResult, log: (line: string
 
 /**
  * THE REAL WORLD, through the gate's own `gh` runner. The promotion is `unpark-satisfied`'s `promote` (a `row-file --promote` child), so there is one promotion act in the gate and not two.
- * @param {(args: string[]) => string} run @returns {ReadyIo}
  */
 export function githubReadyIo(run: (args: string[]) => string): ReadyIo {
   const github = githubIo(run);
   return {
     read: (number) => {
       const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state,body,blockedBy"]));
-      return { labels: (read.labels ?? []).map((/** @type {any} */ l: any) => String(l.name)), state: String(read.state), body: String(read.body ?? ""), blockedBy: read.blockedBy ?? {} };
+      return { labels: (read.labels ?? []).map((l: any) => String(l.name)), state: String(read.state), body: String(read.body ?? ""), blockedBy: read.blockedBy ?? {} };
     },
     mergedClosers: (number) => mergedClosersOf(number, run),
     promote: github.promote,

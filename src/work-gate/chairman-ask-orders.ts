@@ -1,4 +1,3 @@
-// @ts-check
 // A WAIT THAT CLEARS ON A FACT RAISES `needs:chairman` WHEN THE ACT THAT REMAINS IS THE CHAIRMAN'S (#4020, his order relayed 2026-10-07 19:15Z: he found #2885 and #2887 himself,
 // from the milestone, three days after `screenreader-fleet` 0.5.1 and `screenreader-worker` 0.3.0 shipped; the wait was the sentence "ask the chairman once the new packages have
 // real releases", and no field named the condition or the ask).
@@ -40,14 +39,13 @@ const ASK_HEADER =/^[ \t]*#{0,6}[ \t]*Then-ask-chairman:[ \t]*(.*?)[ \t]*$/;
 const DECLARED_LINE = /^[ \t]*Declared:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/m;
 
 /**
- * @typedef {{ item: import("../wait-condition.ts").WaitItem, lines: string[], declaredOn: string | null, waits: import("../wait-condition.ts").Wait[], problem: string | null }} Ask
  * A row's declared ask. `lines` are the brief's lines as written; `problem` is why it would never raise a usable alert, or `null`.
  */
+export type Ask = { item: import("../wait-condition.ts").WaitItem, lines: string[], declaredOn: string | null, waits: import("../wait-condition.ts").Wait[], problem: string | null };
 
 /**
  * EACH LINE OF A BODY AND WHAT IT IS TO THE DECLARATION, outside fences only (a body QUOTING the grammar declares nothing, the repo's own fence rule): the `header`, the
  * `block` lines under it (to the first blank line), a `Waiting-for:` line, or `other`.
- * @param {string} body @returns {{ line: string, role: "header" | "block" | "wait" | "other" }[]}
  */
 function scan(body: string): { line: string; role: "header" | "block" | "wait" | "other"; }[] {
   let fenced = false;
@@ -69,38 +67,31 @@ function scan(body: string): { line: string; role: "header" | "block" | "wait" |
   });
 }
 
-/**
- * THE BODY WITHOUT THE DECLARATION: the block and every `Waiting-for:` line, which is what the raise removes. Fenced text is untouched.
- * @param {string} body @returns {string}
- */
+/** THE BODY WITHOUT THE DECLARATION: the block and every `Waiting-for:` line, which is what the raise removes. Fenced text is untouched. */
 export function withoutDeclaration(body: string): string {
   return scan(body).filter(({ role }) => role === "other").map(({ line }) => line).join("\n");
 }
 
-/** @param {string[]} lines @returns {string} the comment the alert source reads: it opens `BRIEF for the chairman`, as a labeller's would */
+/** @returns the comment the alert source reads: it opens `BRIEF for the chairman`, as a labeller's would */
 const briefOf = (lines: string[]): string => `BRIEF for the chairman\n\n${lines.join("\n")}`;
 
 /**
  * WHY A DECLARED BLOCK WOULD NEVER SEND A USABLE ALERT, asked of the alert source itself (`requestEvent`), so the two cannot drift: the same lines are required, the same options and
  * steps are refused. `null` when it would send.
- * @param {string[]} lines @returns {string | null}
  */
 function briefProblem(lines: string[]): string | null {
   const comment = { body: briefOf(lines), createdAt: new Date(0).toISOString(), authorAssociation: "MEMBER" };
   return requestEvent({ repo: "declared", row: { number: 0, title: "", url: "", comments: [comment] }, now: 0 }).problem;
 }
 
-/** @param {import("../wait-condition.ts").Wait[]} waits @returns {string | null} why no condition here can ever come true, or `null` */
+/** @returns why no condition here can ever come true, or `null` */
 function conditionProblem(waits: import("../wait-condition.ts").Wait[]): string | null {
   if (waits.length === 0) return "it declares no `Waiting-for:` line, so nothing says WHEN to ask";
   const unreadable = waits.filter((wait) => wait.state === "manual" || wait.state === "unreadable");
   return unreadable.length === 0 ? null : `\`Waiting-for: ${unreadable[0].text}\` is a condition the gate cannot read, so the ask would never fire`;
 }
 
-/**
- * THE ASK A ROW DECLARES, or `null` when it declares none.
- * @param {import("../wait-condition.ts").WaitItem} item @returns {Ask | null}
- */
+/** THE ASK A ROW DECLARES, or `null` when it declares none. */
 export function askOf(item: import("../wait-condition.ts").WaitItem): Ask | null {
   const roles = scan(item.body);
   const headers = roles.filter(({ role }) => role === "header");
@@ -116,10 +107,7 @@ export function askOf(item: import("../wait-condition.ts").WaitItem): Ask | null
   return { item, lines, declaredOn, waits, problem };
 }
 
-/**
- * THE REFUSAL A FILING OR AN AMENDMENT EARNS for a body whose declaration could never raise an alert, or `null` (no declaration, or a sound one).
- * @param {string} body @returns {string | null}
- */
+/** THE REFUSAL A FILING OR AN AMENDMENT EARNS for a body whose declaration could never raise an alert, or `null` (no declaration, or a sound one). */
 export function chairmanAskRefusal(body: string): string | null {
   const ask = askOf(waitItemOf({ number: 0, body }, "row"));
   if (ask?.problem == null) return null;
@@ -128,10 +116,7 @@ export function chairmanAskRefusal(body: string): string | null {
     + "and rides on at least one `Waiting-for:` condition the gate reads.";
 }
 
-/**
- * WHAT THE TICK READ for one wait, in words, for the brief's `Condition true at` line.
- * @param {import("../wait-condition.ts").Wait} wait @param {import("../wait-condition.ts").WaitFacts} facts @returns {string}
- */
+/** WHAT THE TICK READ for one wait, in words, for the brief's `Condition true at` line. */
 function readingOf(wait: import("../wait-condition.ts").Wait, facts: import("../wait-condition.ts").WaitFacts): string {
   if (isItemWait(wait)) return `${wait.text} (${facts.items[wait.key]?.state ?? "read"})`;
   if (wait.state === "manual" || wait.state === "unreadable") return wait.text; // never due, so never read; the type needs the line
@@ -141,10 +126,7 @@ function readingOf(wait: import("../wait-condition.ts").Wait, facts: import("../
   return `${wait.text} (registry dist-tags ${tags})`;
 }
 
-/**
- * THE COMMENT THE TICK POSTS: the declared brief, then what the gate adds (when the condition was true and what it read) and what it did NOT check.
- * @param {Ask} ask @param {import("../wait-condition.ts").WaitFacts} facts @param {number} now @returns {string}
- */
+/** THE COMMENT THE TICK POSTS: the declared brief, then what the gate adds (when the condition was true and what it read) and what it did NOT check. */
 export function postedBrief(ask: Ask, facts: import("../wait-condition.ts").WaitFacts, now: number): string {
   return [briefOf(ask.lines), "",
     `Condition true at ${new Date(now).toISOString()}: ${ask.waits.map((wait) => readingOf(wait, facts)).join("; ")}`,
@@ -153,28 +135,20 @@ export function postedBrief(ask: Ask, facts: import("../wait-condition.ts").Wait
     MARKER].join("\n");
 }
 
-/**
- * THE ROWS TO CONSIDER: an open row of the first repository that declares an ask, does not already carry the label, and whose block is sound. A malformed one is `broken`, reported by name.
- * @param {import("../wait-condition.ts").WaitItem[]} items @returns {{ sound: Ask[], broken: Ask[] }}
- */
+/** THE ROWS TO CONSIDER: an open row of the first repository that declares an ask, does not already carry the label, and whose block is sound. A malformed one is `broken`, reported by name. */
 export function declaredAsks(items: import("../wait-condition.ts").WaitItem[]): { sound: Ask[]; broken: Ask[]; } {
   const asks = items.filter((item) => item.kind === "row" && item.repoKey === undefined && !item.labels.includes(NEEDS_CHAIRMAN)).flatMap((item) => askOf(item) ?? []);
   return { sound: asks.filter((ask) => ask.problem === null), broken: asks.filter((ask) => ask.problem !== null) };
 }
 
-/**
- * THE ASKS WHOSE EVERY CONDITION IS TRUE. One that is false, or unknown (a read that failed, a reference nobody read), waits.
- * @param {Ask[]} asks @param {import("../wait-condition.ts").WaitFacts} facts @returns {Ask[]}
- */
+/** THE ASKS WHOSE EVERY CONDITION IS TRUE. One that is false, or unknown (a read that failed, a reference nobody read), waits. */
 export function dueAsks(asks: Ask[], facts: import("../wait-condition.ts").WaitFacts): Ask[] {
   return asks.filter((ask) => ask.waits.every((wait) => conditionHolds(wait, facts) === true));
 }
 
-/**
- * @typedef {{ run: (args: string[]) => string, log?: (line: string) => void }} Writer
- */
+export type Writer = { run: (args: string[]) => string, log?: (line: string) => void };
 
-/** @param {Writer} io @param {number} number @returns {boolean | null} whether the gate's brief is already on the row; `null` when the comments could not be read */
+/** @returns whether the gate's brief is already on the row; `null` when the comments could not be read */
 function briefAlreadyPosted({ run }: Writer, number: number): boolean | null {
   try {
     const { comments } = JSON.parse(run(["issue", "view", String(number), "--json", "comments"]));
@@ -184,10 +158,7 @@ function briefAlreadyPosted({ run }: Writer, number: number): boolean | null {
   }
 }
 
-/**
- * RAISE ONE ASK, in the order that survives a failure: comment, label, body edit. Returns whether the label went on, which is what `ceo` is told.
- * @param {Ask} ask @param {import("../wait-condition.ts").WaitFacts} facts @param {number} now @param {Writer} io @returns {boolean}
- */
+/** RAISE ONE ASK, in the order that survives a failure: comment, label, body edit. Returns whether the label went on, which is what `ceo` is told. */
 export function raiseAsk(ask: Ask, facts: import("../wait-condition.ts").WaitFacts, now: number, io: Writer): boolean {
   const { run, log = (line) => process.stderr.write(`${line}\n`) } = io;
   const number = String(ask.item.number);
@@ -200,21 +171,18 @@ export function raiseAsk(ask: Ask, facts: import("../wait-condition.ts").WaitFac
     if (!posted) run(["issue", "comment", number, "--body", postedBrief(ask, facts, now)]);
     run(["issue", "edit", number, "--add-label", NEEDS_CHAIRMAN]);
   } catch (error) {
-    log(`chairman-ask: COULD NOT raise #${number} (${String(/** @type {Error} */ (error).message).split("\n")[0]}); the next tick retries, and a posted brief is not posted twice`);
+    log(`chairman-ask: COULD NOT raise #${number} (${String((error as Error).message).split("\n")[0]}); the next tick retries, and a posted brief is not posted twice`);
     return false;
   }
   try {
     run(["issue", "edit", number, "--body", withoutDeclaration(ask.item.body)]);
   } catch (error) {
-    log(`chairman-ask: raised #${number} but COULD NOT remove its declaration (${String(/** @type {Error} */ (error).message).split("\n")[0]}); remove the \`Then-ask-chairman:\` block and its \`Waiting-for:\` lines by hand`);
+    log(`chairman-ask: raised #${number} but COULD NOT remove its declaration (${String((error as Error).message).split("\n")[0]}); remove the \`Then-ask-chairman:\` block and its \`Waiting-for:\` lines by hand`);
   }
   return true;
 }
 
-/**
- * THE ORDER TO `ceo`, once, when the label goes on: the row, the ask, its age, and the way to withdraw it.
- * @param {Ask} ask @returns {any}
- */
+/** THE ORDER TO `ceo`, once, when the label goes on: the row, the ask, its age, and the way to withdraw it. */
 function toldOrder(ask: Ask): any {
   const { item } = ask;
   const discriminator = String(item.number);
@@ -224,10 +192,7 @@ function toldOrder(ask: Ask): any {
     causeKey: `${TOLD}/org-health/chairman-ask-raised-order@${discriminator}` };
 }
 
-/**
- * A MALFORMED DECLARATION, TO `product-manager` BY NAME: an alert that lacks a required line is not sent, and nothing else would say so.
- * @param {Ask} ask @returns {any}
- */
+/** A MALFORMED DECLARATION, TO `product-manager` BY NAME: an alert that lacks a required line is not sent, and nothing else would say so. */
 function brokenOrder(ask: Ask): any {
   const { item } = ask;
   const discriminator = String(item.number);
@@ -238,15 +203,15 @@ function brokenOrder(ask: Ask): any {
 }
 
 /**
- * @typedef {{ run: (args: string[]) => string, repo: () => string, readItemFacts: (input: { items: import("../wait-condition.ts").WaitItem[], open: any[], run: (args: string[]) => string }) => import("../wait-condition.ts").WaitFacts,
- *            limit: number, readers?: import("./held-on-satisfied-orders.ts").ReleaseReaders, log?: (line: string) => void }} AskIo
  * `readItemFacts` is `readWaitFacts` (it lives in `org-health.mjs`, which is a cycle with the gate); `repo` names the remote a `tagged` wait reads; `limit` caps raises and orders per tick.
  */
+export type AskIo = { run: (args: string[]) => string, repo: () => string, readItemFacts: (input: { items: import("../wait-condition.ts").WaitItem[], open: any[], run: (args: string[]) => string }) => import("../wait-condition.ts").WaitFacts,
+             limit: number, readers?: import("./held-on-satisfied-orders.ts").ReleaseReaders, log?: (line: string) => void };
 
 /**
  * THE TICK'S WHOLE ASK STEP over the open rows: report the broken declarations, read the facts of the SOUND ones only (a quiet org with no declaration pays no call), raise what is due.
  * `null` rows (a refused list) raise nothing.
- * @param {{ rows: any[] | null, now: number }} input @param {AskIo} io @returns {any[]} the orders
+ * @returns the orders
  */
 export function chairmanAskOrders({ rows, now }: { rows: any[] | null; now: number; }, io: AskIo): any[] {
   if (rows === null) return [];
@@ -254,7 +219,7 @@ export function chairmanAskOrders({ rows, now }: { rows: any[] | null; now: numb
   if (sound.length === 0) return broken.slice(0, io.limit).map(brokenOrder);
   const items = sound.map((ask) => ask.item);
   const { run } = io;
-  const readers = io.readers ?? { distTags: registryDistTags, tagExists: (/** @type {string} */ tag: string) => remoteTagExists(tag, { run, repo: io.repo }) };
+  const readers = io.readers ?? { distTags: registryDistTags, tagExists: (tag: string) => remoteTagExists(tag, { run, repo: io.repo }) };
   const facts = { ...io.readItemFacts({ items, open: rows, run }), releases: readReleaseFacts({ items, readers }) };
   const raised = dueAsks(sound, facts).slice(0, io.limit).filter((ask) => raiseAsk(ask, facts, now, io));
   return [...broken.slice(0, io.limit).map(brokenOrder), ...raised.map(toldOrder)];

@@ -24,7 +24,7 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 # a `gh` call in would act as a person.
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
-ExecStart=/usr/bin/node --import tsx packages/agent-org/src/trace/otel-receiver.mjs
+ExecStart=%h/.local/bin/node packages/agent-org/src/trace/otel-receiver.ts
 
 # RESTART WHAT FAILED. A port already taken is a failure that mends when the other listener goes, and the program reads a store it can lose without losing anything: the ids it
 # refuses are in the file, scanned again at each start.

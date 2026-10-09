@@ -1,4 +1,3 @@
-// @ts-check
 // `messaging:pair` (a11ign/a11ign#2902; docs/messaging.md decision 1, "Secret by reference only"): THE ONLY WAY THE CHAIRMAN'S IDS GET
 // INTO THE CHAIRMAN FILE. The chairman's Telegram user id and chat id are not secrets but are personal data, and this repository is
 // public, so nobody types them anywhere: the host prints a ONE-TIME CODE in the chairman's own shell, the chairman sends `/pair <code>`
@@ -21,6 +20,7 @@ import { pathToFileURL } from "node:url";
 
 import { MessagingConfigRefusal, readMessagingConfig } from "../../config.ts";
 import { readSecretFile, redactingFetch } from "../../secret.ts";
+import type { Secret } from "../../secret.ts";
 import { TELEGRAM_API } from "./send.ts";
 
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
@@ -42,19 +42,19 @@ export const REFUSAL = Object.freeze({
   malformed: "the update names no sender or chat",
 });
 
-/** @returns {string} a fresh code from the system's randomness */
+/** A fresh code from the system's randomness. */
 export function generateCode(): string {
   return Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join("");
 }
 
-/** @param {string} left @param {string} right @returns {boolean} equal, without the time telling how many leading characters matched */
+/** Equal, without the time telling how many leading characters matched. */
 function sameCode(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** @param {any} update @returns {{ userId: number, chatId: number, chatType: string, text: string } | null} the parts pairing reads, or null when it is not a message */
+/** The parts pairing reads, or null when it is not a message. */
 function messageParts(update: any): { userId: number; chatId: number; chatType: string; text: string; } | null {
   const message = update?.message;
   const userId = message?.from?.id;
@@ -65,8 +65,6 @@ function messageParts(update: any): { userId: number; chatId: number; chatType: 
 
 /**
  * ONE pairing attempt's state: the code, when it dies, and whether it has been spent. PURE but for the injected clock.
- * @param {{ code: string, now: () => number, ttlMs?: number }} options
- * @returns {{ code: string, expiresAt: number, expired(): boolean, attempt(update: unknown): { outcome: "ignored" } | { outcome: "refused", reason: string } | { outcome: "paired", userId: number, chatId: number } }}
  */
 export function createPairingSession({ code, now, ttlMs = PAIRING_TTL_MS }: { code: string; now: () => number; ttlMs?: number; }): { code: string; expiresAt: number; expired(): boolean; attempt(update: unknown): { outcome: "ignored"; } | { outcome: "refused"; reason: string; } | { outcome: "paired"; userId: number; chatId: number; }; } {
   if (typeof code !== "string" || code === "") throw new TypeError("a pairing code is a non-empty string");
@@ -93,7 +91,6 @@ export function createPairingSession({ code, now, ttlMs = PAIRING_TTL_MS }: { co
 
 /**
  * Writes the chairman file at mode 0600 from its first byte.
- * @param {string} path @param {{ userId: number, chatId: number }} ids @param {{ now: () => number }} deps
  */
 export function writeChairmanFile(path: string, { userId, chatId }: { userId: number; chatId: number; }, { now }: { now: () => number; }) {
   mkdirSync(dirname(path), { recursive: true, mode: CHAIRMAN_DIRECTORY_MODE });
@@ -111,11 +108,8 @@ export function writeChairmanFile(path: string, { userId, chatId }: { userId: nu
   renameSync(temporary, path);
 }
 
-/**
- * @param {{ token: import("../../secret.ts").Secret, fetch: typeof fetch, apiBase: string, signal?: AbortSignal }} api
- * @returns {(offset: number | undefined, timeoutSeconds: number) => Promise<any[]>} one `getUpdates` call
- */
-function updatesFrom({ token, fetch: fetchImpl, apiBase, signal }: { token: import("../../secret.ts").Secret; fetch: typeof fetch; apiBase: string; signal?: AbortSignal; }): (offset: number | undefined, timeoutSeconds: number) => Promise<any[]> {
+/** One `getUpdates` call. */
+function updatesFrom({ token, fetch: fetchImpl, apiBase, signal }: { token: Secret; fetch: typeof fetch; apiBase: string; signal?: AbortSignal; }): (offset: number | undefined, timeoutSeconds: number) => Promise<any[]> {
   const guarded = redactingFetch(fetchImpl, token);
   return async (offset, timeoutSeconds) => {
     const body = { timeout: timeoutSeconds, allowed_updates: ["message"], ...(offset === undefined ? {} : { offset }) };
@@ -129,21 +123,19 @@ function updatesFrom({ token, fetch: fetchImpl, apiBase, signal }: { token: impo
   };
 }
 
-/** @param {number} untilMs @param {number} nowMs @returns {number} whole seconds to long-poll for: the pairing window may end sooner than a full poll */
+/** Whole seconds to long-poll for: the pairing window may end sooner than a full poll. */
 const pollSeconds = (untilMs: number, nowMs: number): number => Math.max(1, Math.min(LONG_POLL_SECONDS, Math.ceil((untilMs - nowMs) / MS_PER_SECOND)));
 
-/** @param {any[]} batch @param {number | undefined} offset @returns {number | undefined} the offset that confirms everything seen so far */
+/** The offset that confirms everything seen so far. */
 function nextOffset(batch: any[], offset: number | undefined): number | undefined {
   return batch.reduce((next, update) => Math.max(next ?? 0, Number(update.update_id) + 1), offset);
 }
 
 /**
  * Hands each update of a batch to the session, in order, so two correct codes in one batch pair the first and refuse the second.
- * @param {any[]} batch @param {ReturnType<typeof createPairingSession>} session @param {(line: string) => void} print
- * @returns {{ userId: number, chatId: number } | null} who proved the code, if anyone did
+ * Returns who proved the code, if anyone did.
  */
 function judgeBatch(batch: any[], session: ReturnType<typeof createPairingSession>, print: (line: string) => void): { userId: number; chatId: number; } | null {
-  /** @type {{ userId: number, chatId: number } | null} */
   let paired: { userId: number; chatId: number; } | null = null;
   for (const update of batch) {
     const verdict = session.attempt(update);
@@ -153,13 +145,8 @@ function judgeBatch(batch: any[], session: ReturnType<typeof createPairingSessio
   return paired;
 }
 
-/**
- * @param {{ token: import("../../secret.ts").Secret, chairmanFile: string, fetch?: typeof fetch, now?: () => number,
- *   sleep?: (ms: number) => Promise<void>, print?: (line: string) => void, code?: string, ttlMs?: number, apiBase?: string, signal?: AbortSignal }} options
- * @returns {Promise<{ paired: true, userId: number, chatId: number } | { paired: false, reason: string }>}
- */
 export async function runPairing(options: {
-        token: import("../../secret.ts").Secret; chairmanFile: string; fetch?: typeof fetch; now?: () => number;
+        token: Secret; chairmanFile: string; fetch?: typeof fetch; now?: () => number;
         sleep?: (ms: number) => Promise<void>; print?: (line: string) => void; code?: string; ttlMs?: number; apiBase?: string; signal?: AbortSignal;
     }): Promise<{ paired: true; userId: number; chatId: number; } | { paired: false; reason: string; }> {
   const { token, chairmanFile, fetch: fetchImpl = globalThis.fetch, now = Date.now, sleep = defaultSleep, print = defaultPrint,
@@ -167,7 +154,6 @@ export async function runPairing(options: {
   const session = createPairingSession({ code, now, ttlMs });
   const getUpdates = updatesFrom({ token, fetch: fetchImpl, apiBase, signal });
   print(`Send this to your bot within ${Math.round(ttlMs / (MS_PER_SECOND * 60))} minutes, from your own private chat with it:\n\n  /pair ${code}\n`);
-  /** @type {number | undefined} */
   let offset: number | undefined;
   while (!session.expired() && signal?.aborted !== true) {
     const batch = await getUpdates(offset, pollSeconds(session.expiresAt, now()));
@@ -186,23 +172,21 @@ export async function runPairing(options: {
   return { paired: false, reason };
 }
 
-/** @param {number} ms @returns {Promise<void>} */
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-/** @param {string} line */
 function defaultPrint(line: string) {
   process.stdout.write(`${line}\n`);
 }
 
-/** @param {string[]} argv @returns {string} the project root: `--root=<dir>`, else the current directory */
+/** The project root: `--root=<dir>`, else the current directory. */
 function rootFrom(argv: string[]): string {
   const flag = argv.find((arg) => arg.startsWith("--root="));
   return flag === undefined ? process.cwd() : flag.slice("--root=".length);
 }
 
-/** @param {string[]} argv @returns {Promise<number>} the exit code: 0 paired, 1 not */
+/** The exit code: 0 paired, 1 not. */
 export async function main(argv: string[]): Promise<number> {
   try {
     const config = readMessagingConfig(rootFrom(argv));

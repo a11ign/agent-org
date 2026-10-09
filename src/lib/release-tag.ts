@@ -1,4 +1,3 @@
-// @ts-check
 // #3443: WHAT A RELEASE TAG IS, AND WHICH ONE THE HOST RUNS -- pure, so `host-config.mjs` (a leaf) can validate `toolVersion` with the same pattern
 // `update-tool.mjs` selects by, and neither states it twice.
 //
@@ -11,16 +10,14 @@ export const LATEST = "latest";
 
 const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-/** @param {string} name @returns {boolean} */
 export const isReleaseTag = (name: string): boolean => RELEASE_TAG.test(name);
 
-/** Whether a `host.json` `toolVersion` is one the tool knows: `"latest"` or one release tag. @param {unknown} value @returns {boolean} */
+/** Whether a `host.json` `toolVersion` is one the tool knows: `"latest"` or one release tag. */
 export const isToolVersion = (value: unknown): boolean => value === LATEST || (typeof value === "string" && isReleaseTag(value));
 
-/** @param {string} tag @returns {number[]} */
-const fields = (tag: string): number[] => /** @type {RegExpExecArray} */ (RELEASE_TAG.exec(tag)).slice(1).map(Number);
+const fields = (tag: string): number[] => (RELEASE_TAG.exec(tag) as RegExpExecArray).slice(1).map(Number);
 
-/** Order two release tags numerically. @param {string} a @param {string} b @returns {number} */
+/** Order two release tags numerically. */
 export function compareReleaseTags(a: string, b: string): number {
   const [left, right] = [fields(a), fields(b)];
   return left.map((part, index) => part - right[index]).find((difference) => difference !== 0) ?? 0;
@@ -29,7 +26,7 @@ export function compareReleaseTags(a: string, b: string): number {
 /**
  * The tag a `toolVersion` selects among the tags a checkout holds, or `null` when there is none: the newest release tag for `"latest"`, and for a pin exactly
  * that tag. `null` is "refuse", never "fall back": an absent pin is not the newest tag, and no tag is not `origin/main`.
- * @param {string[]} tags every tag name, of any shape @param {string} toolVersion @returns {string | null}
+ * @param tags every tag name, of any shape
  */
 export function chooseReleaseTag(tags: string[], toolVersion: string): string | null {
   const releases = tags.filter(isReleaseTag);

@@ -1,4 +1,3 @@
-// @ts-check
 // THE RELEASE SOURCE (a11ign/a11ign#3413, chairman point 2 of #3409): a declared package cut a release, and the chairman is told in ONE line --
 // package, version, what changed -- with the release page last. `release:<repo>@<tag>` is the key, so a release is told once however many
 // ticks see it, and the core's ledger is the memory that says it was.
@@ -30,12 +29,11 @@ const COMMIT_PREFIX = /^[0-9a-f]{7,40}:\s+/;
 const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const SENTENCE_END = /(?<=[.!?])\s/;
 
-/** @param {string} repo @param {string} tag @returns {string} */
 export function releaseKey(repo: string, tag: string): string {
   return `${KEY_PREFIX}${repo}@${tag}`;
 }
 
-/** @param {string} repo @returns {string} the marker that says this repository has been read once */
+/** The marker that says this repository has been read once. */
 export function baselineKey(repo: string): string {
   return `${BASELINE_PREFIX}${repo}`;
 }
@@ -43,8 +41,6 @@ export function baselineKey(repo: string): string {
 /**
  * What the ledger holds from earlier runs: every `release:` and `release-baseline:` key a `source-note` line recorded. A release that was TOLD is not
  * here and does not need to be: the core's own ledger refuses it as a duplicate.
- *
- * @param {Record<string, any>[]} history @returns {Set<string>}
  */
 export function seenKeys(history: Record<string, any>[]): Set<string> {
   return new Set(history
@@ -52,18 +48,18 @@ export function seenKeys(history: Record<string, any>[]): Set<string> {
     .map((line) => line.key));
 }
 
-/** @param {string} repo @returns {string} `a11ign/agent-org` is the package `agent-org` */
+/** `a11ign/agent-org` is the package `agent-org`. */
 function packageOf(repo: string): string {
   return repo.slice(repo.indexOf("/") + 1);
 }
 
-/** @param {string} tag @returns {string} `v0.7.8` is version `0.7.8`: the `v` is the tag's convention and not part of the number */
+/** `v0.7.8` is version `0.7.8`: the `v` is the tag's convention and not part of the number. */
 function versionOf(tag: string): string {
   return tag.replace(/^v(?=\d)/, "");
 }
 
 /**
- * @param {string} line @returns {string} the markdown a plain-text message would show as noise: a code span's backticks, a bold pair, and a link's address.
+ * Drops the markdown a plain-text message would show as noise: a code span's backticks, a bold pair, and a link's address.
  * A lone `*` or `_` stays: `@a11ign/*` and `snake_case` are the words, not emphasis.
  */
 function plain(line: string): string {
@@ -72,8 +68,6 @@ function plain(line: string): string {
 
 /**
  * The first paragraph or bullet that is not a heading, its wrapped lines joined: a changeset's bullet continues onto the next line when it is long.
- *
- * @param {string} notes @returns {string}
  */
 function firstBlock(notes: string): string {
   const lines = notes.split(/\r?\n/);
@@ -87,7 +81,7 @@ function firstBlock(notes: string): string {
   return block.map((line) => line.trim()).join(" ");
 }
 
-/** @param {string} text @returns {string} at most `SUMMARY_LIMIT` characters, cut at a word and marked */
+/** At most `SUMMARY_LIMIT` characters, cut at a word and marked. */
 function fit(text: string): string {
   if (text.length <= SUMMARY_LIMIT) return text;
   const cut = text.slice(0, SUMMARY_LIMIT - 1);
@@ -95,7 +89,7 @@ function fit(text: string): string {
 }
 
 /**
- * @param {unknown} notes the release's body, as GitHub returns it (null when empty) @returns {string} its first sentence, or "" when there is none
+ * The first sentence of `notes`, or "" when there is none. `notes` is the release's body, as GitHub returns it (null when empty).
  */
 export function firstSentence(notes: unknown): string {
   if (typeof notes !== "string") return "";
@@ -103,12 +97,12 @@ export function firstSentence(notes: unknown): string {
   return fit(block.split(SENTENCE_END)[0] ?? "");
 }
 
-/** @param {Record<string, any>} release @returns {boolean} a published, final release: the only kind the chairman is told about */
+/** A published, final release: the only kind the chairman is told about. */
 function isTold(release: Record<string, any>): boolean {
   return release.draft !== true && release.prerelease !== true;
 }
 
-/** @param {unknown} releases @returns {Record<string, any>[]} the told releases, the oldest first */
+/** The told releases, the oldest first. */
 function toldOldestFirst(releases: unknown): Record<string, any>[] {
   if (!Array.isArray(releases)) throw new TypeError("releases: an array was expected");
   return releases.filter(isTold)
@@ -117,7 +111,6 @@ function toldOldestFirst(releases: unknown): Record<string, any>[] {
     .map(({ release }) => release);
 }
 
-/** @param {string} repo @param {Record<string, any>} release @returns {Record<string, unknown>} */
 function eventOf(repo: string, release: Record<string, any>): Record<string, unknown> {
   const sentence = firstSentence(release.body);
   const named = `${packageOf(repo)} ${versionOf(release.tag_name)} is out`;
@@ -129,12 +122,10 @@ function eventOf(repo: string, release: Record<string, any>): Record<string, unk
   };
 }
 
-/** @typedef {{ reason: string, key: string }} Note */
+type Note = { reason: string; key: string };
 
 /**
  * The first read of a repository: every release recorded as seen, then the marker last, so a run that stops half way reads the repository as new again.
- *
- * @param {string} repo @param {Record<string, any>[]} releases @returns {Note[]}
  */
 function baselineNotes(repo: string, releases: Record<string, any>[]): Note[] {
   const existing = releases.map((release) => ({ key: releaseKey(repo, release.tag_name), reason: "existed before the releases source was enabled: recorded as seen, not told" }));
@@ -142,10 +133,6 @@ function baselineNotes(repo: string, releases: Record<string, any>[]): Note[] {
   return [...existing, { key: baselineKey(repo), reason: `first read of ${repo}: ${count} recorded as seen and none told` }];
 }
 
-/**
- * @param {{ repo: string, releases: Record<string, any>[], seen: Set<string> }} input
- * @returns {{ events: Record<string, unknown>[], notes: Note[] }}
- */
 function readRepository({ repo, releases, seen }: { repo: string; releases: Record<string, any>[]; seen: Set<string>; }): { events: Record<string, unknown>[]; notes: Note[]; } {
   if (!seen.has(baselineKey(repo))) return { events: [], notes: baselineNotes(repo, releases) };
   const fresh = releases.filter((release) => !seen.has(releaseKey(repo, release.tag_name)));
@@ -154,10 +141,7 @@ function readRepository({ repo, releases, seen }: { repo: string; releases: Reco
 
 /**
  * One event per release not yet seen, the oldest first. A repository whose read fails yields no event and is named in `cannotAsk`, never read as "nothing new".
- *
- * @param {{ repos: readonly string[], listReleases: (repo: string) => Promise<unknown> | unknown, seen: Set<string>, log?: (line: string) => void }} input
- * @returns {Promise<{ events: Record<string, unknown>[], notes: Note[], cannotAsk: { source: string, reason: string }[] }>}
- *   `notes` are the ledger lines to write (see the head of this file); the watcher records each once.
+ * `notes` are the ledger lines to write (see the head of this file); the watcher records each once.
  */
 export async function observeReleases({ repos, listReleases, seen, log = () => {} }: { repos: readonly string[]; listReleases: (repo: string) => Promise<unknown> | unknown; seen: Set<string>; log?: (line: string) => void; }): Promise<{ events: Record<string, unknown>[]; notes: Note[]; cannotAsk: { source: string; reason: string; }[]; }> {
   const parts = await Promise.all(repos.map((repo) => observe(
@@ -165,7 +149,7 @@ export async function observeReleases({ repos, listReleases, seen, log = () => {
     async () => [readRepository({ repo, releases: toldOldestFirst(await listReleases(repo)), seen })],
     log,
   )));
-  const readings = parts.flatMap((part) => /** @type {{ events: Record<string, unknown>[], notes: Note[] }[]} */ (part.events));
+  const readings = parts.flatMap((part) => part.events as unknown as { events: Record<string, unknown>[]; notes: Note[] }[]);
   return {
     events: readings.flatMap((reading) => reading.events),
     notes: readings.flatMap((reading) => reading.notes),

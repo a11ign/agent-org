@@ -72,7 +72,7 @@ ExecStartPre=-%h/.local/bin/pnpm run primary:update
 #
 # `1` HERE IS THE CONTRACT'S ATTENTION AND NOT node's CRASH -- #3038. node exits 1 on any uncaught exception, so the
 # `--import` below moves a crash to 70, which is NOT listed and so ends the unit `failed` (63 crashed ticks were `Finished` on 2026-10-02).
-ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts
+ExecStart=%h/.local/bin/node --import=./packages/agent-org/src/lib/crash-exit.ts packages/agent-org/src/work-tick.ts
 SuccessExitStatus=0 1 2
 
 # A rebuild after a lockfile change can outlast the interval; systemd will not start a second copy while

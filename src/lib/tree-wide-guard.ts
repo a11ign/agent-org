@@ -3,7 +3,6 @@
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: org-health's `copies-drifted` reading compares them.
 // CHANGED FROM THE ORIGINAL, 10 NAMED LINES: the original is TypeScript since a11ign/a11ign#4273 and this copy stays plain JS under `// @ts-check`, so each of the nine is a TYPE the original writes inline and this copy writes as JSDoc or leaves to inference: `tsModule`'s declaration (1); `typescriptModule`'s signature (1) and its return cast (1); `declareTreeWideGuard`'s signature (1); `lsFilesCache`'s declaration (1); `defaultGitLsFiles`'s declaration (1); the `WalkedFile` type, an exported `type` in the original and a `@typedef` here (1); `walkTree`'s signature (1); and `scriptKindOf`'s declaration (1). The tenth is its one import, `./git-env.mjs` here where the original reads `./git-env.ts`, because the tool's own `git-env.mjs` sits beside it.
 // ==== end of copy header ====
-// @ts-check
 // THE TREE-WIDE-GUARD MARKER -- #716/#704, ceo's ruling 2026-09-09.
 //
 // `packages/guards/src/tree-wide-guards.ts`'s discovery used to grep comment-stripped source for the literal
@@ -36,12 +35,10 @@ import { sandboxGitEnv } from "./git-env.ts";
 // `createRequire` loads it SYNCHRONOUSLY (so `walkTree` stays sync, no API change) and LAZILY (only the
 // first time a `kind !== "all"` call actually needs it, never for a text-only guard).
 const require = createRequire(import.meta.url);
-/** @type {typeof import("typescript") | null} */
 let tsModule: typeof import("typescript") | null = null;
-/** @returns {typeof import("typescript")} */
 function typescriptModule(): typeof import("typescript") {
   if (tsModule === null) tsModule = require("typescript");
-  return /** @type {typeof import("typescript")} */ (tsModule);
+  return tsModule as typeof import("typescript");
 }
 
 /** Test-only: has this process actually loaded `typescript` yet -- proof the laziness is real, not
@@ -57,7 +54,6 @@ export function _typescriptLoadedForTests() {
  * one file. The return value carries no meaning -- `packages/guards/src/tree-wide-guards.ts`'s discovery only checks
  * that the CALL exists (never merely the import), the same "imported is not used" distinction
  * `git-spawn-classification.test.ts`'s own `usesCanonicalHelper` already draws for the identical reason.
- * @returns {true}
  */
 export function declareTreeWideGuard(): true {
   return true;
@@ -70,12 +66,10 @@ export function declareTreeWideGuard(): true {
 // fact.test.ts` and `referenced-scripts.test.ts` each ask for the whole tree twice; `walkTree`'s own test
 // asks for the same kind+root pair from two different tests), and every one of those repeats is a real,
 // avoidable spawn this closes.
-/** @type {Map<string, string>} */
 const lsFilesCache: Map<string, string> = new Map();
 /** A `Map.set` on an EXISTING key does not grow `.size` whether or not the cache actually short-circuited
  *  -- so `.size` alone cannot prove a repeat call skipped the spawn. This counts the spawns themselves. */
 let realSpawnCount = 0;
-/** @type {(args: string[]) => string} */
 const defaultGitLsFiles: (args: string[]) => string = (args): string => {
   const key = JSON.stringify(args);
   const cached = lsFilesCache.get(key);
@@ -100,8 +94,8 @@ export function _lsFilesSpawnCountForTests() {
  * `scriptKind` is `undefined` for a `kind: "all"` walk -- that population isn't ts/mjs, so there is no
  * `ScriptKind` to compute, and computing one anyway is exactly the unconditional `typescript` load #795's
  * CPU follow-up traced nine seconds to.
- * @typedef {{ path: string, scriptKind: import("typescript").ScriptKind | undefined, isSelf: boolean }} WalkedFile
  */
+export type WalkedFile = { path: string; scriptKind: import("typescript").ScriptKind | undefined; isSelf: boolean };
 
 /**
  * #795: THE SHARED TREE WALK, so the SEARCH is asserted once rather than 20-odd times, each written by
@@ -127,10 +121,6 @@ export function _lsFilesSpawnCountForTests() {
  * `isSelf: true` when the walk finds it -- named rather than silently included or silently excluded, the
  * same "mention vs use" self-reference trap this tree keeps meeting (`git-spawn-classification.test.ts`'s
  * own fixture regex matching its own describing prose was the same shape, one file over).
- *
- * @param {{ kind: "ts" | "mjs" | "both" | "all", roots?: string[], selfPath?: string }} opts
- * @param {{ gitLsFiles?: typeof defaultGitLsFiles }} [deps]
- * @returns {WalkedFile[]}
  */
 export function walkTree({ kind, roots = [], selfPath }: { kind: "ts" | "mjs" | "both" | "all"; roots?: string[]; selfPath?: string; }, { gitLsFiles = defaultGitLsFiles }: { gitLsFiles?: typeof defaultGitLsFiles; } = {}): WalkedFile[] {
   if (!["ts", "mjs", "both", "all"].includes(kind)) {
@@ -138,7 +128,6 @@ export function walkTree({ kind, roots = [], selfPath }: { kind: "ts" | "mjs" | 
   }
   // Lazy, and only for a kind that means something has a ScriptKind at all -- a `kind: "all"` caller must
   // never pay for loading `typescript`, since it never reads this field.
-  /** @type {(path: string) => import("typescript").ScriptKind | undefined} */
   const scriptKindOf: (path: string) => import("typescript").ScriptKind | undefined = kind === "all"
     ? () => undefined
     : (path) => (extname(path) === ".ts" ? typescriptModule().ScriptKind.TS : typescriptModule().ScriptKind.JS);

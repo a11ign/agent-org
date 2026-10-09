@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // RULE: WOULD ARMING THIS PR CLOSE A ROW SOMEBODY ELSE IS INSIDE? -- #249.
 //
 // `row-claim check` runs before a worker DISPATCHES or STARTS a row; nothing ran before a PR closing that
@@ -46,11 +45,6 @@ import { reasonKind } from "./reason-kind.ts";
 // so it does not become a second CLI entry point `cli-flags.test.ts`'s argv-reading census has to track.
 // `merge-guard.ts` already reads argv and already calls `refuseUnknownFlags` for the whole command.
 
-/**
- * @param {{number: number, title?: string, labels: string[]}[]} closes
- * @param {string | null} session
- * @returns {string[]}
- */
 export function closingClaimReasons(closes: { number: number; title?: string; labels: string[]; }[], session: string | null): string[] {
   const reasons = [];
   for (const issue of closes) {
@@ -74,12 +68,10 @@ export function closingClaimReasons(closes: { number: number; title?: string; la
  * typed on the command line that does not match any actual claimant on the row being closed covers
  * nothing, so that row's collision reason stays refused.
  *
- * @param {{number: number, labels: string[]}[]} closes
- * @param {string} confirmedWith
- * @returns {Set<number>} issue numbers this confirmation actually covers
+ * @returns issue numbers this confirmation actually covers
  */
 export function claimedCloseCoveredBy(closes: { number: number; labels: string[]; }[], confirmedWith: string): Set<number> {
-  const covered = new Set();
+  const covered = new Set<number>();
   for (const issue of closes) {
     const status = claimStatus(issue.labels);
     if (status.claimed && status.sessions.includes(confirmedWith)) covered.add(issue.number);
@@ -95,19 +87,14 @@ export function claimedCloseCoveredBy(closes: { number: number; labels: string[]
  * already narrows to exactly this rule's own "WOULD CLOSE #" sentences, which a CANNOT_ASK verdict's
  * lookup-failure message can never match -- so filtering by reason shape alone is already precise, without
  * this module needing to know the composed verdict's own exit-code table.
- *
- * @param {{reasons: string[]}} verdict
- * @param {{number: number, labels: string[]}[]} closes
- * @param {string | null} allowClaimedClose
- * @returns {{overridden: string[], remaining: string[]}}
  */
 export function applyAllowClaimedClose(verdict: { reasons: string[]; }, closes: { number: number; labels: string[]; }[], allowClaimedClose: string | null): { overridden: string[]; remaining: string[]; } {
   const covered = allowClaimedClose ? claimedCloseCoveredBy(closes, allowClaimedClose) : new Set();
-  const issueNumberOf = (/** @type {string} */ reason: string) => {
+  const issueNumberOf = (reason: string) => {
     const m = /^WOULD CLOSE #(\d+)/.exec(reason);
     return m ? Number(m[1]) : null;
   };
-  const isCoveredCollision = (/** @type {string} */ reason: string) =>
+  const isCoveredCollision = (reason: string) =>
     reasonKind(reason) === "CLAIMED_BY_ANOTHER_SESSION" && covered.has(issueNumberOf(reason));
   return {
     overridden: verdict.reasons.filter(isCoveredCollision),

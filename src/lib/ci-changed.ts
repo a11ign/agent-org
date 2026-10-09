@@ -15,7 +15,6 @@
 //   makes the same edit in the final pull request of a11ign/a11ign#3573; until then this copy is the one that has it, which is why the count
 //   is 100 and not 7. The count is a ceiling, so it stays true after the original catches up.
 // ==== end of copy header ====
-// @ts-check
 // command: classify what a PR's diff touches, so CI's conditional jobs know whether to run
 // WHAT CHANGED, CLASSIFIED — the one place `ci.yml`'s conditional jobs read to decide whether they run.
 //
@@ -64,10 +63,7 @@ import { changedPackages } from "./changed-packages.ts";
 // question (does a consumer's install actually work), so it is the one authority now.
 import { packedFiles as packedFilesForDir } from "./isolation-gate.ts";
 
-/**
- * Every top-level package directory this repo has, read once rather than hardcoded twice.
- * @param {string} repoRoot
- */
+/** Every top-level package directory this repo has, read once rather than hardcoded twice. */
 export function knownPackages(repoRoot: string) {
   const pkg = JSON.parse(readFileSync(`${repoRoot}/package.json`, "utf8"));
   const patterns = pkg.workspaces ?? ["packages/*"];
@@ -114,7 +110,7 @@ export const DOC_ROOT_FILES = new Set(["README.md", "CLAUDE.md", "CONTRIBUTING.m
  * react to. Exported separately from `classify` so the pre-push hook's board-only fast path can ask the
  * identical question `ci.yml`'s `board` job asks, rather than a second copy of the same two regexes.
  *
- * @param {string[]} docsFiles a list of files to check -- an EMPTY list is not "board-only", it is "no
+ * @param docsFiles a list of files to check -- an EMPTY list is not "board-only", it is "no
  *   doc changed at all", and those are different questions with different callers. Two valid shapes,
  *   deliberately: `classify` pre-filters to doc-touching files only, because its `board`/`docs` decision
  *   is independent of the OTHER categories (`ts`, `python`, ...) it computes over the same diff in the
@@ -132,10 +128,6 @@ export function boardOnly(docsFiles: string[]) {
  * root. `classify` accepts an injected replacement (`getPackedFiles`) so its own tests never shell out to
  * npm; this is only the REAL one, kept at this `(repoRoot, pkgName)` shape so every existing caller and
  * test here is unaffected by where the underlying npm call actually lives.
- *
- * @param {string} repoRoot
- * @param {string} pkgName
- * @returns {Set<string>}
  */
 export function packedFiles(repoRoot: string, pkgName: string): Set<string> {
   return packedFilesForDir(`${repoRoot}/packages/${pkgName}`);
@@ -164,8 +156,7 @@ export function packedFiles(repoRoot: string, pkgName: string): Set<string> {
  * `src/local-worker`/`src/provisioning`) needs no mapping at all: the file's own path is already a
  * candidate, and its `files` field either lists that literal path or does not.
  *
- * @param {string} relPath path relative to the package root
- * @returns {string[]}
+ * @param relPath path relative to the package root
  */
 export function candidatePackedPaths(relPath: string): string[] {
   const candidates = [relPath];
@@ -183,9 +174,6 @@ export function candidatePackedPaths(relPath: string): string[] {
  * stand-in), whose `.has()` answers every candidate `true` and which is not itself iterable. Iterating it
  * would throw `TypeError: packed is not iterable`, and the CLI's own `runCliIn` test (no `--precise`)
  * caught exactly that on the first run of this fix.
- * @param {Set<string>} packed
- * @param {string[]} candidates
- * @returns {boolean}
  */
 export function reachesPacked(packed: Set<string>, candidates: string[]): boolean {
   return candidates.some((c) => {
@@ -196,11 +184,7 @@ export function reachesPacked(packed: Set<string>, candidates: string[]): boolea
   });
 }
 
-/**
- * Whether `packages/<pkgName>` is ever published — a `private: true` package has no changeset question.
- * @param {string} repoRoot
- * @param {string} pkgName
- */
+/** Whether `packages/<pkgName>` is ever published — a `private: true` package has no changeset question. */
 function isPublished(repoRoot: string, pkgName: string) {
   return !JSON.parse(readFileSync(`${repoRoot}/packages/${pkgName}/package.json`, "utf8")).private;
 }
@@ -220,13 +204,13 @@ function isPublished(repoRoot: string, pkgName: string) {
  * one job invocation that then finds nothing to enforce; a false negative would skip the real check
  * entirely, which is why this never goes the other way.
  *
- * @param {string} repoRoot unused -- present only to match `getPackedFiles`'s real shape
- * @param {string} pkgName unused -- present only to match `getPackedFiles`'s real shape
- * @returns {Set<string>} answers `.has(anything)` true, without ever running the real `npm pack`
+ * @param repoRoot unused -- present only to match `getPackedFiles`'s real shape
+ * @param pkgName unused -- present only to match `getPackedFiles`'s real shape
+ * @returns answers `.has(anything)` true, without ever running the real `npm pack`
  */
 function everythingIsPacked(repoRoot: string, pkgName: string): Set<string> {
   void repoRoot; void pkgName;
-  return /** @type {Set<string>} */ (/** @type {unknown} */ ({ has: () => true }));
+  return { has: () => true } as unknown as Set<string>;
 }
 
 /**
@@ -251,8 +235,7 @@ function everythingIsPacked(repoRoot: string, pkgName: string): Set<string> {
  * comment adds a phantom entry to the derived map (harmless, since `<some path>` never appears in a real
  * diff, but sloppy and worth avoiding; caught once already in this function's own test file).
  *
- * @param {string} repoRoot
- * @returns {Map<string, Set<string>>} literal path -> package name(s) whose ts-job glob covers a test
+ * @returns literal path -> package name(s) whose ts-job glob covers a test
  *   naming it
  */
 export function testDependencyMap(repoRoot: string): Map<string, Set<string>> {
@@ -281,9 +264,7 @@ export function testDependencyMap(repoRoot: string): Map<string, Set<string>> {
  * the call site (which measured WORSE, not better, the last time this file's own `rules.ts` sibling tried
  * it).
  *
- * @param {Set<string>} tsPackages mutated in place
- * @param {{ files: string[], board: boolean,
- *   getTestDependencyMap: (repoRoot: string) => Map<string, Set<string>>, repoRoot: string }} ctx
+ * @param tsPackages mutated in place
  */
 function foldTestNamedPackages(tsPackages: Set<string>, { files, board, getTestDependencyMap, repoRoot }: {
         files: string[]; board: boolean;
@@ -322,8 +303,7 @@ const READS_DOCS = new RegExp([
  * DERIVED from the tracked test files, so a test added tomorrow joins without an edit here; that is the
  * whole reason this is not a list of names (the shape #2329 slipped past).
  *
- * @param {string} repoRoot
- * @returns {string[]} repo-relative, sorted
+ * @returns repo-relative, sorted
  */
 export function docsReadingTests(repoRoot: string): string[] {
   return execFileSync("git", ["ls-files", "packages"], { cwd: repoRoot, env: sandboxGitEnv(), encoding: "utf8" })
@@ -336,8 +316,6 @@ export function docsReadingTests(repoRoot: string): string[] {
 /**
  * Must `ts` run for this diff because it changes docs some test reads? Only a NON-board docs diff asks:
  * `board` has its own narrower route (#283 fold above). Its own function so `classify` pays one call for it.
- *
- * @param {{ docs: boolean, getDocsReadingTests: (repoRoot: string) => string[], repoRoot: string }} ctx
  */
 function docsReadersMustRun({ docs, getDocsReadingTests, repoRoot }: { docs: boolean; getDocsReadingTests: (repoRoot: string) => string[]; repoRoot: string; }) {
   return docs && getDocsReadingTests(repoRoot).length > 0;
@@ -349,31 +327,27 @@ function docsReadersMustRun({ docs, getDocsReadingTests, repoRoot }: { docs: boo
  * own header opens with, applied to itself). Exists so the #283 acceptance check can ask the CLASS
  * question standalone, with no diff or checkout: does `docs/board/reported.json` alone route to `ts`.
  *
- * @param {string[]} files
- * @param {string} [repoRoot]
- * @returns {string[]} the job names `classify` set true for this file list
+ * @returns the job names `classify` set true for this file list
  */
 export function jobsFor(files: string[], repoRoot: string = process.cwd()): string[] {
   const result = classify(files, knownPackages(repoRoot), { repoRoot });
-  /** @type {(keyof ClassifyResult)[]} */
   const jobs: (keyof ClassifyResult)[] = ["ts", "python", "ansible", "docs", "board", "changeset", "rulesFitness"];
   return jobs.filter((job) => result[job]);
 }
 
+export type ClassifyResult = {
+  ts: boolean; python: boolean; ansible: boolean; docs: boolean; board: boolean;
+  changeset: boolean; rulesFitness: boolean; packages: string[];
+};
+
 /**
  * Classify a list of repo-relative changed paths into which `ci.yml` jobs must run.
  *
- * @param {string[]} files
- * @param {string[]} allPackages every package directory name, for the "a root config file changed" case
- * @param {{ repoRoot?: string, getPackedFiles?: (repoRoot: string, pkgName: string) => Set<string>,
- *   getTestDependencyMap?: (repoRoot: string) => Map<string, Set<string>>,
- *   getDocsReadingTests?: (repoRoot: string) => string[] }} [deps]
+ * @param allPackages every package directory name, for the "a root config file changed" case
+ * @param [deps]
  *   `repoRoot` defaults to `process.cwd()`, `getPackedFiles` to the real `packedFiles` above,
  *   `getTestDependencyMap` to the real `testDependencyMap` above, `getDocsReadingTests` to the real
  *   `docsReadingTests` — all injectable so `classify` itself stays testable without touching disk or git.
- * @typedef {{ ts: boolean, python: boolean, ansible: boolean, docs: boolean, board: boolean,
- *   changeset: boolean, rulesFitness: boolean, packages: string[] }} ClassifyResult
- * @returns {ClassifyResult}
  */
 export function classify(files: string[], allPackages: string[],
   { repoRoot = process.cwd(), getPackedFiles = packedFiles, getTestDependencyMap = testDependencyMap,
@@ -387,7 +361,7 @@ export function classify(files: string[], allPackages: string[],
   // — not only `.ts`/`.mjs`/`.json` under `src`/`bin` — marks that package touched. A second, narrower
   // definition of "touched" living beside the pre-push hook's is exactly the shape that drifts; the hook's
   // own tests already exercise renames, deletions and the no-subdirectory edge case for this function.
-  const tsPackages = new Set(changedPackages(files.join("\n")));
+  const tsPackages = new Set(changedPackages(files.join("\n")) as string[]);
   const rootScriptsChanged = files.some((f) => /^scripts\/.*\.mjs$/.test(f));
   // A root config file (tsconfig, eslint config, the workspace's own package.json) OR a `scripts/*.mjs`
   // file can change what EVERY package lints, typechecks or tests as — dozens of packaging tests import
@@ -465,7 +439,6 @@ export function classify(files: string[], allPackages: string[],
   };
 }
 
-/** @param {ClassifyResult} result */
 function writeOutputs(result: ClassifyResult) {
   const outFile = process.env.GITHUB_OUTPUT;
   const lines = [

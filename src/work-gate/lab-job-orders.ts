@@ -1,4 +1,3 @@
-// @ts-check
 // module: the `lab-job-finished` order -- what the gate says to the holder of a row when the lab job it dispatched ends (#2729)
 //
 // THE GAP: no cause fired when a lab job finished, so sessions called `ScheduleWakeup` to re-poll `lab:status` and each
@@ -35,13 +34,12 @@ const MINUTE_MS = 60_000;
  */
 export const RECORD_WAKE_WINDOW_MS = 90 * MINUTE_MS;
 
-/** @typedef {{ schema: number, job: string, row: number, invocation: string, outcome: string, exit: number,
- *             commit?: string, host?: string, finishedAt: string }} LabJobRecord */
+export type LabJobRecord = { schema: number, job: string, row: number, invocation: string, outcome: string, exit: number,
+              commit?: string, host?: string, finishedAt: string };
 
 /**
  * PURE. A record's shape, or `null` when the parsed JSON is not one this file understands. A foreign `schema` is refused
  * rather than guessed at: a record read wrongly would wake a holder with a wrong result.
- * @param {any} raw @returns {LabJobRecord | null}
  */
 export function recordOf(raw: any): LabJobRecord | null {
   if (raw?.schema !== 1 || typeof raw.job !== "string" || raw.job === "") return null;
@@ -50,7 +48,7 @@ export function recordOf(raw: any): LabJobRecord | null {
   return raw;
 }
 
-/** @param {string} path @param {typeof readFileSync} read @returns {LabJobRecord | null} a torn or unreadable file is `null`: it cannot establish an ending */
+/** @returns a torn or unreadable file is `null`: it cannot establish an ending */
 function recordAt(path: string, read: typeof readFileSync): LabJobRecord | null {
   try {
     return recordOf(JSON.parse(String(read(path, "utf8"))));
@@ -63,18 +61,15 @@ function recordAt(path: string, read: typeof readFileSync): LabJobRecord | null 
  * Every well-formed record on disk. An ABSENT directory is an empty answer (nothing was ever dispatched with a row, which is
  * a fact); a directory that exists and cannot be read THROWS, so a caller never reads "could not look" as "nothing ended". A
  * single unreadable or malformed file is skipped and NAMED through `skipped`, since one bad record must not hide the others.
- * @param {{dir?: string, list?: typeof readdirSync, read?: typeof readFileSync, skipped?: (file: string) => void}} [io]
- * @returns {LabJobRecord[]}
  */
 export function readLabJobRecords({ dir = RECORD_DIR, list = readdirSync, read = readFileSync, skipped = () => {} }: { dir?: string; list?: typeof readdirSync; read?: typeof readFileSync; skipped?: (file: string) => void; } = {}): LabJobRecord[] {
-  let files;
+  let files: string[];
   try {
-    files = /** @type {string[]} */ (list(dir));
+    files = list(dir) as string[];
   } catch (err) {
-    if (/** @type {any} */ (err)?.code === "ENOENT") return [];
+    if ((err as { code?: unknown } | null | undefined)?.code === "ENOENT") return [];
     throw err;
   }
-  /** @type {LabJobRecord[]} */
   const records: LabJobRecord[] = [];
   for (const file of files.filter((f) => f.endsWith(".json")).sort()) {
     const record = recordAt(`${dir}/${file}`, read);
@@ -91,10 +86,8 @@ export function readLabJobRecords({ dir = RECORD_DIR, list = readdirSync, read =
  * unclaimed row wakes nobody -- there is no one to tell, and the record ages out on its own.
  * ONE ORDER PER ROW, keyed on the set of InvocationIDs, so two jobs that end in one tick are said once and a later job
  * is a new key. `nowMs` is a parameter so the window is testable.
- * @param {any[]} rows every open row
- * @param {LabJobRecord[] | null | undefined} records `readLabJobRecords`'s answer; `null` is "not asked or refused" and emits nothing
- * @param {number} nowMs
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
+ * @param rows every open row
+ * @param records `readLabJobRecords`'s answer; `null` is "not asked or refused" and emits nothing
  */
 export function labJobFinishedOrders(rows: any[], records: LabJobRecord[] | null | undefined, nowMs: number): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   const live = (records ?? []).filter((r) => nowMs - Date.parse(r.finishedAt) < RECORD_WAKE_WINDOW_MS);
@@ -108,11 +101,9 @@ export function labJobFinishedOrders(rows: any[], records: LabJobRecord[] | null
   return orders;
 }
 
-/** @param {LabJobRecord} r */
 const resultLine = (r: LabJobRecord) => `- \`${r.job}\`${r.commit ? ` at ${r.commit}` : ""}: ${r.outcome}, exit ${r.exit}, `
   + `ended ${r.finishedAt} (run ${r.invocation})`;
 
-/** @param {{row: any, session: string, ended: LabJobRecord[]}} found */
 function finishedOrder({ row, session, ended }: { row: any; session: string; ended: LabJobRecord[]; }) {
   const key = ended.map((r) => r.invocation).sort().join("+");
   const ref = subjectRef(row.repoKey, row.number);
@@ -146,11 +137,10 @@ function finishedOrder({ row, session, ended }: { row: any; session: string; end
  * Ansible forks one child per host that carries the parent's command line, so the same dispatch is listed several times: the names are
  * a set. A `-e describe=...` dispatch only prints the catalogue and starts nothing. A dispatch whose job name cannot be read is still
  * a dispatch and is named `unnamed`, so it is counted rather than dropped.
- * @param {string} psOutput one command line per line, as `ps -eo args=` prints them
- * @returns {string[]}
+ * @param psOutput one command line per line, as `ps -eo args=` prints them
  */
 export function dispatchedJobNames(psOutput: string): string[] {
-  const names = new Set();
+  const names = new Set<string>();
   for (const line of psOutput.split("\n")) {
     if (!/^\s*(\S*python\S*\s+)?\S*ansible-playbook\s.*\blab-job\.yml(\s|$)/.test(line) || /\bdescribe=/.test(line)) continue;
     names.add(/\bjob=([a-z][a-z0-9-]*)/.exec(line)?.[1] ?? /"job"\s*:\s*"([a-z][a-z0-9-]*)"/.exec(line)?.[1] ?? "unnamed");
@@ -162,8 +152,7 @@ export function dispatchedJobNames(psOutput: string): string[] {
  * The lab jobs dispatched from this host and not yet ended (#3007): `waiting.labJobs` for `fleetIdleReading`. READ-ONLY: one `ps`,
  * which touches neither the lab nor the fleet. A `ps` that cannot run THROWS, so a caller never reads "could not look" as "nothing
  * waits"; an empty list is a fact, an exception is not an answer.
- * @param {{ run?: () => string }} [io] `run` is the process listing, for the test
- * @returns {string[]}
+ * @param [io] `run` is the process listing, for the test
  */
 export function readDispatchedLabJobs({ run = () => String(execFileSync("ps", ["-eo", "args="], { encoding: "utf8" })) }: { run?: () => string; } = {}): string[] {
   return dispatchedJobNames(run());

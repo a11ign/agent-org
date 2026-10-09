@@ -5,7 +5,6 @@
 // - its dynamic import of ci-changed.mjs, now the tool's own copy beside it
 // - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
 // ==== end of copy header ====
-// @ts-check
 // A TREE-WALKING GUARD DECLARES THE SUBTREE IT WALKS, AND ITS OWN RUN PROVES IT -- #929.
 //
 // `select-changed-tests.mjs`'s `alwaysRunTests` runs every guard whose population is discovered from the tree,
@@ -48,15 +47,10 @@ export { inScope, parseWalkScope };
 
 const require = createRequire(import.meta.url);
 // Indexed by NAME below to wrap each function in turn, so typed as a record rather than as the module.
-/** @type {Record<string, any>} */
 const fs: Record<string, any> = require("node:fs");
-/** @type {Record<string, any>} */
 const childProcess: Record<string, any> = require("node:child_process");
-/** @type {Record<string, any>} */
 const workerThreads: Record<string, any> = require("node:worker_threads");
-/** @type {Record<string, any>} */
 const nodeTest: Record<string, any> = require("node:test");
-/** @type {Record<string, any>} */
 const moduleApi: Record<string, any> = require("node:module");
 
 // REAL, because every comparison below is against a real path: on macOS `/tmp` is a link to `/private/tmp`.
@@ -114,12 +108,10 @@ export const WHOLE_REPOSITORY = "(the whole repository)";
  * `spawnSync` or `fs/promises` `readFile` was unseen otherwise, while `readFileSync` was seen. So both copies
  * share this state, only the first installs, and the second reuses the first's UNWRAPPED `fs` functions: its
  * own lookups would otherwise be recorded as the guard's reads.
- * @type {{ observedReads: Set<string>, installed: boolean, originals?: Record<string, any> }}
  */
-const STATE: { observedReads: Set<string>; installed: boolean; originals?: Record<string, any>; } = /** @type {any} */ (globalThis)[Symbol.for("a11y-witness.walk-scope")] ??= {
+const STATE: { observedReads: Set<string>; installed: boolean; originals?: Record<string, any>; } = (globalThis as any)[Symbol.for("a11y-witness.walk-scope")] ??= {
   observedReads: new Set(), installed: false };
 
-/** @param {string} how */
 const unbounded = (how: string) => `${WHOLE_REPOSITORY} -- ${how}`;
 
 // Captured BEFORE `install()` wraps them, so the observer's own lookups are never counted as the guard's.
@@ -130,14 +122,13 @@ const existsOriginal = STATE.originals.exists;
 const statOriginal = STATE.originals.stat;
 const readFileOriginal = STATE.originals.readFile;
 
-/** @param {string} path @param {string} dir */
 const isInside = (path: string, dir: string) => {
   const rel = relative(dir, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
 };
 
 /** The real path of `absolute`, through its longest prefix that exists -- a file not yet created still has one. */
-function realOf(/** @type {string} */ absolute: string) {
+function realOf(absolute: string) {
   const rest = [];
   for (let head = absolute; ; head = dirname(head)) {
     if (existsOriginal(head)) return join(realpathOriginal(head), ...rest.reverse());
@@ -151,7 +142,7 @@ function realOf(/** @type {string} */ absolute: string) {
  * that directory and the common one behind it. A worktree's index lives outside the worktree, so a check of
  * "inside REPO_ROOT" alone would call a read of it a read of somewhere else.
  */
-function gitDirectoriesOf(/** @type {string} */ root: string) {
+function gitDirectoriesOf(root: string) {
   const dotGit = join(root, ".git");
   if (!existsOriginal(dotGit)) return [dotGit]; // an exported tree: there is nothing for git to be pointed at
   const pointer = statOriginal(dotGit).isDirectory() ? null
@@ -163,7 +154,7 @@ function gitDirectoriesOf(/** @type {string} */ root: string) {
 }
 const GIT_DIRECTORIES = gitDirectoriesOf(REPO_ROOT);
 
-/** @param {unknown} target @param {string} base @returns {string | null} an absolute path, or null for a descriptor */
+/** @returns an absolute path, or null for a descriptor */
 function absoluteOf(target: unknown, base: string): string | null {
   let path = target;
   // #1398: A `node:` SPECIFIER NAMES A BUILTIN MODULE, NEVER A FILE. Under `rstest --coverage`, `@rstest/core`'s
@@ -179,7 +170,6 @@ function absoluteOf(target: unknown, base: string): string | null {
 /**
  * A read's repo-relative path ("" is the root), a whole-repository marker, or null when it is no read of the
  * tree at all.
- * @param {unknown} target @param {string} base
  */
 function repoPath(target: unknown, base: string) {
   let absolute = absoluteOf(target, base);
@@ -200,18 +190,17 @@ function repoPath(target: unknown, base: string) {
   return rel;
 }
 
-/** @param {unknown} cwd @returns {string} */
 const baseOf = (cwd: unknown): string => resolve(process.cwd(),
   cwd instanceof URL ? fileURLToPath(cwd) : typeof cwd === "string" ? cwd : ".");
 
 /** A path the process opened, statted, copied or tested. The root itself is no population. */
-function recordRead(/** @type {unknown} */ target: unknown, base = process.cwd()) {
+function recordRead(target: unknown, base = process.cwd()) {
   const path = repoPath(target, base);
   if (path) STATE.observedReads.add(path);
 }
 
 /** A directory the process LISTED. Listing the root is walking the whole repository. */
-function recordListing(/** @type {unknown} */ target: unknown, base = process.cwd()) {
+function recordListing(target: unknown, base = process.cwd()) {
   const path = repoPath(target, base);
   if (path !== null) STATE.observedReads.add(path === "" ? unbounded("listed the repository root") : path);
 }
@@ -219,7 +208,7 @@ function recordListing(/** @type {unknown} */ target: unknown, base = process.cw
 const GLOB_SYNTAX = /[*?[\]{}()!]/;
 
 /** A glob lists from its static prefix: `packages/{a,b}/src/**` walks `packages`. */
-function recordGlob(/** @type {unknown} */ pattern: unknown, /** @type {{ cwd?: unknown } | undefined} */ options: { cwd?: unknown; } | undefined) {
+function recordGlob(pattern: unknown, options: { cwd?: unknown; } | undefined) {
   for (const each of [pattern].flat()) {
     const segments = String(each).split("/");
     const firstGlob = segments.findIndex((segment) => GLOB_SYNTAX.test(segment));
@@ -236,11 +225,9 @@ const POPULATION_FREE_GIT = new Set(["rev-parse", "config", "var", "version", "c
 /**
  * Where `git` runs, what else it was pointed at, and what it was asked -- past its own options, in both
  * their spellings (`--git-dir <path>` and `--git-dir=<path>`).
- * @param {string[]} argv @param {string} base
  */
 function gitInvocation(argv: string[], base: string) {
   let where = base;
-  /** @type {string[]} */
   const redirects: string[] = [];
   let at = 0;
   for (; at < argv.length && argv[at].startsWith("-"); at += 1) {
@@ -256,7 +243,7 @@ function gitInvocation(argv: string[], base: string) {
 }
 
 /** Does `value`, read as a path from `where`, name this checkout or its git directories? */
-function pointsHere(/** @type {string} */ value: string, /** @type {string} */ where: string) {
+function pointsHere(value: string, where: string) {
   if (value === "") return false;
   const path = /^file:\/\//.test(value) && URL.canParse(value) ? fileURLToPath(value) : value;
   const absolute = realOf(resolve(where, path));
@@ -267,10 +254,9 @@ function pointsHere(/** @type {string} */ value: string, /** @type {string} */ w
  * A git run from OUTSIDE this checkout that is pointed back at it anyway: by `--git-dir`/`--work-tree`, by a
  * `GIT_*` variable in the environment it runs with -- git exports `GIT_DIR` into every hook, per
  * `packages/guards/src/git-env.mjs` -- or by an operand, as a clone source is.
- * @param {{ where: string, redirects: string[], rest: string[] }} git @param {{ env?: unknown } | undefined} options
  */
 function pointedBackHere({ where, redirects, rest }: { where: string; redirects: string[]; rest: string[]; }, options: { env?: unknown; } | undefined) {
-  const env = /** @type {Record<string, unknown>} */ (options?.env ?? process.env);
+  const env = ((options?.env ?? process.env) as Record<string, unknown>);
   const fromEnv = Object.entries(env)
     .filter(([key, value]) => key.startsWith("GIT_") && typeof value === "string")
     .flatMap(([, value]) => String(value).split(delimiter));
@@ -289,7 +275,7 @@ const BOUNDED_OPTIONS = {
       "--no-empty-directory", "--resolve-undo"]),
     short: "zcstvfomduk",
     inline: ["--format=", "--abbrev"],
-    valued: new Set(),
+    valued: new Set<string>(),
   },
   grep: {
     flags: new Set(["--cached", "--name-only", "--files-with-matches", "--files-without-match", "--count",
@@ -304,7 +290,6 @@ const BOUNDED_OPTIONS = {
   },
 };
 
-/** @param {typeof BOUNDED_OPTIONS["grep"]} known @param {string} option */
 const boundsNothingAway = (known: typeof BOUNDED_OPTIONS["grep"], option: string) => known.flags.has(option)
   || known.inline.some((prefix) => option.startsWith(prefix))
   || (/^-[A-Za-z]+$/.test(option) && [...option.slice(1)].every((letter) => known.short.includes(letter)));
@@ -315,8 +300,6 @@ const boundsNothingAway = (known: typeof BOUNDED_OPTIONS["grep"], option: string
  * `ls-files` takes pathspecs anywhere; `grep`'s first operand is its PATTERN, so only what follows `--` is a
  * path. Recorded by operand position, `git grep scripts` -- the word, searched for everywhere -- read as a
  * walk of `scripts/` and passed a declaration of it.
- * @param {string} subcommand @param {string[]} rest
- * @returns {string[] | null}
  */
 function gitPathspecs(subcommand: string, rest: string[]): string[] | null {
   if (subcommand !== "ls-files" && subcommand !== "grep") return null;
@@ -335,7 +318,6 @@ function gitPathspecs(subcommand: string, rest: string[]): string[] | null {
   return pathspecs && !pathspecs.some((spec) => spec.startsWith(":")) ? pathspecs : null;
 }
 
-/** @param {unknown[]} args @param {{ cwd?: unknown, env?: unknown } | undefined} options */
 function recordGit(args: unknown[], options: { cwd?: unknown; env?: unknown; } | undefined) {
   const git = gitInvocation(args.map(String), baseOf(options?.cwd));
   if (repoPath(git.where, git.where) === null) {
@@ -355,18 +337,17 @@ function recordGit(args: unknown[], options: { cwd?: unknown; env?: unknown; } |
 // touches is not in the string.
 const SHELL_SYNTAX = /[|&;<>()$`\\"'*?[\]{}~!#\n]/;
 
-/** @param {unknown} command @param {{ cwd?: unknown, env?: unknown } | undefined} options */
 function recordCommandLine(command: unknown, options: { cwd?: unknown; env?: unknown; } | undefined) {
   const line = String(command).trim();
   if (/^git\s/.test(line) && !SHELL_SYNTAX.test(line)) recordGit(line.split(/\s+/).slice(1), options);
   else STATE.observedReads.add(unbounded(`a shell ran \`${line.slice(0, 60)}\``));
 }
 
-/** @param {unknown} file @param {unknown[]} rest the arguments after `file`, in whichever overload was used */
+/** @param rest the arguments after `file`, in whichever overload was used */
 function recordSpawn(file: unknown, rest: unknown[]) {
   const args = Array.isArray(rest[0]) ? rest[0] : [];
-  const options = /** @type {{ cwd?: unknown, env?: unknown, shell?: unknown } | undefined} */ (
-    rest.find((r) => r !== null && typeof r === "object" && !Array.isArray(r)));
+  const options = (
+    rest.find((r) => r !== null && typeof r === "object" && !Array.isArray(r)) as { cwd?: unknown, env?: unknown, shell?: unknown } | undefined);
   if (options?.shell) recordCommandLine([file, ...args].join(" "), options);
   else if (basename(String(file)) === "git") recordGit(args, options);
   else STATE.observedReads.add(unbounded(`a child process, \`${basename(String(file))}\`, whose reads are not visible here`));
@@ -376,8 +357,8 @@ function recordSpawn(file: unknown, rest: unknown[]) {
 const OBSERVED = Symbol.for("a11y-witness.walk-scope: this function records before it calls through");
 
 /** Is `fn` one of this module's wrappers? The exhaustiveness test asks this of every function it finds. */
-export function isObserved(/** @type {unknown} */ fn: unknown) {
-  return typeof fn === "function" && /** @type {any} */ (fn)[OBSERVED] === true;
+export function isObserved(fn: unknown) {
+  return typeof fn === "function" && (fn as any)[OBSERVED] === true;
 }
 
 /**
@@ -385,13 +366,13 @@ export function isObserved(/** @type {unknown} */ fn: unknown) {
  * returned or thrown, for the calls whose answer is what was read (`_resolveFilename`, `findPackageJSON`).
  * A throw is recorded and RETHROWN, never swallowed. Own properties are carried across: `realpathSync.native`
  * is called directly, and `exists` keeps a `util.promisify.custom`.
- * @param {Record<string, any>} owner @param {string} name @param {(args: unknown[]) => void} record
- * @param {(args: unknown[], result: unknown) => void} [after] `result` is undefined when the call threw
+ *
+ * @param [after] `result` is undefined when the call threw
  */
 function wrap(owner: Record<string, any>, name: string, record: (args: unknown[]) => void, after?: (args: unknown[], result: unknown) => void) {
   const original = owner[name];
   if (typeof original !== "function") return;
-  const observed = function observed(/** @type {unknown[]} */ ...args: unknown[]) {
+  const observed = function observed(...args: unknown[]) {
     record(args);
     if (!after) {
       // @ts-expect-error -- `this` is whatever the caller bound, passed through untouched
@@ -410,7 +391,7 @@ function wrap(owner: Record<string, any>, name: string, record: (args: unknown[]
   };
   for (const key of Reflect.ownKeys(original)) {
     if (key === "length" || key === "name" || key === "prototype") continue;
-    Object.defineProperty(observed, key, /** @type {PropertyDescriptor} */ (Object.getOwnPropertyDescriptor(original, key)));
+    Object.defineProperty(observed, key, (Object.getOwnPropertyDescriptor(original, key) as PropertyDescriptor));
   }
   Object.defineProperty(observed, OBSERVED, { value: true });
   owner[name] = observed;
@@ -518,19 +499,18 @@ export const DECLARER_BUILTINS = Object.freeze({
   url: "string arithmetic", util: "formatting and types; no path",
 });
 
-/** @param {string} how */
 const whole = (how: string) => () => { STATE.observedReads.add(unbounded(how)); };
 
 /** Where `findPackageJSON` walked: from its start up to the manifest it found -- all of that directory. */
-function recordPackageLookup(/** @type {unknown} */ found: unknown) {
+function recordPackageLookup(found: unknown) {
   if (typeof found === "string") recordRead(dirname(found));
   else STATE.observedReads.add(unbounded("findPackageJSON found no manifest, having walked to the root"));
 }
 
 /** What a CommonJS `require`/`require.resolve` resolved to -- or, for a relative request that failed, where it looked. */
-function recordResolution(/** @type {unknown[]} */ [request, parent]: unknown[], /** @type {unknown} */ resolved: unknown) {
+function recordResolution([request, parent]: unknown[], resolved: unknown) {
   if (typeof resolved === "string" && isAbsolute(resolved)) { recordRead(resolved); return; }
-  const from = /** @type {{ filename?: unknown } | undefined} */ (parent)?.filename;
+  const from = (parent as { filename?: unknown } | undefined)?.filename;
   if (resolved === undefined && /^\.{0,2}\//.test(String(request))) {
     recordRead(String(request), typeof from === "string" ? dirname(from) : process.cwd());
   }
@@ -556,9 +536,9 @@ function installBeyondFs() {
 }
 
 function install() {
-  const read = (/** @type {unknown[]} */ [target]: unknown[]) => recordRead(target);
-  const list = (/** @type {unknown[]} */ [target]: unknown[]) => recordListing(target);
-  const glob = (/** @type {unknown[]} */ [pattern, options]: unknown[]) => recordGlob(pattern, /** @type {any} */ (options));
+  const read = ([target]: unknown[]) => recordRead(target);
+  const list = ([target]: unknown[]) => recordListing(target);
+  const glob = ([pattern, options]: unknown[]) => recordGlob(pattern, (options as any));
   for (const owner of [fs, fs.promises]) {
     for (const name of LISTS) { wrap(owner, name, list); wrap(owner, `${name}Sync`, list); }
     for (const name of READS) { wrap(owner, name, read); wrap(owner, `${name}Sync`, read); }
@@ -570,11 +550,11 @@ function install() {
     wrap(childProcess, name, ([file, ...rest]) => (name === "fork" ? recordSpawn(process.execPath, rest) : recordSpawn(file, rest)));
   }
   for (const name of ["exec", "execSync"]) {
-    wrap(childProcess, name, ([command, options]) => recordCommandLine(command, /** @type {any} */ (options)));
+    wrap(childProcess, name, ([command, options]) => recordCommandLine(command, (options as any)));
   }
   const { Worker } = workerThreads;
   workerThreads.Worker = class ObservedWorker extends Worker {
-    constructor(/** @type {any[]} */ ...args: any[]) {
+    constructor(...args: any[]) {
       STATE.observedReads.add(unbounded("a worker thread, whose reads are not visible here"));
       super(...args);
     }
@@ -598,8 +578,6 @@ export function readsSoFar() {
 /**
  * The paths read while `run` runs, and only those -- how `declared-walk-scope.test.ts` proves each route is
  * seen. Tested against `readsSoFar()` instead, a path something else had already read would pass vacuously.
- * @param {() => unknown} run
- * @returns {Promise<string[]>}
  */
 export async function readsDuring(run: () => unknown): Promise<string[]> {
   const outer = STATE.observedReads;
@@ -615,7 +593,6 @@ export async function readsDuring(run: () => unknown): Promise<string[]> {
 
 /**
  * A read `readsOutsideScope` refuses WHATEVER the scope: the marker is outside every subtree by construction.
- * @param {string} path
  */
 const isUnboundedRead = (path: string) => path.startsWith(WHOLE_REPOSITORY);
 
@@ -625,9 +602,9 @@ const isUnboundedRead = (path: string) => path.startsWith(WHOLE_REPOSITORY);
  * The closure is excluded because a change to it already selects the guard PRECISELY, whatever its scope --
  * reading its own imports is not a population, it is the guard's code.
  *
- * @param {readonly string[]} reads repo-relative
- * @param {readonly string[]} scope
- * @param {ReadonlySet<string>} ownFiles repo-relative paths in the guard's import closure
+ * @param reads repo-relative
+ *
+ * @param ownFiles repo-relative paths in the guard's import closure
  */
 export function readsOutsideScope(reads: readonly string[], scope: readonly string[], ownFiles: ReadonlySet<string>) {
   return reads.filter((path) => isUnboundedRead(path) || (!ownFiles.has(path) && !inScope(path, scope)));
@@ -643,8 +620,6 @@ const PATHS_SHOWN = 8;
  * contain one -- and it does without sorting it here: `readsSoFar` returns the reads SORTED, and every
  * marker begins `(`, which orders before any repo-relative path. A reorder here would be machinery no
  * fixture could ever be seen to need.
- *
- * @param {readonly string[]} outside
  */
 function namedSample(outside: readonly string[]) {
   return `${outside.slice(0, PATHS_SHOWN).join("; ")}${outside.length > PATHS_SHOWN ? "; ..." : ""}`;
@@ -665,8 +640,6 @@ function namedSample(outside: readonly string[]) {
  *
  * Failing closed on a child process stays correct and is not what this softens: undeclared is unbounded,
  * which is the fail-safe direction `declared-walk-scope.test.ts` pins.
- *
- * @param {readonly string[]} outside
  */
 function remedyFor(outside: readonly string[]) {
   const narrower = "A declaration narrower than the walk is a guard that stops running on a diff that would fail it";
@@ -684,8 +657,8 @@ function remedyFor(outside: readonly string[]) {
  * Paths a TEST RUNNER reads on a test file's behalf, which are the runner's and not the guard's population
  * (#1349). rstest looks for `__snapshots__/<file>.snap` beside every test file it runs, so a declarer whose
  * scope does not contain its own directory failed its check on that probe alone.
- * @param {string} testPath absolute
- * @returns {string[]} repo-relative
+ * @param testPath absolute
+ * @returns repo-relative
  */
 export function runnerOwnedPaths(testPath: string): string[] {
   return [relative(REPO_ROOT, join(dirname(testPath), "__snapshots__", `${basename(testPath)}.snap`))];
@@ -699,7 +672,7 @@ export function runnerOwnedPaths(testPath: string): string[] {
  * selector acts on. A value handed in could differ from the literal the selector reads -- two copies of one
  * fact, which is the shape that produced #904's wrong numbers.
  *
- * @param {string} testUrl the declaring guard's `import.meta.url`
+ * @param testUrl the declaring guard's `import.meta.url`
  */
 export async function declareWalkScope(testUrl: string) {
   const testPath = fileURLToPath(testUrl);

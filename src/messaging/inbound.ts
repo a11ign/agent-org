@@ -1,4 +1,3 @@
-// @ts-check
 // THE INBOUND CORE (decision 2(a), (b) and (d)): who may speak to the organisation through the chat, and what happens to what they say.
 // A LEAF module over the ledger and the classifier, with the provider's updates passed IN and nothing fetched, so it is tested with
 // plain objects shaped like Telegram's `getUpdates`.
@@ -34,7 +33,7 @@ import { createHash } from "node:crypto";
 import { classifyText, VERDICT } from "./classify.ts";
 
 const BRAND = Symbol("chairman-accepted-update");
-/** @type {WeakMap<object, {userId: number, chatId: number}>} what was minted, and for whom */
+/** What was minted, and for whom. */
 const MINTED: WeakMap<object, { userId: number; chatId: number; }> = new WeakMap();
 
 /** The reasons an update is dropped on identity or shape. Distinct, so a ledger reader can tell a stranger from an edit. */
@@ -59,20 +58,18 @@ const OPTION_ID_SHAPE = /^[A-Za-z0-9_-]{1,16}$/;
 /** The fixed words a button may carry beside an option id: the closed set of the chairman's point 5 (Approve, Done, Stuck, Later, Explain more, Do it for me). */
 export const BUTTON_ACTIONS = Object.freeze(["approve", "done", "stuck", "later", "explain", "forme"]);
 
-/** @param {string} optionId @returns {string} what a button offering that option carries as `callback_data` */
+/** What a button offering that option carries as `callback_data`. */
 export function optionData(optionId: string): string {
   return `${OPTION_PREFIX}${optionId}`;
 }
 
-/** @param {string} action one of `BUTTON_ACTIONS` @returns {string} what a button for that word carries as `callback_data` */
+/** What a button for that word (one of `BUTTON_ACTIONS`) carries as `callback_data`. */
 export function actionData(action: string): string {
   return `${ACTION_PREFIX}${action}`;
 }
 
 /**
  * The one reading of a button's data. PURE, and null for everything outside the vocabulary: no prefix, an id of the wrong shape, a word not in the set.
- *
- * @param {unknown} data @returns {{kind: "option", id: string} | {kind: "action", name: string} | null}
  */
 export function parseButtonData(data: unknown): { kind: "option"; id: string; } | { kind: "action"; name: string; } | null {
   if (typeof data !== "string") return null;
@@ -89,24 +86,22 @@ const FORWARD_FIELDS = ["forward_origin", "forward_date", "forward_from", "forwa
 const EDIT_TYPES = new Set(["edited_message"]);
 const CHANNEL_TYPES = new Set(["channel_post", "edited_channel_post"]);
 
-/** @param {unknown} value @returns {number | null} an id only when it is a safe integer; anything else is attacker text and is not recorded */
+/** An id only when it is a safe integer; anything else is attacker text and is not recorded. */
 function safeId(value: unknown): number | null {
-  return Number.isSafeInteger(value) ? /** @type {number} */ (value) : null;
+  return Number.isSafeInteger(value) ? value as number : null;
 }
 
-/** @param {unknown} value @returns {value is Record<string, any>} */
 function isObject(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** @param {unknown} content @returns {{length: number | null, sha256: string | null}} what the ledger may hold about it: never the text */
+/** What the ledger may hold about it: never the text. */
 function describeContent(content: unknown): { length: number | null; sha256: string | null; } {
   if (typeof content !== "string") return { length: null, sha256: null };
   return { length: content.length, sha256: createHash("sha256").update(content, "utf8").digest("hex") };
 }
 
 /**
- * @param {{chairman: {userId: number, chatId: number}}} options
  * @throws {TypeError} when the chairman's ids are not both safe integers: with an id missing, "the sender's id equals the chairman's" would
  *   be `null === undefined`-shaped and an update with no sender could be accepted by accident.
  */
@@ -119,9 +114,6 @@ function checkedChairman({ chairman }: { chairman: { userId: number; chatId: num
 
 /**
  * What an update is, before anyone is asked who sent it.
- *
- * @param {unknown} update
- * @returns {{drop: string} | {kind: "message" | "button", payload: Record<string, any>}}
  */
 function locatePayload(update: unknown): { drop: string; } | { kind: "message" | "button"; payload: Record<string, any>; } {
   if (!isObject(update)) return { drop: DROP_REASON.malformed };
@@ -137,7 +129,7 @@ function locatePayload(update: unknown): { drop: string; } | { kind: "message" |
   return isObject(update[type]) ? { kind: type === "message" ? "message" : "button", payload: update[type] } : { drop: DROP_REASON.malformed };
 }
 
-/** @param {Record<string, any>} chat @param {{userId: number, chatId: number}} chairman @returns {string | null} the reason this chat is not the chairman's */
+/** The reason this chat is not the chairman's. */
 function chatDrop(chat: Record<string, any>, chairman: { userId: number; chatId: number; }): string | null {
   if (chat.type !== "private") return DROP_REASON.notPrivateChat;
   return chat.id === chairman.chatId ? null : DROP_REASON.wrongChat;
@@ -145,8 +137,6 @@ function chatDrop(chat: Record<string, any>, chairman: { userId: number; chatId:
 
 /**
  * The accepted value. Frozen, branded, registered against the chairman it was minted for. Called only by `handle`, after the classifier.
- *
- * @param {Record<string, unknown>} fields @param {{userId: number, chatId: number}} chairman @returns {Readonly<Record<string, any>>}
  */
 function mint(fields: Record<string, unknown>, { userId, chatId }: { userId: number; chatId: number; }): Readonly<Record<string, any>> {
   const value = { ...fields };
@@ -158,23 +148,22 @@ function mint(fields: Record<string, unknown>, { userId, chatId }: { userId: num
 /**
  * The check the chairman-attributed writer makes: this module minted it, after classifying it, for THIS chairman.
  *
- * @param {unknown} value
- * @param {{userId: number, chatId: number}} chairman  the ids the CALLER is configured with, never read off the value
- * @returns {boolean}
+ * `chairman` is the ids the CALLER is configured with, never read off the value.
  * @throws {TypeError} when the chairman's ids are not both safe integers: a check that cannot say who it checks for is not run
  */
 export function isAccepted(value: unknown, chairman: { userId: number; chatId: number; }): boolean {
   const { userId, chatId } = checkedChairman({ chairman });
   if (!isObject(value)) return false;
   const minted = MINTED.get(value);
-  return minted !== undefined && minted.userId === userId && minted.chatId === chatId && /** @type {any} */ (value)[BRAND] === true;
+  return minted !== undefined && minted.userId === userId && minted.chatId === chatId && (value as Record<symbol, unknown>)[BRAND] === true;
 }
 
-/**
- * @typedef {{updateId: number | null, userId: number | null, chatId: number | null, chatType: string | null, kind: string | null,
- *            length: number | null, sha256: string | null}} Facts  what the ledger may say about an update. Never the text.
- * @typedef {{ok: true, accepted: Readonly<Record<string, any>>, facts: Facts} | {ok: false, reason: string, facts: Facts}} Acceptance
- */
+/** What the ledger may say about an update. Never the text. */
+export type Facts = {
+  updateId: number | null; userId: number | null; chatId: number | null; chatType: string | null; kind: string | null;
+  length: number | null; sha256: string | null;
+};
+export type Acceptance = { ok: true; accepted: Readonly<Record<string, any>>; facts: Facts } | { ok: false; reason: string; facts: Facts };
 
 /**
  * Identity, and nothing else: whether this update is the chairman speaking in the chairman's own private chat. **Not the classifier, and
@@ -183,15 +172,12 @@ export function isAccepted(value: unknown, chairman: { userId: number; chatId: n
  * Dropped, each with its own reason: a message from anyone but the chairman; the chairman in a group, supergroup or channel; the
  * chairman in a private chat that is not the paired one; an edit; a forward; a channel post; and every other update type.
  *
- * @param {unknown} update  one entry of a provider's `updates`, Telegram's shape
- * @param {{chairman: {userId: number, chatId: number}}} options
- * @returns {Acceptance}
+ * `update` is one entry of a provider's `updates`, Telegram's shape.
  */
 export function acceptUpdate(update: unknown, options: { chairman: { userId: number; chatId: number; }; }): Acceptance {
   const chairman = checkedChairman(options);
   const updateId = isObject(update) ? safeId(update.update_id) : null;
   const located = locatePayload(update);
-  /** @type {Facts} */
   const facts: Facts = { updateId, userId: null, chatId: null, chatType: null, kind: "kind" in located ? located.kind : null, length: null, sha256: null };
   if ("drop" in located) return { ok: false, reason: located.drop, facts };
   const { kind, payload } = located;
@@ -217,17 +203,12 @@ export function acceptUpdate(update: unknown, options: { chairman: { userId: num
 /**
  * The bot message a chairman's reply points at, so the answer to a request is routed from the value alone. Only a MESSAGE can be a reply: a press
  * sits under its message and says so with `messageId`. A target that is not a safe integer is attacker-shaped text and is null, as in `safeId`.
- *
- * @param {string} kind @param {Record<string, any>} message @returns {number | null}
  */
 function replyTarget(kind: string, message: Record<string, any>): number | null {
   return kind === "message" && isObject(message.reply_to_message) ? safeId(message.reply_to_message.message_id) : null;
 }
 
-/**
- * @param {{sender: unknown, chat: unknown, message: unknown, payload: Record<string, any>, kind: string, chairman: {userId: number, chatId: number}}} parts
- * @returns {string | null} why this is not the chairman, or null when it is
- */
+/** Why this is not the chairman, or null when it is. */
 function identityDrop({ sender, chat, message, payload, kind, chairman }: { sender: unknown; chat: unknown; message: unknown; payload: Record<string, any>; kind: string; chairman: { userId: number; chatId: number; }; }): string | null {
   if (!isObject(sender) || safeId(sender.id) === null) return DROP_REASON.noSender;
   if (sender.id !== chairman.userId) return DROP_REASON.wrongUser;
@@ -244,25 +225,19 @@ function identityDrop({ sender, chat, message, payload, kind, chairman }: { send
 
 /**
  * The line for one verdict. Ids are recorded only when they are integers; the content only as a length and (but for a secret) a hash.
- *
- * @param {Facts & {verdict: string, reason: string | null, hashed: boolean}} fields
  */
 function inboundLine({ updateId, userId, chatId, chatType, kind, length, sha256, verdict, reason, hashed }: Facts & { verdict: string; reason: string | null; hashed: boolean; }) {
   return { direction: "in", updateId, verdict, reason, kind, userId, chatId, chatType, length, sha256: hashed ? sha256 : null };
 }
 
-/**
- * @typedef {{action: "replayed", updateId: number}
- *   | {action: "ignore", reason: string, chatId: number | null, chatType: string | null}
- *   | {action: "forward", accepted: Readonly<Record<string, any>>}
- *   | {action: "reply", reason: string, text: string, chatId: number, deleteMessage: {chatId: number, messageId: number | null} | null}} Handled
- */
+export type Handled =
+  | { action: "replayed"; updateId: number }
+  | { action: "ignore"; reason: string; chatId: number | null; chatType: string | null }
+  | { action: "forward"; accepted: Readonly<Record<string, any>> }
+  | { action: "reply"; reason: string; text: string; chatId: number; deleteMessage: { chatId: number; messageId: number | null } | null };
 
 /**
  * `ledger` is `createLedger(...)` from ./ledger.ts (its `append` and `read`). Its `now` stamps the lines, so a test owns the clock.
- *
- * @param {{ledger: {append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]},
- *          chairman: {userId: number, chatId: number}}} options
  */
 export function createInbound({ ledger, chairman }: {
         ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; };
@@ -272,20 +247,18 @@ export function createInbound({ ledger, chairman }: {
   // THE LEDGER IS THE MEMORY (as in the core): a listener that restarts and is handed the same batch again acts on none of it twice.
   const seen = new Set(ledger.read().filter((line) => line.direction === "in" && Number.isSafeInteger(line.updateId)).map((line) => line.updateId));
 
-  /** @param {Facts} facts @param {{verdict: string, reason: string | null, hashed?: boolean}} verdict */
   function record(facts: Facts, { verdict, reason, hashed = true }: { verdict: string; reason: string | null; hashed?: boolean; }) {
     // The line is written BEFORE the caller is told what to do: a crash between the two loses one message and never repeats one.
     ledger.append(inboundLine({ ...facts, verdict, reason, hashed }));
     if (facts.updateId !== null) seen.add(facts.updateId);
   }
 
-  /** @param {Facts} facts @param {string} reason @returns {Handled} a drop, with the hash of the data `facts` already holds */
+  /** A drop, with the hash of the data `facts` already holds. */
   function dropped(facts: Facts, reason: string): Handled {
     record(facts, { verdict: VERDICT.drop, reason });
     return { action: "ignore", reason, chatId: facts.chatId, chatType: facts.chatType };
   }
 
-  /** @param {Readonly<Record<string, any>>} accepted @param {Facts} facts @returns {Handled} */
   function classified(accepted: Readonly<Record<string, any>>, facts: Facts): Handled {
     // A button's data is classified by VOCABULARY and not as text: it is a word the organisation drew or it is nothing, so no secret can be in it.
     if (accepted.kind === "button" && parseButtonData(accepted.data) === null) return dropped(facts, DROP_REASON.unknownCallbackData);
@@ -302,7 +275,6 @@ export function createInbound({ ledger, chairman }: {
   }
 
   return {
-    /** @param {unknown} update @returns {Handled} */
     handle(update: unknown): Handled {
       const updateId = isObject(update) ? safeId(update.update_id) : null;
       if (updateId !== null && seen.has(updateId)) return { action: "replayed", updateId };

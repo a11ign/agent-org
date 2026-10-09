@@ -1,4 +1,3 @@
-// @ts-check
 // THE REAL READS FOR THE STALL AND INCIDENT SOURCES (a11ign/a11ign#3008, row 5b of 13; design #2899). `stall.mjs` and `incidents.mjs` take every read
 // INJECTED and say so; this file is what the host injects. Seven readers, each returning what its source's own typedef names, and each a
 // read that THROWS on failure: the source turns the throw into `cannot-ask`, never into "all clear" and never into an event.
@@ -67,22 +66,19 @@ const LEDGER_FILE = "ledger.jsonl";
 const ANNOTATIONS_FILE = "ci-annotations.json";
 export const SYSTEMD_PROPERTIES = "ActiveState,StateChangeTimestamp,InactiveEnterTimestamp";
 
-/** @param {unknown} value @param {string} field @returns {any[]} */
 function asArray(value: unknown, field: string): any[] {
   if (!Array.isArray(value)) throw new TypeError(`${field}: an array was expected, got ${JSON.stringify(value)?.slice(0, 80)}`);
   return value;
 }
 
-/**
- * @typedef {{ api: (path: string) => Promise<any> }} Github  a GET of one REST path, as `gh api <path>` parses it
- * @typedef {{ github: Github, repo: string }} Repo
- */
+/** A GET of one REST path, as `gh api <path>` parses it. */
+export type Github = { api: (path: string) => Promise<any> };
+export type Repo = { github: Github; repo: string };
 
 /**
  * The newest merge into `main`, by the pull request's own `merged_at`. NOT the newest commit: `main` carries "Merge origin/main into <branch>"
  * commits that came in with a branch, and a clock built on them would read a merge that never happened. Closed pulls come back by last
  * update, which a merge sets, so the newest merge is among the first of them.
- * @param {Repo} deps @returns {Promise<number>}
  */
 export async function readLastMerge({ github, repo }: Repo): Promise<number> {
   const pulls = asArray(await github.api(`repos/${repo}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=${MERGED_PULLS_WINDOW}`), "pulls");
@@ -91,16 +87,12 @@ export async function readLastMerge({ github, repo }: Repo): Promise<number> {
   return Math.max(...merged);
 }
 
-/** @param {Repo & { workflow?: string }} deps @returns {Promise<Record<string, any>[]>} */
 export async function readTrunkRuns({ github, repo, workflow = "trunk.yml" }: Repo & { workflow?: string; }): Promise<Record<string, any>[]> {
   const body = await github.api(`repos/${repo}/actions/workflows/${workflow}/runs?branch=main&per_page=${TRUNK_RUNS_WINDOW}`);
   return asArray(body?.workflow_runs, "workflow_runs");
 }
 
-/**
- * The messages of one failed run's annotations: its failed jobs, then each job's annotations. A permission refusal is written on the job.
- * @param {Repo & { run: Record<string, any> }} deps @returns {Promise<string[]>}
- */
+/** The messages of one failed run's annotations: its failed jobs, then each job's annotations. A permission refusal is written on the job. */
 async function annotationsOf({ github, repo, run }: Repo & { run: Record<string, any>; }): Promise<string[]> {
   const jobs = asArray((await github.api(`repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`))?.jobs, "jobs");
   const messages = [];
@@ -114,30 +106,27 @@ async function annotationsOf({ github, repo, run }: Repo & { run: Record<string,
 /**
  * A small JSON file of `{ key: value }`. A missing file is empty (the first run); one that is not JSON is empty too and the caller is told, because
  * what it holds is a cache and the cost of losing it is a re-read.
- * @param {string} path
  */
 function jsonStore(path: string) {
   return {
-    /** @returns {Record<string, any>} */
     read(): Record<string, any> {
       let text;
       try {
         text = readFileSync(path, "utf8");
       } catch (error) {
-        if (/** @type {NodeJS.ErrnoException} */ (error)?.code === "ENOENT") return {};
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {};
         throw error;
       }
       const parsed = JSON.parse(text);
       return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
     },
-    /** @param {Record<string, any>} value */
     write(value: Record<string, any>) {
       replaceFile(path, `${JSON.stringify(value)}\n`);
     },
   };
 }
 
-/** Atomic: a reader never sees half a file, and a crash leaves the old one. @param {string} path @param {string} text */
+/** Atomic: a reader never sees half a file, and a crash leaves the old one. */
 function replaceFile(path: string, text: string) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -149,8 +138,6 @@ function replaceFile(path: string, text: string) {
  * Recent completed runs of every workflow, each with its annotations, for the `Resource not accessible` check. Only a FAILED run is asked for its
  * annotations, and a completed run's never change, so they are kept by run id and read once. A failed run whose annotations could not be read this
  * time THROWS rather than reading as "no annotation": a run unread is not a run clear, and a clear would send "cleared" for a thing nobody checked.
- *
- * @param {Repo & { stateDir: string }} deps @returns {Promise<Record<string, any>[]>}
  */
 export async function readCiRuns({ github, repo, stateDir }: Repo & { stateDir: string; }): Promise<Record<string, any>[]> {
   const body = await github.api(`repos/${repo}/actions/runs?status=completed&per_page=${CI_RUNS_WINDOW}`);
@@ -166,17 +153,15 @@ export async function readCiRuns({ github, repo, stateDir }: Repo & { stateDir: 
   if (unread.length > ANNOTATION_READS_PER_RUN) {
     throw new RangeError(`${unread.length - ANNOTATION_READS_PER_RUN} failed run(s) have no annotations read yet (${ANNOTATION_READS_PER_RUN} are read per run)`);
   }
-  return runs.map((run) => ({ ...run, annotations: (known[run.id] ?? []).map((/** @type {string} */ message: string) => ({ message })) }));
+  return runs.map((run) => ({ ...run, annotations: (known[run.id] ?? []).map((message: string) => ({ message })) }));
 }
 
-/**
- * @param {string} text `systemctl show` output, `Key=value` per line @returns {Record<string, string>}
- */
+/** `text`: `systemctl show` output, `Key=value` per line */
 function parseProperties(text: string): Record<string, string> {
   return Object.fromEntries(text.split("\n").filter((line) => line.includes("=")).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 }
 
-/** @param {string | undefined} text `--timestamp=unix` prints `@<seconds>`; empty or `@0` is a time the unit never had @param {string} field @returns {number} */
+/** `text`: `--timestamp=unix` prints `@<seconds>`; empty or `@0` is a time the unit never had */
 function unixMilliseconds(text: string | undefined, field: string): number {
   const seconds = /^@(\d+)$/.exec(text ?? "")?.[1];
   if (seconds === undefined || Number(seconds) === 0) throw new RangeError(`${field}: systemd has no such time (${JSON.stringify(text)})`);
@@ -189,8 +174,6 @@ function unixMilliseconds(text: string | undefined, field: string): number {
  * from the record `work-tick.ts` writes only at the end of `main()` (#3040). A record that is absent or unreadable THROWS: no tick known to have
  * completed is not a clean reading. `work-tick.service` declares `SuccessExitStatus=0 1 2`, so a quiet or partial tick is not a failure and `failed`
  * means the gate really crashed (exit 70, #3038).
- * @param {{ unit: string | undefined, systemctl: (argv: string[]) => Promise<string>, recordPath: string }} deps
- * @returns {Promise<import("./incidents.ts").GateUnitReading>}
  */
 export async function readGateUnit({ unit, systemctl, recordPath }: { unit: string | undefined; systemctl: (argv: string[]) => Promise<string>; recordPath: string; }): Promise<import("./incidents.ts").GateUnitReading> {
   if (unit === undefined) throw new TypeError("the work-tick unit's name is not known (no `units.prefix` in the project declaration)");
@@ -208,13 +191,10 @@ export async function readGateUnit({ unit, systemctl, recordPath }: { unit: stri
  * lets the source refuse a watcher that stopped. A MISSING file throws: `fleet-watch`'s own reader calls that "empty", which is right for it and
  * would be a false all-clear here. **Only the worker's NAME is kept.** The key is `<name>  <host>:<port>`, and a LAN address has no business in a
  * message to a chat provider or in a ledger.
- *
- * @param {{ path: string }} deps @returns {{ state: Record<string, number>, writtenAt: number }}
  */
 export function readFleetState({ path }: { path: string; }): { state: Record<string, number>; writtenAt: number; } {
   const stored = JSON.parse(readFileSync(path, "utf8"));
   if (stored === null || typeof stored !== "object" || Array.isArray(stored)) throw new TypeError(`${path}: an object of worker to time was expected`);
-  /** @type {Record<string, number>} */
   const state: Record<string, number> = {};
   for (const [key, since] of Object.entries(stored)) {
     const name = key.trim().split(/\s+/)[0];
@@ -223,10 +203,13 @@ export function readFleetState({ path }: { path: string; }): { state: Record<str
   return { state, writtenAt: statSync(path).mtimeMs };
 }
 
-/** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. @param {string} a @param {string} b @returns {number} */
+/** `worker-2` before `worker-10`: the order a person reads a list of numbered machines in. */
 const byNumberedName = (a: string, b: string): number => a.localeCompare(b, "en", { numeric: true });
 
-/** @param {string} key `<name>  <host>:<port>` or a bare name @returns {string} the worker's name: an address has no business in a message to a chat provider */
+/**
+ * `key`: `<name>  <host>:<port>` or a bare name
+ * Returns the worker's name: an address has no business in a message to a chat provider
+ */
 function workerName(key: string): string {
   return key.trim().split(/\s+/)[0];
 }
@@ -240,9 +223,7 @@ function workerName(key: string): string {
  *
  * **Both files must be fresh and the roster must be non-empty, else it THROWS**: "no worker is down" over a watcher that stopped, or over a roster nobody
  * is on, is the false all-clear this layer exists to refuse. A worker that has never answered since the roster began is not on it, and is not known.
- *
- * @param {{ statePath: string, capturesPath: string, now: number, maxAgeMs?: number }} input
- * @returns {{ up: string[], down: string[], polledAt: number }} `polledAt` is the OLDER of the two files' write times
+ * Returns: `polledAt` is the OLDER of the two files' write times
  */
 export function readFleetRoster({ statePath, capturesPath, now, maxAgeMs = FLEET_READING_MAX_AGE_MS }: { statePath: string; capturesPath: string; now: number; maxAgeMs?: number; }): { up: string[]; down: string[]; polledAt: number; } {
   const notReady = Object.keys(readFleetState({ path: statePath }).state);
@@ -254,7 +235,7 @@ export function readFleetRoster({ statePath, capturesPath, now, maxAgeMs = FLEET
   const polledAt = Math.min(wroteAt, statSync(statePath).mtimeMs);
   if (now - polledAt > maxAgeMs) throw new RangeError(`fleet-watch last wrote its state ${Math.round((now - polledAt) / MS_PER_MINUTE)} minutes ago: that is not a reading of the fleet`);
   const roster = Object.entries(captures.workers).map(([key, entry]) => {
-    const seenAt = /** @type {any} */ (entry)?.seenAt;
+    const seenAt = (entry as { seenAt: number } | null)?.seenAt as number;
     if (!Number.isFinite(seenAt)) throw new TypeError(`${capturesPath}: ${workerName(key)} has no numeric seenAt`);
     return { name: workerName(key), answered: wroteAt - seenAt <= POLL_SLACK_MS };
   });
@@ -267,19 +248,15 @@ export function readFleetRoster({ statePath, capturesPath, now, maxAgeMs = FLEET
 /**
  * When the gate last COMPLETED a tick (#3040's record, not the unit's timestamp: a tick that died at import moves that as surely as a good one). Absent or
  * unreadable THROWS, as `readCompletion` does.
- * @param {{ recordPath: string }} input @returns {{ at: number }}
  */
 export function readLastTick({ recordPath }: { recordPath: string; }): { at: number; } {
   return { at: readCompletion(recordPath).at };
 }
 
-/**
- * The rows waiting for a session to take them: `ready` and open, no hold on them, and not a pull request (the issues listing returns both).
- * @param {Repo} deps @returns {Promise<{ number: number }[]>}
- */
+/** The rows waiting for a session to take them: `ready` and open, no hold on them, and not a pull request (the issues listing returns both). */
 export async function readWaitingRows({ github, repo }: Repo): Promise<{ number: number; }[]> {
   const issues = asArray(await github.api(`repos/${repo}/issues?labels=ready&state=open&per_page=100`), "issues");
-  const held = (/** @type {any} */ issue: any) => asArray(issue.labels, "labels").some((label) => NOT_WAITING.test(String(label?.name ?? label)));
+  const held = (issue: { labels?: unknown }) => asArray(issue.labels, "labels").some((label) => NOT_WAITING.test(String(label?.name ?? label)));
   return issues.filter((issue) => issue.pull_request === undefined && !held(issue)).map((issue) => ({ number: issue.number }));
 }
 
@@ -291,14 +268,12 @@ export const ORG_LOGINS = Object.freeze(["a11ign-ai-workers", "a11ign-ai-leads",
 const INCIDENT_LABEL = "incident";
 const COMMENTS_PER_PAGE = 100;
 
-/** @param {string} key @returns {RegExp} the `Incident: <key>` line a fix row's body carries, on a line of its own */
+/** Returns the `Incident: <key>` line a fix row's body carries, on a line of its own */
 const incidentLine = (key: string): RegExp => new RegExp(`^Incident:[ \\t]*${key}[ \\t]*$`, "m");
 
 /**
  * The newest comment an org account left on one row. Comments list oldest first, so the newest are on the LAST page, which the listing's own `comments` count
  * names; a page with no org comment sends the walk one page back. `null` when the row has none.
- *
- * @param {Repo & { number: number, count: number }} deps @returns {Promise<NonNullable<import("./stall.ts").FixRow["comment"]> | null>}
  */
 async function newestOrgComment({ github, repo, number, count }: Repo & { number: number; count: number; }): Promise<NonNullable<import("./stall.ts").FixRow["comment"]> | null> {
   for (let page = Math.ceil(count / COMMENTS_PER_PAGE); page >= 1; page -= 1) {
@@ -324,8 +299,6 @@ async function newestOrgComment({ github, repo, number, count }: Repo & { number
  * Returns `null` ONLY when GitHub answered and no open item names the key; a failed call, or a key that is not an incident or stall key, THROWS, because "could
  * not ask" and "nobody has picked it up" are different readings and the message tells the chairman which. Several: the oldest, the one first opened for it. An item
  * with no org comment is `{ number }`.
- *
- * @param {Repo & { key: string }} deps @returns {Promise<(import("./stall.ts").FixRow & { holder?: string }) | null>}
  */
 export async function readFixRow({ github, repo, key }: Repo & { key: string; }): Promise<(import("./stall.ts").FixRow & { holder?: string; }) | null> {
   if (!FIX_ROW_KEY.test(key)) throw new TypeError(`readFixRow: ${JSON.stringify(key)} is not an incident or stall key`);
@@ -341,7 +314,7 @@ export async function readFixRow({ github, repo, key }: Repo & { key: string; })
 }
 
 /**
- * @param {{ labels?: unknown }} issue @returns {Promise<string | undefined>} the session named by the item's `session:` label, if it carries one. The prefix is the
+ * The session named by the item's `session:` label, if it carries one. The prefix is the
  * vocabulary's, imported when asked (as `correct.mjs` does) so this file still loads outside a configured host, and `project-vocabulary.test.ts` refuses a copy in code.
  */
 async function holderOf(issue: { labels?: unknown; }): Promise<string | undefined> {
@@ -355,11 +328,9 @@ async function holderOf(issue: { labels?: unknown; }): Promise<string | undefine
  * When the chairman was TOLD of the episode of `key` that is open now: the ledger's first delivered line since the last clear. The ledger is the only memory
  * of an episode (the sources keep none), and what it holds is the send, not the start, so this is a floor on how long the thing stood. `null` when the ledger
  * holds no open episode for the key; an unreadable ledger throws.
- *
- * @param {{ ledgerPath: string, key: string }} deps @returns {number | null}
  */
 export function readEpisodeStart({ ledgerPath, key }: { ledgerPath: string; key: string; }): number | null {
-  let told = /** @type {number | null} */ (null);
+  let told: number | null = null;
   for (const line of readLedgerLines(ledgerPath)) {
     if (line.direction === "in" || line.key !== key) continue;
     if (line.status === "withdrawn" || (line.status === "sent" && line.kind === "cleared")) told = null;
@@ -371,9 +342,6 @@ export function readEpisodeStart({ ledgerPath, key }: { ledgerPath: string; key:
 /**
  * Append ONE sample: now, every seat's state, the rows waiting. Either read failing throws and NOTHING is appended: a sample with no seats would read as
  * "every seat idle" for an empty roster. A torn last line (a crash mid-append) costs one sample, and `readTicks` says so.
- *
- * @param {Repo & { stateDir: string, now: () => number, readSeats: () => { label: string, status: string }[] | null, limit?: number }} deps
- * @returns {Promise<void>}
  */
 export async function takeSample({ github, repo, stateDir, now, readSeats, limit = SAMPLE_LIMIT }: Repo & { stateDir: string; now: () => number; readSeats: () => { label: string; status: string; }[] | null; limit?: number; }): Promise<void> {
   const seats = readSeats();
@@ -390,12 +358,12 @@ export async function takeSample({ github, repo, stateDir, now, readSeats, limit
   }
 }
 
-/** @param {string} path @returns {string[]} the lines of the samples file, oldest first; none when it does not exist yet */
+/** Returns the lines of the samples file, oldest first; none when it does not exist yet */
 function readSampleLines(path: string): string[] {
   try {
     return readFileSync(path, "utf8").split("\n").filter((line) => line.trim() !== "");
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
     throw error;
   }
 }
@@ -403,8 +371,6 @@ function readSampleLines(path: string): string[] {
 /**
  * The newest `limit` samples, NEWEST FIRST, as `stall.mjs` reads them. A line that is not JSON is dropped and `log` says how many: it is a torn append or a
  * hand edit, and one bad line must not blind the source for as long as the file holds it.
- *
- * @param {{ stateDir: string, log?: (line: string) => void, limit?: number }} deps @returns {import("./stall.ts").TickRecord[]}
  */
 export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }: { stateDir: string; log?: (line: string) => void; limit?: number; }): import("./stall.ts").TickRecord[] {
   const records = [];
@@ -417,15 +383,12 @@ export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }: { 
     }
   }
   if (unreadable > 0) log(`readTicks: ${unreadable} line(s) of ${SAMPLES_FILE} are not JSON and were skipped`);
-  return /** @type {import("./stall.ts").TickRecord[]} */ (records.slice(-limit).reverse());
+  return records.slice(-limit).reverse() as import("./stall.ts").TickRecord[];
 }
 
 /**
  * The eight readers, bound to one repository, one state directory and one set of outside reads, plus `takeSample`, which the stall source runs first.
- *
- * @param {{ github: Github, repo: string, stateDir: string, fleetStatePath: string, unit: string | undefined, now: () => number,
- *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void,
- *   completionPath: string, ledgerPath?: string }} deps `completionPath` is where `work-tick.ts` records a completed tick
+ * `completionPath` is where `work-tick.ts` records a completed tick
  */
 export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath, ledgerPath = join(stateDir, LEDGER_FILE) }: {
         github: Github; repo: string; stateDir: string; fleetStatePath: string; unit: string | undefined; now: () => number;
@@ -439,8 +402,8 @@ export function createReaders({ github, repo, stateDir, fleetStatePath, unit, no
     readGateUnit: () => readGateUnit({ unit, systemctl, recordPath: completionPath }),
     readFleetState: () => readFleetState({ path: fleetStatePath }),
     readTicks: () => readTicks({ stateDir, log }),
-    readFixRow: (/** @type {string} */ key: string) => readFixRow({ github, repo, key }),
-    readEpisodeStart: (/** @type {string} */ key: string) => readEpisodeStart({ ledgerPath, key }),
+    readFixRow: (key: string) => readFixRow({ github, repo, key }),
+    readEpisodeStart: (key: string) => readEpisodeStart({ ledgerPath, key }),
     takeSample: () => takeSample({ github, repo, stateDir, now, readSeats }),
   };
 }

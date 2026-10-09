@@ -1,4 +1,3 @@
-// @ts-check
 // pure: orders for open pull requests that change one file, from the list handed in -- nothing here reads gh, git or herdr
 /**
  * #3480: TWO OPEN PULL REQUESTS THAT CHANGE ONE FILE ARE REPORTED TO THE OWNER OF THE LATER ONE, while both are open and before either
@@ -35,20 +34,13 @@ import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.ts";
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */
 const NO_OWNER_SESSION = "product-manager";
 /** Changeset files are excluded on both sides, as B4 excludes them (`file-overlap-rule.mjs`): every pull request adds its own, and a shared NAME is no shared change. */
-const isChangeset = (/** @type {string} */ path: string) => path.startsWith(".changeset/") || isAcceptancePath(path); // ADR 0044: each pull request adds its own `.acceptance/` file
+const isChangeset = (path: string) => path.startsWith(".changeset/") || isAcceptancePath(path); // ADR 0044: each pull request adds its own `.acceptance/` file
 const HASH_LENGTH = 10;
 
-/**
- * @typedef {{ pr: any, files: Set<string> }} Compared
- * @typedef {{ ahead: Compared, shared: string[] }} Overlap
- */
+export type Overlap = { ahead: Compared, shared: string[] };
+export type Compared = { pr: any, files: Set<string> };
 
-/**
- * @param {any[]} prs
- * @param {(line: string) => void} [say] the diagnostic for a pull request left out; the gate's stderr by default
- * @returns {{ session: string, fallback?: string, fallbackOnlyIfAbsent?: boolean, fallbackPrompt?: string, cause: string, subject: string,
- *   discriminator: string, prompt: string, causeKey: string }[]}
- */
+/** @param [say] the diagnostic for a pull request left out; the gate's stderr by default */
 export function sharedFileOrders(prs: any[], say: (line: string) => void = (line) => process.stderr.write(line)): {
     session: string; fallback?: string; fallbackOnlyIfAbsent?: boolean; fallbackPrompt?: string; cause: string; subject: string;
     discriminator: string; prompt: string; causeKey: string;
@@ -57,20 +49,18 @@ export function sharedFileOrders(prs: any[], say: (line: string) => void = (line
   return [...groupByRepo(compared).values()].flatMap(ordersWithin);
 }
 
-/** @param {any} pr @param {(line: string) => void} say @returns {Compared[]} none when the list is not the whole of the pull request's files */
+/** @returns none when the list is not the whole of the pull request's files */
 function comparedOf(pr: any, say: (line: string) => void): Compared[] {
   if (!pr || !Number.isInteger(Number(pr.number)) || !Array.isArray(pr.files)) return []; // never read by `readPrs`: nothing was asked, so nothing is said
-  const paths = pr.files.map((/** @type {any} */ f: any) => String(f?.path ?? f));
+  const paths = pr.files.map((f: any) => String(f?.path ?? f));
   if (!Number.isInteger(Number(pr.changedFiles)) || paths.length !== Number(pr.changedFiles)) {
     say(`work-gate: ${subjectMention(pr)} lists ${paths.length} files, not the ${pr.changedFiles} it reports -- left out of the shared-file comparison, which is NOT a reading of "no overlap" (#3480)\n`);
     return [];
   }
-  return [{ pr, files: new Set(paths.filter((/** @type {string} */ p: string) => !isChangeset(p))) }];
+  return [{ pr, files: new Set(paths.filter((p: string) => !isChangeset(p))) }];
 }
 
-/** @param {Compared[]} compared */
 function groupByRepo(compared: Compared[]) {
-  /** @type {Map<string, Compared[]>} */
   const groups: Map<string, Compared[]> = new Map();
   for (const entry of compared) {
     const key = String(entry.pr.repoKey ?? "");
@@ -79,33 +69,28 @@ function groupByRepo(compared: Compared[]) {
   return groups;
 }
 
-/** @param {Compared[]} group one repository's pull requests */
+/** @param group one repository's pull requests */
 function ordersWithin(group: Compared[]) {
   const ascending = [...group].sort((a, b) => Number(a.pr.number) - Number(b.pr.number));
   return ascending.flatMap((later, i) => {
     const overlaps = ascending.slice(0, i).map((ahead) => overlapOf(ahead, later)).filter((o) => o !== null);
-    const unsequenced = /** @type {Overlap[]} */ (overlaps).filter((o) => !sequencedBehind(later.pr, o.ahead.pr));
+    const unsequenced = (overlaps as Overlap[]).filter((o) => !sequencedBehind(later.pr, o.ahead.pr));
     return unsequenced.length === 0 ? [] : [orderFor(later.pr, unsequenced)];
   });
 }
 
-/** @param {Compared} ahead @param {Compared} later @returns {Overlap | null} */
 function overlapOf(ahead: Compared, later: Compared): Overlap | null {
   const shared = [...later.files].filter((path) => ahead.files.has(path)).sort();
   return shared.length === 0 ? null : { ahead, shared };
 }
 
-/**
- * Whether `pr` is held AND declares it waits for `ahead` to merge. A bare `#n` names the pull request's OWN repository (`declaredWaitsOf`).
- * @param {any} pr @param {any} ahead
- */
+/** Whether `pr` is held AND declares it waits for `ahead` to merge. A bare `#n` names the pull request's OWN repository (`declaredWaitsOf`). */
 function sequencedBehind(pr: any, ahead: any) {
   if (holdersOf(labelsOf(pr)).length === 0) return false;
   const { waits } = declaredWaitsOf(waitItemOf(pr, "pr"));
   return waits.some((w) => w.state === "merged" && w.number === Number(ahead.number) && (w.repo ?? null) === (ahead.repo ?? null));
 }
 
-/** @param {any} pr @param {Overlap[]} overlaps */
 function orderFor(pr: any, overlaps: Overlap[]) {
   const { session: labelled, source } = ownerOfPr(pr);
   const unowned = source === "ceo";
@@ -128,24 +113,21 @@ function orderFor(pr: any, overlaps: Overlap[]) {
   };
 }
 
-/** @param {Overlap} overlap what the key is made of: the pull request ahead and the files, so a file the later one adds is a new order */
+/** @param overlap what the key is made of: the pull request ahead and the files, so a file the later one adds is a new order */
 const keyPart = ({ ahead, shared }: Overlap) => `${ahead.pr.number}:${shared.join(",")}`;
 
-/** @param {any} pr @param {Overlap[]} overlaps */
 function whatItSays(pr: any, overlaps: Overlap[]) {
   const lines = overlaps.map(({ ahead, shared }) => `  ${subjectMention(ahead.pr)}, which is ahead of it (opened first), on ${shared.map((p) => `\`${p}\``).join(", ")}`);
   return `${subjectMention(pr)} changes files that ${overlaps.length === 1 ? "another open pull request also changes" : `${overlaps.length} open pull requests also change`}:\n${lines.join("\n")}\n`
     + "Whichever merges second conflicts with the first, and today nothing says so until GitHub reports `DIRTY`, after the first has merged. ";
 }
 
-/** @param {any} pr @param {{ unowned: boolean }} says */
 function ownerSentence(pr: any, { unowned }: { unowned: boolean; }) {
   if (!unowned) return "It is yours (its session label, or the row it closes, names you), so the sequencing is yours.";
   return `IT HAS NO OWNER: no \`${SESSION_PREFIX}\` label of a live session, no live session holding a row it closes or its branch \`${pr.headRefName}\` names, and no live session stamped its worktree. `
     + `You are the first reader for process, so put the label of a session that can act on it (\`${SESSION_PREFIX}<name>\`), then take the remedy below.`;
 }
 
-/** @param {any} pr @param {Overlap[]} overlaps @param {string} session */
 function remedy(pr: any, overlaps: Overlap[], session: string) {
   const waits = overlaps.map(({ ahead }) => `\`Waiting-for: merged ${subjectMention(ahead.pr)}\``).join(", ");
   const key = pr.repoKey ? ` --repo-key=${pr.repoKey}` : "";

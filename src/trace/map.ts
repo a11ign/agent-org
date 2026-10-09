@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3514 (slice 7 of #3494): `trace --map` -- THE ACROSS-ROWS PROCESS MAP. A directly-follows graph of the merged rows' phases, as ONE self-contained HTML page:
 // the picture of #3513's numbers.
 //
@@ -12,6 +11,8 @@
 import { mergedRows, rowsClosedBy } from "../wakes-per-row.ts";
 import { nearestRank, weekStart } from "./aggregate.ts";
 import { costOf } from "./store.ts";
+import type { TraceEvent } from "./store.ts";
+import type { PullRequest } from "../wakes-per-row.ts";
 
 export const MAP_DEFINITIONS = [
   "PHASES are the chairman's ten (#3494). A row's STEPS are the phases the store has an event for, in the order of those events' times: the graph is DIRECTLY-FOLLOWS, an edge from each step to the next one the same row took, so the map shows the order rows really went in, not the order the process says.",
@@ -31,17 +32,13 @@ const MS_PER_SECOND = 1000;
 const MEDIAN = 50;
 const SMALL_DOLLARS = 0.01;
 
-/**
- * @typedef {import("./store.ts").TraceEvent} TraceEvent
- * @typedef {{ id: string, label: string }} Phase
- * @typedef {{ phase: string, at: number }} Step
- * @typedef {{ dollars: number, floor: boolean }} Spend
- * @typedef {{ repo?: string, week?: number, cause?: string }} MapFilter
- * @typedef {{ rowRepo: string, org: string, prRows: Map<string, number[]>, rowPrs: Map<number, string[]> }} Keys
- * @typedef {{ count: number, dollars: number, floor: boolean }} Loop
- */
+type Phase = { id: string; label: string };
+type Step = { phase: string; at: number };
+type Spend = { dollars: number; floor: boolean };
+export type MapFilter = { repo?: string; week?: number; cause?: string };
+type Keys = { rowRepo: string; org: string; prRows: Map<string, number[]>; rowPrs: Map<number, string[]> };
+type Loop = { count: number; dollars: number; floor: boolean };
 
-/** @type {Phase[]} */
 export const PHASES: Phase[] = [
   { id: "filed", label: "filed" }, { id: "boarded", label: "boarded" }, { id: "claimed", label: "claimed" }, { id: "build", label: "build" }, { id: "verify", label: "verify" },
   { id: "pr", label: "PR" }, { id: "review", label: "review" }, { id: "ci", label: "CI" }, { id: "queue", label: "queue" }, { id: "merged", label: "merged" },
@@ -58,14 +55,10 @@ export const LOOPS = [
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Keys and placement: which rows an event is about. This repeats `aggregate.mjs`'s placement, which is not exported; the test pins the two to the same dollars per row.
 
-/** @param {Keys} keys @param {string | null} repo @param {number} number */
 const prKey = (keys: Keys, repo: string | null, number: number) => `${repo === null ? keys.rowRepo : `${keys.org}/${repo}`}#${number}`;
 
-/** @param {import("../wakes-per-row.ts").PullRequest[]} pulls @param {string} rowRepo @returns {Keys} */
-function keysOf(pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string): Keys {
-  /** @type {Map<string, number[]>} */
+function keysOf(pulls: PullRequest[], rowRepo: string): Keys {
   const prRows: Map<string, number[]> = new Map();
-  /** @type {Map<number, string[]>} */
   const rowPrs: Map<number, string[]> = new Map();
   for (const pull of pulls) {
     const key = `${pull.repo}#${pull.number}`;
@@ -77,10 +70,8 @@ function keysOf(pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: str
   return { rowRepo, org: rowRepo.split("/")[0], prRows, rowPrs };
 }
 
-/** @param {unknown} value @returns {value is number} */
 const isNumber = (value: unknown): value is number => typeof value === "number";
 
-/** @param {TraceEvent} event @param {Keys} keys @returns {number[]} */
 function rowsOf(event: TraceEvent, keys: Keys): number[] {
   const rows = new Set([event.row, ...(event.rows ?? []), ...(event.touchedRows ?? [])].filter(isNumber));
   const named = [event.pr, ...(event.prs ?? [])].filter(isNumber).map((pr) => prKey(keys, event.repo, pr));
@@ -89,14 +80,12 @@ function rowsOf(event: TraceEvent, keys: Keys): number[] {
   return [...rows];
 }
 
-/** @template T @param {Map<number | string, T[]>} map @param {number | string} key @param {T} value */
 function pushTo<T>(map: Map<number | string, T[]>, key: number | string, value: T) {
   map.set(key, [...(map.get(key) ?? []), value]);
 }
 
 /**
  * Every index the map reads, in one pass over the events, each list in time order.
- * @param {TraceEvent[]} events @param {Keys} keys
  */
 function indexEvents(events: TraceEvent[], keys: Keys) {
   const sorted = [...events].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
@@ -108,22 +97,20 @@ function indexEvents(events: TraceEvent[], keys: Keys) {
       else if (typeof event.row === "number") pushTo(index.ofRow, event.row, event);
       continue;
     }
-    const target = { turn: index.turns, wake: index.wakes, compaction: index.compactions }[/** @type {"turn"} */ (event.kind)];
+    const target = { turn: index.turns, wake: index.wakes, compaction: index.compactions }[event.kind as "turn"];
     if (target) for (const row of rowsOf(event, keys)) pushTo(target, row, event);
   }
-  return /** @type {{ turns: Map<number, TraceEvent[]>, wakes: Map<number, TraceEvent[]>, compactions: Map<number, TraceEvent[]>, ofPr: Map<string, TraceEvent[]>, ofRow: Map<number, TraceEvent[]>, bySession: Map<string, TraceEvent[]> }} */ (index);
+  return index as { turns: Map<number, TraceEvent[]>; wakes: Map<number, TraceEvent[]>; compactions: Map<number, TraceEvent[]>; ofPr: Map<string, TraceEvent[]>; ofRow: Map<number, TraceEvent[]>; bySession: Map<string, TraceEvent[]> };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // One row's steps
 
-/** @param {TraceEvent[]} events @param {string} kind @param {(event: TraceEvent) => number} [timeOf] @returns {number | undefined} */
 function earliest(events: TraceEvent[], kind: string, timeOf: (event: TraceEvent) => number = (event) => event.at): number | undefined {
   const times = events.filter((event) => event.kind === kind).map(timeOf);
   return times.length === 0 ? undefined : Math.min(...times);
 }
 
-/** @param {TraceEvent[]} prEvents @param {number | undefined} opened @returns {{ build?: number, verify?: number }} */
 function commitTimes(prEvents: TraceEvent[], opened: number | undefined): { build?: number; verify?: number; } {
   if (opened === undefined) return {};
   const before = prEvents.filter((event) => event.kind === "head_moved" && event.at <= opened).map((event) => event.at);
@@ -132,8 +119,6 @@ function commitTimes(prEvents: TraceEvent[], opened: number | undefined): { buil
 
 /**
  * The time each phase the store holds an event for was first entered.
- * @param {{ entry: { row: number, mergedAt: number }, own: TraceEvent[], prEvents: TraceEvent[] }} input
- * @returns {Record<string, number | undefined>}
  */
 function entryTimes({ entry, own, prEvents }: { entry: { row: number; mergedAt: number; }; own: TraceEvent[]; prEvents: TraceEvent[]; }): Record<string, number | undefined> {
   const opened = earliest(prEvents, "opened");
@@ -143,13 +128,13 @@ function entryTimes({ entry, own, prEvents }: { entry: { row: number; mergedAt: 
   };
 }
 
-/** The steps in the order of their times; a tie keeps the order of the ten. @param {Record<string, number | undefined>} times @returns {Step[]} */
+/** The steps in the order of their times; a tie keeps the order of the ten. */
 function stepsOf(times: Record<string, number | undefined>): Step[] {
   const held = PHASES.filter((phase) => !NOT_HELD_PHASES.has(phase.id) && times[phase.id] !== undefined);
-  return held.map((phase) => ({ phase: phase.id, at: /** @type {number} */ (times[phase.id]) })).sort((a, b) => a.at - b.at);
+  return held.map((phase) => ({ phase: phase.id, at: times[phase.id] as number })).sort((a, b) => a.at - b.at);
 }
 
-/** The priced dollars of `turns` in [from, to). @param {TraceEvent[]} turns @param {number} from @param {number} to @returns {Spend} */
+/** The priced dollars of `turns` in [from, to). */
 function spendBetween(turns: TraceEvent[], from: number, to: number): Spend {
   let dollars = 0;
   let floor = false;
@@ -160,32 +145,30 @@ function spendBetween(turns: TraceEvent[], from: number, to: number): Spend {
   return { dollars, floor };
 }
 
-/** @param {TraceEvent[]} turns @returns {Spend} */
 const spendOf = (turns: TraceEvent[]): Spend => spendBetween(turns, -Infinity, Infinity);
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // One row's loops
 
-/** @param {Spend[]} spends @returns {Loop} */
 const loopOf = (spends: Spend[]): Loop => ({ count: spends.length, dollars: spends.reduce((sum, spend) => sum + spend.dollars, 0), floor: spends.some((spend) => spend.floor) });
 
-/** The windows between a review and the next one. @param {TraceEvent[]} prEvents @returns {[number, number][]} */
+/** The windows between a review and the next one. */
 function reviewLoops(prEvents: TraceEvent[]): [number, number][] {
   const times = prEvents.filter((event) => event.kind === "reviewed").map((event) => event.at).sort((a, b) => a - b);
   return times.slice(1).map((time, index) => [times[index], time]);
 }
 
-/** The windows from an exit that did not merge to the next entry. @param {TraceEvent[]} prEvents @returns {[number, number][]} */
+/** The windows from an exit that did not merge to the next entry. */
 function queueLoops(prEvents: TraceEvent[]): [number, number][] {
   const entries = prEvents.filter((event) => event.kind === "added_to_merge_queue").map((event) => event.at);
   const ejects = prEvents.filter((event) => event.kind === "removed_from_merge_queue" && event.outcome === "unmerged").map((event) => event.at);
   return ejects.flatMap((eject) => {
     const back = entries.filter((time) => time >= eject).sort((a, b) => a - b)[0];
-    return back === undefined ? [] : [/** @type {[number, number]} */ ([eject, back])];
+    return back === undefined ? [] : [[eject, back] as [number, number]];
   });
 }
 
-/** The input side of the first turn the session took after the compaction: what re-reading the window cost. A subagent's turn is its own context, not the session re-reading its window, so it is skipped (as `aggregate` does). @param {TraceEvent} compaction @param {TraceEvent[]} sessionTurns @returns {Spend} */
+/** The input side of the first turn the session took after the compaction: what re-reading the window cost. A subagent's turn is its own context, not the session re-reading its window, so it is skipped (as `aggregate` does). */
 function compactionSpend(compaction: TraceEvent, sessionTurns: TraceEvent[]): Spend {
   const next = sessionTurns.find((turn) => !turn.sidechain && turn.at > compaction.at && turn.tokens);
   const cost = next?.tokens ? costOf(next.model, { ...next.tokens, output: 0 }) : null;
@@ -194,12 +177,9 @@ function compactionSpend(compaction: TraceEvent, sessionTurns: TraceEvent[]): Sp
 
 /**
  * Each loop the row went round, with its dollars from the row's turns. A row with no turn in the store has loops that are counted and not priced.
- * @param {{ prEvents: TraceEvent[], turns: TraceEvent[], compactions: TraceEvent[], bySession: Map<string, TraceEvent[]> }} input
- * @returns {Record<string, Loop>}
  */
 function loopsOf({ prEvents, turns, compactions, bySession }: { prEvents: TraceEvent[]; turns: TraceEvent[]; compactions: TraceEvent[]; bySession: Map<string, TraceEvent[]>; }): Record<string, Loop> {
   const held = turns.length > 0;
-  /** @param {[number, number][]} windows */
   const priced = (windows: [number, number][]) => loopOf(windows.map(([from, to]) => (held ? spendBetween(turns, from, to) : { dollars: 0, floor: true })));
   return {
     review: priced(reviewLoops(prEvents)), queue: priced(queueLoops(prEvents)),
@@ -210,17 +190,16 @@ function loopsOf({ prEvents, turns, compactions, bySession }: { prEvents: TraceE
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The population, and the filters over it
 
-/** @param {number} ms the UTC day, as `YYYY-MM-DD` */
+/** @param ms the UTC day, as `YYYY-MM-DD` */
 const day = (ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DD".length);
 
-/** @param {{ mergedAt: number, repo: string, row: number }} entry @param {MapFilter} filter @param {Map<number, TraceEvent[]>} wakes */
 function kept(entry: { mergedAt: number; repo: string; row: number; }, filter: MapFilter, wakes: Map<number, TraceEvent[]>) {
   if (filter.repo !== undefined && entry.repo !== filter.repo && entry.repo.split("/")[1] !== filter.repo) return false;
   if (filter.week !== undefined && weekStart(entry.mergedAt) !== filter.week) return false;
   return filter.cause === undefined || (wakes.get(entry.row) ?? []).some((wake) => wake.cause === filter.cause);
 }
 
-/** What the unfiltered window holds, so a reader knows what to ask for. @template T @param {T[]} values @returns {{ value: T, rows: number }[]} */
+/** What the unfiltered window holds, so a reader knows what to ask for. */
 function tally<T>(values: T[]): { value: T; rows: number; }[] {
   const counts = new Map();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
@@ -230,14 +209,12 @@ function tally<T>(values: T[]): { value: T; rows: number; }[] {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The model
 
-/** @param {number[]} values @returns {number | null} */
 const median = (values: number[]): number | null => nearestRank(values, MEDIAN);
 
 /**
  * The model of the map: nodes, edges and loops over the rows the filters keep.
- * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, window: { from: number, to: number }, filter?: MapFilter }} input
  */
-export function processMap({ events, pulls, rowRepo, window, filter = {} }: { events: TraceEvent[]; pulls: import("../wakes-per-row.ts").PullRequest[]; rowRepo: string; window: { from: number; to: number; }; filter?: MapFilter; }) {
+export function processMap({ events, pulls, rowRepo, window, filter = {} }: { events: TraceEvent[]; pulls: PullRequest[]; rowRepo: string; window: { from: number; to: number; }; filter?: MapFilter; }) {
   const keys = keysOf(pulls, rowRepo);
   const index = indexEvents(events, keys);
   const population = mergedRows(pulls, window, rowRepo);
@@ -252,15 +229,15 @@ export function processMap({ events, pulls, rowRepo, window, filter = {} }: { ev
   };
 }
 
-/** The causes the window's rows were woken by, each counted once per row. A wake with no cause cannot be asked for with `--cause`, so it is not listed. @param {{ row: number }[]} population @param {Map<number, TraceEvent[]>} wakes */
+/** The causes the window's rows were woken by, each counted once per row. A wake with no cause cannot be asked for with `--cause`, so it is not listed. */
 function causesOf(population: { row: number; }[], wakes: Map<number, TraceEvent[]>) {
   const causes = population.flatMap((entry) => [...new Set((wakes.get(entry.row) ?? []).flatMap((wake) => (typeof wake.cause === "string" ? [wake.cause] : [])))]);
   return tally(causes);
 }
 
-/** @typedef {ReturnType<typeof rowPath>} RowPath */
+type RowPath = ReturnType<typeof rowPath>;
 
-/** One row: its steps, the dollars and wait in each, and the loops it went round. @param {{ entry: { row: number, repo: string, mergedAt: number }, keys: Keys, index: ReturnType<typeof indexEvents> }} input */
+/** One row: its steps, the dollars and wait in each, and the loops it went round. */
 function rowPath({ entry, keys, index }: { entry: { row: number; repo: string; mergedAt: number; }; keys: Keys; index: ReturnType<typeof indexEvents>; }) {
   const prEvents = (keys.rowPrs.get(entry.row) ?? []).flatMap((key) => index.ofPr.get(key) ?? []).sort((a, b) => a.at - b.at);
   const own = index.ofRow.get(entry.row) ?? [];
@@ -276,7 +253,6 @@ function rowPath({ entry, keys, index }: { entry: { row: number; repo: string; m
     loops: loopsOf({ prEvents, turns, compactions: index.compactions.get(entry.row) ?? [], bySession: index.bySession }) };
 }
 
-/** @param {RowPath[]} rows */
 function nodesOf(rows: RowPath[]) {
   return PHASES.map((phase) => {
     const visits = rows.flatMap((row) => row.visits.filter((visit) => visit.phase === phase.id));
@@ -289,9 +265,7 @@ function nodesOf(rows: RowPath[]) {
   });
 }
 
-/** @param {RowPath[]} rows @returns {{ from: string, to: string, rows: number }[]} */
 function edgesOf(rows: RowPath[]): { from: string; to: string; rows: number; }[] {
-  /** @type {Map<string, number>} */
   const counts: Map<string, number> = new Map();
   for (const row of rows) {
     // A row enters a phase once, so its consecutive pairs are all different: a row is counted once per edge without asking.
@@ -303,7 +277,6 @@ function edgesOf(rows: RowPath[]): { from: string; to: string; rows: number; }[]
   return [...counts].map(([key, count]) => ({ from: key.split(">")[0], to: key.split(">")[1], rows: count })).sort((a, b) => b.rows - a.rows || a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
 }
 
-/** @param {RowPath[]} rows */
 function foldLoops(rows: RowPath[]) {
   return LOOPS.map((loop) => {
     const found = rows.map((row) => ({ held: row.held, loop: row.loops[loop.id] })).filter((entry) => entry.loop.count > 0);
@@ -317,10 +290,8 @@ function foldLoops(rows: RowPath[]) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The page
 
-/** @param {unknown} text */
 const esc = (text: unknown) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-/** @param {number | null} ms */
 function span(ms: number | null) {
   if (ms === null) return "n/a";
   if (ms < MS_PER_MINUTE) return `${Math.round(ms / MS_PER_SECOND)}s`;
@@ -328,25 +299,22 @@ function span(ms: number | null) {
   return ms < MS_PER_DAY ? `${(ms / MS_PER_HOUR).toFixed(1)}h` : `${(ms / MS_PER_DAY).toFixed(1)}d`;
 }
 
-/** @param {number | null} value @param {boolean} [floor] */
 const money = (value: number | null, floor: boolean = false) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(value >= SMALL_DOLLARS ? 2 : 4)}`);
 
-/** The dollars of a loop: `n/a` when no row of it had a priced turn. @param {{ count: number, priced: number, dollars: number, floor: boolean }} loop */
+/** The dollars of a loop: `n/a` when no row of it had a priced turn. */
 const loopMoney = (loop: { count: number; priced: number; dollars: number; floor: boolean; }) => (loop.count === 0 ? "$0.00" : loop.priced === 0 ? "n/a" : money(loop.dollars, loop.floor));
 
 const LAYOUT = { left: 80, gap: 150, width: 104, height: 76, steps: 230, loops: 410, pad: 70, canvas: 480 };
 const SHADES = ["s0", "s1", "s2", "s3", "s4"];
 
-/** @param {ReturnType<typeof processMap>["nodes"]} nodes */
 function shadeOf(nodes: ReturnType<typeof processMap>["nodes"]) {
   const top = Math.max(0, ...nodes.map((node) => node.medianDollars ?? 0));
-  return (/** @type {number | null} */ dollars: number | null) => (dollars === null ? "na" : SHADES[Math.min(SHADES.length - 1, top === 0 ? 0 : Math.floor((dollars / top) * SHADES.length))]);
+  return (dollars: number | null) => (dollars === null ? "na" : SHADES[Math.min(SHADES.length - 1, top === 0 ? 0 : Math.floor((dollars / top) * SHADES.length))]);
 }
 
-/** @param {number} column */
 const centreX = (column: number) => LAYOUT.left + column * LAYOUT.gap;
 
-/** The page's position of each node: the ten in a row, the loop nodes under the phase the loop leaves, and `wake` beside `compaction`. @returns {Map<string, { x: number, y: number }>} */
+/** The page's position of each node: the ten in a row, the loop nodes under the phase the loop leaves, and `wake` beside `compaction`. */
 function positions(): Map<string, { x: number; y: number; }> {
   const at = new Map(PHASES.map((phase, column) => [phase.id, { x: centreX(column), y: LAYOUT.steps }]));
   at.set("rework", { x: centreX(PHASES.findIndex((phase) => phase.id === "review")), y: LAYOUT.loops });
@@ -356,7 +324,7 @@ function positions(): Map<string, { x: number; y: number; }> {
   return at;
 }
 
-/** A step that skips columns: an arc over the row (forward) or under it (back), higher the further it goes. @param {{ x: number, y: number }} from @param {{ x: number, y: number }} to @param {number} span columns apart, signed */
+/** A step that skips columns: an arc over the row (forward) or under it (back), higher the further it goes. @param span columns apart, signed */
 function arc(from: { x: number; y: number; }, to: { x: number; y: number; }, span: number) {
   const height = (span > 0 ? 24 : 20) + 14 * Math.abs(span);
   const lift = span > 0 ? -1 : 1;
@@ -365,10 +333,9 @@ function arc(from: { x: number; y: number; }, to: { x: number; y: number; }, spa
   return { d: `M ${from.x} ${edgeY} Q ${(from.x + to.x) / 2} ${edgeY + lift * height * 2} ${to.x} ${edgeY}`, labelX: (from.x + to.x) / 2, labelY: apex + (lift < 0 ? -5 : 14) };
 }
 
-/** @param {{ from: string, to: string, rows: number }} edge @param {number} widest @param {Map<string, { x: number, y: number }>} where */
 function stepEdge(edge: { from: string; to: string; rows: number; }, widest: number, where: Map<string, { x: number; y: number; }>) {
-  const from = /** @type {{ x: number, y: number }} */ (where.get(edge.from));
-  const to = /** @type {{ x: number, y: number }} */ (where.get(edge.to));
+  const from = where.get(edge.from) as { x: number; y: number };
+  const to = where.get(edge.to) as { x: number; y: number };
   const stroke = (1.5 + (6.5 * edge.rows) / widest).toFixed(1);
   const columns = Math.round((to.x - from.x) / LAYOUT.gap);
   const label = `${edge.rows}`;
@@ -385,10 +352,10 @@ function stepEdge(edge: { from: string; to: string; rows: number; }, widest: num
     + `<text x="${curve.labelX}" y="${curve.labelY}" text-anchor="middle">${label}</text></g>`;
 }
 
-/** The two red edges of a loop, one each way, beside each other, and the single one of the loop that has no way back. @param {ReturnType<typeof foldLoops>[number]} loop @param {Map<string, { x: number, y: number }>} where */
+/** The two red edges of a loop, one each way, beside each other, and the single one of the loop that has no way back. */
 function loopEdges(loop: ReturnType<typeof foldLoops>[number], where: Map<string, { x: number; y: number; }>) {
-  const from = /** @type {{ x: number, y: number }} */ (where.get(loop.from));
-  const via = /** @type {{ x: number, y: number }} */ (where.get(loop.via));
+  const from = where.get(loop.from) as { x: number; y: number };
+  const via = where.get(loop.via) as { x: number; y: number };
   const title = `<title>loop ${esc(loop.label)}: ${loop.count} times, ${esc(loopMoney(loop))}</title>`;
   const data = `class="loop" data-loop="${loop.id}" data-count="${loop.count}"`;
   const back = loop.id === "compaction" ? "" : `<line x1="${via.x + 22}" y1="${via.y - LAYOUT.height / 2}" x2="${from.x + 22}" y2="${from.y + LAYOUT.height / 2}" marker-end="url(#arrow-red)"/>`;
@@ -399,7 +366,6 @@ function loopEdges(loop: ReturnType<typeof foldLoops>[number], where: Map<string
   return `<g ${data}>${title}${out}${back}<text x="${where2.x}" y="${where2.y}" ${loop.id === "compaction" ? 'text-anchor="middle"' : ""}>${loop.count}× ${esc(loopMoney(loop))}</text></g>`;
 }
 
-/** @param {{ x: number, y: number }} spot @param {string[]} lines @param {string} classes @param {string} id */
 function nodeBox(spot: { x: number; y: number; }, lines: string[], classes: string, id: string) {
   const left = spot.x - LAYOUT.width / 2;
   const top = spot.y - LAYOUT.height / 2;
@@ -407,16 +373,15 @@ function nodeBox(spot: { x: number; y: number; }, lines: string[], classes: stri
   return `<g class="node ${classes}" data-phase="${esc(id)}"><rect x="${left}" y="${top}" width="${LAYOUT.width}" height="${LAYOUT.height}" rx="6"/>${text}</g>`;
 }
 
-/** @param {ReturnType<typeof processMap>} model */
 function svgOf(model: ReturnType<typeof processMap>) {
   const where = positions();
   const shade = shadeOf(model.nodes);
   const widest = Math.max(1, ...model.edges.map((edge) => edge.rows));
-  const boxes = model.nodes.map((node) => nodeBox(/** @type {{ x: number, y: number }} */ (where.get(node.id)),
+  const boxes = model.nodes.map((node) => nodeBox(where.get(node.id) as { x: number; y: number },
     node.held ? [node.label, `${node.rows} rows`, node.id === "merged" ? "end" : `wait ${span(node.medianWaitMs)}`, money(node.medianDollars, node.floor)] : [node.label, "not held", "no event", "in the store"],
     node.held ? shade(node.medianDollars) : "unheld", node.id));
-  const loopBoxes = model.loops.map((loop) => nodeBox(/** @type {{ x: number, y: number }} */ (where.get(loop.via)), [loop.via, `${loop.count}×`, loopMoney(loop)], "loopnode", loop.via));
-  const wakeBox = nodeBox(/** @type {{ x: number, y: number }} */ (where.get("wake")), ["wake", `${model.wakes} wakes`], "loopnode", "wake");
+  const loopBoxes = model.loops.map((loop) => nodeBox(where.get(loop.via) as { x: number; y: number }, [loop.via, `${loop.count}×`, loopMoney(loop)], "loopnode", loop.via));
+  const wakeBox = nodeBox(where.get("wake") as { x: number; y: number }, ["wake", `${model.wakes} wakes`], "loopnode", "wake");
   const width = centreX(PHASES.length - 1) + LAYOUT.pad + LAYOUT.width / 2;
   const summary = `Process map of ${model.rows.length} merged rows: ${model.edges.length} steps between phases, ${model.loops.map((loop) => `${loop.count} ${loop.label}`).join(", ")}. The tables below give every figure.`;
   return `<svg role="img" aria-labelledby="map-title map-desc" viewBox="0 0 ${width} ${LAYOUT.canvas}" width="${width}" height="${LAYOUT.canvas}">`
@@ -443,17 +408,14 @@ td.loop-row { color: #b3261e; font-weight: 700; }
 .note { color: #444; max-width: 70rem; }
 `;
 
-/** @param {MapFilter} filter */
 function filterLine(filter: MapFilter) {
   const parts = [filter.repo === undefined ? null : `repo ${filter.repo}`, filter.week === undefined ? null : `week of ${day(filter.week)}`, filter.cause === undefined ? null : `cause ${filter.cause}`];
   const named = parts.filter((part) => part !== null);
   return named.length === 0 ? "none (every merged row in the window)" : named.join(", ");
 }
 
-/** @param {{ value: unknown, rows: number }[]} entries @param {(value: any) => string} show */
 const options = (entries: { value: unknown; rows: number; }[], show: (value: any) => string) => (entries.length === 0 ? "none held" : entries.map((entry) => `${esc(show(entry.value))} (${entry.rows})`).join(", "));
 
-/** @param {ReturnType<typeof processMap>} model */
 function tables(model: ReturnType<typeof processMap>) {
   const nodeRows = model.nodes.map((node) => (node.held
     ? `<tr><td>${esc(node.label)}</td><td>${node.rows}</td><td>${node.id === "merged" ? "end" : span(node.medianWaitMs)}</td><td>${money(node.medianDollars, node.floor)}</td><td>${node.priced}</td></tr>`
@@ -467,7 +429,6 @@ function tables(model: ReturnType<typeof processMap>) {
 
 /**
  * The page. `generatedAt` is printed, so the same model prints the same page.
- * @param {ReturnType<typeof processMap>} model @param {{ generatedAt: number }} context
  */
 export function renderMap(model: ReturnType<typeof processMap>, { generatedAt }: { generatedAt: number; }) {
   const { window } = model;
@@ -488,7 +449,7 @@ ${tables(model)}
 `;
 }
 
-/** The page, from the store's events. @param {Parameters<typeof processMap>[0] & { generatedAt: number }} input */
+/** The page, from the store's events. */
 export function buildMap({ generatedAt, ...input }: Parameters<typeof processMap>[0] & { generatedAt: number; }) {
   return renderMap(processMap(input), { generatedAt });
 }

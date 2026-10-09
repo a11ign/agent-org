@@ -59,15 +59,10 @@ const TRACE = join(dirname(fileURLToPath(import.meta.url)), "trace.mjs");
 /** The directory the host serves: beside the store (`~/.cache/a11ign/trace/`), under the home the unit declares. */
 export const defaultOut = () => join(homedir(), ".cache", "a11ign", "trace-pages");
 
-/**
- * @param {string[]} argv
- * @returns {{ out: string, maxAgeMs: number, recent: number, rows: number[], calls: number }}
- */
 export function parseArgs(argv: string[]): { out: string; maxAgeMs: number; recent: number; rows: number[]; calls: number; } {
-  /** @type {Record<string, string[]>} */
   const flags: Record<string, string[]> = {};
   for (let index = 0; index < argv.length; index += 2) (flags[argv[index].replace(/^--/, "")] ??= []).push(argv[index + 1]);
-  const whole = (/** @type {string} */ name: string, /** @type {number} */ fallback: number) => {
+  const whole = (name: string, fallback: number) => {
     const value = flags[name] === undefined ? fallback : Number(flags[name][0]);
     if (!Number.isInteger(value) || value < 0) throw new Error(`--${name} must be a whole number (got ${flags[name]?.[0]})`);
     return value;
@@ -84,15 +79,16 @@ export function parseArgs(argv: string[]): { out: string; maxAgeMs: number; rece
   };
 }
 
-/**
- * @typedef {{ input: string, at: number }} DrawnRow what a row's page was drawn FROM (its issue's `updated_at`) and when
- * @typedef {{ at: number, heads: Record<string, string>, rows: Record<string, DrawnRow> }} Stamp
- */
+/** What a row's page was drawn FROM (its issue's `updated_at`) and when. */
+type DrawnRow = { input: string; at: number };
+type Stamp = { at: number; heads: Record<string, string>; rows: Record<string, DrawnRow> };
+/** One page to render: the map, or the swimlane of `row`. */
+type Page = { kind: "map" | "row"; row?: number; out: string };
 
-/** A stamp's rows, or none: a stamp from before row pages were remembered has no `rows`, and none means every row is drawn again. @param {any} rows @returns {Record<string, DrawnRow>} */
-const stampedRows = (rows: any): Record<string, DrawnRow> => Object.fromEntries(Object.entries(rows ?? {}).filter(([, row]) => typeof row?.input === "string" && Number.isFinite(row.at)));
+/** A stamp's rows, or none: a stamp from before row pages were remembered has no `rows`, and none means every row is drawn again. */
+const stampedRows = (rows: any): Record<string, DrawnRow> => Object.fromEntries(Object.entries<any>(rows ?? {}).filter(([, row]) => typeof row?.input === "string" && Number.isFinite(row.at)));
 
-/** The stamp of the last COMPLETE publication. Absent is `null`; unreadable is also `null`, on purpose: the safe direction of "I cannot tell" is to regenerate. @param {string} out @returns {Stamp | null} */
+/** The stamp of the last COMPLETE publication. Absent is `null`; unreadable is also `null`, on purpose: the safe direction of "I cannot tell" is to regenerate. */
 export function readStamp(out: string): Stamp | null {
   const path = join(out, STAMP_FILE);
   if (!existsSync(path)) return null;
@@ -100,15 +96,13 @@ export function readStamp(out: string): Stamp | null {
     const stamp = JSON.parse(readFileSync(path, "utf8"));
     return Number.isFinite(stamp.at) && typeof stamp.heads === "object" && stamp.heads !== null ? { at: stamp.at, heads: stamp.heads, rows: stampedRows(stamp.rows) } : null;
   } catch (cause) {
-    console.error(`publish: ${path} is unreadable (${/** @type {Error} */ (cause).message}); regenerating`);
+    console.error(`publish: ${path} is unreadable (${(cause as Error).message}); regenerating`);
     return null;
   }
 }
 
 /**
  * WHY a run must regenerate, or `null` when it must not. A moved head names the repository, so a log line says which merge started it.
- * @param {{ heads: Record<string, string>, stamp: Stamp | null, now: number, maxAgeMs: number }} input
- * @returns {string | null}
  */
 export function whyRun({ heads, stamp, now, maxAgeMs }: { heads: Record<string, string>; stamp: Stamp | null; now: number; maxAgeMs: number; }): string | null {
   if (stamp === null) return "no earlier publication is stamped";
@@ -118,10 +112,9 @@ export function whyRun({ heads, stamp, now, maxAgeMs }: { heads: Record<string, 
   return null;
 }
 
-/** @param {{ generatedAt: number, reason: string, heads: Record<string, string>, pages: { file: string, label: string }[], failed: string[] }} input */
 export function indexPage({ generatedAt, reason, heads, pages, failed }: { generatedAt: number; reason: string; heads: Record<string, string>; pages: { file: string; label: string; }[]; failed: string[]; }) {
-  const item = ({ file, label }) => `<li><a href="${esc(file)}">${esc(label)}</a></li>`;
-  const head = ([repo, sha]) => `<li>${esc(repo)} <code>${esc(sha.slice(0, 9))}</code></li>`;
+  const item = ({ file, label }: { file: string; label: string }) => `<li><a href="${esc(file)}">${esc(label)}</a></li>`;
+  const head = ([repo, sha]: [string, string]) => `<li>${esc(repo)} <code>${esc(sha.slice(0, 9))}</code></li>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Trace pages</title></head>
 <body><h1>Trace pages</h1>
@@ -133,14 +126,14 @@ ${failed.length > 0 ? `<h2>Not regenerated</h2><ul>${failed.map((line) => `<li>$
 `;
 }
 
-/** A page that is on disk and not empty: a renderer that exits 0 having written nothing is the empty directory this module exists to refuse. @param {string} path */
+/** A page that is on disk and not empty: a renderer that exits 0 having written nothing is the empty directory this module exists to refuse. */
 const written = (path: string) => existsSync(path) && statSync(path).size > 0;
 
-/** @typedef {{ row: number, input: string | null }} WantedRow a row page to draw, and what it is drawn from; `null` is "unknown", which is always drawn again */
+/** A row page to draw, and what it is drawn from; `null` is "unknown", which is always drawn again. */
+export type WantedRow = { row: number; input: string | null };
 
 /**
  * Whether the page already in `out` still says what a fresh render would: the SAME input as when it was drawn, drawn under a day ago, and on disk and not empty. Every doubt is a render.
- * @param {{ wanted: WantedRow, stamp: Stamp | null, out: string, now: number }} input
  */
 export function pageStillHolds({ wanted: { row, input }, stamp, out, now }: { wanted: WantedRow; stamp: Stamp | null; out: string; now: number; }) {
   const drawn = stamp?.rows[row];
@@ -150,12 +143,10 @@ export function pageStillHolds({ wanted: { row, input }, stamp, out, now }: { wa
 /**
  * Render every page into `staging`; what succeeded is returned, what failed is returned apart, and NOTHING is thrown here so one broken row does not hold back the others. A row in `held` is not
  * rendered: its page is already in place, and it is listed as `held` so it is neither moved nor retired.
- * @param {{ staging: string, rows: number[], held: Set<number>, render: (page: { kind: "map" | "row", row?: number, out: string }) => void }} input
  */
-function renderAll({ staging, rows, held, render }: { staging: string; rows: number[]; held: Set<number>; render: (page: { kind: "map" | "row"; row?: number; out: string; }) => void; }) {
-  const wanted = [{ file: MAP_PAGE, label: "Process map: merged rows, last seven days", page: { kind: /** @type {const} */ ("map"), out: join(staging, MAP_PAGE) } },
-    ...rows.map((row) => ({ file: `row-${row}.html`, label: `Swimlane: #${row}`, page: { kind: /** @type {const} */ ("row"), row, out: join(staging, `row-${row}.html`) } }))];
-  /** @type {{ file: string, label: string, held: boolean }[]} */
+function renderAll({ staging, rows, held, render }: { staging: string; rows: number[]; held: Set<number>; render: (page: Page) => void; }) {
+  const wanted: { file: string; label: string; page: Page }[] = [{ file: MAP_PAGE, label: "Process map: merged rows, last seven days", page: { kind: "map", out: join(staging, MAP_PAGE) } },
+    ...rows.map((row) => ({ file: `row-${row}.html`, label: `Swimlane: #${row}`, page: { kind: "row" as const, row, out: join(staging, `row-${row}.html`) } }))];
   const pages: { file: string; label: string; held: boolean; }[] = [];
   const failed = [];
   for (const { file, label, page } of wanted) {
@@ -168,34 +159,30 @@ function renderAll({ staging, rows, held, render }: { staging: string; rows: num
       if (!written(page.out)) throw new Error("the renderer returned without writing the page");
       pages.push({ file, label, held: false });
     } catch (cause) {
-      failed.push(`${file}: ${String(/** @type {Error} */ (cause).message).split("\n")[0]}`);
+      failed.push(`${file}: ${String((cause as Error).message).split("\n")[0]}`);
     }
   }
   return { pages, failed };
 }
 
-/** Row pages in `out` that this publication no longer draws, so the directory does not grow without bound. @param {string} out @param {string[]} keep */
+/** Row pages in `out` that this publication no longer draws, so the directory does not grow without bound. */
 function retire(out: string, keep: string[]) {
   for (const name of readdirSync(out)) if (ROW_PAGE.test(name) && !keep.includes(name)) rmSync(join(out, name));
 }
 
 /**
  * The rows a stamp remembers: each row page that is in place and has an input, with the time it was DRAWN (a held page keeps its old time, so the day's bound is on the drawing and not on the last look).
- * @param {{ wanted: WantedRow[], pages: { file: string, held: boolean }[], stamp: Stamp | null, now: number }} input
- * @returns {Record<string, DrawnRow>}
  */
 function rowsToStamp({ wanted, pages, stamp, now }: { wanted: WantedRow[]; pages: { file: string; held: boolean; }[]; stamp: Stamp | null; now: number; }): Record<string, DrawnRow> {
   const placed = new Map(pages.map(({ file, held }) => [file, held]));
   const kept = wanted.filter(({ row, input }) => input !== null && placed.has(`row-${row}.html`));
-  return Object.fromEntries(kept.map(({ row, input }) => [row, { input: /** @type {string} */ (input), at: placed.get(`row-${row}.html`) ? /** @type {DrawnRow} */ (stamp?.rows[row]).at : now }]));
+  return Object.fromEntries(kept.map(({ row, input }) => [row, { input: input as string, at: placed.get(`row-${row}.html`) ? (stamp?.rows[row] as DrawnRow).at : now }]));
 }
 
 /**
  * One run: decide, render, move into place, stamp. Returns `{ ran: false }` when nothing moved and the stamp is fresh; THROWS when a head cannot be read, a write fails, or any page failed.
- * @param {{ out: string, repos: string[], rows: () => WantedRow[], readHead: (repo: string) => string, render: (page: { kind: "map" | "row", row?: number, out: string }) => void, now: number, maxAgeMs: number }} input
- * @returns {{ ran: boolean, reason: string | null, pages: string[], held: string[] }}
  */
-export function publish({ out, repos, rows, readHead, render, now, maxAgeMs }: { out: string; repos: string[]; rows: () => WantedRow[]; readHead: (repo: string) => string; render: (page: { kind: "map" | "row"; row?: number; out: string; }) => void; now: number; maxAgeMs: number; }): { ran: boolean; reason: string | null; pages: string[]; held: string[]; } {
+export function publish({ out, repos, rows, readHead, render, now, maxAgeMs }: { out: string; repos: string[]; rows: () => WantedRow[]; readHead: (repo: string) => string; render: (page: Page) => void; now: number; maxAgeMs: number; }): { ran: boolean; reason: string | null; pages: string[]; held: string[]; } {
   const heads = Object.fromEntries(repos.map((repo) => [repo, readHead(repo)]));
   const stamp = readStamp(out);
   const reason = whyRun({ heads, stamp, now, maxAgeMs });
@@ -220,15 +207,15 @@ export function publish({ out, repos, rows, readHead, render, now, maxAgeMs }: {
   }
 }
 
-/** @typedef {{ etag: string, value: any, used: number }} Validated the reduced answer GitHub gave, the ETag it came with, and when it was last used */
-/** @typedef {{ status: number, etag: string | null, body: any }} Reply */
-/** @typedef {(path: string, etag: string | null) => Reply} Ask one GET of `path`, conditional when an ETag is given. A 304 has `body` null; a failure THROWS. */
+/** The reduced answer GitHub gave, the ETag it came with, and when it was last used. */
+export type Validated = { etag: string; value: any; used: number };
+type Reply = { status: number; etag: string | null; body: any };
+/** One GET of `path`, conditional when an ETag is given. A 304 has `body` null; a failure THROWS. */
+export type Ask = (path: string, etag: string | null) => Reply;
 
 /**
  * What a `gh api -i` reply says: its status, its ETag, its parsed body. The status line is what is read and the exit code is not, because `gh` exits 1 on a 304 (`gh: HTTP 304`) and on a failure alike. A 304 returns the ETag
  * that was sent (`sent`), which is the one still true. A failure THROWS, naming `path` and the last line `gh` said.
- * @param {{ stdout: string, stderr: string, path: string, sent: string | null }} input
- * @returns {Reply}
  */
 export function parseReply({ stdout, stderr, path, sent }: { stdout: string; stderr: string; path: string; sent: string | null; }): Reply {
   const [head, ...rest] = stdout.split(/\r?\n\r?\n/);
@@ -241,9 +228,8 @@ export function parseReply({ stdout, stderr, path, sent }: { stdout: string; std
 /**
  * `gh api -i <path>`, with `If-None-Match` when `etag` is given. THE `-H` COMES FIRST on a conditional call because the `gh` ledger keeps the first two words of a command (`api -H`), which is what lets the trace store
  * count the conditional reads apart from the unconditional ones (`api -i`, and the ledger's `script` says `publish.mjs`).
- * @type {Ask}
  */
-export function ghAsk(path, etag) {
+export function ghAsk(path: string, etag: string | null): Reply {
   const ran = spawnSync("gh", ["api", ...(etag === null ? [] : ["-H", `If-None-Match: ${etag}`]), "-i", path], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER });
   if (ran.error) throw new Error(`gh api ${path}: ${ran.error.message}`);
   return parseReply({ stdout: ran.stdout, stderr: ran.stderr, path, sent: etag });
@@ -251,16 +237,15 @@ export function ghAsk(path, etag) {
 
 /**
  * The kept validators. Absent, unreadable or ill-shaped is NONE, on purpose and said on stderr when it was there: a request that carries no validator is an ordinary request, so the worst a bad store does is cost the calls it would have saved.
- * @param {string} out @returns {Record<string, Validated>}
  */
 export function readValidators(out: string): Record<string, Validated> {
   const path = join(out, VALIDATORS_FILE);
   if (!existsSync(path)) return {};
   try {
     const held = JSON.parse(readFileSync(path, "utf8"));
-    return Object.fromEntries(Object.entries(held).filter(([, one]) => typeof one?.etag === "string" && one.value !== undefined && Number.isFinite(one.used)));
+    return Object.fromEntries(Object.entries<any>(held).filter(([, one]) => typeof one?.etag === "string" && one.value !== undefined && Number.isFinite(one.used)));
   } catch (cause) {
-    console.error(`publish: ${path} is unreadable (${/** @type {Error} */ (cause).message}); asking GitHub without validators`);
+    console.error(`publish: ${path} is unreadable (${(cause as Error).message}); asking GitHub without validators`);
     return {};
   }
 }
@@ -268,11 +253,10 @@ export function readValidators(out: string): Record<string, Validated> {
 /**
  * GETs that send the ETag they were last given and answer a 304 from the value kept with it. `read` takes the path and `reduce`, which turns a body into the small thing worth keeping (a head's sha, a list page's four fields), so the
  * store is not a copy of GitHub.
- * @param {{ held: Record<string, Validated>, ask: Ask, now: number }} input
  */
 export function conditionalReader({ held, ask, now }: { held: Record<string, Validated>; ask: Ask; now: number; }) {
   const reads = { asked: 0, notModified: 0 };
-  const read = (/** @type {string} */ path: string, /** @type {(body: any) => any} */ reduce: (body: any) => any) => {
+  const read = (path: string, reduce: (body: any) => any) => {
     const kept = held[path];
     const reply = ask(path, kept ? kept.etag : null);
     reads.asked += 1;
@@ -288,7 +272,7 @@ export function conditionalReader({ held, ask, now }: { held: Record<string, Val
     return value;
   };
   /** A read that sends no validator and keeps none, counted with the rest: the list, whose ETag does not hold. */
-  const readFresh = (/** @type {string} */ path: string, /** @type {(body: any) => any} */ reduce: (body: any) => any) => {
+  const readFresh = (path: string, reduce: (body: any) => any) => {
     reads.asked += 1;
     return reduce(ask(path, null).body);
   };
@@ -297,7 +281,6 @@ export function conditionalReader({ held, ask, now }: { held: Record<string, Val
 
 /**
  * Write the validators beside the pages: a temporary file and a rename, so a run killed mid-write leaves the old store and not half of one. Entries unused for two days are left out.
- * @param {{ out: string, held: Record<string, Validated>, now: number }} input
  */
 export function saveValidators({ out, held, now }: { out: string; held: Record<string, Validated>; now: number; }) {
   const kept = Object.fromEntries(Object.entries(held).filter(([, one]) => now - one.used < VALIDATOR_KEEP_MS));
@@ -307,12 +290,12 @@ export function saveValidators({ out, held, now }: { out: string; held: Record<s
   renameSync(`${path}.tmp`, path);
 }
 
-/** @typedef {ReturnType<typeof conditionalReader>["read"]} Read */
+type Read = ReturnType<typeof conditionalReader>["read"];
 
-/** The head of `main` in `repo`, kept as its sha. @param {Read} read @returns {(repo: string) => string} */
+/** The head of `main` in `repo`, kept as its sha. */
 export const headReader = (read: Read): (repo: string) => string => (repo) => read(`repos/${repo}/branches/main`, (branch) => branch.commit.sha);
 
-/** What of an issue the closed-rows list needs, and so what is kept: a page of 100 issues is not. @param {any} reply @param {string} path */
+/** What of an issue the closed-rows list needs, and so what is kept: a page of 100 issues is not. */
 function listedIssues(reply: any, path: string) {
   if (!Array.isArray(reply)) throw new Error(`gh api ${path}: the reply carried no list where one was expected`);
   return reply.map((issue) => ({ number: issue.number, closed_at: issue.closed_at, updated_at: issue.updated_at, pull_request: issue.pull_request !== undefined }));
@@ -326,8 +309,7 @@ function listedIssues(reply: any, path: string) {
  * BEFORE the `count`-th newest closing, every issue not yet read was updated earlier still and so closed earlier still, and cannot displace one. MEASURED 2026-10-08 against the tracker repository: one page of 100, where creation order
  * (the order this read in before, for the reason that a comment cannot move an issue between two pages) needed 13, and the same six rows. The record issue (#928, closed 2026-09-12) is commented on all day and so heads this list; `closed_at` keeps it
  * out of the answer and it costs only its place on a page. A list not finished, or not provably finished, in CLOSED_ROWS_MAX_PAGES is REFUSED, not cut short, because a swimlane missing its newest row prints as a quieter week.
- * @param {string} repo @param {number} count @param {number} since ms @param {ReturnType<typeof conditionalReader>["readFresh"]} readFresh
- * @returns {WantedRow[]}
+ * @param since ms
  */
 export function recentClosedRows(repo: string, count: number, since: number, readFresh: ReturnType<typeof conditionalReader>["readFresh"]): WantedRow[] {
   if (count === 0) return [];
@@ -343,19 +325,18 @@ export function recentClosedRows(repo: string, count: number, since: number, rea
   throw new Error(`${repo} has more than ${CLOSED_ROWS_MAX_PAGES * CLOSED_ROWS_PAGE} issues closed and updated since ${new Date(since).toISOString()}; a list cut short could miss the newest rows, so narrow the window`);
 }
 
-/** Whether the `count`-th newest closing in `closed` is later than the last issue read was updated, so that nothing further down a newest-updated list can be closed later than it. @param {{ closed: any[], count: number, lastUpdated: string }} input */
+/** Whether the `count`-th newest closing in `closed` is later than the last issue read was updated, so that nothing further down a newest-updated list can be closed later than it. */
 function nothingUnreadCanDisplace({ closed, count, lastUpdated }: { closed: any[]; count: number; lastUpdated: string; }) {
   return closed.length >= count && Date.parse(lastUpdated) < Date.parse(newestFirst(closed)[count - 1].closed_at);
 }
 
-/** Issues (not pull requests, which the issues endpoint also lists) closed on or after `since`. @param {any[]} issues @param {number} since ms */
+/** Issues (not pull requests, which the issues endpoint also lists) closed on or after `since`. @param since ms */
 const closedSince = (issues: any[], since: number) => issues.filter((issue) => !issue.pull_request && Date.parse(issue.closed_at) >= since);
 
-/** @param {any[]} issues */
 const newestFirst = (issues: any[]) => [...issues].sort((one, other) => Date.parse(other.closed_at) - Date.parse(one.closed_at));
 
-/** Run `trace` for one page, as a child process: it is a command with its own ingest state, and a crash in it must not take the others down. @param {{ calls: number, now: number }} budget */
-export const traceRenderer = ({ calls, now }: { calls: number; now: number; }) => (/** @type {{ kind: "map" | "row", row?: number, out: string }} */ { kind, row, out }: { kind: "map" | "row"; row?: number; out: string; }) => {
+/** Run `trace` for one page, as a child process: it is a command with its own ingest state, and a crash in it must not take the others down. */
+export const traceRenderer = ({ calls, now }: { calls: number; now: number; }) => ({ kind, row, out }: Page) => {
   const since = new Date(now - MAP_WINDOW_DAYS * MS_PER_DAY).toISOString();
   const args = kind === "map" ? ["--", "--map", "--out", out, "--since", since, "--calls", String(calls)] : ["--", String(row), "--html", "--out", out, "--since", since];
   const ran = spawnSync(process.execPath, [...TSX_IMPORT, TRACE, ...args], { encoding: "utf8", timeout: RENDER_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER });
@@ -365,7 +346,6 @@ export const traceRenderer = ({ calls, now }: { calls: number; now: number; }) =
 /**
  * Everything a run does, with GitHub behind `ask` and the renderer behind `render`: read the validators, publish, and write the validators back WHETHER OR NOT the publication succeeded (what GitHub said is true either way,
  * and a failed render should not also cost the next run its 304s). `reads` is what the journal prints, so the share of 304s is on the unit's log and not only in the ledger.
- * @param {{ out: string, repos: string[], trackerRepo: string, recent: number, rows: number[], ask: Ask, render: Parameters<typeof publish>[0]["render"], now: number, maxAgeMs: number }} input
  */
 export function runPublisher({ out, repos, trackerRepo, recent, rows, ask, render, now, maxAgeMs }: { out: string; repos: string[]; trackerRepo: string; recent: number; rows: number[]; ask: Ask; render: Parameters<typeof publish>[0]["render"]; now: number; maxAgeMs: number; }) {
   const held = readValidators(out);
@@ -387,7 +367,7 @@ async function main() {
   const { out, maxAgeMs, recent, rows, calls } = parseArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.ts");
   const declaration = homeProjectDeclaration();
-  const repos = [...new Set(declaration.code.map((/** @type {{ repo: string }} */ entry: { repo: string; }) => entry.repo))];
+  const repos = [...new Set(declaration.code.map((entry: { repo: string; }) => entry.repo))];
   const now = Date.now();
   const result = runPublisher({ out, repos, trackerRepo: declaration.tracker[0].repo, recent, rows, ask: ghAsk, render: traceRenderer({ calls, now }), now, maxAgeMs });
   const asked = `GitHub reads: ${result.reads.asked}, answered 304: ${result.reads.notModified}`;

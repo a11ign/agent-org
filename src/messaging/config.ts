@@ -1,4 +1,3 @@
-// @ts-check
 // THE `messaging` KEY OF `.agent-org/project.json`, READ THE WAY `causes` IS (a11ign/a11ign#2901; docs/messaging.md decision 1, "Optional
 // and off by default"). A LEAF module: it imports nothing from the tool, so it cannot use `ProjectDeclarationRefusal` or
 // `readProjectDeclaration` and states its own refusal and its own read.
@@ -34,7 +33,8 @@ const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** A configuration that is present and wrong. `field` is a dotted path (`messaging.summary.at`) and `source` names the file read. */
 export class MessagingConfigRefusal extends Error {
-  /** @param {string} field @param {string} reason @param {string} [source] @param {{ cause?: unknown }} [options] */
+  field: string;
+
   constructor(field: string, reason: string, source: string = PROJECT_FILE, options: { cause?: unknown; } = {}) {
     super(`${source}: ${field}: ${reason}`, options);
     this.name = "MessagingConfigRefusal";
@@ -42,18 +42,14 @@ export class MessagingConfigRefusal extends Error {
   }
 }
 
-/** @param {unknown} value */
-const isObject = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** @param {unknown} value @returns {string} a name for the type, for a message that must say what it found instead */
+/** A name for the type, for a message that must say what it found instead. */
 function describe(value: unknown): string {
   if (value === null) return "null";
   return Array.isArray(value) ? "an array" : typeof value;
 }
 
-/**
- * @param {Record<string, unknown>} holder @param {Set<string>} allowed @param {string} where @param {string} source
- */
 function refuseUnknownKeys(holder: Record<string, unknown>, allowed: Set<string>, where: string, source: string) {
   for (const key of Object.keys(holder)) {
     if (key.startsWith("_") || allowed.has(key)) continue;
@@ -61,7 +57,6 @@ function refuseUnknownKeys(holder: Record<string, unknown>, allowed: Set<string>
   }
 }
 
-/** @param {unknown} provider @param {string} source @returns {string} */
 function readProvider(provider: unknown, source: string): string {
   if (typeof provider !== "string" || provider === "") {
     throw new MessagingConfigRefusal("messaging.provider", `it must be a non-empty string, not ${describe(provider)}`, source);
@@ -74,7 +69,6 @@ function readProvider(provider: unknown, source: string): string {
 
 /**
  * A reference to a secret-bearing file, resolved against the home directory and confined to `~/.config/agent-org/`.
- * @param {unknown} value @param {string} field @param {string} home @param {string} source @returns {string}
  */
 function readSecretReference(value: unknown, field: string, home: string, source: string): string {
   if (typeof value !== "string" || value === "") {
@@ -88,7 +82,6 @@ function readSecretReference(value: unknown, field: string, home: string, source
   return resolved;
 }
 
-/** @param {unknown} at @param {string} source @returns {string} */
 function readSummaryTime(at: unknown, source: string): string {
   if (typeof at !== "string" || !TIME_OF_DAY.test(at)) {
     throw new MessagingConfigRefusal("messaging.summary.at", `${JSON.stringify(at)} is not a 24-hour HH:MM time`, source);
@@ -96,7 +89,7 @@ function readSummaryTime(at: unknown, source: string): string {
   return at;
 }
 
-/** `Intl` is the one authority on which zones exist, and it is the one the summary's own date arithmetic will use. @param {unknown} timezone @param {string} source */
+/** `Intl` is the one authority on which zones exist, and it is the one the summary's own date arithmetic will use. */
 function readTimezone(timezone: unknown, source: string) {
   if (typeof timezone !== "string" || timezone === "") {
     throw new MessagingConfigRefusal("messaging.summary.timezone", `it must be a non-empty string, not ${describe(timezone)}`, source);
@@ -112,12 +105,11 @@ function readTimezone(timezone: unknown, source: string) {
 /**
  * THE SUMMARY IS OPT-IN: an absent key is `null` and constructs no summary source (chairman, 2026-10-04: "the chairman does not want a daily
  * message"). A PRESENT key keeps its field defaults, so `summary: {}` asks for the 08:00 London one.
- * @param {unknown} summary @param {string} source @returns {{ at: string, timezone: string } | null}
  */
 function readSummary(summary: unknown, source: string): { at: string; timezone: string; } | null {
   if (summary === undefined) return null;
   if (!isObject(summary)) throw new MessagingConfigRefusal("messaging.summary", `it must be an object, not ${describe(summary)}`, source);
-  const holder = /** @type {Record<string, unknown>} */ (summary);
+  const holder = summary;
   refuseUnknownKeys(holder, ALLOWED_SUMMARY_KEYS, "messaging.summary", source);
   // `=== undefined` and not `??`: an explicit `null` is a malformed value to refuse, not an absent one to default.
   return {
@@ -128,7 +120,6 @@ function readSummary(summary: unknown, source: string): { at: string; timezone: 
 
 /**
  * THE MILESTONES FILE IS OPT-IN: an absent key is `null`. A present one is a path inside the project, resolved against its root.
- * @param {unknown} value @param {string} root @param {string} source @returns {string | null}
  */
 function readMilestonesPath(value: unknown, root: string, source: string): string | null {
   if (value === undefined) return null;
@@ -142,22 +133,20 @@ function readMilestonesPath(value: unknown, root: string, source: string): strin
   return resolved;
 }
 
-/** @typedef {{ enabled: false }} MessagingOff */
-/** @typedef {{ enabled: true, provider: string, tokenFile: string, chairmanFile: string, summary: { at: string, timezone: string } | null, milestones: string | null }} MessagingOn */
+export type MessagingOff = { enabled: false };
+export type MessagingOn = { enabled: true; provider: string; tokenFile: string; chairmanFile: string; summary: { at: string; timezone: string } | null; milestones: string | null };
 
 /**
- * PURE: a test drives every refusal with a plain object.
- * @param {unknown} parsed the whole parsed `project.json`
- * @param {{ home?: string, source?: string, root?: string }} [options] `home` is where `~` and the secret directory are anchored, `root` where `milestones` is
- * @returns {MessagingOff | MessagingOn}
+ * PURE: a test drives every refusal with a plain object. `parsed` is the whole parsed `project.json`;
+ * `home` is where `~` and the secret directory are anchored, `root` where `milestones` is.
  */
 export function parseMessagingConfig(parsed: unknown, { home = homedir(), source = PROJECT_FILE, root = process.cwd() }: { home?: string; source?: string; root?: string; } = {}): MessagingOff | MessagingOn {
   if (!isObject(parsed)) throw new MessagingConfigRefusal("(file)", "it must be a JSON object", source);
-  const document = /** @type {Record<string, unknown>} */ (parsed);
+  const document = parsed;
   if (!Object.hasOwn(document, "messaging")) return { enabled: false };
   const key = document.messaging;
   if (!isObject(key)) throw new MessagingConfigRefusal("messaging", `it must be an object, not ${describe(key)}`, source);
-  const holder = /** @type {Record<string, unknown>} */ (key);
+  const holder = key;
   refuseUnknownKeys(holder, ALLOWED_KEYS, "messaging", source);
   return {
     enabled: true,
@@ -172,19 +161,15 @@ export function parseMessagingConfig(parsed: unknown, { home = homedir(), source
 /**
  * Read `<root>/.agent-org/project.json`'s `messaging` key. An unreadable or unparseable file is a refusal and not "off": the file
  * that says whether to message the chairman being unreadable is not the same fact as its saying no.
- * @param {string} root @param {{ home?: string, read?: typeof readFileSync }} [deps]
- * @returns {MessagingOff | MessagingOn}
  */
 export function readMessagingConfig(root: string, { home, read = readFileSync }: { home?: string; read?: typeof readFileSync; } = {}): MessagingOff | MessagingOn {
   const path = join(root, PROJECT_FILE);
-  /** @type {string} */
   let text: string;
   try {
     text = String(read(path, "utf8"));
   } catch (cause) {
     throw new MessagingConfigRefusal("(file)", "the declaration cannot be read", path, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

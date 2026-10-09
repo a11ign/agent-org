@@ -1,4 +1,3 @@
-// @ts-check
 // THE STALL SOURCES (a11ign/a11ign#2904, row 5 of 13; design #2899): is the org doing nothing while there is something to do?
 // Two kinds, each returning ONE event with a stable `key` and a `resolved` reading, for the core to dedupe, hold down and clear.
 //
@@ -26,7 +25,7 @@ export const TICK_INTERVAL_MS = 126_000;
 const STALE_TICKS = 3;
 const MINUTES_PER_HOUR = 60;
 
-/** Typed wide: frozen literals would infer `noMergeHours: 6`, and a caller overriding the threshold is the point of it being config. @type {Readonly<{ noMergeHours: number, allIdleAfterMs: number, idleStates: readonly string[], maxTickAgeMs: number }>} */
+/** Typed wide: frozen literals would infer `noMergeHours: 6`, and a caller overriding the threshold is the point of it being config. */
 export const DEFAULT_STALL_CONFIG: Readonly<{ noMergeHours: number; allIdleAfterMs: number; idleStates: readonly string[]; maxTickAgeMs: number; }> = Object.freeze({
   /** No merge on `main` for this long is a stall (the row's default). */
   noMergeHours: 6,
@@ -41,14 +40,11 @@ export const DEFAULT_STALL_CONFIG: Readonly<{ noMergeHours: number; allIdleAfter
   maxTickAgeMs: STALE_TICKS * TICK_INTERVAL_MS,
 });
 
-/**
- * @typedef {{ source: string, reason: string }} CannotAsk
- * @typedef {{ events: Record<string, unknown>[], cannotAsk: CannotAsk[] }} Observation
- */
+export type CannotAsk = { source: string; reason: string };
+export type Observation = { events: Record<string, unknown>[]; cannotAsk: CannotAsk[] };
 
 /**
  * Anything a reader hands over as a time, as epoch milliseconds. A reader that cannot give one is a reader that could not ask.
- * @param {unknown} value @param {string} field @returns {number}
  */
 export function instant(value: unknown, field: string): number {
   const ms = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
@@ -56,7 +52,7 @@ export function instant(value: unknown, field: string): number {
   return ms;
 }
 
-/** @param {number} ms @returns {string} `6h 01m`, `42m`: how long a thing has stood, for a line a person reads */
+/** `6h 01m`, `42m`: how long a thing has stood, for a line a person reads. */
 export function span(ms: number): string {
   const minutes = Math.floor(ms / MINUTE_MS);
   return minutes < MINUTES_PER_HOUR ? `${minutes}m` : `${Math.floor(minutes / MINUTES_PER_HOUR)}h ${String(minutes % MINUTES_PER_HOUR).padStart(2, "0")}m`;
@@ -64,8 +60,6 @@ export function span(ms: number): string {
 
 /**
  * Run ONE reader. A throw is `cannot-ask`: no event, one log line, and the result says which source and why.
- * @param {string} source @param {() => Promise<Record<string, unknown>[]> | Record<string, unknown>[]} read
- * @param {(line: string) => void} log @returns {Promise<Observation>}
  */
 export async function observe(source: string, read: () => Promise<Record<string, unknown>[]> | Record<string, unknown>[], log: (line: string) => void): Promise<Observation> {
   try {
@@ -77,9 +71,6 @@ export async function observe(source: string, read: () => Promise<Record<string,
   }
 }
 
-/**
- * @param {Record<string, unknown>} readers @param {string} name @returns {Function}
- */
 export function requireReader(readers: Record<string, unknown>, name: string): Function {
   const read = readers[name];
   if (typeof read !== "function") throw new TypeError(`no reader named \`${name}\` is wired`);
@@ -103,18 +94,17 @@ export const IMPACT = Object.freeze({
 const NOT_KNOWN = "not known";
 const QUOTE_LIMIT = 200;
 
-/**
- * @typedef {{ number: number, comment?: { author: string, at: number | string, text: string } }} FixRow
- *   the open row that holds the fix, and the newest comment an org account left on it (absent: the org has said nothing there yet)
- * @typedef {(key: string) => Promise<FixRow | null> | FixRow | null} FixRowReader  by the event's key; `null` is "no row is open", a throw is "could not ask"
- * @typedef {{ status: "row", row: FixRow } | { status: "none" } | { status: "unknown" }} FixReading
- */
+/** The open row that holds the fix, and the newest comment an org account left on it (absent: the org has said nothing there yet). */
+export type FixRow = { number: number; comment?: { author: string; at: number | string; text: string } };
+/** By the event's key; `null` is "no row is open", a throw is "could not ask". */
+export type FixRowReader = (key: string) => Promise<FixRow | null> | FixRow | null;
+export type FixReading = { status: "row"; row: FixRow } | { status: "none" } | { status: "unknown" };
 
 /**
  * What the org has done about an event, read once from the row the incident points at. `null` from the reader is the ONLY thing that says no row is
  * open: a reader that is not wired, throws or hands back something that is not a row is `unknown`, because absence is not proof.
  *
- * @param {Record<string, unknown>} readers `readFixRow(key)` is optional @param {string} key @param {(line: string) => void} log @returns {Promise<FixReading>}
+ * `readers.readFixRow(key)` is optional.
  */
 async function readFix(readers: Record<string, unknown>, key: string, log: (line: string) => void): Promise<FixReading> {
   if (typeof readers.readFixRow !== "function") return { status: "unknown" };
@@ -131,35 +121,31 @@ async function readFix(readers: Record<string, unknown>, key: string, log: (line
   }
 }
 
-/** @param {string} text @returns {string} the comment on one line, cut where a message must stop: a quote, not the comment */
+/** The comment on one line, cut where a message must stop: a quote, not the comment. */
 function quoted(text: string): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length <= QUOTE_LIMIT ? line : `${line.slice(0, QUOTE_LIMIT - 1)}\u2026`;
 }
 
-/** @param {FixReading} fix @param {number} now @returns {string} */
 function beingDoneLine(fix: FixReading, now: number): string {
   if (fix.status === "none") return "nobody has picked this up yet";
   if (fix.status === "unknown") return "I could not read it";
   const { number, comment } = fix.row;
   if (comment === undefined) return `row #${number} is open for this and the org has not commented on it yet`;
-  return `row #${number}, ${comment.author} ${span(now - /** @type {number} */ (comment.at))} ago: "${quoted(comment.text)}"`;
+  return `row #${number}, ${comment.author} ${span(now - (comment.at as number))} ago: "${quoted(comment.text)}"`;
 }
 
 /**
  * The two lines a SENT event carries beyond what started. A pure function of the key, one reading and the clock, so a test hands it a fixture.
- * @param {string} key @param {FixReading} fix @param {number} now @returns {string}
  */
 export function meaningLines(key: string, fix: FixReading, now: number): string {
-  return `Impact: ${IMPACT[/** @type {keyof typeof IMPACT} */ (key)] ?? NOT_KNOWN}\nBeing done: ${beingDoneLine(fix, now)}.`;
+  return `Impact: ${IMPACT[key as keyof typeof IMPACT] ?? NOT_KNOWN}\nBeing done: ${beingDoneLine(fix, now)}.`;
 }
 
 /**
  * How long a sent event stood. `readEpisodeStart(key)` answers with when the chairman was TOLD (the ledger's first send of the open episode), because the
  * source keeps no state of its own and a resolved reading no longer holds when the thing began. So it is a floor, and the line says `at least`.
  * `null` or a throw is `not known`: a duration nobody could read is never a short one.
- *
- * @param {Record<string, unknown>} readers @param {string} key @param {number} now @param {(line: string) => void} log @returns {Promise<string>}
  */
 async function lastedLine(readers: Record<string, unknown>, key: string, now: number, log: (line: string) => void): Promise<string> {
   if (typeof readers.readEpisodeStart !== "function") return `Lasted: ${NOT_KNOWN}.`;
@@ -177,9 +163,6 @@ async function lastedLine(readers: Record<string, unknown>, key: string, now: nu
  * Append Impact and Being done to every event that says something STARTED, and Lasted to every one that says it ENDED. The key, `firstSeenAt` and
  * everything else the core reads are not touched, so the hold-down and the dedupe see the same event as before. A failed read is said on its own line
  * (`I could not read it`, `not known`) and never costs the event.
- *
- * @param {Record<string, unknown>[]} events @param {Record<string, unknown>} readers @param {(line: string) => void} log @param {number} now
- * @returns {Promise<Record<string, unknown>[]>}
  */
 export async function withMeaning(events: Record<string, unknown>[], readers: Record<string, unknown>, log: (line: string) => void, now: number): Promise<Record<string, unknown>[]> {
   return Promise.all(events.map(async (event) => {
@@ -189,21 +172,17 @@ export async function withMeaning(events: Record<string, unknown>[], readers: Re
   }));
 }
 
-/**
- * @typedef {{ at: number | string, seats: { session: string, state: string }[], orders: unknown[] }} TickRecord
- *   what one tick recorded: when, every seat's state, and the orders the gate found (an order is a row or PR with nobody on it)
- */
+/** What one tick recorded: when, every seat's state, and the orders the gate found (an order is a row or PR with nobody on it). */
+export type TickRecord = { at: number | string; seats: { session: string; state: string }[]; orders: unknown[] };
 
-/** @param {unknown} record @param {number} index @returns {{ at: number, seats: { session: string, state: string }[], waiting: number }} */
 function readTickRecord(record: unknown, index: number): { at: number; seats: { session: string; state: string; }[]; waiting: number; } {
-  const tick = /** @type {Record<string, any>} */ (record);
+  const tick = record as TickRecord;
   if (tick === null || typeof tick !== "object" || !Array.isArray(tick.seats) || !Array.isArray(tick.orders)) {
     throw new TypeError(`ticks[${index}]: a record needs \`at\`, \`seats\` and \`orders\``);
   }
   return { at: instant(tick.at, `ticks[${index}].at`), seats: tick.seats, waiting: tick.orders.length };
 }
 
-/** @param {{ seats: { session: string, state: string }[] }} tick @param {readonly string[]} idleStates */
 function everySeatIdle(tick: { seats: { session: string; state: string; }[]; }, idleStates: readonly string[]) {
   return tick.seats.length > 0 && tick.seats.every((seat) => idleStates.includes(seat.state));
 }
@@ -211,15 +190,12 @@ function everySeatIdle(tick: { seats: { session: string; state: string; }[]; }, 
 /**
  * Every seat idle while rows wait. `ticks` is newest first. The newest tick decides whether it is true NOW; the streak behind it
  * decides since when, and the event waits for `allIdleAfterMs` of it.
- *
- * @param {TickRecord[]} ticks @param {number} now @param {typeof DEFAULT_STALL_CONFIG} config
- * @returns {Record<string, unknown>[]}
  */
 export function allIdleEvents(ticks: TickRecord[], now: number, config: typeof DEFAULT_STALL_CONFIG): Record<string, unknown>[] {
   if (!Array.isArray(ticks) || ticks.length === 0) throw new TypeError("no tick has been recorded");
   const records = ticks.map((record, index) => readTickRecord(record, index));
   if (now - records[0].at > config.maxTickAgeMs) throw new RangeError(`the newest tick is ${span(now - records[0].at)} old`);
-  const stalled = (/** @type {any} */ tick: any) => tick.waiting > 0 && everySeatIdle(tick, config.idleStates);
+  const stalled = (tick: ReturnType<typeof readTickRecord>) => tick.waiting > 0 && everySeatIdle(tick, config.idleStates);
   const base = { key: "stall:all-idle", kind: "stall", severity: "warning", links: [] };
   if (!stalled(records[0])) return [{ ...base, firstSeenAt: now, text: "Seats are no longer all idle with rows waiting.", resolved: true }];
   const streak = [];
@@ -237,9 +213,6 @@ export function allIdleEvents(ticks: TickRecord[], now: number, config: typeof D
 /**
  * Nothing merged on `main` for N hours. `lastMergeAt` is the newest merge's time; the incident began when the threshold was crossed,
  * which is what makes `firstSeenAt` the same on every tick.
- *
- * @param {number | string} lastMergeAt @param {number} now @param {typeof DEFAULT_STALL_CONFIG} config
- * @returns {Record<string, unknown>[]}
  */
 export function noMergeEvents(lastMergeAt: number | string, now: number, config: typeof DEFAULT_STALL_CONFIG): Record<string, unknown>[] {
   const last = instant(lastMergeAt, "lastMergeAt");
@@ -250,12 +223,7 @@ export function noMergeEvents(lastMergeAt: number | string, now: number, config:
     text: `Nothing has merged on main for ${span(now - last)} (last merge ${new Date(last).toISOString()}).` }];
 }
 
-/**
- * @param {{ now: () => number, config?: Partial<typeof DEFAULT_STALL_CONFIG>, log?: (line: string) => void,
- *   readers: { readTicks?: () => Promise<TickRecord[]> | TickRecord[], readLastMerge?: () => Promise<number | string> | number | string, readFixRow?: FixRowReader,
- *   readEpisodeStart?: (key: string) => Promise<number | null> | number | null } }} options
- * @returns {Promise<Observation>} both stall kinds, each independently able to fail to ask
- */
+/** Both stall kinds, each independently able to fail to ask. */
 export async function observeStalls({ now, config: overrides = {}, log = console.error, readers }: {
         now: () => number; config?: Partial<typeof DEFAULT_STALL_CONFIG>; log?: (line: string) => void;
         readers: {

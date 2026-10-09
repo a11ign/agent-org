@@ -1,4 +1,3 @@
-// @ts-check
 // WHAT THE CHAIRMAN MAY NOT SAY IN A CHAT (decision 2(d): "Never from chat: credentials, secrets, deletions, money"). A LEAF module that
 // imports only the ledger's redactor, so it runs in this repository's `gate`.
 //
@@ -37,7 +36,7 @@ const INVISIBLE = /[­​-‏⁠﻿]/g;
 // "-" in "force-push" and "rm -rf", so each is made one before a pattern is matched.
 const DASHES = /[\u2010-\u2015\u2212\u2E3A\u2E3B\uFE58]/g;
 
-/** @param {string} text @returns {string} the text a pattern is matched against: compatibility-folded, no invisibles, one hyphen, one-space whitespace */
+/** Returns the text a pattern is matched against: compatibility-folded, no invisibles, one hyphen, one-space whitespace */
 function normalise(text: string): string {
   return text.normalize("NFKC").replace(INVISIBLE, "").replace(DASHES, "-").replace(/\s+/g, " ").trim();
 }
@@ -50,7 +49,6 @@ function normalise(text: string): string {
 // The ledger's `redact` holds the token shapes (GitHub, Slack, AWS, JWT, Telegram bot token, Bearer, `password=...`, and a catch-all for
 // any 32+ character run of token characters). A message `redact` would CHANGE is one that holds something it considers a secret, so the
 // two cannot drift: a shape added to the redactor protects the chat the same day. The lists below are what the redactor does not have.
-/** @type {RegExp[]} */
 const SECRET_SHAPES: RegExp[] = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s@/]+@/i,
@@ -70,14 +68,13 @@ const GIT_OBJECT_NAME = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const SLUG = /^[a-z0-9]{1,16}(?:[-_][a-z0-9]{1,16}){2,}$/;
 const CATCH_ALL_MINIMUM = 32;
 
-/** @param {string} run @returns {boolean} */
 function isOrdinaryRun(run: string): boolean {
   if (!GIT_OBJECT_NAME.test(run) && !SLUG.test(run)) return false;
   const head = run.slice(0, CATCH_ALL_MINIMUM - 1);
   return redact(head) === head;
 }
 
-/** @param {string} text @returns {boolean} whether `redact` would change it, the ordinary long runs aside */
+/** Returns whether `redact` would change it, the ordinary long runs aside */
 function holdsRedactableShape(text: string): boolean {
   const masked = text.replace(LONG_RUN, (run) => (isOrdinaryRun(run) ? "ordinary" : run));
   return redact(masked) !== masked;
@@ -96,19 +93,19 @@ const MAX_FILLERS = 2;
 const PRONOUN = /^(?:it|this|that|which|what|here|there|he|she|they|who|one|mine|yours|all|nothing|something|everything)$/i;
 const MINIMUM_CREDENTIAL_LENGTH = 4;
 
-/** @param {string} value @returns {string} the value without the punctuation a sentence puts round it (a trailing `!` can be part of a password, so it stays inside) */
+/** Returns the value without the punctuation a sentence puts round it (a trailing `!` can be part of a password, so it stays inside) */
 function bare(value: string): string {
   return value.replace(/^["'`(\[<]+/, "").replace(/["'`)\]>.,;:?!]+$/, "");
 }
 
-/** @param {string} value @returns {boolean} whether it has the look of a credential: long enough, and a digit, a symbol or a capital after the first letter */
+/** Returns whether it has the look of a credential: long enough, and a digit, a symbol or a capital after the first letter */
 function looksLikeCredential(value: string): boolean {
   const inner = bare(value);
   if (inner.length < MINIMUM_CREDENTIAL_LENGTH) return false;
   return /\d/.test(inner) || /[^A-Za-z0-9]/.test(inner) || (/[a-z]/.test(inner) && /[A-Z]/.test(inner.slice(1)));
 }
 
-/** @param {string} rest what follows a credential word @returns {{ explicit: boolean, value: string | null }} */
+/** `rest`: what follows a credential word */
 function readValue(rest: string): { explicit: boolean; value: string | null; } {
   let remaining = rest.replace(FOR_WHAT, "");
   let explicit = false;
@@ -126,7 +123,10 @@ function readValue(rest: string): { explicit: boolean; value: string | null; } {
   return { explicit, value: value === undefined ? null : value };
 }
 
-/** @param {string} text @param {RegExpExecArray} match a credential word in it @returns {boolean} whether a credential's value sits beside it */
+/**
+ * `match`: a credential word in it
+ * Returns whether a credential's value sits beside it
+ */
 function hasValueBeside(text: string, match: RegExpExecArray): boolean {
   const rest = text.slice(match.index + match[0].length);
   const { explicit, value } = readValue(rest);
@@ -139,7 +139,6 @@ function hasValueBeside(text: string, match: RegExpExecArray): boolean {
 // `<value> is my password`: the value comes first. The pronoun list keeps `that is my password` and `this is the secret` from being values.
 const VALUE_FIRST = /(\S+) (?:is|was|are) (?:my|the|our|its|their) (?:(?:new|old|current|temp\w*|admin|root|login|wi-?fi|account) )?(pass(?:word|wd|phrase|code)|pw|pwd|secret|pin|token|api[ _-]?key|private[ _-]?key|credentials?|login)(?![A-Za-z0-9])(?! (?:reset|manager|policy|page))/gi;
 
-/** @param {string} text @returns {boolean} */
 function holdsValueFirst(text: string): boolean {
   return [...text.matchAll(VALUE_FIRST)].some(([, value, word]) => {
     if (PRONOUN.test(bare(value)) || bare(value) === "") return false;
@@ -147,14 +146,14 @@ function holdsValueFirst(text: string): boolean {
   });
 }
 
-/** @param {string} text @returns {boolean} whether a credential word has a value beside it, in either order */
+/** Returns whether a credential word has a value beside it, in either order */
 function holdsKeyedCredential(text: string): boolean {
   return [...text.matchAll(CREDENTIAL_WORD)].some((match) => hasValueBeside(text, match)) || holdsValueFirst(text);
 }
 
 const RELEASE_PHRASE = /\bnot a secret\b/gi;
 
-/** @param {string} text @returns {boolean} whether it holds a DEFINITE secret: no phrase releases it, so the phrase is taken out first (it holds the word `secret`) */
+/** Returns whether it holds a DEFINITE secret: no phrase releases it, so the phrase is taken out first (it holds the word `secret`) */
 function holdsSecret(text: string): boolean {
   const withoutPhrase = text.replace(RELEASE_PHRASE, " ").replace(/\s+/g, " ");
   return holdsRedactableShape(withoutPhrase) || SECRET_SHAPES.some((shape) => shape.test(withoutPhrase)) || holdsKeyedCredential(withoutPhrase);
@@ -169,7 +168,6 @@ const UNSURE_CLASSES = 3;
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 const EMAIL_ADDRESS = /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i;
 
-/** @param {string} token @returns {boolean} */
 function looksLikePastedSecret(token: string): boolean {
   if (token.length < UNSURE_MINIMUM_LENGTH || URL_SCHEME.test(token) || EMAIL_ADDRESS.test(token)) return false;
   if (!token.split(/[-_./:]/).some((stretch) => stretch.length >= UNSURE_STRETCH)) return false;
@@ -177,7 +175,7 @@ function looksLikePastedSecret(token: string): boolean {
   return classes.length >= UNSURE_CLASSES;
 }
 
-/** @param {string} text @returns {boolean} whether some token in it is unsure, and the chairman has not said it is not a secret */
+/** Returns whether some token in it is unsure, and the chairman has not said it is not a secret */
 function holdsUnsureToken(text: string): boolean {
   if (new RegExp(RELEASE_PHRASE.source, "i").test(text)) return false;
   return text.split(" ").some((word) => looksLikePastedSecret(word.replace(/^["'`(\[<]+/, "").replace(/["'`)\]>.,;:]+$/, "")));
@@ -186,7 +184,6 @@ function holdsUnsureToken(text: string): boolean {
 // ---- deletions ----------------------------------------------------------------------------------------------------------------------
 const DELETE_VERB = "(?:delete|remove|destroy|wipe|erase|purge|nuke|drop|trash|obliterate|get rid of)";
 const DELETE_OBJECT = "(?:repos?|repositor(?:y|ies)|branch(?:es)?|rows?|issues?|data|databases?|db|files?|folders?|director(?:y|ies)|ledgers?|corpus|backups?|history|volumes?|main|trunk|everything)";
-/** @type {RegExp[]} */
 const DELETION_SHAPES: RegExp[] = [
   // A verb, then up to four words of "the agent-org" / "my old", then what is being deleted.
   new RegExp(`\\b${DELETE_VERB}\\b(?: [\\w:./@#-]+){0,4}? ${DELETE_OBJECT}\\b`),
@@ -197,7 +194,6 @@ const DELETION_SHAPES: RegExp[] = [
 ];
 
 // ---- spending -----------------------------------------------------------------------------------------------------------------------
-/** @type {RegExp[]} */
 const SPENDING_SHAPES: RegExp[] = [
   /\b(?:buy|purchase|subscribe|renew)\b/,
   /\bpay (?:for|the|a|an|my|[$£€\d])/,
@@ -210,21 +206,17 @@ const SPENDING_SHAPES: RegExp[] = [
   /\b(?:usd|gbp|eur) ?\d/,
 ];
 
-/** @param {string} reason @param {string} verdict */
-function withReply(verdict: string, reason: string) {
-  return { verdict, reason, reply: /** @type {Record<string, string>} */ (REPLIES)[reason] };
+function withReply(verdict: "drop" | "withhold" | "refuse", reason: string) {
+  return { verdict, reason, reply: (REPLIES as Record<string, string>)[reason] };
 }
 
-/**
- * @param {string} text  the message the accepted chairman sent
- * @returns {{verdict: "forward"} | {verdict: "drop" | "withhold" | "refuse", reason: string, reply: string}}
- */
+/** `text`: the message the accepted chairman sent */
 export function classifyText(text: string): { verdict: "forward"; } | { verdict: "drop" | "withhold" | "refuse"; reason: string; reply: string; } {
   const plain = normalise(text);
-  if (holdsSecret(plain)) return /** @type {any} */ (withReply(VERDICT.drop, REASON.secret));
-  if (holdsUnsureToken(plain)) return /** @type {any} */ (withReply(VERDICT.withhold, REASON.unsure));
+  if (holdsSecret(plain)) return withReply(VERDICT.drop, REASON.secret);
+  if (holdsUnsureToken(plain)) return withReply(VERDICT.withhold, REASON.unsure);
   const lowered = plain.toLowerCase();
-  if (DELETION_SHAPES.some((shape) => shape.test(lowered))) return /** @type {any} */ (withReply(VERDICT.refuse, REASON.deletion));
-  if (SPENDING_SHAPES.some((shape) => shape.test(lowered))) return /** @type {any} */ (withReply(VERDICT.refuse, REASON.spending));
+  if (DELETION_SHAPES.some((shape) => shape.test(lowered))) return withReply(VERDICT.refuse, REASON.deletion);
+  if (SPENDING_SHAPES.some((shape) => shape.test(lowered))) return withReply(VERDICT.refuse, REASON.spending);
   return { verdict: VERDICT.forward };
 }

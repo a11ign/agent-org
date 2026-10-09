@@ -1,4 +1,3 @@
-// @ts-check
 // `chairman:watch` (a11ign/a11ign#3418, A5; epic #3409, chairman point 2): "KEEP ME POSTED ON X" IS RECORDED ONCE, TOLD WHEN X CHANGES STATE, AND ENDS WHEN X ENDS.
 // Nothing held it before: a thing the chairman asked about lived in the conversation's context, which is cleared or compacted, so the follow-up never came.
 //
@@ -34,6 +33,7 @@ import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { stateFingerprint } from "./event.ts";
 import { STATUS, createLedger, describeError } from "./ledger.ts";
 import { createGhReaders, parsePlaceholders, readPlaceholders } from "./placeholders.ts";
+import type { Readers } from "./placeholders.ts";
 import { assertReadOnlyGh, assertReadOnlySystemctl } from "./reply-cli.ts";
 import { checkMessage } from "./record.ts";
 import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
@@ -56,7 +56,6 @@ const RUN_CONCLUSIONS = Object.freeze(["success", "failure", "cancelled", "skipp
 /**
  * What can be watched, by the word the chairman's liaison types. `placeholder` is the vocabulary placeholder whose value IS the state; `terminal` lists the states after
  * which nothing can change (a run's are the conclusions GitHub names, so a status such as `in_progress` or a word it adds later is never taken for an end).
- * @type {Readonly<Record<string, {id: RegExp, placeholder: (id: string) => string, label: (id: string) => string, terminal: readonly string[], link: ((repo: string, id: string) => string) | null}>>}
  */
 export const WATCHABLE: Readonly<Record<string, { id: RegExp; placeholder: (id: string) => string; label: (id: string) => string; terminal: readonly string[]; link: ((repo: string, id: string) => string) | null; }>> = Object.freeze({
   row: { id: NUMBER, placeholder: (id) => `{{issue:${id}.state}}`, label: (id) => `Row #${id}`, terminal: ["closed"], link: (repo, id) => `https://github.com/${repo}/issues/${id}` },
@@ -65,42 +64,36 @@ export const WATCHABLE: Readonly<Record<string, { id: RegExp; placeholder: (id: 
   unit: { id: UNIT_NAME, placeholder: (id) => `{{unit:${id}.state}}`, label: (id) => `Unit ${id}`, terminal: [], link: null },
 });
 
-/**
- * @typedef {{outcome: "done" | "already" | "refused", say: string}} Outcome  `say` is what the command prints
- * @typedef {{ledger: {append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[]}, readers: import("./placeholders.ts").Readers, now: () => number}} Ports
- * @typedef {{thing: string, kind: string, id: string, messageRef: string, addedAt: string, baselineHash: string, toldHash: string | null, active: boolean, ended: boolean}} Watch
- */
+/** `say` is what the command prints */
+export type Outcome = { outcome: "done" | "already" | "refused"; say: string };
+export type Ports = { ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[] }; readers: Readers; now: () => number };
+export type Watch = { thing: string; kind: string; id: string; messageRef: string; addedAt: string; baselineHash: string; toldHash: string | null; active: boolean; ended: boolean };
 
-/** @param {string} thing `kind:id` @returns {{kind: string, id: string}} */
+/** `thing`: `kind:id` */
 export function splitThing(thing: string): { kind: string; id: string; } {
   const at = thing.indexOf(":");
   return { kind: thing.slice(0, at), id: thing.slice(at + 1) };
 }
 
-/** @param {string} thing @returns {string} the event key the core dedupes this watch under */
+/** Returns the event key the core dedupes this watch under */
 export function watchKey(thing: string): string {
   return `${KEY_PREFIX}${thing}`;
 }
 
-/** @param {string} kind @param {string} state @returns {boolean} whether nothing can change after `state` */
+/** Returns whether nothing can change after `state` */
 export function isTerminal(kind: string, state: string): boolean {
   return WATCHABLE[kind].terminal.includes(state);
 }
 
-/** @param {string} kind @param {string} hash @returns {boolean} whether `hash` is the fingerprint of a final state (a delivery line holds the hash, not the state) */
+/** Returns whether `hash` is the fingerprint of a final state (a delivery line holds the hash, not the state) */
 function isTerminalHash(kind: string, hash: string): boolean {
   return WATCHABLE[kind].terminal.some((state) => stateFingerprint({ state }) === hash);
 }
 
-/** @param {Record<string, any>} line @returns {boolean} */
 const isTold = (line: Record<string, any>): boolean => line.direction !== "in" && (line.status === STATUS.sent || line.status === STATUS.digested);
 
-/**
- * Every thing ever watched, as the ledger now says it is. Lines are applied in order, so a thing added again after it was removed starts afresh.
- * @param {Record<string, any>[]} lines @returns {Map<string, Watch>}
- */
+/** Every thing ever watched, as the ledger now says it is. Lines are applied in order, so a thing added again after it was removed starts afresh. */
 export function foldWatches(lines: Record<string, any>[]): Map<string, Watch> {
-  /** @type {Map<string, Watch>} */
   const watches: Map<string, Watch> = new Map();
   for (const line of lines) {
     if (line.direction === WATCH_DIRECTION && typeof line.thing === "string") {
@@ -115,16 +108,13 @@ export function foldWatches(lines: Record<string, any>[]): Map<string, Watch> {
   return watches;
 }
 
-/** @param {Record<string, any>[]} lines @returns {Watch[]} the watches still running: added, not removed, and not yet told their final state */
+/** Returns the watches still running: added, not removed, and not yet told their final state */
 export function activeWatches(lines: Record<string, any>[]): Watch[] {
   return [...foldWatches(lines).values()].filter((watch) => watch.active && !watch.ended);
 }
 
-/**
- * The state of one thing, read through the placeholder vocabulary's own readers. A reader that cannot answer THROWS, never returns an empty state.
- * @param {{kind: string, id: string}} subject @param {{readers: import("./placeholders.ts").Readers, now: () => number}} deps @returns {Promise<string>}
- */
-export async function readState({ kind, id }: { kind: string; id: string; }, { readers, now }: { readers: import("./placeholders.ts").Readers; now: () => number; }): Promise<string> {
+/** The state of one thing, read through the placeholder vocabulary's own readers. A reader that cannot answer THROWS, never returns an empty state. */
+export async function readState({ kind, id }: { kind: string; id: string; }, { readers, now }: { readers: Readers; now: () => number; }): Promise<string> {
   const { placeholders, problems } = parsePlaceholders(WATCHABLE[kind].placeholder(id));
   if (problems.length > 0) throw new TypeError(problems[0].reason);
   const { values, failures } = await readPlaceholders(placeholders, { readers, now });
@@ -132,18 +122,17 @@ export async function readState({ kind, id }: { kind: string; id: string; }, { r
   return String(values.get(placeholders[0].raw));
 }
 
-/** @param {string} kind @param {string} id @returns {string | null} why `kind id` is not something that can be watched, or null */
+/** Returns why `kind id` is not something that can be watched, or null */
 function whyNotWatchable(kind: string, id: string): string | null {
   if (!Object.hasOwn(WATCHABLE, kind)) return `"${kind}" is not something that can be watched (the kinds: ${Object.keys(WATCHABLE).join(", ")})`;
   return WATCHABLE[kind].id.test(id) ? null : `"${id}" is not the id of a ${kind}`;
 }
 
-/** @param {Ports} ports */
 export function createWatchList({ ledger, readers, now }: Ports) {
   return {
     /**
-     * @param {{kind: string, id: string, ref: string}} request `ref` is a message of the chairman's the ledger took in
-     * @returns {Promise<Outcome>} never throws for a refusal: it is a value, and nothing was written
+     * `request`: `ref` is a message of the chairman's the ledger took in
+     * Never throws for a refusal: it is a value, and nothing was written
      */
     async add({ kind, id, ref }: { kind: string; id: string; ref: string; }): Promise<Outcome> {
       const bad = whyNotWatchable(kind, id);
@@ -153,7 +142,6 @@ export function createWatchList({ ledger, readers, now }: Ports) {
       const thing = `${kind}:${id}`;
       const label = WATCHABLE[kind].label(id);
       if (activeWatches(ledger.read()).some((watch) => watch.thing === thing)) return { outcome: "already", say: `${label} is already being watched. Nothing was written.` };
-      /** @type {string} */
       let state: string;
       try {
         state = await readState({ kind, id }, { readers, now });
@@ -164,11 +152,10 @@ export function createWatchList({ ledger, readers, now }: Ports) {
       ledger.append({ direction: WATCH_DIRECTION, op: "add", thing, messageRef: ref, state, stateHash: stateFingerprint({ state }) });
       return { outcome: "done", say: `watching ${label} (now ${state}); the chairman is told when its state changes, and it ends when it does.` };
     },
-    /** @returns {{thing: string, label: string, since: string, messageRef: string}[]} */
     list(): { thing: string; label: string; since: string; messageRef: string; }[] {
       return activeWatches(ledger.read()).map((watch) => ({ thing: watch.thing, label: WATCHABLE[watch.kind].label(watch.id), since: watch.addedAt, messageRef: watch.messageRef }));
     },
-    /** @param {{kind: string, id: string}} request @returns {Outcome} ends the watch WITHOUT a message */
+    /** Ends the watch WITHOUT a message */
     remove({ kind, id }: { kind: string; id: string; }): Outcome {
       const bad = whyNotWatchable(kind, id);
       if (bad !== null) return { outcome: "refused", say: bad };
@@ -181,7 +168,7 @@ export function createWatchList({ ledger, readers, now }: Ports) {
   };
 }
 
-/** @param {string} file @param {(argv: readonly string[]) => void} assertRead @returns {(argv: string[]) => Promise<string>} a runner that refuses every argv a reader does not build */
+/** Returns a runner that refuses every argv a reader does not build */
 function guardedRunner(file: string, assertRead: (argv: readonly string[]) => void): (argv: string[]) => Promise<string> {
   return async (argv) => {
     assertRead(argv);
@@ -195,9 +182,7 @@ function guardedRunner(file: string, assertRead: (argv: readonly string[]) => vo
  * and the tick's completion record beside the wake ledger. WITHOUT THEM those placeholders refuse ("this host named no fleet-watch state files"), which is the right
  * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.ts` is imported WHEN ASKED, as `reply-cli.mjs` does:
  * it resolves the host at import, and a host that cannot name the record must cost `{{gate.*}}` and nothing else.
- *
- * @param {{ root: string, err: (line: string) => void }} where
- * @returns {Promise<{ fleet: { statePath: string, capturesPath: string }, gateRecordPath?: string }>} no `gateRecordPath` when the host could not name one, said on `err`
+ * Returns no `gateRecordPath` when the host could not name one, said on `err`
  */
 export async function hostFiles({ root, err }: { root: string; err: (line: string) => void; }): Promise<{ fleet: { statePath: string; capturesPath: string; }; gateRecordPath?: string; }> {
   const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
@@ -211,39 +196,33 @@ export async function hostFiles({ root, err }: { root: string; err: (line: strin
 }
 
 /**
- * @param {string} repo @param {() => number} now @param {{ fleet?: { statePath: string, capturesPath: string }, gateRecordPath?: string }} [files] what `hostFiles` names
- * @returns {import("./placeholders.ts").Readers} the real reads, over `gh` and `systemctl` runners that make no write
+ * `files`: what `hostFiles` names
+ * Returns the real reads, over `gh` and `systemctl` runners that make no write
  */
-export function createWatchReaders(repo: string, now: () => number = Date.now, files: { fleet?: { statePath: string; capturesPath: string; }; gateRecordPath?: string; } = {}): import("./placeholders.ts").Readers {
+export function createWatchReaders(repo: string, now: () => number = Date.now, files: { fleet?: { statePath: string; capturesPath: string; }; gateRecordPath?: string; } = {}): Readers {
   return createGhReaders({ gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now, ...files });
 }
 
 /** What a caller may leave out. A spread and not parameter defaults, as `record.mjs` does. */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: /** @type {Record<string, string | undefined>} */ (process.env), home: homedir(), now: Date.now,
-  readers: /** @type {import("./placeholders.ts").Readers | undefined} */ (undefined),
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
+  root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now,
+  readers: undefined as Readers | undefined,
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 
 /** Thrown for a command that cannot start (usage, config, no account): none of those mends itself by retrying. */
 class Refusal extends Error {}
 
-/** @param {string[]} positionals @param {number} count @param {string} usage @returns {string[]} */
 function expectArguments(positionals: string[], count: number, usage: string): string[] {
   if (positionals.length !== count) throw new Refusal(`usage: ${usage}`);
   return positionals;
 }
 
-/** @param {Error} error @returns {number} */
 function exitCodeFor(error: Error): number {
-  const isUsage = /** @type {any} */ (error).code?.startsWith?.("ERR_PARSE_ARGS") === true;
+  const isUsage = (error as NodeJS.ErrnoException).code?.startsWith?.("ERR_PARSE_ARGS") === true;
   return isUsage || error instanceof Refusal || error instanceof MessagingConfigRefusal ? EXIT.refused : EXIT.failed;
 }
 
-/**
- * @param {ReturnType<typeof createWatchList>} watches @param {string} verb @param {string[]} positionals @param {string | undefined} ref
- * @returns {Promise<{lines: string[], code: number}>}
- */
 async function perform(watches: ReturnType<typeof createWatchList>, verb: string, positionals: string[], ref: string | undefined): Promise<{ lines: string[]; code: number; }> {
   if (verb === "list") {
     const rows = watches.list();
@@ -256,14 +235,13 @@ async function perform(watches: ReturnType<typeof createWatchList>, verb: string
   return report(await watches.add({ kind, id, ref }));
 }
 
-/** @param {Outcome} outcome @returns {{lines: string[], code: number}} */
 function report(outcome: Outcome): { lines: string[]; code: number; } {
   return { lines: [outcome.say], code: outcome.outcome === "refused" ? EXIT.refused : EXIT.ok };
 }
 
 /**
  * Messaging being OFF is a refusal and not a silent success, as `chairman:record`'s: a caller believes it is recording something.
- * @param {string[]} argv @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps] @returns {Promise<number>} the exit code
+ * Returns the exit code
  */
 export async function main(argv: string[], deps: Partial<ReturnType<typeof DEFAULT_DEPS>> = {}): Promise<number> {
   const { root, env, home, now, readers, out, err } = { ...DEFAULT_DEPS(), ...deps };

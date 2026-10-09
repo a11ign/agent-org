@@ -1,4 +1,3 @@
-// @ts-check
 // CONVERSATION OUT: REPLIES ARE CHECKED FACTS (a11ign/a11ign#2910, row 11 of 13; design #2899 decision 2(e)). `createReply({...}).send(text)` is the
 // only function that turns an agent's words into a message to the chairman, and it sends nothing it has not checked. The third of the design's three
 // layers against what the chairman's chat could be made to carry (the classifier on the way in, `ceo`'s brief, and this).
@@ -30,6 +29,7 @@
 // LEAF over its injected `send`, `ledger`, `readers` and `now`: nothing here reaches the network or the clock but through them.
 
 import { describeError } from "./ledger.ts";
+import type { Readers } from "./placeholders.ts";
 import { MASK, parsePlaceholders, readPlaceholders, renderSegments } from "./placeholders.ts";
 
 const DEFAULT_MAX_TEXT = 4096;
@@ -46,11 +46,11 @@ const MAX_ROWS_READ = 5;
 
 /**
  * What the readers returned for a `#N` the writer typed: which placeholder kind reads it (`issue` or `pr`) and its state, or why neither could.
- * @typedef {{kind: "issue" | "pr", number: string, state: string} | {error: string}} RowReading
  */
+type RowReading = { kind: "issue" | "pr"; number: string; state: string } | { error: string };
 
-/** @param {string} number the digits as written @param {import("./placeholders.ts").Readers} readers @returns {Promise<RowReading>} */
-async function readRow(number: string, readers: import("./placeholders.ts").Readers): Promise<RowReading> {
+/** `number` is the digits as written. */
+async function readRow(number: string, readers: Readers): Promise<RowReading> {
   const [issue, pr] = await Promise.allSettled([readers.issue(Number(number)), readers.pr(Number(number))]);
   if (issue.status === "fulfilled" && typeof issue.value?.state === "string" && issue.value.state !== "") return { kind: "issue", number, state: issue.value.state };
   if (pr.status === "fulfilled" && typeof pr.value?.state === "string" && pr.value.state !== "") return { kind: "pr", number, state: pr.value.state };
@@ -58,23 +58,23 @@ async function readRow(number: string, readers: import("./placeholders.ts").Read
   return { error: `neither a row nor a pull request #${number} could be read (${why})` };
 }
 
-/** @param {string} masked the free text @param {import("./placeholders.ts").Readers} readers @returns {Promise<Map<string, RowReading>>} each `#N` in it, by its digits */
-async function readReferencedRows(masked: string, readers: import("./placeholders.ts").Readers): Promise<Map<string, RowReading>> {
+/** Each `#N` in the free text `masked`, by its digits. */
+async function readReferencedRows(masked: string, readers: Readers): Promise<Map<string, RowReading>> {
   const numbers = [...new Set([...masked.matchAll(ROW_REFERENCE)].map((found) => found[1]))].slice(0, MAX_ROWS_READ);
   const readings = await Promise.all(numbers.map((number) => readRow(number, readers)));
   return new Map(numbers.map((number, at) => [number, readings[at]]));
 }
 
-/** @param {Map<string, RowReading>} rows @returns {Extract<RowReading, {kind: string}> | undefined} the one row the text is about, when it is about exactly one that was read */
+/** The one row the text is about, when it is about exactly one that was read. */
 function soleRow(rows: Map<string, RowReading>): Extract<RowReading, { kind: string; }> | undefined {
   const [only] = rows.size === 1 ? rows.values() : [];
   return only !== undefined && "kind" in only ? only : undefined;
 }
 
-/** @param {{kind: string, number: string}} row @param {"number" | "state"} field @returns {string} `{{issue:3542.state}}` */
+/** `{{issue:3542.state}}` */
 const placeholderFor = ({ kind, number }: { kind: string; number: string; }, field: "number" | "state"): string => `{{${kind}:${number}.${field}}}`;
 
-/** @param {string} match `#3542` @param {Map<string, RowReading>} rows @returns {string} what to write, with the row's own kind and value in it */
+/** What to write for `match` (`#3542`), with the row's own kind and value in it. */
 function numberFix(match: string, rows: Map<string, RowReading>): string {
   const row = rows.get(match.slice(1));
   if (row === undefined) return "write #{{pr:N.number}} or #{{issue:N.number}}";
@@ -82,7 +82,7 @@ function numberFix(match: string, rows: Map<string, RowReading>): string {
   return `write #${placeholderFor(row, "number")}; it is ${row.kind === "pr" ? "a pull request" : "a row"} and reads "${row.state}" now`;
 }
 
-/** @param {string} word @param {Map<string, RowReading>} rows @returns {string} what to write, once the text is about exactly one row that was read */
+/** What to write, once the text is about exactly one row that was read. */
 function stateFix(word: string, rows: Map<string, RowReading>): string {
   const row = soleRow(rows);
   if (row === undefined) return "a state is {{pr:N.state}}, {{issue:N.state}}, {{run:ID.conclusion}} or {{unit:NAME.state}}";
@@ -95,7 +95,6 @@ function stateFix(word: string, rows: Map<string, RowReading>): string {
 /**
  * Checked IN THIS ORDER: a number reference is masked before the digit rule runs, so `#2881` is one problem and not two. A digit run preceded by a letter
  * is part of a name (`a11ign`, `W3C`) and is not a count. `rows` is what the readers returned for each `#N`, so a reason can name the placeholder with its value.
- * @type {{pattern: RegExp, reason: (match: string, rows: Map<string, RowReading>) => string}[]}
  */
 const FREE_TEXT_RULES: { pattern: RegExp; reason: (match: string, rows: Map<string, RowReading>) => string; }[] = [
   { pattern: /#\d+/g, reason: (match, rows) => `"${match}" is a row or pull request number outside a placeholder (${numberFix(match, rows)})` },
@@ -104,11 +103,11 @@ const FREE_TEXT_RULES: { pattern: RegExp; reason: (match: string, rows: Map<stri
   { pattern: STATE_WORDS, reason: (match, rows) => `"${match}" is a state word outside a placeholder (${stateFix(match, rows)})` },
 ];
 
-/** @typedef {{placeholder: string | null, reason: string}} Problem  `placeholder` is the one as written; null for a problem in the free text */
+/** `placeholder` is the one as written; null for a problem in the free text. */
+type Problem = { placeholder: string | null; reason: string };
 
-/** @param {string} masked the free text, each placeholder already replaced by `MASK` @param {Map<string, RowReading>} rows @returns {Problem[]} each claim-shaped word, once */
+/** Each claim-shaped word, once; `masked` is the free text, each placeholder already replaced by `MASK`. */
 function freeTextProblems(masked: string, rows: Map<string, RowReading>): Problem[] {
-  /** @type {Problem[]} */
   const problems: Problem[] = [];
   let rest = masked;
   for (const { pattern, reason } of FREE_TEXT_RULES) {
@@ -124,11 +123,10 @@ function freeTextProblems(masked: string, rows: Map<string, RowReading>): Proble
 /**
  * The writer's own words with each `#N` the readers confirmed written as its placeholder, and each state word that equals what the sole row reads (a state
  * the reader did NOT return is left as written, so it is still refused). Text inside a placeholder is copied as it was.
- * @param {ReturnType<typeof parsePlaceholders>["segments"]} segments @param {Map<string, RowReading>} rows @returns {string}
  */
 function correctedFacts(segments: ReturnType<typeof parsePlaceholders>["segments"], rows: Map<string, RowReading>): string {
   const only = soleRow(rows);
-  const fixWords = (/** @type {string} */ words: string) => words
+  const fixWords = (words: string) => words
     .replace(ROW_REFERENCE, (match, number) => {
       const row = rows.get(number);
       return row !== undefined && "kind" in row ? `#${placeholderFor(row, "number")}` : match;
@@ -137,10 +135,7 @@ function correctedFacts(segments: ReturnType<typeof parsePlaceholders>["segments
   return segments.map((segment) => (typeof segment === "string" ? fixWords(segment) : segment.raw)).join("");
 }
 
-/**
- * @param {{facts: string, opinion: string}} written @param {ReturnType<typeof parsePlaceholders>} spoken @param {Map<string, RowReading>} rows
- * @returns {string | undefined} the text with the readers' values in, only when THAT text passes the same check; undefined when the writer has more to mend than this
- */
+/** The text with the readers' values in, only when THAT text passes the same check; undefined when the writer has more to mend than this. */
 function correctionOf({ facts, opinion }: { facts: string; opinion: string; }, spoken: ReturnType<typeof parsePlaceholders>, rows: Map<string, RowReading>): string | undefined {
   const corrected = correctedFacts(spoken.segments, rows);
   if (rows.size === 0 || corrected === facts) return undefined;
@@ -149,41 +144,35 @@ function correctionOf({ facts, opinion }: { facts: string; opinion: string; }, s
   return stands ? `${corrected}${opinion}` : undefined;
 }
 
-/** @param {string} text @returns {{facts: string, opinion: string}} the text before the first `My read:` line, and from it to the end */
+/** The text before the first `My read:` line, and from it to the end. */
 function splitOpinion(text: string): { facts: string; opinion: string; } {
   const at = text.search(OPINION_MARKER);
   return at === -1 ? { facts: text, opinion: "" } : { facts: text.slice(0, at), opinion: text.slice(at) };
 }
 
-/** @param {number} at @returns {string} "14:05Z" */
+/** "14:05Z" */
 function clockOf(at: number): string {
   return `${new Date(at).toISOString().slice(STAMP_FROM, STAMP_TO)}Z`;
 }
 
 /**
  * The refusal for a failed read, in words the chairman can be sent: it names what could not be checked and states nothing about it.
- * @param {string[]} placeholders as written, `{{pr:2881.state}}` @returns {string}
+ * `placeholders` are as written, `{{pr:2881.state}}`.
  */
 function couldNotCheck(placeholders: string[]): string {
   return `Could not check, so not stated: ${placeholders.map((raw) => `{{unchecked:${raw.slice(2, -2)}}}`).join(", ")}.`;
 }
 
-/**
- * @typedef {{outcome: "refused", problems: Problem[], sendable?: string, corrected?: string}
- *   | {outcome: "checked", text: string, values: Record<string, string>, at: number}} Prepared
- */
+export type Prepared = { outcome: "refused"; problems: Problem[]; sendable?: string; corrected?: string }
+  | { outcome: "checked"; text: string; values: Record<string, string>; at: number };
 
-/** @param {string | undefined} corrected @returns {{corrected?: string}} the field only when there is one, so a refusal without it is the shape it always had */
+/** The field only when there is one, so a refusal without it is the shape it always had. */
 const withCorrection = (corrected: string | undefined): { corrected?: string; } => (corrected === undefined ? {} : { corrected });
 
 /**
  * Checks `text` and reads its placeholders; sends nothing. A refusal is a value, never a throw: it is an ordinary result of an agent writing a reply.
- *
- * @param {string} text
- * @param {{readers: import("./placeholders.ts").Readers, now: () => number, maxText?: number}} deps
- * @returns {Promise<Prepared>}
  */
-export async function prepareReply(text: string, { readers, now, maxText = DEFAULT_MAX_TEXT }: { readers: import("./placeholders.ts").Readers; now: () => number; maxText?: number; }): Promise<Prepared> {
+export async function prepareReply(text: string, { readers, now, maxText = DEFAULT_MAX_TEXT }: { readers: Readers; now: () => number; maxText?: number; }): Promise<Prepared> {
   if (typeof text !== "string" || text.trim() === "") return { outcome: "refused", problems: [{ placeholder: null, reason: "the reply is empty" }] };
   const { facts, opinion } = splitOpinion(text);
   const [spoken, opined] = [parsePlaceholders(facts), parsePlaceholders(opinion)];
@@ -202,29 +191,19 @@ export async function prepareReply(text: string, { readers, now, maxText = DEFAU
   return { outcome: "checked", text: stamped, values: Object.fromEntries(values), at };
 }
 
-/**
- * @param {{send: (message: {text: string, replyTo?: string}) => Promise<{messageRef: string}>,
- *   ledger: {append: (entry: Record<string, unknown>) => Record<string, any>},
- *   readers: import("./placeholders.ts").Readers, now?: () => number, maxText?: number}} options
- *   `send` is the provider's, the ONE way out; `readers` re-read every fact (`createGhReaders` is the real set).
- */
+/** `send` is the provider's, the ONE way out; `readers` re-read every fact (`createGhReaders` is the real set). */
 export function createReply({ send, ledger, readers, now = Date.now, maxText = DEFAULT_MAX_TEXT }: {
         send: (message: { text: string; replyTo?: string; }) => Promise<{ messageRef: string; }>;
         ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; };
-        readers: import("./placeholders.ts").Readers; now?: () => number; maxText?: number;
+        readers: Readers; now?: () => number; maxText?: number;
     }) {
   return {
-    /**
-     * @param {string} text @param {{replyTo?: string}} [options] `replyTo` is the chairman's message this answers
-     * @returns {Promise<{outcome: "sent", messageRef: string, text: string, values: Record<string, string>}
-     *   | {outcome: "refused", problems: Problem[], sendable?: string, corrected?: string} | {outcome: "failed", error: string}>}
-     */
+    /** `replyTo` is the chairman's message this answers. */
     async send(text: string, { replyTo }: { replyTo?: string; } = {}): Promise<{ outcome: "sent"; messageRef: string; text: string; values: Record<string, string>; } |
       { outcome: "refused"; problems: Problem[]; sendable?: string; corrected?: string; } | { outcome: "failed"; error: string; }> {
       const prepared = await prepareReply(text, { readers, now, maxText });
       if (prepared.outcome === "refused") return prepared;
       const line = { direction: "reply", replyTo: replyTo ?? null, asOf: new Date(prepared.at).toISOString(), values: prepared.values, text: prepared.text };
-      /** @type {{messageRef: string} | {error: string}} */
       let delivery: { messageRef: string; } | { error: string; };
       try {
         const { messageRef } = await send({ text: prepared.text, replyTo });

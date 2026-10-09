@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#4073 (#4055 move 7, measurement first): how much each REQUEST of a worker grew the window, attributed to the tool before it.
 //
 // WHY THIS IS A READER OF TRANSCRIPTS AND NOT OF THE STORE: a stored turn names no tool (only `toolRead`, for Read, Grep and Glob), so "which tool grew the window" is not
@@ -27,6 +26,7 @@ import { flagValue, refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { sessionOf, transcriptFiles } from "../token-audit.ts";
 import { isWake } from "../wakes-per-row.ts";
 import { readRecords, tokensOf } from "./store.ts";
+import type { Rec } from "./store.ts";
 
 export const DEFINITIONS = [
   "GROWTH (measured): a request's `cacheRead` less the previous request's, in the same thread. It is the tokens the previous request wrote to the cache, which a later request then pays to read.",
@@ -37,9 +37,9 @@ export const DEFINITIONS = [
 ];
 
 /** Why a request has no growth. */
-export const NOT_DERIVABLE = /** @type {const} */ ({
+export const NOT_DERIVABLE = ({
   FIRST: "first", AFTER_COMPACTION: "after-compaction", AFTER_CLEAR: "after-clear", SHRANK: "cache-shrank", REWRITTEN: "cache-rewritten",
-});
+} as const);
 
 export const START_OF_WINDOW = "(start of window)";
 export const PROMPT = "(prompt)";
@@ -48,24 +48,22 @@ export const MIXED = "mixed";
 export const SEVERAL_COMMANDS = "(several commands)";
 export const UNPARSED = "(unparsed)";
 
-/** @typedef {{ id: string, first: number, last: number, thread: "main" | "side", tools: string[], commands: string[], cacheRead: number, at: number }} Message */
-/** @typedef {{ session: string, thread: "main" | "side", id: string, at: number, cacheRead: number, growth: number | null, reason: string | null, tool: string | null, calls: string[], commands: string[] }} Request */
+export type Message = { id: string; first: number; last: number; thread: "main" | "side"; tools: string[]; commands: string[]; cacheRead: number; at: number; };
+export type Request = { session: string; thread: "main" | "side"; id: string; at: number; cacheRead: number; growth: number | null; reason: string | null; tool: string | null; calls: string[]; commands: string[]; };
 
-/** @param {any} record @returns {string[]} one name per tool call the record's blocks make */
+/** One name per tool call the record's blocks make. */
 const toolNamesOf = (record: any): string[] => (Array.isArray(record?.message?.content) ? record.message.content : [])
-  .filter((/** @type {{ type?: string }} */ block: { type?: string; }) => block?.type === "tool_use").map((/** @type {{ name?: string }} */ block: { name?: string; }) => String(block.name));
+  .filter((block: { type?: string; }) => block?.type === "tool_use").map((block: { name?: string; }) => String(block.name));
 
-/** @param {any} record @returns {string[]} the command of each Bash call the record's blocks make ("" for a call whose input names none, which reads as unparsed) */
+/** The command of each Bash call the record's blocks make ("" for a call whose input names none, which reads as unparsed) */
 const bashCommandsOf = (record: any): string[] => (Array.isArray(record?.message?.content) ? record.message.content : [])
-  .filter((/** @type {{ type?: string, name?: string }} */ block: { type?: string; name?: string; }) => block?.type === "tool_use" && block.name === "Bash")
-  .map((/** @type {{ input?: { command?: unknown } }} */ block: { input?: { command?: unknown; }; }) => (typeof block.input?.command === "string" ? block.input.command : ""));
+  .filter((block: { type?: string; name?: string; }) => block?.type === "tool_use" && block.name === "Bash")
+  .map((block: { input?: { command?: unknown; }; }) => (typeof block.input?.command === "string" ? block.input.command : ""));
 
 /**
  * One message per `message.id` (the API message is written once per content block), in order: its usage is the last block's, and its tools are every block's.
- * @param {import("./store.ts").Rec[]} records @returns {Message[]}
  */
-export function messagesOf(records: import("./store.ts").Rec[]): Message[] {
-  /** @type {Map<string, Message>} */
+export function messagesOf(records: Rec[]): Message[] {
   const byId: Map<string, Message> = new Map();
   for (const [position, { record, at }] of records.entries()) {
     const id = record?.type === "assistant" ? record.message?.id : null;
@@ -79,7 +77,7 @@ export function messagesOf(records: import("./store.ts").Rec[]): Message[] {
   return [...byId.values()];
 }
 
-/** @param {any} record whether the record replaces the window: a compaction summary, the harness's boundary marker, or the echo of a `/clear` */
+/** Whether the record replaces the window: a compaction summary, the harness's boundary marker, or the echo of a `/clear` */
 function windowBreak(record: any) {
   if (record?.isCompactSummary === true || (record?.type === "system" && record.subtype === "compact_boundary")) return NOT_DERIVABLE.AFTER_COMPACTION;
   const content = record?.message?.content;
@@ -88,9 +86,9 @@ function windowBreak(record: any) {
 
 /**
  * A marker resets the window of the thread it is written in: a subagent has a window of its own, so the parent's compaction does not reset it and its compaction does not reset the parent.
- * @param {import("./store.ts").Rec[]} records @param {{ from: number, to: number, side: boolean }} span the records strictly between two messages of one thread @returns {string | null}
+ * `span` is the records strictly between two messages of one thread.
  */
-function breakBetween(records: import("./store.ts").Rec[], { from, to, side }: { from: number; to: number; side: boolean; }): string | null {
+function breakBetween(records: Rec[], { from, to, side }: { from: number; to: number; side: boolean; }): string | null {
   for (const { record } of records.slice(from + 1, to)) {
     const found = (record?.isSidechain === true) === side ? windowBreak(record) : null;
     if (found !== null) return found;
@@ -101,26 +99,24 @@ function breakBetween(records: import("./store.ts").Rec[], { from, to, side }: {
 /**
  * Whether the records of one thread between two messages hold only tool results (a prompt, an order or a summary there means the window grew by more than a tool's result).
  * Kept beside its twin in `store.mjs` because that one is private to it.
- * @param {import("./store.ts").Rec[]} records @param {{ from: number, to: number, side: boolean }} span
  */
-function onlyToolResults(records: import("./store.ts").Rec[], { from, to, side }: { from: number; to: number; side: boolean; }) {
+function onlyToolResults(records: Rec[], { from, to, side }: { from: number; to: number; side: boolean; }) {
   return records.slice(from + 1, to).every(({ record }) => record?.type !== "user" || (record.isSidechain === true) !== side
-    || (Array.isArray(record.message?.content) && record.message.content.some((/** @type {{ type?: string }} */ block: { type?: string; }) => block?.type === "tool_result")));
+    || (Array.isArray(record.message?.content) && record.message.content.some((block: { type?: string; }) => block?.type === "tool_result")));
 }
 
-/** @param {string[]} tools the tools one request called @returns {string} */
+/** `tools` are the tools one request called. */
 const toolLabel = (tools: string[]): string => {
   const distinct = [...new Set(tools)];
   return distinct.length === 1 ? distinct[0] : MIXED;
 };
 
-/** @typedef {{ prior: Message, writer: string, writerCalls: string[], writerCommands: string[], priorShrank: boolean }} ThreadState */
+type ThreadState = { prior: Message; writer: string; writerCalls: string[]; writerCommands: string[]; priorShrank: boolean; };
 
 /**
  * What caused the tokens that `message` is the first to be written at: the tool called by the request before it when only that tool's results came between, else a prompt.
- * @param {import("./store.ts").Rec[]} records @param {{ prior: Message, message: Message }} pair @returns {{ writer: string, writerCalls: string[], writerCommands: string[] }}
  */
-function writerOf(records: import("./store.ts").Rec[], { prior, message }: { prior: Message; message: Message; }): { writer: string; writerCalls: string[]; writerCommands: string[]; } {
+function writerOf(records: Rec[], { prior, message }: { prior: Message; message: Message; }): { writer: string; writerCalls: string[]; writerCommands: string[]; } {
   const clean = prior.tools.length > 0 && onlyToolResults(records, { from: prior.last, to: message.first, side: message.thread === "side" });
   return clean
     ? { writer: toolLabel(prior.tools), writerCalls: [...new Set(prior.tools)].sort(), writerCommands: prior.commands }
@@ -129,7 +125,6 @@ function writerOf(records: import("./store.ts").Rec[], { prior, message }: { pri
 
 /**
  * The request's growth and its reason, given the thread's state.
- * @param {ThreadState} state @param {Message} message @returns {{ growth: number | null, reason: string | null }}
  */
 function growthOf(state: ThreadState, message: Message): { growth: number | null; reason: string | null; } {
   const delta = message.cacheRead - state.prior.cacheRead;
@@ -138,19 +133,16 @@ function growthOf(state: ThreadState, message: Message): { growth: number | null
   return { growth: delta, reason: null };
 }
 
-/** @param {string} session @param {Message} message @param {Partial<Request>} fields @returns {Request} */
 const requestOf = (session: string, message: Message, fields: Partial<Request>): Request => ({
   session, thread: message.thread, id: message.id, at: message.at, cacheRead: message.cacheRead, growth: null, reason: null, tool: null, calls: [], commands: [], ...fields,
 });
 
 /**
  * Every request of a transcript with its growth. `session` names the seat; a request's growth is read against the previous request of ITS thread, so a subagent's are not between the parent's.
- * @param {string} text one transcript @param {string} session
- * @returns {Request[]}
+ * `text` is one transcript.
  */
 export function requestsOf(text: string, session: string): Request[] {
   const { records } = readRecords(text);
-  /** @type {{ main: ThreadState | null, side: ThreadState | null }} */
   const states: { main: ThreadState | null; side: ThreadState | null; } = { main: null, side: null };
   return messagesOf(records).map((message) => {
     const state = states[message.thread];
@@ -167,7 +159,7 @@ export function requestsOf(text: string, session: string): Request[] {
   });
 }
 
-/** The seat a transcript belongs to: the name in its first order, as the store reads it. @param {string} text @returns {string | null} */
+/** The seat a transcript belongs to: the name in its first order, as the store reads it. */
 export function sessionOfTranscript(text: string): string | null {
   const { records } = readRecords(text);
   const order = records.find(({ record }) => isWake(record) && sessionOf(record.message.content) !== null);
@@ -188,19 +180,18 @@ const SUBCOMMAND_TOOLS = new Set(["gh", "git", "pnpm"]);
 /** Flags of those tools that take a value, which the first subcommand lies past (`git -C <dir> status`, `gh -R <repo> pr list`, `pnpm --filter <pkg> test`). */
 const VALUE_FLAGS = new Set(["-C", "-c", "-R", "--repo", "--git-dir", "--work-tree", "--filter", "-F", "--dir"]);
 
-/** @param {string} word @returns {string} the word without its quotes and escapes (enough for a command's name, not a shell's reading of it) */
+/** The word without its quotes and escapes (enough for a command's name, not a shell's reading of it). */
 const unquote = (word: string): string => word.replace(/\\([\s\S])/g, "$1").replace(/["']/g, "");
 
-/** @param {string} path @returns {string} the file's own name, so `/usr/bin/git` and `git` are one command */
+/** The file's own name, so `/usr/bin/git` and `git` are one command. */
 const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
 /**
  * The simple commands of a shell line in order, each as its words, split at `|`, `||`, `&`, `&&`, `;` and newline outside quotes. Lazy, so a later segment is read only if the earlier ones were setup.
- * @param {string} line @returns {Generator<string[] | null>} null, once, when a quote is left open or a character is neither a word nor an operator
+ * Yields null, once, when a quote is left open or a character is neither a word nor an operator.
  */
 export function* segmentsOf(line: string): Generator<string[] | null> {
   const text = line.replace(/\\\n/g, " ").trim();
-  /** @type {string[]} */
   let words: string[] = [];
   let at = 0;
   while (at < text.length) {
@@ -222,7 +213,7 @@ export function* segmentsOf(line: string): Generator<string[] | null> {
   yield words;
 }
 
-/** @param {string[]} args @returns {string | null} the first argument that is not a flag, past the value of a flag that takes one */
+/** The first argument that is not a flag, past the value of a flag that takes one */
 function subcommandOf(args: string[]): string | null {
   for (let at = 0; at < args.length; at += 1) {
     if (VALUE_FLAGS.has(args[at])) at += 1;
@@ -231,7 +222,7 @@ function subcommandOf(args: string[]): string | null {
   return null;
 }
 
-/** @param {string[]} words a segment's words, its leading `VAR=value` assignments and `(` removed @returns {string} */
+/** `words` are a segment's words, its leading `VAR=value` assignments and `(` removed. */
 function nameOfSegment(words: string[]): string {
   const [name, ...args] = words.map(unquote);
   const command = baseName(name).replace(/\)+$/, "");
@@ -240,7 +231,7 @@ function nameOfSegment(words: string[]): string {
   return next === null || next === undefined ? command : `${command} ${baseName(next)}`;
 }
 
-/** @param {string[]} words @returns {string[]} the words past the leading assignments (`FOO=1 cmd`) and a subshell's opening `(` */
+/** The words past the leading assignments (`FOO=1 cmd`) and a subshell's opening `(` */
 function afterPrefix(words: string[]): string[] {
   const rest = [...words];
   while (rest.length > 0 && ENV_ASSIGNMENT.test(rest[0])) rest.shift();
@@ -250,10 +241,10 @@ function afterPrefix(words: string[]): string[] {
 
 /**
  * The command a Bash call ran, as the by-command table names it: the first segment that is not setup, else the first setup command (a call of only `cd`), else `(unparsed)`.
- * @param {string} line the call's `command` input @returns {string}
+ * `line` is the call's `command` input.
  */
 export function commandName(line: string): string {
-  let setup = null;
+  let setup: string | null = null;
   for (const segment of segmentsOf(line)) {
     if (segment === null) return UNPARSED;
     const words = afterPrefix(segment);
@@ -266,17 +257,13 @@ export function commandName(line: string): string {
   return setup ?? UNPARSED;
 }
 
-/** @param {Request} request a request whose tool is Bash @returns {string} its one command, or `(several commands)` when it ran different ones in parallel */
+/** For a request whose tool is Bash: its one command, or `(several commands)` when it ran different ones in parallel */
 export function commandOf(request: Request): string {
   const names = new Set(request.commands.map(commandName));
   return names.size === 1 ? [...names][0] : names.size === 0 ? UNPARSED : SEVERAL_COMMANDS;
 }
 
-/** @typedef {{ requests: number, tokens: number, share: number }} Total */
-
-/** @param {Request[]} requests @param {(request: Request) => string} key @returns {Map<string, { requests: number, tokens: number }>} */
 function totalsBy(requests: Request[], key: (request: Request) => string): Map<string, { requests: number; tokens: number; }> {
-  /** @type {Map<string, { requests: number, tokens: number }>} */
   const totals: Map<string, { requests: number; tokens: number; }> = new Map();
   for (const request of requests) {
     const total = totals.get(key(request)) ?? { requests: 0, tokens: 0 };
@@ -288,7 +275,6 @@ function totalsBy(requests: Request[], key: (request: Request) => string): Map<s
 /**
  * The table's numbers: growth by tool and by session over the main-thread requests that HAVE a growth, and a count of each reason one does not. A request with no growth adds nothing
  * to any total and is counted apart, so a share is a share of what could be read, and `coverage` says how much that was.
- * @param {Request[]} requests
  */
 export function summarise(requests: Request[]) {
   const main = requests.filter((request) => request.thread === "main");
@@ -296,9 +282,8 @@ export function summarise(requests: Request[]) {
   const tokens = read.reduce((sum, request) => sum + (request.growth ?? 0), 0);
   const bash = read.filter((request) => request.tool === "Bash");
   const bashTokens = bash.reduce((sum, request) => sum + (request.growth ?? 0), 0);
-  const rank = (/** @type {Map<string, { requests: number, tokens: number }>} */ totals: Map<string, { requests: number; tokens: number; }>, /** @type {number} */ whole: number = tokens) => [...totals]
+  const rank = (totals: Map<string, { requests: number; tokens: number; }>, whole: number = tokens) => [...totals]
     .map(([name, total]) => ({ name, ...total, share: whole === 0 ? 0 : total.tokens / whole })).sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
-  /** @type {Record<string, number>} */
   const notDerivable: Record<string, number> = {};
   for (const request of main) if (request.reason !== null) notDerivable[request.reason] = (notDerivable[request.reason] ?? 0) + 1;
   return {
@@ -309,10 +294,10 @@ export function summarise(requests: Request[]) {
 }
 
 const PERCENT = 100;
-const pct = (/** @type {number} */ fraction: number) => `${(fraction * PERCENT).toFixed(1)}%`;
-const thousands = (/** @type {number} */ n: number) => n.toLocaleString("en-US");
+const pct = (fraction: number) => `${(fraction * PERCENT).toFixed(1)}%`;
+const thousands = (n: number) => n.toLocaleString("en-US");
 
-/** @param {ReturnType<typeof summarise>["byTool"]} rows @param {string} label @param {string} [shareOf] what the share column is a share of @returns {string[]} */
+/** `shareOf` is what the share column is a share of. */
 function tableOf(rows: ReturnType<typeof summarise>["byTool"], label: string, shareOf: string = "share"): string[] {
   return [`| ${label} | requests | growth tokens | ${shareOf} | mean per request |`, "|---|---:|---:|---:|---:|",
     ...rows.map((row) => `| ${row.name} | ${thousands(row.requests)} | ${thousands(row.tokens)} | ${pct(row.share)} | ${thousands(Math.round(row.tokens / row.requests))} |`)];
@@ -324,7 +309,6 @@ const OTHER_COMMANDS = "(other commands)";
 
 /**
  * The Bash row of the table above, split by command: the first `TOP_COMMANDS`, the rest folded into one row so the printed rows still sum to the Bash line, and the sum check printed beside them.
- * @param {ReturnType<typeof summarise>} summary @returns {string[]}
  */
 function byCommandSection(summary: ReturnType<typeof summarise>): string[] {
   const { byCommand, bashTokens, bashRequests } = summary;
@@ -346,10 +330,7 @@ function byCommandSection(summary: ReturnType<typeof summarise>): string[] {
   ];
 }
 
-/**
- * @param {ReturnType<typeof summarise>} summary @param {{ from: number, to: number, root: string, sessions: string, transcripts: number, byCommand?: true }} reading the command's own inputs, printed so the table can be re-asked; `byCommand` adds the Bash split
- * @returns {string}
- */
+/** `reading` is the command's own inputs, printed so the table can be re-asked; `byCommand` adds the Bash split. */
 export function renderGrowth(summary: ReturnType<typeof summarise>, reading: { from: number; to: number; root: string; sessions: string; transcripts: number; byCommand?: true; }): string {
   const reasons = Object.entries(summary.notDerivable).map(([why, n]) => `${why} ${thousands(n)}`).join(", ") || "none";
   return [
@@ -362,9 +343,8 @@ export function renderGrowth(summary: ReturnType<typeof summarise>, reading: { f
   ].join("\n");
 }
 
-/** @typedef {{ from: number, to: number, root: string, sessions: string }} Query */
+type Query = { from: number; to: number; root: string; sessions: string; };
 
-/** @param {string[]} argv @returns {Query} */
 export function parseArgs(argv: string[]): Query {
   const usage = "usage: growth --from=<ISO> --to=<ISO> [--root=<dir of transcripts>] [--sessions=<regex, default ^worker-[0-9]+$>] [--by-command]";
   const from = Date.parse(flagValue(argv, "from") ?? "");
@@ -375,11 +355,9 @@ export function parseArgs(argv: string[]): Query {
 
 /**
  * Every request in the window of every transcript whose seat matches. A transcript last written before `from` cannot hold one, and is not read.
- * @param {Query} query @returns {{ requests: Request[], transcripts: number }}
  */
 export function readGrowth({ from, to, root, sessions }: Query): { requests: Request[]; transcripts: number; } {
   const wanted = new RegExp(sessions);
-  /** @type {Request[]} */
   const requests: Request[] = [];
   let transcripts = 0;
   for (const file of transcriptFiles(root)) {
@@ -397,7 +375,7 @@ function main() {
   refuseUnknownFlags(["--from", "--to", "--root", "--sessions", "--by-command"], { entry: import.meta.url, command: "node src/trace/growth.ts" });
   const query = parseArgs(process.argv.slice(2));
   const { requests, transcripts } = readGrowth(query);
-  const byCommand = process.argv.includes("--by-command") ? { byCommand: /** @type {const} */ (true) } : {};
+  const byCommand = process.argv.includes("--by-command") ? { byCommand: true as const } : {};
   process.stdout.write(`${renderGrowth(summarise(requests), { ...query, transcripts, ...byCommand })}\n`);
 }
 

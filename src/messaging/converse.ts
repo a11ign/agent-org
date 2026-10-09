@@ -1,4 +1,3 @@
-// @ts-check
 // CONVERSATION IN (a11ign/a11ign#2909, decision 2(b) as amended by #3416): a free message from the chairman, queued for the `liaison` and for nobody else.
 // `createConverse({...}).forward` is what the listener's `onForward` calls with the value `createInbound(...).handle()` minted.
 //
@@ -61,13 +60,15 @@ const REFUSAL_LINE_LIMIT = 200;
 /**
  * `promptOrQueue` is `prompt:session`'s own: it types the order into a seat that is between tasks (`run` is herdr) and queues it for one that is not. `NOT_QUEUED_PREFIX` starts every refusal of the
  * queue, which is how a refusal is told from an order that WENT and came back with a caution (a refused `/clear`). `delivery` is for a test: the seams `promptOrQueue` takes (`sleep`, `checkout`, `contextRoot`, `clock`).
- * @typedef {{ promptOrQueue: typeof import("../prompt-session.ts").promptOrQueue, run: (args: string[]) => string, delivery?: Partial<Parameters<typeof import("../prompt-session.ts").promptOrQueue>[0]>,
- *   NOT_QUEUED_PREFIX: string, attributed: (text: string, sender: string | null) => string,
- *   handoffId: (session: string, prompt: string) => string, readHandoffs: (path: string) => {id: string, session: string, prompt: string}[],
- *   EXIT: {OK: number, REFUSED: number, QUEUED: number}, STANCE: typeof import("../prompt-session.ts").STANCE, defaultQueuePath?: () => string }} QueuePort
  */
+export type QueuePort = {
+  promptOrQueue: typeof import("../prompt-session.ts").promptOrQueue; run: (args: string[]) => string; delivery?: Partial<Parameters<typeof import("../prompt-session.ts").promptOrQueue>[0]>;
+  NOT_QUEUED_PREFIX: string; attributed: (text: string, sender: string | null) => string;
+  handoffId: (session: string, prompt: string) => string; readHandoffs: (path: string) => { id: string; session: string; prompt: string }[];
+  EXIT: { OK: number; REFUSED: number; QUEUED: number }; STANCE: typeof import("../prompt-session.ts").STANCE; defaultQueuePath?: () => string;
+};
 
-/** @returns {Promise<QueuePort>} the real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */
+/** The real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */
 export async function realQueue(): Promise<QueuePort> {
   const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake.ts")]);
   const { promptOrQueue, defaultRun, attributed, EXIT, STANCE, NOT_QUEUED_PREFIX } = session;
@@ -78,8 +79,7 @@ export async function realQueue(): Promise<QueuePort> {
 /**
  * The order the liaison reads for a button: the same provenance as a message, but the words are the organisation's own (what the press asked for).
  *
- * @param {{ text: string, messageRef: string }} order @param {number} receivedAt @param {string | null} [note] why it came to the fallback and not to the liaison, when it did
- * @returns {string}
+ * `note` is why it came to the fallback and not to the liaison, when it did.
  */
 export function buttonOrderText({ text, messageRef }: { text: string; messageRef: string; }, receivedAt: number, note: string | null = null): string {
   return [
@@ -96,18 +96,15 @@ export function buttonOrderText({ text, messageRef }: { text: string; messageRef
 /**
  * What the queue printed while `run` ran. `queueOrLose` reports by writing to stderr and returning an exit code, and its refusal text
  * is the thing the chairman is owed, so it is read there rather than rebuilt here. Synchronous on purpose: nothing else writes during it.
- *
- * @template T @param {() => T} run @returns {{ value: T, stderr: string }}
  */
 function capturingStderr<T>(run: () => T): { value: T; stderr: string; } {
   const original = process.stderr.write;
-  /** @type {string[]} */
   const chunks: string[] = [];
-  process.stderr.write = /** @type {any} */ ((/** @type {any} */ chunk: any, /** @type {any[]} */ ...rest: any[]) => {
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
     chunks.push(String(chunk));
-    rest.find((part) => typeof part === "function")?.();
+    (rest.find((part) => typeof part === "function") as (() => void) | undefined)?.();
     return true;
-  });
+  }) as typeof process.stderr.write;
   try {
     return { value: run(), stderr: chunks.join("") };
   } finally {
@@ -119,8 +116,7 @@ function capturingStderr<T>(run: () => T): { value: T; stderr: string; } {
  * The order the liaison reads: who it is from, how it is known to be, which message, when, and then the chairman's words. The message ref and
  * the time are what make two identical messages two orders (the queue's id is a hash of the text, and one hash is one order).
  *
- * @param {Readonly<Record<string, any>>} accepted @param {number} receivedAt @param {string | null} [note] why it came to the fallback and not to the liaison, when it did
- * @returns {string}
+ * `note` is why it came to the fallback and not to the liaison, when it did.
  */
 export function provenanceText(accepted: Readonly<Record<string, any>>, receivedAt: number, note: string | null = null): string {
   return [
@@ -139,18 +135,18 @@ export const PASSED_SEAT_ABSENT = `The ${RECIPIENT} isn't running; I've passed t
 /** The same, for every other refusal (a full inbox, a queue file that would not take it). */
 export const PASSED_REFUSED = `The ${RECIPIENT} couldn't take this just now; I've passed it to ${FALLBACK_RECIPIENT}.`;
 
-/** @returns {string} the chairman's message when NEITHER queue took it: the one case where it is lost, said so in plain words, with the queue's text left in the ledger */
+/** The chairman's message when NEITHER queue took it: the one case where it is lost, said so in plain words, with the queue's text left in the ledger */
 export function notReached(): string {
   return `I couldn't pass your message to the ${RECIPIENT} or to ${FALLBACK_RECIPIENT}, so nothing was delivered. Please send it again.`;
 }
 
-/** @param {string} reason @returns {string} the line the fallback's reader gets saying why this came to them and not to the liaison */
+/** The line the fallback's reader gets saying why this came to them and not to the liaison */
 const reroutedNote = (reason: string): string => `It came to you, ${FALLBACK_RECIPIENT}, and not to the ${RECIPIENT}, because the ${RECIPIENT}'s queue refused it: ${reason}`;
 
-/** @param {string} reason @returns {string} the first line of the queue's refusal, cut short: the rest of it can repeat the message, which the ledger never holds */
+/** The first line of the queue's refusal, cut short: the rest of it can repeat the message, which the ledger never holds */
 const firstLine = (reason: string): string => reason.split("\n")[0].slice(0, REFUSAL_LINE_LIMIT);
 
-/** @param {string} text @param {number} limit @returns {string} `text`, cut to what the provider will carry and SAYING so when it had to be */
+/** `text`, cut to what the provider will carry and SAYING so when it had to be */
 function withinLimit(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const note = " [cut to fit]";
@@ -158,11 +154,7 @@ function withinLimit(text: string, limit: number): string {
 }
 
 /**
- * @param {{ chairman: {userId: number, chatId: number}, queuePath?: string,
- *   ledger: {append: (entry: Record<string, unknown>) => Record<string, any>},
- *   send: (message: {text: string, replyTo?: string}) => Promise<{messageRef: string}>, maxText?: number,
- *   agents?: () => {label: string, status: string}[] | null, now?: () => number, queue?: QueuePort }} options
- *   `queuePath` is left out by the listener, so the port names it (the real queue's own file); a test gives one. `send` is the provider's; `agents` is herdr's roster (the queue refuses a session herdr does not know); `queue` is the port, real by default.
+ * `queuePath` is left out by the listener, so the port names it (the real queue's own file); a test gives one. `send` is the provider's; `agents` is herdr's roster (the queue refuses a session herdr does not know); `queue` is the port, real by default.
  */
 export function createConverse({ chairman, queuePath, ledger, send, maxText = 4096, agents = readAgents, now = Date.now, queue }: {
         chairman: { userId: number; chatId: number; }; queuePath?: string;
@@ -170,18 +162,16 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
         send: (message: { text: string; replyTo?: string; }) => Promise<{ messageRef: string; }>; maxText?: number;
         agents?: () => { label: string; status: string; }[] | null; now?: () => number; queue?: QueuePort;
     }) {
-  /** @type {Promise<QueuePort> | undefined} */
   let loaded: Promise<QueuePort> | undefined;
   const port = () => (queue ? Promise.resolve(queue) : (loaded ??= realQueue()));
 
-  /** @param {QueuePort} q @returns {string} */
   function pathOf(q: QueuePort): string {
     const path = queuePath ?? q.defaultQueuePath?.();
     if (path === undefined) throw new Error("converse: no queue path was given and the queue port names none");
     return path;
   }
 
-  /** @param {QueuePort} q @param {string} recipient @param {string} text @returns {{ code: number, stderr: string }} what `promptOrQueue` decided, and what it said: it delivers to an idle seat and queues for a busy one */
+  /** What `promptOrQueue` decided, and what it said: it delivers to an idle seat and queues for a busy one */
   function dispatch(q: QueuePort, recipient: string, text: string): { code: number; stderr: string; } {
     // The path and the roster are read OUTSIDE the try, as they always were: a queue path that cannot be had and a roster that cannot be read are the listener's to report, and only the call that touches herdr is a refusal.
     const path = pathOf(q);
@@ -199,7 +189,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     return { code: value, stderr };
   }
 
-  /** @param {QueuePort} q @param {string} recipient @param {string} text @returns {string | null} the id of the entry, read back from the queue file; null when it is not there */
+  /** The id of the entry, read back from the queue file; null when it is not there */
   function verifiedEntry(q: QueuePort, recipient: string, text: string): string | null {
     const id = q.handoffId(recipient, q.attributed(text, CHAIRMAN_SENDER));
     return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === recipient) ? id : null;
@@ -211,7 +201,6 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
    * to `ceo` on a doubt would be the duplicate its own rule forbids), `queued` is an entry read back from the queue file.
    *
    * A REFUSED code with no queue prefix on its words is the order that WENT and came back with a caution (`prompt:session`: the text landed, a `/clear` was refused), so it is delivered.
-   * @param {QueuePort} q @param {string} recipient @param {string} text @returns {{ verdict: "delivered" | "queued" | "refused" | "unverified", reason: string | null, handoff: string | null }}
    */
   function attempt(q: QueuePort, recipient: string, text: string): { verdict: "delivered" | "queued" | "refused" | "unverified"; reason: string | null; handoff: string | null; } {
     const { code, stderr } = dispatch(q, recipient, text);
@@ -227,20 +216,18 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
   /**
    * The liaison first; `ceo` only when the liaison's seat did not take it, for any reason, and told why. A message is lost only when both refuse.
    * `refusals` is the first line of each queue's refusal, in the order asked: the ledger's, and never the chat's. `delivery` is how the taker got it.
-   *
-   * @param {QueuePort} q @param {(note: string | null) => string} words the order's text, with the note saying why it came to the fallback when it did
-   * @returns {{ verdict: "delivered" | "queued" | typeof REROUTED | "refused" | "unverified", delivery: "delivered" | "queued" | null, taker: string | null, handoff: string | null, refusals: string[] }}
+   * `words` is the order's text, with the note saying why it came to the fallback when it did.
    */
   function submit(q: QueuePort, words: (note: string | null) => string): { verdict: "delivered" | "queued" | typeof REROUTED | "refused" | "unverified"; delivery: "delivered" | "queued" | null; taker: string | null; handoff: string | null; refusals: string[]; } {
     const first = attempt(q, RECIPIENT, words(null));
-    if (first.reason === null) return { verdict: /** @type {"delivered" | "queued"} */ (first.verdict), delivery: /** @type {"delivered" | "queued"} */ (first.verdict), taker: RECIPIENT, handoff: first.handoff, refusals: [] };
+    if (first.reason === null) return { verdict: first.verdict as "delivered" | "queued", delivery: first.verdict as "delivered" | "queued", taker: RECIPIENT, handoff: first.handoff, refusals: [] };
     const refusal = firstLine(first.reason);
     const second = attempt(q, FALLBACK_RECIPIENT, words(reroutedNote(refusal)));
-    if (second.reason === null) return { verdict: REROUTED, delivery: /** @type {"delivered" | "queued"} */ (second.verdict), taker: FALLBACK_RECIPIENT, handoff: second.handoff, refusals: [refusal] };
+    if (second.reason === null) return { verdict: REROUTED, delivery: second.verdict as "delivered" | "queued", taker: FALLBACK_RECIPIENT, handoff: second.handoff, refusals: [refusal] };
     return { verdict: second.verdict, delivery: null, taker: null, handoff: null, refusals: [refusal, firstLine(second.reason)] };
   }
 
-  /** @param {{ taker: string | null }} verdict @returns {string | null} what the chairman is told about where his message went: nothing when the liaison took it */
+  /** What the chairman is told about where his message went: nothing when the liaison took it */
   function toldOf({ taker }: { taker: string | null; }): string | null {
     if (taker === RECIPIENT) return null;
     if (taker === null) return notReached();
@@ -248,7 +235,6 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     return Array.isArray(roster) && !roster.some((agent) => agent.label === RECIPIENT) ? PASSED_SEAT_ABSENT : PASSED_REFUSED;
   }
 
-  /** @param {string} text @param {string} replyTo @returns {Promise<{ ref: string | null, error: unknown }>} */
   async function tell(text: string, replyTo: string): Promise<{ ref: string | null; error: unknown; }> {
     try {
       return { ref: (await send({ text: withinLimit(text, maxText), replyTo })).messageRef, error: null };
@@ -262,9 +248,6 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
      * An order for the liaison, from a button the answers path vetted; if the liaison's seat refuses it, it goes to `ceo` the same way a message does. `queued` is "somebody took it" (typed into an idle seat, or queued for a busy one), the answers path's own word for it. Nothing is sent to the chairman and
      * nothing is written to the ledger here: the caller (`answers.mjs`) records the outcome and tells the chairman. `say` is for the ledger (the queue's words, never the chairman's); `told`
      * is what the chairman may be told when the order went to `ceo`, and null otherwise.
-     *
-     * @param {{ text: string, messageRef: string }} order
-     * @returns {Promise<{ queued: boolean, say: string, handoff: string | null, taker: string | null, told: string | null }>}
      */
     async orderLiaison(order: { text: string; messageRef: string; }): Promise<{ queued: boolean; say: string; handoff: string | null; taker: string | null; told: string | null; }> {
       const verdict = submit(await port(), (note) => buttonOrderText(order, now(), note));
@@ -273,10 +256,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
         : verdict.delivery === "delivered" ? `delivered to ${verdict.taker}` : `queued for ${verdict.taker}, handoff ${verdict.handoff}`;
       return { queued, say, handoff: verdict.handoff, taker: verdict.taker, told: verdict.taker === FALLBACK_RECIPIENT ? toldOf(verdict) : null };
     },
-    /**
-     * @param {Readonly<Record<string, any>>} accepted what `createInbound(...).handle()` returned with `action: "forward"`
-     * @returns {Promise<{ outcome: "delivered" | "queued" | typeof REROUTED | "refused" | "unverified" | "not-conversation" | "not-accepted", handoff?: string | null }>}
-     */
+    /** `accepted` is what `createInbound(...).handle()` returned with `action: "forward"`. */
     async forward(accepted: Readonly<Record<string, any>>): Promise<{ outcome: "delivered" | "queued" | typeof REROUTED | "refused" | "unverified" | "not-conversation" | "not-accepted"; handoff?: string | null; }> {
       if (!isAccepted(accepted, chairman)) return { outcome: "not-accepted" };
       if (accepted.kind !== "message") return { outcome: "not-conversation" };

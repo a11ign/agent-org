@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3526: WHAT THE TRACE INGEST HAS ALREADY READ. One small JSON file beside the store, so `trace` re-reads only the bytes a transcript gained.
 //
 // PER TRANSCRIPT it keeps: `offset` (the byte up to which every record has been turned into events), `size` and `mtimeMs` as they were at that read, a hash of the
@@ -22,38 +21,33 @@ export const STATE_VERSION = 4;
 /** The first bytes hashed to tell a rewritten file from a grown one. Small, so that checking a grown file costs next to nothing. */
 export const HEAD_BYTES = 256;
 
-/**
- * @typedef {{ window: number, output: number, tools: string[], clean: boolean }} Previous the last message of a thread: its window, its output, the tools it called, and whether only tool results followed it in the read
- * @typedef {{ session: string | null, owner: { at: number, id: string, row: number | null, pr: number | null, repo: string | null, rows?: number[], prs?: number[], cause: string | null, causeKey: string | null } | null,
- *   lastAt: number | null, used: { at: number, key: string }[], previous?: { main: Previous | null, side: Previous | null } }} Carry
- * @typedef {{ offset: number, size: number, mtimeMs: number, headBytes: number, headHash: string, firstReadAt: number, settleAt: number | null, carry: Carry }} FileState
- * @typedef {{ version: number, firstRunAt: number, firstRunSince: number, storeBytes: number, files: Record<string, FileState> }} IngestState
- */
+/** The last message of a thread: its window, its output, the tools it called, and whether only tool results followed it in the read */
+export type Previous = { window: number; output: number; tools: string[]; clean: boolean };
+export type Carry = {
+  session: string | null; owner: { at: number; id: string; row: number | null; pr: number | null; repo: string | null; rows?: number[]; prs?: number[]; cause: string | null; causeKey: string | null } | null;
+  lastAt: number | null; used: { at: number; key: string }[]; previous?: { main: Previous | null; side: Previous | null };
+};
+export type FileState = { offset: number; size: number; mtimeMs: number; headBytes: number; headHash: string; firstReadAt: number; settleAt: number | null; carry: Carry };
+export type IngestState = { version: number; firstRunAt: number; firstRunSince: number; storeBytes: number; files: Record<string, FileState> };
 
-/** The state file of a store: beside it, named for it, so a scratch `--store` has a scratch state. @param {string} storePath */
+/** The state file of a store: beside it, named for it, so a scratch `--store` has a scratch state. */
 export const stateFileFor = (storePath: string) => `${storePath}.ingest-state.json`;
 
-/** @param {Buffer | Uint8Array} bytes */
 export const fingerprint = (bytes: Buffer | Uint8Array) => createHash("sha1").update(bytes).digest("hex");
 
-/** @param {{ now: number, since: number }} input @returns {IngestState} */
 export function emptyState({ now, since }: { now: number; since: number; }): IngestState {
   return { version: STATE_VERSION, firstRunAt: now, firstRunSince: since, storeBytes: 0, files: {} };
 }
 
-/**
- * The state to resume from, or an empty one and the reason it is empty. `coldStart` is `null` only when a state was read and trusted.
- * @param {{ statePath: string, storePath: string, now: number, since: number }} input
- * @returns {{ state: IngestState, coldStart: string | null }}
- */
+/** The state to resume from, or an empty one and the reason it is empty. `coldStart` is `null` only when a state was read and trusted. */
 export function loadState({ statePath, storePath, now, since }: { statePath: string; storePath: string; now: number; since: number; }): { state: IngestState; coldStart: string | null; } {
-  const cold = (/** @type {string} */ reason: string) => ({ state: emptyState({ now, since }), coldStart: reason });
+  const cold = (reason: string) => ({ state: emptyState({ now, since }), coldStart: reason });
   if (!existsSync(statePath)) return cold("no state file: first run against this store");
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(statePath, "utf8"));
   } catch (cause) {
-    return cold(`state file unreadable (${/** @type {Error} */ (cause).message})`);
+    return cold(`state file unreadable (${(cause as Error).message})`);
   }
   if (parsed?.version !== STATE_VERSION || typeof parsed.files !== "object" || parsed.files === null) return cold(`state file is not version ${STATE_VERSION}`);
   const storeBytes = existsSync(storePath) ? statSync(storePath).size : 0;
@@ -61,7 +55,7 @@ export function loadState({ statePath, storePath, now, since }: { statePath: str
   return { state: parsed, coldStart: null };
 }
 
-/** Written to a sibling and renamed, so a run killed mid-write leaves the old state, not half of a new one. @param {string} statePath @param {IngestState} state */
+/** Written to a sibling and renamed, so a run killed mid-write leaves the old state, not half of a new one. */
 export function saveState(statePath: string, state: IngestState) {
   mkdirSync(dirname(statePath), { recursive: true });
   const partial = `${statePath}.${process.pid}.tmp`;
@@ -72,8 +66,6 @@ export function saveState(statePath: string, state: IngestState) {
 /**
  * What to do with one transcript. `headMatches` is a thunk because checking it costs a read, which a skipped file must not pay.
  * `settleAt` is when a message held back as possibly still being written has been quiet long enough: a file whose stat has not changed is read again from then.
- * @param {{ entry: FileState | undefined, stat: { size: number, mtimeMs: number }, now: number, headMatches: () => boolean }} input
- * @returns {{ action: "skip" | "resume" | "from-zero", reason: string | null }}
  */
 export function planRead({ entry, stat, now, headMatches }: { entry: FileState | undefined; stat: { size: number; mtimeMs: number; }; now: number; headMatches: () => boolean; }): { action: "skip" | "resume" | "from-zero"; reason: string | null; } {
   if (!entry) return { action: "from-zero", reason: null };

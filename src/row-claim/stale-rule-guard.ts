@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // A GUARD THAT CANNOT STAND BEHIND ITS VERDICT SAYS SO -- #1014, ceo's ruling 2026-09-12.
 //
 // `row-claim.ts` is POLICY code. When the policy changes by merge, every checkout that has not moved keeps
@@ -37,8 +36,6 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
  * a `cwd` is NOT isolation for a git subprocess -- `rev-list` would then answer about the inherited
  * repository while this function believes it asked about `repoRoot`, which is a verdict about the wrong
  * tree wearing the right one's name.
- * @param {string} repoRoot
- * @returns {(args: string[]) => string}
  */
 const gitIn = (repoRoot: string): (args: string[]) => string => (args) =>
   execFileSync("git", args,
@@ -50,9 +47,7 @@ const gitIn = (repoRoot: string): (args: string[]) => string => (args) =>
  * DERIVED FROM THE ENTRY'S OWN PATH, never typed (#3041). This was the literal `packages/agent-org/src/row-claim/`, the monorepo's layout, and in the
  * standalone `agent-org` checkout (`src/row-claim/`) it named a directory that does not exist: the guard then asked git about a pathspec that
  * matches nothing and read "0 commits behind" off it, which is the other way to be wrong and the quieter one.
- * @param {string} entry absolute path to `row-claim.ts`
- * @param {string} repoRoot
- * @returns {string}
+ * @param entry absolute path to `row-claim.ts`
  */
 export function ruleDirOf(entry: string, repoRoot: string): string {
   return `${relative(repoRoot, join(dirname(entry), "row-claim")).split(sep).join("/")}/`;
@@ -62,8 +57,6 @@ export function ruleDirOf(entry: string, repoRoot: string): string {
  * The work tree this module lives in, by asking git from the module's own directory -- NOT by counting directories up, which is a statement
  * about ONE layout (#3041: four up from `packages/agent-org/src/row-claim/` is the product root; from `src/row-claim/` it is the parent of the
  * checkout, `/home/agent`). `null` when the module is not inside a git work tree.
- * @param {string} dir
- * @returns {string | null}
  */
 export function workTreeOf(dir: string): string | null {
   try {
@@ -81,16 +74,15 @@ export function workTreeOf(dir: string): string | null {
  * itself. Narrowed rather than taken whole because the closure reaches `merge-guard.ts`,
  * `board-snapshot.ts` and more -- real dependencies of the TOOL whose movement says nothing about whether
  * the RULE changed, and folding them in would turn this into the blanket refusal the row rules out.
- * @param {string} entry absolute path to `row-claim.ts`
- * @param {string} repoRoot
- * @param {{ imports?: (file: string) => string[] }} [deps] `imports` is injectable so a test can drive the
+ * @param entry absolute path to `row-claim.ts`
+ *
+ * @param [deps] `imports` is injectable so a test can drive the
  *   case this function cannot survive on its own -- see `rulePathspec`.
- * @returns {string[]}
  */
 export function ruleFiles(entry: string, repoRoot: string, deps?: { imports?: (file: string) => string[]; }): string[] {
   const imports = deps?.imports ?? localImports;
-  const seen = new Set();
-  const visit = (/** @type {string} */ file: string) => {
+  const seen = new Set<string>();
+  const visit = (file: string) => {
     if (seen.has(file)) return;
     seen.add(file);
     for (const next of imports(file)) visit(next);
@@ -121,10 +113,6 @@ export function ruleFiles(entry: string, repoRoot: string, deps?: { imports?: (f
  * pathspec as a directory prefix -- covering every rule module including ones the walker never saw. The
  * derivation is kept beside it because the prefix has the opposite gap: a rule module that lands OUTSIDE
  * this directory tomorrow is invisible to the prefix and obvious to the closure. Neither alone holds it.
- * @param {string} entry
- * @param {string} repoRoot
- * @param {{ imports?: (file: string) => string[] }} [deps]
- * @returns {string[]}
  */
 export function rulePathspec(entry: string, repoRoot: string, deps?: { imports?: (file: string) => string[]; }): string[] {
   return [...new Set([...ruleFiles(entry, repoRoot, deps), ruleDirOf(entry, repoRoot)])].sort();
@@ -137,8 +125,6 @@ export function rulePathspec(entry: string, repoRoot: string, deps?: { imports?:
  * `null` is CANNOT_ASK and is deliberately NOT folded into zero: a checkout with no `origin/main` ref (a
  * fresh clone mid-fetch, a detached tree) cannot say whether its rule is current, and "could not ask" and
  * "up to date" are the two answers this repository has most often seen conflated.
- * @param {{ repoRoot: string, files: string[], run?: (args: string[]) => string }} options
- * @returns {number | null}
  */
 export function commitsBehindOn({ repoRoot, files, run }: { repoRoot: string; files: string[]; run?: (args: string[]) => string; }): number | null {
   const git = run ?? gitIn(repoRoot);
@@ -155,8 +141,6 @@ export function commitsBehindOn({ repoRoot, files, run }: { repoRoot: string; fi
 
 /**
  * How many tracked files at HEAD the pathspec matches, or `null` when git cannot say (the next step then reports that, by its own name).
- * @param {{ repoRoot: string, files: string[], run?: (args: string[]) => string }} options
- * @returns {number | null}
  */
 export function trackedFileCount({ repoRoot, files, run }: { repoRoot: string; files: string[]; run?: (args: string[]) => string; }): number | null {
   const git = run ?? gitIn(repoRoot);
@@ -174,8 +158,7 @@ export function trackedFileCount({ repoRoot, files, run }: { repoRoot: string; f
  *
  * pnpm installs a GitHub dependency at `node_modules/.pnpm/agent-org@https+++codeload.github.com+a11ign+agent-org+tar.gz+<sha>_<peers>/node_modules/agent-org/`,
  * and the module's real path is that one. The sha is the answer to "which pin is this", and no file inside the package carries it.
- * @param {string} entry absolute real path to `row-claim.ts`
- * @returns {{ installed: boolean, sha: string | null, packageRoot: string | null }}
+ * @param entry absolute real path to `row-claim.ts`
  */
 export function installedLayoutOf(entry: string): { installed: boolean; sha: string | null; packageRoot: string | null; } {
   const parts = entry.split(sep);
@@ -191,8 +174,6 @@ const REPOSITORY = "a11ign/agent-org";
 /**
  * What changed in `a11ign/agent-org` between the installed commit and its `main`: GitHub's own compare, one call, nothing cloned. `null` when GitHub
  * cannot say (no `gh`, no token, offline, an unknown sha) -- CANNOT ASK, and never "nothing changed".
- * @param {string} sha
- * @returns {{ status: string, files: string[] } | null}
  */
 function compareWithMain(sha: string): { status: string; files: string[]; } | null {
   try {
@@ -211,15 +192,9 @@ const COMPARE_FILE_CAP = 300;
 
 /**
  * Does a changed path fall under the rule pathspec? Entries ending `/` are directories, the rest are files.
- * @param {string} file
- * @param {string[]} spec
  */
 const underPathspec = (file: string, spec: string[]) => spec.some((entry) => (entry.endsWith("/") ? file.startsWith(entry) : file === entry));
 
-/**
- * @param {string} entry
- * @param {string} why
- */
 const cannotAskInstalled = (entry: string, why: string) => `CANNOT ASK whether the INSTALLED copy of the rule (${entry}) is current: ${why}\n`
   + "  This refuses rather than assuming it is up to date.";
 
@@ -229,8 +204,6 @@ const cannotAskInstalled = (entry: string, why: string) => `CANNOT ASK whether t
  * came from: the commit pnpm installed against `a11ign/agent-org` `main`, narrowed to the rule files exactly as the other layouts are.
  *
  * Not a blanket refusal either: `main` moving on anything but the rule leaves the installed copy current, which is why this compares files and not tips.
- * @param {{ entry: string, sha: string | null, packageRoot: string, compare?: (sha: string) => { status: string, files: string[] } | null }} options
- * @returns {string | null}
  */
 export function installedStaleReason({ entry, sha, packageRoot, compare }: { entry: string; sha: string | null; packageRoot: string; compare?: (sha: string) => { status: string; files: string[]; } | null; }): string | null {
   if (sha === null) return cannotAskInstalled(entry, "the install directory names no commit, so there is nothing to compare with `main`.");
@@ -246,14 +219,9 @@ export function installedStaleReason({ entry, sha, packageRoot, compare }: { ent
     + "  (`pnpm update agent-org`) and ask again.";
 }
 
-/** @param {string} dir */
 const cannotAskNoTree = (dir: string) => `CANNOT ASK whether this checkout's copy of the rule is current: ${dir} is not inside a git work tree, so there is\n`
   + "  no repository to compare against `origin/main`. This refuses rather than assuming it is up to date.";
 
-/**
- * @param {string} root
- * @param {string[]} spec
- */
 const cannotAskNothingTracked = (root: string, spec: string[]) => `CANNOT ASK whether this checkout's copy of the rule is current: the rule pathspec `
   + `(${spec.length === 0 ? "empty" : spec.join(", ")}) matches no tracked file in ${root}, so a count of "0 commits behind" would be read off\n`
   + "  nothing. The tool's own layout is not the one this guard was asked about; this refuses rather than assuming it is up to date.";
@@ -261,10 +229,8 @@ const cannotAskNothingTracked = (root: string, spec: string[]) => `CANNOT ASK wh
 /**
  * The refusal, or `null` when this checkout's copy of the rule is the current one.
  *
- * @param {{ repoRoot?: string, entry?: string, run?: (args: string[]) => string,
- *           files?: string[], compare?: (sha: string) => { status: string, files: string[] } | null }} [options]
+ *
  *   `files` is for tests: a real list, never a stub of git. `compare` is the installed layout's GitHub question, injectable for the same reason.
- * @returns {string | null}
  */
 export function staleRuleReason({ repoRoot, entry, run, files, compare }: {
     repoRoot?: string; entry?: string; run?: (args: string[]) => string;
@@ -273,7 +239,7 @@ export function staleRuleReason({ repoRoot, entry, run, files, compare }: {
   const here = dirname(fileURLToPath(import.meta.url));
   const installed = installedLayoutOf(entry ?? resolve(here, "..", "row-claim.ts"));
   if (installed.installed && repoRoot === undefined && files === undefined) {
-    return installedStaleReason({ entry: entry ?? resolve(here, "..", "row-claim.ts"), sha: installed.sha, packageRoot: /** @type {string} */ (installed.packageRoot), compare });
+    return installedStaleReason({ entry: entry ?? resolve(here, "..", "row-claim.ts"), sha: installed.sha, packageRoot: (installed.packageRoot as string), compare });
   }
   const root = repoRoot ?? workTreeOf(here);
   if (root === null) return cannotAskNoTree(here);
@@ -316,8 +282,6 @@ export function staleRuleReason({ repoRoot, entry, run, files, compare }: {
  * empty by construction, a false clean. It cannot mislead here, because this function does not decide
  * anything -- `commitsBehindOn` has already returned a non-zero count before this is called, which is only
  * possible when `origin/main` has commits HEAD does not.
- * @param {{ repoRoot: string, files: string[], run?: (args: string[]) => string }} options
- * @returns {string[]}
  */
 export function movedFiles({ repoRoot, files, run }: { repoRoot: string; files: string[]; run?: (args: string[]) => string; }): string[] {
   const git = run ?? gitIn(repoRoot);

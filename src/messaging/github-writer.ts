@@ -1,4 +1,3 @@
-// @ts-check
 // THE `GithubWriter` ANSWERS NEEDS (a11ign/a11ign#3062, row 9b): the four calls `answers.mjs` makes on a row, over `gh`. The only module of
 // `src/messaging/` that WRITES to GitHub, which is why `watch.mjs`'s read-only allowlist stays as it was and this file has an allowlist of its own.
 //
@@ -22,28 +21,24 @@ const GH_TIMEOUT_MS = 60_000;
 const GH_MAX_BUFFER = 64_000_000;
 const LABEL_ABSENT = /Label does not exist/i;
 
-/** @param {readonly string[]} argv @returns {Promise<string>} what `gh` printed; a non-zero exit rejects, with `stderr` on the error */
+/** Returns what `gh` printed; a non-zero exit rejects, with `stderr` on the error */
 async function runGh(argv: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
   return stdout;
 }
 
-/** @param {{repo: string, number: number}} row @returns {string} the REST path of the row's issue; a row is a pair this program was configured with, but a path is only built from a well-formed one */
+/** Returns the REST path of the row's issue; a row is a pair this program was configured with, but a path is only built from a well-formed one */
 function issuePath({ repo, number }: { repo: string; number: number; }): string {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isSafeInteger(number) || number < 1) throw new TypeError(`github writer: ${repo}#${number} is not a row`);
   return `repos/${repo}/issues/${number}`;
 }
 
-/** @param {unknown} error @returns {string} what `gh` said on stderr, else the message */
+/** Returns what `gh` said on stderr, else the message */
 function saidBy(error: unknown): string {
-  const failure = /** @type {{stderr?: unknown, message?: unknown}} */ (error ?? {});
+  const failure = (error ?? {}) as { stderr?: unknown; message?: unknown };
   return `${typeof failure.stderr === "string" ? failure.stderr : ""} ${typeof failure.message === "string" ? failure.message : ""}`;
 }
 
-/**
- * @param {{run?: (argv: readonly string[]) => Promise<string>}} [deps]
- * @returns {import("./answers.ts").GithubWriter}
- */
 export function createGithubWriter({ run = runGh }: { run?: (argv: readonly string[]) => Promise<string>; } = {}): import("./answers.ts").GithubWriter {
   return {
     async readRow(row) {

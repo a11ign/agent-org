@@ -1,4 +1,3 @@
-// @ts-check
 // THE REQUEST SOURCE (a11ign/a11ign#2903, done-whens 1 and 2): A ROW GAINS `needs:chairman` -> ONE REQUEST EVENT; IT LOSES THE LABEL -> ONE
 // RESOLVED EVENT. A LEAF module: it imports nothing from the tool, and it reads GitHub only through an injected reader whose methods are
 // all reads (`watch.mjs` builds the real one and refuses a write).
@@ -74,7 +73,6 @@ const VERIFY_LINE = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Verify(?:\*\*|__)?[ \t]*
 const VERIFY_BODY = /^(\{\{[^{}]+\}\})[ \t]+(is|contains)[ \t]+(\S.*)$/i;
 const MAX_STEPS = 12;
 
-/** @param {string} label @returns {RegExp} */
 function briefLinePattern(label: string): RegExp {
   // A line of the brief, optionally a list item or quoted, the label optionally bold: `**Ask:** x`, `**Ask**: x`, `- Ask: x`.
   // `[ \t]` and not `\s`, so a bare `Ask:` never takes the next line as its text. An apostrophe in a label is either kind.
@@ -82,24 +80,25 @@ function briefLinePattern(label: string): RegExp {
   return new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?${spelled}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(?:\\*\\*|__)?[ \\t]*(\\S.*)$`, "im");
 }
 
-/** @param {boolean} offersOptions @returns {string[]} every label this brief must carry, in the order the message shows them */
+/** Returns every label this brief must carry, in the order the message shows them */
 function requiredLabels(offersOptions: boolean): string[] {
   return [...BASE_LABELS, ...(offersOptions ? OPTION_LABELS : [NOT_HIS_CLAUDE])];
 }
 
-/** @typedef {{ body: string, createdAt: string, authorAssociation?: string }} RowComment */
-/** @typedef {{ number: number, title: string, url: string, comments?: RowComment[] }} RequestRow */
-/** @typedef {{ id: string, label: string }} ChairmanOption */
-/** @typedef {{ read: string, compare: "is" | "contains", expected: string }} Verify  `read` is one placeholder as written, `{{unit:x.state}}`; the step happened when what it reads is, or contains, `expected` */
-/** @typedef {{ text: string, verify: Verify | null }} Step */
-/** @typedef {{ steps: Step[], unblocks: string }} Walk */
+export type RowComment = { body: string; createdAt: string; authorAssociation?: string };
+export type RequestRow = { number: number; title: string; url: string; comments?: RowComment[] };
+export type ChairmanOption = { id: string; label: string };
+/** `read` is one placeholder as written, `{{unit:x.state}}`; the step happened when what it reads is, or contains, `expected` */
+export type Verify = { read: string; compare: "is" | "contains"; expected: string };
+export type Step = { text: string; verify: Verify | null };
+export type Walk = { steps: Step[]; unblocks: string };
 
-/** @param {string} repo @param {number} number @returns {string} the stable identity of the thing, as the design spells it */
+/** Returns the stable identity of the thing, as the design spells it */
 export function requestKey(repo: string, number: number): string {
   return `${KEY_PREFIX}${repo}#${number}`;
 }
 
-/** @param {string} key @returns {{ repo: string, number: number } | null} null for any key that is not a request's */
+/** Returns null for any key that is not a request's */
 export function parseRequestKey(key: string): { repo: string; number: number; } | null {
   const match = KEY_PATTERN.exec(key);
   return match ? { repo: match[1], number: Number(match[2]) } : null;
@@ -110,9 +109,7 @@ export function parseRequestKey(key: string): { repo: string; number: number; } 
  *
  * **ALL OR NOTHING.** One bad entry yields no options and a reason, never the entries around it: a button row missing the option the
  * chairman meant to press is a quieter wrong than none. Absent is not malformed (`problem: null`), because most briefs offer no choice.
- *
- * @param {string} body the whole comment
- * @returns {{ options: ChairmanOption[], problem: string | null }}
+ * `body`: the whole comment
  */
 export function parseChairmanOptions(body: string): { options: ChairmanOption[]; problem: string | null; } {
   const blocks = [...body.matchAll(OPTIONS_BLOCK)];
@@ -120,7 +117,6 @@ export function parseChairmanOptions(body: string): { options: ChairmanOption[];
   if (blocks.length > 1) return { options: [], problem: `${blocks.length} chairman-options blocks in one comment; there must be one` };
   const entries = blocks[0][1].split(";").map((entry) => entry.trim()).filter((entry) => entry !== "");
   if (entries.length === 0) return { options: [], problem: "the chairman-options block is empty" };
-  /** @type {ChairmanOption[]} */
   const options: ChairmanOption[] = [];
   for (const entry of entries) {
     const separator = entry.indexOf("=");
@@ -136,8 +132,8 @@ export function parseChairmanOptions(body: string): { options: ChairmanOption[];
 
 /**
  * The act a brief names for the "Do it for me" button, read as the other brief lines are (markup and control characters out, one line, the same cap).
- *
- * @param {string} body the whole comment @returns {string | null} the act, or null when the brief names none (absent is not malformed: most briefs ask for an answer, not an act)
+ * `body`: the whole comment
+ * Returns the act, or null when the brief names none (absent is not malformed: most briefs ask for an answer, not an act)
  */
 export function parseChairmanAct(body: string): string | null {
   const found = briefLinePattern(ACT_LABEL).exec(body);
@@ -145,7 +141,7 @@ export function parseChairmanAct(body: string): string | null {
   return act === "" ? null : act;
 }
 
-/** @param {string} text @returns {{ verify: Verify | null, problem: string | null }} the `Verify:` line's text read as a check, or why it is not one */
+/** Returns the `Verify:` line's text read as a check, or why it is not one */
 function parseVerify(text: string): { verify: Verify | null; problem: string | null; } {
   // Markup an author wraps a value in (`**`, backticks) is not part of it, as in every other line of a brief.
   const found = VERIFY_BODY.exec(text.replace(/\*\*|__|`/g, "").trim());
@@ -153,34 +149,32 @@ function parseVerify(text: string): { verify: Verify | null; problem: string | n
   const [, read, compare, expected] = found;
   const { placeholders, problems } = parsePlaceholders(read);
   if (problems.length > 0 || placeholders.length !== 1) return { verify: null, problem: `Verify ${read} is not a placeholder of the checked-facts vocabulary` };
-  return { verify: { read, compare: /** @type {"is" | "contains"} */ (compare.toLowerCase()), expected: expected.trim() }, problem: null };
+  return { verify: { read, compare: compare.toLowerCase() as "is" | "contains", expected: expected.trim() }, problem: null };
 }
 
 /**
  * The `Steps:` list of a brief: numbered (or bulleted) items under the header, each optionally followed by a `Verify:` line, and indented lines continuing an item. The list ends at the
  * first line that is none of these (`Unblocks:`). **ALL OR NOTHING, as the options block is:** one step that cannot be read yields no steps and a reason, because a walk missing the step the
  * chairman needed is a quieter wrong than none. Absent is not malformed.
- *
- * @param {string} body the whole comment @returns {{ steps: Step[], problem: string | null }}
+ * `body`: the whole comment
  */
 export function parseSteps(body: string): { steps: Step[]; problem: string | null; } {
   const header = STEPS_HEADER.exec(body);
   if (header === null) return { steps: [], problem: null };
-  /** @type {{ text: string, verify: Verify | null }[]} */
   const steps: { text: string; verify: Verify | null; }[] = [];
   for (const line of body.slice(header.index + header[0].length).split(/\r?\n/)) {
     const verifyText = VERIFY_LINE.exec(line)?.[1];
     const item = STEP_ITEM.exec(line)?.[1];
     if (line.trim() === "") continue;
     if (verifyText !== undefined && steps.length > 0) {
-      const last = /** @type {Step} */ (steps.at(-1));
+      const last = steps.at(-1) as Step;
       const { verify, problem } = parseVerify(verifyText);
       if (verify === null || last.verify !== null) return { steps: [], problem: problem ?? `step ${steps.length} has two Verify lines` };
       last.verify = verify;
     } else if (item !== undefined) {
       steps.push({ text: plainLine(item), verify: null });
     } else if (/^[ \t]/.test(line) && steps.length > 0) {
-      const last = /** @type {Step} */ (steps.at(-1));
+      const last = steps.at(-1) as Step;
       last.text = plainLine(`${last.text} ${line}`);
     } else {
       break;
@@ -192,8 +186,8 @@ export function parseSteps(body: string): { steps: Step[]; problem: string | nul
 }
 
 /**
- * @param {string} text the brief's whole comment
- * @returns {{ walk: Walk | null, problem: string | null }} `walk` is null for a brief that is not a procedure; `problem` says why a procedure could not be read, and begins `steps:` so it names itself
+ * `text`: the brief's whole comment
+ * Returns: `walk` is null for a brief that is not a procedure; `problem` says why a procedure could not be read, and begins `steps:` so it names itself
  */
 export function readWalk(text: string): { walk: Walk | null; problem: string | null; } {
   const { steps, problem } = parseSteps(text);
@@ -203,12 +197,12 @@ export function readWalk(text: string): { walk: Walk | null; problem: string | n
   return { walk: { steps, unblocks: unblocks === undefined ? "" : plainLine(unblocks) }, problem: null };
 }
 
-/** @param {{ position: number, total: number, text: string }} step @returns {string} the line the chairman reads for the step he is on */
+/** Returns the line the chairman reads for the step he is on */
 export function stepLine({ position, total, text }: { position: number; total: number; text: string; }): string {
   return `Step ${position} of ${total}: ${text}`;
 }
 
-/** @param {RowComment[] | undefined} comments @returns {RowComment | null} the newest brief an org account wrote, or null */
+/** Returns the newest brief an org account wrote, or null */
 export function latestBrief(comments: RowComment[] | undefined): RowComment | null {
   const briefs = (comments ?? []).filter((comment) =>
     typeof comment?.body === "string" && TRUSTED_ASSOCIATIONS.has(String(comment.authorAssociation)) && BRIEF_MARKER.test(comment.body));
@@ -216,7 +210,7 @@ export function latestBrief(comments: RowComment[] | undefined): RowComment | nu
   return briefs[0] ?? null;
 }
 
-/** @param {string} text @returns {string} one line, no markup that a plain-text message would show literally, and no control characters */
+/** Returns one line, no markup that a plain-text message would show literally, and no control characters */
 function plainLine(text: string): string {
   // eslint-disable-next-line no-control-regex
   const flat = text.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, " ").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim();
@@ -224,8 +218,9 @@ function plainLine(text: string): string {
 }
 
 /**
- * @param {string} body the whole comment @param {string[]} labels the lines this brief must carry
- * @returns {{ lines: string[], missing: string[] }} each required line as one plain `Label: text` line; `missing` names every label with no text after it
+ * `body`: the whole comment
+ * `labels`: the lines this brief must carry
+ * Returns each required line as one plain `Label: text` line; `missing` names every label with no text after it
  */
 function readBriefLines(body: string, labels: string[]): { lines: string[]; missing: string[]; } {
   const lines = [];
@@ -245,15 +240,13 @@ function readBriefLines(body: string, labels: string[]): { lines: string[]; miss
  * reminder rule exists to end. A re-briefed ask (a new first line or new options) IS a change worth telling them; a label is not.
  *
  * The steps are part of the ask and their POSITION is not: the walk moving on is the ask being worked, not changed.
- *
- * @param {string[]} briefLines @param {ChairmanOption[]} options @param {Walk | null} walk @returns {string}
  */
 function requestState(briefLines: string[], options: ChairmanOption[], walk: Walk | null): string {
   const steps = walk === null ? [] : walk.steps.map((step, at) => `step ${at + 1}=${step.text}|${step.verify?.read ?? ""}`);
   return [...briefLines, ...options.map((option) => `${option.id}=${option.label}`), ...steps].join("\n");
 }
 
-/** @param {RowComment | null} brief @param {string[]} missing @returns {string} why no alert is sent, in words the log can show on its own */
+/** Returns why no alert is sent, in words the log can show on its own */
 function refusalReason(brief: RowComment | null, missing: string[]): string {
   if (brief === null) return `alert not sent: the row has no brief for the chairman from an org account, so nothing says what he is to do`;
   const hints = missing.flatMap((label) => MISSING_HINTS.get(label) ?? []);
@@ -268,10 +261,8 @@ function refusalReason(brief: RowComment | null, missing: string[]): string {
  * begins `chairman-options:`, because the watcher adds no prefix and a grep for either finds only its own kind (#3344).
  *
  * **A PROCEDURE BRIEF IS A PROCEDURE, NOT A CHOICE**: a brief with both a `Steps:` list and an options block is refused, and so is a `Steps:` list that cannot be read (`steps:` names it).
- *
- * @param {{ repo: string, row: RequestRow, now: number, position?: number }} input `position` is the step the walk is on (1-based), which only a procedure brief uses
- * @returns {{ event: Record<string, unknown> | null, options: ChairmanOption[], walk: Walk | null, act: string | null, problem: string | null }}
- *   `act` is the act the brief names for "Do it for me", or null; the event's text carries it, so the OK a press gives is for something he read.
+ * `position` is the step the walk is on (1-based), which only a procedure brief uses
+ * Returns: `act` is the act the brief names for "Do it for me", or null; the event's text carries it, so the OK a press gives is for something he read.
  */
 export function requestEvent({ repo, row, now, position = 1 }: { repo: string; row: RequestRow; now: number; position?: number; }): { event: Record<string, unknown> | null; options: ChairmanOption[]; walk: Walk | null; act: string | null; problem: string | null; } {
   const brief = latestBrief(row.comments);
@@ -306,7 +297,7 @@ export function requestEvent({ repo, row, now, position = 1 }: { repo: string; r
   };
 }
 
-/** @param {Walk | null} walk @param {number} position @returns {string[]} the step the chairman is on, or nothing for a brief that is not a procedure; a finished walk shows its last step */
+/** Returns the step the chairman is on, or nothing for a brief that is not a procedure; a finished walk shows its last step */
 function walkLine(walk: Walk | null, position: number): string[] {
   if (walk === null) return [];
   const total = walk.steps.length;
@@ -314,7 +305,6 @@ function walkLine(walk: Walk | null, position: number): string[] {
   return [stepLine({ position: at, total, text: walk.steps[at - 1].text })];
 }
 
-/** @param {{ repo: string, number: number, now: number }} input @returns {Record<string, unknown>} */
 export function resolvedEvent({ repo, number, now }: { repo: string; number: number; now: number; }): Record<string, unknown> {
   return {
     key: requestKey(repo, number),
@@ -329,22 +319,15 @@ export function resolvedEvent({ repo, number, now }: { repo: string; number: num
 
 /**
  * PURE: what this tick observes. `openKeys` are the request keys the ledger says the chairman has been told about and not told cleared.
- *
- * @param {{ repo: string, rows: RequestRow[], openKeys: Iterable<string>, now: number, positionOf?: (key: string) => number }} input `positionOf` is the step the ledger says a walk is on
- * @returns {{ events: Record<string, unknown>[], options: Record<string, ChairmanOption[]>, walks: Record<string, true>, acts: Record<string, string>, problems: { key: string, reason: string }[] }}
- *   `options` is keyed by event key, for stage 2's buttons (row 9); the core's `normalizeEvent` has no field for it and stage 1 ignores it. `walks` holds the keys of the procedure briefs.
+ * `positionOf` is the step the ledger says a walk is on
+ * Returns: `options` is keyed by event key, for stage 2's buttons (row 9); the core's `normalizeEvent` has no field for it and stage 1 ignores it. `walks` holds the keys of the procedure briefs.
  *   `acts` holds, by key, the act a brief names for "Do it for me": a key with none is absent, and its keyboard has no such button.
  */
 export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 1 }: { repo: string; rows: RequestRow[]; openKeys: Iterable<string>; now: number; positionOf?: (key: string) => number; }): { events: Record<string, unknown>[]; options: Record<string, ChairmanOption[]>; walks: Record<string, true>; acts: Record<string, string>; problems: { key: string; reason: string; }[]; } {
-  /** @type {Record<string, unknown>[]} */
   const events: Record<string, unknown>[] = [];
-  /** @type {Record<string, ChairmanOption[]>} */
   const options: Record<string, ChairmanOption[]> = {};
-  /** @type {Record<string, true>} */
   const walks: Record<string, true> = {};
-  /** @type {Record<string, string>} */
   const acts: Record<string, string> = {};
-  /** @type {{ key: string, reason: string }[]} */
   const problems: { key: string; reason: string; }[] = [];
   const labelled = new Set();
   for (const row of rows) {
@@ -366,10 +349,7 @@ export function observeRequests({ repo, rows, openKeys, now, positionOf = () => 
   return { events, options, walks, acts, problems };
 }
 
-/**
- * @param {{ issueComments: (query: { repo: string, number: number }) => Promise<RowComment[]> }} github
- * @param {string} repo @param {RequestRow} row @returns {Promise<RequestRow>} the row with every comment, when the list may have cut them
- */
+/** Returns the row with every comment, when the list may have cut them */
 async function withAllComments(github: { issueComments: (query: { repo: string; number: number; }) => Promise<RowComment[]>; }, repo: string, row: RequestRow): Promise<RequestRow> {
   if ((row.comments ?? []).length < COMMENT_WINDOW) return row;
   const comments = await github.issueComments({ repo, number: row.number });
@@ -379,13 +359,7 @@ async function withAllComments(github: { issueComments: (query: { repo: string; 
   return { ...row, comments };
 }
 
-/**
- * The impure half: one read, then `observeRequests`. THROWS when the read cannot be trusted (see the head of this file).
- *
- * @param {{ github: { issuesLabelled: (query: { repo: string, label: string, comments?: boolean, limit?: number }) => Promise<RequestRow[]>,
- *                     issueComments: (query: { repo: string, number: number }) => Promise<RowComment[]> },
- *           repo: string, openKeys: Iterable<string>, now: number, positionOf?: (key: string) => number }} input
- */
+/** The impure half: one read, then `observeRequests`. THROWS when the read cannot be trusted (see the head of this file). */
 export async function readRequests({ github, repo, openKeys, now, positionOf }: {
         github: {
             issuesLabelled: (query: { repo: string; label: string; comments?: boolean; limit?: number; }) => Promise<RequestRow[]>;

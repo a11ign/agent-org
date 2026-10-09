@@ -1,4 +1,3 @@
-// @ts-check
 // THE TELEGRAM PROVIDER, SEND ONLY (a11ign/a11ign#2902; docs/messaging.md decision 1). It passes `runProviderConformance`, so it is a
 // provider by the only definition there is. `poll` is the polling provider's (./poll.ts).
 //
@@ -48,7 +47,9 @@ export const MAX_BUTTON_LABEL = 64;
 const NOT_MODIFIED = /message is not modified/i;
 
 export class TelegramSendError extends Error {
-  /** @param {string} message already scrubbed @param {{ status?: number, retryAfter?: number }} [details] */
+  declare status?: number;
+  declare retryAfter?: number;
+  /** `message` is already scrubbed. */
   constructor(message: string, { status, retryAfter }: { status?: number; retryAfter?: number; } = {}) {
     super(message);
     this.name = "TelegramSendError";
@@ -57,14 +58,14 @@ export class TelegramSendError extends Error {
   }
 }
 
-/** @param {string} text @param {number} end @returns {number} `end`, moved back by one when it would cut a surrogate pair in half */
+/** Returns: `end`, moved back by one when it would cut a surrogate pair in half */
 function whole(text: string, end: number): number {
   const code = text.charCodeAt(end - 1);
   const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
   return isHighSurrogate && end > 1 ? end - 1 : end;
 }
 
-/** @param {string} text @param {number} limit @returns {{ part: string, rest: string }} the first part, and what is left to send */
+/** Returns the first part, and what is left to send */
 function takeOne(text: string, limit: number): { part: string; rest: string; } {
   if (text.length <= limit) return { part: text, rest: "" };
   const lineEnd = text.lastIndexOf(NEWLINE, limit);
@@ -77,7 +78,6 @@ function takeOne(text: string, limit: number): { part: string; rest: string; } {
 /**
  * `text` as parts of at most `limit` characters, each ending at a line boundary where the text has one. The newline a part ends at is
  * the separator and is not repeated at the head of the next part; a line longer than `limit` is cut at the limit.
- * @param {string} text @param {number} [limit] @returns {string[]}
  */
 export function splitText(text: string, limit: number = TELEGRAM_MAX_MESSAGE): string[] {
   const parts = [];
@@ -90,7 +90,7 @@ export function splitText(text: string, limit: number = TELEGRAM_MAX_MESSAGE): s
   return parts;
 }
 
-/** @param {Response | Record<string, any>} response @returns {Promise<Record<string, any>>} the JSON body, or `{}` when there is none to read */
+/** Returns the JSON body, or `{}` when there is none to read */
 async function readBody(response: Response | Record<string, any>): Promise<Record<string, any>> {
   try {
     const body = await response.json();
@@ -101,7 +101,6 @@ async function readBody(response: Response | Record<string, any>): Promise<Recor
   }
 }
 
-/** @param {Record<string, any>} body @param {Response | Record<string, any>} response @returns {number | undefined} */
 function retryAfterOf(body: Record<string, any>, response: Response | Record<string, any>): number | undefined {
   const fromBody = Number(body.parameters?.retry_after);
   if (Number.isFinite(fromBody) && fromBody >= 0) return fromBody;
@@ -109,10 +108,7 @@ function retryAfterOf(body: Record<string, any>, response: Response | Record<str
   return Number.isFinite(fromHeader) && fromHeader >= 0 ? fromHeader : undefined;
 }
 
-/**
- * @param {{ token: import("../../secret.ts").Secret, chatId: number | string, fetch?: typeof fetch, sleep?: (ms: number) => Promise<void>,
- *   log?: (line: string) => void, apiBase?: string, deadline?: (ms: number) => AbortSignal }} options `deadline` is the request's clock, injected like `sleep`
- */
+/** `deadline` is the request's clock, injected like `sleep` */
 export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
         token: import("../../secret.ts").Secret; chatId: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
         log?: (line: string) => void; apiBase?: string; deadline?: (ms: number) => AbortSignal;
@@ -123,7 +119,10 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
   // Every string that reaches `log` is either a number-only line or a `TelegramSendError` message, scrubbed where it is built (`attempt`).
   const note = log;
 
-  /** One HTTP attempt. @param {string} method the Bot API method @param {Record<string, unknown>} payload @returns {Promise<{ ok: true, result: Record<string, any> } | { ok: false, error: TelegramSendError }>} */
+  /**
+   * One HTTP attempt.
+   * `method`: the Bot API method
+   */
   async function attempt(method: string, payload: Record<string, unknown>): Promise<{ ok: true; result: Record<string, any>; } | { ok: false; error: TelegramSendError; }> {
     let response;
     try {
@@ -146,7 +145,10 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
     return { ok: false, error };
   }
 
-  /** One call, retried ONCE and only when Telegram says 429 and says when. @param {string} method @param {Record<string, unknown>} payload @returns {Promise<Record<string, any>>} Telegram's `result` */
+  /**
+   * One call, retried ONCE and only when Telegram says 429 and says when.
+   * Returns Telegram's `result`
+   */
   async function callOnce(method: string, payload: Record<string, unknown>): Promise<Record<string, any>> {
     const first = await attempt(method, payload);
     if (first.ok) return first.result;
@@ -159,14 +161,17 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
     throw refused(second.error, { retried: true });
   }
 
-  /** One part of a message. @param {Record<string, unknown>} payload @returns {Promise<string>} the messageRef */
+  /**
+   * One part of a message.
+   * Returns the messageRef
+   */
   async function sendPart(payload: Record<string, unknown>): Promise<string> {
     const result = await callOnce("sendMessage", payload);
     if (!Number.isSafeInteger(result.message_id)) throw refused(new TelegramSendError("telegram sendMessage failed: no message_id in the reply"), { retried: false });
     return String(result.message_id);
   }
 
-  /** @param {string} messageRef @returns {Promise<void>} takes the keyboard off a message; one that has none is already what was asked for */
+  /** Takes the keyboard off a message; one that has none is already what was asked for */
   async function clearKeyboard(messageRef: string): Promise<void> {
     const messageId = /^\d+$/.test(messageRef) ? Number(messageRef) : NaN;
     if (!Number.isSafeInteger(messageId) || messageId === 0) throw new TypeError(`telegram: ${JSON.stringify(messageRef)} is not a message id`);
@@ -177,7 +182,7 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
     }
   }
 
-  /** Logs a failure, with whether the one retry was spent, and hands the error back to throw. @param {TelegramSendError} error @param {{ retried: boolean }} spent */
+  /** Logs a failure, with whether the one retry was spent, and hands the error back to throw. */
   function refused(error: TelegramSendError, { retried }: { retried: boolean; }) {
     const status = error.status ?? 0;
     const kind = status >= CLIENT_ERROR_FLOOR && status < SERVER_ERROR_FLOOR ? "refused by Telegram" : "failed";
@@ -192,12 +197,10 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
       maxText: TELEGRAM_MAX_MESSAGE * MAX_PARTS, ratePerSecond: 1,
     }),
     clearKeyboard,
-    /** @param {{ text: string, silent?: boolean, actions?: unknown[], replyTo?: string }} message @returns {Promise<{ messageRef: string, silent: boolean, messageRefs: string[] }>} */
     async send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; }): Promise<{ messageRef: string; silent: boolean; messageRefs: string[]; }> {
       const parts = partsOf(message?.text);
       const keyboard = keyboardOf(message.actions);
       const silent = message.silent === true;
-      /** @type {string[]} */
       const messageRefs: string[] = [];
       for (const [index, part] of parts.entries()) {
         if (index > 0) await sleep(PART_SPACING_MS);
@@ -212,7 +215,7 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
   };
 }
 
-/** @param {unknown} text @returns {string[]} the parts, or a refusal: a provider rejects what it cannot deliver whole rather than cutting it silently */
+/** Returns the parts, or a refusal: a provider rejects what it cannot deliver whole rather than cutting it silently */
 function partsOf(text: unknown): string[] {
   if (typeof text !== "string" || text === "") throw new RangeError("telegram: text is empty");
   const limit = TELEGRAM_MAX_MESSAGE * MAX_PARTS;
@@ -225,8 +228,6 @@ function partsOf(text: unknown): string[] {
 /**
  * `actions` as Telegram's inline keyboard, one button per row, or `undefined` for none: a message with no action carries no `reply_markup`.
  * A malformed action is refused whole, before any part is sent: a keyboard missing the button the chairman meant to press is a quieter wrong than none.
- *
- * @param {unknown} actions @returns {{ text: string, callback_data: string }[][] | undefined}
  */
 function keyboardOf(actions: unknown): { text: string; callback_data: string; }[][] | undefined {
   if (actions === undefined || (Array.isArray(actions) && actions.length === 0)) return undefined;
@@ -239,10 +240,7 @@ function keyboardOf(actions: unknown): { text: string; callback_data: string; }[
   });
 }
 
-/**
- * @param {{ chatId: number | string, text: string, silent: boolean, replyTo?: string, keyboard?: { text: string, callback_data: string }[][] }} fields
- * @returns {Record<string, unknown>} `disable_notification` is present ONLY when silent: an ordinary message carries no such key; `reply_markup` ONLY with a keyboard
- */
+/** Returns: `disable_notification` is present ONLY when silent: an ordinary message carries no such key; `reply_markup` ONLY with a keyboard */
 function payloadFor({ chatId, text, silent, replyTo, keyboard }: { chatId: number | string; text: string; silent: boolean; replyTo?: string; keyboard?: { text: string; callback_data: string; }[][]; }): Record<string, unknown> {
   const payload = { chat_id: chatId, text };
   if (silent) Object.assign(payload, { disable_notification: true });
@@ -256,7 +254,6 @@ function payloadFor({ chatId, text, silent, replyTo, keyboard }: { chatId: numbe
 /**
  * Says how much of a split message was already delivered when a later part failed: the core retries a failed send whole, so the
  * chairman may see the earlier parts twice, and an error that does not say so hides the cause of the duplicate.
- * @param {unknown} error @param {{ index: number, total: number }} where @returns {unknown}
  */
 function partial(error: unknown, { index, total }: { index: number; total: number; }): unknown {
   if (index === 0 || !(error instanceof TelegramSendError)) return error;
@@ -264,12 +261,10 @@ function partial(error: unknown, { index, total }: { index: number; total: numbe
   return wrapped;
 }
 
-/** @param {number} ms @returns {Promise<void>} */
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-/** @param {string} line */
 function defaultLog(line: string) {
   console.error(line);
 }

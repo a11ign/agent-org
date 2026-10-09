@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // #188: A GUARD WHOSE WRONG ANSWERS ARE ABSORBED BY ANOTHER MECHANISM HAS NO FAILURE SIGNAL.
 //
 // #182 was caught only because strict branch protection refused what this tool passed -- the guard's own
@@ -35,20 +34,17 @@ const EXIT = { READY: 0, CANNOT_ASK: 2 };
  *
  * Exported (#226) so a second log -- `row-claim`'s check/conflict log -- reuses this rather than
  * re-deriving "append one JSON line, fail loud" a second time in this repo.
- *
- * @param {string} path
- * @param {object} entry
  */
 export function appendJsonl(path: string, entry: object) {
   try {
     appendFileSync(path, `${JSON.stringify(entry)}\n`);
   } catch (error) {
-    throw new Error(`could not write the log at ${path}: ${/** @type {Error} */ (error).message}`,
+    throw new Error(`could not write the log at ${path}: ${(error as Error).message}`,
       { cause: error });
   }
 }
 
-/** @returns {string} the `.git` directory shared by the primary checkout and every worktree. */
+/** @returns the `.git` directory shared by the primary checkout and every worktree. */
 export function gitCommonDir(): string {
   return execFileSync("git", ["rev-parse", "--git-common-dir"],
     { encoding: "utf8", env: sandboxGitEnv() }).trim();
@@ -64,9 +60,6 @@ export function agreementLogPath() {
 
 /**
  * Appends one verdict. Called on every live guard run against an OPEN PR.
- * @param {string} logPath
- * @param {number} prNumber
- * @param {{code: number, reasons: string[]}} verdict
  */
 export function recordVerdict(logPath: string, prNumber: number, verdict: { code: number; reasons: string[]; }) {
   appendJsonl(logPath, {
@@ -78,16 +71,13 @@ export function recordVerdict(logPath: string, prNumber: number, verdict: { code
 
 /**
  * The most recently recorded verdict for a PR, or null if none was ever recorded.
- * @param {string} logPath
- * @param {number} prNumber
- * @returns {{prNumber: number, at: string, code: number, reasonKinds: string[]} | null}
  */
 export function latestVerdictFor(logPath: string, prNumber: number): { prNumber: number; at: string; code: number; reasonKinds: string[]; } | null {
   let text;
   try {
     text = readFileSync(logPath, "utf8");
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   const entries = text.split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -98,9 +88,6 @@ export function latestVerdictFor(logPath: string, prNumber: number): { prNumber:
 /**
  * `pr.state` -> a real outcome, or null when there isn't one yet. Never `mergeStateStatus` -- see the
  * header above this section.
- *
- * @param {string} state
- * @returns {"ACCEPTED" | "REFUSED" | null}
  */
 export function realOutcomeFor(state: string): "ACCEPTED" | "REFUSED" | null {
   if (state === "MERGED") return "ACCEPTED";
@@ -119,12 +106,6 @@ export function realOutcomeFor(state: string): "ACCEPTED" | "REFUSED" | null {
  * PR's own resolution timestamp is refused here rather than reconciled: it was never a live, pre-decision
  * check, and treating it as one would flood this log with false DISAGREED entries for every merged PR
  * anyone runs the guard against after the fact.
- *
- * @param {{prNumber: number, recordedVerdict: {code: number, reasonKinds: string[], at: string} | null,
- *          realOutcome: "ACCEPTED" | "REFUSED" | null, resolvedAt: string | null}} args
- * @returns {{code: number, reason: string, record: null} | {code: number, reason: null, record:
- *   {prNumber: number, at: string, guardVerdict: "READY" | "REFUSED", guardReasonKinds: string[],
- *    realOutcome: "ACCEPTED" | "REFUSED", agreement: "AGREED" | "DISAGREED"}}}
  */
 export function reconcile({ prNumber, recordedVerdict, realOutcome, resolvedAt }: {
         prNumber: number; recordedVerdict: { code: number; reasonKinds: string[]; at: string; } | null;

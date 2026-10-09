@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#4074 (token efficiency v2, #4055 move 8, FIRST STEP ONLY): a SEEDED, reproducible draw of manager wakes for a human to label `wake`, `digest` or `drop`.
 //
 // A PURE FUNCTION over the store's events (`drawTriageSample`): it opens no file, calls no `gh` and no model. The labelling belongs to `product-manager` and is posted on the row; nothing
@@ -19,8 +18,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readStore } from "./store.ts";
-
-/** @typedef {import("./store.ts").TraceEvent} TraceEvent */
+import type { TraceEvent } from "./store.ts";
 
 /** The three managers the row names: the seats whose wakes #4055 move 8 would route through a small model. */
 export const MANAGERS = ["ceo", "product-manager", "orchestrator"];
@@ -41,7 +39,7 @@ export const LABELS = Object.freeze(["wake", "digest", "drop"]);
 
 /**
  * A small deterministic generator (mulberry32), seeded from a hash so that any string is a seed and a seed of `4074` and one of `4075` are unrelated streams.
- * @param {string} seed @returns {() => number} uniform in [0, 1)
+ * @returns uniform in [0, 1)
  */
 function generatorFor(seed: string): () => number {
   let state = createHash("sha256").update(seed).digest().readUIntBE(0, SEED_BYTES);
@@ -55,7 +53,6 @@ function generatorFor(seed: string): () => number {
 
 /**
  * A seeded shuffle that does not depend on the order the input arrived in: the items are sorted by `keyOf` first, so a store read in another order draws the same.
- * @template T @param {T[]} items @param {string} seed @param {(item: T) => string} keyOf @returns {T[]}
  */
 function shuffled<T>(items: T[], seed: string, keyOf: (item: T) => string): T[] {
   const next = generatorFor(seed);
@@ -67,19 +64,18 @@ function shuffled<T>(items: T[], seed: string, keyOf: (item: T) => string): T[] 
   return out;
 }
 
-/** Plain code-unit order, because `localeCompare` follows the machine's locale and a draw must not. @param {string} a @param {string} b */
+/** Plain code-unit order, because `localeCompare` follows the machine's locale and a draw must not. */
 const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** @param {TraceEvent} wake @returns {string} */
 const causeOf = (wake: TraceEvent): string => wake.cause ?? NO_CAUSE;
 
 /**
  * Places per stratum. One each first (so every cause appears), then the rest in proportion to the wakes, WATER-FILLED: a stratum whose proportional share exceeds what it has left is
  * given all it has, and the places it leaves over are re-shared among the others. The last places go by largest remainder, ties by cause name, so the result is a function of the counts.
- * @param {Map<string, number>} counts wakes per cause @param {number} size @returns {Map<string, number>}
+ * @param counts wakes per cause
  */
 export function allocate(counts: Map<string, number>, size: number): Map<string, number> {
-  const wakesOf = (/** @type {string} */ cause: string) => counts.get(cause) ?? 0;
+  const wakesOf = (cause: string) => counts.get(cause) ?? 0;
   const quota = new Map([...counts.keys()].map((cause) => [cause, 1]));
   const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
   if (total <= size) return new Map(counts);
@@ -98,10 +94,10 @@ export function allocate(counts: Map<string, number>, size: number): Map<string,
   return shareRemainder({ quota, counts, open, spare });
 }
 
-/** The last step of `allocate`: floor each open stratum's proportional share, then hand the leftover places to the largest remainders. @param {{ quota: Map<string, number>, counts: Map<string, number>, open: string[], spare: number }} state */
+/** The last step of `allocate`: floor each open stratum's proportional share, then hand the leftover places to the largest remainders. */
 function shareRemainder({ quota, counts, open, spare }: { quota: Map<string, number>; counts: Map<string, number>; open: string[]; spare: number; }) {
-  const wakesOf = (/** @type {string} */ cause: string) => counts.get(cause) ?? 0;
-  const placed = (/** @type {string} */ cause: string) => quota.get(cause) ?? 0;
+  const wakesOf = (cause: string) => counts.get(cause) ?? 0;
+  const placed = (cause: string) => quota.get(cause) ?? 0;
   const weight = open.reduce((sum, cause) => sum + wakesOf(cause), 0);
   const shares = open.map((cause) => ({ cause, ideal: (spare * wakesOf(cause)) / weight }));
   for (const { cause, ideal } of shares) quota.set(cause, placed(cause) + Math.floor(ideal));
@@ -113,20 +109,19 @@ function shareRemainder({ quota, counts, open, spare }: { quota: Map<string, num
 
 /**
  * The cost of one wake: every turn of the wake's own session that carries its id, sidechains included (a subagent's turn is the wake's spend), summed.
- * @param {TraceEvent} wake @param {Map<string, TraceEvent[]>} turnsOf by wake id @returns {{ usd: number | null, state: string, turns: number }}
+ * @param turnsOf by wake id
  */
 function costOf(wake: TraceEvent, turnsOf: Map<string, TraceEvent[]>): { usd: number | null; state: string; turns: number; } {
   const turns = (turnsOf.get(wake.id) ?? []).filter((turn) => turn.session === wake.session);
   if (turns.length === 0) return { usd: null, state: COST.NO_TURN, turns: 0 };
   const priced = turns.filter((turn) => typeof turn.costUsd === "number");
   if (priced.length === 0) return { usd: null, state: COST.UNPRICED, turns: turns.length };
-  const usd = Number(priced.reduce((sum, turn) => sum + /** @type {number} */ (turn.costUsd), 0).toFixed(COST_DECIMALS));
+  const usd = Number(priced.reduce((sum, turn) => sum + (turn.costUsd as number), 0).toFixed(COST_DECIMALS));
   return { usd, state: priced.length === turns.length ? COST.PRICED : COST.FLOOR, turns: turns.length };
 }
 
-/** @param {TraceEvent[]} events @returns {Map<string, TraceEvent[]>} turns by the wake id they carry */
+/** @returns turns by the wake id they carry */
 function turnsByWake(events: TraceEvent[]): Map<string, TraceEvent[]> {
-  /** @type {Map<string, TraceEvent[]>} */
   const byWake: Map<string, TraceEvent[]> = new Map();
   for (const event of events) {
     if (event.kind !== "turn" || !event.wakeId) continue;
@@ -135,21 +130,18 @@ function turnsByWake(events: TraceEvent[]): Map<string, TraceEvent[]> {
   return byWake;
 }
 
-/** @param {TraceEvent[]} events @param {{ from: number, to: number, sessions: string[] }} window @returns {TraceEvent[]} the manager wakes with `from <= at < to`, once per id */
+/** @returns the manager wakes with `from <= at < to`, once per id */
 function managerWakes(events: TraceEvent[], { from, to, sessions }: { from: number; to: number; sessions: string[]; }): TraceEvent[] {
   const wakes = events.filter((event) => event.kind === "wake" && sessions.includes(event.session) && event.at >= from && event.at < to);
   return [...new Map(wakes.map((wake) => [wake.id, wake])).values()];
 }
 
-/** @param {TraceEvent[]} wakes @returns {Map<string, TraceEvent[]>} */
 function strataOf(wakes: TraceEvent[]): Map<string, TraceEvent[]> {
-  /** @type {Map<string, TraceEvent[]>} */
   const strata: Map<string, TraceEvent[]> = new Map();
   for (const wake of wakes) strata.set(causeOf(wake), [...(strata.get(causeOf(wake)) ?? []), wake]);
   return strata;
 }
 
-/** @param {{ events: TraceEvent[], seed: string, size?: number, from: number, to: number, sessions?: string[] }} input */
 function checked({ events, seed, size = DEFAULT_SIZE, from, to, sessions = MANAGERS }: { events: TraceEvent[]; seed: string; size?: number; from: number; to: number; sessions?: string[]; }) {
   if (typeof seed !== "string" || seed === "") throw new Error("a seed is required: an unseeded draw cannot be reproduced");
   if (!Number.isInteger(size) || size < 1) throw new Error(`size must be a positive integer, got ${size}`);
@@ -163,8 +155,7 @@ function checked({ events, seed, size = DEFAULT_SIZE, from, to, sessions = MANAG
 
 /**
  * Draw the sample.
- * @param {{ events: TraceEvent[], seed: string, size?: number, from: number, to: number, sessions?: string[] }} input `from` inclusive, `to` exclusive, epoch ms
- * @returns {{ rows: Array<{ wakeId: string, n: number, cause: string, causeKey: string | null, session: string, cost: { usd: number | null, state: string, turns: number } }>, strata: Array<{ cause: string, wakes: number, drawn: number }>, population: number }}
+ * @param input `from` inclusive, `to` exclusive, epoch ms
  */
 export function drawTriageSample(input: { events: TraceEvent[]; seed: string; size?: number; from: number; to: number; sessions?: string[]; }): { rows: Array<{ wakeId: string; n: number; cause: string; causeKey: string | null; session: string; cost: { usd: number | null; state: string; turns: number; }; }>; strata: Array<{ cause: string; wakes: number; drawn: number; }>; population: number; } {
   const { strata, size, seed, population } = checked(input);
@@ -179,7 +170,6 @@ export function drawTriageSample(input: { events: TraceEvent[]; seed: string; si
   return { rows, strata: strataReport, population };
 }
 
-/** @param {{ usd: number | null, state: string }} cost @returns {string} */
 function costText({ usd, state }: { usd: number | null; state: string; }): string {
   if (usd === null) return state;
   return state === COST.PRICED ? `$${usd.toFixed(COST_DECIMALS)}` : `>= $${usd.toFixed(COST_DECIMALS)} (${state})`;
@@ -188,7 +178,6 @@ function costText({ usd, state }: { usd: number | null; state: string; }): strin
 /**
  * The sheet a human labels: one line per wake, a blank for the label, and nothing but the `SHOWN` facts. The strata sizes are NOT on it (they are in `renderProvenance`, for whoever
  * posts it), so the labeller is not told how common a cause is.
- * @param {ReturnType<typeof drawTriageSample>} sample @returns {string}
  */
 export function renderSheet(sample: ReturnType<typeof drawTriageSample>): string {
   const header = `label each wake as one of: ${LABELS.join(" | ")}\n`;
@@ -198,7 +187,6 @@ export function renderSheet(sample: ReturnType<typeof drawTriageSample>): string
 
 /**
  * How the draw was made, to go beside the sheet: the command's inputs and each cause's wakes and places. Kept apart from the sheet on purpose.
- * @param {ReturnType<typeof drawTriageSample>} sample @param {{ seed: string, from: number, to: number }} input @returns {string}
  */
 export function renderProvenance(sample: ReturnType<typeof drawTriageSample>, { seed, from, to }: { seed: string; from: number; to: number; }): string {
   const lines = sample.strata.map((one) => `  ${one.cause}: ${one.drawn} of ${one.wakes}`);
@@ -222,10 +210,10 @@ const LABELS_FILE = new URL("./triage-labels-4074.json", import.meta.url);
 const PERCENT = 100;
 const PERCENT_DECIMALS = 1;
 
-/** @typedef {{ position: number, session: string, cause: string, causeKey: string, cost: string, label: string, excluded: boolean }} LabelRow */
-/** @typedef {{ n: number, agree: number, confusion: Record<string, Record<string, number>>, missedWakes: number[] }} Figures */
+type LabelRow = { position: number; session: string; cause: string; causeKey: string; cost: string; label: string; excluded: boolean };
+type Figures = { n: number; agree: number; confusion: Record<string, Record<string, number>>; missedWakes: number[] };
 
-/** @param {URL} [file] @returns {{ definitions: Record<string, string>, rows: LabelRow[] }} the frozen #4074 sheet and labels */
+/** @returns the frozen #4074 sheet and labels */
 export function loadLabels(file: URL = LABELS_FILE): { definitions: Record<string, string>; rows: LabelRow[]; } {
   return JSON.parse(readFileSync(file, "utf8"));
 }
@@ -233,7 +221,6 @@ export function loadLabels(file: URL = LABELS_FILE): { definitions: Record<strin
 /**
  * What the model is shown: the three label definitions and the printed columns of every row, in the sheet's order. Exactly what the labeller had, so a disagreement is not explained by information
  * the labeller lacked: no order text, no state, no label, no `excluded` mark.
- * @param {{ definitions: Record<string, string>, rows: LabelRow[] }} labels @returns {string}
  */
 export function renderPrompt({ definitions, rows }: { definitions: Record<string, string>; rows: LabelRow[]; }): string {
   const rules = LABELS.map((label) => `- ${label}: ${definitions[label]}`).join("\n");
@@ -248,7 +235,7 @@ export function renderPrompt({ definitions, rows }: { definitions: Record<string
 
 /**
  * Refuse what cannot be scored honestly: a score over a partial or duplicated file reads as a score over the sample.
- * @param {LabelRow[]} rows @param {unknown} predictions @returns {Map<number, string>} the predicted label by position
+ * @returns the predicted label by position
  */
 function predictedBy(rows: LabelRow[], predictions: unknown): Map<number, string> {
   if (!Array.isArray(predictions)) throw new Error("predictions must be a JSON array of { position, label }");
@@ -264,24 +251,21 @@ function predictedBy(rows: LabelRow[], predictions: unknown): Map<number, string
   return predicted;
 }
 
-/** @param {LabelRow[]} rows @param {Map<number, string>} predicted @returns {Figures} */
 function figuresOf(rows: LabelRow[], predicted: Map<number, string>): Figures {
   const confusion = Object.fromEntries(LABELS.map((label) => [label, Object.fromEntries(LABELS.map((guess) => [guess, 0]))]));
-  for (const row of rows) confusion[row.label][/** @type {string} */ (predicted.get(row.position))] += 1;
+  for (const row of rows) confusion[row.label][predicted.get(row.position) as string] += 1;
   const missedWakes = rows.filter((row) => row.label === "wake" && predicted.get(row.position) !== "wake").map((row) => row.position);
   return { n: rows.length, agree: LABELS.reduce((sum, label) => sum + confusion[label][label], 0), confusion, missedWakes };
 }
 
-/** @param {{ n: number, wakeRows: number, missed: number }} cause @returns {{ passed: boolean, verdict: string }} the declared bar, applied */
+/** @returns the declared bar, applied */
 function barFor({ n, wakeRows, missed }: { n: number; wakeRows: number; missed: number; }): { passed: boolean; verdict: string; } {
   if (missed > 0) return { passed: false, verdict: "fail: missed a wake" };
   if (n < BAR.minRows) return { passed: false, verdict: `fail: fewer than ${BAR.minRows} readable rows` };
   return { passed: true, verdict: wakeRows === 0 ? "candidate (no wake row in the class: the no-miss half is untested)" : "candidate" };
 }
 
-/** @param {LabelRow[]} readable @param {Map<number, string>} predicted */
 function classesOf(readable: LabelRow[], predicted: Map<number, string>) {
-  /** @type {Map<string, LabelRow[]>} */
   const byCause: Map<string, LabelRow[]> = new Map();
   for (const row of readable) byCause.set(row.cause, [...(byCause.get(row.cause) ?? []), row]);
   return [...byCause].map(([cause, rows]) => {
@@ -293,7 +277,7 @@ function classesOf(readable: LabelRow[], predicted: Map<number, string>) {
 
 /**
  * Score predictions against the labels.
- * @param {LabelRow[]} labels the frozen rows @param {unknown} predictions `[{ position, label }]`, one per row
+ * @param labels the frozen rows @param predictions `[{ position, label }]`, one per row
  */
 export function scoreTriage(labels: LabelRow[], predictions: unknown) {
   const predicted = predictedBy(labels, predictions);
@@ -308,16 +292,13 @@ export function scoreTriage(labels: LabelRow[], predictions: unknown) {
   };
 }
 
-/** @param {number} part @param {number} whole @returns {string} */
 const percent = (part: number, whole: number): string => `${((PERCENT * part) / whole).toFixed(PERCENT_DECIMALS)}%`;
 
-/** @param {string} title @param {Figures} figures @returns {string[]} */
 function figureLines(title: string, { n, agree, confusion, missedWakes }: Figures): string[] {
   const rows = LABELS.map((label) => `  labelled ${label.padEnd("digest".length)} -> ${LABELS.map((guess) => `${guess} ${String(confusion[label][guess]).padStart(2)}`).join("  ")}`);
   return [`${title}: n ${n}, agreement ${agree}/${n} (${percent(agree, n)}), missed wakes ${missedWakes.length}${missedWakes.length > 0 ? ` (positions ${missedWakes.join(", ")})` : ""}`, ...rows];
 }
 
-/** @param {ReturnType<typeof scoreTriage>} score @returns {string} */
 export function renderScore(score: ReturnType<typeof scoreTriage>): string {
   const classes = score.classes.map((one) => `  ${one.cause.padEnd(Math.max(...score.classes.map((c) => c.cause.length)))}  n ${String(one.n).padStart(2)}  wake rows ${String(one.wakeRows).padStart(2)}  missed ${one.missedWakes.length}  ${one.bar.verdict}`);
   const apart = score.excluded.predicted.map((one) => `  ${one.position}: labelled ${one.label}, predicted ${one.predicted}`);
@@ -331,7 +312,6 @@ export function renderScore(score: ReturnType<typeof scoreTriage>): string {
   ].join("\n");
 }
 
-/** @param {string[]} argv @returns {{ seed: string, size: number, from: number, to: number, store: string, json: boolean, score: string | null, prompt: boolean }} */
 export function parseArgs(argv: string[]): { seed: string; size: number; from: number; to: number; store: string; json: boolean; score: string | null; prompt: boolean; } {
   const flags = new Map();
   for (let i = 0; i < argv.length; i++) {
@@ -351,13 +331,13 @@ export function parseArgs(argv: string[]): { seed: string; size: number; from: n
   };
 }
 
-/** @param {ReturnType<typeof parseArgs>} args @returns {string} the sampler's output: it is the only mode that reads the store */
+/** @returns the sampler's output: it is the only mode that reads the store */
 function sampled(args: ReturnType<typeof parseArgs>): string {
   const sample = drawTriageSample({ events: readStore(args.store), seed: args.seed, size: args.size, from: args.from, to: args.to });
   return args.json ? `${JSON.stringify(sample, null, 2)}\n` : `${renderProvenance(sample, args)}\n\n${renderSheet(sample)}`;
 }
 
-/** @param {string} predictionsPath @param {boolean} json @returns {string} the frozen labels and the predictions file only: no store, no sampler */
+/** @returns the frozen labels and the predictions file only: no store, no sampler */
 function scored(predictionsPath: string, json: boolean): string {
   const result = scoreTriage(loadLabels().rows, JSON.parse(readFileSync(predictionsPath, "utf8")));
   return json ? `${JSON.stringify(result, null, 2)}\n` : renderScore(result);

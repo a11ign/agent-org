@@ -55,17 +55,14 @@ export const MEASUREMENT_TAIL = "THIS RUN IS A MEASUREMENT ON A THROWAWAY WORKTR
   + "but do not push, do not open a pull request, do not label or comment on the row or any issue, and do not run `agent-org pr:open`, `row-claim` or `fleet:*`. "
   + "This worktree is deleted when you finish; a pane worker builds the row afterwards.";
 
-/** @typedef {{ maxTurns: number, maxBudgetUsd: number }} Caps */
-/** @typedef {{ number: number, state: string, title: string, body: string, labels: { name: string }[] }} Issue */
-/** @typedef {{ refusal: string, why: string }} Refusal */
+type Caps = { maxTurns: number; maxBudgetUsd: number };
+type Issue = { number: number; state: string; title: string; body: string; labels: { name: string }[] };
+type Refusal = { refusal: string; why: string };
 
-/** The one thing every refusal and every record is keyed by. @param {string} refusal @param {string} why @returns {Refusal} */
+/** The one thing every refusal and every record is keyed by. */
 const refuse = (refusal: string, why: string): Refusal => ({ refusal, why });
 
-/**
- * THE GUARD THAT MAKES "READ-ONLY" A PROPERTY OF THE CODE: `issue view` and a GET `api` are the only calls this script may make through `gh`. Anything else throws before it is sent.
- * @param {string[]} args
- */
+/** THE GUARD THAT MAKES "READ-ONLY" A PROPERTY OF THE CODE: `issue view` and a GET `api` are the only calls this script may make through `gh`. Anything else throws before it is sent. */
 export function assertGhRead(args: string[]) {
   const [group, verb] = args;
   const isView = group === "issue" && verb === "view";
@@ -76,7 +73,7 @@ export function assertGhRead(args: string[]) {
 
 /**
  * The row numbers on an issue's `Pilot-rows:` line. TWO such lines are ambiguous and read as none: the script does not choose between them.
- * @param {string} body @returns {number[] | null} `null` when the issue has no single `Pilot-rows:` line
+ * Returns `null` when the issue has no single `Pilot-rows:` line
  */
 export function pilotRowsOf(body: string): number[] | null {
   const lines = String(body).split("\n").filter((line) => /^\s*(?:[-*]\s*)?\**Pilot-rows:/i.test(line));
@@ -84,10 +81,7 @@ export function pilotRowsOf(body: string): number[] | null {
   return [...lines[0].replace(/^[^:]*:/, "").matchAll(/\d+/g)].map((m) => Number(m[0]));
 }
 
-/**
- * Every refusal that needs no row read: an odd row is the pane arm's, and a cap that is missing is one the launch form has no default for.
- * @param {{ row: number, caps: Partial<Caps>, namedOn: number }} input @returns {Refusal | null}
- */
+/** Every refusal that needs no row read: an odd row is the pane arm's, and a cap that is missing is one the launch form has no default for. */
 export function earlyRefusal({ row, caps, namedOn }: { row: number; caps: Partial<Caps>; namedOn: number; }): Refusal | null {
   if (!Number.isInteger(row) || row <= 0) return refuse("bad-row", `--row must be a row number, got ${row}`);
   if (!Number.isInteger(namedOn) || namedOn <= 0) return refuse("no-named-on", "--named-on must name the issue whose `Pilot-rows:` line lists this row");
@@ -100,7 +94,6 @@ export function earlyRefusal({ row, caps, namedOn }: { row: number; caps: Partia
 /**
  * The row's own answer to "does it need the fleet or the lab": the template's full-question section (`declaredFleetAnswer`), else the `## Fleet` section this row family carries.
  * The platform reader knows only the first, and a row written with the second would otherwise read as undeclared. The first word decides, as it does there; anything else is `null`.
- * @param {string} body @returns {"no" | "yes" | null}
  */
 export function fleetAnswerOf(body: string): "no" | "yes" | null {
   const declared = declaredFleetAnswer(body);
@@ -110,10 +103,7 @@ export function fleetAnswerOf(body: string): "no" | "yes" | null {
   return /^(?:yes|both)(?=$|[\s.,:;!\u2014\u2013])/i.test(word) ? "yes" : null;
 }
 
-/**
- * Every refusal that needs the row and the issue naming it. ABSENCE IS NOT AN ANSWER: a row with no `## Fleet` section is refused as unreadable, never passed as `No`.
- * @param {{ row: number, namedOn: number, namedBody: string, issue: Issue }} input @returns {Refusal | null}
- */
+/** Every refusal that needs the row and the issue naming it. ABSENCE IS NOT AN ANSWER: a row with no `## Fleet` section is refused as unreadable, never passed as `No`. */
 export function rowRefusal({ row, namedOn, namedBody, issue }: { row: number; namedOn: number; namedBody: string; issue: Issue; }): Refusal | null {
   const named = pilotRowsOf(namedBody);
   if (named === null) return refuse("not-named", `#${namedOn} carries no single \`Pilot-rows:\` line, so no row is named for the pilot`);
@@ -128,30 +118,23 @@ export function rowRefusal({ row, namedOn, namedBody, issue }: { row: number; na
   return null;
 }
 
-/**
- * The first-contact order a pane worker would get for this row, plus {@link MEASUREMENT_TAIL}. `addressed` is wake.ts's, handed the facts a spawn hands it.
- * @param {{ issue: Issue, label: string, worktree: string, branch: string }} input
- */
+/** The first-contact order a pane worker would get for this row, plus {@link MEASUREMENT_TAIL}. `addressed` is wake.ts's, handed the facts a spawn hands it. */
 export function pilotOrder({ issue, label, worktree, branch }: { issue: Issue; label: string; worktree: string; branch: string; }) {
   const order = { session: label, prompt: "", title: issue.title, cause: PILOT_CAUSE };
   const claimed = { row: issue.number, branch, launchDir: worktree, worktree };
   return `${addressed(order, label, { spawned: claimed, engineers: [] })}\n\n${MEASUREMENT_TAIL}`;
 }
 
-/** @param {Caps} caps */
 export function launchArgs(caps: Caps) {
   const profile = profileFor(PILOT_CAUSE);
   if ("refusal" in profile) throw new Error(profile.refusal);
   return agentArgs(profile, { headless: caps });
 }
 
-/** The stream-json line `claude -p --input-format stream-json` reads as one user turn. @param {string} text */
+/** The stream-json line `claude -p --input-format stream-json` reads as one user turn. */
 export const userTurn = (text: string) => `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
 
-/**
- * What the stream says happened: the session id (from `init`, else the result) and the `result` record's fields. A stream with no `result` line is a run that did not finish.
- * @param {string} stdout
- */
+/** What the stream says happened: the session id (from `init`, else the result) and the `result` record's fields. A stream with no `result` line is a run that did not finish. */
 export function readStream(stdout: string) {
   let sessionId = null;
   let result = null;
@@ -164,11 +147,7 @@ export function readStream(stdout: string) {
   return { sessionId, result };
 }
 
-/**
- * The trace store's dollars for one transcript, found by session id under `<config>/projects/*`.
- * @param {{ sessionId: string | null, configDir: string }} input
- * @returns {{ traceCostUsd: number | null, traceApiCalls: number | null, unpricedTurns: number | null, transcript: string | null }}
- */
+/** The trace store's dollars for one transcript, found by session id under `<config>/projects/*`. */
 export function traceCost({ sessionId, configDir }: { sessionId: string | null; configDir: string; }): { traceCostUsd: number | null; traceApiCalls: number | null; unpricedTurns: number | null; transcript: string | null; } {
   const none = { traceCostUsd: null, traceApiCalls: null, unpricedTurns: null, transcript: null };
   const root = join(configDir, "projects");
@@ -182,10 +161,7 @@ export function traceCost({ sessionId, configDir }: { sessionId: string | null; 
   return { traceCostUsd: priced.reduce((sum, cost) => sum + cost, 0), traceApiCalls: turns.length, unpricedTurns: turns.length - priced.length, transcript: file };
 }
 
-/**
- * The row's own Acceptance, as written, in the worktree. Its exit is the first non-zero command's, else 0.
- * @param {string[]} commands @param {string} cwd
- */
+/** The row's own Acceptance, as written, in the worktree. Its exit is the first non-zero command's, else 0. */
 export function runAcceptance(commands: string[], cwd: string) {
   for (const command of commands) {
     const ran = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: ACCEPTANCE_TIMEOUT_MS, maxBuffer: OUTPUT_BUFFER_BYTES });
@@ -198,19 +174,15 @@ export function runAcceptance(commands: string[], cwd: string) {
 /**
  * `success` IS TRUE ONLY WHEN BOTH ARE: the run ended on `subtype: success` AND the Acceptance exited 0. A stop at a cap (`error_max_turns`, a budget stop) is false and is WRITTEN: the cap is
  * the cost of this form and a dropped failure would flatter it (`ceo`'s condition 2).
- * @param {string | null} subtype @param {number | null} acceptanceExit
  */
 export const successOf = (subtype: string | null, acceptanceExit: number | null) => subtype === "success" && acceptanceExit === 0;
 
-/** Where a run's throwaway worktree lives. @param {string} scratch @param {number} row */
+/** Where a run's throwaway worktree lives. */
 export const worktreePathFor = (scratch: string, row: number) => join(scratch, `wt-${row}`);
 
-/**
- * @typedef {{ gh?: (args: string[]) => string, git?: (args: string[]) => string, claudeBin?: string, scratch?: string, checkout?: string,
- *   recordDir?: string, configDir?: string, out?: (line: string) => void }} Deps
- */
+type Deps = { gh?: (args: string[]) => string; git?: (args: string[]) => string; claudeBin?: string; scratch?: string; checkout?: string;
+  recordDir?: string; configDir?: string; out?: (line: string) => void };
 
-/** @param {Deps} deps */
 function resolved(deps: Deps) {
   const checkout = deps.checkout ?? PRIMARY_CHECKOUT;
   return {
@@ -226,7 +198,6 @@ function resolved(deps: Deps) {
   };
 }
 
-/** @param {(args: string[]) => string} gh @param {number} number @returns {Issue} */
 function readIssue(gh: (args: string[]) => string, number: number): Issue {
   const args = ["issue", "view", String(number), "--repo", REPO, "--json", "number,state,title,body,labels"];
   assertGhRead(args);
@@ -236,7 +207,6 @@ function readIssue(gh: (args: string[]) => string, number: number): Issue {
 /**
  * Add the throwaway worktree on its own branch off `origin/main`, and the function that removes both. The branch is `pilot/…`, a namespace nothing else writes, so `-B` resets only a
  * leftover of this script's own.
- * @param {{ git: (args: string[]) => string, checkout: string, worktree: string, branch: string }} input
  */
 function addWorktree({ git, checkout, worktree, branch }: { git: (args: string[]) => string; checkout: string; worktree: string; branch: string; }) {
   git(["-C", checkout, "fetch", "--quiet", "origin", "main"]);
@@ -249,7 +219,7 @@ function addWorktree({ git, checkout, worktree, branch }: { git: (args: string[]
   };
 }
 
-/** One record per row. A record already there is a measurement and is renamed aside, never overwritten. @param {string} dir @param {number} row @param {object} record */
+/** One record per row. A record already there is a measurement and is renamed aside, never overwritten. */
 function writeRecord(dir: string, row: number, record: object) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${row}.json`);
@@ -258,27 +228,19 @@ function writeRecord(dir: string, row: number, record: object) {
   return path;
 }
 
-/**
- * Launch `claude` in the worktree with the order on stdin. A `claude` that cannot start is a run that ended with nothing, and is returned as one.
- * @param {{ claudeBin: string, args: string[], order: string, cwd: string }} input
- */
+/** Launch `claude` in the worktree with the order on stdin. A `claude` that cannot start is a run that ended with nothing, and is returned as one. */
 function launchClaude({ claudeBin, args, order, cwd }: { claudeBin: string; args: string[]; order: string; cwd: string; }) {
   const env = { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "remote.origin.pushurl", GIT_CONFIG_VALUE_0: "headless-pilot-refuses-push" };
   const ran = spawnSync(claudeBin, args, { cwd, env, input: userTurn(order), encoding: "utf8", timeout: CLAUDE_TIMEOUT_MS, maxBuffer: OUTPUT_BUFFER_BYTES });
   return { exit: ran.status, launchError: ran.error ? String(ran.error.message) : null, stdout: ran.stdout ?? "" };
 }
 
-/** @param {string} claudeBin */
 function claudeVersion(claudeBin: string) {
   const ran = spawnSync(claudeBin, ["--version"], { encoding: "utf8" });
   return ran.status === 0 ? ran.stdout.trim() : null;
 }
 
-/**
- * Work the row in the throwaway worktree and say what happened. The worktree is removed in `finally`, so a run that throws is cleaned up as well as one that finishes.
- * @param {{ issue: Issue, caps: Caps, args: string[], order: string, worktree: string, branch: string, row: number, namedOn: number }} run
- * @param {ReturnType<typeof resolved>} env
- */
+/** Work the row in the throwaway worktree and say what happened. The worktree is removed in `finally`, so a run that throws is cleaned up as well as one that finishes. */
 function work(run: { issue: Issue; caps: Caps; args: string[]; order: string; worktree: string; branch: string; row: number; namedOn: number; }, env: ReturnType<typeof resolved>) {
   const remove = addWorktree({ git: env.git, checkout: env.checkout, worktree: run.worktree, branch: run.branch });
   try {
@@ -299,18 +261,13 @@ function work(run: { issue: Issue; caps: Caps; args: string[]; order: string; wo
   }
 }
 
-/** The dry run's whole output: nothing is launched and no worktree is made. @param {string[]} args @param {string} order @param {(line: string) => void} out */
+/** The dry run's whole output: nothing is launched and no worktree is made. */
 function printDryRun(args: string[], order: string, out: (line: string) => void) {
   out(`claude ${args.map((a) => JSON.stringify(a)).join(" ")}`);
   out(`--- the order's first ${ORDER_PREVIEW_LINES} lines ---`);
   for (const line of order.split("\n").slice(0, ORDER_PREVIEW_LINES)) out(line);
 }
 
-/**
- * @param {{ row: number, namedOn: number, caps: Partial<Caps>, dryRun: boolean }} options
- * @param {Deps} [deps]
- * @returns {Promise<{ refused: Refusal } | { dryRun: true, args: string[], order: string } | { record: object, path: string }>}
- */
 export async function runPilot(options: { row: number; namedOn: number; caps: Partial<Caps>; dryRun: boolean; }, deps: Deps = {}): Promise<{ refused: Refusal; } | { dryRun: true; args: string[]; order: string; } | { record: object; path: string; }> {
   const env = resolved(deps);
   const { row, namedOn, caps, dryRun } = options;
@@ -323,13 +280,13 @@ export async function runPilot(options: { row: number; namedOn: number; caps: Pa
   const worktree = worktreePathFor(env.scratch, row);
   if (existsSync(worktree)) return { refused: refuse("worktree-exists", `${worktree} already exists: a leftover to look at, not one to delete unseen`) };
   const branch = `pilot/headless-${row}`;
-  const args = launchArgs(/** @type {Caps} */ (caps));
+  const args = launchArgs(caps as Caps);
   const order = pilotOrder({ issue, label: `pilot-${row}`, worktree, branch });
   if (dryRun) {
     printDryRun(args, order, env.out);
     return { dryRun: true, args, order };
   }
-  const done = work({ issue, caps: /** @type {Caps} */ (caps), args, order, worktree, branch, row, namedOn }, env);
+  const done = work({ issue, caps: caps as Caps, args, order, worktree, branch, row, namedOn }, env);
   env.out(`row #${row}: success=${done.record.success} (record ${done.path}; the CLI's own total_cost_usd is printed beside the trace store's and not used)`);
   return done;
 }
@@ -337,11 +294,9 @@ export async function runPilot(options: { row: number; namedOn: number; caps: Pa
 /**
  * `--row 4` and `--row=4` are the same flag: the row's usage line is the space form and `flagValue` reads only the `=` form, so the space form is joined to its value first.
  * A value flag at the end of the line with no value stays as it is and reads as absent.
- * @param {string[]} argv
  */
 export function normalizeArgv(argv: string[]) {
   const valued = new Set(FLAGS.filter((f) => f.endsWith("=")).map((f) => f.slice(0, -1)));
-  /** @type {string[]} */
   const out: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const joins = valued.has(argv[i]) && i + 1 < argv.length && !argv[i + 1].startsWith("--");
@@ -350,7 +305,6 @@ export function normalizeArgv(argv: string[]) {
   return out;
 }
 
-/** @param {string[]} argv @param {string} name @returns {number | undefined} */
 function numberFlag(argv: string[], name: string): number | undefined {
   const raw = flagValue(argv, name);
   return raw === undefined || raw === "" ? undefined : Number(raw);

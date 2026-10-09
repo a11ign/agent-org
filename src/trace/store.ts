@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3494, first slice: THE TRACE STORE -- one append-only record per event, keyed by row (and pull request, and repository).
 //
 // FOUR SOURCES TODAY, and each record says which: `source: "gh-ledger"` for one `gh` call (`gh-calls.mjs`, #3516), `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
@@ -30,6 +29,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { sessionOf } from "../token-audit.ts";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.ts";
+import type { LedgerEntry } from "../wakes-per-row.ts";
+import type { EndedDeferral } from "../deferral-log.ts";
+import type { GithubKind } from "./github-events.ts";
+import type { Carry, Previous } from "./ingest-state.ts";
 
 export const DEFINITIONS = [
   "EVENT: one record in the store, `kind` turn | wake | compaction | gh_call | deferral, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
@@ -56,6 +59,8 @@ const COST_PRECISION = 100_000_000; // Claude Code reports cost_usd to 7 places;
 const WRITE_5M_FACTOR = 1.25;
 const WRITE_1H_FACTOR = 2;
 
+type Rates = { input: number; output: number; cacheRead: number; verified: boolean };
+
 /**
  * Dollars per million tokens, `cacheRead` as the pricing page lists it (read 2026-10-08, #4057): the factor on input is not the same for every model (Fable 5.1 $0.25 on a $10 input,
  * Fable 5 $1, Sonnet 5.5 $0.10). `verified` is true where the formula reproduced Claude Code's own `cost_usd` (2026-10-04, #3494); the others are the published rates.
@@ -63,8 +68,6 @@ const WRITE_1H_FACTOR = 2;
  * A Claude row matches by `prefix` (ids carry dated suffixes). A row of any OTHER vendor matches by `model`, the EXACT name, and carries `source` (the URL it was quoted from) and `fetched`
  * (the date), because a rate borrowed from a neighbouring model is an invention with a citation on it (#4076, #4055 move 10): `gpt-5.6-luna-pro` is a different model with a different price.
  * `maxPrompt` is the largest prompt (input + cached + cache writes) the listed rates are quoted for: a request above it costs `null`, because the page states a different rate there and not all of it.
- * @typedef {{ input: number, output: number, cacheRead: number, verified: boolean }} Rates
- * @type {(Rates & { prefix?: string, model?: string, source?: string, fetched?: string, maxPrompt?: number })[]}
  */
 export const PRICES: (Rates & { prefix?: string; model?: string; source?: string; fetched?: string; maxPrompt?: number; })[] = [
   // `claude-fable-5-1` stands BEFORE `claude-fable-5`: the page lists them apart, and `costOf` takes the first prefix that matches.
@@ -88,22 +91,20 @@ export const PRICES: (Rates & { prefix?: string; model?: string; source?: string
   { model: "gpt-5.6-luna", input: 0.2, output: 1.2, cacheRead: 0.02, verified: false, source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna.md", fetched: "2026-10-08", maxPrompt: 272_000 },
 ];
 
-/**
- * @typedef {{ input: number, output: number, cacheRead: number, cacheWrite5m: number, cacheWrite1h: number }} Tokens
- * @typedef {{ id: string, kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | import("./github-events.ts").GithubKind, source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log", at: number, session: string, row: number | null,
- *   pr: number | null, repo: string | null, cause: string | null, causeKey: string | null, wakeId: string | null, model?: string, tokens?: Tokens,
- *   costUsd?: number | null, toolRead?: ToolRead | null, transcript?: string, wallClockMs?: number | null, toolMs?: number | null, deliveryLagMs?: number | null, bytes?: number, sidechain?: boolean, harness?: "codex",
- *   rows?: number[], prs?: number[], touchedRows?: number[], touchedPrs?: number[], actor?: string | null, seq?: number, claimant?: string, name?: string, state?: string | null, status?: string, headSha?: string, mergeSha?: string, startedAt?: number,
- *   completedAt?: number | null, how?: "delivered" | "gone", outcome?: "merged" | "unmerged", account?: string, resource?: string, cost?: number | null, exit?: number, command?: string, workspace?: string,
- *   script?: string, sessionId?: string, keyedBy?: "session" | "time" | null, unkeyed?: "script" | "no-turn" }} TraceEvent
- */
+export type Tokens = { input: number; output: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number };
+export type TraceEvent = {
+  id: string; kind: "turn" | "wake" | "compaction" | "gh_call" | "deferral" | GithubKind; source: "transcript" | "wake-ledger" | "github" | "gh-ledger" | "deferral-log"; at: number; session: string; row: number | null;
+  pr: number | null; repo: string | null; cause: string | null; causeKey: string | null; wakeId: string | null; model?: string; tokens?: Tokens;
+  costUsd?: number | null; toolRead?: ToolRead | null; transcript?: string; wallClockMs?: number | null; toolMs?: number | null; deliveryLagMs?: number | null; bytes?: number; sidechain?: boolean; harness?: "codex";
+  rows?: number[]; prs?: number[]; touchedRows?: number[]; touchedPrs?: number[]; actor?: string | null; seq?: number; claimant?: string; name?: string; state?: string | null; status?: string; headSha?: string; mergeSha?: string; startedAt?: number;
+  completedAt?: number | null; how?: "delivered" | "gone"; outcome?: "merged" | "unmerged"; account?: string; resource?: string; cost?: number | null; exit?: number; command?: string; workspace?: string;
+  script?: string; sessionId?: string; keyedBy?: "session" | "time" | null; unkeyed?: "script" | "no-turn";
+};
 
-/** @typedef {{ tool: "Read" | "Grep" | "Glob" | "mixed", tokens: number | null }} ToolRead */
+export type ToolRead = { tool: "Read" | "Grep" | "Glob" | "mixed"; tokens: number | null };
 
 /**
  * Cost of a turn, or `null` when the model has no price: an unpriced turn is unknown, and 0 would say it was free.
- * @param {string | undefined} model @param {Tokens} tokens
- * @returns {number | null}
  */
 export function costOf(model: string | undefined, tokens: Tokens): number | null {
   const price = PRICES.find((entry) => (entry.model === undefined ? model?.startsWith(entry.prefix ?? "") : model === entry.model));
@@ -118,7 +119,6 @@ export function costOf(model: string | undefined, tokens: Tokens): number | null
  * The events with every turn's `costUsd` REPRICED from `PRICES` as it stands now, never read off the line it was stored on: the store is append-only and a transcript that has not
  * changed is not read again, so a price added after ingest (a11ign/a11ign#3582) would otherwise never reach the turns stored before it (#3638: 147,675 turns kept `null`).
  * A model with no price stays `null`. A turn with no `tokens` has nothing to price from and is left as stored, and any event that is not a turn is returned as it came.
- * @param {TraceEvent[]} events @returns {TraceEvent[]}
  */
 export function repriceEvents(events: TraceEvent[]): TraceEvent[] {
   return events.map((event) => {
@@ -128,7 +128,6 @@ export function repriceEvents(events: TraceEvent[]): TraceEvent[] {
   });
 }
 
-/** @param {any} usage @returns {Tokens} */
 export function tokensOf(usage: any): Tokens {
   const split = usage?.cache_creation;
   const written = usage?.cache_creation_input_tokens ?? 0;
@@ -152,8 +151,7 @@ const BARE_NUMBER_IS = new Map([
 /**
  * The row and pull request a cause key names. `worker-3490/pr-review-blocked/pr-agent-org#165/...` is agent-org pull request 165; `pr-3406` is pull request 3406 of
  * the primary repository; `row-3390` is a row. `repo` is the keyed repository's name, or `null` for the primary.
- * @param {string} key the ledger key, `<group>/<cause>/<subject...>`
- * @returns {{ row: number | null, pr: number | null, repo: string | null }}
+ * @param key the ledger key, `<group>/<cause>/<subject...>`
  */
 export function subjectOf(key: string): { row: number | null; pr: number | null; repo: string | null; } {
   const [, cause = "", ...rest] = key.split("/");
@@ -174,8 +172,7 @@ export function subjectOf(key: string): { row: number | null; pr: number | null;
 /**
  * The rows or pull requests a cause key names when it names SEVERAL, as a comma list (`row-call-count-signal/3125,3404`): `subjectOf` keeps `row: null` for it,
  * because the first of the list is a guess, and an event the key names twice was about both. `{}` for a key that names one subject or none.
- * @param {string} key the ledger key, `<group>/<cause>/<subject...>`
- * @returns {{ rows?: number[], prs?: number[] }}
+ * @param key the ledger key, `<group>/<cause>/<subject...>`
  */
 export function subjectsOf(key: string): { rows?: number[]; prs?: number[]; } {
   const [, cause = "", ...rest] = key.split("/");
@@ -188,7 +185,6 @@ export function subjectsOf(key: string): { rows?: number[]; prs?: number[]; } {
 
 /**
  * What a session's NAME says when the order's key says nothing: a spawned `worker-<n>` is row n and `reviewer-<n>` is pull request n.
- * @param {string} session @param {string} rowRepo
  */
 export function subjectOfSession(session: string, rowRepo: string) {
   const worker = /^worker-(\d+)$/.exec(session);
@@ -201,10 +197,8 @@ export function subjectOfSession(session: string, rowRepo: string) {
 /**
  * One event per ended deferral of the gate's log (`deferral-log.ts`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
  * again) is the one event. `at` is the END, which is when the store learned of it; the start is `startedAt`.
- * @param {import("../deferral-log.ts").EndedDeferral[]} spans @param {string} rowRepo
- * @returns {TraceEvent[]}
  */
-export function eventsOfDeferrals(spans: import("../deferral-log.ts").EndedDeferral[], rowRepo: string): TraceEvent[] {
+export function eventsOfDeferrals(spans: EndedDeferral[], rowRepo: string): TraceEvent[] {
   return spans.map(({ key, startMs, endMs, how }) => {
     const [session = key, cause = null] = key.split("/");
     const subject = subjectOf(key);
@@ -227,17 +221,15 @@ export const QUIET_MS = 5 * 60 * 1000;
 /** How long a consumed ledger line is remembered: it must exceed wakes-per-row's `LEDGER_LEAD_MS` (10 min), the window in which a later wake could claim it again. */
 const LEDGER_MEMORY_MS = 60 * 60 * 1000;
 
-/** @typedef {{ start: number, index: number, at: number, record: any }} Rec */
+export type Rec = { start: number; index: number; at: number; record: any };
 
 /**
- * @param {string} text one transcript, or the part of one that starts at a line boundary
- * @returns {{ records: Rec[], unreadable: number[], end: number, tail: number | null }} `start` is a byte offset into `text`; `unreadable` the start of each line that is not JSON;
+ * @param text one transcript, or the part of one that starts at a line boundary
+ * @returns `start` is a byte offset into `text`; `unreadable` the start of each line that is not JSON;
  *   `tail` where a final line WITHOUT its newline begins when it is not JSON (a half-written line, to be read again), else `null`; `end` where the readable text ends
  */
 export function readRecords(text: string): { records: Rec[]; unreadable: number[]; end: number; tail: number | null; } {
-  /** @type {Rec[]} */
   const records: Rec[] = [];
-  /** @type {number[]} */
   const unreadable: number[] = [];
   let start = 0;
   let tail = null;
@@ -259,15 +251,12 @@ export function readRecords(text: string): { records: Rec[]; unreadable: number[
   return { records, unreadable, end: tail ?? Buffer.byteLength(text), tail };
 }
 
-/** @typedef {{ id: string, first: number, last: number, record: any }} MessageGroup */
+type MessageGroup = { id: string; first: number; last: number; record: any };
 
 /**
  * One group per `message.id`: the position of its first and last block (in `records`) and its last record, whose usage is final.
- * @param {Rec[]} records
- * @returns {MessageGroup[]}
  */
 function messageGroups(records: Rec[]): MessageGroup[] {
-  /** @type {Map<string, MessageGroup>} */
   const byMessage: Map<string, MessageGroup> = new Map();
   for (const [position, { record }] of records.entries()) {
     const id = record?.type === "assistant" ? record.message?.id : null;
@@ -280,8 +269,6 @@ function messageGroups(records: Rec[]): MessageGroup[] {
 /**
  * The byte before which everything is settled: the start of the earliest message still young enough to be gaining blocks, or `end`. A message is wholly before the
  * boundary or wholly after it: a settled message with blocks on both sides pulls the boundary back to its first block.
- * @param {{ records: Rec[], groups: MessageGroup[], end: number, now: number }} input
- * @returns {{ boundary: number, held: MessageGroup[], settleAt: number | null }}
  */
 function settledBoundary({ records, groups, end, now }: { records: Rec[]; groups: MessageGroup[]; end: number; now: number; }): { boundary: number; held: MessageGroup[]; settleAt: number | null; } {
   const young = groups.filter((group) => now - records[group.last].at < QUIET_MS);
@@ -300,9 +287,7 @@ function settledBoundary({ records, groups, end, now }: { records: Rec[]; groups
   return { boundary, held, settleAt };
 }
 
-/** @typedef {import("./ingest-state.ts").Carry} Carry */
-
-/** A Claude transcript's id is its file name (`<id>.jsonl`), and is what `CLAUDE_CODE_SESSION_ID` holds in the session that wrote it: the key `host/gh` writes on a `gh` call (#3589). @param {string} file */
+/** A Claude transcript's id is its file name (`<id>.jsonl`), and is what `CLAUDE_CODE_SESSION_ID` holds in the session that wrote it: the key `host/gh` writes on a `gh` call (#3589). */
 const transcriptId = (file: string) => (file.split("/").pop() ?? file).replace(/\.jsonl$/, "");
 
 /**
@@ -311,10 +296,8 @@ const transcriptId = (file: string) => (file.split("/").pop() ?? file).replace(/
  * `consumed` is how many bytes of `text` are turned into events (the rest is a half-written line or a message that may still be gaining blocks), so a caller that
  * resumes at `consumed` sees every event exactly as one read of the whole file would have given it. `now` defaults to "nothing is young": a caller that reads
  * a finished file in one piece holds nothing back.
- * @param {{ text: string, file: string, ledger: import("../wakes-per-row.ts").LedgerEntry[], rowRepo: string, carry?: Carry | null, now?: number }} input
- * @returns {{ session: string, events: TraceEvent[], unreadable: number, carry: Carry, consumed: number, held: number, settleAt: number | null, namedLate: boolean }}
  */
-export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, now = Number.POSITIVE_INFINITY }: { text: string; file: string; ledger: import("../wakes-per-row.ts").LedgerEntry[]; rowRepo: string; carry?: Carry | null; now?: number; }): { session: string; events: TraceEvent[]; unreadable: number; carry: Carry; consumed: number; held: number; settleAt: number | null; namedLate: boolean; } {
+export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, now = Number.POSITIVE_INFINITY }: { text: string; file: string; ledger: LedgerEntry[]; rowRepo: string; carry?: Carry | null; now?: number; }): { session: string; events: TraceEvent[]; unreadable: number; carry: Carry; consumed: number; held: number; settleAt: number | null; namedLate: boolean; } {
   const { records, unreadable, end, tail } = readRecords(text);
   const groups = messageGroups(records);
   const { boundary, held, settleAt } = settledBoundary({ records, groups, end, now });
@@ -327,11 +310,8 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   const used = carry?.used ?? [];
   const free = ledger.filter((entry) => entry.session === session && !used.some((spent) => spent.at === entry.at && spent.key === entry.key));
   const paired = matchLedger(wakes, free);
-  /** @type {TraceEvent[]} */
   const events: TraceEvent[] = [];
-  /** @type {NonNullable<Carry["owner"]>[]} */
   const placed: NonNullable<Carry["owner"]>[] = [];
-  /** @type {{ at: number, key: string }[]} */
   const spent: { at: number; key: string; }[] = [];
   for (const wake of paired.wakes) {
     const key = ledger.find((entry) => entry.session === session && entry.at === wake.typedAt && entry.cause === wake.cause)?.key ?? null;
@@ -347,7 +327,7 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
   }
   // The wake in force at the offset: the carried one answers for a turn before the first wake of this read, which is how the row survives a resume.
   const latest = placed.at(-1) ?? carry?.owner ?? null;
-  const owner = (/** @type {number} */ at: number) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
+  const owner = (at: number) => placed.findLast((wake) => wake.at <= at) ?? carry?.owner
     ?? { id: null, ...subjectOfSession(session, rowRepo), cause: null, causeKey: null };
   const priorAt = carry?.lastAt ?? null;
   const reads = toolReadsOf({ records, groups: groups.filter((group) => !held.includes(group)), end: settled.length, carried: carry?.previous ?? null });
@@ -372,12 +352,11 @@ const OTHER_CLONE = /agent-org|screenreader-worker|documents/;
 /**
  * The rows and pull requests of the primary repository a turn WROTE to with `gh issue|pr <verb> <n>` (INFERRED from the command text: the harness records no cwd for a
  * command, so a command that names another clone or another `--repo` is left out, and a `gh api` write is not read). Present only when the turn wrote to one.
- * @param {Rec[]} blocks the records of one API message @param {string} rowRepo
- * @returns {{ touchedRows?: number[], touchedPrs?: number[] }}
+ * @param blocks the records of one API message
  */
 export function touchesOf(blocks: Rec[], rowRepo: string): { touchedRows?: number[]; touchedPrs?: number[]; } {
-  const rows = new Set();
-  const prs = new Set();
+  const rows = new Set<number>();
+  const prs = new Set<number>();
   for (const { record } of blocks) {
     for (const block of Array.isArray(record?.message?.content) ? record.message.content : []) {
       const command = block?.type === "tool_use" && typeof block.input?.command === "string" ? block.input.command : "";
@@ -392,15 +371,13 @@ export function touchesOf(blocks: Rec[], rowRepo: string): { touchedRows?: numbe
   return { ...(rows.size > 0 ? { touchedRows: [...rows].sort((a, b) => a - b) } : {}), ...(prs.size > 0 ? { touchedPrs: [...prs].sort((a, b) => a - b) } : {}) };
 }
 
-/** @typedef {(at: number) => { id: string | null, row: number | null, pr: number | null, repo: string | null, rows?: number[], prs?: number[], cause: string | null, causeKey: string | null }} Owner */
+type Owner = (at: number) => { id: string | null; row: number | null; pr: number | null; repo: string | null; rows?: number[]; prs?: number[]; cause: string | null; causeKey: string | null };
 
-/** The several subjects a wake's key named, as event fields: present only when it named several, so an event with one subject is the shape it always was. @param {{ rows?: number[], prs?: number[] }} own */
+/** The several subjects a wake's key named, as event fields: present only when it named several, so an event with one subject is the shape it always was. */
 const listedBy = ({ rows, prs }: { rows?: number[]; prs?: number[]; }) => ({ ...(rows ? { rows } : {}), ...(prs ? { prs } : {}) });
 
 /**
  * One turn per `message.id`, from its last record. `priorAt` is the time of the record before this read began, for the wall-clock of a turn that is the first thing in it.
- * @param {{ records: Rec[], groups: MessageGroup[], session: string, transcript: string, owner: Owner, priorAt: number | null, rowRepo: string, reads: Map<string, ToolRead | null> }} input
- * @returns {TraceEvent[]}
  */
 function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo, reads }: { records: Rec[]; groups: MessageGroup[]; session: string; transcript: string; owner: Owner; priorAt: number | null; rowRepo: string; reads: Map<string, ToolRead | null>; }): TraceEvent[] {
   const before = recordBefore(records, priorAt);
@@ -423,37 +400,33 @@ function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo
 /** The tools whose results the report calls READ tokens. */
 export const READ_TOOLS = ["Read", "Grep", "Glob"];
 
-/** @typedef {import("./ingest-state.ts").Previous} Previous */
-
-/** @param {Tokens} tokens the window a turn was sent: everything on the input side */
+/** @param tokens the window a turn was sent: everything on the input side */
 const windowOf = (tokens: Tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
 
-/** Whether the records in `[from, to)` of one side (main thread or a subagent's) hold only tool results: a prompt, an order or a compaction summary there means the window grew by more than the results. @param {Rec[]} records @param {{ from: number, to: number, side: boolean }} span */
+/** Whether the records in `[from, to)` of one side (main thread or a subagent's) hold only tool results: a prompt, an order or a compaction summary there means the window grew by more than the results. */
 function onlyToolResults(records: Rec[], { from, to, side }: { from: number; to: number; side: boolean; }) {
   return records.slice(from, to).every(({ record }) => record?.type !== "user" || (record.isSidechain === true) !== side
-    || (Array.isArray(record.message?.content) && record.message.content.some((/** @type {{ type?: string }} */ block: { type?: string; }) => block?.type === "tool_result")));
+    || (Array.isArray(record.message?.content) && record.message.content.some((block: { type?: string; }) => block?.type === "tool_result")));
 }
 
-/** @param {Rec[]} records @param {MessageGroup} group @returns {string[]} the tool the message called, one name per call */
+/** @returns the tool the message called, one name per call */
 function toolsCalled(records: Rec[], { id, first, last }: MessageGroup): string[] {
   return records.slice(first, last + 1).filter(({ record }) => record?.message?.id === id)
-    .flatMap(({ record }) => (Array.isArray(record.message.content) ? record.message.content : []).filter((/** @type {{ type?: string }} */ block: { type?: string; }) => block?.type === "tool_use").map((/** @type {{ name?: string }} */ block: { name?: string; }) => String(block.name)));
+    .flatMap(({ record }) => (Array.isArray(record.message.content) ? record.message.content : []).filter((block: { type?: string; }) => block?.type === "tool_use").map((block: { name?: string; }) => String(block.name)));
 }
 
 /**
  * What each message's results cost the window (`toolRead`, defined in `DEFINITIONS`): a turn is sent the whole window again, so the growth since the message before it, less that
  * message's own output, is what the results (and the few tokens of framing around them) added. A thread is its own sequence: a subagent's messages are not between the main thread's.
  * `carried` is what the read before this one left, so a resumed read derives its first turn the way one read of the whole file would have.
- * @param {{ records: Rec[], groups: MessageGroup[], end: number, carried: { main: Previous | null, side: Previous | null } | null }} input `end` is where the settled records end
- * @returns {{ byMessage: Map<string, ToolRead | null>, previous: { main: Previous | null, side: Previous | null } }}
+ * @param input `end` is where the settled records end
  */
 function toolReadsOf({ records, groups, end, carried }: { records: Rec[]; groups: MessageGroup[]; end: number; carried: { main: Previous | null; side: Previous | null; } | null; }): { byMessage: Map<string, ToolRead | null>; previous: { main: Previous | null; side: Previous | null; }; } {
   const previous = { main: carried?.main ?? null, side: carried?.side ?? null };
   const lastAt = { main: -1, side: -1 };
-  /** @type {Map<string, ToolRead | null>} */
   const byMessage: Map<string, ToolRead | null> = new Map();
   for (const group of groups) {
-    const thread = group.record.isSidechain === true ? "side" : "main";
+    const thread: "main" | "side" = group.record.isSidechain === true ? "side" : "main";
     const prior = previous[thread];
     const clean = prior !== null && prior.clean && onlyToolResults(records, { from: lastAt[thread] + 1, to: group.first, side: thread === "side" });
     const tokens = tokensOf(group.record.message.usage);
@@ -461,22 +434,22 @@ function toolReadsOf({ records, groups, end, carried }: { records: Rec[]; groups
     previous[thread] = { window: windowOf(tokens), output: tokens.output, tools: toolsCalled(records, group), clean: true };
     lastAt[thread] = group.last;
   }
-  for (const thread of /** @type {const} */ (["main", "side"])) {
+  for (const thread of ["main", "side"] as const) {
     const last = previous[thread];
     if (last !== null) previous[thread] = { ...last, clean: (lastAt[thread] >= 0 || last.clean) && onlyToolResults(records, { from: lastAt[thread] + 1, to: end, side: thread === "side" }) };
   }
   return { byMessage, previous };
 }
 
-/** @param {Previous} prior the message before @param {{ window: number, clean: boolean }} now @returns {ToolRead | null} `null` when that message called no read tool */
+/** @param prior the message before @returns `null` when that message called no read tool */
 function toolReadOf(prior: Previous, { window, clean }: { window: number; clean: boolean; }): ToolRead | null {
   if (!prior.tools.some((tool) => READ_TOOLS.includes(tool))) return null;
   const distinct = [...new Set(prior.tools)];
   const grown = window - prior.window - prior.output;
-  return { tool: distinct.length === 1 ? /** @type {"Read" | "Grep" | "Glob"} */ (distinct[0]) : "mixed", tokens: clean && grown >= 0 ? grown : null };
+  return { tool: distinct.length === 1 ? (distinct[0] as "Read" | "Grep" | "Glob") : "mixed", tokens: clean && grown >= 0 ? grown : null };
 }
 
-/** For each position, the time of the last record before it that has one, in one pass (a search per message was quadratic in the file). @param {Rec[]} records @param {number | null} priorAt */
+/** For each position, the time of the last record before it that has one, in one pass (a search per message was quadratic in the file). */
 function recordBefore(records: Rec[], priorAt: number | null) {
   let latest = priorAt;
   return records.map(({ at }) => {
@@ -486,7 +459,7 @@ function recordBefore(records: Rec[], priorAt: number | null) {
   });
 }
 
-/** For each position, the time of the last ASSISTANT record before it (`priorAt` before the first one of this read), in one pass: where a tool call's run begins. @param {Rec[]} records @param {number | null} priorAt */
+/** For each position, the time of the last ASSISTANT record before it (`priorAt` before the first one of this read), in one pass: where a tool call's run begins. */
 function assistantBefore(records: Rec[], priorAt: number | null) {
   let latest = priorAt;
   return records.map(({ at, record }) => {
@@ -500,22 +473,20 @@ function assistantBefore(records: Rec[], priorAt: number | null) {
  * How long the tool call that precedes the message at `first` ran: from `startedAt`, the last block of the message that made the call, to the latest tool result before this
  * message (parallel calls answer one by one). `null` when the records before the message are not tool results: a user record that is anything else (an order, a prompt) means
  * no tool ran, and nothing known about `startedAt` means nobody can say when it began. Records of other kinds (attachments, titles) are the harness's and are stepped over.
- * @param {Rec[]} records @param {number} first position of the message's first block @param {number | null} startedAt
- * @returns {number | null}
+ * @param first position of the message's first block
  */
 function toolMsBefore(records: Rec[], first: number, startedAt: number | null): number | null {
   let resultAt = Number.NaN;
   for (let position = first - 1; position >= 0 && records[position].record?.type !== "assistant"; position--) {
     const { at, record } = records[position];
     if (record?.type !== "user") continue;
-    const answered = Array.isArray(record.message?.content) && record.message.content.some((/** @type {{ type?: string }} */ block: { type?: string; }) => block?.type === "tool_result");
+    const answered = Array.isArray(record.message?.content) && record.message.content.some((block: { type?: string; }) => block?.type === "tool_result");
     if (!answered) return null;
     if (!Number.isNaN(at)) resultAt = Number.isNaN(resultAt) ? at : Math.max(resultAt, at);
   }
   return startedAt === null || Number.isNaN(resultAt) ? null : Math.max(0, resultAt - startedAt);
 }
 
-/** @param {{ index: number, at: number, record: any }[]} records @param {string} session @param {Owner} owner @returns {TraceEvent[]} */
 function compactionsOf(records: { index: number; at: number; record: any; }[], session: string, owner: Owner): TraceEvent[] {
   return records.filter(({ record }) => record?.isCompactSummary === true && !Number.isNaN(Date.parse(record.timestamp))).map(({ at }) => {
     const own = owner(at);
@@ -530,7 +501,6 @@ function compactionsOf(records: { index: number; at: number; record: any; }[], s
 /**
  * The events in a store file. The file is an append-only LOG: an event whose attribution was later corrected (`appendToStore`) is on it twice, and the LAST copy of an id
  * is the event, at the position of its last copy.
- * @param {string} path @returns {TraceEvent[]}
  */
 export function readStore(path: string): TraceEvent[] {
   if (!existsSync(path)) return [];
@@ -542,8 +512,8 @@ export function readStore(path: string): TraceEvent[] {
 /**
  * The store, read ONCE: its events and where each id sits. A run that appends in several batches (the transcripts, then GitHub) shares one of these, so the
  * file is parsed once per run, not once per transcript (the shipped `appendEvents` re-parsed all of it on every call, about 20 GB of JSON for 1,247 transcripts).
- * @param {string} path @param {(path: string) => TraceEvent[]} [read] a parameter so a test can count the reads
- * @returns {{ path: string, events: TraceEvent[], at: Map<string, number> }} `at` is each id's index in `events`
+ * @param read a parameter so a test can count the reads
+ * @returns `at` is each id's index in `events`
  */
 export function openStore(path: string, read: (path: string) => TraceEvent[] = readStore): { path: string; events: TraceEvent[]; at: Map<string, number>; } {
   const events = read(path);
@@ -554,11 +524,8 @@ export function openStore(path: string, read: (path: string) => TraceEvent[] = r
  * Append what an open store does not have, as ONE write. An event it already holds is left alone when the new copy is identical (a second call with the same events adds
  * nothing); a copy that DIFFERS supersedes it: it is appended, and `readStore` takes the last copy of an id. Nothing already on disk is rewritten. A correction is how a
  * fix to the attribution of a turn reaches the turns stored before the fix: ids are stable, so without it they would stay as first read.
- * @param {{ path: string, events: TraceEvent[], at: Map<string, number> }} store @param {TraceEvent[]} events
- * @returns {{ added: number, superseded: number, skipped: number }}
  */
 export function appendToStore(store: { path: string; events: TraceEvent[]; at: Map<string, number>; }, events: TraceEvent[]): { added: number; superseded: number; skipped: number; } {
-  /** @type {TraceEvent[]} */
   const fresh: TraceEvent[] = [];
   let superseded = 0;
   for (const event of events) {
@@ -580,18 +547,16 @@ export function appendToStore(store: { path: string; events: TraceEvent[]; at: M
   return { added: fresh.length - superseded, superseded, skipped: events.length - fresh.length };
 }
 
-/** Open, append, done: for a caller with one batch. @param {string} path @param {TraceEvent[]} events */
+/** Open, append, done: for a caller with one batch. */
 export const appendEvents = (path: string, events: TraceEvent[]) => appendToStore(openStore(path), events);
 
 /**
  * The events about a subject: those of its rows, and of its pull requests (the ones that close the rows, and the one asked about when it IS a pull request).
- * @param {TraceEvent[]} events @param {{ rows: number[], prs: number[] }} subject
- * @returns {TraceEvent[]}
  */
 export function eventsForRow(events: TraceEvent[], { rows, prs }: { rows: number[]; prs: number[]; }): TraceEvent[] {
   const wantedRows = new Set(rows);
   const wantedPulls = new Set(prs);
-  const about = (/** @type {TraceEvent} */ event: TraceEvent) => (event.row !== null && wantedRows.has(event.row)) || (event.pr !== null && event.repo === null && wantedPulls.has(event.pr))
+  const about = (event: TraceEvent) => (event.row !== null && wantedRows.has(event.row)) || (event.pr !== null && event.repo === null && wantedPulls.has(event.pr))
     || [...(event.rows ?? []), ...(event.touchedRows ?? [])].some((row) => wantedRows.has(row)) || [...(event.prs ?? []), ...(event.touchedPrs ?? [])].some((pr) => wantedPulls.has(pr));
   return events.filter(about)
     .sort((a, b) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0) || a.id.localeCompare(b.id));

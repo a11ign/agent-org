@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // RULE: DOES THIS ROW'S OWN REGION OVERLAP AN OPEN PR'S ACTUAL FILES? -- B4, #462.
 //
 // "No two open pull requests touch the same file." An intersection of changed-file lists, at claim time
@@ -82,7 +81,6 @@ import { CLAIM_LABEL } from "../claim-labels.ts";
 import { isAcceptancePath } from "../acceptance-file.ts";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.ts";
 
-/** @type {(path: string) => boolean} */
 // ADR 0044: and each pull request's own `.acceptance/` file, for the same reason -- a shared directory is no shared change.
 const isChangeset: (path: string) => boolean = (path): boolean => path.startsWith(".changeset/") || isAcceptancePath(path);
 
@@ -100,9 +98,8 @@ const primaryTrackerRepo = () => homeProjectDeclaration().tracker[0].repo;
  * tracker's row 7 -- and must not be excused from a claim on that row. Both default to the project's first, so a body that names
  * no repository, read for the first repository, returns what it always did.
  *
- * @param {string | null | undefined} body
- * @param {{ prRepo?: string, trackerRepo?: string }} [where] the repository the body is on, and the tracker whose rows are asked about
- * @returns {number[]}
+ *
+ * @param [where] the repository the body is on, and the tracker whose rows are asked about
  */
 export function declaredClosedRows(body: string | null | undefined, { prRepo = REPO, trackerRepo = primaryTrackerRepo() }: { prRepo?: string; trackerRepo?: string; } = {}): number[] {
   const declaration = extractClosesDeclaration(body);
@@ -116,9 +113,6 @@ export function declaredClosedRows(body: string | null | undefined, { prRepo = R
  * The rows a listed PR declares it closes. `closes` is a LIST because a PR may declare several rows; a
  * caller holding one may write it bare, which is how the hand-run fixtures and Open-checks in the rows
  * themselves are written.
- *
- * @param {{ closes?: number[] | number | null }} other
- * @returns {number[]}
  */
 function closedRowsOf(other: { closes?: number[] | number | null; }): number[] {
   if (Array.isArray(other.closes)) return other.closes;
@@ -133,11 +127,6 @@ function closedRowsOf(other: { closes?: number[] | number | null; }): number[] {
  * #2769: OR its head branch is the one `--adopt` is re-stamping (`adoptedBranch`), which a `Closes: none` split PR needs because it
  * declares no row at all. Absent `adoptedBranch` excludes nothing, and a PR of another repository is never matched: a branch NAME
  * is not unique across repositories.
- *
- * @param {{ number: number, closes?: number[] | number | null, branch?: string, repo?: string }} other
- * @param {number | null | undefined} rowNumber
- * @param {string | null | undefined} [adoptedBranch]
- * @returns {boolean}
  */
 function isOwnPrOf(other: { number: number; closes?: number[] | number | null; branch?: string; repo?: string; }, rowNumber: number | null | undefined, adoptedBranch?: string | null | undefined): boolean {
   if (typeof adoptedBranch === "string" && adoptedBranch !== "" && other.repo === undefined && other.branch === adoptedBranch) return true;
@@ -162,10 +151,9 @@ function isOwnPrOf(other: { number: number; closes?: number[] | number | null; b
  * the PR's own `blockersOf` (a held PR out of `lookupOpenPrFiles` carries a lazy one over the same `run`, so the claim,
  * `check` and the spawn filter get the exclusion without each having to be edited to ask for it).
  *
- * @param {{ held?: boolean, closes?: number[] | number | null, blockersOf?: (row: number) => number[] | null }} other
- * @param {number | null | undefined} rowNumber
- * @param {((row: number) => number[] | null) | undefined} blockersOf the rows blocking a given row, or `null`
- * @returns {boolean}
+ *
+ *
+ * @param blockersOf the rows blocking a given row, or `null`
  */
 function isHeldPrWaitingOn(other: { held?: boolean; closes?: number[] | number | null; blockersOf?: (row: number) => number[] | null; }, rowNumber: number | null | undefined, blockersOf: ((row: number) => number[] | null) | undefined): boolean {
   const resolve = blockersOf ?? other.blockersOf;
@@ -178,28 +166,26 @@ function isHeldPrWaitingOn(other: { held?: boolean; closes?: number[] | number |
 /**
  * THE VERDICT, PURE.
  *
- * @param {string[]} myFiles this row's own declared Region paths -- files, and (#941) directory prefixes
+ * @param myFiles this row's own declared Region paths -- files, and (#941) directory prefixes
  *   ending in `/` (changeset entries already excluded by
  *   the caller is NOT required -- this function excludes them itself, so either side can pass a raw list)
- * @param {{ number: number, files: string[], changedFiles: number, closes?: number[] | number | null,
- *   held?: boolean, blockersOf?: (row: number) => number[] | null, repo?: string, repoKey?: string, branch?: string }[]} otherPrFiles
+ *
  *   every OTHER open PR, its changed files, the count GitHub reports for them -- #1419: the list is only
  *   comparable when it matches the count -- (#2101) the rows its body declares it closes, and (#2493)
  *   whether it carries a `hold:` label. (#2617) `repo` and `repoKey` are on a pull request of any repository but the first: ABSENT
  *   IS THE FIRST'S (the empty key), and a Region entry is compared only with the files of the repository it is prefixed for
- * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null, adoptedBranch?: string | null }} [options] the number
+ * @param [options] the number
  *   of the row being asked about, so its OWN pull request can be excluded (#2101). ABSENT EXCLUDES NOTHING: a
  *   caller that does not know which row it is comparing for gets the unconditional B4 of before. `adoptedBranch` (#2769) is the
  *   branch of the tree `--adopt` is resuming: an open PR from it is this row's own work even when it declares `Closes: none`.
  *   `blockersOf` (#2493) is asked ONLY for a held PR that overlaps, and ABSENT EXCLUDES NOTHING likewise.
- * @returns {{ reason: string | null, emptyOtherPrs: (number | string)[] }} a number for a pull request of the first repository, `owner/repo#N` for another's
+ * @returns a number for a pull request of the first repository, `owner/repo#N` for another's
  */
 export function fileOverlapReason(myFiles: string[], otherPrFiles: {
         number: number; files: string[]; changedFiles: number; closes?: number[] | number | null;
         held?: boolean; blockersOf?: (row: number) => number[] | null; repo?: string; repoKey?: string; branch?: string;
     }[], { rowNumber = null, blockersOf, adoptedBranch = null }: { rowNumber?: number | null; blockersOf?: (row: number) => number[] | null; adoptedBranch?: string | null; } = {}): { reason: string | null; emptyOtherPrs: (number | string)[]; } {
   const mine = new Set(myFiles.filter((p) => !isChangeset(splitRegionEntry(p).path)));
-  /** @type {(number | string)[]} */
   const emptyOtherPrs: (number | string)[] = [];
   if (mine.size === 0) return { reason: null, emptyOtherPrs };
 
@@ -260,11 +246,10 @@ export function fileOverlapReason(myFiles: string[], otherPrFiles: {
  * A Region entry is compared only with entries of the same repository key (a bare one is the first's), #2617's rule. A directory
  * entry (`dir/`, #941) meets every entry under it, and the refusal names the more specific entry of the two.
  *
- * @param {string[]} myFiles this row's declared Region entries, as written
- * @param {{ number: number, files: string[] }[]} claimedRows the other rows that are `in-progress`, each with its Region entries
- * @param {{ rowNumber?: number | null, blockersOf?: (row: number) => number[] | null,
- *   openPrs?: { closes?: number[] | number | null }[] }} [options]
- * @returns {string | null} the refusal, or `null` when no claimed row shares a file
+ * @param myFiles this row's declared Region entries, as written
+ * @param claimedRows the other rows that are `in-progress`, each with its Region entries
+ *
+ * @returns the refusal, or `null` when no claimed row shares a file
  */
 export function claimedRegionOverlapReason(myFiles: string[], claimedRows: { number: number; files: string[]; }[], { rowNumber = null, blockersOf, openPrs = [] }: {
     rowNumber?: number | null; blockersOf?: (row: number) => number[] | null;
@@ -288,17 +273,15 @@ export function claimedRegionOverlapReason(myFiles: string[], claimedRows: { num
 
 /**
  * The Region entries that count for B4: all of them but changesets, which never collide.
- * @param {string[]} entries @returns {string[]}
  */
 const regionEntriesOf = (entries: string[]): string[] => entries.filter((entry) => !isChangeset(splitRegionEntry(entry).path));
 
 /**
  * The entries of `mine` and `theirs` that meet: same repository key, and one path equal to or covering the other. The MORE SPECIFIC
  * of the two is named, as written, so a directory against a file names the file.
- * @param {string[]} mine @param {string[]} theirs @returns {string[]}
  */
 function sharedRegionEntries(mine: string[], theirs: string[]): string[] {
-  const shared = new Set();
+  const shared = new Set<string>();
   for (const a of mine) {
     for (const b of theirs) {
       const [x, y] = [splitRegionEntry(a), splitRegionEntry(b)];
@@ -313,8 +296,6 @@ function sharedRegionEntries(mine: string[], theirs: string[]): string[] {
 /**
  * A `blockedBy` edge in EITHER direction between two rows: one cannot be worked first while the other waits on it, so neither is the
  * other's competitor. `null` from `blockersOf` is "cannot say" and excludes nothing.
- * @param {number | null} asker @param {number} claimed @param {((row: number) => number[] | null) | undefined} blockersOf
- * @returns {boolean}
  */
 function areBlockedOnEachOther(asker: number | null, claimed: number, blockersOf: ((row: number) => number[] | null) | undefined): boolean {
   if (typeof blockersOf !== "function" || !Number.isInteger(asker)) return false;
@@ -338,7 +319,7 @@ function areBlockedOnEachOther(asker: number | null, claimed: number, blockersOf
  */
 export const NO_CODE_LEFT_LABEL = "no-code-left";
 
-const hasLabel = (/** @type {any} */ row: any, /** @type {string} */ name: string) => (row?.labels ?? []).some((/** @type {any} */ l: any) => String(l?.name ?? l) === name);
+const hasLabel = (row: any, name: string) => (row?.labels ?? []).some((l: any) => String(l?.name ?? l) === name);
 
 const FENCE_LINE = /^\s*(?:```|~~~)/;
 
@@ -352,8 +333,8 @@ const FENCE_LINE = /^\s*(?:```|~~~)/;
  * Reads the fence out of `extractRegionSection`'s text and hands the fenced lines back to `declaredRegionFiles` under a heading, so
  * the path grammar is the one grammar and the two cannot disagree about what a fenced line declares.
  *
- * @param {string} body @param {{ rootFiles?: Set<string> }} [options]
- * @returns {string[] | null} `null` for a body with no Region section, as `declaredRegionFiles`
+ *
+ * @returns `null` for a body with no Region section, as `declaredRegionFiles`
  */
 function claimedRegionFiles(body: string, options?: { rootFiles?: Set<string>; }): string[] | null {
   const fenced = fencedLinesOf(extractRegionSection(body) ?? "");
@@ -362,7 +343,6 @@ function claimedRegionFiles(body: string, options?: { rootFiles?: Set<string>; }
 
 /**
  * The lines of every fenced block in `section`, fences included, or `null` when it holds none.
- * @param {string} section @returns {string[] | null}
  */
 function fencedLinesOf(section: string): string[] | null {
   let inFence = false;
@@ -383,9 +363,8 @@ function fencedLinesOf(section: string): string[] | null {
  * #3541: a row labelled {@link NO_CODE_LEFT_LABEL} holds no file and is dropped too, and a row's Region is read by its fence
  * ({@link claimedRegionFiles}). The label is read from the same list, so it costs no call.
  *
- * @param {any[] | null | undefined} rows `null`/absent is "not read", and yields `null` -- NEVER `[]`, which would say nobody holds a file
- * @param {{ rootFiles?: Set<string> }} [options] passed to `declaredRegionFiles`, so a test can name its own tree
- * @returns {{ number: number, files: string[], blockedBy: number[] }[] | null}
+ * @param rows `null`/absent is "not read", and yields `null` -- NEVER `[]`, which would say nobody holds a file
+ * @param [options] passed to `declaredRegionFiles`, so a test can name its own tree
  */
 export function claimedRegionsOf(rows: any[] | null | undefined, options?: { rootFiles?: Set<string>; }): { number: number; files: string[]; blockedBy: number[]; }[] | null {
   if (!Array.isArray(rows)) return null;
@@ -393,7 +372,7 @@ export function claimedRegionsOf(rows: any[] | null | undefined, options?: { roo
     .filter((row) => hasLabel(row, CLAIM_LABEL) && !hasLabel(row, NO_CODE_LEFT_LABEL))
     .flatMap((row) => {
       const files = claimedRegionFiles(String(row?.body ?? ""), options) ?? [];
-      const blockedBy = (row?.blockedBy?.nodes ?? []).map((/** @type {any} */ n: any) => Number(n.number));
+      const blockedBy = (row?.blockedBy?.nodes ?? []).map((n: any) => Number(n.number));
       return files.length === 0 ? [] : [{ number: Number(row.number), files, blockedBy }];
     });
 }
@@ -406,8 +385,7 @@ const CLAIMED_ROWS_LIMIT = 200;
  * `blockedBy` edges included. `null` on a failed read, which is INCONCLUSIVE and NEVER "nobody holds a file": the caller refuses
  * on it, because a comparison that cannot be made must not pass as a comparison that found nothing.
  *
- * @param {{ run?: (args: string[]) => string, repo?: string, rootFiles?: Set<string> }} [deps] `repo` is the TRACKER whose rows are listed
- * @returns {{ number: number, files: string[], blockedBy: number[] }[] | null}
+ * @param [deps] `repo` is the TRACKER whose rows are listed
  */
 export function lookupClaimedRegions({ run = gh, repo = REPO, rootFiles }: { run?: (args: string[]) => string; repo?: string; rootFiles?: Set<string>; } = {}): { number: number; files: string[]; blockedBy: number[]; }[] | null {
   return lookup(() => {
@@ -423,8 +401,6 @@ export function lookupClaimedRegions({ run = gh, repo = REPO, rootFiles }: { run
 /**
  * #2617: A PULL REQUEST'S NAME IN A REFUSAL -- `#7` for the first repository's, which is what every refusal has always said, and
  * `#7 in owner/repo` for another's, because two repositories both have a #7 and a bare number would name either.
- * @param {{ number: number, repo?: string }} pr
- * @returns {string}
  */
 function prName(pr: { number: number; repo?: string; }): string {
   return pr.repo === undefined ? `#${pr.number}` : `#${pr.number} in ${pr.repo}`;
@@ -432,8 +408,6 @@ function prName(pr: { number: number; repo?: string; }): string {
 
 /**
  * #1419: WHY A PR CANNOT BE COMPARED, IN NUMBERS. A reader must be able to check both against GitHub.
- * @param {{ number: number, files: string[], changedFiles: number, repo?: string }} other
- * @returns {string}
  */
 function notComparableReason(other: { number: number; files: string[]; changedFiles: number; repo?: string; }): string {
   const count = Number.isInteger(other.changedFiles) ? `its ${other.changedFiles} changed files` : "no changed-file count";
@@ -453,15 +427,10 @@ function notComparableReason(other: { number: number; files: string[]; changedFi
  *
  * #2617: the row is read from `repo`, the TRACKER it lives in (default the first), and its entries may carry a repository prefix
  * (`nvda-worker:src/x.ts`) -- returned as written, for `fileOverlapReason` to place. One `gh` call, whatever the repositories.
- *
- * @param {number} issueNumber
- * @param {{ run?: (args: string[]) => string, repo?: string }} [deps]
- * @returns {string[] | null}
  */
 export function lookupMyRegionFiles(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): string[] | null {
   return lookup(() => {
     const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "body"]);
-    /** @type {{ body?: string }} */
     const parsed: { body?: string; } = JSON.parse(raw);
     return declaredRegionFiles(parsed.body ?? "");
   });
@@ -483,8 +452,7 @@ export function lookupMyRegionFiles(issueNumber: number, { run = gh, repo = REPO
  * one REST page per pull request whose list came back short (#1419) and one `blockedBy` read per held pull request that overlaps
  * (#2493). `trackerRepo` is whose rows a body's `Closes` is read against (see {@link declaredClosedRows}).
  *
- * @param {{ run?: (args: string[]) => string, log?: (line: string) => void,
- *   repos?: readonly { key: string, repo: string }[], trackerRepo?: string }} [deps]
+ *
  * #2493: and `labels`, on that same call, for whether the PR is held.
  *
  * A HELD PR ALSO CARRIES `blockersOf`, lazy and over this same `run`, so every caller of the rule that got its PRs
@@ -492,9 +460,6 @@ export function lookupMyRegionFiles(issueNumber: number, { run = gh, repo = REPO
  * for a held PR that overlaps (`fileOverlapReason`); merely carrying it costs nothing.
  *
  * #2769: and `headRefName`, on that same call, as `branch` -- what `--adopt` matches its own PR by.
- *
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean, branch?: string,
- *   blockersOf?: (row: number) => number[] | null }[] | null}
  */
 export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.write(`${line}\n`),
   repos = homeProjectDeclaration().code, trackerRepo = primaryTrackerRepo() }: {
@@ -511,20 +476,16 @@ export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.wri
  * #2617: ONE REPOSITORY'S OPEN PULL REQUESTS, in the shape `fileOverlapReason` reads. A failed read is said aloud WITH the repository
  * and re-thrown, so the caller's `lookup` makes the whole read `null` -- INCONCLUSIVE -- and the line says which repository it was:
  * with two, "the open pull requests could not be read" no longer says which half a person should go and look at.
- * @param {{ key: string, repo: string }} where
- * @param {{ run: (args: string[]) => string, log: (line: string) => void, trackerRepo: string }} deps
  */
 function openPrsOf({ key, repo }: { key: string; repo: string; }, { run, log, trackerRepo }: { run: (args: string[]) => string; log: (line: string) => void; trackerRepo: string; }) {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,changedFiles,files,body,labels,headRefName"]);
   } catch (error) {
-    log(`row-claim: could not read ${repo}'s open pull requests (${String(/** @type {Error} */ (error).message).split("\n")[0]}) `
+    log(`row-claim: could not read ${repo}'s open pull requests (${String((error as Error).message).split("\n")[0]}) `
       + "-- B4 is INCONCLUSIVE, never \"no overlap\" (#2617).");
     throw error;
   }
-  /** @type {{ number: number, changedFiles: number, files: { path: string }[], body?: string, labels?: { name: string }[], headRefName?: string }[]} */
   const parsed: { number: number; changedFiles: number; files: { path: string; }[]; body?: string; labels?: { name: string; }[]; headRefName?: string; }[] = JSON.parse(raw);
   return parsed.map((pr) => {
     const listed = pr.files.map((f) => f.path);
@@ -542,16 +503,13 @@ function openPrsOf({ key, repo }: { key: string; repo: string; }, { run, log, tr
  * #1419: EVERY FILE OF ONE PR, THROUGH REST's PAGES. A failure here keeps the short list and says so: letting it throw
  * would make `lookup` return null for the whole read, and a null read skips B4 entirely -- the defect this row fixes,
  * arriving by a different door. The short list then reaches the rule, which refuses it as not comparable.
- * @param {number} number @param {string[]} listed
- * @param {{ run: (args: string[]) => string, log: (line: string) => void, repo: string }} deps
- * @returns {string[]}
  */
 function pagedPrFiles(number: number, listed: string[], { run, log, repo }: { run: (args: string[]) => string; log: (line: string) => void; repo: string; }): string[] {
   try {
     return run(["api", "--paginate", `repos/${repo}/pulls/${number}/files?per_page=100`, "--jq", ".[].filename"])
       .split("\n").filter(Boolean);
   } catch (error) {
-    log(`row-claim: could not page #${number}'s files past ${listed.length} (${/** @type {Error} */ (error).message}) `
+    log(`row-claim: could not page #${number}'s files past ${listed.length} (${(error as Error).message}) `
       + "-- B4 will refuse it as not comparable (#1419).");
     return listed;
   }
@@ -565,9 +523,6 @@ function pagedPrFiles(number: number, listed: string[], { run, log, repo }: { ru
  * for every open row.
  *
  * #2617: `repo` is the TRACKER whose rows are asked about (default the first).
- *
- * @param {{ run?: typeof gh, repo?: string }} [deps]
- * @returns {(row: number) => number[] | null}
  */
 export function lookupBlockersOf({ run = gh, repo = REPO }: { run?: typeof gh; repo?: string; } = {}): (row: number) => number[] | null {
   return (row) => {

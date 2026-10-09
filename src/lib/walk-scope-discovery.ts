@@ -1,4 +1,3 @@
-// @ts-check
 // COPIED FROM `packages/guards/src/walk-scope-discovery.mjs` at aaa3793977 (a11ign/a11ign#3573; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-wiring.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
@@ -25,8 +24,6 @@ import { dirname, join, resolve } from "node:path";
  * #1527: AND `import("<spec>")`, the DYNAMIC form. The static regex needs whitespace after `import`, so
  * `await import("../../scripts/check-real-page-findings.ts")` (`relocated-fixture-key.test.ts`) yielded no
  * specifier, the walk never reached the script, and a change to it never selected that test (#1526).
- * @param {string} source
- * @returns {string[]}
  */
 function specifiersOf(source: string): string[] {
   const staticSpecs = [...source.matchAll(/\bimport\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g)].map((m) => m[1]);
@@ -39,9 +36,6 @@ function specifiersOf(source: string): string[] {
  * workspace specifier can be resolved back to a SOURCE file rather than the `dist/*.js` its own
  * `exports` field actually points a real Node resolution at -- this walk answers "what does a test
  * import", which for a workspace package means its SOURCE, not its build output.
- * @param {string} repoRoot
- * @param {string[]} packageDirs
- * @returns {Map<string, { dir: string, exportsMap: Record<string, unknown> }>}
  */
 export function packageIndex(repoRoot: string, packageDirs: string[]): Map<string, { dir: string; exportsMap: Record<string, unknown>; }> {
   const index = new Map();
@@ -56,13 +50,11 @@ export function packageIndex(repoRoot: string, packageDirs: string[]): Map<strin
  * The literal export target string for one subpath -- `exports` values are either a bare string
  * (`nvda-worker`'s no-build-step packages, ADR 0031) or `{types, default}` (every `tsc --build` package),
  * and only `default` is ever a real runtime resolution target.
- * @param {unknown} value
- * @returns {string | null}
  */
 function exportTarget(value: unknown): string | null {
   if (typeof value === "string") return value;
-  if (value && typeof value === "object" && typeof (/** @type {any} */ (value)).default === "string") {
-    return /** @type {any} */ (value).default;
+  if (value && typeof value === "object" && typeof (value as any).default === "string") {
+    return (value as any).default;
   }
   return null;
 }
@@ -73,8 +65,8 @@ function exportTarget(value: unknown): string | null {
  * `rootDir: src`, `outDir: dist`, so `dist/foo.js` is built from `src/foo.ts`. A package shipping `src`
  * RAW (`nvda-worker`) has no `dist/` in its own targets at all, so the swap is a no-op and the literal
  * target -- already a real source file -- is tried as-is.
- * @param {string} target relative to the package root, e.g. "./dist/wcag.js"
- * @returns {string[]} candidate paths, relative to the package root, most-likely first
+ * @param target relative to the package root, e.g. "./dist/wcag.js"
+ * @returns candidate paths, relative to the package root, most-likely first
  */
 function sourceCandidatesForExportTarget(target: string): string[] {
   const stripped = target.replace(/^\.\//, "");
@@ -89,9 +81,9 @@ function sourceCandidatesForExportTarget(target: string): string[] {
  * import each other with the COMPILED `.js` extension (NodeNext-style TypeScript), so `./foo.js` from a
  * `.ts` file must resolve to the SOURCE `./foo.ts` that produces it, not a `dist/foo.js` that may not
  * exist yet on an unbuilt tree.
- * @param {string} spec
- * @param {string} fromFile absolute path
- * @returns {string | null} absolute path, or null if nothing on disk matches any candidate
+ *
+ * @param fromFile absolute path
+ * @returns absolute path, or null if nothing on disk matches any candidate
  */
 function resolveRelative(spec: string, fromFile: string): string | null {
   const base = resolve(dirname(fromFile), spec);
@@ -106,10 +98,10 @@ function resolveRelative(spec: string, fromFile: string): string | null {
  * One BARE `@a11ign/*` (or unscoped `a11ign`) specifier, with an optional subpath, to a source file --
  * `.` for the package root, `./x` for `exports["./x"]`. Any other bare specifier (a real npm dependency)
  * is not a workspace file and returns null.
- * @param {string} spec
- * @param {string} repoRoot
- * @param {Map<string, { dir: string, exportsMap: Record<string, unknown> }>} packages
- * @returns {string | null} absolute path
+ *
+ *
+ *
+ * @returns absolute path
  */
 function resolveWorkspacePackage(spec: string, repoRoot: string, packages: Map<string, { dir: string; exportsMap: Record<string, unknown>; }>): string | null {
   const scopedMatch = /^(@[^/]+\/[^/]+)(\/.*)?$/.exec(spec);
@@ -135,16 +127,16 @@ function resolveWorkspacePackage(spec: string, repoRoot: string, packages: Map<s
  * "who depends on this PACKAGE"; this asks "which SOURCE FILES does this one TEST FILE actually reach",
  * so a change to any of them is a reason to run it.
  *
- * @param {string} entryFile absolute path
- * @param {string} repoRoot
- * @param {Map<string, { dir: string, exportsMap: Record<string, unknown> }>} packages
- * @returns {Set<string>} absolute paths, entry included
+ * @param entryFile absolute path
+ *
+ *
+ * @returns absolute paths, entry included
  */
 export function sourceClosure(entryFile: string, repoRoot: string, packages: Map<string, { dir: string; exportsMap: Record<string, unknown>; }>): Set<string> {
-  const seen = new Set();
+  const seen = new Set<string>();
   const queue = [entryFile];
   while (queue.length > 0) {
-    const file = /** @type {string} */ (queue.pop());
+    const file = (queue.pop() as string);
     if (seen.has(file) || !existsSync(file)) continue;
     seen.add(file);
     for (const spec of specifiersOf(readFileSync(file, "utf8"))) {

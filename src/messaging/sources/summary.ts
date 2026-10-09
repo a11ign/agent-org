@@ -1,4 +1,3 @@
-// @ts-check
 // THE DAILY SUMMARY SOURCE (a11ign/a11ign#2903, done-whens 3 and 4): COUNTS READ FROM GITHUB, AT THE CONFIGURED LOCAL TIME, ONCE PER LOCAL
 // DATE, SILENT. A LEAF module: it imports nothing from the tool and reads GitHub only through the injected reader.
 //
@@ -27,19 +26,17 @@ export const SUMMARY_LIST_LIMIT = 500;
 
 /**
  * Which instant the local clock reads. `hourCycle: "h23"` because `hour12: false` makes some runtimes print midnight as "24".
- *
- * @param {number} ms epoch milliseconds @param {string} timeZone an IANA zone
- * @returns {{ date: string, minutes: number }} the local calendar date as YYYY-MM-DD, and minutes since local midnight
+ * `ms` is epoch milliseconds and `timeZone` an IANA zone; returns the local calendar date as YYYY-MM-DD, and minutes since local midnight.
  */
 export function localClock(ms: number, timeZone: string): { date: string; minutes: number; } {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).formatToParts(new Date(ms));
-  const part = (/** @type {string} */ type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
+  const part = (type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
   return { date: `${part("year")}-${part("month")}-${part("day")}`, minutes: Number(part("hour")) * MINUTES_PER_HOUR + Number(part("minute")) };
 }
 
-/** @param {string} at "HH:MM" @returns {number} minutes since midnight */
+/** Minutes since midnight, from `at` as "HH:MM". */
 function minutesOf(at: string): number {
   const [hour, minute] = at.split(":").map(Number);
   return hour * MINUTES_PER_HOUR + minute;
@@ -49,32 +46,27 @@ function minutesOf(at: string): number {
  * `at` has been reached TODAY, in the zone's own clock. `>=` and not `===`: a tick that arrives at 08:03 is on time, and one that arrives
  * at 14:00 after the machine was off still owes the day's summary. A time the zone skips (01:30 on a spring-forward day) is reached
  * at the first minute after the gap.
- *
- * @param {{ nowMs: number, at: string, timeZone: string }} input @returns {{ due: boolean, date: string }}
  */
 export function summaryDue({ nowMs, at, timeZone }: { nowMs: number; at: string; timeZone: string; }): { due: boolean; date: string; } {
   const clock = localClock(nowMs, timeZone);
   return { due: clock.minutes >= minutesOf(at), date: clock.date };
 }
 
-/** @param {string} date the LOCAL date, YYYY-MM-DD @returns {string} */
+/** `date` is the LOCAL date, YYYY-MM-DD. */
 export function summaryKey(date: string): string {
   return `summary:${date}`;
 }
 
-/** @typedef {{ ok: true, count: number } | { ok: false, reason: string }} Reading */
-/** @typedef {{ waiting: Reading, ready: Reading, merged: Reading, red: Reading, stalled: Reading }} SummaryCounts */
+type Reading = { ok: true; count: number } | { ok: false; reason: string };
+export type SummaryCounts = { waiting: Reading; ready: Reading; merged: Reading; red: Reading; stalled: Reading };
 
-/** @param {unknown} error @returns {string} */
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /**
- * @template T
- * @param {() => Promise<T[]>} read @param {(row: T) => boolean} [keep] which of the rows count; the cut-off test is on the list as READ, before this
- * @returns {Promise<Reading>}
- *   The count is the LENGTH of what the reader returned, so a fixture returning three rows yields 3 and nothing here can type a number.
+ * `keep` says which of the rows count; the cut-off test is on the list as READ, before this.
+ * The count is the LENGTH of what the reader returned, so a fixture returning three rows yields 3 and nothing here can type a number.
  */
 async function count<T>(read: () => Promise<T[]>, keep: (row: T) => boolean = () => true): Promise<Reading> {
   try {
@@ -87,19 +79,15 @@ async function count<T>(read: () => Promise<T[]>, keep: (row: T) => boolean = ()
   }
 }
 
-/**
- * @typedef {{
- *   issuesLabelled: (query: { repo: string, label: string, limit?: number }) => Promise<{ updatedAt?: string }[]>,
- *   mergedPullsSince: (query: { repo: string, sinceMs: number, limit?: number }) => Promise<unknown[]>,
- *   redPulls: (query: { repo: string, limit?: number }) => Promise<unknown[]>,
- * }} SummaryReader
- */
+export type SummaryReader = {
+  issuesLabelled: (query: { repo: string; label: string; limit?: number }) => Promise<{ updatedAt?: string }[]>;
+  mergedPullsSince: (query: { repo: string; sinceMs: number; limit?: number }) => Promise<unknown[]>;
+  redPulls: (query: { repo: string; limit?: number }) => Promise<unknown[]>;
+};
 
 /**
  * "Stalled" here is the cheapest honest reading: a claimed row nobody has touched for a day. The work gate's own two-hour claim nudge
  * and the `stall:no-merge` event (row 5) are finer instruments and are not repeated here.
- *
- * @param {{ github: SummaryReader, repo: string, nowMs: number }} input @returns {Promise<SummaryCounts>}
  */
 export async function readSummaryCounts({ github, repo, nowMs }: { github: SummaryReader; repo: string; nowMs: number; }): Promise<SummaryCounts> {
   const limit = SUMMARY_LIST_LIMIT;
@@ -114,20 +102,17 @@ export async function readSummaryCounts({ github, repo, nowMs }: { github: Summa
   return { waiting, ready, merged, red, stalled };
 }
 
-/** @param {Reading} reading @returns {string} */
 function show(reading: Reading): string {
   return reading.ok ? String(reading.count) : `unread (${reading.reason})`;
 }
 
-/** @param {number} ms @returns {string} HH:MMZ, the stamp the design's "as of" uses */
+/** HH:MMZ, the stamp the design's "as of" uses. */
 function stamp(ms: number): string {
   return `${new Date(ms).toISOString().slice(ISO_CLOCK.from, ISO_CLOCK.to)}Z`;
 }
 
 /**
  * Each line says what it counted, because "stalled" and "red" mean what a reader assumes unless told.
- *
- * @param {{ date: string, asOfMs: number, counts: SummaryCounts }} input @returns {string}
  */
 export function formatSummary({ date, asOfMs, counts }: { date: string; asOfMs: number; counts: SummaryCounts; }): string {
   return [
@@ -142,9 +127,7 @@ export function formatSummary({ date, asOfMs, counts }: { date: string; asOfMs: 
 
 /**
  * Zero events before the time, one after it. THROWS nothing for a failed read (see the head of this file): all failed is zero events.
- *
- * @param {{ github: SummaryReader, repo: string, now: number, summary: { at: string, timezone: string } }} input
- * @returns {Promise<{ events: Record<string, unknown>[], unread: string[] }>} `unread` names each read that failed, for the caller's log
+ * `unread` names each read that failed, for the caller's log.
  */
 export async function observeSummary({ github, repo, now, summary }: { github: SummaryReader; repo: string; now: number; summary: { at: string; timezone: string; }; }): Promise<{ events: Record<string, unknown>[]; unread: string[]; }> {
   const { due, date } = summaryDue({ nowMs: now, at: summary.at, timeZone: summary.timezone });

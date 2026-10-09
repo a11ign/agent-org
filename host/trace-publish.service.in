@@ -13,7 +13,7 @@ Type=oneshot
 # The checkout the repository-relative ExecStart resolves against, as the other units that run a script from this repository do.
 WorkingDirectory=@@checkout@@
 
-# PATH IS DECLARED because a systemd unit does not get a login shell's. `publish.mjs` and the `trace` it runs call a bare `gh`, and it is in @@binDir@@: the routing wrapper
+# PATH IS DECLARED because a systemd unit does not get a login shell's. `publish.ts` and the `trace` it runs call a bare `gh`, and it is in @@binDir@@: the routing wrapper
 # (board-report.service has the measurement of what the bare name resolved to without it).
 Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -32,7 +32,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # far above a measured pass, and each page has its own thirty-minute limit inside it.
 TimeoutStartSec=7200
 
-# `/usr/bin/node <repository-relative path>`, the shape shadow-window.service explains: the tree copy IS the program, not copied anywhere.
-ExecStart=/usr/bin/node --import tsx packages/agent-org/src/trace/publish.mjs
+# `%h/.local/bin/node <repository-relative path>`, the shape shadow-window.service explains: the tree copy IS the program, not copied anywhere.
+ExecStart=%h/.local/bin/node packages/agent-org/src/trace/publish.ts
 
 # NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot at every boot. The timer is the only thing that may start it.

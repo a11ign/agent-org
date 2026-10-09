@@ -1,4 +1,3 @@
-// @ts-check
 // module: who owns a pull request -- the owner each of the gate's PR orders is addressed to (#2898)
 //
 // MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the third split of #928's lever 2a): the three rungs that name a
@@ -39,7 +38,7 @@ import { ownerOfPr } from "./pr-orders.ts";
  * `<owner/repo>#<n>`. A bare `#n` there is that pull request's OWN repository's issue and matches nothing, which is the
  * wrong-tracker match the header used to name as the reason for not wiring it.
  *
- * @param {any[]} prs @param {any[]} openRows @param {string} [rowsRepo] the repository `openRows` are rows of; absent means the pull requests' own
+ *   @param [rowsRepo] the repository `openRows` are rows of; absent means the pull requests' own
  */
 export function withClosingRowOwners(prs: any[], openRows: any[], rowsRepo?: string) {
   const held = heldRows(openRows);
@@ -62,8 +61,6 @@ export function withClosingRowOwners(prs: any[], openRows: any[], rowsRepo?: str
  * (#2174: the gate loads without `.agent-org/roles`), so a live session holding no claim is not named, and the PR falls to
  * `ceo`. The stamp rung is paid for only when a PR reaches it: `stampOf` is a function precisely so the `git worktree list` it
  * costs is made lazily, at most once, and not at all on a tick where every PR already has an owner.
- *
- * @param {any[]} prs @param {any[]} openRows @param {(branch: string) => string | null} [stampOf]
  */
 export function withNamedOwners(prs: any[], openRows: any[], stampOf: (branch: string) => string | null = () => null) {
   const live = new Set(openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && sessionOf(row)).map((row) => String(sessionOf(row))));
@@ -79,8 +76,8 @@ export function withNamedOwners(prs: any[], openRows: any[], stampOf: (branch: s
 /**
  * #4386: THE SAME LADDER FOR A PULL REQUEST OF ANOTHER REPOSITORY than its rows (agent-org's, whose rows are the product repository's).
  * The stamp rung is not asked: `git worktree list` reads THIS checkout, and a keyed scope's trees are not in it.
- * @param {any[]} prs @param {any[]} openRows the rows of `rowsRepo`
- * @param {{ rowsRepo: string, io?: Parameters<typeof withEndedLabels>[1] | null }} scope `io` as `withPrOwners` reads it
+ *  @param openRows the rows of `rowsRepo`
+ * @param scope `io` as `withPrOwners` reads it
  */
 export function withScopedPrOwners(prs: any[], openRows: any[], { rowsRepo, io = null }: { rowsRepo: string; io?: Parameters<typeof withEndedLabels>[1] | null; }) {
   return withNamedOwners(withClosingRowOwners(io ? withEndedLabels(prs, io) : prs, openRows, rowsRepo), openRows);
@@ -88,8 +85,8 @@ export function withScopedPrOwners(prs: any[], openRows: any[], { rowsRepo, io =
 
 /**
  * THE WHOLE LADDER BELOW A PR'S OWN LABEL (a label naming an ENDED session is not one, #3093), in the one order `main` and the test share, so neither can drift from the other.
- * @param {any[]} prs @param {any[]} openRows @param {(branch: string) => string | null} [stampOf]
- * @param {Parameters<typeof withEndedLabels>[1] | null} [io] where `withEndedLabels` reads herdr and the ending ledgers (#3093). ABSENT
+ *
+ * @param [io] where `withEndedLabels` reads herdr and the ending ledgers (#3093). ABSENT
  *        MEANS NOT ASKED, on purpose: a caller that names no source must not be answered by this host's herdr and ledgers, so `main`
  *        passes the live ones and every other caller stays pure.
  */
@@ -99,7 +96,6 @@ export function withPrOwners(prs: any[], openRows: any[], stampOf?: (branch: str
 
 /**
  * Whether the PR's own `session:` label is one the ladder must honour: it carries one and `withEndedLabels` did not find it dead.
- * @param {any} pr
  */
 function labelStands(pr: any) {
   return Boolean(sessionOf(pr)) && !pr.labelEnded;
@@ -114,10 +110,6 @@ function labelStands(pr: any) {
  * listing AND recorded by a teardown. Absent WITHOUT a record keeps the label (`reviewer-<n>` is started after its order can
  * exist), and a herdr that does not answer or a ledger that cannot be read classifies NOTHING. Neither source is asked unless a
  * pull request carries a `session:` label at all, so a quiet tick pays nothing. Only the label is read: a PR's other facts stay.
- *
- * @param {any[]} prs
- * @param {{agents?: () => string[] | null, ended?: () => Map<string, number>, say?: (line: string) => void}} [io]
- * @returns {any[]}
  */
 export function withEndedLabels(prs: any[], { agents = liveWorkspaceLabels, ended = endedSessionLabels,
   say = (line) => process.stderr.write(line) }: { agents?: () => string[] | null; ended?: () => Map<string, number>; say?: (line: string) => void; } = {}): any[] {
@@ -131,7 +123,7 @@ export function withEndedLabels(prs: any[], { agents = liveWorkspaceLabels, ende
   try {
     gone = ended();
   } catch (err) {
-    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no pull request's \`${SESSION_PREFIX}\` label was classed as ended this tick (#3093).\n`);
+    say(`NOTE: the ended-session ledgers could not be read (${String((err as any)?.message ?? err).split("\n")[0]}) -- no pull request's \`${SESSION_PREFIX}\` label was classed as ended this tick (#3093).\n`);
     return prs;
   }
   return prs.map((pr) => {
@@ -143,7 +135,6 @@ export function withEndedLabels(prs: any[], { agents = liveWorkspaceLabels, ende
 /**
  * The live session a head ref NAMES: `agent/<session>` whole, or a `worker-<n>` token anywhere in it. `null` when it names no
  * live one. Two live ones in one ref name the first -- the ref is the author's, and a ref naming two sessions is a rename.
- * @param {unknown} headRef @param {Set<string>} live
  */
 function sessionNamedByBranch(headRef: unknown, live: Set<string>) {
   const ref = String(headRef ?? "");
@@ -156,21 +147,20 @@ function sessionNamedByBranch(headRef: unknown, live: Set<string>) {
  * The live session the rows a PR CLOSES name: that session, `null` for none, `"split"` for two different ones. "Closes" is
  * every row it states (#4386): GitHub's own resolution and the body's `Row:` line are the same claim, so two different
  * claimants across them are a split, never a pick.
- * @param {any} pr @param {Map<number, {session: string, row: number}>} held @param {string} [rowsRepo]
  */
 function closingRowOwner(pr: any, held: Map<number, { session: string; row: number; }>, rowsRepo?: string) {
   const owners = rowsNamedBy(pr, rowsRepo).filter(({ via }) => via !== "branch")
-    .map(({ row }) => held.get(row)).filter((/** @type {any} */ owner: any) => owner !== undefined);
-  const sessions = new Set(owners.map((/** @type {any} */ owner: any) => owner.session));
+    .map(({ row }) => held.get(row)).filter((owner: any) => owner !== undefined);
+  const sessions = new Set(owners.map((owner: any) => owner.session));
   if (sessions.size > 1) return "split";
   return sessions.size === 1 ? { ...owners[0], source: "closing" } : null;
 }
 
 /** The sessions that hold a claim, by the row they hold: `in-progress` beside a `session:` label. */
-const heldRows = (/** @type {any[]} */ openRows: any[]) => new Map(openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && sessionOf(row))
+const heldRows = (openRows: any[]) => new Map(openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && sessionOf(row))
   .map((row) => [Number(row.number), { session: String(sessionOf(row)), row: Number(row.number) }]));
 
-/** The repository a `closingIssuesReferences` entry belongs to, as `owner/name`, or `undefined` when the entry does not say. @param {any} ref */
+/** The repository a `closingIssuesReferences` entry belongs to, as `owner/name`, or `undefined` when the entry does not say. */
 function repoOfReference(ref: any) {
   const repository = ref?.repository;
   if (typeof repository?.nameWithOwner === "string") return repository.nameWithOwner;
@@ -187,25 +177,22 @@ const REFERENCE = /(?:([\w.-]+\/[\w.-]+))?#(\d+)/g;
  * and, last, the number its branch `agent/<slug>-<n>` ends in (`branch`) -- which names a row of the DEFAULT tracker by the
  * claim's own convention, whatever repository the pull request is in. With `rowsRepo`, a reference counts only when it names that
  * repository; a bare one counts only for a pull request of that repository itself (see `withClosingRowOwners`).
- * @param {any} pr @param {string} [rowsRepo]
- * @returns {{ row: number, via: "closing" | "stated" | "branch" }[]}
  */
 function rowsNamedBy(pr: any, rowsRepo?: string): { row: number; via: "closing" | "stated" | "branch"; }[] {
   const closing = (Array.isArray(pr?.closingIssuesReferences) ? pr.closingIssuesReferences : [])
-    .filter((/** @type {any} */ ref: any) => rowsRepo === undefined || (repoOfReference(ref) ?? pr?.repo) === rowsRepo)
-    .map((/** @type {any} */ ref: any) => ({ row: Number(ref?.number), via: /** @type {const} */ ("closing") }));
+    .filter((ref: any) => rowsRepo === undefined || (repoOfReference(ref) ?? pr?.repo) === rowsRepo)
+    .map((ref: any) => ({ row: Number(ref?.number), via: ("closing" as const) }));
   const stated = rowsRepo === undefined ? [] : String(pr?.body ?? "").match(STATED_ROW_LINE)?.flatMap((line) =>
     [...line.matchAll(REFERENCE)].filter((m) => (m[1] === undefined ? pr?.repo === rowsRepo : m[1] === rowsRepo))
-      .map((m) => ({ row: Number(m[2]), via: /** @type {const} */ ("stated") }))) ?? [];
+      .map((m) => ({ row: Number(m[2]), via: ("stated" as const) }))) ?? [];
   const suffix = /^agent\/.+-(\d+)$/.exec(String(pr?.headRefName ?? ""));
-  return [...closing, ...stated, ...(suffix ? [{ row: Number(suffix[1]), via: /** @type {const} */ ("branch") }] : [])];
+  return [...closing, ...stated, ...(suffix ? [{ row: Number(suffix[1]), via: ("branch" as const) }] : [])];
 }
 
 /**
  * #2928: the live session holding the row a PR's BRANCH was claimed for, or `null`. `row-claim claim <n>
  * --branch=agent/<slug>-<n>` writes the trailing number, so it names the row even when the PR says `Closes: none`
  * because the done-when belongs to someone else. The last authority: a PR that closes rows is answered by them.
- * @param {any} pr @param {Map<number, {session: string, row: number}>} held
  */
 function branchRowOwner(pr: any, held: Map<number, { session: string; row: number; }>) {
   const suffix = /^agent\/.+-(\d+)$/.exec(String(pr.headRefName ?? ""));
@@ -213,9 +200,7 @@ function branchRowOwner(pr: any, held: Map<number, { session: string; row: numbe
   return owner ? { ...owner, source: "branch" } : null;
 }
 
-/**
- * @typedef {{ repo: string, number: number, session: string, row: number, via: "closing" | "stated" | "branch" }} ResolverDefect
- */
+export type ResolverDefect = { repo: string, number: number, session: string, row: number, via: "closing" | "stated" | "branch" };
 
 /**
  * #4386: A PULL REQUEST THAT REACHED `ceo`'S RUNG WHILE IT NAMES A LIVE CLAIMANT IS A RESOLVER DEFECT, EVERY TIME. Pure, driven by the
@@ -227,8 +212,7 @@ function branchRowOwner(pr: any, held: Map<number, { session: string; row: numbe
  * `closingRowOwner`), so they are not flagged: the defect is a name the ladder could have used, not one it was right to refuse.
  * `null` for a PR the ladder answered, for one naming no live claim, and for one naming two.
  *
- * @param {any} pr a pull request AFTER `withPrOwners`/`withScopedPrOwners` @param {any[]} openRows @param {string} [rowsRepo] as `withClosingRowOwners`
- * @returns {ResolverDefect | null}
+ * @param pr a pull request AFTER `withPrOwners`/`withScopedPrOwners`  @param [rowsRepo] as `withClosingRowOwners`
  */
 export function resolverDefectOf(pr: any, openRows: any[], rowsRepo?: string): ResolverDefect | null {
   if (ownerOfPr(pr).source !== "ceo") return null;
@@ -244,8 +228,6 @@ export function resolverDefectOf(pr: any, openRows: any[], rowsRepo?: string): R
 
 /**
  * The defects of a whole list, one per pull request.
- * @param {any[]} prs @param {any[]} openRows @param {string} [rowsRepo]
- * @returns {ResolverDefect[]}
  */
 export function resolverDefectsOf(prs: any[], openRows: any[], rowsRepo?: string): ResolverDefect[] {
   return prs.flatMap((pr) => resolverDefectOf(pr, openRows, rowsRepo) ?? []);
@@ -253,12 +235,10 @@ export function resolverDefectsOf(prs: any[], openRows: any[], rowsRepo?: string
 
 /** The label the class row carries, and the key a defect is remembered by. */
 export const RESOLVER_DEFECT_LABEL = "resolver-defect";
-export const resolverDefectKey = (/** @type {ResolverDefect} */ { repo, number }: ResolverDefect) => `${repo === "" ? "(primary)" : repo}#${number}`;
+export const resolverDefectKey = ({ repo, number }: ResolverDefect) => `${repo === "" ? "(primary)" : repo}#${number}`;
 
 /**
  * What the gate writes on the class row for ONE defect: the title of a row it has to file, and the comment for every PR after the first.
- * @param {ResolverDefect} defect
- * @returns {{ title: string, comment: string }}
  */
 export function resolverDefectText(defect: ResolverDefect): { title: string; comment: string; } {
   const via = { closing: "a row it closes", stated: "a `Closes`/`Row:` line of its body", branch: "the row number its branch ends in" }[defect.via];

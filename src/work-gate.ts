@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // command: work-gate -- is there work for any session? One cheap read; a wake order per line when yes.
 //
 // #912's remaining half. `org-watch.ts:713-717` states it in its own comment: "READS 2-4 ARE NOT WIRED
@@ -200,7 +199,6 @@ export const DRAIN_MARKER = stateEntryPath("drain");
  * inside a transient unit cannot.
  *
  * It sits beside the wake ledger deliberately: one directory holds the org's runtime state.
- * @param {string} [path] @param {(p: string) => boolean} [exists]
  */
 export function draining(path: string = DRAIN_MARKER, exists: (p: string) => boolean = existsSync) {
   return exists(path);
@@ -215,14 +213,11 @@ export function draining(path: string = DRAIN_MARKER, exists: (p: string) => boo
  *
  * Synchronous (`execFileSync`) and restored in a `finally`, which is what makes an ambient safe: no read of one repository
  * can run while another's is set.
- * @type {string | undefined}
  */
 let activeRepo: string | undefined;
 
 /**
  * Run `read` with every `gh` call it makes aimed at `repo` (`undefined` is the checkout's own).
- * @template T
- * @param {string | undefined} repo @param {() => T} read @returns {T}
  */
 export function inRepo<T>(repo: string | undefined, read: () => T): T {
   const outer = activeRepo;
@@ -256,8 +251,8 @@ const ghCallName = (args: string[]) => args.slice(0, 2).join(" ");
  * `gh`, run to completion or cut at `timeoutMs`. A call that hits the bound is TOLD (naming the subcommand) and then thrown as `execFileSync` throws it
  * (`code: "ETIMEDOUT"`), which is a refusal every reader already turns into `null` for ITS lane and nobody else's: nothing new is thrown. `SIGKILL`, because a
  * `gh` that has hung is not one that answers a polite request.
- * @param {number} timeoutMs
- * @param {{ stdio?: "pipe", log?: (line: string) => void }} [how] `stdio: "pipe"` captures `gh`'s stderr on the error instead of inheriting it; `log` is where the cut is told
+ *
+ * @param [how] `stdio: "pipe"` captures `gh`'s stderr on the error instead of inheriting it; `log` is where the cut is told
  */
 export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => (args: string[], repo = activeRepo) => {
   try {
@@ -270,13 +265,13 @@ export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.std
   }
 };
 
-/** @param {string[]} args @param {string} [repo] the repository to aim at; the ambient one when omitted */
+/** @param [repo] the repository to aim at; the ambient one when omitted */
 export const defaultRun = ghWithin(GH_READ_TIMEOUT_MS);
 
 /**
  * #4128: THE RELEASE-BEHIND-MAIN FACTS, at most once an hour (see the comment in `GH_READS`). Through `defaultRun`, the identity the tick already reads as and never another config.
- * @param {{ stateDir?: string }} [where] the directory the hour's facts are kept in; the tick's own unless a caller (a live run) must not write the tick's
- * @returns {import("./release-behind-main.ts").RepoFact[] | null} `null` is a declaration that will not parse, a stated gap
+ * @param [where] the directory the hour's facts are kept in; the tick's own unless a caller (a live run) must not write the tick's
+ * @returns `null` is a declaration that will not parse, a stated gap
  */
 export function releaseBehindNow({ stateDir = REVIEWER_STATE_DIR }: { stateDir?: string; } = {}): import("./release-behind-main.ts").RepoFact[] | null {
   try {
@@ -288,7 +283,6 @@ export function releaseBehindNow({ stateDir = REVIEWER_STATE_DIR }: { stateDir?:
   }
 }
 
-/** @param {string | undefined} repo @returns {import("node:child_process").ExecFileSyncOptionsWithStringEncoding} */
 const ghOptions = (repo: string | undefined): import("node:child_process").ExecFileSyncOptionsWithStringEncoding =>
   ({ encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
 
@@ -297,7 +291,6 @@ const capturedRun = ghWithin(GH_READ_TIMEOUT_MS, { stdio: "pipe" });
 
 /**
  * The reader a refusal-handling read asks through: the default one is swapped for the capturing one, and a test's `run` stands for `gh` as it is.
- * @param {(args: string[]) => string} run
  */
 const capturingStderr = (run: (args: string[]) => string) => (run === defaultRun ? capturedRun : run);
 
@@ -334,10 +327,10 @@ Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdo
  * (#3843) EACH CALL IS CUT AT `callMs`, THE BOUND `defaultRun` GIVES A `gh` ON ITS OWN. A cut call answers as a refused one (`failed`, `status: null`,
  * `code: "ETIMEDOUT"`, as `ghWithin` throws it), so every caller's fail-open verdict stands and the other calls' answers are intact. The worker's own wait
  * is `BATCH_OUTER_GRACE_MS` longer, so it reports the call it cut before it is killed; if it is killed anyway, `runBatch` throws and the caller runs its calls one by one.
- * @param {{ args: string[], repo: string | undefined }[]} calls
- * @param {NodeJS.ProcessEnv} [env]
- * @param {number} [callMs] the bound on each call
- * @returns {({ stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string })[]} one answer per call, in order
+ *
+ *
+ * @param [callMs] the bound on each call
+ * @returns one answer per call, in order
  */
 export function runBatch(calls: { args: string[]; repo: string | undefined; }[], env: NodeJS.ProcessEnv = process.env, callMs: number = GH_READ_TIMEOUT_MS): ({ stdout: string; } | { failed: true; stdout: string; stderr: string; status: number | null; code?: string; })[] {
   const answers = [];
@@ -349,7 +342,6 @@ export function runBatch(calls: { args: string[]; repo: string | undefined; }[],
   return answers;
 }
 
-/** @param {string[]} args @param {string | undefined} repo */
 const callKey = (args: string[], repo: string | undefined) => JSON.stringify([repo ?? "", args]);
 
 /**
@@ -360,12 +352,6 @@ const callKey = (args: string[], repo: string | undefined) => JSON.stringify([re
  *
  * Only for `defaultRun` unless a `batch` is handed in: a test's `run` stands for `gh` and must see its calls one at a time, and `batch` is the seam
  * that shows them arriving together.
- * @template T
- * @param {(run: (args: string[], repo?: string) => string) => T} read
- * @param {(args: string[], repo?: string) => string} [run]
- * @param {typeof runBatch | undefined} [batch]
- * @param {(line: string) => void} [log]
- * @returns {T}
  */
 export function readWithFirstWaveTogether<T>(read: (run: (args: string[], repo?: string) => string) => T, run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined, log: (line: string) => void = (line) => process.stderr.write(line)): T {
   if (batch === undefined) return read(run);
@@ -410,7 +396,7 @@ export const OPEN_PRS_FIRST_PAGE = 20;
 /** How many open pull requests one repository's list can hold before the gate stops seeing the oldest (as it always has: `gh`'s own `--limit`). */
 export const OPEN_PRS_LIMIT = 100;
 
-/** @param {number} limit @returns {string[]} `gh`'s arguments for the open list, newest `limit` first */
+/** @returns `gh`'s arguments for the open list, newest `limit` first */
 function openPrsArgs(limit: number): string[] {
   return ["pr", "list", "--state", "open", "--limit", String(limit), "--json",
       "number,isDraft,headRefOid,baseRefName,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
@@ -460,8 +446,6 @@ function openPrsArgs(limit: number): string[] {
  * exits non-zero with empty stdout, so a reader that returns `[]` for it reports "nothing is queued" and
  * the org acts on it. Every caller below must keep the two apart. A refused SECOND read is `null` too: the first page alone is a list that may
  * be cut, which is the one answer a caller cannot tell from a whole one.
- * @param {(args: string[]) => string} run
- * @returns {any[] | null}
  */
 export function readPrs(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -490,8 +474,6 @@ const PAGED_FILES_KEPT = 20;
  * NEVER THROWS: a failure here must not turn into a refused `pr list`.
  *
  * `{owner}/{repo}` are `gh api`'s own placeholders, resolved from the `GH_REPO` that `run` is aimed with.
- * @param {any[]} prs @param {{ run: (args: string[]) => string, cachePath?: string, log?: (line: string) => void }} deps
- * @returns {any[]}
  */
 export function withPagedFiles(prs: any[], { run, cachePath = stateEntryPath(PAGED_FILES_CACHE), log = (line) => process.stderr.write(line) }: { run: (args: string[]) => string; cachePath?: string; log?: (line: string) => void; }): any[] {
   const truncated = prs.filter((pr) => Array.isArray(pr?.files) && pr.files.length < Number(pr.changedFiles));
@@ -510,7 +492,7 @@ export function withPagedFiles(prs: any[], { run, cachePath = stateEntryPath(PAG
   return prs.map((pr) => ((paged.get(pr) ?? null) === null ? pr : { ...pr, files: (paged.get(pr) as string[]).map((path) => ({ path })) }));
 }
 
-/** @param {any} pr @param {{ run: (args: string[]) => string, log: (line: string) => void }} deps @returns {string[] | null} `null` when the pages could not be read whole */
+/** @returns `null` when the pages could not be read whole */
 function pageFilesOf(pr: any, { run, log }: { run: (args: string[]) => string; log: (line: string) => void; }): string[] | null {
   try {
     const files = run(["api", "--paginate", `repos/{owner}/{repo}/pulls/${pr.number}/files?per_page=100`, "--jq", ".[].filename"]).split("\n").filter(Boolean);
@@ -523,7 +505,7 @@ function pageFilesOf(pr: any, { run, log }: { run: (args: string[]) => string; l
   return null;
 }
 
-/** @param {string} path @param {(line: string) => void} log @returns {Record<string, string[]>} an absent file is an empty cache; an unreadable one is said aloud and is too */
+/** @returns an absent file is an empty cache; an unreadable one is said aloud and is too */
 function readPagedFilesCache(path: string, log: (line: string) => void): Record<string, string[]> {
   if (!existsSync(path)) return {};
   try {
@@ -726,7 +708,6 @@ export const GIT_READS = Object.freeze({
  * `git-env.mjs`'s header records the incident: fifteen commits landed in the wrong checkout because an
  * inherited `GIT_DIR` beat `cwd`. This tick runs under systemd, where the environment is not one a
  * person typed and is therefore not one anybody has looked at.
- * @param {string} cmd @param {string[]} args
  */
 const defaultSpawn = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
@@ -760,8 +741,8 @@ const PROJECT_GIT = Object.freeze(["-C", HOME_CHECKOUT]);
  * did before this existed. `row-claim.ts` THROWS on the same failure and that difference is deliberate
  * -- a claim is about to write and must refuse on a guess; a tick is about to say nothing new.
  *
- * @param {(cmd: string, args: string[]) => string} [run]
- * @returns {{ branch: string, head: string, row: number }[] | null} `null` when refused, never `[]`
+ *
+ * @returns `null` when refused, never `[]`
  */
 export function readRowBranches(run: (cmd: string, args: string[]) => string = defaultSpawn): { branch: string; head: string; row: number; }[] | null {
   try {
@@ -785,9 +766,6 @@ const BRANCH_PRS_LIMIT = 100;
  * A FULL PAGE IS A REFUSED READ TOO. `gh` cuts the list at its limit, newest first, so a branch with more pull requests than that can lose an OLD MERGED one
  * and read as closed-only: the page is then not the branch's history, and "every pull request is closed" was never established. A page with room left is the
  * whole list (the rule {@link OPEN_PRS_FIRST_PAGE} reads the open list by).
- * @param {readonly { branch: string }[]} branches
- * @param {(args: string[]) => string} [run]
- * @returns {{ branch: string, number: number, state: string }[] | null}
  */
 export function readBranchPrs(branches: readonly { branch: string; }[], run: (args: string[]) => string = defaultRun): { branch: string; number: number; state: string; }[] | null {
   const found = [];
@@ -810,14 +788,11 @@ export function readBranchPrs(branches: readonly { branch: string; }[], run: (ar
  * A ROW IS REPLACEABLE ONLY WHEN NO BRANCH ON IT IS ANYTHING ELSE. A branch with no pull request is #2031's (nobody knows whether it is finished), one with
  * an OPEN pull request is #3010's (`--adopt` it), and one with a MERGED pull request is landed work; each keeps the row shelved, and one such branch
  * keeps it shelved whatever the others are. ABSENT `branchPrs` is "not asked or refused" and releases nothing.
- * @param {{ branch: string, head: string, row: number }[] | null | undefined} rowBranches
- * @param {{ branch: string, number: number, state: string }[] | null | undefined} branchPrs
- * @returns {Map<number, { branch: string, head: string, prs: number[] }[]>}
  */
 export function branchesToReplace(rowBranches: { branch: string; head: string; row: number; }[] | null | undefined, branchPrs: { branch: string; number: number; state: string; }[] | null | undefined): Map<number, { branch: string; head: string; prs: number[]; }[]> {
   const replaceable: Map<number, { branch: string; head: string; prs: number[]; }[]> = new Map();
   if (!Array.isArray(branchPrs)) return replaceable;
-  const closedOnly = (/** @type {{ branch: string }} */ { branch }: { branch: string; }) => {
+  const closedOnly = ({ branch }: { branch: string; }) => {
     const mine = branchPrs.filter((pr) => pr.branch === branch);
     return mine.length > 0 && mine.every((pr) => pr.state === "CLOSED") ? mine.map((pr) => pr.number) : null;
   };
@@ -835,8 +810,7 @@ export function branchesToReplace(rowBranches: { branch: string; head: string; r
 /**
  * #3892: `readBranchPrs` for the branches the question is ABOUT -- those carrying an UNCLAIMED ready row's number -- and for no others, so a tick with none pays no call.
  * A claimed row's branch is its holder's and nothing here releases it.
- * @param {any[]} readyRows @param {{ branch: string, row: number }[] | null} rowBranches `null` (not asked) asks nothing
- * @param {(args: string[]) => string} [run]
+ *  @param rowBranches `null` (not asked) asks nothing
  */
 export function readBranchPrsOfUnclaimed(readyRows: any[], rowBranches: { branch: string; row: number; }[] | null, run: (args: string[]) => string = defaultRun) {
   const unclaimed = new Set(readyRows.filter((row) => !labelsOf(row).includes(CLAIM_LABEL) && !sessionOf(row)).map((row) => Number(row.number)));
@@ -915,7 +889,6 @@ export const LANE_OWNER = Object.freeze({ [`${LANE_PREFIX}ceo`]: "ceo", [`${LANE
 
 /**
  * The session a row's lane assigns it to, or `null` for the engineer pool.
- * @param {any} row
  */
 export function laneOwnerOf(row: any) {
   const lane = labelsOf(row).find((n: string) => n in LANE_OWNER);
@@ -934,9 +907,6 @@ export function laneOwnerOf(row: any) {
  * A ROUTED ROW CAN NOW RETURN AN ARRAY -- #1828. `ROUTED_TO`'s value is a pool, not a name, and this
  * function hands that value straight back rather than picking one: every caller (`laneBacklogOrders`,
  * `decide`'s pool-count math) must read a two-name owner as "reaches both", not "reaches the first".
- *
- * @param {any} row
- * @returns {string | readonly string[] | null}
  */
 export function ownerOf(row: any): string | readonly string[] | null {
   const byLane = laneOwnerOf(row);
@@ -1003,8 +973,8 @@ export const LAUNCH_PLACEHOLDER = "<launch-directory>";
  * ran. Measuring true waiting time would need the timeline API per row; last activity is what one cheap
  * list call honestly supports, and it answers the question that matters here: has ANYTHING happened.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when refused -- never [], which would read as "nobody is waiting"
+ *
+ * @returns `null` when refused -- never [], which would read as "nobody is waiting"
  */
 export function readChairmanBlocked(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -1025,13 +995,13 @@ export function readChairmanBlocked(run: (args: string[]) => string = defaultRun
  */
 export const CHAIRMAN_LOGINS = Object.freeze(["DanBeckDev"]);
 
-/** @param {string[]} times ISO times @returns {string | null} the newest, or `null` for none */
+/** @param times ISO times @returns the newest, or `null` for none */
 function newestTime(times: string[]): string | null {
   const dated = times.filter((t) => Number.isFinite(Date.parse(t)));
   return dated.length === 0 ? null : dated.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
 }
 
-/** @param {string} out `gh api --jq` output, one JSON object per line @returns {any[]} */
+/** @param out `gh api --jq` output, one JSON object per line */
 function jsonLines(out: string): any[] {
   return out.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
 }
@@ -1039,7 +1009,6 @@ function jsonLines(out: string): any[] {
 /**
  * When `needs:chairman` was LAST applied to the row, or `null` when no `labeled` event could be read for it. The last one, because a
  * label taken off and applied again is a new ask -- that is how a row is re-asked, as data rather than prose.
- * @param {number} number @param {(args: string[]) => string} run
  */
 function readChairmanLabelledAt(number: number, run: (args: string[]) => string) {
   const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
@@ -1051,7 +1020,6 @@ function readChairmanLabelledAt(number: number, run: (args: string[]) => string)
  * When the chairman last acted on the row: a comment by the chairman's own login, or the answer comment `answers.mjs` writes (a bot's
  * account carrying `PROVENANCE` as its FIRST words -- a line quoted further down is somebody repeating it, not the chairman answering).
  * `null` when there is none. The body is cut in the projection: the provenance line is the first line and nothing else is read.
- * @param {number} number @param {(args: string[]) => string} run
  */
 function readChairmanEventAt(number: number, run: (args: string[]) => string) {
   const out = run(["api", `repos/{owner}/{repo}/issues/${number}/comments`, "--paginate", "--jq",
@@ -1066,7 +1034,6 @@ function readChairmanEventAt(number: number, run: (args: string[]) => string) {
  *
  * A ROW WHOSE READ WAS REFUSED, OR WHOSE LABEL TIME COULD NOT BE FOUND, CARRIES `chairmanReadRefused` AND NEITHER TIME: "could not
  * determine" shares a value with neither "answered" nor "not answered" (`chairmanReadsRefused` reports them, the tick says so).
- * @param {any[]} rows @param {(args: string[]) => string} run
  */
 export function withChairmanEventTimes(rows: any[], run: (args: string[]) => string) {
   return rows.map((row) => {
@@ -1080,7 +1047,7 @@ export function withChairmanEventTimes(rows: any[], run: (args: string[]) => str
   });
 }
 
-/** @param {any[]} rows rows from {@link readChairmanBlocked} @returns {number[]} the rows whose timeline could not be read */
+/** @param rows rows from {@link readChairmanBlocked} @returns the rows whose timeline could not be read */
 export function chairmanReadsRefused(rows: any[]): number[] {
   return rows.filter((row) => row.chairmanReadRefused === true).map((row) => Number(row.number));
 }
@@ -1095,8 +1062,6 @@ export function chairmanReadsRefused(rows: any[]): number[] {
  *
  * KEYED ON THE ROW AND THE CHAIRMAN EVENT'S TIME: a new event is a new question, the same one is not asked as new. A row without both
  * times (never read, or refused) is skipped here and reported by {@link chairmanReadsRefused}; `NaN > NaN` is false, so absence is not "answered".
- *
- * @param {any[]} rows @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function chairmanAnsweredOrders(rows: any[]): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   const answered = rows.filter((row) => Date.parse(row.chairmanEventAt) > Date.parse(row.labelledAt));
@@ -1123,7 +1088,6 @@ export function chairmanAnsweredOrders(rows: any[]): { session: string; cause: s
 
 /**
  * Whole days between an ISO timestamp and `now`. Floor, so "today" reads 0 rather than a fraction.
- * @param {string} iso @param {number} [now]
  */
 export function daysSince(iso: string, now: number = Date.now()) {
   const at = Date.parse(String(iso));
@@ -1142,8 +1106,8 @@ export function daysSince(iso: string, now: number = Date.now()) {
  * rows `ready` TO HIT THE FLOOR -- one disputed, one with no Region or Acceptance -- and its finding is
  * the rule here, *"a floor met by a label I control is not a measurement"*.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when the read was refused -- never [], which would read as "nothing there"
+ *
+ * @returns `null` when the read was refused -- never [], which would read as "nothing there"
  */
 export function readPromotableRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -1188,8 +1152,6 @@ export function readPromotableRows(run: (args: string[]) => string = defaultRun)
 /**
  * Open rows carrying `ready`. FILTERED SERVER-SIDE by the label the API already indexes, so this stays
  * one call and this file never spells the literal -- `claim-labels.ts` owns it (#804).
- * @param {(args: string[]) => string} run
- * @returns {any[] | null}
  */
 export function readReadyRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -1216,7 +1178,6 @@ export const MAX_ROW_ORDERS_PER_TICK = 8;
 
 /**
  * #4020: THE TICK'S DECLARED-ASK STEP over the open rows, with the gate's own runner and reader. It reads nothing for an org in which no row declares an ask.
- * @param {any[] | null} openRowsRead @returns {any[]}
  */
 export const chairmanAsksNow = (openRowsRead: any[] | null): any[] => chairmanAskOrders({ rows: openRowsRead, now: Date.now() },
   { run: defaultRun, repo: repoNow, readItemFacts: readWaitFacts, limit: MAX_ROW_ORDERS_PER_TICK });
@@ -1224,7 +1185,6 @@ export const chairmanAsksNow = (openRowsRead: any[] | null): any[] => chairmanAs
 /** The label `ceo` created for "offer this row before others"; `offerOrder` reads it (#2296). */
 export const PRIORITY_LABEL = "priority";
 
-/** @param {any} x @returns {string[]} */
 export const labelsOf = (x: any): string[] => (x?.labels ?? []).map((l: any) => String(l?.name ?? l));
 
 /**
@@ -1250,11 +1210,10 @@ export const labelsOf = (x: any): string[] => (x?.labels ?? []).map((l: any) => 
  * the PR as `#7 in owner/repo`. Its `Closes #7` is read against ITS OWN repository (`prRepo`), as `lookupOpenPrFiles` does: a bare number
  * in agent-org's PR body is agent-org's #7, never the tracker's row 7. An untagged PR (the primary's own) is exactly what it was.
  *
- * @param {any[]} prs
+ *
  * #2493: `held` rides along too -- whether the PR carries a `hold:` label -- from `labels`, already on that call.
  *
- * @param {{ trackerRepo?: string }} [where] the tracker whose rows a `Closes` is read against; the project's first when omitted
- * @returns {{ number: number, files: string[], changedFiles: number, closes: number[], held: boolean, repo?: string, repoKey?: string }[]}
+ * @param [where] the tracker whose rows a `Closes` is read against; the project's first when omitted
  */
 export function comparablePrFiles(prs: any[], { trackerRepo }: { trackerRepo?: string; } = {}): { number: number; files: string[]; changedFiles: number; closes: number[]; held: boolean; repo?: string; repoKey?: string; }[] {
   return prs
@@ -1291,10 +1250,9 @@ export function comparablePrFiles(prs: any[], { trackerRepo }: { trackerRepo?: s
  * shelved behind #2376, which was waiting on #2399. `blockersOf` is how the gate answers "what blocks that row" from
  * the `blockedBy` it already holds for every open row (`blockersFromRows`), so it makes no call of its own.
  *
- * @param {any} row @param {{ number: number, files: string[], changedFiles: number, closes?: number[], held?: boolean }[]} prFiles
- * @param {{ rootFiles?: Set<string>, blockersOf?: (row: number) => number[] | null }} [options] `rootFiles` is
+ *
+ * @param [options] `rootFiles` is
  *   passed to `declaredRegionFiles` so a test can name its own tree rather than needing this repository's
- * @returns {string | null}
  */
 export function blockedOnOpenPr(row: any, prFiles: { number: number; files: string[]; changedFiles: number; closes?: number[]; held?: boolean; }[], options?: { rootFiles?: Set<string>; blockersOf?: (row: number) => number[] | null; }): string | null {
   // NOTHING TO OVERLAP. With no comparable open PR no refusal is possible, and reading the row's Region
@@ -1313,10 +1271,6 @@ export function blockedOnOpenPr(row: any, prFiles: { number: number; files: stri
  *
  * FAILS THE WAY THE PULL-REQUEST HALF DOES: no `openRows` read, or a row with no Region section, is "cannot ask" and shelves nothing,
  * and the claim still asks (and refuses on a failed read). `claimed` is {@link claimedRegionsOf}'s output, computed once per call.
- *
- * @param {any} row @param {{ number: number, files: string[] }[]} claimed
- * @param {{ rootFiles?: Set<string>, blockersOf?: (row: number) => number[] | null, openPrs?: { closes?: number[] }[] }} options
- * @returns {string | null}
  */
 export function blockedOnClaimedRow(row: any, claimed: { number: number; files: string[]; }[], options: { rootFiles?: Set<string>; blockersOf?: (row: number) => number[] | null; openPrs?: { closes?: number[]; }[]; }): string | null {
   if (claimed.length === 0) return null;
@@ -1329,9 +1283,6 @@ export function blockedOnClaimedRow(row: any, claimed: { number: number; files: 
  * #2493: what blocks a row, answered from the open rows the gate has ALREADY READ -- `blockedBy` rides
  * `readOpenRows`'s call -- so the exclusion costs the gate nothing. `null` for a row not among them (closed, or
  * beyond the read's limit), which the rule reads as "not excluded".
- *
- * @param {any[] | null | undefined} openRows
- * @returns {(row: number) => number[] | null}
  */
 export function blockersFromRows(openRows: any[] | null | undefined): (row: number) => number[] | null {
   const byNumber = new Map((openRows ?? []).map((r) => [Number(r?.number), r]));
@@ -1347,8 +1298,6 @@ export function blockersFromRows(openRows: any[] | null | undefined): (row: numb
  * An ABSENT or `null` listing yields an EMPTY index, and every caller then behaves exactly as it did
  * before #2031 -- that is the degradation `readRowBranches`'s `null` is for, expressed once here rather
  * than as a branch at each of the two call sites.
- * @param {{ branch: string, head: string, row: number }[] | null | undefined} rowBranches
- * @returns {Map<number, { branch: string, head: string }[]>}
  */
 function branchIndex(rowBranches: { branch: string; head: string; row: number; }[] | null | undefined): Map<number, { branch: string; head: string; }[]> {
   const byRow: Map<number, { branch: string; head: string; }[]> = new Map();
@@ -1367,8 +1316,6 @@ function branchIndex(rowBranches: { branch: string; head: string; row: number; }
  * a branch on `origin` for a `ready` row means only that a branch exists. Whether it is finished work
  * awaiting a pull request, or abandoned work, is a reading of the branch -- so this must not assert the
  * row is done, and the wording is the guard against a reader inferring it from a cause that fired.
- * @param {{ branch: string, head: string }[] } pushed
- * @returns {string}
  */
 function branchesText(pushed: { branch: string; head: string; }[]): string {
   const named = pushed.map(({ branch, head }) => `\`${branch}\` at ${head.slice(0, 12)}`).join("; ");
@@ -1381,14 +1328,11 @@ function branchesText(pushed: { branch: string; head: string; }[]): string {
  * The template sections this row's body does not state, `[]` when it is complete OR WHEN THE BODY WAS NOT READ.
  * A row with no string `body` is "not asked", never "asked and empty": `readReadyRows` always requests it, so a
  * caller that lacks it (a fixture, a future read) must not shelve the whole queue on an absence.
- * @param {any} row
- * @returns {string[]}
  */
 function missingFieldsOf(row: any): string[] {
   return typeof row?.body === "string" ? missingTemplateFields(row.body) : [];
 }
 
-/** @param {string[]} missing @returns {string} */
 const templateGapText = (missing: string[]): string => `its body has no ${missing.map((f) => `\`## ${f}\``).join(", ")}`;
 
 /**
@@ -1412,12 +1356,8 @@ const templateGapText = (missing: string[]): string => `its body has no ${missin
  * `main` reports every shelving on stderr, and `emptyShelfOrder` names the pool's blocked rows, because a
  * row that vanishes silently is the exact shape of the empty-shelf defect these orders exist to catch.
  *
- * @param {any[]} readyRows @param {{ number: number, files: string[], changedFiles: number, closes?: number[], held?: boolean }[]} prFiles
- * @param {{ rootFiles?: Set<string>,
- *           openRows?: any[] | null,
- *           rowBranches?: { branch: string, head: string, row: number }[] | null,
- *           branchPrs?: { branch: string, number: number, state: string }[] | null,
- *           clock?: {today?: string, nowMs?: number} }} [options]
+ *
+ *
  *        `rowBranches` is `readRowBranches()`. It DEFAULTS TO ABSENT, which is "not asked or refused":
  *        nothing is shelved for it and every row is offered exactly as it was before #2031, so a tick
  *        that cannot reach `origin` is never worse off than one from before this existed.
@@ -1433,7 +1373,6 @@ const templateGapText = (missing: string[]): string => `its body has no ${missin
  *        `clock` is injected the way `partitionFleetBatch` already injects one, and #2113 is why this
  *        path needs one at all: a `Not-before:` may now name an HOUR, so whether a row is offerable can
  *        change within a single day and a test cannot pin that against the host clock.
- * @returns {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[] }}
  */
 export function partitionUnclaimed(readyRows: any[], prFiles: { number: number; files: string[]; changedFiles: number; closes?: number[]; held?: boolean; }[], options?: {
         rootFiles?: Set<string>;
@@ -1542,8 +1481,7 @@ function overlapVerdict(row: any, { prFiles, claimed, options }: { prFiles: Para
  * CALLERS MUST NARROW FIRST with newestPerName: GitHub unions superseded runs into statusCheckRollup, so a
  * raw read answers about every attempt ever made and one cancelled first try reads as a failure --
  * merge-queue.ts carried that defect until #634, and local/bounded-window-reads refuses it at the read.
- * @param {any[] | null | undefined} rollup the checks, ALREADY narrowed to the newest run per name
- * @returns {boolean | null}
+ * @param rollup the checks, ALREADY narrowed to the newest run per name
  */
 export function checksSettledGreen(rollup: any[] | null | undefined): boolean | null {
   if (!Array.isArray(rollup) || rollup.length === 0) return null;
@@ -1554,7 +1492,6 @@ export function checksSettledGreen(rollup: any[] | null | undefined): boolean | 
 
 export const conclusionOf = (c: any) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
 
-/** @param {any} c */
 export function stillRunning(c: any) {
   const status = String(c?.status ?? "").toUpperCase();
   return status === "IN_PROGRESS" || status === "QUEUED" || status === "PENDING";
@@ -1566,8 +1503,6 @@ export function stillRunning(c: any) {
  * THE PR CARRIES THE LABEL, which is what makes a red build routable at all. The author field cannot do
  * it -- every PR here is opened by the shared `a11ign-ai-workers` account -- but `arm-pr` puts the
  * claiming session's label on the PR, so the one thing a broken build needs to know is already there.
- *
- * @param {any} pr
  */
 export function sessionOf(pr: any) {
   const label = labelsOf(pr).find((n: string) => n.startsWith(SESSION_PREFIX));
@@ -1578,9 +1513,6 @@ export function sessionOf(pr: any) {
  * PAID ONLY BY A RED TICK, the condition `requiredWhenNeeded` had before a green draft also asked it (#3448), so a healthy
  * queue pays neither this nor the base-tip read (#2117). Extracted from `main` for `requiredWhenNeeded`'s reason, and
  * exported with a `run` seam so a test can assert a healthy tick makes NO call.
- *
- * @param {any[]} prs @param {(args: string[]) => string} [run]
- * @returns {{sha: string, date: string} | null}
  */
 export function baseTipWhenRed(prs: any[], run: (args: string[]) => string = defaultRun): { sha: string; date: string; } | null {
   return anyChecksRed(prs) ? readBaseTip(run) : null;
@@ -1593,8 +1525,8 @@ export function baseTipWhenRed(prs: any[], run: (args: string[]) => string = def
  * Extracted rather than written inline in `main` for the reason the two above it were -- `main`'s job is
  * to deliver what the gate found, and `complexity` counts every inline ternary there.
  *
- * @param {any[]} openRows @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when not asked or refused -- `decide` treats both the same way
+ *
+ * @returns `null` when not asked or refused -- `decide` treats both the same way
  */
 function claimedRowCommentsWhenHeld(openRows: any[], run: (args: string[]) => string = defaultRun): any[] | null {
   const held = openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
@@ -1605,8 +1537,6 @@ function claimedRowCommentsWhenHeld(openRows: any[], run: (args: string[]) => st
  * #3486: THE CLAIMED ROWS' COMMENTS AS THE OUTCOME CLOCK READS THEM. `claimedRowCommentsWhenHeld` answers `null` for TWO things -- no row is claimed (nothing
  * was asked) and the read was refused -- and the clock must tell them apart: the first is "no claimed row to age", the second is "unread", reported as such
  * and never as nothing overdue. A claimed row and a `null` is the refusal; no claimed row is `[]`.
- * @param {any[]} openRows @param {any[] | null} claimedComments
- * @returns {any[] | null}
  */
 function claimedCommentsForClock(openRows: any[], claimedComments: any[] | null): any[] | null {
   return claimedComments ?? (openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL)) ? null : []);
@@ -1623,8 +1553,8 @@ function claimedCommentsForClock(openRows: any[], claimedComments: any[] | null)
  * the row that cost 6.5 hours, is `fleet-gated` and would have been outside a promotable-only read. A
  * cause that could not see the row it was written for would be the same defect one level up.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when refused, never `[]`
+ *
+ * @returns `null` when refused, never `[]`
  */
 export function readOpenRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -1667,8 +1597,8 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun): any[
  * ALL OR NOTHING: a refusal of either read is `null` for the whole, so `closedAnswerRows` says it once rather than
  * ordering the half that answered and staying silent about the half that did not.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
+ *
+ * @returns `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
  */
 export function readClosedAnswerRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -1705,7 +1635,6 @@ export function readClosedAnswerRows(run: (args: string[]) => string = defaultRu
 export const FLEET_GATED_SELECTOR = Object.freeze({
   label: "fleet-gated",
   listArgs: Object.freeze(["--label", "fleet-gated"]),
-  /** @param {any} row */
   matches: (row: any) => labelsOf(row).includes("fleet-gated"),
 });
 
@@ -1748,9 +1677,8 @@ export const FLEET_GATED_SELECTOR = Object.freeze({
  * `Not-before:`), so a row answered that way never left the set. The rule is the one #1899 applied to
  * `answer:<session>`: a hold is an answer.
  *
- * @param {any[]} rows
- * @param {{today?: string, nowMs?: number}} [clock] injected so a test moves time without a global stub
- * @returns {{batch: any[], waiting: {number: number, reason: string}[]}}
+ *
+ * @param [clock] injected so a test moves time without a global stub
  */
 export function partitionFleetBatch(rows: any[], clock: { today?: string; nowMs?: number; } = {}): { batch: any[]; waiting: { number: number; reason: string; }[]; } {
   const { today = todayIso(), nowMs = Date.now() } = clock;
@@ -1771,7 +1699,6 @@ export function partitionFleetBatch(rows: any[], clock: { today?: string; nowMs?
   return { batch, waiting };
 }
 
-/** @param {any} row @param {string} today @param {number} nowMs @returns {string | null} */
 function fleetHeldPhrase(row: any, today: string, nowMs: number): string | null {
   const held = fleetWaitingOn(row, today, nowMs);
   return held ? describeWaiting(held) : null;
@@ -1779,8 +1706,6 @@ function fleetHeldPhrase(row: any, today: string, nowMs: number): string | null 
 
 /**
  * The `fleet-gated` rows that ARE dispatchable -- the batch #914 describes.
- *
- * @param {any[]} rows @param {{today?: string, nowMs?: number}} [clock]
  */
 export function fleetBatchRows(rows: any[], clock: { today?: string; nowMs?: number; } = {}) {
   return partitionFleetBatch(rows, clock).batch;
@@ -1815,10 +1740,7 @@ export function fleetBatchRows(rows: any[], clock: { today?: string; nowMs?: num
  * this counts, so a set in which everything is answered emits NO ORDER rather than an order naming rows
  * whose answers are already recorded in a field.
  *
- * @param {any[]} rows every open row
- * @param {{today?: string, nowMs?: number}} [clock]
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param rows every open row
  */
 export function fleetBatchOrders(rows: any[], clock: { today?: string; nowMs?: number; } = {}): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -1884,8 +1806,6 @@ export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
 
 /**
  * One open issue's board facts, from its `repository.issues` node.
- * @param {any} node
- * @returns {BoardFacts}
  */
 function boardFactsOf(node: any): BoardFacts {
   const items = node?.projectItems;
@@ -1904,10 +1824,6 @@ function boardFactsOf(node: any): BoardFacts {
  *
  * #3448: THE GRAPHQL POOL THE ANSWER NAMES IS PUSHED ONTO `pools` (the first page's: one budget, read once), so the tick learns its own account's budget from the
  * read it was making. A refused read pushes nothing, and the pool-low signal then says it was not read.
- *
- * @param {(args: string[]) => string} [run]
- * @param {import("./org-health.ts").PoolReading[]} [pools]
- * @returns {BoardFacts[] | null}
  */
 export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("./org-health.ts").PoolReading[] = []): BoardFacts[] | null {
   const [owner, name] = repoNow().split("/");
@@ -1935,10 +1851,6 @@ export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, p
 /**
  * The open rows that are provably off Project 1, oldest number first: no item there, and old enough that `row-file` cannot
  * still be on its way to adding one.
- *
- * @param {BoardFacts[]} facts
- * @param {number} [nowMs]
- * @returns {{ number: number, repoKey?: string, title: string }[]}
  */
 export function rowsOffBoard(facts: BoardFacts[], nowMs: number = Date.now()): { number: number; repoKey?: string; title: string; }[] {
   return facts
@@ -1963,10 +1875,7 @@ export function rowsOffBoard(facts: BoardFacts[], nowMs: number = Date.now()): {
  * IT DOES NOT BOARD THE ROW. Boarding carries a Status judgment (#1990 is `In progress`, #2068 is `Ready`) and this repository's
  * audits report the debris rather than act on the tracker.
  *
- * @param {BoardFacts[] | null | undefined} facts `readRowsOffBoard`'s result; OMITTED AND `null` MEAN "NOT ASKED"
- * @param {number} [nowMs]
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param facts `readRowsOffBoard`'s result; OMITTED AND `null` MEAN "NOT ASKED"
  */
 export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs: number = Date.now()): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -2062,12 +1971,10 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
  * reading "not asked" as "all correct" is this repository's most-repeated defect, so `driftReport` keeps
  * the two apart in the CLI's output and the tests below assert the three separately rather than once.
  *
- * @param {{unit: string, problem: string, detail: string, manualFix?: boolean}[] | null | undefined} drift
+ *
  *        `host:check --json`'s findings.
  *        `null`/omitted is "not asked or refused" and emits nothing -- a caller that cannot read the
  *        host must never produce a false all-clear and must never invent a false alarm either.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function hostDriftOrders(drift: { unit: string; problem: string; detail: string; manualFix?: boolean; }[] | null | undefined): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -2135,10 +2042,6 @@ const HOST_DRIFT_SESSION = "orchestrator";
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * the 2026-09-28 stale primary was an interactive session's uncommitted edits, which no hook refuses.
- *
- * @param {import("./update-primary.ts").PrimaryDrift | null | undefined} drift
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function primaryStaleOrders(drift: import("./update-primary.ts").PrimaryDrift | null | undefined): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -2170,9 +2073,6 @@ export function primaryStaleOrders(drift: import("./update-primary.ts").PrimaryD
  * The builder's choice between this and withholding: withholding would stall the whole org on a condition `ceo` can clear in one
  * command, but an order presented as current from stale code is what cost 22 hours, so the orders go out and SAY WHAT THEY ARE.
  * Applied to the tick's orders after `decide`, so no cause's own text or key changes; `primary-stale` already says it.
- *
- * @template {{cause: string, prompt: string}} T
- * @param {T[]} orders @param {import("./update-primary.ts").PrimaryDrift | null | undefined} drift @returns {T[]}
  */
 export function withStalePrimaryNotice<T extends { cause?: string; prompt: string }>(orders: T[], drift: import("./update-primary.ts").PrimaryDrift | null | undefined): T[] {
   if (!drift || drift.behind === 0) return orders;
@@ -2185,7 +2085,6 @@ export function withStalePrimaryNotice<T extends { cause?: string; prompt: strin
  * `update-primary.ts --drift` -- SPAWNED, like `readHostDrift`, so the gate and `primary:update` read one question with one
  * reader and the gate's import closure does not grow. `null` for every unreadable case (a spawn that failed, a non-zero exit,
  * unparseable output, `asked: false`), which is silence and never a clean primary.
- * @returns {import("./update-primary.ts").PrimaryDrift | null}
  */
 function readPrimaryDriftNow(): import("./update-primary.ts").PrimaryDrift | null {
   const run = spawnSync(process.execPath, [...TSX_IMPORT, fileURLToPath(new URL("./update-primary.ts", import.meta.url)), "--drift"], { encoding: "utf8" });
@@ -2204,8 +2103,7 @@ function readPrimaryDriftNow(): import("./update-primary.ts").PrimaryDrift | nul
  * session with nothing saying it had -- so a refused read is a line, not an empty list.
  * (#3566, slice 5) HANDED THE READ, NOT MAKING IT: the read is one of the follow-ups asked together (`readOpenRowFollowUps`), and the refusal is still
  * said here, where it was, when the answer is used.
- * @param {any[] | null} rows what `readClosedAnswerRows` answered
- * @returns {any[]}
+ * @param rows what `readClosedAnswerRows` answered
  */
 function closedAnswerRows(rows: any[] | null): any[] {
   if (rows === null) {
@@ -2229,9 +2127,6 @@ function closedAnswerRows(rows: any[] | null): any[] {
  * The herdr call is made only when a closed row carries an `answer:` label at all, so a quiet tracker pays nothing.
  *
  * Only the ENDED session's label is taken off the row COPY; another session's `answer:` on the same row still orders.
- * @param {any[]} rows
- * @param {{agents?: () => string[] | null, ended?: () => Map<string, number>, say?: (line: string) => void}} [io]
- * @returns {any[]}
  */
 export function withoutEndedAnswerSessions(rows: any[], { agents = liveWorkspaceLabels, ended = endedSessionLabels,
   say = (line) => process.stderr.write(line) }: { agents?: () => string[] | null; ended?: () => Map<string, number>; say?: (line: string) => void; } = {}): any[] {
@@ -2256,7 +2151,6 @@ export function withoutEndedAnswerSessions(rows: any[], { agents = liveWorkspace
 
 /**
  * `row` without its `answer:<session>` labels for sessions `isGone` names, saying each one -- as GONE, never as busy.
- * @param {any} row @param {(session: string) => boolean} isGone @param {(line: string) => void} say
  */
 function dropGoneLabels(row: any, isGone: (session: string) => boolean, say: (line: string) => void) {
   const goneLabels = labelsOf(row).filter((n) => n.startsWith(ANSWER_PREFIX) && isGone(n.slice(ANSWER_PREFIX.length)));
@@ -2270,7 +2164,7 @@ function dropGoneLabels(row: any, isGone: (session: string) => boolean, say: (li
 
 /**
  * Every workspace label herdr knows, or `null` when it would not say -- never `[]`, which would read as "nobody is
- * live" and class every session gone. @returns {string[] | null}
+ * live" and class every session gone.
  */
 export function liveWorkspaceLabels(): string[] | null {
   try {
@@ -2281,7 +2175,7 @@ export function liveWorkspaceLabels(): string[] | null {
   }
 }
 
-/** @param {string} path @param {typeof readFileSync} read @returns {string} `""` for a file that is not there; THROWS otherwise */
+/** @returns `""` for a file that is not there; THROWS otherwise */
 function evidenceText(path: string, read: typeof readFileSync): string {
   try {
     return String(read(path, "utf8"));
@@ -2291,7 +2185,7 @@ function evidenceText(path: string, read: typeof readFileSync): string {
   }
 }
 
-/** @param {string} path @param {typeof readFileSync} read @returns {any[]} an unparseable line is skipped: it cannot establish an ending */
+/** @returns an unparseable line is skipped: it cannot establish an ending */
 function evidenceLines(path: string, read: typeof readFileSync): any[] {
   return evidenceText(path, read).split("\n").filter((l) => l.trim() !== "").flatMap((line) => {
     try {
@@ -2308,11 +2202,9 @@ function evidenceLines(path: string, read: typeof readFileSync): any[] {
  * closed; `reviewer-endings`) and two registries name what STARTED and has not ended: an entry stamped at or after the
  * ending is a later instance under the same name, and the label is not ended. THROWS on a file that exists and cannot be
  * read, so the caller drops nothing on a reading it could not make.
- * @param {{dir?: string, read?: typeof readFileSync}} [io] @returns {Map<string, number>}
  */
 export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSync }: { dir?: string; read?: typeof readFileSync; } = {}): Map<string, number> {
   const ended: Map<string, number> = new Map();
-  /** @param {unknown} label @param {number} at */
   const note = (label: unknown, at: number) => {
     if (typeof label !== "string" || label === "?" || !Number.isFinite(at)) return;
     if (at > (ended.get(label) ?? -Infinity)) ended.set(label, at);
@@ -2329,7 +2221,7 @@ export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSy
   return ended;
 }
 
-/** The rows that owe someone an answer. @param {any[]} rows */
+/** The rows that owe someone an answer. */
 export function withAnswerLabel(rows: any[]) {
   return (rows ?? []).filter((r) => labelsOf(r).some((n: string) => n.startsWith(ANSWER_PREFIX)));
 }
@@ -2340,8 +2232,6 @@ export function withAnswerLabel(rows: any[]) {
  * which is why a label on #2376 woke nobody), and the closed rows still owing (#2202). Kept as one named
  * function so a fourth place is one line here, and a test can call it rather than read `main`'s text. `closedRows`
  * is every subject that is no longer open: closed ISSUES (#2202) and merged or closed pull requests (#2641).
- *
- * @param {{ openRows: any[], openPrs: any[], closedRows: any[] }} reads
  */
 export function rowsOwingAnswers({ openRows, openPrs, closedRows }: { openRows: any[]; openPrs: any[]; closedRows: any[]; }) {
   return [...withAnswerLabel(openRows), ...withAnswerLabel(openPrs), ...closedRows];
@@ -2367,8 +2257,6 @@ export function rowsOwingAnswers({ openRows, openPrs, closedRows }: { openRows: 
  * on a hosted-runner behaviour, not a row or a date). What is refused is a `blocked` that says nothing
  * at all, because a claim nobody can evaluate is one only a human re-reading the row can ever lift --
  * which is exactly how these eleven got to be a day stale with the queue empty behind them.
- *
- * @param {any[]} rows @param {string} [today]
  */
 export function blockedWithoutReferent(rows: any[], today: string = todayIso()) {
   return (rows ?? []).filter((r) => labelsOf(r).includes(BLOCKED_LABEL)
@@ -2403,8 +2291,6 @@ export function blockedWithoutReferent(rows: any[], today: string = todayIso()) 
  * a row, a date nor a person -- was then correctly re-answered FOUR TIMES IN NINE HOURS (23:43, 01:44, 05:45, 08:21), each a full turn
  * reaching the identical conclusion, because nothing could record that the question had been answered.
  * On 2026-09-20 eleven rows carried the `blocked` label with the queue empty behind them, one (#1731) about code fixed the day before.
- *
- * @param {any[]} rows @param {any[]} readyRows @param {string} [today]
  */
 export function blockedReferentOrders(rows: any[], readyRows: any[], today: string = todayIso()) {
   if (readyRows.length > 0) return [];
@@ -2477,9 +2363,6 @@ export { ANSWER_PREFIX };
 
 /**
  * PURE. Who owes an answer on which rows -- `{ session: rows }`, oldest row first within each session.
- *
- * @param {any[]} rows
- * @returns {Map<string, any[]>}
  */
 export function answersOwed(rows: any[]): Map<string, any[]> {
   const owed: Map<string, any[]> = new Map();
@@ -2501,8 +2384,6 @@ export function answersOwed(rows: any[]): Map<string, any[]> {
  * `headRefOid` and `gh pr list --json` always does, so the shape says which list it came from without a
  * tag every caller would have to remember to set. A PR from `readPrs` carries no `state` either -- it reads
  * as open, which is what `--state open` made it.
- *
- * @param {any} row
  */
 function isPullRequest(row: any) {
   return typeof row?.isDraft === "boolean" || typeof row?.headRefOid === "string";
@@ -2511,7 +2392,7 @@ function isPullRequest(row: any) {
 /**
  * The sentence that says the subject is no longer open, or "" when it is. A MERGED pull request is its own case (#2641):
  * `state` is `MERGED`, not `CLOSED`, and "a merge closed it" would be the wrong verb for one that was never closed.
- * @param {any} row @param {string} subject `"row"` or `"pull request"`
+ *  @param subject `"row"` or `"pull request"`
  */
 function closedNote(row: any, subject: string) {
   if (row.state === "MERGED") {
@@ -2549,8 +2430,6 @@ function closedNote(row: any, subject: string) {
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * on 2026-09-20 a question sat unread for 6.5 hours while the session that asked it re-posted five times.
- *
- * @param {any[]} rows
  */
 export function answerOrders(rows: any[]) {
   const orders = [];
@@ -2586,9 +2465,6 @@ export function answerOrders(rows: any[]) {
  * `null` ON A REFUSED READ, NEVER `[]`: an empty timeline would read every outstanding `answer:` label on
  * it as bare, which is the false-positive direction a refused read must not produce (`readCommitShas`'s
  * own rule, applied here).
- *
- * @param {number} number @param {(args: string[]) => string} run
- * @returns {{event: string, label?: {name: string}, actor?: string, id?: number, created_at: string}[] | null}
  */
 export function readRowTimeline(number: number, run: (args: string[]) => string = defaultRun): { event: string; label?: { name: string; }; actor?: string; id?: number; created_at: string; }[] | null {
   try {
@@ -2603,7 +2479,6 @@ export function readRowTimeline(number: number, run: (args: string[]) => string 
 
 /**
  * One order: wake `holder` because `owed`'s `answer:` label has nothing said on `row` since `labelledAt`.
- * @param {any} row @param {string} holder @param {string} owed @param {string} labelledAt
  */
 function bareAnswerLabelOrder(row: any, holder: string, owed: string, labelledAt: string) {
   const subject = isPullRequest(row) ? "pull request" : "row";
@@ -2624,7 +2499,6 @@ function bareAnswerLabelOrder(row: any, holder: string, owed: string, labelledAt
 /**
  * Every unexplained `answer:` label on ONE row/PR, turned into orders. PAID ONLY BY A ROW THAT ALREADY
  * CARRIES THE LABEL AT ALL: the timeline read happens after both cheap checks below have already refused.
- * @param {any} row @param {(args: string[]) => string} run @param {number} nowMs
  */
 function bareAnswerLabelOrdersForRow(row: any, run: (args: string[]) => string, nowMs: number) {
   const holder = sessionOf(row);
@@ -2652,9 +2526,9 @@ function bareAnswerLabelOrdersForRow(row: any, run: (args: string[]) => string, 
  * own holder setting `answer:` on the row they are stopped on, which `sessionOf` already names. A row with
  * no holder has no session this cause can wake, so it is skipped rather than guessed at.
  *
- * @param {any[]} rowsOwingAnswers `withAnswerLabel`'s output -- open rows and open pull requests together
- * @param {(args: string[]) => string} [run]
- * @param {number} [nowMs] the gate's clock, for the label's grace window (`ANSWER_LABEL_GRACE_MS`)
+ * @param rowsOwingAnswers `withAnswerLabel`'s output -- open rows and open pull requests together
+ *
+ * @param [nowMs] the gate's clock, for the label's grace window (`ANSWER_LABEL_GRACE_MS`)
  */
 export function bareAnswerLabelOrders(rowsOwingAnswers: any[], run: (args: string[]) => string = defaultRun, nowMs: number = Date.now()) {
   const orders = [];
@@ -2667,7 +2541,6 @@ export function bareAnswerLabelOrders(rowsOwingAnswers: any[], run: (args: strin
 
 /**
  * One order: tell `claimant` that `answered`'s question on `row` was answered, with where the answer is.
- * @param {any} row @param {string} claimant @param {ReturnType<typeof answersGiven>[number]} given
  */
 function answerGivenOrder(row: any, claimant: string, given: ReturnType<typeof answersGiven>[number]) {
   const { answered, removedAt, removedBy, commentId } = given;
@@ -2702,8 +2575,8 @@ function answerGivenOrder(row: any, claimant: string, given: ReturnType<typeof a
  * because a row's order count is known only after its timeline is read, so no smaller set is provably enough; the orders are still the first
  * `MAX_ROW_ORDERS_PER_TICK`, in the order the rows came. herdr is asked ONCE, before the read, because the rehearsal runs the read twice.
  *
- * @param {any[]} openRows @param {(args: string[]) => string} [run] @param {number} [nowMs]
- * @param {() => string[] | null} [agents] @param {typeof runBatch | undefined} [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
+ *
+ *  @param [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
  */
 export function answerGivenOrders(openRows: any[], run: (args: string[]) => string = defaultRun, nowMs: number = Date.now(), agents: () => string[] | null = liveWorkspaceLabels, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined) {
   const touched = (openRows ?? []).filter((row) => sessionOf(row) !== null
@@ -2714,7 +2587,7 @@ export function answerGivenOrders(openRows: any[], run: (args: string[]) => stri
   return readWithFirstWaveTogether((read) => answerGivenOrdersFromTimelines(askable, read, nowMs), run, batch);
 }
 
-/** @param {any[]} rows touched, claimed and live @param {(args: string[]) => string} run @param {number} nowMs */
+/** @param rows touched, claimed and live */
 function answerGivenOrdersFromTimelines(rows: any[], run: (args: string[]) => string, nowMs: number) {
   const orders = [];
   for (const row of rows) {
@@ -2726,10 +2599,8 @@ function answerGivenOrdersFromTimelines(rows: any[], run: (args: string[]) => st
   return orders;
 }
 
-/** @param {ReturnType<typeof answerGivenOrders> | undefined} orders */
 const answerGivenOrdersOrNone = (orders: ReturnType<typeof answerGivenOrders> | undefined) => orders ?? [];
 
-/** @param {ReturnType<typeof bareAnswerLabelOrders> | undefined} orders */
 const bareAnswerOrdersOrNone = (orders: ReturnType<typeof bareAnswerLabelOrders> | undefined) => orders ?? [];
 
 /**
@@ -2740,8 +2611,6 @@ const bareAnswerOrdersOrNone = (orders: ReturnType<typeof bareAnswerLabelOrders>
  * truncated, which is right for an overlap comparison and would here silently withdraw the screen for
  * the largest pull requests -- the ones most likely to be a row's whole build.
  * #2493: a pull request carrying a `hold:` label does not count -- see the body.
- * @param {any[] | null | undefined} openPrs
- * @returns {Set<number>}
  */
 function rowsWithOpenPr(openPrs: any[] | null | undefined): Set<number> {
   // #2493: A HELD PR IS NOT AN ACT, IT IS A DECLARED WAIT. `hold:` is the owner saying "do not merge me yet", and the
@@ -2762,8 +2631,6 @@ function rowsWithOpenPr(openPrs: any[] | null | undefined): Set<number> {
  * BACK UP" to a holder whose row names a person or the schedule as the one thing it waits on: #2623
  * (`needs:chairman` from 2026-09-28T16:06:31Z) was asked 19+ times in a day, and the prompt's own remedies never
  * mention the label. Skipped here rather than taught to `waitingOn`, which every reader would then inherit.
- *
- * @param {any} row @param {string} today @param {number} nowMs
  */
 export function holderWaitingOn(row: any, today: string, nowMs: number) {
   const labels = labelsOf(row);
@@ -2834,10 +2701,10 @@ export function holderWaitingOn(row: any, today: string, nowMs: number) {
  * no other cause addresses a session that already holds a row. On 2026-09-22 #1908's last blocker closed at 21:26:02Z, the next tick said
  * nothing to `worker-capture`, and six rows sat behind it until a label meant for something else was applied by hand.
  *
- * @param {any[]} rows every open row
- * @param {string} [today]
- * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
- * @param {{openPrs?: any[], closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null}} [reads]
+ * @param rows every open row
+ *
+ * @param [nowMs] the clock a timestamped hold is read against, injected so a test moves time
+ *
  *   the reads this cause takes BEYOND `rows` itself, bundled so a 5th positional parameter does not join `nowMs` (`max-params`).
  *   `openPrs` is `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then behaves
  *   exactly as before #2161: it fails toward telling the holder, never toward silence.
@@ -2845,8 +2712,7 @@ export function holderWaitingOn(row: any, today: string, nowMs: number) {
  *   own header for what that falls back to.
  *   `claimFacts` (#3451) is the claim-stall tick's reading of every claimed row (`onFacts`). OMITTED MEANS NOT ASKED (no drop, no line); `null` is a tick that
  *   read no claim, which keeps every order and says so.
- * @returns {{ orders: {session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[],
- *   drops: BlockerClearedDrop[], log: string[] }} `drops` are the orders NOT emitted and why; `log` is every line the tick prints about them
+ * @returns `drops` are the orders NOT emitted and why; `log` is every line the tick prints about them
  */
 export function blockerClearedReading(rows: any[], today: string = todayIso(), nowMs: number = Date.now(), { openPrs = [], closings = null, claimFacts }: { openPrs?: any[]; closings?: Map<number, number> | null; claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null; } = {}): {
     orders: { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[];
@@ -2893,7 +2759,6 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
 
 /**
  * `blockerClearedReading`'s orders alone, for every caller that has no use for what was dropped (`decide`: the drops are said by `main`, once).
- * @param {Parameters<typeof blockerClearedReading>} args
  */
 export function blockerClearedOrders(...args: Parameters<typeof blockerClearedReading>) {
   return blockerClearedReading(...args).orders;
@@ -2909,7 +2774,6 @@ export type BlockerClearedDropReason = "claimed-after-clearing" | "own-pull-requ
 export type BlockerClearedDrop = { causeKey: string, reason: BlockerClearedDropReason, at: number };
 export const BLOCKER_CLEARED_DROP_REASONS = Object.freeze(["claimed-after-clearing", "own-pull-request", "moved-since-clearing"]);
 
-/** @param {number} ms @returns {string} */
 const isoOf = (ms: number): string => new Date(ms).toISOString();
 
 /**
@@ -2918,8 +2782,6 @@ const isoOf = (ms: number): string => new Date(ms).toISOString();
  * In the order asked: (1) the claim post-dates the clearing, which the claim itself refused to be made before; (2) a pull request of the claim's own
  * (`ownsPr`, in ANY tracked repository) is open and not held (#2493: a held PR is a declared wait, whose owner must hear the last edge close) or merged since the
  * claim; (3) the holder commented, committed or pushed AFTER the clearing. A holder who claimed before and has done none of that (#1908) is not here.
- * @param {import("./work-gate/claim-stall-tick.ts").ClaimMoves} moves @param {number} clearedAtMs @param {number} nowMs
- * @returns {{ reason: BlockerClearedDropReason, at: number } | null}
  */
 function whyNotNeeded(moves: import("./work-gate/claim-stall-tick.ts").ClaimMoves, clearedAtMs: number, nowMs: number): { reason: BlockerClearedDropReason; at: number; } | null {
   if (moves.claimedAt >= clearedAtMs) return { reason: "claimed-after-clearing", at: moves.claimedAt };
@@ -2934,8 +2796,6 @@ function whyNotNeeded(moves: import("./work-gate/claim-stall-tick.ts").ClaimMove
  * The read that was REFUSED, as a phrase, or `null` when every read the drop needs was made. FAILING TOWARD TELLING THE HOLDER: a refusal drops nothing, because
  * an order that should not have gone costs a wake and a drop that should not have happened strands a row (this function's own header).
  * A blocker ABSENT from a map that was read is a refusal only when the map carries no `closedNoLaterThan` (#3706): with one, the absent blocker is bounded, not unread.
- * @param {{ row: any, cleared: number[], closings: Closings | null, claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null }} reads
- * @returns {string | null}
  */
 function refusedRead({ row, cleared, closings, claimFacts }: { row: any; cleared: number[]; closings: Closings | null; claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null; }): string | null {
   if (claimFacts === null) return "the claim-stall tick read no claim";
@@ -2951,8 +2811,6 @@ function refusedRead({ row, cleared, closings, claimFacts }: { row: any; cleared
  * The time the drop compares the claim against: the newest of the listed closings and, when a cleared blocker is ABSENT from the list, `closedNoLaterThan` (#3706).
  * `boundedBy` is that bound only when it decided the answer, so the log names it exactly when it was relied on. SOUND IN BOTH DIRECTIONS: the result is `>=` every blocker's
  * real closing, so a claim at or after it came after all of them, and a bound smaller than a listed closing changes nothing.
- * @param {number[]} cleared @param {Closings} closings
- * @returns {{ at: number, boundedBy: { blocker: number, at: number } | null }}
  */
 function newestClosing(cleared: number[], closings: Closings): { at: number; boundedBy: { blocker: number; at: number; } | null; } {
   const listed = cleared.filter((n) => closings.has(n)).map((n) => (closings.get(n) as number));
@@ -2965,9 +2823,6 @@ function newestClosing(cleared: number[], closings: Closings): { at: number; bou
 
 /**
  * `blockerClearedReading`'s drop for ONE row about to be ordered, with the lines to print. `claimFacts` undefined is a caller that did not ask: no drop, no line.
- * @param {{ row: any, cleared: number[], causeKey: string, closings: Closings | null, nowMs: number,
- *   claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null }} args
- * @returns {{ drop: BlockerClearedDrop | null, log: string[] }}
  */
 function staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs }: {
         row: any; cleared: number[]; causeKey: string; closings: Closings | null; nowMs: number;
@@ -3041,8 +2896,8 @@ export const PROMOTION_ASK_WINDOW_MS = 2 * HOUR_MS;
 /**
  * PURE. The ask a row is in, `age` after its last blocker closed -- or `null` between asks.
  *
- * @param {number} age milliseconds since the clearing; a future stamp (clock skew) reads as zero
- * @returns {{suffix: string} | null} `suffix` is `""` for the first ask, else `@<hours>h`, and it is
+ * @param age milliseconds since the clearing; a future stamp (clock skew) reads as zero
+ * @returns `suffix` is `""` for the first ask, else `@<hours>h`, and it is
  *          part of the causeKey so each window is a NEW question to `wake`'s ledger
  */
 export function promotionAskWindow(age: number): { suffix: string; } | null {
@@ -3057,8 +2912,6 @@ export function promotionAskWindow(age: number): { suffix: string; } | null {
  * When the last of `cleared` closed, in epoch ms. A blocker missing from `closings` closed before the
  * window that read covers, so it counts as the epoch: the row lands on the wall-clock 72-hour grid
  * (`promotionAskWindow`'s tail) rather than being anchored to a moment nobody can name.
- *
- * @param {number[]} cleared @param {Map<number, number>} closings
  */
 function clearedAt(cleared: number[], closings: Map<number, number>) {
   return Math.max(...cleared.map((n) => closings.get(n) ?? 0));
@@ -3068,8 +2921,6 @@ function clearedAt(cleared: number[], closings: Map<number, number>) {
  * The backoff window a clearing is in, shared by `blockerClearedOrders` and `unclaimedBlockerClearedOrders`
  * (#2741) so the "no `closings`, no backoff" fallback is written once rather than as two ternaries that
  * could drift. `null` `closings` (not asked or refused) is the unstaged first ask, forever.
- * @param {number[]} cleared @param {number} nowMs @param {Map<number, number> | null} closings
- * @returns {{suffix: string} | null}
  */
 function clearingAskWindow(cleared: number[], nowMs: number, closings: Map<number, number> | null): { suffix: string; } | null {
   return closings ? promotionAskWindow(nowMs - clearedAt(cleared, closings)) : { suffix: "" };
@@ -3087,8 +2938,6 @@ export type Closings = Map<number, number> & { closedNoLaterThan?: number };
  * `closedNoLaterThan` of a listing, or `undefined` when the listing cannot prove one: a row without a readable `updatedAt`, or an order that is not `updatedAt` descending.
  * THE ORDER IS CHECKED, NOT TRUSTED: `gh` silently ignores a sort key it does not know (`sort:closed-desc` returns the creation order, measured 2026-10-06), and the oldest
  * `updatedAt` of a list sorted by anything else bounds nothing.
- * @param {any[]} listed
- * @returns {number | undefined}
  */
 function oldestUpdatedWhenOrdered(listed: any[]): number | undefined {
   const updated = listed.map((r) => Date.parse(r?.updatedAt));
@@ -3113,9 +2962,6 @@ function oldestUpdatedWhenOrdered(listed: any[]): number | undefined {
  * gate asks at the unstaged key, which is the pre-#2286 behaviour. The alternative -- reading a refused
  * call as "everything closed long ago" -- would silence a FRESH clearing behind the 72-hour grid, the
  * exact stranding #2139 was written to end.
- *
- * @param {(args: string[]) => string} [run]
- * @returns {Closings | null}
  */
 export function readRecentlyClosed(run: (args: string[]) => string = defaultRun): Closings | null {
   try {
@@ -3179,11 +3025,7 @@ export function readRecentlyClosed(run: (args: string[]) => string = defaultRun)
  * closed; without it (`null`, or an old caller) every order is the unstaged first ask, which is the
  * behaviour before the backoff existed and is what a refused read must fall back to.
  *
- * @param {any[]} rows every open row
- * @param {string} [today]
- * @param {{closings?: Map<number, number> | null, now?: number}} [when]
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param rows every open row
  */
 export function unclaimedBlockerClearedOrders(rows: any[], today: string = todayIso(), { closings = null, now = Date.now() }: { closings?: Map<number, number> | null; now?: number; } = {}): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -3206,9 +3048,6 @@ export function unclaimedBlockerClearedOrders(rows: any[], today: string = today
  * `nowMs` IS THE CLOCK THE HOUR-FORM `Not-before:` IS READ AGAINST (#2812). `today` only decides the date form, so a
  * caller that injected `now` and not this left the hour to the real clock: a fixture naming 2026-09-30T00:00:00Z as
  * the future went red on main when the wall clock passed it.
- *
- * @param {any[]} rows @param {string} [today] @param {number} [nowMs]
- * @returns {{row: any, cleared: number[]}[]}
  */
 export function unclaimedClearings(rows: any[], today: string = todayIso(), nowMs: number = Date.now()): { row: any; cleared: number[]; }[] {
   const found = [];
@@ -3246,8 +3085,8 @@ export function unclaimedClearings(rows: any[], today: string = todayIso(), nowM
  * a shelf with four rows on it is why six rows sat runnable for up to 16h09m on 2026-09-23 with three engineers idle.
  * #1561's `blockedBy` cleared at 2026-09-23T08:28:00Z exactly as designed and the row sat another 4h30m behind a hand-set `blocked` label.
  *
- * @param {any} row @param {number[]} cleared
- * @param {string} [suffix] which re-ask this is -- `""` for the first, `@6h` for the one due six hours on
+ *
+ * @param [suffix] which re-ask this is -- `""` for the first, `@6h` for the one due six hours on
  */
 function promotionOrder(row: any, cleared: number[], suffix: string = "") {
   // RE-DERIVED RATHER THAN PASSED IN: the caller's list is its own, and a helper that reads the row it
@@ -3296,9 +3135,6 @@ function promotionOrder(row: any, cleared: number[], suffix: string = "") {
  * SORTED, so the causeKey is stable: GitHub returns `blockedBy.nodes` in its own order, and an unsorted
  * key would mint a different question for the same clearing depending on what that order happened to be
  * -- `fleetBatchOrders` pays for this exact property one function up.
- *
- * @param {any} row
- * @returns {number[] | null}
  */
 function declaredBlockers(row: any): number[] | null {
   const nodes = row?.blockedBy?.nodes ?? [];
@@ -3338,8 +3174,7 @@ export const CONSTRAINT_BODY_PREFIX = "Constraint:";
  * the oldest claims in the tracker, which is a worse failure than announcing a constraint that has been
  * sitting there. It is still one order, because the key names the marker.
  *
- * @param {{body?: string, id?: string}[]} comments oldest first, as `gh issue list --json comments` returns
- * @returns {{body?: string, id?: string}[]}
+ * @param comments oldest first, as `gh issue list --json comments` returns
  */
 export function constraintsAfterClaim(comments: { body?: string; id?: string; }[]): { body?: string; id?: string; }[] {
   const list = comments ?? [];
@@ -3357,7 +3192,6 @@ export function constraintsAfterClaim(comments: { body?: string; id?: string; }[
  * rule while explaining it -- is not itself a constraint. That is the mention-versus-use trap
  * `acceptance-commands.ts` names, and it is the one a plain `includes` would walk straight into: the
  * comment announcing this cause on the row would have fired it.
- * @param {string} body
  */
 function hasConstraintHeading(body: string) {
   return new RegExp(`^${CONSTRAINT_COMMENT_MARKER}\\s*$`, "m").test(body);
@@ -3381,9 +3215,8 @@ function hasConstraintHeading(body: string) {
  *                constraint on a row they hold, which is not the failure this cause is about; it is
  *                keyed like the others, so it is once and never again.
  *
- * @param {any} row
- * @param {{body?: string, id?: string}[]} comments this row's comments, oldest first
- * @returns {{kind: string, id: string, says: string}[]}
+ *
+ * @param comments this row's comments, oldest first
  */
 export function amendmentsOn(row: any, comments: { body?: string; id?: string; }[]): { kind: string; id: string; says: string; }[] {
   const markers = [];
@@ -3407,8 +3240,6 @@ export function amendmentsOn(row: any, comments: { body?: string; id?: string; }
  * THE WHOLE LINE IS THE MARKER because the whole line is what changes. Keying on the mere PRESENCE of a
  * `Constraint:` line would make a row whose constraint was REPLACED look unchanged, and the replacement
  * is precisely the amendment a holder must be told about.
- * @param {string} body
- * @returns {string[]}
  */
 function constraintLines(body: string): string[] {
   return [...(body ?? "").matchAll(new RegExp(`^${CONSTRAINT_BODY_PREFIX}\\s*(?:.*\\S)`, "gm"))]
@@ -3420,8 +3251,6 @@ function constraintLines(body: string): string[] {
  *
  * SORTED for `declaredBlockers`'s reason one function up: GitHub returns the nodes in its own order and an
  * unsorted key would mint a different question for the same set of blockers.
- * @param {any} row
- * @returns {number[]}
  */
 export function openBlockers(row: any): number[] {
   return (row?.blockedBy?.nodes ?? [])
@@ -3433,7 +3262,6 @@ export function openBlockers(row: any): number[] {
 /**
  * A short, stable name for a marker GitHub gives no id to -- a body line. Content-derived, so it moves
  * when the line does, which is what makes a REPLACED constraint a new question.
- * @param {string} text
  */
 function digestOf(text: string) {
   return createHash("sha1").update(text).digest("hex").slice(0, 12);
@@ -3469,12 +3297,10 @@ function digestOf(text: string) {
  * record, a build report -- must emit NOTHING. Without it this is a comment-noise generator and the tests
  * that assert silence would all pass against a function that returns `[]`.
  *
- * @param {any[]} rows every open row (`readOpenRows`)
- * @param {{number?: number, comments?: {body?: string, id?: string}[]}[]} [claimedComments]
+ * @param rows every open row (`readOpenRows`)
+ *
  *        `readClaimedRowComments`'s answer. `[]` is "not asked or refused", which evaluates the body and
  *        edge markers and not the comment one -- a degradation that can go quiet, never one that invents.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function claimedRowAmendedOrders(rows: any[], claimedComments: { number?: number; comments?: { body?: string; id?: string; }[]; }[] = []): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -3500,8 +3326,6 @@ export function claimedRowAmendedOrders(rows: any[], claimedComments: { number?:
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * on 2026-09-23 a ruling reached #2099 six minutes AFTER the build was finished and 28 minutes after the claim; it was honoured only because
  * a human read the thread, and this gate said nothing to the session that held the row.
- *
- * @param {{row: any, session: string, markers: {kind: string, id: string, says: string}[]}} found
  */
 function amendedOrder({ row, session, markers }: { row: any; session: string; markers: { kind: string; id: string; says: string; }[]; }) {
   const key = markers.map((m) => m.id).join("+");
@@ -3543,8 +3367,8 @@ function amendedOrder({ row, session, markers }: { row: any; session: string; ma
  * its END (`readNewestComments`), in ONE batched call for all such rows and none on a tick where no row is at the cap. A row whose end could not be
  * read is LEFT OUT of the page: the claim-stall pass finds no claim record for it and SKIPS it, which costs a tick, where a release destroys a worktree's claim.
  *
- * @param {(args: string[]) => string} [run]
- * @returns {any[] | null} `null` when refused, never `[]`
+ *
+ * @returns `null` when refused, never `[]`
  */
 export function readClaimedRowComments(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
@@ -3562,7 +3386,6 @@ export const ISSUE_LIST_COMMENT_CAP = 100;
 /**
  * `rows` with each capped row's comments replaced by its LAST `ISSUE_LIST_COMMENT_CAP`, oldest first -- the shape `issue list` gives, so no reader changes --
  * and a capped row whose end could not be read dropped.
- * @param {any[]} rows @param {(args: string[]) => string} run @returns {any[]}
  */
 function withNewestCommentsOfCappedRows(rows: any[], run: (args: string[]) => string): any[] {
   const capped = rows.filter((row) => (row?.comments?.length ?? 0) >= ISSUE_LIST_COMMENT_CAP);
@@ -3581,7 +3404,6 @@ function withNewestCommentsOfCappedRows(rows: any[], run: (args: string[]) => st
  * The last `ISSUE_LIST_COMMENT_CAP` comments of each named row, in ONE GraphQL call (an aliased `issue(number:)` per row, so the cost is not a function of
  * how many rows are capped), or `null` when the call was refused or its answer is not whole: `errors` beside `data` is refused too (#555), and a row the
  * answer does not carry is left out of the map, never filled with `[]`.
- * @param {number[]} numbers @param {(args: string[]) => string} run @returns {Map<number, any[]> | null}
  */
 function readNewestComments(numbers: number[], run: (args: string[]) => string): Map<number, any[]> | null {
   const [owner, name] = repoNow().split("/");
@@ -3608,8 +3430,7 @@ function readNewestComments(numbers: number[], run: (args: string[]) => string):
  * is exactly the population whose instance can still be stopped.
  *
  * `null` FOR A REFUSAL, NEVER `[]` (#1286): an unread list is not "no closed claim", and `closedClaimOrders` says it was unread.
- * @param {number[]} numbers the rows of the listed per-row instances @param {(args: string[]) => string} [run]
- * @returns {import("./claim-stall.ts").ClosedClaimedRow[] | null}
+ * @param numbers the rows of the listed per-row instances
  */
 export function readClosedClaimedRows(numbers: number[], run: (args: string[]) => string = defaultRun): import("./claim-stall.ts").ClosedClaimedRow[] | null {
   const [owner, name] = repoNow().split("/");
@@ -3639,8 +3460,6 @@ const CLOSED_CLAIM_LABEL_LIMIT = 1000;
  * on 264 rows nobody holds would have released 264 rows' worth of work (measured 2026-10-06: 5.6 s with comments, none a live claim). This read acts on a LABEL and never on an instance, so
  * the whole population is the right one: it is what a hand close, a `Closes` resolved with another actor and a not-planned close all leave behind and no merge path ever sees. It asks for
  * no `comments`, and `--label` filters server-side, so the page is the debris and nothing else.
- * @param {(args: string[]) => string} [run]
- * @returns {{ number: number, labels: ({ name?: string } | string)[], closedAt?: string }[] | null}
  */
 export function readClosedClaimLabelRows(run: (args: string[]) => string = defaultRun): { number: number; labels: ({ name?: string; } | string)[]; closedAt?: string; }[] | null {
   try {
@@ -3656,9 +3475,6 @@ export function readClosedClaimLabelRows(run: (args: string[]) => string = defau
  * #3883: THAT READ, ASKED ONLY WHEN HERDR'S LISTING IS COMPLETE, and handed the listing it is decided from. `null` is NOT ASKED -- the listing is `null` (herdr could not be read),
  * or lacks a standing pane (`listingIsComplete`: a partial listing reads EVERY holder as absent, the live ones included, and the strip would take a working seat's labels). A listing the
  * gate already read for #3535 is REUSED, never read twice, which is why `agents` is a parameter.
- * @param {{ label: string, status: string }[] | null} agents
- * @param {(args: string[]) => string} [run]
- * @returns {{ rows: ReturnType<typeof readClosedClaimLabelRows>, agents: { label: string, status: string }[] } | null}
  */
 export function closedClaimLabelsWhenListed(agents: { label: string; status: string; }[] | null, run: (args: string[]) => string = defaultRun): { rows: ReturnType<typeof readClosedClaimLabelRows>; agents: { label: string; status: string; }[]; } | null {
   if (agents === null || !listingIsComplete(agents)) return null;
@@ -3672,7 +3488,6 @@ const STANDING_SEAT_GRACE_MS = 24 * 60 * 60 * 1000;
  * #3900: DOES THIS LISTED HOLDER STILL HOLD A ROW CLOSED AT `closedAt`? A `worker-<n>` instance is listed only while its turn runs, so it is mid-turn on the row it just closed and always holds it
  * (#3883). A STANDING seat is listed for ever and releases nothing by closing a row, so it holds one only inside the grace; past it the row is debris. A missing or unparseable `closedAt` holds
  * (fail toward not stripping a label), and so does a clock reading that puts the close in the future.
- * @param {string} holder @param {unknown} closedAt @param {number} nowMs
  */
 function holdsClosedRow(holder: string, closedAt: unknown, nowMs: number) {
   if (familyNumber(holder) !== null) return true;
@@ -3684,8 +3499,6 @@ function holdsClosedRow(holder: string, closedAt: unknown, nowMs: number) {
  * #3883: WHICH CLOSED ROWS' CLAIM LABELS ARE DEBRIS, PURE. A row is KEPT when a `session:<name>` label on it names a holder herdr LISTS (in any status: a listing says a seat exists, not what it
  * is doing) and that holder still holds it (`holdsClosedRow`, #3900: a standing seat's hold ends a day after the close); everything else -- an unlisted holder, a seat past the grace, or no
  * `session:` label at all -- is stripped, by `labelsToStrip` (`answer:*` stays, as it decides).
- * @param {{ number: number, labels: ({ name?: string } | string)[], closedAt?: string }[]} rows @param {{ label: string }[]} agents @param {number} [nowMs]
- * @returns {{ strip: { number: number, labels: string[] }[], kept: { number: number, holders: string[] }[] }}
  */
 export function closedClaimDebris(rows: { number: number; labels: ({ name?: string; } | string)[]; closedAt?: string; }[], agents: { label: string; }[], nowMs: number = Date.now()): { strip: { number: number; labels: string[]; }[]; kept: { number: number; holders: string[]; }[]; } {
   const listed = new Set(agents.map((a) => a.label));
@@ -3709,9 +3522,9 @@ export function closedClaimDebris(rows: { number: number; labels: ({ name?: stri
  *
  * SAID ON STDERR, NEVER STDOUT: stdout is the orders, one JSON line each. A row KEPT because its holder is listed is NAMED (it stays until that seat releases it), and an unread
  * read or an unasked one is said as such and never as "no debris". A refused edit is said and the tick goes on: the next tick asks again.
- * @param {ReturnType<typeof closedClaimLabelsWhenListed>} asked
- * @param {{ gh?: (args: string[]) => unknown, say?: (line: string) => void, repo?: string, nowMs?: number }} [deps]
- * @returns {number} how many rows had their labels taken off
+ *
+ *
+ * @returns how many rows had their labels taken off
  */
 export function stripClosedClaims(asked: ReturnType<typeof closedClaimLabelsWhenListed>, { gh = defaultRun, say = (line) => process.stderr.write(`${line}\n`), repo = repoNow(), nowMs = Date.now() }: { gh?: (args: string[]) => unknown; say?: (line: string) => void; repo?: string; nowMs?: number; } = {}): number {
   if (asked === null) { say("GATE: closed rows' claim labels were NOT read this tick: herdr's listing was missing or incomplete, so no holder can be called unlisted."); return 0; }
@@ -3728,8 +3541,6 @@ export function stripClosedClaims(asked: ReturnType<typeof closedClaimLabelsWhen
  * The newest merged pull requests, in ONE call, for the claimed branches whose work landed while the row stayed open.
  * `null` FOR A REFUSAL, NEVER `[]` (#1286): an unread list is not "nothing merged", and the merged release is simply not
  * evaluated this tick.
- * @param {(args: string[]) => string} [run]
- * @returns {{ number: number, headRefName: string, mergedAt: string, title: string, labels: { name: string }[] }[] | null}
  */
 export function readMergedPrs(run: (args: string[]) => string = defaultRun): { number: number; headRefName: string; mergedAt: string; title: string; labels: { name: string; }[]; }[] | null {
   try {
@@ -3744,7 +3555,6 @@ export function readMergedPrs(run: (args: string[]) => string = defaultRun): { n
 /**
  * Each open pull request with `checksPending`: a check of its NEWEST run per name is still running. The idle-claimant reading counts that as a wait
  * (#2999), and it is decided HERE, through `newestPerName` and `stillRunning`, so there is one reader of the rollup and one meaning of "running".
- * @param {any[]} prs
  */
 export function withChecksPending(prs: any[]) {
   return prs.map((pr) => ({ ...pr, checksPending: newestPerName(pr?.statusCheckRollup ?? []).some(stillRunning) }));
@@ -3760,10 +3570,8 @@ export function withChecksPending(prs: any[]) {
  * (#3566) `known` IS WHAT `readOtherScopes` ALREADY ASKED THIS TICK. Its `prs` lane is the same `readPrs`, aimed at the same repository and tagged the
  * same way, so asking again was one repeated `gh pr list` per other repository per tick (5 of 53 calls, about 4.6 s, measured by the census's `GH_REPO`
  * field). A scope present in `known` has its open list taken from there, `null` (refused) included: a refusal is not retried, since a retry is a new read.
- * @param {readonly Scope[]} [scopes] @param {(args: string[], repo?: string) => string} [run]
+ *
  * (#3566, slice 2) Its merged lists, one per repository, go out together (`readWithFirstWaveTogether`).
- * @param {readonly { scope: Scope, read: { prs: any[] | null } }[]} [known] @param {typeof runBatch} [batch]
- * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
  */
 export function readElsewherePrs(scopes: readonly Scope[] = scopesOf([homeProjectDeclaration()]), run: (args: string[], repo?: string) => string = defaultRun, known: readonly { scope: Scope; read: { prs: any[] | null; }; }[] = [], batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { open: any[] | null; merged: any[] | null; } | undefined {
   const lanes: { open: any[] | null; merged: any[] | null; }[] = readWithFirstWaveTogether((through) => scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
@@ -3777,7 +3585,6 @@ export function readElsewherePrs(scopes: readonly Scope[] = scopesOf([homeProjec
     merged: lanes.every((lane) => lane.merged === null) ? null : lanes.flatMap((lane) => lane.merged ?? []) };
 }
 
-/** @param {string[]} args */
 export const systemctlRun = (args: string[]) => execFileSync("systemctl", args, { encoding: "utf8", timeout: 10_000 });
 
 /** The project checkout this tool serves (`HOME_CHECKOUT`, not `src` up three): where `../wt-<row>` claim records are resolved against. */
@@ -3811,11 +3618,6 @@ export const REPO_CHECKOUT = HOME_CHECKOUT;
  *
  * A START CAUSE, so a drain withholds it: splitting an epic MANUFACTURES new work, which is exactly what
  * a drain window exists to stop.
- *
- * @param {{number?: number, title?: string, subIssuesSummary?: {total?: number},
- *          body?: string, labels?: {name?: string}[],
- *          blockedBy?: {nodes?: {number?: number, state?: string}[]}}[]} epics
- * @param {string} [today]
  */
 export function unfiledEpics(epics: {
         number?: number; title?: string; subIssuesSummary?: { total?: number; };
@@ -3866,10 +3668,6 @@ export function unfiledEpics(epics: {
  * epic, not the shelf: filing #16 elsewhere removes #16's own order and leaves #69's, #57's and #20's
  * causeKeys byte-identical, so `JUDGMENT_TTL_MS` protects each one exactly as long as that epic's own
  * answer has not moved -- the same property `ready-row-unclaimed` already has over `ready-queue-empty`.
- *
- * @param {any[]} epics @param {any[]} readyRows
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function epicOrders(epics: any[], readyRows: any[]): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -3922,8 +3720,6 @@ export function epicOrders(epics: any[], readyRows: any[]): {
  * next reader inherits the judgment rather than re-deriving it.
  *
  * A WAITING EPIC IS WAITING, not finished -- the same filter `unfiledEpics` carries, for #1780's reason.
- *
- * @param {any[]} epics @param {string} [today]
  */
 export function finishedEpics(epics: any[], today: string = todayIso()) {
   return (epics ?? [])
@@ -3952,10 +3748,6 @@ export function finishedEpics(epics: any[], today: string = todayIso()) {
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * measured 2026-09-21, nine of the org's thirteen open epics were finished and the backlog read three times deeper than it was.
- *
- * @param {any[]} epics
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function finishedEpicOrders(epics: any[]): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -3994,8 +3786,6 @@ const EPIC_LABEL = "epic";
  * `subIssuesSummary` AND NOT `blocking`: GitHub has both, and they mean different things. `blocking` is a dependency edge;
  * sub-issues are PARENTHOOD, which is what "has this epic been broken down" asks. Using the wrong one would have read #68
  * -- which blocks nothing and parents nothing -- as filed.
- *
- * @param {any[]} openRows
  */
 export function epicRowsOf(openRows: any[]) {
   return openRows.filter((r) => labelsOf(r).includes(EPIC_LABEL));
@@ -4008,9 +3798,6 @@ const DONE_WHEN_MAX_LINE_CHARS = 400;
 /**
  * The lines of an epic body's `## Done-when` section, up to the next heading. Fenced-code delimiters and blank lines are dropped;
  * the rest is quoted as written, capped so one long epic cannot flood the order. `[]` when the body has no such section.
- *
- * @param {string | null | undefined} body
- * @returns {string[]}
  */
 export function doneWhenLines(body: string | null | undefined): string[] {
   const lines = String(body ?? "").split(/\r\n|\r|\n/);
@@ -4028,7 +3815,6 @@ export function doneWhenLines(body: string | null | undefined): string[] {
 /**
  * The part of a finished-epic order that says what is LEFT: the epic's done-when, to be answered line by line. An epic with
  * no such section says so, because "nothing to check against" is itself a finding for the reader.
- * @param {string | null | undefined} body
  */
 function doneWhenNote(body: string | null | undefined) {
   const lines = doneWhenLines(body);
@@ -4045,8 +3831,6 @@ function doneWhenNote(body: string | null | undefined) {
  * The cheap question that decides whether the expensive one is worth asking. It deliberately looks at
  * EVERY check rather than the required ones -- it cannot know which those are yet, and asking is the
  * thing it is gating.
- *
- * @param {any[]} prs
  */
 export function anyChecksRed(prs: any[]) {
   return prs.some((pr) => checksSettledGreen(newestPerName(pr?.statusCheckRollup ?? [])) === false);
@@ -4101,10 +3885,6 @@ const BRANCH_JQ = "{protected, contexts: .protection.required_status_checks.cont
  * "never worked"; silence is what this repository's diagnostics model exists to refuse.
  *
  * ONCE PER TICK, because `requiredWhenNeeded` is the only caller and calls this at most once.
- *
- * @param {(args: string[]) => string} [run]
- * @param {(line: string) => void} [log]
- * @returns {string[] | null}
  */
 export function requiredCheckNames(run: (args: string[]) => string = defaultRun, log: (line: string) => void = (line) => process.stderr.write(line)): string[] | null {
   let answer;
@@ -4129,7 +3909,6 @@ const ECHOED_ANSWER_CHARS = 200;
 /**
  * The answer itself, bounded. `defaultRun` allows a 32MB body, and a diagnostic that pastes one into the
  * tick log replaces a silent failure with an unreadable one.
- * @param {string} text
  */
 function quoted(text: string) {
   const trimmed = text.trim();
@@ -4138,7 +3917,6 @@ function quoted(text: string) {
     : trimmed;
 }
 
-/** @param {string} text */
 function parsedOrNull(text: string) {
   try {
     return JSON.parse(text);
@@ -4153,8 +3931,6 @@ function parsedOrNull(text: string) {
  * THE CONSEQUENCE IS PART OF THE REPORT. A reader who sees only "could not read" has to know #1750 to
  * work out whether anything is at risk; saying the fallback out loud is what keeps this line from being
  * read as an outage. Nothing is missed -- the SAVING is.
- *
- * @param {string} diagnosis
  */
 function cannotReadRequiredChecks(diagnosis: string) {
   return `CANNOT READ the required checks: \`gh api ${BRANCH_ENDPOINT}\` ${diagnosis} `
@@ -4178,10 +3954,6 @@ const BASE_TIP_JQ = "{sha: .sha, date: .commit.committer.date}";
  *
  * Refusals are announced on stderr like `requiredCheckNames`': a read that fails silently is
  * indistinguishable from one that never ran.
- *
- * @param {(args: string[]) => string} [run]
- * @param {(line: string) => void} [log]
- * @returns {{sha: string, date: string} | null}
  */
 export function readBaseTip(run: (args: string[]) => string = defaultRun, log: (line: string) => void = (line) => process.stderr.write(line)): { sha: string; date: string; } | null {
   let answer;
@@ -4203,8 +3975,6 @@ export function readBaseTip(run: (args: string[]) => string = defaultRun, log: (
  * `null` required means "unreadable", and that is not the same as "nothing is required" -- the first must
  * consider every check (fail open), the second would consider none and go permanently silent. Keeping
  * them distinct is the whole reason `requiredCheckNames` returns `null` rather than `[]`.
- *
- * @param {any[]} rollup @param {string[] | null} required
  */
 export function blockingChecks(rollup: any[], required: string[] | null) {
   if (required === null) return rollup;
@@ -4230,8 +4000,8 @@ export function blockingChecks(rollup: any[], required: string[] | null) {
  * for any PR carrying a red `sweep` -- which is precisely the check the 2026-09-22 outage turned red on
  * every pull request it stranded.
  *
- * @param {any[]} prs @param {string[] | null} [required]
- * @returns {number[]} PR numbers, ascending
+ *
+ * @returns PR numbers, ascending
  */
 export function shouldBeMerging(prs: any[], required: string[] | null = null): number[] {
   return mergeCandidates(prs, required).map((pr) => Number(pr.number)).sort((a, b) => a - b);
@@ -4247,9 +4017,6 @@ export function shouldBeMerging(prs: any[], required: string[] | null = null): n
  * twice, one copy correct -- and here it would be worse than a wrong answer: the two causes would report
  * OVERLAPPING but different populations, so a pull request could be called stranded by one and healthy by
  * the other on the same tick.
- *
- * @param {any[]} prs @param {string[] | null} [required]
- * @returns {any[]}
  */
 function mergeCandidates(prs: any[], required: string[] | null = null): any[] {
   return greenUnheldPrs(prs, required)
@@ -4262,9 +4029,6 @@ function mergeCandidates(prs: any[], required: string[] | null = null): any[] {
  * `mergeCandidates` keeps the ones that can, `conflictedPrs` the ones that cannot, so the two partition it
  * and no pull request is called stranded by one cause and healthy by another on the same tick (#2084's
  * argument for extracting `mergeCandidates`, applied once more).
- *
- * @param {any[]} prs @param {string[] | null} [required]
- * @returns {any[]}
  */
 function greenUnheldPrs(prs: any[], required: string[] | null = null): any[] {
   return (prs ?? [])
@@ -4301,8 +4065,8 @@ export const CONFLICT_STATE = Object.freeze({
  * would turn a field the gate lost, or GitHub had not yet computed, into a silently emptier
  * `pr-green-unarmed`, which is the reassuring direction a blind spot fails in.
  *
- * @param {any} pr
- * @returns {string} a `CONFLICT_STATE` value
+ *
+ * @returns a `CONFLICT_STATE` value
  */
 export function conflictStateOf(pr: any): string {
   if (pr?.mergeStateStatus === "DIRTY" || pr?.mergeable === "CONFLICTING") return CONFLICT_STATE.CONFLICTING;
@@ -4317,8 +4081,8 @@ export function conflictStateOf(pr: any): string {
  * PURE. #2209: the green, unheld, non-draft pull requests that CANNOT MERGE because they conflict with
  * `main` -- the complement of `mergeCandidates` inside `greenUnheldPrs`.
  *
- * @param {any[]} prs @param {string[] | null} [required]
- * @returns {any[]} ascending by PR number
+ *
+ * @returns ascending by PR number
  */
 export function conflictedPrs(prs: any[], required: string[] | null = null): any[] {
   return greenUnheldPrs(prs, required)
@@ -4354,9 +4118,6 @@ export function conflictedPrs(prs: any[], required: string[] | null = null): any
  * file over and for its reason: an allowlist of the blocking values would be written from today's
  * vocabulary, and the one value nobody here has seen is exactly the one that would slip through. A state
  * this code cannot name must never be the state that lets a pull request read as healthy.
- *
- * @param {any} pr
- * @returns {{code: string, why: string}}
  */
 export function reviewStateOf(pr: any): { code: string; why: string; } {
   if (!Object.hasOwn(pr ?? {}, "reviewDecision")) {
@@ -4401,7 +4162,7 @@ export const REVIEW_STATE = Object.freeze({
   UNRECOGNISED: "UNRECOGNISED",
 });
 
-/** The states that stop a pull request merging, however green and armed it looks. @type {readonly string[]} */
+/** The states that stop a pull request merging, however green and armed it looks. */
 export const BLOCKING_REVIEW_STATES: readonly string[] = Object.freeze([
   REVIEW_STATE.AWAITING_REVIEW, REVIEW_STATE.REFUSED, REVIEW_STATE.UNRECOGNISED]);
 
@@ -4412,8 +4173,6 @@ export const BLOCKING_REVIEW_STATES: readonly string[] = Object.freeze([
  * back empty. `null` is "the payload cannot say", never "at no commit" -- the order then tells the reader to
  * look rather than asserting a comparison nobody made. The LAST refusal is taken on the assumption that `gh` lists
  * reviews oldest first, as GitHub's API does; that order was NOT confirmed here (the one PR read had a single review).
- *
- * @param {any} pr @returns {string | null}
  */
 function refusalCommitOf(pr: any): string | null {
   if (!Array.isArray(pr?.reviews)) return null;
@@ -4425,7 +4184,6 @@ function refusalCommitOf(pr: any): string | null {
 /**
  * PURE. #3045: whether a pull request's patch at its current head equals its patch at `oid` -- the head a review was posted at. `null`
  * when `oid` is absent or either patch was not read (`withPatchIds`), because absence of a reading is not a reading of change.
- * @param {any} pr @param {string | null} oid @returns {boolean | null}
  */
 function patchUnchangedSince(pr: any, oid: string | null): boolean | null {
   const ids = pr?.patchIds ?? {};
@@ -4451,15 +4209,14 @@ function patchUnchangedSince(pr: any, oid: string | null): boolean | null {
  * `reviewBlockedOrders` send a labelled pull request to its own session instead of to `product-manager`;
  * the two commits let the order open with the comparison the #2084 diagnosis turns on.
  *
- * @param {any[]} prs @param {string[] | null} [required]
+ *
  * `patchUnchanged` (#3045) is whether the pull request's patch is the one the refusing review was posted at: `true`, or `false`, or `null` when
  * either patch was not read -- unread is not changed, and is not unchanged either.
  *
  * `refusalLifted` (a11ign#3199) is whether the refusal was posted for a check that failed at that commit and fails at none now, at an equal
  * patch (`refusalLiftedAt`, the decider the door asks): a refusal that only a fresh review can lift and that no rework could.
  *
- * @returns {{number: number, code: string, why: string, session: string | null, head: string,
- *            refusedAt: string | null, patchUnchanged: boolean | null, refusalLifted: boolean}[]} ascending by PR number
+ * @returns ascending by PR number
  */
 export function reviewBlocked(prs: any[], required: string[] | null = null): {
     number: number; code: string; why: string; session: string | null; head: string;
@@ -4487,7 +4244,6 @@ export function reviewBlocked(prs: any[], required: string[] | null = null): {
  * `null` IS CANNOT-ASK, NEVER "NOTHING OWNS THE PIPELINE" -- `loadLanes`'s own rule: a check that answers
  * "clear" because it could not find its own rules is worse than no check, and `pipelineCodeownerReviewMissing`
  * below reads this return the same way.
- * @returns {{owner: string, paths: string[], except?: string[]} | null}
  */
 function pipelineLane(): { owner: string; paths: string[]; except?: string[]; } | null {
   return loadLanes()?.lanes.find((l) => l.lane === "the pipeline") ?? null;
@@ -4505,7 +4261,6 @@ const ROLE_LOGIN = Object.freeze({ ceo: "a11ign-ai-leads" });
  * Does this PR touch a path CODEOWNERS actually assigns to the lane's owner -- inside `paths` and outside
  * every `except` entry, the same last-matching-pattern rule GitHub applies to the file itself. A PR
  * touching ONLY an excepted path (`.github/workflows/consumer-gate.yml`) answers `false`.
- * @param {string[]} files @param {{paths: string[], except?: string[]}} lane
  */
 function touchesOwnedLanePath(files: string[], lane: { paths: string[]; except?: string[]; }) {
   return files.some((f) => inLane(f, lane.paths) && !inLane(f, lane.except ?? []));
@@ -4529,8 +4284,8 @@ function touchesOwnedLanePath(files: string[], lane: { paths: string[]; except?:
  * this cause inherits the same guarantee: it can be silent about a PR the gate cannot see the whole of, but
  * it can never fire on a partial list and miss the path that mattered.
  *
- * @param {any[]} prs @param {{number: number, files: string[], repoKey?: string}[]} prFiles
- * @returns {{number: number, repoKey?: string, session: string | null}[]} ascending by PR number
+ *
+ * @returns ascending by PR number
  */
 export function pipelineCodeownerReviewMissing(prs: any[], prFiles: { number: number; files: string[]; repoKey?: string; }[]): { number: number; repoKey?: string; session: string | null; }[] {
   const lane = pipelineLane();
@@ -4556,10 +4311,6 @@ export function pipelineCodeownerReviewMissing(prs: any[], prFiles: { number: nu
  * `ceo` ALWAYS, WHOEVER OPENED THE PULL REQUEST -- unlike `pr-review-blocked`'s owned/unowned split, the
  * act this order asks for (`ceo` posting a formal review) is never a labelled session's to do; the label,
  * when there is one, is named in the prompt only so `ceo` knows whose branch it is.
- *
- * @param {{number: number, repoKey?: string, session: string | null}[]} missing
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string,
- *            causeKey: string}[]}
  */
 function pipelineCodeownerReviewOrders(missing: { number: number; repoKey?: string; session: string | null; }[]): {
     session: string; cause: string; subject: string; discriminator: string; prompt: string;
@@ -4600,9 +4351,6 @@ function pipelineCodeownerReviewOrders(missing: { number: number; repoKey?: stri
  * A CANDIDATE THE QUERY DID NOT RETURN IS DROPPED, NOT REPORTED. `=== false` and not `!== true`: an
  * absent number means the read did not cover it (a PR against another base, or past the 100-PR window),
  * and calling that "unarmed" would wake somebody to arm a pull request nothing has looked at.
- *
- * @param {number[]} candidates @param {(args: string[]) => string} [run]
- * @returns {number[] | null}
  */
 export function readUnarmed(candidates: number[], run: (args: string[]) => string = defaultRun): number[] | null {
   if (candidates.length === 0) return [];
@@ -4628,9 +4376,7 @@ export function readUnarmed(candidates: number[], run: (args: string[]) => strin
  * DROPPED FROM BOTH SIDES: it is neither called unarmed nor called ejected, because either would be a guess and an order
  * built on a guess is the defect this fixes. A refused read sends no order, never a false all-clear.
  *
- * @param {number[] | null} unarmed `readUnarmed`'s answer
- * @param {(args: string[]) => string} [run]
- * @returns {{ unarmed: number[], ejections: Map<number, {removedAt: string | null, runId: number | null, failingTests: string[] | null}> } | null}
+ * @param unarmed `readUnarmed`'s answer
  */
 export function readEjections(unarmed: number[] | null, run: (args: string[]) => string = defaultRun): { unarmed: number[]; ejections: Map<number, { removedAt: string | null; runId: number | null; failingTests: string[] | null; }>; } | null {
   if (unarmed === null) return null;
@@ -4645,7 +4391,6 @@ export function readEjections(unarmed: number[] | null, run: (args: string[]) =>
   return { unarmed: stillUnarmed, ejections };
 }
 
-/** @param {number} number @param {(args: string[]) => string} run */
 function readEjection(number: number, run: (args: string[]) => string) {
   try {
     return queueEjectionOf(JSON.parse(run(ejectionQueryArgs({ number, repo: repoNow() }))));
@@ -4660,8 +4405,6 @@ function readEjection(number: number, run: (args: string[]) => string) {
  *
  * The run is found by its branch (`gh-readonly-queue/main/pr-<n>-<sha>`, measured on `agent-org#16`): the newest failed
  * `merge_group` run for this PR created no later than the removal. A PR ejected twice has two, and the removal time picks.
- *
- * @param {number} number @param {string | null} removedAt @param {(args: string[]) => string} run
  */
 function readEjectionRun(number: number, removedAt: string | null, run: (args: string[]) => string) {
   const found = { removedAt, runId: (null as number | null), failingTests: (null as string[] | null) };
@@ -4683,8 +4426,6 @@ function readEjectionRun(number: number, removedAt: string | null, run: (args: s
 /**
  * The failing subtest identities in a `--log-failed` dump, capped so a mass failure does not become the order.
  * `null` when the log names none: "the log did not say" is a different report from "no subtest failed".
- * @param {string} log
- * @returns {string[] | null}
  */
 function failingSubtestsOf(log: string): string[] | null {
   const lines = log.split("\n").map((l) => l.replace(/^.*?\t.*?\t/, "").replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
@@ -4705,7 +4446,7 @@ const MAX_EJECTION_SUBTESTS = 5;
  * It must stop blocking a REVIEW, which is the defect #2709 was filed for: PR #2649 carried a release
  * condition needing a verdict, and the hold's own red checks made `reviewableHead` return `null` before
  * anyone was ever asked for one.
- * @param {any} pr @param {any[]} onHead every check on the head, narrowed by `newestPerName`
+ *  @param onHead every check on the head, narrowed by `newestPerName`
  */
 function redOnlyFromAnyHold(pr: any, onHead: any[]) {
   if (holdersOf(labelsOf(pr)).length === 0) return false;
@@ -4723,7 +4464,6 @@ function redOnlyFromAnyHold(pr: any, onHead: any[]) {
  * `failingChecksOrder` and no review's question to this: it earned no order at all, and waited for a reviewer nobody was sent for.
  * `required` is `null` when the list could not be read, and `blockingChecks` then counts every check -- the answer before #3597.
  * `redOnlyFromAnyHold` still reads the whole head: a hold's manufactured jobs are named, not required, and it asks about its own red.
- * @param {any} pr @param {string[] | null} [required] @returns {string | null}
  */
 export function reviewableHead(pr: any, required: string[] | null = null): string | null {
   const onHead = newestPerName(pr?.statusCheckRollup);
@@ -4737,7 +4477,7 @@ const SHA_RESOLVES_TO_NOTHING = [404, 422];
 /** What each refusal already told this tick, so a fault met on every head of a pull request is one line. */
 const refusalsTold = new Set();
 
-/** @param {any} error @returns {number | null} the HTTP status `gh` printed (`gh: Not Found (HTTP 404)`), or null when it printed none */
+/** @returns the HTTP status `gh` printed (`gh: Not Found (HTTP 404)`), or null when it printed none */
 function refusalStatus(error: any): number | null {
   const found = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
   return found ? Number(found[1]) : null;
@@ -4753,9 +4493,6 @@ function refusalStatus(error: any): number | null {
  * ANYTHING ELSE IS A FAULT AND STAYS VISIBLE (403, 5xx, a timeout, a 404 of a pull request), ONCE PER TICK per repository, path and status
  * -- the path elides the sha, so a fault met on every head is one line. Before this, `gh`'s own stderr was inherited and a bare
  * `gh: Not Found (HTTP 404)` repeated for 30 ticks naming no repository, pull request or sha.
- *
- * @param {any} error @param {{ path: string, ofASha: boolean }} read
- * @param {(line: string) => void} [log]
  */
 export function noteRefusedRead(error: any, { path, ofASha }: { path: string; ofASha: boolean; }, log: (line: string) => void = (line) => process.stderr.write(line)) {
   const status = refusalStatus(error);
@@ -4777,8 +4514,6 @@ export function noteRefusedRead(error: any, { path, ofASha }: { path: string; of
  * which every caller reads as "the patch is not known", never as "the patch is empty".
  *
  * `head` MAY BE AN ABBREVIATION (a verdict's `at <head8>`): the compare API resolves it.
- *
- * @param {string} head @param {string} base @param {(args: string[]) => string} run @returns {string | null}
  */
 export function readPatchId(head: string, base: string, run: (args: string[]) => string = defaultRun): string | null {
   try {
@@ -4793,8 +4528,6 @@ export function readPatchId(head: string, base: string, run: (args: string[]) =>
  * #3045: The shas of one pull request's commits, oldest first, or `null` when the read was refused. REST, not the list call: `commits`
  * on `gh pr list --limit 100` is refused outright by GraphQL ("requesting up to 1,000,000 possible nodes which exceeds the maximum
  * limit of 500,000", 2026-09-24), and REST returns every commit rather than the first hundred.
- *
- * @param {number} number @param {(args: string[]) => string} run @returns {string[] | null}
  */
 export function readCommitShas(number: number, run: (args: string[]) => string = defaultRun): string[] | null {
   try {
@@ -4818,8 +4551,6 @@ export function readCommitShas(number: number, run: (args: string[]) => string =
  * A REQUIRED check still running is `"running"`; a check outside the required set is not read at all (a11ign#3597), so one still running
  * beside a settled-green required set asks the review now, as it does for a red one -- `required` is `null` for an unread list, which
  * counts every check as before.
- *
- * @param {any} pr @param {string[] | null} [required] @returns {"settled" | "running" | null}
  */
 export function reviewWait(pr: any, required: string[] | null = null): "settled" | "running" | null {
   if (!pr?.headRefOid) return null;
@@ -4839,8 +4570,6 @@ export function reviewWait(pr: any, required: string[] | null = null): "settled"
  *
  * `required` is the list `draftOrder` reads the question against (a11ign#3597): the patch is read for the pull request the question is
  * open for, so the two must not disagree about whether a non-required red check closes it.
- *
- * @param {any[]} prs @param {(args: string[]) => string} [run] @param {string[] | null} [required]
  */
 export function withPatchIds(prs: any[], run: (args: string[]) => string = defaultRun, required: string[] | null = null) {
   return prs.map((pr) => {
@@ -4861,8 +4590,6 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
  * hand a refused pull request back to a reviewer on a guess.
  *
  * `commit` MAY BE AN ABBREVIATION (a verdict's `at <head8>`): the commits endpoint resolves it, as the compare API does.
- *
- * @param {string} commit @param {(args: string[]) => string} run @returns {string[] | null}
  */
 export function readFailingChecks(commit: string, run: (args: string[]) => string = defaultRun): string[] | null {
   try {
@@ -4881,8 +4608,6 @@ export function readFailingChecks(commit: string, run: (args: string[]) => strin
  * with such a refusal pays anything, and then one read per commit compared: each refusal head, and the current head only when one of those
  * had a failure, since a refusal at an all-green commit is the #3033 shape and stays standing whatever the head looks like. A refused read
  * leaves the commit out, and absent is not green.
- *
- * @param {any} pr @param {(args: string[]) => string} run
  */
 function withFailingChecks(pr: any, run: (args: string[]) => string) {
   const refused = refusalHeads(pr);
@@ -4901,7 +4626,6 @@ function withFailingChecks(pr: any, run: (args: string[]) => string) {
 /**
  * The commit before a pull request's head, as a one-element list, or none when the commits could not be read or do not end at the
  * head (a push landed between the list and the commits).
- * @param {any} pr @param {(args: string[]) => string} run @returns {string[]}
  */
 function predecessorOf(pr: any, run: (args: string[]) => string): string[] {
   const shas = readCommitShas(Number(pr.number), run);
@@ -4915,7 +4639,6 @@ export const AWAITING_EVIDENCE_LABEL = "awaiting-evidence";
 export const AWAITING_EVIDENCE_QUIET_HOURS = 48;
 export const AWAITING_EVIDENCE_QUIET_MS = AWAITING_EVIDENCE_QUIET_HOURS * HOUR_MS;
 
-/** @param {any} pr */
 export function awaitingEvidence(pr: any) {
   return labelsOf(pr).includes(AWAITING_EVIDENCE_LABEL);
 }
@@ -4928,8 +4651,6 @@ export function awaitingEvidence(pr: any) {
  * reads that can answer it. THE LAST `labeled` EVENT, because a label removed (the evidence posted) and
  * applied again is a new wait. `null` is refused-or-never-applied, and neither becomes an order: an order
  * naming a PR whose label age is unknown would be a claim the gate never measured.
- *
- * @param {number} number @param {(args: string[]) => string} run @returns {string | null}
  */
 export function readEvidenceLabelledAt(number: number, run: (args: string[]) => string = defaultRun): string | null {
   try {
@@ -4946,8 +4667,6 @@ export function readEvidenceLabelledAt(number: number, run: (args: string[]) => 
  * The pull requests, each one carrying the label with `awaitingSince` attached. A queue where nothing carries the
  * label pays NO call, and a labelled one pays one per labelled pull request -- the condition is answered from
  * the list already in hand, which is what makes the read affordable on every tick.
- *
- * @param {any[]} prs @param {(args: string[]) => string} [run]
  */
 export function withEvidenceLabelAges(prs: any[], run: (args: string[]) => string = defaultRun) {
   return prs.map((pr) => {
@@ -4960,9 +4679,6 @@ export function withEvidenceLabelAges(prs: any[], run: (args: string[]) => strin
 /**
  * `{ branch -> stamped session }` for every worktree on this host, from ONE local `git worktree list --porcelain` and a file read
  * per stamped tree. `null` when git refused: a refused read names nobody, which is a fall to `ceo`, never a guess. Spends no pool.
- *
- * @param {(cmd: string, args: string[]) => string} [run] @param {typeof worktreeOwner} [owner]
- * @returns {Map<string, string> | null}
  */
 export function readWorktreeStamps(run: (cmd: string, args: string[]) => string = defaultSpawn, owner: typeof worktreeOwner = worktreeOwner): Map<string, string> | null {
   try {
@@ -4981,8 +4697,6 @@ export function readWorktreeStamps(run: (cmd: string, args: string[]) => string 
 
 /**
  * The lazy, once-per-tick stamp lookup `withNamedOwners` takes: the first call reads the host, every later one reuses it.
- * @param {() => Map<string, string> | null} [read]
- * @returns {(branch: string) => string | null}
  */
 export function stampLookup(read: () => Map<string, string> | null = readWorktreeStamps): (branch: string) => string | null {
   let stamps: Map<string, string> | null | undefined;
@@ -5005,7 +4719,7 @@ export function stampLookup(read: () => Map<string, string> | null = readWorktre
  * per-tick slice, or a high-numbered priority row would be cut by the very cap it exists to beat. A row `partitionUnclaimed` shelved never reaches here, so a label
  * cannot walk a row past a claim label or a template gap -- the one thing the hierarchy changes about eligibility is B4 against a NON-chairman holder (see there).
  *
- * @param {any[]} unclaimed @param {OfferHierarchy} [hierarchy] ABSENT MEANS NOT ASKED: `priority` first, then the lowest row number, exactly as before this existed
+ * @param hierarchy ABSENT MEANS NOT ASKED: `priority` first, then the lowest row number, exactly as before this existed
  */
 function offerOrder(unclaimed: any[], hierarchy?: OfferHierarchy) {
   const tier = (row: any) => (isChairmanRow(row, hierarchy?.chairmanRows) ? 0 : labelsOf(row).includes(PRIORITY_LABEL) ? 1 : 2);
@@ -5086,7 +4800,6 @@ const exemptFromFloor = (row: any, chairmanRows: ReadonlySet<number> | undefined
  * engineer that ran it for `agent-org#7` would claim the wrong row. The claim-side readers of a non-primary key are child 3b (#2617),
  * and until they exist this says so rather than handing over a command that does the wrong thing. The NAMES the claim must produce are
  * ADR 0040 decision 2's, and are given here so 3b's command and this order cannot disagree about them.
- * @param {{ number: number, repoKey?: string, repo?: string }} row
  */
 function claimSentence(row: { number: number; repoKey?: string; repo?: string; }) {
   if (row.repoKey === undefined || row.repoKey === "") {
@@ -5130,8 +4843,6 @@ const TOOL_REPO = "a11ign/agent-org";
  * THE ONE PLACE `adopterFacing` IS READ FOR THE SHARE (#4399, `ceo` on #4378): a repository whose releasable change reaches no outside adopter contributes no product path, so a row whose every Region
  * entry sits under one reads `org`, while ONE entry under an adopter-facing repository keeps it `product` (`rowKind` reads `some`). An entry that omits the key is adopter-facing, as before.
  * A `dora` repository `code` does not declare has no key a Region entry could carry, so it is left out rather than guessed.
- * @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration
- * @returns {{ key: string, paths: string[] }[]}
  */
 export function productRegionsOf({ code, dora }: { code: { key: string; repo: string; }[]; dora: { repo: string; releasablePaths: string[]; adopterFacing?: boolean; }[]; }): { key: string; paths: string[]; }[] {
   return dora.filter((entry) => entry.repo !== TOOL_REPO && entry.adopterFacing !== false).flatMap((entry) => {
@@ -5143,8 +4854,7 @@ export function productRegionsOf({ code, dora }: { code: { key: string; repo: st
 /**
  * `product` when ONE Region entry lies under a releasable path of the repository its key names, else `org`. `unreadable` is a Region the
  * parser found no entries in (`null`: no section; `[]`: a section naming no path), which counts as `org` and is SAID, never guessed.
- * @param {string[] | null} entries what `declaredRegionFiles` read @param {{ key: string, paths: string[] }[]} regions `productRegionsOf`
- * @returns {{ kind: "product" | "org", unreadable: boolean }}
+ * @param entries what `declaredRegionFiles` read @param regions `productRegionsOf`
  */
 export function rowKind(entries: string[] | null, regions: { key: string; paths: string[]; }[]): { kind: "product" | "org"; unreadable: boolean; } {
   if (entries === null || entries.length === 0) return { kind: "org", unreadable: true };
@@ -5158,7 +4868,6 @@ export function rowKind(entries: string[] | null, regions: { key: string; paths:
 /**
  * How many of the last `PRODUCT_SHARE_WINDOW` starts, newest by `at`, were product. `of` IS ALWAYS THE WINDOW: fewer recorded starts than ten
  * count as not product, so a gate with no history offers product rows first, which is the direction the order points.
- * @param {{ at: number, kind: string }[]} starts @returns {{ product: number, of: number }}
  */
 export function productShare(starts: { at: number; kind: string; }[]): { product: number; of: number; } {
   const last = [...starts].sort((a, b) => a.at - b.at).slice(-PRODUCT_SHARE_WINDOW);
@@ -5170,7 +4879,7 @@ export function productShare(starts: { at: number; kind: string; }[]): { product
  * ONE `NO PRODUCT ROW OFFERABLE` line, which `product-manager` reads as an order to stock the shelf. AN ENGINEER IS NEVER LEFT IDLE TO HOLD
  * A RATIO. Only the pool is restricted: a row a lane routes to its owner is not an engineer's start and passes through. ABSENT MEANS NOT
  * ASKED (`decide` sits on its complexity limit, so there is no default there): no starts or no declaration offers as the gate always did.
- * @param {any[]} offerable @param {{ starts?: { at: number, kind: string }[], declaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} [read]
+ *
  *        `shareMemory` (#3929) is where the line is remembered so it prints when it CHANGES; omitted, it prints every time it is reached.
  */
 function offeredByFloor(offerable: any[], { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory }: { starts?: { at: number; kind: string; }[]; declaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; }; } = {}) {
@@ -5210,7 +4919,6 @@ export function offeredByShare(offerable: any[], read: NonNullable<Parameters<ty
  * Whether the line is to be printed now, remembering that it was. ABSENT MEMORY MEANS NOT ASKED: it prints every time, as it always did. A memory
  * that cannot be read (absent, empty, unparseable) or written prints, and never throws: a broken memory must not stop the orders behind it, and
  * must not silence the line either, for `recordEngineerStarts`'s reason.
- * @param {string} line @param {{ stateDir: string, now?: number } | undefined} memory
  */
 function shareLineDue(line: string, memory: { stateDir: string; now?: number; } | undefined) {
   if (memory === undefined) return true;
@@ -5226,7 +4934,7 @@ function shareLineDue(line: string, memory: { stateDir: string; now?: number; } 
   return true;
 }
 
-/** A tick that stocked the shelf (a product row on offer, or the share at the floor) ends the standing state, so a recurrence prints. @param {{ stateDir: string } | undefined} memory */
+/** A tick that stocked the shelf (a product row on offer, or the share at the floor) ends the standing state, so a recurrence prints. */
 function forgetShareLine(memory: { stateDir: string; } | undefined) {
   if (memory === undefined) return;
   const path = `${memory.stateDir}/${SHARE_LINE_FILE}`;
@@ -5244,8 +4952,6 @@ function forgetShareLine(memory: { stateDir: string; } | undefined) {
  * THEN because the row's body is gone from the list once it closes. A seat's row (`session:ceo`) starts nothing. The time is the tick's, which is
  * up to one tick after the claim and orders starts exactly as the claims were ordered. NEVER THROWS, for `claimRefusalStreaksNow`'s reason: a
  * broken memory must not stop the orders behind it, and it reads as no history, which offers product first.
- * @param {any[]} openRows @param {{ stateDir?: string, declaration: Parameters<typeof productRegionsOf>[0], now?: number, log?: (line: string) => void }} host
- * @returns {{ row: string, at: number, kind: string }[]}
  */
 export function recordEngineerStarts(openRows: any[], { stateDir = REVIEWER_STATE_DIR, declaration, now = Date.now(), log = (line) => process.stderr.write(line) }: { stateDir?: string; declaration: Parameters<typeof productRegionsOf>[0]; now?: number; log?: (line: string) => void; }): { row: string; at: number; kind: string; }[] {
   try {
@@ -5266,13 +4972,13 @@ export function recordEngineerStarts(openRows: any[], { stateDir = REVIEWER_STAT
   }
 }
 
-/** A claimed row held by a `worker-<n>` session: the only claim that is an engineer START. @param {any} row */
+/** A claimed row held by a `worker-<n>` session: the only claim that is an engineer START. */
 function startedByAnEngineer(row: any) {
   const labels = labelsOf(row);
   return labels.includes(CLAIM_LABEL) && labels.some((label) => label.startsWith(`${SESSION_PREFIX}worker-`));
 }
 
-/** #3820: `decide`'s two arguments for the product share, read at the tick: the starts memory (local files, no `gh`) and the declaration `dora` is in. @param {any[]} openRows */
+/** #3820: `decide`'s two arguments for the product share, read at the tick: the starts memory (local files, no `gh`) and the declaration `dora` is in. */
 function engineerShareReads(openRows: any[]) {
   const declaration = homeProjectDeclaration();
   return { engineerStarts: recordEngineerStarts(openRows, { declaration }), projectDeclaration: declaration, shareMemory: { stateDir: REVIEWER_STATE_DIR } };
@@ -5282,8 +4988,6 @@ function engineerShareReads(openRows: any[]) {
  * #3892: WHAT A REPLACEMENT'S ORDER SAYS INSTEAD OF "claim it". The plain claim is refused for as long as the branch is on `origin` (#2014), so the
  * order that offered it would end in a refusal the engineer then has to reason out. The branches, their shas and the pull requests that were closed are
  * named; the claim is `--adopt`, which is the exit #2014 leaves, and which `row-claim` still checks (the tree must exist, stamped by the session named, on that branch).
- * @param {{ number: number, repoKey?: string, repo?: string }} row
- * @param {{ branch: string, head: string, prs: number[] }[]} branches
  */
 function replacementSentence(row: { number: number; repoKey?: string; repo?: string; }, branches: { branch: string; head: string; prs: number[]; }[]) {
   const named = branches.map(({ branch, head, prs }) => `\`${branch}\` at ${head.slice(0, 12)} (closed unmerged: ${prs.map((n) => `#${n}`).join(", ")})`).join("; ");
@@ -5302,10 +5006,10 @@ function replacementSentence(row: { number: number; repoKey?: string; repo?: str
  * function past `local/max-physical-lines-per-function` 90. `decide` asks what the queue needs;
  * this asks which rows are on offer and to whom.
  *
- * @param {any[]} unclaimed the unclaimed Ready rows `partitionUnclaimed` judged actually claimable --
+ * @param unclaimed the unclaimed Ready rows `partitionUnclaimed` judged actually claimable --
  *   the CLAIM_LABEL filter and the B4 filter both live there now, because the caller needs the rows
  *   this one discards (a shelved row is reported, not forgotten)
- * @param {Map<number, { branch: string, head: string, prs: number[] }[]>} [replacing] (#3892) `branchesToReplace`'s answer. A row in it is offered with the
+ * @param [replacing] (#3892) `branchesToReplace`'s answer. A row in it is offered with the
  *   branches named and the `--adopt` claim, and the order carries them as `replaces` for the spawner (`claimTarget`).
  * @param {OfferHierarchy} [hierarchy] (#4524) the order rows are offered in, and which are the chairman's. A chairman row's order carries `startFresh: true`: the spawner
  *   starts ONE fresh engineer for it above the usual pool limit when none is idle, and never more than one per such row.
@@ -5453,11 +5157,6 @@ export const CLAIM_REFUSALS_FILE = "claim-refusals.json";
  * here, and says so by being offered without ever being reported.
  *
  * A TREE A RELEASE KEPT FOR THIS ROW IS NOT A REFUSAL: the spawner adopts it (`--adopt`, #2470), so the claim lands.
- *
- * @param {{ number: number }} row
- * @param {{ worktreesDir: string, kept?: Record<string, { worktree?: string }>, exists?: (path: string) => boolean,
- *   owner?: typeof worktreeOwner }} deps
- * @returns {string | null}
  */
 export function claimRefusalOf(row: { number: number; }, { worktreesDir, kept = {}, exists = existsSync, owner = worktreeOwner }: {
         worktreesDir: string; kept?: Record<string, { worktree?: string; }>; exists?: (path: string) => boolean;
@@ -5475,9 +5174,8 @@ export function claimRefusalOf(row: { number: number; }, { worktreesDir, kept = 
 /**
  * The streaks after one more tick. KEYED ON THE ROW AND THE REFUSAL TEXT: the same refusal extends the streak, a CHANGED
  * one starts it again at 1, and a row with no refusal this tick (claimed, withdrawn, or its tree gone) is simply not carried.
- * @param {Record<string, { reason: string, ticks: number }>} before
- * @param {Record<string, string | null>} readings row -> this tick's refusal, or `null` for none
- * @returns {Record<string, { reason: string, ticks: number }>}
+ *
+ * @param readings row -> this tick's refusal, or `null` for none
  */
 export function nextRefusalStreaks(before: Record<string, { reason: string; ticks: number; }>, readings: Record<string, string | null>): Record<string, { reason: string; ticks: number; }> {
   const after: Record<string, { reason: string; ticks: number; }> = {};
@@ -5492,10 +5190,8 @@ export function nextRefusalStreaks(before: Record<string, { reason: string; tick
  * THE WHOLE OF THIS CAUSE'S MEMORY FOR ONE TICK: read each offered row's refusal, advance the streaks on disk, and return them.
  * NEVER THROWS, and says so on stderr: a broken detector must not stop the orders behind it, and it returns NO streaks rather
  * than stale ones, so nothing is reported on a tick that could not be read.
- * @param {any[]} offerable the rows `partitionUnclaimed` judged offerable this tick
- * @param {{ stateDir?: string, worktreesDir?: string, log?: (line: string) => void, exists?: (path: string) => boolean,
- *   owner?: typeof worktreeOwner }} [host] every one a seam
- * @returns {Record<string, { reason: string, ticks: number }>}
+ * @param offerable the rows `partitionUnclaimed` judged offerable this tick
+ * @param [host] every one a seam
  */
 export function claimRefusalStreaksNow(offerable: any[], { stateDir = REVIEWER_STATE_DIR, worktreesDir = dirname(REPO_CHECKOUT),
   log = (line) => process.stderr.write(line), ...seams }: {
@@ -5520,8 +5216,6 @@ export function claimRefusalStreaksNow(offerable: any[], { stateDir = REVIEWER_S
 /**
  * `claimRefusalStreaksNow` over the rows `decide` will OFFER -- the same `partitionUnclaimed` reading, so the streaks advance on
  * those rows and on no others (a row shelved for B4 or a branch on `origin` is not being refused by the claim, it is not offered).
- * @param {Parameters<typeof partitionUnclaimed>[0]} rows @param {Parameters<typeof partitionUnclaimed>[1]} prFiles
- * @param {Parameters<typeof partitionUnclaimed>[2]} options
  */
 function offeredRefusalStreaks(rows: Parameters<typeof partitionUnclaimed>[0], prFiles: Parameters<typeof partitionUnclaimed>[1], options: Parameters<typeof partitionUnclaimed>[2]) {
   return claimRefusalStreaksNow(partitionUnclaimed(rows, prFiles, options).offerable);
@@ -5533,9 +5227,6 @@ function offeredRefusalStreaks(rows: Parameters<typeof partitionUnclaimed>[0], p
  * stops repeating while the answer is unchanged, and a refusal that changes (a different owner stamped the tree) is a new
  * question and re-fires. It stops altogether when the row is claimed or leaves the shelf, because `offerable` no longer holds it.
  * `streaks` ABSENT MEANS NOT ASKED and carries no default here, for `rowBranches`'s reason: `decide` sits on its complexity limit.
- *
- * @param {any[]} offerable @param {Record<string, { reason: string, ticks: number }> | undefined} streaks
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function unclaimableRowOrders(offerable: any[], streaks: Record<string, { reason: string; ticks: number; }> | undefined): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   return offerable.flatMap((row) => {
@@ -5589,18 +5280,16 @@ export function unclaimableRowOrders(offerable: any[], streaks: Record<string, {
  * paid on #1564. The key carries the sha, so a PUSH to that branch is a new question and reaches the
  * owner immediately.
  *
- * @param {any[]} readyRows the `ready` rows (`readReadyRows`)
- * @param {{ branch: string, head: string, row: number }[] | null} [rowBranches]
+ * @param readyRows the `ready` rows (`readReadyRows`)
+ *
  *        `readRowBranches`'s answer. `null` (the default) is "not asked or refused" and emits NOTHING:
  *        a tick that could not reach `origin` must not invent this condition, and must not report a
  *        false all-clear either -- it simply says nothing new, which is what it did before #2031.
- * @param {{ number: number, headRefName?: string, labels?: any[] }[]} [openPrs] the open pull requests the tick already
+ * @param [openPrs] the open pull requests the tick already
  *        read (#3010). A branch one of them is on is NOT unshipped, so its order names the PR and `--adopt` instead of
  *        advising "open its pull request". Absent is none, and the order is exactly what #2031 wrote.
- * @param {{ branch: string, number: number, state: string }[] | null} [branchPrs] `readBranchPrs`'s answer (#3892). A row whose branches
+ * @param [branchPrs] `readBranchPrs`'s answer (#3892). A row whose branches
  *        are all closed-unmerged is OFFERED by `rowOrders` and gets no order here: asking `product-manager` to read a branch that was closed on purpose is the dead end this fixes.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function rowBranchOrders(readyRows: any[], rowBranches: { branch: string; head: string; row: number; }[] | null = null, openPrs: { number: number; headRefName?: string; labels?: any[]; }[] = [], branchPrs: { branch: string; number: number; state: string; }[] | null = null): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -5630,9 +5319,6 @@ export function rowBranchOrders(readyRows: any[], rowBranches: { branch: string;
 /**
  * #3010: THE OPEN PULL REQUEST, IF ANY, THAT ONE OF THESE BRANCHES IS ON. Read off the `pr list` the tick already made,
  * so it spends no pool -- `readRowBranches` is API-free on purpose and a per-row `gh pr list --head` would undo that.
- * @param {{ branch: string, head: string }[]} pushed
- * @param {{ number: number, headRefName?: string, labels?: any[] }[] | null | undefined} openPrs
- * @returns {{ number: number, branch: string, holder: string | null } | null}
  */
 function openPrOnBranch(pushed: { branch: string; head: string; }[], openPrs: { number: number; headRefName?: string; labels?: any[]; }[] | null | undefined): { number: number; branch: string; holder: string | null; } | null {
   for (const pr of Array.isArray(openPrs) ? openPrs : []) {
@@ -5649,8 +5335,6 @@ function openPrOnBranch(pushed: { branch: string; head: string; }[], openPrs: { 
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * measured 2026-09-22 on #2000: its branch sat pushed for 20 minutes while the row read `ready`, and a second session was routed into the
  * same three Region paths.
- *
- * @param {{ row: any, pushed: { branch: string, head: string }[], openPr: { number: number, branch: string, holder: string | null } | null }} found
  */
 function unshippedOrder({ row, pushed, openPr }: { row: any; pushed: { branch: string; head: string; }[]; openPr: { number: number; branch: string; holder: string | null; } | null; }) {
   const owner = laneOwnerOf(row) ?? "product-manager";
@@ -5673,7 +5357,7 @@ function unshippedOrder({ row, pushed, openPr }: { row: any; pushed: { branch: s
   };
 }
 
-/** The #2031 body of the order, for a branch with NO pull request: read it, then one of three exits. @param {string} first */
+/** The #2031 body of the order, for a branch with NO pull request: read it, then one of three exits. */
 function unpushedSentence(first: string) {
   return "READ THE BRANCH FIRST. Both of these spend NO API pool: "
     + `\`git fetch origin && git log --oneline origin/main..origin/${first}\` and `
@@ -5690,7 +5374,6 @@ function unpushedSentence(first: string) {
  * there and "delete the branch" is worse -- it closes the PR. Measured on #2981: PR #2987 was open for 4h while the row
  * was re-offered the three exits above, and the only way to finish it, `claim --adopt`, was named nowhere.
  * `claim`'s own refusal (#2014) is unchanged: it still refuses a row whose branch is on `origin`, and `--adopt` is the exit it leaves.
- * @param {{ row: any, openPr: { number: number, branch: string, holder: string | null } }} found
  */
 function openPrSentence({ row, openPr }: { row: any; openPr: { number: number; branch: string; holder: string | null; }; }) {
   const holder = openPr.holder ?? `<the session on the PR's \`${SESSION_PREFIX}\` label>`;
@@ -5718,9 +5401,7 @@ function openPrSentence({ row, openPr }: { row: any; openPr: { number: number; b
  * measured 2026-09-30 on #2729 and #2730: both sat `ready` for ~38h behind exactly that refusal while the queue read as stocked and
  * `ready-queue-empty` never fired.
  *
- * @param {any[]} readyRows the `ready` rows (`readReadyRows`)
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param readyRows the `ready` rows (`readReadyRows`)
  */
 export function incompleteRowOrders(readyRows: any[]): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -5757,7 +5438,6 @@ export function incompleteRowOrders(readyRows: any[]): {
  * REPO-WIDE, by `isRepoWideResolutionFault`'s own three-sibling rule (#2823). `[]` when the condition does not hold,
  * and a PR whose `closingIssuesReferences` was not read (a fixture, a refused field) is neither declared-and-unresolved
  * nor a sibling: an absent field is "not asked", never "resolved nothing".
- * @param {any[] | null} prs @returns {any[]}
  */
 export function closesUnresolvedPrs(prs: any[] | null): any[] {
   const candidates = (prs ?? [])
@@ -5774,7 +5454,6 @@ export function closesUnresolvedPrs(prs: any[] | null): any[] {
   return held.map(({ pr }) => pr).sort((a, b) => Number(a.number) - Number(b.number));
 }
 
-/** @param {number} ms @returns {string} */
 const standingText = (ms: number): string => (ms >= 2 * 3_600_000 ? `${Math.floor(ms / 3_600_000)}h` : `${Math.max(1, Math.round(ms / 60_000))} min`);
 
 /**
@@ -5786,11 +5465,6 @@ const standingText = (ms: number): string => (ms >= 2 * 3_600_000 ? `${Math.floo
  *
  * KEYED ON THE SET OF PULL REQUESTS, so it is asked once per condition and stops the moment a PR resolves (the rule then
  * no longer holds). JUDGMENT: the answer is durable, and an action cause's expiry would re-ask an unchanged set.
- *
- * @param {any[] | null} prs
- * @param {number} [now]
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function closesUnresolvedOrders(prs: any[] | null, now: number = Date.now()): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -5835,10 +5509,6 @@ export const AGED_BACKLOG_MS = 24 * 60 * 60 * 1000;
  * ONE ORDER PER ROW AND THE SET IN EVERY PROMPT, `laneBacklogOrders`' discipline (#1799): the key follows the row, so one row's
  * answer is not re-litigated when another is filed, and a session is delivered one order per tick, so the prompt carries the
  * rest. Oldest first, capped at `MAX_ROW_ORDERS_PER_TICK`.
- *
- * @param {any[]} promotableRows
- * @param {number} [now]
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function agedBacklogOrders(promotableRows: any[], now: number = Date.now()): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   const aged = promotableRows
@@ -5868,8 +5538,6 @@ export function agedBacklogOrders(promotableRows: any[], now: number = Date.now(
  * SPLIT OUT OF `decide` because adding it took that function past
  * `local/max-physical-lines-per-function` 90 and the pre-push gate refused it. The seam is the real
  * one: `decide` asks what the whole queue needs, this asks what each LANE OWNER is sitting on.
- *
- * @param {any[]} promotableRows @param {any[]} readyRows
  */
 function laneBacklogOrders(promotableRows: any[], readyRows: any[]) {
   const orders = [];
@@ -5915,8 +5583,6 @@ function laneBacklogOrders(promotableRows: any[], readyRows: any[]) {
  *
  * SO THE KEY STAYS PER ROW AND THE PROMPT CARRIES THE SET. Both properties, neither traded: the ledger
  * still dedupes one row's judgment without touching another's, and one turn can still clear several.
- *
- * @param {any[]} mine @param {any} current
  */
 function alsoOwned(mine: any[], current: any) {
   const others = mine.filter((r: any) => r.number !== current.number);
@@ -5958,8 +5624,6 @@ function alsoOwned(mine: any[], current: any) {
  * to one session, so a single order naming both `orchestrator` and `worker-capture` would reach neither
  * reliably; the row must recruit whichever of the two is free, exactly as an unlaned Ready row already
  * does for the engineer pool.
- *
- * @param {string | readonly string[]} owner @param {any[]} mine
  */
 function backlogOrders(owner: string | readonly string[], mine: any[]) {
   const names = Array.isArray(owner) ? owner : [(owner as string)];
@@ -6007,7 +5671,7 @@ export const CHAIRMAN_REMINDER_PERIOD_MS = 24 * HOUR_MS;
  * unemitted between windows is what lets the ledger write its `RESET`. A window whose order was never
  * delivered is retried every tick until it closes, then not until tomorrow: the stated cost.
  *
- * @param {number} nowMs @returns {{day: number} | null} `day` is whole days since the epoch
+ *  @returns `day` is whole days since the epoch
  */
 export function chairmanReminderWindow(nowMs: number): { day: number; } | null {
   const day = Math.floor(Math.max(0, nowMs) / CHAIRMAN_REMINDER_PERIOD_MS);
@@ -6022,8 +5686,8 @@ export function chairmanReminderWindow(nowMs: number): { day: number; } | null {
  * refused it -- the fourth such split, and the seam is the same each time: `decide` asks what the
  * queue needs, each helper asks one narrower question.
  *
- * @param {any[]} chairmanBlocked rows waiting on the chairman, oldest first
- * @param {number} [nowMs] injectable so a test is not wall-clock dependent
+ * @param chairmanBlocked rows waiting on the chairman, oldest first
+ * @param [nowMs] injectable so a test is not wall-clock dependent
  */
 function chairmanOrders(chairmanBlocked: any[], nowMs: number = Date.now()) {
   // THE ORG CANNOT WAKE A HUMAN, so this wakes the session whose brief says it briefs one. `ceo` is the
@@ -6103,8 +5767,7 @@ function chairmanOrders(chairmanBlocked: any[], nowMs: number = Date.now()) {
  * declined to promote it -- while the defect it describes had been fixed 17 HOURS EARLIER by #1764, with 30 sweep runs since and zero
  * failures. It was the only row between the queue and empty, and it was already done.
  *
- * @param {{ offerable: any[], blocked: { number: number, owner: string | null, reason: string }[],
- *           promotable: number, key?: string }} state `key` is the tracker's key, so two trackers' counts are two ledger keys
+ * @param state `key` is the tracker's key, so two trackers' counts are two ledger keys
  */
 function emptyShelfOrder({ offerable, blocked, promotable, key }: {
         offerable: any[]; blocked: { number: number; owner: string | null; reason: string; }[];
@@ -6177,9 +5840,9 @@ function emptyShelfOrder({ offerable, blocked, promotable, key }: {
  * date or row, WHICH date, WHICH row -- was computed and discarded at the same expression, and `ceo` then
  * spent an hour hand-reading twenty rows to recover it.
  *
- * @param {any[] | null | undefined} rows the un-coalesced `readOpenRows` result
- * @param {string} [today] an ISO `YYYY-MM-DD`
- * @returns {{reachable: number, waiting: ReturnType<typeof waitingBreakdown>} | null} `null` when the
+ * @param rows the un-coalesced `readOpenRows` result
+ * @param [today] an ISO `YYYY-MM-DD`
+ * @returns `null` when the
  *   read was refused -- never a zero count, which would read as "the tracker is empty"
  */
 export function openRowState(rows: any[] | null | undefined, today: string = todayIso()): { reachable: number; waiting: ReturnType<typeof waitingBreakdown>; } | null {
@@ -6201,10 +5864,9 @@ export function openRowState(rows: any[] | null | undefined, today: string = tod
  *
  * ONLY A READ `working` LEAVES A ROW OUT. A session that is idle, `blocked`, absent from the listing, or a listing that could not be read (`null`) leaves the row
  * counted: an unreadable liveness is not "working", and a stall under a dead claim must still page. A row that waits is not reachable and is not subtracted twice.
- * @param {any[] | null | undefined} rows the un-coalesced `readOpenRows` result
- * @param {{ label: string, status: string }[] | null | undefined} agents herdr's listing, `null` when herdr could not be asked
- * @param {string} [today] an ISO `YYYY-MM-DD`
- * @returns {any[]}
+ * @param rows the un-coalesced `readOpenRows` result
+ * @param agents herdr's listing, `null` when herdr could not be asked
+ * @param [today] an ISO `YYYY-MM-DD`
  */
 export function workingClaims(rows: any[] | null | undefined, agents: { label: string; status: string; }[] | null | undefined, today: string = todayIso()): any[] {
   if (!Array.isArray(rows) || !Array.isArray(agents)) return [];
@@ -6215,7 +5877,6 @@ export function workingClaims(rows: any[] | null | undefined, agents: { label: s
 
 /**
  * Says how many claimed rows were left out of the reachable count (#4205), so a reader can tell "nothing moves" from "everything that moves is claimed".
- * @param {number} leftOut
  */
 function leftOutParagraph(leftOut: number) {
   return leftOut > 0 ? `NOT IN THAT COUNT: ${leftOut} claimed row(s) with a working session were left out, because a claim whose session is working is moving.\n` : "";
@@ -6244,9 +5905,7 @@ function leftOutParagraph(leftOut: number) {
  * `ceo`" is the fact a reader acts on, and three separate lines naming `ceo` is that fact spelled so it
  * has to be re-derived.
  *
- * @param {any[]} rows @param {string} today an ISO `YYYY-MM-DD`
- * @returns {{dates: {date: string, numbers: number[]}[], blocked: {number: number, on: number[]}[],
- *   answers: {session: string, numbers: number[]}[], total: number}}
+ *  @param today an ISO `YYYY-MM-DD`
  */
 export function waitingBreakdown(rows: any[], today: string = todayIso()): {
     dates: { date: string; numbers: number[]; }[]; blocked: { number: number; on: number[]; }[];
@@ -6281,7 +5940,7 @@ export function waitingBreakdown(rows: any[], today: string = todayIso()): {
  */
 const WAITING_ROWS_NAMED = 12;
 
-/** `#1 #2 #3 +4 more` -- exact count, capped enumeration. @param {number[]} numbers */
+/** `#1 #2 #3 +4 more` -- exact count, capped enumeration. */
 function nameRows(numbers: number[]) {
   const shown = numbers.slice(0, WAITING_ROWS_NAMED).map((n) => `#${n}`).join(" ");
   const rest = numbers.length - WAITING_ROWS_NAMED;
@@ -6301,8 +5960,8 @@ function nameRows(numbers: number[]) {
  * says so. This returns "" for that state rather than a paragraph saying "0 rows are waiting", so the
  * unexplained stall reads exactly as it did before #1935.
  *
- * @param {ReturnType<typeof waitingBreakdown> | null | undefined} waiting
- * @param {number} reachable the rows that could move, which is what `openRows` counts
+ *
+ * @param reachable the rows that could move, which is what `openRows` counts
  */
 function waitingParagraph(waiting: ReturnType<typeof waitingBreakdown> | null | undefined, reachable: number) {
   if (!waiting || waiting.total === 0) return "";
@@ -6383,8 +6042,7 @@ function waitingParagraph(waiting: ReturnType<typeof waitingBreakdown> | null | 
  * key already re-fires on exactly the event that matters, and folding the breakdown into it would page
  * again whenever any blocker anywhere changed shape without the org becoming any more reachable.
  *
- * @param {{ orders: unknown[], openRows: number | null,
- *           waiting?: ReturnType<typeof waitingBreakdown> | null, leftOut?: number }} state `leftOut` (#4205): the claimed rows whose sessions are working, which `openRows` does not count
+ * @param state `leftOut` (#4205): the claimed rows whose sessions are working, which `openRows` does not count
  */
 export function stalledOrder({ orders, openRows, waiting = null, leftOut = 0 }: {
         orders: unknown[]; openRows: number | null;
@@ -6440,9 +6098,6 @@ export function stalledOrder({ orders, openRows, waiting = null, leftOut = 0 }: 
  * A DRAIN DOES NOT WITHHOLD IT, and that is not an oversight: `draft-convinced-not-ready` is not in
  * `START_CAUSES` because marking a reviewed draft ready FINISHES work in flight rather than starting
  * any. A drain wants exactly this to happen.
- *
- * @param {any[]} orders @param {(args: string[]) => string} run @param {(line: string) => void} log
- * @returns {{ delivered: any[], performed: number }}
  */
 export function performActions(orders: any[], run: (args: string[]) => string = defaultRun, log: (line: string) => void = (line) => process.stderr.write(line)): { delivered: any[]; performed: number; } {
   const delivered = [];
@@ -6475,23 +6130,7 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  * at that head" rather than "check whether there is work" -- a woken turn that has to survey the queue is
  * a tick with extra steps, which is the cost this file exists to remove.
  *
- * @param {{ prs: any[], readyRows: any[], promotableRows?: any[], chairmanBlocked?: any[], nowMs?: number,
- *           prFiles?: { number: number, files: string[], changedFiles: number }[],
- *           drain?: boolean, required?: string[] | null, epics?: any[], answerOwed?: any[],
- *           key?: string, repo?: string, openRows?: any[], unarmed?: number[] | null,
- *           claimedComments?: {number?: number, comments?: {body?: string, id?: string}[]}[],
- *           rowBranches?: {branch: string, head: string, row: number}[] | null,
- *           branchPrs?: {branch: string, number: number, state: string}[] | null,
- *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
- *           primaryDrift?: import("./update-primary.ts").PrimaryDrift | null,
- *           closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null, trunkRed?: ReturnType<typeof readTrunkRed>,
- *           baseTip?: {sha: string, date: string} | null,
- *           claimStalls?: import("./claim-stall.ts").StallOrder[], offBoard?: BoardFacts[] | null,
- *           callCountSignals?: { row: number, session: string, calls: number }[],
- *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>, answerGiven?: ReturnType<typeof answerGivenOrders>,
- *           labJobs?: import("./work-gate/lab-job-orders.ts").LabJobRecord[] | null,
- *           claimRefusals?: Record<string, { reason: string, ticks: number }>,
- *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} state
+ *
  *        `engineerStarts` and `projectDeclaration` (#3820) are the last engineer starts and the declaration that says which rows are product; the engineer pool is
  *        offered product rows only while fewer than 6 of the last 10 starts were one (`offeredByShare`). OMITTED MEANS NOT ASKED: the offer is unrestricted.
  *        `offerHierarchy` (#4524) is `readChairmanPriority`'s verified rows and the declared milestone ranking: the order rows are offered in, the chairman's exempt
@@ -6558,8 +6197,6 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  *        `nowMs` is the clock `chairmanOrders` windows on (#2989); omitted is `Date.now()`, so only a test passes it.
  *        `claimFacts` is the claim-stall tick's reading of every claimed row (#3451) -- what `blockerClearedOrders` drops an order on. OMITTED MEANS NOT ASKED, so no drop;
  *        `null` is a tick that read no claim. It carries no `= undefined` default for `rowBranches`'s reason.
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
@@ -6578,7 +6215,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
         claimStalls?: import("./claim-stall.ts").StallOrder[]; offBoard?: BoardFacts[] | null;
         callCountSignals?: { row: number; session: string; calls: number; }[];
         bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>; answerGiven?: ReturnType<typeof answerGivenOrders>;
-        labJobs?: import("./work-gate/lab-job-orders.ts").LabJobRecord[] | null;
+        labJobs?: NonNullable<ReturnType<typeof import("./work-gate/lab-job-orders.ts").recordOf>>[] | null;
         claimRefusals?: Record<string, { reason: string; ticks: number; }>;
         engineerStarts?: { at: number; kind: string; }[]; projectDeclaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; };
         offerHierarchy?: OfferHierarchy;
@@ -6686,7 +6323,6 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
  * for as long as nobody thought to look for it, so every tick says where it is and how to remove it.
  *
  * (Split out of `main`, which reached `complexity` 16 when the drain branch landed.)
- * @param {{ drain: boolean, blocked: { number: number, repoKey?: string, reason: string }[] }} withheld
  */
 function reportWithheld({ drain, blocked }: { drain: boolean; blocked: { number: number; repoKey?: string; reason: string; }[]; }) {
   if (drain) {
@@ -6766,8 +6402,6 @@ const REVIEWER_VERDICT_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdic
 /**
  * `credential.last_refresh` as epoch milliseconds, or `null` when the file cannot be read or carries none.
  * `null` is "could not ask" and signal (b) says nothing for it; it is never a time.
- * @param {string} [path] @param {(path: string, enc: "utf8") => string} [read]
- * @returns {number | null}
  */
 export function readLastRefresh(path: string = CODEX_AUTH_FILE, read: (path: string, enc: "utf8") => string = readFileSync): number | null {
   try {
@@ -6781,8 +6415,6 @@ export function readLastRefresh(path: string = CODEX_AUTH_FILE, read: (path: str
 /**
  * The instances `wake.ts` started, from the registry file. `{}` for a missing file (nothing was started) AND for
  * one that will not parse -- the second is a lost reading, so it is never confused with an instance that FAILED.
- * @param {string} path @param {(path: string, enc: "utf8") => string} [read]
- * @returns {Record<string, {spawnedAt: number}>}
  */
 export function readReviewerRegistry(path: string, read: (path: string, enc: "utf8") => string = readFileSync): Record<string, { spawnedAt: number; }> {
   try {
@@ -6796,8 +6428,6 @@ export function readReviewerRegistry(path: string, read: (path: string, enc: "ut
 /**
  * The phrase of codex's own auth-failure text a pane shows, or `null`. The logged-out startup screen answers with
  * its welcome line.
- * @param {string | null | undefined} text
- * @returns {string | null}
  */
 export function authFailureShownIn(text: string | null | undefined): string | null {
   const shown = String(text ?? "");
@@ -6809,8 +6439,6 @@ export function authFailureShownIn(text: string | null | undefined): string | nu
 /**
  * The reviewer sessions this tick's orders say still OWE a verdict: an order addressed to `reviewer-<n>` for one
  * of the two verdict causes. The gate derives those from GitHub each tick, so "still emitted" is "still owed".
- * @param {{session: string, cause?: string}[]} orders
- * @returns {Set<string>}
  */
 export function sessionsOwingVerdict(orders: { session: string; cause?: string; }[]): Set<string> {
   return new Set(orders
@@ -6830,10 +6458,6 @@ export function sessionsOwingVerdict(orders: { session: string; cause?: string; 
  * (b) NEEDS THE VERDICT STILL OWED, and that is what keeps an idle instance -- verdict posted, PR waiting to
  * merge -- from reading as failed the moment the credential moves. A `paneText` that cannot be read is `null`,
  * which says nothing for (a) and leaves (b) to stand alone.
- *
- * @param {{instances: Record<string, {spawnedAt: number}>, owing: Set<string>, lastRefresh: number | null,
- *   paneText: (session: string) => string | null, now: number, silenceMs?: number}} facts
- * @returns {{session: string, signals: string[]}[]}
  */
 export function reviewerAuthFailures({ instances, owing, lastRefresh, paneText, now, silenceMs = REVIEWER_SILENCE_MS }: {
         instances: Record<string, { spawnedAt: number; }>; owing: Set<string>; lastRefresh: number | null;
@@ -6852,8 +6476,6 @@ export function reviewerAuthFailures({ instances, owing, lastRefresh, paneText, 
  * The incident order to `ceo`, or none. `ceo` because the remedy is a re-login of the reviewer's codex account, an
  * interactive step only the chairman can take (ruling 2). JUDGMENT-keyed on the failed set and the refresh it
  * followed, so the same failure is not re-asked every twenty minutes and a NEW one is a new question.
- * @param {{session: string, signals: string[]}[]} failures @param {number | null} lastRefresh
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function reviewerAuthOrders(failures: { session: string; signals: string[]; }[], lastRefresh: number | null): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   if (failures.length === 0) return [];
@@ -6884,10 +6506,6 @@ export function reviewerAuthOrders(failures: { session: string; signals: string[
  * failed, so "the first real refresh is the measurement" is a file someone can read. A failure is detected up to
  * `REVIEWER_SILENCE_MS` AFTER the refresh, so it is its own line naming the refresh it followed, never a
  * rewrite of the `refresh` line.
- *
- * @param {{ledger: {type: string, lastRefresh: string | null, session?: string}[], lastRefresh: number | null,
- *   live: string[], failures: {session: string, signals: string[]}[], now: number}} facts
- * @returns {object[]}
  */
 export function refreshLedgerLines({ ledger, lastRefresh, live, failures, now }: {
         ledger: { type: string; lastRefresh: string | null; session?: string; }[]; lastRefresh: number | null;
@@ -6908,7 +6526,6 @@ export function refreshLedgerLines({ ledger, lastRefresh, live, failures, now }:
   return lines;
 }
 
-/** @param {string} path @param {(path: string, enc: "utf8") => string} [read] */
 function readRefreshLedger(path: string, read: (path: string, enc: "utf8") => string = readFileSync) {
   try {
     return String(read(path, "utf8")).split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
@@ -6925,8 +6542,6 @@ function readRefreshLedger(path: string, read: (path: string, enc: "utf8") => st
  * A HERDR CALL FROM THE GATE, AND THE ONE EXCEPTION to its header (which keeps herdr to `wake.ts` so this file
  * stays testable): the seam is `run`, INJECTED, and it is reached only for an instance in the registry, so a tick
  * with no reviewer instance makes no call at all.
- * @param {(args: string[]) => string} run
- * @returns {(session: string) => string | null}
  */
 export function herdrPaneReader(run: (args: string[]) => string): (session: string) => string | null {
   return (session) => {
@@ -6949,9 +6564,6 @@ export function herdrPaneReader(run: (args: string[]) => string): (session: stri
  *
  * NEVER THROWS -- a detector that can crash the gate would stop every order behind it. A failure to append the
  * ledger is said on stderr and the order is still returned.
- *
- * @param {{orders: {session: string, cause?: string}[], dir?: string, authFile?: string, now?: number,
- *   run?: (args: string[]) => string, log?: (line: string) => void}} args
  */
 export function reviewerAuthTick({ orders, dir = REVIEWER_STATE_DIR, authFile = CODEX_AUTH_FILE, now = Date.now(),
   run = herdrRun, log = (line) => process.stderr.write(line) }: {
@@ -6981,13 +6593,11 @@ const BYTES_PER_GIB = 1_073_741_824;
 /**
  * `/` and `/tmp` -> `root+tmp`: a mount as a word a causeKey can carry. `/` is `root`, any other loses its leading
  * slash and turns the rest into `-`.
- * @param {string[]} mounts
  */
 function mountsLabel(mounts: string[]) {
   return mounts.map((m) => (m === "/" ? "root" : m.replace(/^\//, "").replaceAll("/", "-"))).join("+");
 }
 
-/** @param {import("./disk-headroom.ts").LowFinding} f */
 function describeLow(f: import("./disk-headroom.ts").LowFinding) {
   const amount = f.resource === "bytes"
     ? `${(f.free / BYTES_PER_GIB).toFixed(1)} GiB of ${(f.total / BYTES_PER_GIB).toFixed(1)} GiB`
@@ -7006,9 +6616,6 @@ function describeLow(f: import("./disk-headroom.ts").LowFinding) {
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * on 2026-09-25 `/tmp` ran out of INODES at 73% of its bytes and every session failed with ENOSPC for about six hours.
- *
- * @param {import("./disk-headroom.ts").LowFinding[]} low
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function diskHeadroomOrders(low: import("./disk-headroom.ts").LowFinding[]): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   if (low.length === 0) return [];
@@ -7049,8 +6656,6 @@ export function diskHeadroomOrders(low: import("./disk-headroom.ts").LowFinding[
  * line is written whether or not the order is ever delivered. THE JOURNAL IT LANDS IN IS ON THE SAME FILESYSTEM
  * (`/var/log/journal`, persistent), so this is a channel that does not depend on a write BY THE ORG, not one proven
  * to survive an exhausted disk: journald's own free-space rules decide that, and nothing here has run it to zero.
- *
- * @param {{ read?: typeof diskHeadroom, log?: (line: string) => void }} [io]
  */
 export function diskHeadroomTick({ read = diskHeadroom, log = (line) => process.stderr.write(line) }: { read?: typeof diskHeadroom; log?: (line: string) => void; } = {}) {
   try {
@@ -7066,7 +6671,6 @@ export function diskHeadroomTick({ read = diskHeadroom, log = (line) => process.
   }
 }
 
-/** @param {string[]} args */
 const herdrRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 10_000 });
 
 /**
@@ -7093,9 +6697,6 @@ const herdrRun = (args: string[]) => execFileSync("herdr", args, { encoding: "ut
  * the pull-request and Ready lanes (`CANNOT ASK` / `PARTIAL`); this is the same rule for this lane.
  *
  * A CLAIMED ROW WITH A WORKING SESSION IS NOT COUNTED (#4205): `agents` is herdr's listing, the one the tick already read, and `null` or absent leaves every row counted.
- *
- * @param {{ orders: unknown[], drain: boolean, performed?: number, openRows: any[] | null,
- *           agents?: { label: string, status: string }[] | null, log?: (line: string) => void }} state
  */
 export function deadMansSwitch({ orders, drain, performed = 0, openRows, agents = null,
   log = (line) => process.stderr.write(line) }: {
@@ -7140,9 +6741,6 @@ export function deadMansSwitch({ orders, drain, performed = 0, openRows, agents 
  * defaulted, for the same reason `run` is (#1405): a defaulted read of `.agent-org/host.json` and a
  * `hosts.yml` is still a real filesystem read, and a test reaching this function would make it against
  * whatever this host happens to have installed.
- *
- * @param {{run: (args: string[]) => string, identity: import("./gh-identity.ts").DeclaredAccount}} deps
- * @returns {string}
  */
 export function cannotAskReport({ run, identity }: { run: (args: string[]) => string; identity: import("./gh-identity.ts").DeclaredAccount; }): string {
   const diagnosis = poolDiagnosis({ run });
@@ -7178,7 +6776,6 @@ export function cannotAskReport({ run, identity }: { run: (args: string[]) => st
  * that failed, a non-zero exit, unparseable output and `asked: false` are all "not asked", while `[]` is
  * a host that was looked at and is correct. Both produce silence here and they are NOT the same claim --
  * `hostDriftOrders` keeps them apart, and `driftReport` keeps them apart for the CLI's reader.
- * @returns {{unit: string, problem: string, detail: string}[] | null}
  */
 function readHostDrift(): { unit: string; problem: string; detail: string; }[] | null {
   const run = spawnSync(process.execPath, [...TSX_IMPORT, hostUnitsEntry(), "--json"], { encoding: "utf8" });
@@ -7201,7 +6798,6 @@ function hostUnitsEntry() {
 /**
  * The lab jobs that ended for a row (#2729), or `null` when the directory exists and cannot be read -- SAID on stderr, and
  * emitting nothing, since "could not look" is not "nothing ended". A local disk read: it adds nothing to `GH_READS`.
- * @param {typeof readLabJobRecords} [read]
  */
 export function labJobRecordsOrSay(read: typeof readLabJobRecords = readLabJobRecords) {
   try {
@@ -7215,7 +6811,6 @@ export function labJobRecordsOrSay(read: typeof readLabJobRecords = readLabJobRe
 /**
  * The lab jobs dispatched and not yet ended (#3007), or `null` when the read was refused -- SAID on stderr, and `null`, never `[]`: an
  * empty list reads as "nothing waits". A local `ps`: it adds nothing to `GH_READS`.
- * @param {typeof readDispatchedLabJobs} [read]
  */
 export function dispatchedLabJobsOrSay(read: typeof readDispatchedLabJobs = readDispatchedLabJobs) {
   try {
@@ -7229,7 +6824,7 @@ export function dispatchedLabJobsOrSay(read: typeof readDispatchedLabJobs = read
 /**
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
- * @param {(line: string) => void} [log] @param {import("./org-health.ts").PoolReading[]} [pools] where the read leaves the GraphQL pool it saw (#3448)
+ *  @param [pools] where the read leaves the GraphQL pool it saw (#3448)
  */
 export function rowsOffBoardOrSay(log: (line: string) => void = (line) => process.stderr.write(line), pools: import("./org-health.ts").PoolReading[] = []) {
   const facts = readRowsOffBoard(defaultRun, pools);
@@ -7247,9 +6842,6 @@ export function rowsOffBoardOrSay(log: (line: string) => void = (line) => proces
  * SUPERSET of `blockerClearedOrders`' own population, never a narrower one: an already-resumed row pays
  * for a `closings` read it turns out not to need, exactly as `unstaged first ask` already tolerates for a
  * refused one.
- *
- * @param {any[]} rows @param {string} [today] @param {number} [nowMs]
- * @returns {boolean}
  */
 export function anyBlockerClearingCandidate(rows: any[], today: string = todayIso(), nowMs: number = Date.now()): boolean {
   return (rows ?? []).some((row) => sessionOf(row) && labelsOf(row).includes(CLAIM_LABEL)
@@ -7262,8 +6854,6 @@ export function anyBlockerClearingCandidate(rows: any[], today: string = todayIs
  * is already in hand, so the condition costs no call, and a quiet tracker pays nothing
  * (`GH_READS.conditionalOnClearedRows`). `null` when there is nothing to ask about OR the read was
  * refused -- in both cases the caller's fallback is the unstaged first ask.
- *
- * @param {any[]} openRows @param {(args: string[]) => string} [run]
  */
 function closingsWhenRowsCleared(openRows: any[], run: (args: string[]) => string = defaultRun) {
   return (unclaimedClearings(openRows).length > 0 || anyBlockerClearingCandidate(openRows))
@@ -7285,12 +6875,9 @@ export type Scope = { key: string, code: ScopeRepository | null, tracker: ScopeR
  *
  * A key declared twice REFUSES, naming it: `project-config.ts` refuses a duplicate within one declaration, and this is the
  * same rule across the host (ADR 0040, decision 2: the key is "unique across the host"), which no single declaration can see.
- * @param {readonly { tracker: readonly { key: string, repo: string }[], code: readonly { key: string, repo: string }[] }[]} declarations
- * @returns {Scope[]}
  */
 export function scopesOf(declarations: readonly { tracker: readonly { key: string; repo: string; }[]; code: readonly { key: string; repo: string; }[]; }[]): Scope[] {
   const byKey: Map<string, Scope> = new Map();
-  /** @param {string} key @param {"code" | "tracker"} part @param {string} repo */
   const declare = (key: string, part: "code" | "tracker", repo: string) => {
     const scope = byKey.get(key) ?? { key, code: null, tracker: null };
     if (scope[part] !== null) throw new Error(`key ${key === "" ? "(empty)" : `\`${key}\``} declares a ${part} repository twice (${scope[part].repo} and ${repo}); a key is unique across the host`);
@@ -7307,14 +6894,12 @@ export function scopesOf(declarations: readonly { tracker: readonly { key: strin
 /**
  * The repository a scope's read is AIMED at, or `undefined` for the primary project's own: its reads are made exactly as
  * they were before a second repository existed, with nothing added to the call.
- * @param {Scope} scope @param {ScopeRepository | null} part @returns {string | undefined}
  */
 const aimOf = (scope: Scope, part: ScopeRepository | null): string | undefined => (scope.key === "" || part === null ? undefined : part.repo);
 
 /**
  * A list a reader returned, its members marked with the repository they came from -- and `null` (a refusal) left as `null`.
  * The primary project's members are returned UNTOUCHED, so its records stay byte-identical to what they were.
- * @param {any[] | null} list @param {string} key @param {string | undefined} repo @returns {any[] | null}
  */
 function tagged(list: any[] | null, key: string, repo: string | undefined): any[] | null {
   return list === null || key === "" ? list : list.map((item) => ({ ...item, repoKey: key, repo }));
@@ -7326,14 +6911,11 @@ function tagged(list: any[] | null, key: string, repo: string | undefined): any[
  * is handed the repository as a second argument. EACH LANE IS `null` WHEN ITS READ WAS REFUSED and `[]` when the scope has no
  * such repository, so "could not ask" and "nothing there" never share a value (#1286), and a refusal in one scope
  * is visible beside another scope's answer instead of taking it down.
- * @param {Scope} scope @param {(args: string[], repo?: string) => string} [run]
  */
 export function readLanes(scope: Scope, run: (args: string[], repo?: string) => string = defaultRun) {
   const codeRepo = aimOf(scope, scope.code);
   const trackerRepo = aimOf(scope, scope.tracker);
-  /** @param {string | undefined} repo @returns {(args: string[]) => string} */
   const aimed = (repo: string | undefined): (args: string[]) => string => (args) => run(args, repo);
-  /** @param {ScopeRepository | null} part @param {(run: (args: string[]) => string) => any[] | null} read */
   const lane = (part: ScopeRepository | null, read: (run: (args: string[]) => string) => any[] | null) => (part === null ? [] : tagged(read(aimed(aimOf(scope, part))), scope.key, aimOf(scope, part)));
   return {
     prs: lane(scope.code, (aim) => readPrs(aim)),
@@ -7348,7 +6930,6 @@ export function readLanes(scope: Scope, run: (args: string[], repo?: string) => 
 /**
  * The words that tell an agent WHICH repository a keyed order is about, appended to its prompt. A prompt names `gh` commands with
  * a bare number (`gh issue edit 7 ...`), and the session that runs one in the primary's checkout would edit the PRIMARY's row 7.
- * @param {Scope} scope
  */
 function repositoryNote(scope: Scope) {
   const repos = [scope.code && `code \`${scope.code.repo}\``, scope.tracker && `rows \`${scope.tracker.repo}\``].filter(Boolean).join(", ");
@@ -7364,12 +6945,12 @@ function repositoryNote(scope: Scope) {
  * stalls) look at THIS checkout and its worktrees; `hostDrift`, the disk and the reviewer's credentials are
  * facts about the host; the scope's OWN `main` is asked (`codeReadings`' `trunkRed`, #3079) and the primary's is not; and Project-1 membership names a board, which 3d and 3f make a
  * declaration's. Each is passed as `undefined`, which `decide` reads as "not asked", so nothing here invents a reading.
- * @param {Scope} scope @param {boolean} drain
- * @param {ReturnType<typeof readLanes> & { siblingPrs?: any[] }} [read] the lanes, when the caller has already asked. #3095: `siblingPrs` are the
+ *
+ * @param [read] the lanes, when the caller has already asked. #3095: `siblingPrs` are the
  *   open pull requests of the OTHER declared code repositories (already read, so the comparison costs no call), which B4 compares a row with too
- * @param {{ code: typeof codeReadings, tracker: typeof trackerReadings }} [readings] the per-tick reads beyond the lanes; a test hands stubs, so no `gh` is spawned
+ * @param [readings] the per-tick reads beyond the lanes; a test hands stubs, so no `gh` is spawned
  * #4386: `home` is the PRIMARY tracker's open rows and repository, which a scope with NO tracker of its own (agent-org's) takes its pull requests' owners from.
- * @returns {{ orders: any[], blocked: any[], refused: string[], defects: ResolverDefect[] }} `defects`: the pull requests the ladder could not own though they name a live claimant
+ * @returns `defects`: the pull requests the ladder could not own though they name a live claimant
  */
 export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: typeof trackerReadings; } = { code: codeReadings, tracker: trackerReadings }): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; } {
   const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
@@ -7422,7 +7003,6 @@ function homeRowsOf(rows: any[]): HomeRows | undefined {
 
 /**
  * #4450 (move 1a of #4437): the tick's failure events go to `failure-ledger` (`failure-recorders.ts`). Only the primary project's `main` is recorded here: a keyed scope's `trunkRed` stays inside `scopeTick`.
- * @param {{ trunkRed: ReturnType<typeof readTrunkRed>, prs: any[] }} seen
  */
 export function recordTickFailures({ trunkRed, prs, stateDir = REVIEWER_STATE_DIR, now = Date.now() }: { trunkRed: ReturnType<typeof readTrunkRed>; prs: any[]; stateDir?: string; now?: number; }): void {
   recordFailuresOf({ trunkRed, prs, stateDir, now, ownerOf: ownerOfPr, homeRepo: REPO });
@@ -7436,7 +7016,6 @@ const RESOLVER_DEFECTS_STATE = "resolver-defects.json";
  * resolver failing, and the order to `ceo` reads as routing, so without this the class ends as a hand route every time (agent-org#436, #437).
  * The CLASS has one open row (`resolver-defect`): the first defect files it, later ones comment on it. A pull request is remembered only after its
  * write LANDED, so a refused `gh` is retried next tick, and one that landed is never written twice. Returns how many were written.
- * @param {ResolverDefect[]} defects
  */
 export function fileResolverDefects(defects: ResolverDefect[], { run = defaultRun, statePath = stateEntryPath(RESOLVER_DEFECTS_STATE), log = (line) => process.stderr.write(line) }: { run?: (args: string[]) => string; statePath?: string; log?: (line: string) => void; } = {}): number {
   if (defects.length === 0) return 0;
@@ -7498,7 +7077,7 @@ function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args:
 /**
  * The reads about a scope's PULL REQUESTS that are made per tick beyond the list itself, and about its `main` (#3079). Run inside `inRepo` for the code repository.
  * `trunkRed` is `undefined` for a scope with no code repository, and `null` for a green or an unreadable `main`: neither emits an order.
- * @param {any[]} openPrs @param {Scope} scope @param {ReturnType<typeof readScopeTrunkRed>} [trunkRed] the scope's `main`, when the caller has already asked
+ *   @param [trunkRed] the scope's `main`, when the caller has already asked
  */
 function codeReadings(openPrs: any[], scope: Scope, trunkRed: ReturnType<typeof readScopeTrunkRed> = readScopeTrunkRed(scope)) {
   const required = requiredWhenNeeded(openPrs);
@@ -7510,7 +7089,6 @@ function codeReadings(openPrs: any[], scope: Scope, trunkRed: ReturnType<typeof 
 
 /**
  * Whether a scope's own `main` is red, as `readTrunkRed` says it -- `undefined` for a scope with no code repository, which has no `main` to ask.
- * @param {Scope} scope @param {(args: string[]) => string} [run]
  */
 export function readScopeTrunkRed(scope: Scope, run?: (args: string[]) => string) {
   return scope.code === null ? undefined : readTrunkRed(run, trunkOfCodeRepository(scope.key, scope.code.repo));
@@ -7519,7 +7097,6 @@ export function readScopeTrunkRed(scope: Scope, run?: (args: string[]) => string
 /**
  * #3019: STAMP `ejection` ON THE PULL REQUESTS THE QUEUE EJECTED, so `stallReasonOf` -- which reads only the pull request --
  * can classify them. Absent is not `null`: a pull request nobody read stays unstamped and is never accused.
- * @param {any[]} prs @param {Map<number, unknown> | undefined} ejections
  */
 function withEjections(prs: any[], ejections: Map<number, unknown> | undefined) {
   if (!ejections || ejections.size === 0) return prs;
@@ -7535,7 +7112,6 @@ const NO_TRACKER_READINGS = { claimedComments: [], epics: [], closedRows: [], cl
 
 /**
  * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
- * @param {{ allOpen: any[] }} lists
  */
 function trackerReadings({ allOpen }: { allOpen: any[]; }) {
   return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicRowsOf(allOpen),
@@ -7547,8 +7123,7 @@ function trackerReadings({ allOpen }: { allOpen: any[]; }) {
  * identical to what they were. #3095: read BEFORE the primary's own B4 comparison, because that comparison needs these pull requests too,
  * and handed on to `otherScopeTicks` so it is not a second read.
  * (#3566) THEIR FIRST READS GO OUT TOGETHER (`readWithFirstWaveTogether`), one wait for the repositories instead of one per repository.
- * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch} [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
- * @returns {{ scope: Scope, read: ReturnType<typeof readLanes> }[]}
+ *  @param [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
  */
 export function readOtherScopes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { scope: Scope; read: ReturnType<typeof readLanes>; }[] {
   const scopes = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
@@ -7560,8 +7135,7 @@ export function readOtherScopes(run: (args: string[], repo?: string) => string =
  * scope's key) -- each tagged with the repository it came from. B4 at the claim compares a row with ALL of them (`lookupOpenPrFiles`, #2617),
  * so a gate that compares with fewer offers every tick what the claim refuses every tick. A lane that could not be read contributes nothing:
  * THE GATE FAILS OPEN and the claim stays the authority, and `scopeTick`'s `refused` names the repository (`unreadLanes`).
- * @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {string} [skip] the key of the scope whose own list is not a sibling
- * @returns {any[]}
+ *  @param [skip] the key of the scope whose own list is not a sibling
  */
 export function pullRequestsOfOthers(others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], skip?: string): any[] {
   return others.filter(({ scope }) => scope.key !== skip).flatMap(({ read }) => read.prs ?? []);
@@ -7570,8 +7144,8 @@ export function pullRequestsOfOthers(others: { scope: Scope; read: ReturnType<ty
 /**
  * Every NON-PRIMARY scope, ticked from lanes already read. Each is told the pull requests of every OTHER declared code repository -- the
  * primary's (`primaryPrs`) and its peers' -- for B4 (#3095).
- * @param {boolean} drain @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {any[]} primaryPrs
- * @param {HomeRows} [home] #4386: the primary tracker's rows, which a scope without a tracker names its pull requests' owners from
+ *
+ * @param [home] #4386: the primary tracker's rows, which a scope without a tracker names its pull requests' owners from
  */
 function otherScopeTicks(drain: boolean, others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], primaryPrs: any[], home?: HomeRows) {
   // (#3566, slice 2) Each repository's `main` is asked ONCE here, together, and handed to its tick: seven `ci.yml` reads were 3.5 s of waiting in a row.
@@ -7583,8 +7157,6 @@ function otherScopeTicks(drain: boolean, others: { scope: Scope; read: ReturnTyp
 /**
  * Every lane this tick could not read, named -- the primary's own two and each other scope's. A refusal in one repository is
  * REPORTED beside the orders the others produced and never drops them (#2618).
- * @param {{ prs: any[] | null, readyRows: any[] | null, others: { refused: string[] }[] }} reads
- * @returns {string[]}
  */
 export function unreadLanes({ prs, readyRows, others }: { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; }): string[] {
   return [...(prs === null ? ["the pull-request list"] : []), ...(readyRows === null ? ["the Ready rows"] : []),
@@ -7598,8 +7170,6 @@ export function unreadLanes({ prs, readyRows, others }: { prs: any[] | null; rea
  * trouble, needing no shared story. Counted here rather than asked per read, because the question this
  * answers is not "was THIS read refused" (every read already fails open at its own site: `promotableRows
  * ?? []`, `offBoard`'s "emits nothing") but "how many were, in the SAME tick" (#2685).
- * @param {(any[] | null)[]} reads
- * @returns {number}
  */
 export function refusedReadCount(reads: (any[] | null)[]): number {
   return reads.filter((read) => read === null).length;
@@ -7617,7 +7187,6 @@ export const SHARED_OUTAGE_READS = 2;
  * Did GitHub itself refuse THIS TICK's reads -- as opposed to one lane's own trouble? Neither `outageOf`
  * (a causeKey's own addressed SESSION being unavailable, #2256) nor #2031's pool-exhaustion guard asks
  * this: both ask about a SESSION or a POOL, never about the reads a tick itself just made.
- * @param {number} refusedCount @returns {boolean}
  */
 export function sharedReadOutage(refusedCount: number): boolean {
   return refusedCount >= SHARED_OUTAGE_READS;
@@ -7629,8 +7198,6 @@ export function sharedReadOutage(refusedCount: number): boolean {
  * several causes reaching `MAX_DELIVERIES` in the SAME run for ONE shared reason apart from N causes each
  * independently and truly stuck (#2685). Untouched when there is no outage, so an ordinary order stays
  * byte-identical to what it always was.
- * @param {any[]} orders @param {boolean} outage
- * @returns {any[]}
  */
 export function markOutageReads(orders: any[], outage: boolean): any[] {
   return outage ? orders.map((order) => ({ ...order, outageNow: true })) : orders;
@@ -7640,9 +7207,6 @@ export function markOutageReads(orders: any[], outage: boolean): any[] {
  * THIS TICK'S OWN SHARED-OUTAGE READING (#2685): every read whose refusal is distinguishable from "found
  * nothing", from the primary scope and every other declared one (`others`' own `refused` already counts
  * each of ITS unread lanes by name, the same way `unreadLanes` reports them).
- * @param {{ prs: any[] | null, readyRows: any[] | null, promotableRows: any[] | null, chairmanBlocked: any[] | null,
- *   openRows: any[] | null, claimedComments: any[] | null, offBoard: any[] | null, others: { refused: string[] }[] }} reads
- * @returns {boolean}
  */
 function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard, others }: {
         prs: any[] | null; readyRows: any[] | null; promotableRows: any[] | null; chairmanBlocked: any[] | null;
@@ -7654,7 +7218,6 @@ function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openR
 
 /**
  * SAY WHICH LANES WENT UNREAD AND END THE TICK `PARTIAL` -- the orders already printed stay real, and none is dropped.
- * @param {string[]} unread @param {number} delivered @returns {never}
  */
 function exitPartial(unread: string[], delivered: number): never {
   process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. `
@@ -7665,7 +7228,6 @@ function exitPartial(unread: string[], delivered: number): never {
 /**
  * #4064: PROMOTE THE CLEARED ROWS THEIR FILERS DECLARED `Ready-when-unblocked: yes`, in place, and hand the same list back. `unclaimedClearings` is the population the `unclaimed-blocker-cleared`
  * order asks about, so the two cannot disagree on "cleared"; a promoted row leaves it because its tick object now carries `ready`. Writes nothing for a row without the line.
- * @param {any[]} rows @returns {any[]}
  */
 function promotedWhenUnblocked(rows: any[]): any[] {
   const now = Date.now();
@@ -7678,7 +7240,6 @@ function promotedWhenUnblocked(rows: any[]): any[] {
  * #2849: `decide`, with the call RECORDED for the shadow-window runner (#2846): the arguments it was given and its RAW return, before
  * `withStalePrimaryNotice`. A helper rather than three lines in `main`, which is at its physical-line limit. DORMANT unless
  * `<stateDir>/shadow-window-open` exists, and a failed write is a stderr line, never a different tick (`shadow-reads.ts`).
- * @param {Parameters<typeof decide>[0]} args @returns {ReturnType<typeof decide>}
  */
 function decideAndTap(args: Parameters<typeof decide>[0]): ReturnType<typeof decide> {
   const orders = decide(args);
@@ -7690,7 +7251,6 @@ function decideAndTap(args: Parameters<typeof decide>[0]): ReturnType<typeof dec
 /**
  * #3451: what `decide`'s `blocker-cleared` cause did NOT order, said on the tick's log the way `SHELVED row #n:` says a shelved row, so a row that stopped being asked is
  * findable. A second pure reading of the same arguments (no read, no write) rather than a side channel out of `decide`, which returns orders and nothing else.
- * @param {Parameters<typeof decide>[0]} args
  */
 function reportClearingDrops({ openRows, prs, closings, claimFacts }: Parameters<typeof decide>[0]) {
   process.stderr.write(blockerClearedReading((openRows as any[]), todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
@@ -7699,9 +7259,8 @@ function reportClearingDrops({ openRows, prs, closings, claimFacts }: Parameters
 /**
  * `claimStallsNow`'s orders beside the facts it built them from, as the two arguments `decide` takes: the facts reach `blockerClearedOrders` and the orders reach
  * `claim-stalled`. `claimFacts` stays `undefined` when the tick never reported one, which `blockerClearedReading` reads as "not asked".
- * @param {Parameters<typeof claimStallsNow>[0]} rows @param {Parameters<typeof claimStallsNow>[1]} claimedComments @param {Parameters<typeof claimStallsNow>[2]} prs
- * @param {ReturnType<typeof readOtherScopes>} otherScopes the other repositories' lanes, already read this tick (#3566): their open lists are not asked again
- * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined }}
+ *
+ * @param otherScopes the other repositories' lanes, already read this tick (#3566): their open lists are not asked again
  */
 function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claimedComments: Parameters<typeof claimStallsNow>[1], prs: Parameters<typeof claimStallsNow>[2], otherScopes: ReturnType<typeof readOtherScopes>): { claimStalls: ReturnType<typeof claimStallsNow>; claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined; } {
   let claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined;
@@ -7713,8 +7272,6 @@ function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claime
 /**
  * #3535: A CLOSED ROW'S CLAIM RIDES THE SAME ORDERS as the open claims': the release (and the interrupt) is one more `claim-stalled` order. The read was made with the
  * follow-ups (`closedClaimsWhenWorkerListed`), so this costs no call; `claimFacts` is untouched, because it describes the OPEN claims the blocker-cleared reading is about.
- * @param {ReturnType<typeof claimStallsWithFacts>} stalls @param {ReturnType<typeof closedClaimsWhenWorkerListed>} closedClaims
- * @returns {ReturnType<typeof claimStallsWithFacts>}
  */
 function withClosedClaims(stalls: ReturnType<typeof claimStallsWithFacts>, closedClaims: ReturnType<typeof closedClaimsWhenWorkerListed>): ReturnType<typeof claimStallsWithFacts> {
   return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims, { trackerRepo: repoNow() })] };
@@ -7731,7 +7288,6 @@ function withClosedClaims(stalls: ReturnType<typeof claimStallsWithFacts>, close
  * #2996: `holdStands` IS WHETHER A HOLD STILL EXCUSES (`holdExcused`), so a PR whose hold has outlived its reason is red for ITS
  * OWN jobs and is read here even though `failingChecksOrder` excused it: the order excuses the addressee's own hold, which is the
  * label trusted, and a freeze that ended is the case this exists for. A PR with a hold and no order is read only when the hold lapsed.
- * @param {any[]} prs @param {{ cause: string, subject: string }[]} decided @param {{ holdStands?: (pr: any) => boolean }} [options]
  */
 export function redPrFacts(prs: any[], decided: { cause: string; subject: string; }[], options: { holdStands?: (pr: any) => boolean; } = {}) {
   const ordered = new Set(decided.filter((order) => order.cause === "pr-checks-failing").map((order) => order.subject));
@@ -7784,12 +7340,10 @@ export type GithubIncident = { state: "incident", name: string, id: string | nul
  * PURE. What the status page's answer says about the three components, as `incident`, `clear` or `unknown`. UNKNOWN IS NEVER A HOLD: a fetch that failed, a
  * non-200, a body that is not JSON, one that names none of the three components, or a component status the gate has not seen all leave the gate exactly as it
  * was. A KNOWN non-operational component outranks an unknown one beside it, because it is the one that says something.
- * @param {{ status?: number, body?: string, error?: string, wallMs?: number } | null | undefined} envelope what the worker wrote
- * @returns {GithubIncident}
+ * @param envelope what the worker wrote
  */
 export function githubIncidentOf(envelope: { status?: number; body?: string; error?: string; wallMs?: number; } | null | undefined): GithubIncident {
   const wallMs = typeof envelope?.wallMs === "number" ? envelope.wallMs : undefined;
-  /** @param {string} why @returns {GithubIncident} */
   const unknown = (why: string): GithubIncident => ({ state: "unknown", why, wallMs });
   if (!envelope || typeof envelope !== "object") return unknown("no answer");
   if (envelope.error) return unknown(`the fetch failed (${envelope.error})`);
@@ -7812,8 +7366,6 @@ export function githubIncidentOf(envelope: { status?: number; body?: string; err
 /**
  * The incident to NAME: the unresolved one that touches one of the three components, else the first, else the component's own words. Its `id` keys the
  * signal, so the same incident on the next tick is the same order.
- * @param {any} summary @param {{ name: string, status: string }[]} down
- * @returns {{ name: string, id: string | null }}
  */
 function incidentNamed(summary: any, down: { name: string; status: string; }[]): { name: string; id: string | null; } {
   const incidents = Array.isArray(summary?.incidents) ? summary.incidents : [];
@@ -7821,7 +7373,6 @@ function incidentNamed(summary: any, down: { name: string; status: string; }[]):
   return { name: String(touching?.name ?? `${down[0].name} is ${down[0].status}`), id: touching?.id ? String(touching.id) : null };
 }
 
-/** @param {number} ms */
 const sleepMs = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /**
@@ -7829,8 +7380,6 @@ const sleepMs = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffe
  * delayed by it; `settle()` is called once the orders are decided and finds the answer already written. IT NEVER WAITS PAST THE BOUND: with no answer by
  * `timeoutMs` plus the worker's boot it returns `unknown`, and a worker that could not be started is `unknown` at once. The call's own wall comes back as
  * `wallMs` (the worker times itself), which `main` prints so the tick's cost can be read per call.
- * @param {{ url?: string, timeoutMs?: number, file?: string, spawnWorker?: typeof spawn, nowMs?: () => number }} [options]
- * @returns {{ settle: () => GithubIncident }}
  */
 export function startGithubStatus({ url = GITHUB_STATUS_URL, timeoutMs = GITHUB_STATUS_TIMEOUT_MS, file = join(REVIEWER_STATE_DIR, GITHUB_STATUS_FILE),
   spawnWorker = spawn, nowMs = () => Date.now() }: { url?: string; timeoutMs?: number; file?: string; spawnWorker?: typeof spawn; nowMs?: () => number; } = {}): { settle: () => GithubIncident; } {
@@ -7847,7 +7396,6 @@ export function startGithubStatus({ url = GITHUB_STATUS_URL, timeoutMs = GITHUB_
   return { settle: () => collectGithubStatus({ file, token, deadline: began + timeoutMs + GITHUB_STATUS_GRACE_MS, nowMs }) };
 }
 
-/** @param {{ file: string, token: string, deadline: number, nowMs: () => number }} asked @returns {GithubIncident} */
 function collectGithubStatus({ file, token, deadline, nowMs }: { file: string; token: string; deadline: number; nowMs: () => number; }): GithubIncident {
   for (;;) {
     const envelope = readJsonOrNull(file);
@@ -7857,7 +7405,7 @@ function collectGithubStatus({ file, token, deadline, nowMs }: { file: string; t
   }
 }
 
-/** @param {string} path @returns {any} the parsed file, or `null` when it is absent or not yet whole -- the caller asks again until its deadline */
+/** @returns the parsed file, or `null` when it is absent or not yet whole -- the caller asks again until its deadline */
 function readJsonOrNull(path: string): any {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
@@ -7866,7 +7414,7 @@ function readJsonOrNull(path: string): any {
   }
 }
 
-/** @param {string[]} args @param {(args: string[]) => string} run @returns {any} the answer, or `null` when `gh` refused or said something that is not JSON: UNCLASSIFIED, which is never held */
+/** @returns the answer, or `null` when `gh` refused or said something that is not JSON: UNCLASSIFIED, which is never held */
 function readGhJson(args: string[], run: (args: string[]) => string): any {
   try {
     return JSON.parse(run(args));
@@ -7888,9 +7436,6 @@ const NOT_FAILING_JOB_CONCLUSIONS = Object.freeze(["success", "skipped", "neutra
  *  - hung:     the check the order names is QUEUED, so it never started; an IN_PROGRESS one ran and hangs, which is its owner's.
  *  - ejected:  the `merge_group` run behind the ejection failed ONLY in jobs that never got a runner.
  * Each read that is refused, or a check with no job to read, is `null`: THE ORDER GOES OUT.
- * @param {any} order @param {any} pr
- * @param {{ required: string[] | null, nowMs: number, job: (url: unknown) => any, ghJson: (args: string[]) => any }} reads
- * @returns {string | null}
  */
 function runnerStartOf(order: any, pr: any, reads: { required: string[] | null; nowMs: number; job: (url: unknown) => any; ghJson: (args: string[]) => any; }): string | null {
   if (order.discriminator === "ejected") return ejectionNeverStarted(order, pr, reads.ghJson);
@@ -7900,7 +7445,6 @@ function runnerStartOf(order: any, pr: any, reads: { required: string[] | null; 
   return `${red.map((c) => `\`${c.name}\``).join(", ")}: no step ran and no runner was assigned`;
 }
 
-/** @param {any} pr @param {{ required: string[] | null, nowMs: number }} reads @returns {string | null} */
 function queuedPastItsBound(pr: any, { required, nowMs }: { required: string[] | null; nowMs: number; }): string | null {
   const hung = hungCheckOf(pr, required, nowMs);
   const named: any = hung && newestPerName(pr.statusCheckRollup ?? []).find((c: any) => String(c.name) === hung.name);
@@ -7910,7 +7454,6 @@ function queuedPastItsBound(pr: any, { required, nowMs }: { required: string[] |
 /**
  * The ejection's `merge_group` run is found by its branch as `readEjectionRun` finds it, but by ANY conclusion and not `failure` only, and its jobs are read for
  * steps and runner. A11ign/toolchain#3's run was `failure` overall with its one job `cancelled`, zero steps, 18 min 53 s queued.
- * @param {any} order @param {any} pr @param {(args: string[]) => any} ghJson @returns {string | null}
  */
 function ejectionNeverStarted(order: any, pr: any, ghJson: (args: string[]) => any): string | null {
   const removedAt = /\/ejected\/(.+)$/.exec(String(order.causeKey))?.[1];
@@ -7928,9 +7471,8 @@ function ejectionNeverStarted(order: any, pr: any, ghJson: (args: string[]) => a
  * are withheld, and everything else goes out unchanged. NOTHING IS WRITTEN: a held order is simply not printed, so the tick after the incident clears sees the same
  * PR in the same state and delivers the order whole, through the ledger as any new one. The reading that clears the hold is the next tick's own status read; no call,
  * label or file stands between. A red that RAN, an order the gate cannot classify, and every other cause are untouched, and so is every order when the reading is not `incident`.
- * @param {any[]} orders @param {GithubIncident} incident
- * @param {{ prs: any[], required?: string[] | null, run?: (args: string[]) => string, nowMs?: number }} facts `prs` of every repository, to find the pull request an order names
- * @returns {{ orders: any[], held: { subject: string, session: string, why: string }[] }}
+ *
+ * @param facts `prs` of every repository, to find the pull request an order names
  */
 export function holdForGithubIncident(orders: any[], incident: GithubIncident, { prs, required = null, run = defaultRun, nowMs = Date.now() }: { prs: any[]; required?: string[] | null; run?: (args: string[]) => string; nowMs?: number; }): { orders: any[]; held: { subject: string; session: string; why: string; }[]; } {
   if (incident?.state !== "incident") return { orders, held: [] };
@@ -7956,8 +7498,6 @@ export function holdForGithubIncident(orders: any[], incident: GithubIncident, {
 /**
  * THE ONE SIGNAL, as an `org-health` order to `ceo` (no new order kind: an existing cause carries it), keyed on the incident so it is raised once and not once per held
  * row. It NAMES the incident and what is held and why, which is how a hold is never silent. `[]` unless the reading is an incident.
- * @param {GithubIncident} incident @param {{ subject: string, session: string, why: string }[]} held
- * @returns {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string }[]}
  */
 export function githubIncidentOrder(incident: GithubIncident, held: { subject: string; session: string; why: string; }[]): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   if (incident?.state !== "incident") return [];
@@ -7980,7 +7520,6 @@ export function githubIncidentOrder(incident: GithubIncident, held: { subject: s
 /**
  * The tick's end of it: collect the reading, say it on stderr (its wall is the cost of the call, per tick), hold what a runner outage holds, and return the
  * signal beside what remains. `required` is the primary's, so only a pull request of the primary's repository is read against it.
- * @param {{ settle: () => GithubIncident }} status @param {any[]} orders @param {{ prs: any[], required: string[] | null }} facts
  */
 function holdForIncidentNow(status: { settle: () => GithubIncident; }, orders: any[], facts: { prs: any[]; required: string[] | null; }) {
   const incident = status.settle();
@@ -7998,7 +7537,6 @@ function holdForIncidentNow(status: { settle: () => GithubIncident; }, orders: a
  * readers, their commands and their parsing are unchanged, so only WHEN the waiting happens moves. They are asked AFTER the check that both
  * `readPrs` and `readReadyRows` were refused, not with it: folding them in would make an outage tick ask three more refused questions. What the batch
  * cannot foresee (a chairman row's events, read once the list is in hand) still runs one at a time, as before.
- * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
  */
 export function readTrackerLanes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined) {
   return readWithFirstWaveTogether((read) => ({
@@ -8015,7 +7553,6 @@ export function readTrackerLanes(run: (args: string[], repo?: string) => string 
  * are called with the rehearsal's own `run`, so they make no batch of their own, and only WHEN the waiting happens moves. It is asked AFTER the outage
  * check, as slice 5 asks the tracker lanes (an outage tick must not ask more refused questions), and so `readPrs` and `readReadyRows`, which that check
  * reads, stay outside it.
- * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
  */
 export function readLanesAfterOutageCheck(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined) {
   return readWithFirstWaveTogether((read) => ({ ...readTrackerLanes(read), otherScopes: readOtherScopes(read) }), run, batch);
@@ -8028,9 +7565,7 @@ export function readLanesAfterOutageCheck(run: (args: string[], repo?: string) =
  *
  * THREE ANSWERS, NEVER TWO: `null` is NOT ASKED (herdr listed no instance), `{ rows: null }` is ASKED OR NEEDED AND UNREAD (the call was refused, or herdr could not
  * be read, so whether an instance exists is unknown), and `{ rows }` is the closed rows read. The listing rides along because the interrupt is decided from it.
- * @param {{ label: string, status: string }[] | null} agents herdr's own listing, or `null` when herdr could not be asked
- * @param {(args: string[]) => string} [run]
- * @returns {{ rows: import("./claim-stall.ts").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null}
+ * @param agents herdr's own listing, or `null` when herdr could not be asked
  */
 export function closedClaimsWhenWorkerListed(agents: { label: string; status: string; }[] | null, run: (args: string[]) => string = defaultRun): { rows: import("./claim-stall.ts").ClosedClaimedRow[] | null; agents: { label: string; status: string; }[] | null; } | null {
   if (agents === null) return { rows: null, agents };
@@ -8048,8 +7583,6 @@ export function closedClaimsWhenWorkerListed(agents: { label: string; status: st
  *
  * `listWorkspaces` is herdr's listing, read ONCE and before the rehearsal (which runs `read` twice, so a spawn inside it would be two). It defaults to the live
  * listing only for the live `gh`, as `batch` does: a test's `run` stands for `gh` alone and must not spawn `herdr`.
- * @param {any[]} allOpen @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch | undefined} [batch]
- * @param {typeof readAgents | undefined} [listWorkspaces]
  */
 export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined,
   listWorkspaces: typeof readAgents | undefined = run === defaultRun ? readAgents : undefined) {

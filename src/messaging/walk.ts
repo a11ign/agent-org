@@ -1,4 +1,3 @@
-// @ts-check
 // THE WALK-THROUGH (a11ign/a11ign#3425, chairman point 3): A PHYSICAL OR ACCOUNT ASK IS WALKED, ONE STEP AT A TIME. A brief with a `Steps:` list (`sources/requests.mjs` reads it) is sent as the first step with
 // Done / Stuck / Explain more under it; on Done the step's `Verify:` is READ through the checked-facts vocabulary, and only a read that shows it moves the walk on. After the last verified step the
 // request is answered on its row, through the answers path, and the closing message says what it unblocked. This module is the walk's rules and its memory; `answers.mjs` routes the presses to it.
@@ -17,8 +16,11 @@
 // WHAT THIS DOES NOT DO: send anything or touch the row. It returns what the listener must send (`text`, `buttons`, and `recordSent`, which writes the `shown` line once the message has a ref), and
 // it is handed the row-answering step (`finish`) as a function. Stuck, Explain more and Later are not here: they are the liaison orders and the snooze `answers.mjs` already has.
 
+import type { Readers } from "./placeholders.ts";
 import { prepareReply } from "./reply.ts";
+import type { Prepared } from "./reply.ts";
 import { stepLine } from "./sources/requests.ts";
+import type { Step, Verify, Walk } from "./sources/requests.ts";
 
 export const WALK_DIRECTION = "walk";
 const CANNOT_CHECK = "Thanks. I can't check that one from here, so I'm taking your word for it.";
@@ -30,17 +32,15 @@ const NOT_READ = "I can't see it: I couldn't read it just now.";
 export const STEP_BUTTONS = Object.freeze(["done", "stuck", "explain"]);
 export const RETRY_BUTTONS = Object.freeze(["done", "stuck", "later"]);
 
-/** @param {string} request `request:<repo>#<n>` @returns {string} the key every line of one request's walk carries */
+/** The key every line of one request's walk carries, from `request:<repo>#<n>`. */
 export function walkKey(request: string): string {
   return `walk:${request}`;
 }
 
-/**
- * @typedef {{ position: number, shown: Map<string, {step: number, text: string, request: string}>, shownSteps: Set<number> }} Progress
- *   `position` is the step awaiting Done (1-based; one past the last once every step is confirmed). `shown` is by message ref.
- */
+/** `position` is the step awaiting Done (1-based; one past the last once every step is confirmed). `shown` is by message ref. */
+export type Progress = { position: number; shown: Map<string, { step: number; text: string; request: string }>; shownSteps: Set<number> };
 
-/** @param {Record<string, any>[]} lines @param {string} request @returns {Progress} where one request's walk is, read from the ledger and nowhere else */
+/** Where one request's walk is, read from the ledger and nowhere else. */
 export function walkProgress(lines: Record<string, any>[], request: string): Progress {
   const mine = lines.filter((line) => line.direction === WALK_DIRECTION && line.walk === walkKey(request));
   const confirmed = mine.filter((line) => line.event === "confirmed").map((line) => Number(line.step));
@@ -55,8 +55,6 @@ export function walkProgress(lines: Record<string, any>[], request: string): Pro
 /**
  * The step a message shows. A step message the listener sent says so itself (`shown`); a message the CORE sent (the ask, an update, a reminder) showed the step the walk was on WHEN IT WENT, which the
  * ledger's order answers: one past the highest step confirmed before its line. Null for a message that is neither, which the caller takes to be the step the walk is on now.
- *
- * @param {Record<string, any>[]} lines @param {string} request @param {string} ref @returns {number | null}
  */
 export function stepOf(lines: Record<string, any>[], request: string, ref: string): number | null {
   const shown = lines.find((line) => line.direction === WALK_DIRECTION && line.event === "shown" && String(line.messageRef) === ref);
@@ -65,48 +63,40 @@ export function stepOf(lines: Record<string, any>[], request: string, ref: strin
   return at === -1 ? null : walkProgress(lines.slice(0, at), request).position;
 }
 
-/** @param {Record<string, any>[]} lines @param {string} request @returns {number} the step the walk is on, for the watcher's first message and its reminders */
+/** The step the walk is on, for the watcher's first message and its reminders. */
 export function walkPosition(lines: Record<string, any>[], request: string): number {
   return walkProgress(lines, request).position;
 }
 
 /**
  * The request a step message belongs to, for a message the core did not send: the walk's later steps are sent by the listener, so `answers.mjs` finds them here.
- * @param {Record<string, any>[]} lines @param {string} ref @returns {{ key: string, text: string } | null} shaped like the core's sent line, as far as a press needs it
+ * The result is shaped like the core's sent line, as far as a press needs it.
  */
 export function stepMessageOf(lines: Record<string, any>[], ref: string): { key: string; text: string; } | null {
   const shown = lines.find((line) => line.direction === WALK_DIRECTION && line.event === "shown" && String(line.messageRef) === ref);
   return shown === undefined ? null : { key: String(shown.request), text: String(shown.text ?? "") };
 }
 
-/** @param {import("./sources/requests.ts").Verify} verify @param {string} value @returns {boolean} whether what was read is what the brief said it should be (case is not a difference) */
-function matches({ compare, expected }: import("./sources/requests.ts").Verify, value: string): boolean {
+/** Whether what was read is what the brief said it should be (case is not a difference). */
+function matches({ compare, expected }: Verify, value: string): boolean {
   const [read, wanted] = [value.trim().toLowerCase(), expected.toLowerCase()];
   return compare === "is" ? read === wanted : read.includes(wanted);
 }
 
 /**
- * @param {import("./reply.ts").Prepared} prepared @param {{ readers: import("./placeholders.ts").Readers, now: () => number }} deps
- * @returns {Promise<string>} why a read could not be made, as the chairman may be told it: the "could not check" form is passed through the checker that refused, as it was written to be, and states nothing
+ * Why a read could not be made, as the chairman may be told it: the "could not check" form is passed through the checker that refused, as it was written to be, and states nothing.
  */
-async function unreadable(prepared: import("./reply.ts").Prepared, deps: { readers: import("./placeholders.ts").Readers; now: () => number; }): Promise<string> {
+async function unreadable(prepared: Prepared, deps: { readers: Readers; now: () => number; }): Promise<string> {
   if (prepared.outcome === "checked") return "";
   if (prepared.sendable === undefined) return prepared.problems.map((problem) => problem.reason).join("; ");
   const told = await prepareReply(prepared.sendable, deps);
   return told.outcome === "checked" ? told.text : prepared.sendable;
 }
 
-/**
- * @typedef {{ advance: boolean, words: string, checked: string | null, verified: boolean }} Verdict
- *   `verified` is whether a read decided it (false for a step with no `Verify:`); `checked` is what the read said.
- */
+/** `verified` is whether a read decided it (false for a step with no `Verify:`); `checked` is what the read said. */
+export type Verdict = { advance: boolean; words: string; checked: string | null; verified: boolean };
 
-/**
- * @param {import("./sources/requests.ts").Step} step
- * @param {{ readers: import("./placeholders.ts").Readers, now: () => number }} deps
- * @returns {Promise<Verdict>}
- */
-async function judge({ verify }: import("./sources/requests.ts").Step, { readers, now }: { readers: import("./placeholders.ts").Readers; now: () => number; }): Promise<Verdict> {
+async function judge({ verify }: Step, { readers, now }: { readers: Readers; now: () => number; }): Promise<Verdict> {
   if (verify === null) return { advance: true, words: CANNOT_CHECK, checked: null, verified: false };
   // ONE read, and the words are built from it: the value that was compared is the value that is shown. The text around the placeholder holds no claim for the checker to refuse.
   const prepared = await prepareReply(`I read: ${verify.read}`, { readers, now });
@@ -116,30 +106,22 @@ async function judge({ verify }: import("./sources/requests.ts").Step, { readers
   return { advance: shows, words: `${shows ? SEEN : NOT_SEEN}\n${prepared.text}`, checked: value, verified: true };
 }
 
-/**
- * @typedef {{ reason: string, text: string, buttons?: readonly string[], recordSent?: (messageRef: string) => void, clearKeyboard?: string | null }} WalkReply
- *   what the listener sends. `recordSent` is called with the sent message's ref, and writes the `shown` line that makes a press under it known.
- */
+/** What the listener sends. `recordSent` is called with the sent message's ref, and writes the `shown` line that makes a press under it known. */
+export type WalkReply = { reason: string; text: string; buttons?: readonly string[]; recordSent?: (messageRef: string) => void; clearKeyboard?: string | null };
 
-/**
- * @param {{ ledger: { append: (entry: Record<string, unknown>) => Record<string, any>, read: () => Record<string, any>[] },
- *          readers: import("./placeholders.ts").Readers, now: () => number }} deps
- */
 export function createWalk({ ledger, readers, now }: {
         ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; };
-        readers: import("./placeholders.ts").Readers; now: () => number;
+        readers: Readers; now: () => number;
     }) {
-  /** @param {string} request @param {string} event @param {Record<string, unknown>} fields */
   function record(request: string, event: string, fields: Record<string, unknown>) {
     ledger.append({ direction: WALK_DIRECTION, walk: walkKey(request), request, event, ...fields });
   }
 
-  /** @param {{ request: string, step: number, text: string }} shown @returns {(messageRef: string) => void} */
   function shownWhenSent({ request, step, text }: { request: string; step: number; text: string; }): (messageRef: string) => void {
     return (messageRef) => record(request, "shown", { step, messageRef, text });
   }
 
-  /** @param {{ request: string, total: number, step: number, text: string, words: string }} next @returns {WalkReply} the next step, with what was just confirmed above it */
+  /** The next step, with what was just confirmed above it. */
   function advanced({ request, total, step, text, words }: { request: string; total: number; step: number; text: string; words: string; }): WalkReply {
     return {
       reason: "advanced", text: `${words}\n\n${stepLine({ position: step, total, text })}`, buttons: STEP_BUTTONS, recordSent: shownWhenSent({ request, step, text }),
@@ -149,11 +131,8 @@ export function createWalk({ ledger, readers, now }: {
   return {
     /**
      * A Done press on the message `ref`, which shows a step of `walk`. `finish` answers the request on its row and resolves to the step that failed, or null.
-     *
-     * @param {{ request: string, ref: string, walk: import("./sources/requests.ts").Walk, finish: () => Promise<string | null> }} press
-     * @returns {Promise<WalkReply>}
      */
-    async done({ request, ref, walk, finish }: { request: string; ref: string; walk: import("./sources/requests.ts").Walk; finish: () => Promise<string | null>; }): Promise<WalkReply> {
+    async done({ request, ref, walk, finish }: { request: string; ref: string; walk: Walk; finish: () => Promise<string | null>; }): Promise<WalkReply> {
       const progress = walkProgress(ledger.read(), request);
       const step = stepOf(ledger.read(), request, ref) ?? progress.position;
       const total = walk.steps.length;
@@ -174,13 +153,9 @@ export function createWalk({ ledger, readers, now }: {
 /**
  * A Done on a message whose step is already confirmed: nothing is written, and the chairman is told where the walk is. When the step the walk is on never reached him (its send failed, or the
  * process stopped between the line and the message), it is sent again, which is how a walk resumes from the ledger without a second Done.
- *
- * @param {{ request: string, ref: string, walk: import("./sources/requests.ts").Walk, progress: Progress, total: number,
- *          shownWhenSent: (shown: { request: string, step: number, text: string }) => (messageRef: string) => void }} job
- * @returns {WalkReply}
  */
 function staleStep({ request, ref, walk, progress, total, shownWhenSent }: {
-        request: string; ref: string; walk: import("./sources/requests.ts").Walk; progress: Progress; total: number;
+        request: string; ref: string; walk: Walk; progress: Progress; total: number;
         shownWhenSent: (shown: { request: string; step: number; text: string; }) => (messageRef: string) => void;
     }): WalkReply {
   const { position } = progress;
@@ -193,11 +168,7 @@ function staleStep({ request, ref, walk, progress, total, shownWhenSent }: {
   };
 }
 
-/**
- * @param {{ request: string, ref: string, walk: import("./sources/requests.ts").Walk, verdict: Verdict, finish: () => Promise<string | null>, confirm: () => void }} job
- * @returns {Promise<WalkReply>}
- */
-async function finishWalk({ request, ref, walk, verdict, finish, confirm }: { request: string; ref: string; walk: import("./sources/requests.ts").Walk; verdict: Verdict; finish: () => Promise<string | null>; confirm: () => void; }): Promise<WalkReply> {
+async function finishWalk({ request, ref, walk, verdict, finish, confirm }: { request: string; ref: string; walk: Walk; verdict: Verdict; finish: () => Promise<string | null>; confirm: () => void; }): Promise<WalkReply> {
   const failed = await finish();
   if (failed !== null) return { reason: "write-failed", text: `${verdict.words}\n\nCould not finish writing to ${request.slice("request:".length)} (at ${failed}). Press Done again to retry; nothing is written twice.` };
   confirm();

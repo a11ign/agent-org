@@ -1,4 +1,3 @@
-// @ts-check
 // module: the pull-request orders -- what `work-gate.ts` says to a session about a PR's own state (#2542)
 //
 // MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2542, the first split of #928's lever 2a): `draftOrder`,
@@ -54,7 +53,7 @@ const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
  * with nothing in flight on the head it is still settled red and still reaches its author, never silence.
  * `NO_VERDICT` is IMPORTED: the rollup spells it in upper case, the REST read in lower (#1100), and the concept is one ruling either way.
  *
- * @param {any[]} blocking the blocking checks, narrowed @param {any[]} head every check on the head, narrowed
+ * @param blocking the blocking checks, narrowed @param head every check on the head, narrowed
  */
 export function redOnlyBySupersededRun(blocking: any[], head: any[]) {
   const red = blocking.filter((c) => checksSettledGreen([c]) === false);
@@ -70,13 +69,12 @@ export function redOnlyBySupersededRun(blocking: any[], head: any[]) {
  * (Extracted from `main`, which reached `complexity` 17 with the ternary inline -- the same seam the
  * dead man's switch took, and for the same reason: `main` is about delivering what the gate found.)
  *
- * @param {any[]} prs @param {() => string[] | null} [read] the required-checks read, a seam so a test can count the calls
+ * @param [read] the required-checks read, a seam so a test can count the calls
  */
 export function requiredWhenNeeded(prs: any[], read: () => string[] | null = requiredCheckNames) {
   return anyChecksRed(prs) || anyGreenDraft(prs) ? read() : null;
 }
 
-/** @param {any[]} prs */
 function anyGreenDraft(prs: any[]) {
   return prs.some((pr) => pr?.isDraft === true && checksSettledGreen(newestPerName(pr?.statusCheckRollup ?? [])) === true);
 }
@@ -101,9 +99,7 @@ function anyGreenDraft(prs: any[]) {
  * --auto` "exits non-zero for a merged PR, an unmergeable one and a network fault alike", so the remedy
  * `pr-green-unarmed` hands over cannot succeed on this state.
  *
- * @param {any[]} conflicted from `conflictedPrs`
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param conflicted from `conflictedPrs`
  */
 export function mergeConflictOrders(conflicted: any[]): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -124,8 +120,7 @@ export function mergeConflictOrders(conflicted: any[]): {
  * text, so the rebase advice and the `arm-pr.ts` warning cannot drift between the green-only order and the
  * total one (#2968).
  *
- * @param {any} pr
- * @param {{session: string, standing: string, ownership: string}} says `standing`: what the pull request IS besides conflicting
+ * @param says `standing`: what the pull request IS besides conflicting
  */
 function conflictOrder(pr: any, { session, standing, ownership }: { session: string; standing: string; ownership: string; }) {
   const head8 = String(pr.headRefOid ?? "").slice(0, 8) || "no-head";
@@ -189,8 +184,7 @@ function conflictOrder(pr: any, { session, standing, ownership }: { session: str
  * `nowMs` is an argument so the classifier stays pure under test; the default is the one clock read, the way
  * `awaitingEvidenceStaleOrders` takes its own, so a caller that has no tick time to hand over needs no change.
  *
- * @param {any} pr @param {string[] | null} [required] @param {number} [nowMs]
- * @returns {string} a `STALL_REASON` value
+ * @returns a `STALL_REASON` value
  */
 export function stallReasonOf(pr: any, required: string[] | null = null, nowMs: number = Date.now()): string {
   if (!armabilityOf({ labels: labelsOf(pr) }).arm || awaitingEvidence(pr)) return STALL_REASON.HELD_ON_PURPOSE;
@@ -221,9 +215,6 @@ export const STALL_REASON = Object.freeze({
  * `true` settled green, `false` settled red, `null` nothing settled (none, or still running) -- on the checks that can
  * hold the pull request. A red that exists only because a superseded run is cancelled while another still runs is
  * NOT red, exactly as in `failingChecksOrder`: the two must agree or `red` would name a pull request that order skips.
- *
- * @param {any} pr @param {string[] | null} required
- * @returns {boolean | null}
  */
 function settledChecksOf(pr: any, required: string[] | null): boolean | null {
   const onHead = newestPerName(pr?.statusCheckRollup ?? []);
@@ -248,9 +239,6 @@ const RUNNING_STATUSES = Object.freeze(["IN_PROGRESS", "QUEUED"]);
  * never asked: a hung check on one is its author's work in progress. A check with NO readable `startedAt` is never accused --
  * absent is not an age, and a run that cannot be aged stays `progressing` as it always did. Of several hung checks the one that
  * started FIRST is named, so the order's key moves only when that check does.
- *
- * @param {any} pr @param {string[] | null} required @param {number} nowMs
- * @returns {{ name: string, startedAt: string, runningMinutes: number, detailsUrl: string | null } | null}
  */
 export function hungCheckOf(pr: any, required: string[] | null, nowMs: number): { name: string; startedAt: string; runningMinutes: number; detailsUrl: string | null; } | null {
   if (pr?.isDraft === true) return null;
@@ -304,13 +292,10 @@ const CAUSE_OF_STALL = Object.freeze({
  *
  * `hung-check` (#3120) is keyed on the check's `startedAt`, like an ejection on `removedAt`: a re-run keeps the head and is a new start,
  * so the same head hanging twice is two orders, and the same hang on a later tick is one.
- *
- * @param {any} pr @param {string[] | null} [required] @param {number} [nowMs]
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string} | null}
  */
 export function stallOrderOf(pr: any, required: string[] | null = null, nowMs: number = Date.now()): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; } | null {
   const reason = stallReasonOf(pr, required, nowMs);
-  const cause = /** @type {Record<string, string>} */ (CAUSE_OF_STALL)[reason];
+  const cause = (CAUSE_OF_STALL as Record<string, string>)[reason];
   if (!cause) return null;
   const owner = ownerOfPr(pr);
   if (reason === STALL_REASON.CONFLICTED) {
@@ -318,7 +303,7 @@ export function stallOrderOf(pr: any, required: string[] | null = null, nowMs: n
   }
   const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
   const hung = reason === STALL_REASON.HUNG_CHECK ? hungCheckOf(pr, required, nowMs) : null;
-  const sentence = hung ? hungSentence(hung) : reason === STALL_REASON.EJECTED ? ejectedSentence(pr.ejection) : /** @type {Record<string, string>} */ (REASON_SENTENCE)[reason];
+  const sentence = hung ? hungSentence(hung) : reason === STALL_REASON.EJECTED ? ejectedSentence(pr.ejection) : (REASON_SENTENCE as Record<string, string>)[reason];
   return {
     session: owner.session,
     cause,
@@ -335,7 +320,6 @@ export function stallOrderOf(pr: any, required: string[] | null = null, nowMs: n
 /**
  * #3120: THE WORDS OF A `hung-check` ORDER. It names the check, how long it has run and which run it is, so the engineer it wakes can
  * open the run without reading anything else. A run the rollup carried no link for is SAID to be unfound, never guessed.
- * @param {{ name: string, startedAt: string, runningMinutes: number, detailsUrl: string | null }} hung
  */
 function hungSentence({ name, startedAt, runningMinutes, detailsUrl }: { name: string; startedAt: string; runningMinutes: number; detailsUrl: string | null; }) {
   const run = detailsUrl ? `the run is ${detailsUrl}` : "the run link was NOT in the check rollup, so find it under the pull request's Checks tab";
@@ -348,7 +332,6 @@ function hungSentence({ name, startedAt, runningMinutes, detailsUrl }: { name: s
  * #3019: THE WORDS OF AN `ejected` ORDER. It says what the queue did, names the run and the subtests it failed, and says
  * in words that re-arming without a push fails the same way -- because the order it replaces told `product-manager` to
  * do exactly that. A run or a subtest list the read could not get is SAID to be unread, never left out and never guessed.
- * @param {{ removedAt?: string | null, runId?: number | null, failingTests?: string[] | null } | undefined} ejection
  */
 function ejectedSentence(ejection: { removedAt?: string | null; runId?: number | null; failingTests?: string[] | null; } | undefined) {
   const run = ejection?.runId ? `run ${ejection.runId}` : "its `merge_group` run (the run id could NOT be read)";
@@ -371,7 +354,6 @@ const REASON_SENTENCE = Object.freeze({
 /**
  * The clause after "and it" in a `conflicted` order: what the pull request is besides conflicting, from the facts that
  * DISTINGUISH the states #2950 fell between. Never claims a check state the payload did not carry.
- * @param {any} pr @param {string[] | null} required
  */
 function standingOf(pr: any, required: string[] | null) {
   const settled = settledChecksOf(pr, required);
@@ -386,7 +368,7 @@ function standingOf(pr: any, required: string[] | null) {
 /**
  * Who `task` belongs to, and on whose authority -- `ownerOfPr`'s rungs in words. The `ceo` rung says nobody could
  * be named, because an owner order that does not say so reads as the owner's own work and gets done by the wrong hands.
- * @param {any} pr @param {string} source one of `ownerOfPr`'s sources @param {string} task "rebase" or "fix"
+ * @param source one of `ownerOfPr`'s sources @param task "rebase" or "fix"
  */
 function ownershipOf(pr: any, source: string, task: string) {
   if (source === "ceo") {
@@ -399,8 +381,6 @@ function ownershipOf(pr: any, source: string, task: string) {
 /**
  * PURE. #2968: the orders for every stalled pull request among `prs`, ascending by number. `reasons` narrows which
  * stall reasons are SENT (`STALL_REASONS_WITHOUT_A_CAUSE` is what `decide` passes); the default is all of them.
- *
- * @param {any[]} prs @param {{required?: string[] | null, reasons?: readonly string[] | null, nowMs?: number}} [asked]
  */
 export function stalledPrOrders(prs: any[], { required = null, reasons = null, nowMs = Date.now() }: { required?: string[] | null; reasons?: readonly string[] | null; nowMs?: number; } = {}) {
   return (prs ?? [])
@@ -442,10 +422,8 @@ export function stalledPrOrders(prs: any[], { required = null, reasons = null, n
  * close-outs". Arming by hand under another account's token is `auto-arm.yml`'s own documented exception
  * for a PR auto-arm never armed, and it is a queue act rather than the author's code work.
  *
- * @param {number[] | null} unarmed `null` when the queue read was refused -- no order, never a false all-clear
- * @param {{ key: string, repo: string }} [scope] the repository these pull requests are in; the primary project's when omitted
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
+ * @param unarmed `null` when the queue read was refused -- no order, never a false all-clear
+ * @param [scope] the repository these pull requests are in; the primary project's when omitted
  */
 export function greenUnarmedOrders(unarmed: number[] | null, scope: { key: string; repo: string; } = { key: "", repo: REPO }): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -532,11 +510,6 @@ export function greenUnarmedOrders(unarmed: number[] | null, scope: { key: strin
  * KEYED ON THE STATE AND NEVER THE HEAD, for the set order and the per-PR ones alike (#2084): the per-PR key is
  * `<session>/pr-review-blocked/pr-<n>/<CODE>`, so a push during a rework does not re-fire it. The head
  * is in the PROMPT of a refusal instead, as its first fact, where it informs without re-waking.
- *
- * @param {{number: number, code: string, why: string, session?: string | null, head?: string,
- *          refusedAt?: string | null}[]} blocked
- * @returns {{session: string, cause: string, subject: string, discriminator: string,
- *            prompt: string, causeKey: string}[]}
  */
 export function reviewBlockedOrders(blocked: {
         number: number; code: string; why: string; session?: string | null; head?: string;
@@ -551,14 +524,13 @@ export function reviewBlockedOrders(blocked: {
 }
 
 /** A pull request whose blocked state is its own session's to act on: labelled and REFUSED (#3592: AWAITING_REVIEW is its reviewer's, never reported here). */
-function ownedBy(/** @type {{code: string, session?: string | null}} */ b: { code: string; session?: string | null; }) {
+function ownedBy(b: { code: string; session?: string | null; }) {
   return Boolean(b.session) && b.code === REVIEW_STATE.REFUSED;
 }
 
 /**
  * a11ign#3199: THE SENTENCE A LIFTED REFUSAL ADDS TO ITS LINE. Nobody owes rework for it (it was posted for a check that has since cleared at an equal
  * patch, a defect that was in the base), so the set order must not read as one more refusal to chase: its reviewer seat is asked by `draft-awaiting-verdict`.
- * @param {{refusalLifted?: boolean}} b
  */
 function liftedNote(b: { refusalLifted?: boolean; }) {
   return b.refusalLifted === true
@@ -566,10 +538,7 @@ function liftedNote(b: { refusalLifted?: boolean; }) {
     : "";
 }
 
-/**
- * The unlabelled set, and every UNRECOGNISED one: ONE order for `product-manager`, exactly as #2084 built it.
- * @param {{number: number, repoKey?: string, code: string, why: string, refusalLifted?: boolean}[]} blocked
- */
+/** The unlabelled set, and every UNRECOGNISED one: ONE order for `product-manager`, exactly as #2084 built it. */
 function reviewBlockedSetOrder(blocked: { number: number; repoKey?: string; code: string; why: string; refusalLifted?: boolean; }[]) {
   if (blocked.length === 0) return [];
   const key = blocked.map((b) => `${subjectRef(b.repoKey, b.number)}:${b.code}`).join(".");
@@ -598,7 +567,6 @@ function reviewBlockedSetOrder(blocked: { number: number; repoKey?: string; code
 /**
  * One labelled pull request's order, to the session on its label. PER PULL REQUEST, where the set order is one
  * for the set: this is one author's one branch, and a set order would wake them about work that is not theirs.
- * @param {{number: number, repoKey?: string, code: string, session?: string | null, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null}} b
  */
 function ownedReviewBlockedOrder(b: { number: number; repoKey?: string; code: string; session?: string | null; head?: string; refusedAt?: string | null; patchUnchanged?: boolean | null; }) {
   const session = String(b.session);
@@ -616,15 +584,13 @@ function ownedReviewBlockedOrder(b: { number: number; repoKey?: string; code: st
  * THE FIRST FACT IS THE COMPARISON, and it decides what the rest means (#2084: #2049 sat seven hours on a
  * refusal posted at a head the author had already fixed). Three readings, and the third is not the first:
  * the refusal is at the current head, at an OLDER head, or the payload named no commit at all.
- * @param {{number: number, repo?: string, repoKey?: string, head?: string, refusedAt?: string | null, patchUnchanged?: boolean | null,
- *          refusalLifted?: boolean}} b
  */
 function refusedPrompt(b: {
         number: number; repo?: string; repoKey?: string; head?: string; refusedAt?: string | null; patchUnchanged?: boolean | null;
         refusalLifted?: boolean;
     }) {
   const head = b.head ?? "";
-  const short = (/** @type {string} */ oid: string) => oid.slice(0, 8);
+  const short = (oid: string) => oid.slice(0, 8);
   let fact;
   if (!b.refusedAt || !head) {
     fact = "The payload names no commit for the refusing review, or no head: read it with "
@@ -686,8 +652,6 @@ export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
  * WHAT IT CANNOT SEE: `deliberateRefusals` also carries #549's `Closes` comparison, and a rollup names the JOB, not the step. A held PR whose
  * body ALSO declares the wrong `Closes` is red for two reasons and silent about one of them until the hold is released, when the refusal
  * reappears with nothing else red.
- *
- * @param {any} pr
  */
 function redOnlyFromAHold(pr: any) {
   return isHeldRed(pr);
@@ -727,9 +691,6 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  *   6. `ceo`          nobody could be named. Never `product-manager`.
  * "Live" in rungs 2-5 is the same test #2912 made: the session still HOLDS A CLAIM on an open row. `isLiveSession`
  * is not asked, so a live session holding NO claim is answered by `ceo`, which can act.
- *
- * @param {any} pr
- * @returns {{ session: string, source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "ceo" }}
  */
 export function ownerOfPr(pr: any): { session: string; source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "ceo"; } {
   const label = sessionOf(pr);
@@ -743,7 +704,7 @@ export function ownerOfPr(pr: any): { session: string; source: "label" | "closin
 /**
  * WHY NOBODY COULD BE NAMED, in the words of the `ceo` rung (#3093). A label that names an ENDED session is not "no session
  * label": saying so would send `ceo` looking for a label that is on the PR, and hide that the fix is to replace it.
- * @param {any} pr @param {string} unlabelled the clause for a PR that carries no label at all
+ * @param unlabelled the clause for a PR that carries no label at all
  */
 function nobodyBasis(pr: any, unlabelled: string) {
   if (!pr?.labelEnded) return unlabelled;
@@ -751,10 +712,7 @@ function nobodyBasis(pr: any, unlabelled: string) {
     + "and no live session holds a row it closes, its branch names or stamped its worktree";
 }
 
-/**
- * The sentence of `failingChecksPrompt` that says whose the fix is, and on whose authority.
- * @param {any} pr @param {{ blocking: any[], nowMs: number }} red
- */
+/** The sentence of `failingChecksPrompt` that says whose the fix is, and on whose authority. */
 function ownershipSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowMs: number; }) {
   const { source } = ownerOfPr(pr);
   const branch = `\`${pr.headRefName}\``;
@@ -772,7 +730,6 @@ function ownershipSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowM
 /**
  * THE LAST RUNG'S WORDS: the PR number, the red checks and how long they have been red, because nothing else
  * names the PR to a session that was handed it with no history.
- * @param {any} pr @param {{ blocking: any[], nowMs: number }} red
  */
 function unownedSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowMs: number; }) {
   const names = blocking.filter((c) => checksSettledGreen([c]) === false).map((c) => String(c?.name ?? c?.context)).join(", ");
@@ -809,8 +766,6 @@ function unownedSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowMs:
  * the red stays on the head while the real work turns from "fix the check" into "rebase". #2990 sat 63 minutes at
  * one key, delivered six times, with its owner never told. `/conflicting` is therefore part of the key: a
  * conflict-free red PR keeps its key byte for byte, and red-to-conflicted restarts the count.
- *
- * @param {any} pr @param {string[] | null} [required] @param {{sha: string, date: string} | null} [baseTip]
  */
 function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null) {
   // ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED. A settled-red job outside the required
@@ -843,7 +798,6 @@ function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: 
  * The words the FALLBACK is typed instead of the owner's (#3078): `wake.ts` swaps this in for `prompt` only when the order is
  * delivered to {@link DEAD_OWNER_FALLBACK}. The owner's `prompt` reads as though its addressee were alive and says "yours to fix",
  * which would send the fallback to fix code it does not own; so this one says the session is gone and what the receiver does.
- * @param {{pr: any, head8: string, session: string, conflicting: boolean}} facts
  */
 function deadOwnerPrompt({ pr, head8, session, conflicting }: { pr: any; head8: string; session: string; conflicting: boolean; }) {
   return `${subjectMention(pr)} at \`${head8}\` has FAILING checks${conflicting ? " and also CONFLICTS with `main`" : ""}, and the session that owns it, `
@@ -870,8 +824,6 @@ const CONFLICTING_RED_SENTENCE = "IT ALSO CONFLICTS with `main` (GitHub reports 
  * `arm` regime) needs `gh run rerun`, and there is nothing to push. Same red; what tells them apart is
  * whether the failing assertion names a defect or a refusal. #2087 (2026-09-23) cost two sessions a cycle
  * each, and they reached opposite readings of one PR.
- *
- * @param {{pr: any, head8: string, blocking: any[], baseTip: {sha: string, date: string} | null, conflicting: boolean, nowMs: number}} facts
  */
 function failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs }: { pr: any; head8: string; blocking: any[]; baseTip: { sha: string; date: string; } | null; conflicting: boolean; nowMs: number; }) {
   return `${subjectMention(pr)} at \`${head8}\` has FAILING checks and is blocked. `
@@ -890,9 +842,6 @@ function failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs 
  * When the newest failing blocking check started, or `null`. THE LATEST, not the earliest: "main moved
  * since" is then true of EVERY red check, so the sentence never overstates. `checksSettledGreen([c])`
  * is `false` for exactly the settled-red ones.
- *
- * @param {any[]} blocking
- * @returns {string | null}
  */
 function failingRunStartedAt(blocking: any[]): string | null {
   const started = blocking.filter((c) => checksSettledGreen([c]) === false)
@@ -903,8 +852,6 @@ function failingRunStartedAt(blocking: any[]): string | null {
 /**
  * The one sentence of fact. Three unknowns stay UNKNOWN rather than collapsing to "has not moved": absence
  * of a start time or of a tip is not evidence that `main` stood still.
- *
- * @param {string | null} startedAt @param {{sha: string, date: string} | null} baseTip
  */
 function baseMovedSentence(startedAt: string | null, baseTip: { sha: string; date: string; } | null) {
   if (startedAt === null) {
@@ -941,9 +888,6 @@ function baseMovedSentence(startedAt: string | null, baseTip: { sha: string; dat
  * own work; so with an owner, REWORK is the default and a DISPUTE is the escalation, and the escalation
  * goes back to `product-manager` exactly as before. With no `session:` label both the lookup and the
  * decision are genuinely `product-manager`'s, and that prompt is unchanged.
- *
- * @param {any} pr @param {{verdict: string | null, by: string | null,
- *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads
  */
 function notConvincedOrder(pr: any, found: {
         verdict: string | null; by: string | null;
@@ -971,7 +915,7 @@ function notConvincedOrder(pr: any, found: {
 
 /**
  * Why the NOT CONVINCED rework is this session's, in the clause `notConvincedOrder` splices in.
- * @param {any} pr @param {string} source one of `ownerOfPr`'s sources but `ceo`
+ * @param source one of `ownerOfPr`'s sources but `ceo`
  */
 function notConvincedBasis(pr: any, source: string) {
   if (source === "label") return "it carries your session label";
@@ -992,11 +936,10 @@ function notConvincedBasis(pr: any, source: string) {
  *
  * ANY head with the same patch counts, not only the current one: an approval at an earlier head is the same
  * work as the head after an update-branch or a rebase, exactly as `verdictAmong` treats a verdict (#3045).
- * @param {any} pr @param {string[]} heads @returns {boolean | null}
  */
 function approvedAtHead(pr: any, heads: string[]): boolean | null {
   if (!Array.isArray(pr.reviews)) return null;
-  return pr.reviews.some((/** @type {any} */ r: any) =>
+  return pr.reviews.some((r: any) =>
     r?.state === "APPROVED" && heads.includes(String(r?.commit?.oid ?? "")));
 }
 
@@ -1021,9 +964,6 @@ function approvedAtHead(pr: any, heads: string[]): boolean | null {
  * NOT HELD, and green (`draftOrder` has already required green): a held pull request is not merging BY
  * DECISION, so an approval nobody wants yet is no defect. Keyed on the AUTHORED head, so update-branch does
  * not re-fire it.
- *
- * @param {any} pr @param {{verdict: string | null, by: string | null, byIsAuthor: boolean | null}} found
- * @param {ReviewHeads} heads
  */
 function unreviewedConvincedOrder(pr: any, found: { verdict: string | null; by: string | null; byIsAuthor: boolean | null; }, heads: ReviewHeads) {
   if (pr.isDraft) return null;
@@ -1064,7 +1004,6 @@ function unreviewedConvincedOrder(pr: any, found: { verdict: string | null; by: 
  *
  * `pr.verifyStamp` is stamped by the caller; ABSENT IS NOT RED, so a pull request nobody read, and a project with no verify script
  * (`no-verify`, stamped by name), keep the action they always had.
- * @param {any} pr @param {{by: string | null}} found @param {ReviewHeads} heads
  */
 function unverifiedReadyOrder(pr: any, found: { by: string | null; }, { head8, key }: ReviewHeads) {
   const owner = ownerOfPr(pr);
@@ -1096,7 +1035,6 @@ function unverifiedReadyOrder(pr: any, found: { by: string | null; }, { head8, k
  * only at an older head never reach it.
  *
  * `pr-open` is unchanged: a pull request is still never OPENED ready without a green stamp.
- * @param {any} pr @param {string[] | null} required
  */
 function stampWithholdsReady(pr: any, required: string[] | null) {
   if (pr.verifyStamp?.state !== VERIFY_STATE.RED) return false;
@@ -1124,9 +1062,6 @@ function stampWithholdsReady(pr: any, required: string[] | null) {
  * draft ready. A convinced verdict on a pull request that is already ready asks nothing of anybody -- UNLESS
  * it is only a comment (#2365), which `unreviewedConvincedOrder` asks about. `not-convinced` applies to both,
  * because rework is owed whatever state the pull request is in.
- *
- * @param {any} pr @param {{verdict: string | null, by: string | null,
- *        byIsAuthor: boolean | null}} found @param {ReviewHeads} heads @param {string[] | null} [required]
  */
 function settledVerdictOrder(pr: any, found: {
         verdict: string | null; by: string | null;
@@ -1169,18 +1104,16 @@ function settledVerdictOrder(pr: any, found: {
 }
 
 /**
- * @typedef {{head8: string, key: string, all: string[], wait: "settled" | "running"}} ReviewHeads
  * `head8` is the head a reviewer would be reading; `key` is what the ORDER is keyed on -- the first eight characters of the PATCH id
  * (#3045), so an update-branch, a rebase or an amend, which make a new head with the same work, keep the key. It is `head8` only when
  * the patch could not be read. `all` is every full head whose patch equals the current head's, current first (`equivalentHeads`). `wait` is
  * `reviewWait`'s: `running` is a head whose checks an update-branch restarted, kept in the question because it adds no work.
  */
+export type ReviewHeads = {head8: string, key: string, all: string[], wait: "settled" | "running"};
 
 /**
  * The key a pull request's review orders carry, and the heads a verdict may sit at (#3045). A VERDICT IS VALID FOR A PATCH, NOT A SHA:
  * `key` is the patch id when `withPatchIds` read it and the head otherwise, which is this gate's behaviour before #2176.
- * @param {any} pr @param {string} head @param {"settled" | "running"} wait
- * @returns {ReviewHeads}
  */
 function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): ReviewHeads {
   const patch = pr?.patchIds?.[head];
@@ -1191,7 +1124,6 @@ function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): Revi
  * The wording of the re-review order, TRUE OF WHICHEVER STATE THE PULL REQUEST IS IN (#2176). It used to
  * say "Draft" unconditionally, which is a false statement to a reviewer about the ready pull request this
  * cause now reaches.
- * @param {any} pr @param {ReviewHeads} heads
  */
 function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads) {
   const state = pr.isDraft ? "Draft" : "Ready (not a draft)";
@@ -1209,7 +1141,6 @@ function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads) 
  * The head of a pull request whose checks are RUNNING when it adds no work to its predecessor, else `null` (#3045). Both patch ids must
  * have been read (`withPatchIds` reads them for a running head only): an unread patch is not an equal one, so a refused read falls back to
  * asking nothing until the checks settle, which is what this gate did before.
- * @param {any} pr @param {"settled" | "running" | null} wait @returns {string | null}
  */
 function unchangedRunningHead(pr: any, wait: "settled" | "running" | null): string | null {
   return wait === "running" && equivalentHeads(pr).length > 1 ? String(pr.headRefOid) : null;
@@ -1238,8 +1169,6 @@ function unchangedRunningHead(pr: any, wait: "settled" | "running" | null): stri
  * A HEAD WHOSE CHECKS ARE RE-RUNNING STAYS IN THE QUESTION WHEN IT ADDS NO WORK, and is asked of nobody else: dropping the order for
  * the minutes CI takes is what wrote a `RESET` and re-armed it after each of #3033's four merges. Only `draft-awaiting-verdict` is
  * emitted from that state -- a settled verdict's follow-ups, `draft-convinced-not-ready`'s ready-flip above all, wait for settled checks.
- *
- * @param {any} pr @param {string[] | null} [required] @param {{sha: string, date: string} | null} [baseTip]
  */
 function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null) {
   // RED FIRST, and before the green check: a red PR is work whether or not it is a draft, and it can
@@ -1290,7 +1219,7 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
  * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), the ones GitHub holds for review that
  * NO order reached (#4002), the later one of each pair that changes one file (#3480), then the set-wide one for labelled pull requests nobody
  * has explained (#2416).
- * @param {any[]} prs @param {string[] | null} required @param {any} [baseTip] @param {number} [nowMs] omitted is `Date.now()`
+ * @param [nowMs] omitted is `Date.now()`
  */
 export function perPullRequestOrders(prs: any[], required: string[] | null, baseTip?: any, nowMs: number = Date.now()) {
   const asked = prs.map((pr) => ({ pr, order: draftOrder(pr, required, baseTip) }));
@@ -1320,8 +1249,6 @@ export const CHECKLESS_QUIET_MINUTES = 30;
  *
  * FILED UNDER `pr-checks-failing`, no new cause, as `ejected` is (`CAUSE_OF_STALL`): same audience, same remedy-by-the-owner, and a cause is
  * pinned by name in several guards. The key says `checkless`, so it never collides with a red head's.
- *
- * @param {any[]} prs @param {number} [nowMs]
  */
 export function checklessPrOrders(prs: any[], nowMs: number = Date.now()) {
   return (prs ?? [])
@@ -1330,7 +1257,6 @@ export function checklessPrOrders(prs: any[], nowMs: number = Date.now()) {
     .map(checklessOrder);
 }
 
-/** @param {any} pr @param {number} nowMs */
 function isCheckless(pr: any, nowMs: number) {
   if (!pr.headRefOid || !Array.isArray(pr.statusCheckRollup) || pr.statusCheckRollup.length > 0) return false;
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return false;
@@ -1338,7 +1264,6 @@ function isCheckless(pr: any, nowMs: number) {
   return !Number.isNaN(quietSince) && nowMs - quietSince >= CHECKLESS_QUIET_MINUTES * MS_PER_MINUTE;
 }
 
-/** @param {any} pr */
 function checklessOrder(pr: any) {
   const head8 = String(pr.headRefOid).slice(0, 8);
   const { session, source } = ownerOfPr(pr);
@@ -1363,7 +1288,6 @@ function checklessOrder(pr: any) {
 /**
  * What an order for a CODE-FREE remedy carries beside its owner: where it goes if that session no longer exists, and the words that tell the
  * fallback the remedy is its own to apply. Empty when the owner IS the fallback.
- * @param {string} session @param {string} what @param {string} remedy
  */
 function deadOwnerFallback(session: string, what: string, remedy: string) {
   if (session === DEAD_OWNER_FALLBACK) return {};
@@ -1393,8 +1317,6 @@ function deadOwnerFallback(session: string, what: string, remedy: string) {
  * FILED UNDER `pr-checks-failing`, as the checkless one is, keyed `unordered` so it collides with neither that nor a red head's. WHEN `required`
  * WAS READ the order names the required checks absent from the rollup; when it was not, it says so rather than guessing which one went missing.
  * NO OWNER IS `product-manager`, the first reader for the queue, and not the `ceo` rung `ownerOfPr` ends on (the row's own words).
- *
- * @param {any[]} unreached @param {string[] | null} required @param {number} nowMs
  */
 export function unorderedPrOrders(unreached: any[], required: string[] | null, nowMs: number) {
   return (unreached ?? [])
@@ -1403,7 +1325,6 @@ export function unorderedPrOrders(unreached: any[], required: string[] | null, n
     .map((pr) => unorderedOrder(pr, required));
 }
 
-/** @param {any} pr @param {number} nowMs */
 function isUnordered(pr: any, nowMs: number) {
   if (!pr.headRefOid || pr.isDraft === true || awaitingEvidence(pr) || !armabilityOf({ labels: labelsOf(pr) }).arm) return false;
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return false;
@@ -1412,16 +1333,15 @@ function isUnordered(pr: any, nowMs: number) {
   return !Number.isNaN(quietSince) && nowMs - quietSince >= CHECKLESS_QUIET_MINUTES * MS_PER_MINUTE;
 }
 
-/** @param {any} pr @returns {number} the newest of `updatedAt` and every check's start and completion; NaN when `updatedAt` cannot be read */
+/** @returns the newest of `updatedAt` and every check's start and completion; NaN when `updatedAt` cannot be read */
 function lastActivityMs(pr: any): number {
   const updated = Date.parse(String(pr.updatedAt ?? ""));
   if (Number.isNaN(updated)) return NaN;
-  const stamps = (pr.statusCheckRollup ?? []).flatMap((/** @type {any} */ c: any) => [c?.startedAt, c?.completedAt])
-    .map((/** @type {unknown} */ at: unknown) => Date.parse(String(at ?? ""))).filter((/** @type {number} */ ms: number) => Number.isFinite(ms));
+  const stamps = (pr.statusCheckRollup ?? []).flatMap((c: any) => [c?.startedAt, c?.completedAt])
+    .map((at: unknown) => Date.parse(String(at ?? ""))).filter((ms: number) => Number.isFinite(ms));
   return Math.max(updated, ...stamps);
 }
 
-/** @param {any} pr @param {string[] | null} required */
 function unorderedOrder(pr: any, required: string[] | null) {
   const head8 = String(pr.headRefOid).slice(0, 8);
   const owner = ownerOfPr(pr);
@@ -1443,13 +1363,10 @@ function unorderedOrder(pr: any, required: string[] | null) {
   };
 }
 
-/**
- * Which required checks the head does not carry, said only as far as the reading allows: a READ list names them, an unread one says so.
- * @param {any} pr @param {string[] | null} required
- */
+/** Which required checks the head does not carry, said only as far as the reading allows: a READ list names them, an unread one says so. */
 function absentChecksSentence(pr: any, required: string[] | null) {
   if (required === null) return "The required-check list was NOT read this tick, so which check is absent cannot be said. ";
-  const present = newestPerName(pr.statusCheckRollup ?? []).map((/** @type {any} */ c: any) => String(c?.name ?? c?.context));
+  const present = newestPerName(pr.statusCheckRollup ?? []).map((c: any) => String(c?.name ?? c?.context));
   const absent = required.filter((name) => !present.includes(name));
   if (absent.length === 0) return "Every required check IS in the rollup, so the cause is not an absent one: read the rollup and the reviewer seat. ";
   return `The required check(s) ${absent.map((name) => `\`${name}\``).join(", ")} are ABSENT from its rollup, which carries ${present.length} other check(s). `;
@@ -1468,8 +1385,6 @@ function absentChecksSentence(pr: any, required: string[] | null) {
  * absence of a reading is not a reading of absence. Keyed on the SET of numbers and not on the ages, which
  * move every tick and would re-ask a question whose answer has not changed. Ordered to `product-manager`,
  * whose brief names holds and waits, in `greenUnarmedOrders`' one-order-for-the-set shape.
- *
- * @param {any[]} prs @param {number} [now]
  */
 export function awaitingEvidenceStaleOrders(prs: any[], now: number = Date.now()) {
   const stale = prs.filter((pr) => awaitingEvidence(pr) && evidenceWaitUnexplained(pr, now))
@@ -1495,15 +1410,12 @@ export function awaitingEvidenceStaleOrders(prs: any[], now: number = Date.now()
   }];
 }
 
-/**
- * Whether a labelled pull request has been quiet since the label went on for longer than the bound.
- * @param {any} pr @param {number} now
- */
+/** Whether a labelled pull request has been quiet since the label went on for longer than the bound. */
 function evidenceWaitUnexplained(pr: any, now: number) {
   const since = Date.parse(String(pr.awaitingSince ?? ""));
   if (Number.isNaN(since) || !Array.isArray(pr.comments)) return false;
   if (now - since <= AWAITING_EVIDENCE_QUIET_MS) return false;
-  return !pr.comments.some((/** @type {any} */ c: any) => {
+  return !pr.comments.some((c: any) => {
     const at = Date.parse(String(c?.createdAt ?? ""));
     return Number.isNaN(at) || at > since;
   });

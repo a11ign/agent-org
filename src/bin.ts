@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // #3068: `agent-org <command> [args]` -- the ONE bin. It takes a command name from `commands.mjs`'s table and runs the program the table names,
 // with the caller's arguments after the table's own, exactly as `node packages/agent-org/src/<program>.mjs <args>` did.
 //
@@ -23,13 +22,11 @@ const SRC = dirname(fileURLToPath(import.meta.url));
 // ADR 0043 Decision 8: checkout-run code is `.ts`, run as `node --import tsx <file>.ts` -- the host's Node has no type stripping. The loader is
 // resolved from THIS file, not from the caller's directory: a command runs wherever the caller stands, and only the tool's own checkout holds `tsx`.
 const TSX_LOADER = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
-const FORWARDED_SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 /**
  * What `agent-org <argv>` should do: run a program, or refuse. PURE, so a test drives every refusal with an array.
- * @param {readonly string[]} argv what follows `agent-org`
- * @param {{ commands?: Readonly<Record<string, string>>, fixedArgs?: Readonly<Record<string, readonly string[]>> }} [tables]
- * @returns {{ run: { program: string, args: string[] } } | { refusal: string }}
+ * @param argv what follows `agent-org`
  */
 export function planInvocation(argv: readonly string[], { commands = COMMANDS, fixedArgs = FIXED_ARGS }: { commands?: Readonly<Record<string, string>>; fixedArgs?: Readonly<Record<string, readonly string[]>>; } = {}): { run: { program: string; args: string[]; }; } | { refusal: string; } {
   const [name, ...rest] = argv;
@@ -43,26 +40,24 @@ export function planInvocation(argv: readonly string[], { commands = COMMANDS, f
 /**
  * #3357: `pr:open create --title ...` reached `gh` as `gh pr create create`, because the table already supplies `create` and the program's own
  * usage text spells it too. A caller who repeats the fixed arguments exactly, leading, gets one copy, so both spellings of the command mean the same.
- * @param {readonly string[]} rest the caller's arguments
- * @param {readonly string[]} fixed the table's arguments for this command
- * @returns {readonly string[]}
+ * @param rest the caller's arguments
+ * @param fixed the table's arguments for this command
  */
 function withoutRepeatedFixed(rest: readonly string[], fixed: readonly string[]): readonly string[] {
   const repeated = fixed.length > 0 && fixed.every((arg, i) => rest[i] === arg);
   return repeated ? rest.slice(fixed.length) : rest;
 }
 
-/** @param {string} program @param {string[]} args @returns {Promise<number>} the program's exit code, 128 + n for a signal n */
+/** @returns the program's exit code, 128 + n for a signal n */
 function runProgram(program: string, args: string[]): Promise<number> {
   return new Promise((done, fail) => {
     const child = spawn(process.execPath, ["--import", TSX_LOADER, program, ...args], { stdio: "inherit" });
     for (const signal of FORWARDED_SIGNALS) process.on(signal, () => child.kill(signal));
     child.on("error", fail);
-    child.on("close", (code, signal) => done(code ?? SIGNAL_EXIT_BASE + (signal ? constants.signals[signal] : 0)));
+    child.on("close", (code, signal) => done(code ?? SIGNAL_EXIT_BASE + (signal ? constants.signals[signal as NodeJS.Signals] : 0)));
   });
 }
 
-/** @param {readonly string[]} argv */
 async function main(argv: readonly string[]) {
   const plan = planInvocation(argv);
   if ("refusal" in plan) {

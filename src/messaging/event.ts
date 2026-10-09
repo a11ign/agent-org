@@ -1,4 +1,3 @@
-// @ts-check
 // THE EVENT A WATCHER OBSERVES, AND NOTHING ELSE (a11ign/a11ign#2899, decision 1). A LEAF module: no import but node's own, so
 // `node --test src/messaging/` runs in this repository's `gate`, which has no project checkout to read.
 //
@@ -21,20 +20,19 @@ const MAX_KEY_LENGTH = 200;
 const FINGERPRINT_LENGTH = 16;
 
 /**
- * @typedef {{
- *   key: string, kind: string, severity: string, firstSeenAt: number, text: string,
- *   links: string[], resolved: boolean, state: string, actions: readonly {label: string, data: string}[]
- * }} MessagingEvent  `firstSeenAt` is milliseconds since the epoch once normalised. `actions` are the buttons the watcher offers under this fact (none for most
- *   kinds); the core hands them to a provider that declares `buttons`, and whether the data means anything is the answers path's, not this module's.
+ * `firstSeenAt` is milliseconds since the epoch once normalised. `actions` are the buttons the watcher offers under this fact (none for most
+ * kinds); the core hands them to a provider that declares `buttons`, and whether the data means anything is the answers path's, not this module's.
  */
+export type MessagingEvent = {
+  key: string; kind: string; severity: string; firstSeenAt: number; text: string;
+  links: string[]; resolved: boolean; state: string; actions: readonly { label: string; data: string }[];
+};
 
-/** @param {unknown} value @param {string} field @returns {string} */
 function requireText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`event.${field}: a non-empty string is required`);
   return value;
 }
 
-/** @param {unknown} value @param {string} field @param {readonly string[]} allowed @returns {string} */
 function requireOneOf(value: unknown, field: string, allowed: readonly string[]): string {
   if (typeof value !== "string" || !allowed.includes(value)) {
     throw new TypeError(`event.${field}: ${JSON.stringify(value)} is not one of ${allowed.join(", ")}`);
@@ -42,21 +40,18 @@ function requireOneOf(value: unknown, field: string, allowed: readonly string[])
   return value;
 }
 
-/** @param {unknown} value @returns {number} */
 function toEpochMs(value: unknown): number {
   const ms = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
   if (!Number.isFinite(ms)) throw new TypeError(`event.firstSeenAt: ${JSON.stringify(value)} is not a time (epoch ms or an ISO string)`);
   return ms;
 }
 
-/** @param {unknown} value @returns {string[]} */
 function toLinks(value: unknown): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((link) => typeof link !== "string")) throw new TypeError("event.links: an array of strings is required");
   return [...value];
 }
 
-/** @param {unknown} value @returns {{label: string, data: string}[]} */
 function toActions(value: unknown): { label: string; data: string; }[] {
   if (value === undefined) return [];
   const valid = Array.isArray(value) && value.every((action) => action !== null && typeof action === "object" && typeof action.label === "string" && typeof action.data === "string");
@@ -64,7 +59,6 @@ function toActions(value: unknown): { label: string; data: string; }[] {
   return value.map(({ label, data }) => Object.freeze({ label, data }));
 }
 
-/** @param {unknown} key @returns {string} */
 function toKey(key: unknown): string {
   const text = requireText(key, "key");
   if (text.length > MAX_KEY_LENGTH || /\s/.test(text)) throw new TypeError(`event.key: at most ${MAX_KEY_LENGTH} characters and no whitespace`);
@@ -74,12 +68,10 @@ function toKey(key: unknown): string {
 /**
  * The one door an event comes in through. It throws a TypeError naming the field rather than coercing, because a watcher that
  * emits a malformed event has a bug, and a coerced one would dedupe under a key nobody chose.
- *
- * @param {unknown} raw @returns {MessagingEvent}
  */
 export function normalizeEvent(raw: unknown): MessagingEvent {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new TypeError("event: an object is required");
-  const candidate = /** @type {Record<string, unknown>} */ (raw);
+  const candidate = raw as Record<string, unknown>;
   return Object.freeze({
     key: toKey(candidate.key),
     kind: requireOneOf(candidate.kind, "kind", EVENT_KINDS),
@@ -93,7 +85,7 @@ export function normalizeEvent(raw: unknown): MessagingEvent {
   });
 }
 
-/** @param {{state: string}} event @returns {string} a short fingerprint of the declared state, comparable and safe to log */
+/** A short fingerprint of the declared state, comparable and safe to log. */
 export function stateFingerprint(event: { state: string; }): string {
   return createHash("sha256").update(event.state).digest("hex").slice(0, FINGERPRINT_LENGTH);
 }

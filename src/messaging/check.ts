@@ -1,4 +1,3 @@
-// @ts-check
 // `messaging:check` (a11ign/a11ign#2901): READ THE CONFIGURATION AND THE SECRET FILES' PERMISSIONS, PRINT A VERDICT, MAKE NO NETWORK CALL.
 // A LEAF module. It never reads a secret's content either (`secretFileProblem` judges the descriptor and stops), so the worst this command
 // can print is a path, a mode and an owner.
@@ -18,7 +17,6 @@ import { MilestonesRefusal, readMilestonesFile } from "./sources/milestones.ts";
 
 type Verdict = { exitCode: number; lines: string[] };
 
-/** @param {import("./config.ts").MessagingOn} config @param {{ uid?: number, exists?: (path: string) => boolean }} deps @returns {{ failed: boolean, lines: string[] }} */
 function judgeFiles(config: import("./config.ts").MessagingOn, { uid, exists = existsSync }: { uid?: number; exists?: (path: string) => boolean; }): { failed: boolean; lines: string[]; } {
   const token = secretFileProblem(config.tokenFile, { uid });
   const lines = [token === null ? `token file: ok (${config.tokenFile}, mode 0600, owned by the running user)` : `token file: REFUSED -- ${token}`];
@@ -31,10 +29,7 @@ function judgeFiles(config: import("./config.ts").MessagingOn, { uid, exists = e
   return { failed: token !== null || chairman !== null, lines };
 }
 
-/**
- * The declared milestones, read and validated, and nothing fetched: whether a condition is true is the watcher's question and needs the network.
- * @param {string | null} path @returns {{ failed: boolean, lines: string[] }}
- */
+/** The declared milestones, read and validated, and nothing fetched: whether a condition is true is the watcher's question and needs the network. */
 function judgeMilestones(path: string | null): { failed: boolean; lines: string[]; } {
   if (path === null) return { failed: false, lines: [] };
   try {
@@ -46,12 +41,7 @@ function judgeMilestones(path: string | null): { failed: boolean; lines: string[
   }
 }
 
-/**
- * @param {{ root: string, home?: string, uid?: number, exists?: (path: string) => boolean }} options
- * @returns {Verdict}
- */
 export function runMessagingCheck({ root, home, uid, exists }: { root: string; home?: string; uid?: number; exists?: (path: string) => boolean; }): Verdict {
-  /** @type {ReturnType<typeof readMessagingConfig>} */
   let config: ReturnType<typeof readMessagingConfig>;
   try {
     config = readMessagingConfig(root, { home });
@@ -71,7 +61,7 @@ export function runMessagingCheck({ root, home, uid, exists }: { root: string; h
   return { exitCode: failed ? 1 : 0, lines: [...header, ...lines, "no network call was made"] };
 }
 
-/** @param {string[]} argv @returns {string} the project root: `--root=<dir>`, else the current directory */
+/** Returns the project root: `--root=<dir>`, else the current directory */
 function rootFrom(argv: string[]): string {
   const flag = argv.find((arg) => arg.startsWith("--root="));
   return resolve(flag === undefined ? process.cwd() : flag.slice("--root=".length));

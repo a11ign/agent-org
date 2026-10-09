@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3511 (slice 4 of #3494): THE WATERFALL -- `trace -- <row>` prints a row's eight phases: where the wall-clock went, how much of it a session was WORKING and how much
 // it was WAITING (and on what), what each phase cost, and every repeat, in the phase it happened in.
 //
@@ -24,13 +23,16 @@
 // the field, or the pull object was not read: a pull request with no `ready_for_review` then reads as a verify phase that says it does not know); and the push time of a head (`head_moved.at` is the COMMIT's date).
 import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 
-/** @typedef {import("./store.ts").TraceEvent} TraceEvent
- * @typedef {[number, number]} Span from and to, in ms
- * @typedef {{ source: string, label: string, inferred: boolean, evidence: string[], spans: Span[] }} WaitSource
- * @typedef {{ source: string, label: string, inferred: boolean, evidence: string[], ms: number }} Wait
- * @typedef {{ phase: string, label: string, from: number, to: number | null, state: "ended" | "open" | "cut", note?: string }} Cut a run before it is classified: `to` is `null` while it is open
- * @typedef {{ turns: number, priced: number, unpriced: number, dollars: number, tokens: number }} Spend
- * @typedef {{ kind: string, at: number, phase: string, summary: string, evidence: string[] }} Repeat */
+import type { TraceEvent } from "./store.ts";
+
+/** from and to, in ms */
+type Span = [number, number];
+type WaitSource = { source: string; label: string; inferred: boolean; evidence: string[]; spans: Span[] };
+export type Wait = { source: string; label: string; inferred: boolean; evidence: string[]; ms: number };
+/** a run before it is classified: `to` is `null` while it is open */
+export type Cut = { phase: string; label: string; from: number; to: number | null; state: "ended" | "open" | "cut"; note?: string };
+export type Spend = { turns: number; priced: number; unpriced: number; dollars: number; tokens: number };
+export type Repeat = { kind: string; at: number; phase: string; summary: string; evidence: string[] };
 
 export const PHASES = ["spec", "claim", "build", "verify", "review", "CI", "queue", "merge"];
 /** The pseudo-phase for time and turns no phase covers. */
@@ -58,12 +60,10 @@ export const DEFINITIONS = [
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Spans
 
-/** @param {Span[]} spans */
 export const lengthOf = (spans: Span[]) => spans.reduce((sum, [from, to]) => sum + (to - from), 0);
 
-/** Sorted, overlapping and touching spans joined, empty ones dropped. @param {Span[]} spans @returns {Span[]} */
+/** Sorted, overlapping and touching spans joined, empty ones dropped. */
 function normalize(spans: Span[]): Span[] {
-  /** @type {Span[]} */
   const joined: Span[] = [];
   for (const [from, to] of spans.filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
     const last = joined.at(-1);
@@ -73,9 +73,8 @@ function normalize(spans: Span[]): Span[] {
   return joined;
 }
 
-/** The parts of `a` that are in `b`. Both are normalized. @param {Span[]} a @param {Span[]} b @returns {Span[]} */
+/** The parts of `a` that are in `b`. Both are normalized. */
 function intersect(a: Span[], b: Span[]): Span[] {
-  /** @type {Span[]} */
   const both: Span[] = [];
   let i = 0;
   let j = 0;
@@ -89,9 +88,8 @@ function intersect(a: Span[], b: Span[]): Span[] {
   return both;
 }
 
-/** The parts of `a` that are not in `b`. Both are normalized. @param {Span[]} a @param {Span[]} b @returns {Span[]} */
+/** The parts of `a` that are not in `b`. Both are normalized. */
 function minus(a: Span[], b: Span[]): Span[] {
-  /** @type {Span[]} */
   const left: Span[] = [];
   for (const [start, to] of a) {
     let from = start;
@@ -105,40 +103,37 @@ function minus(a: Span[], b: Span[]): Span[] {
   return left;
 }
 
-/** The span of one turn: its wall-clock before its end, or nothing when the store has none. @param {TraceEvent} turn @returns {Span} */
+/** The span of one turn: its wall-clock before its end, or nothing when the store has none. */
 const turnSpan = (turn: TraceEvent): Span => [turn.at - Math.max(0, turn.wallClockMs ?? 0), turn.at];
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Reading the events
 
-const byTime = (/** @type {TraceEvent} */ a: TraceEvent, /** @type {TraceEvent} */ b: TraceEvent) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0) || a.id.localeCompare(b.id);
-const short = (/** @type {string | undefined} */ sha: string | undefined) => (sha ?? "?").slice(0, SHORT_SHA);
+const byTime = (a: TraceEvent, b: TraceEvent) => a.at - b.at || (a.seq ?? 0) - (b.seq ?? 0) || a.id.localeCompare(b.id);
+const short = (sha: string | undefined) => (sha ?? "?").slice(0, SHORT_SHA);
 
-/** @param {number} ms */
 const stamp = (ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DDTHH:MM:SS".length).replace("T", " ");
 
-/** @param {number} ms */
 export function duration(ms: number) {
   const seconds = Math.round(ms / MS_PER_SECOND);
   if (seconds === 0 && ms > 0) return "<1s";
   const minutes = Math.floor(seconds / SECONDS_PER_MINUTE);
-  const pad = (/** @type {number} */ n: number) => String(n).padStart(2, "0");
+  const pad = (n: number) => String(n).padStart(2, "0");
   if (minutes === 0) return `${seconds}s`;
   if (minutes < MINUTES_PER_HOUR) return `${minutes}m${pad(seconds % SECONDS_PER_MINUTE)}s`;
   return `${Math.floor(minutes / MINUTES_PER_HOUR)}h${pad(minutes % MINUTES_PER_HOUR)}m${pad(seconds % SECONDS_PER_MINUTE)}s`;
 }
 
+type Pull = { number: number; opened?: TraceEvent; ready?: TraceEvent; heads: TraceEvent[]; reviews: TraceEvent[]; ci: TraceEvent[]; adds: TraceEvent[]; removes: TraceEvent[];
+  merged?: TraceEvent; closed?: TraceEvent };
+
 /**
  * Everything one pull request's events say, in the order the waterfall needs them. A check-run is in the store once per STATUS it was seen in, so a run seen going and seen done is
  * one run: the copy with a completion wins.
- * @typedef {{ number: number, opened?: TraceEvent, ready?: TraceEvent, heads: TraceEvent[], reviews: TraceEvent[], ci: TraceEvent[], adds: TraceEvent[], removes: TraceEvent[],
- *   merged?: TraceEvent, closed?: TraceEvent }} Pull
- * @param {number} number @param {TraceEvent[]} events the github events of this pull request, in time order
- * @returns {Pull}
+ * `events`: the github events of this pull request, in time order
  */
 function pullOf(number: number, events: TraceEvent[]): Pull {
-  const of = (/** @type {string} */ kind: string) => events.filter((event) => event.kind === kind);
-  /** @type {Map<string, TraceEvent>} */
+  const of = (kind: string) => events.filter((event) => event.kind === kind);
   const runs: Map<string, TraceEvent> = new Map();
   for (const run of of("ci_run")) {
     const key = `${run.headSha}\t${run.name}\t${run.startedAt}`;
@@ -150,12 +145,9 @@ function pullOf(number: number, events: TraceEvent[]): Pull {
   };
 }
 
-/**
- * @typedef {{ events: TraceEvent[], turns: TraceEvent[], wakes: TraceEvent[], now: number, stop: number | null, filed?: TraceEvent, claim?: TraceEvent,
- *   pulls: Pull[], rowClosed: TraceEvent[] }} Context
- * @param {TraceEvent[]} events @param {number} now
- * @returns {Context}
- */
+type Context = { events: TraceEvent[]; turns: TraceEvent[]; wakes: TraceEvent[]; now: number; stop: number | null; filed?: TraceEvent; claim?: TraceEvent;
+  pulls: Pull[]; rowClosed: TraceEvent[] };
+
 function contextOf(events: TraceEvent[], now: number): Context {
   const sorted = events.filter((event) => event.kind !== "gh_call").sort(byTime);
   const github = sorted.filter((event) => event.source === "github");
@@ -175,28 +167,25 @@ function contextOf(events: TraceEvent[], now: number): Context {
 /**
  * A run. `to` null is open: with no end record it is OPEN, unless the pull request or row closed after it began, when it is CUT there. An end before its start (clocks of two sources
  * that disagree) is clamped to the start and says so.
- * @param {Context} ctx @param {{ phase: string, label: string, from: number, to: number | null, note?: string }} run @returns {Cut}
  */
 function cut(ctx: Context, { phase, label, from, to, note }: { phase: string; label: string; from: number; to: number | null; note?: string; }): Cut {
   const clamped = to !== null && to < from;
-  const noted = [note, clamped ? `ended ${duration(from - /** @type {number} */ (to))} before it began by the clocks of two sources: clamped to nothing` : undefined].filter(Boolean).join("; ");
+  const noted = [note, clamped ? `ended ${duration(from - (to as number))} before it began by the clocks of two sources: clamped to nothing` : undefined].filter(Boolean).join("; ");
   const rest = noted === "" ? {} : { note: noted };
   if (to !== null) return { phase, label, from, to: Math.max(from, to), state: "ended", ...rest };
   if (ctx.stop !== null && ctx.stop >= from) return { phase, label, from, to: ctx.stop, state: "cut", ...rest };
   return { phase, label, from, to: null, state: "open", ...rest };
 }
 
-/** @typedef {{ runs: Cut[], why: string | null }} Built */
-/** @param {string} why @returns {Built} */
+type Built = { runs: Cut[]; why: string | null };
 const without = (why: string): Built => ({ runs: [], why });
 
-/** @param {Context} ctx @returns {Built} */
 function specRuns(ctx: Context): Built {
   if (!ctx.filed) return without("not held: no `filed` event of a row in the store (a trace of a pull request that closes no row has none)");
   return { runs: [cut(ctx, { phase: "spec", label: "row filed -> claimed", from: ctx.filed.at, to: ctx.claim?.at ?? null })], why: null };
 }
 
-/** The claimant's first turn on the row at or after the claim, and when it began: not before the claim (a claim made inside the turn begins the turn's work, not the wait). @param {Context} ctx */
+/** The claimant's first turn on the row at or after the claim, and when it began: not before the claim (a claim made inside the turn begins the turn's work, not the wait). */
 function claimantStart(ctx: Context) {
   const claim = ctx.claim;
   if (!claim?.claimant) return null;
@@ -204,7 +193,6 @@ function claimantStart(ctx: Context) {
   return first ? { turn: first, began: Math.max(claim.at, turnSpan(first)[0]) } : null;
 }
 
-/** @param {Context} ctx @returns {Built} */
 function claimRuns(ctx: Context): Built {
   if (!ctx.claim) return without("not held: no claim record in the store");
   const start = claimantStart(ctx);
@@ -212,7 +200,6 @@ function claimRuns(ctx: Context): Built {
   return { runs: [cut(ctx, { phase: "claim", label, from: ctx.claim.at, to: start?.began ?? null })], why: null };
 }
 
-/** @param {Context} ctx @returns {Built} */
 function buildRuns(ctx: Context): Built {
   const start = claimantStart(ctx);
   const opened = ctx.pulls.flatMap((pull) => (pull.opened ? [pull.opened] : [])).sort(byTime)[0];
@@ -220,18 +207,17 @@ function buildRuns(ctx: Context): Built {
   return { runs: [cut(ctx, { phase: "build", label: `${ctx.claim?.claimant}'s first turn -> pull request opened`, from: start.began, to: opened?.at ?? null })], why: null };
 }
 
-/** Whether the pull request got as far as a queue entry or a merge, which a draft cannot. @param {Pull} pull */
+/** Whether the pull request got as far as a queue entry or a merge, which a draft cannot. */
 const wasReady = (pull: Pull) => pull.adds.length > 0 || pull.merged !== undefined;
 
 /**
  * The verify run of a pull request that has no `ready_for_review` event, read from what `opened.draft` says (`null`, or absent from a record written before the field, is
  * "the store does not say"; only `false` is "opened ready").
- * @param {Context} ctx @param {Pull} pull @param {string} label
  */
 function unmarkedVerify(ctx: Context, pull: Pull, label: string) {
-  const opened = /** @type {TraceEvent} */ (pull.opened);
-  const draft = /** @type {boolean | null | undefined} */ (/** @type {any} */ (opened).draft);
-  const instant = (/** @type {string} */ note: string) => [cut(ctx, { phase: "verify", label, from: opened.at, to: opened.at, note })];
+  const opened = (pull.opened as TraceEvent);
+  const draft = (opened as TraceEvent & { draft?: boolean | null }).draft;
+  const instant = (note: string) => [cut(ctx, { phase: "verify", label, from: opened.at, to: opened.at, note })];
   if (draft === false) return instant("opened ready (draft: false), so no ready_for_review event and no draft stage");
   if (draft === true && wasReady(pull)) return instant("opened as a draft and then queued or merged, but the store holds no ready_for_review event: the end of the draft stage is not held");
   if (draft === true) return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "opened as a draft, no ready_for_review yet: still a draft" })];
@@ -239,7 +225,6 @@ function unmarkedVerify(ctx: Context, pull: Pull, label: string) {
   return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "no ready_for_review yet: still a draft, or opened ready (the store's `opened` does not say which)" })];
 }
 
-/** @param {Context} ctx @param {Pull} pull @param {boolean} several */
 function verifyRun(ctx: Context, pull: Pull, several: boolean) {
   const { opened, ready } = pull;
   if (!opened) return [];
@@ -248,7 +233,6 @@ function verifyRun(ctx: Context, pull: Pull, several: boolean) {
   return unmarkedVerify(ctx, pull, label);
 }
 
-/** @param {Context} ctx @returns {Built} */
 function verifyRuns(ctx: Context): Built {
   const runs = ctx.pulls.flatMap((pull) => verifyRun(ctx, pull, ctx.pulls.length > 1));
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request opened");
@@ -258,7 +242,6 @@ function verifyRuns(ctx: Context): Built {
  * The review rounds of one pull request: a push (the opening, or a head that moved after it) starts one, and the next review of any kind ends it. A ready mark starts one only when
  * the head has not been reviewed since it last moved, so a draft approved and then marked ready is not waiting for a second review. A reviewer reads a settled DRAFT (#3406 was approved
  * as one), so a draft's pushes count.
- * @param {Context} ctx @param {Pull} pull @param {boolean} several @returns {Cut[]}
  */
 function reviewRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
   if (!pull.opened) return [];
@@ -268,9 +251,7 @@ function reviewRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
     ...pull.heads.filter((head) => head.at > opened.at).map((head) => ({ kind: "push", at: head.at, what: `push ${short(head.headSha)}` })),
     ...pull.reviews.map((review) => ({ kind: "review", at: review.at, what: "" })),
   ].sort((a, b) => a.at - b.at || Number(a.kind === "review") - Number(b.kind === "review"));
-  /** @type {Cut[]} */
   const rounds: Cut[] = [];
-  /** @type {{ at: number, what: string } | null} */
   let pending: { at: number; what: string; } | null = null;
   let unreviewed = true;
   const tag = several ? `#${pull.number} ` : "";
@@ -288,22 +269,20 @@ function reviewRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
   return rounds;
 }
 
-/** @param {Context} ctx @returns {Built} */
 function reviewRuns(ctx: Context): Built {
   const runs = ctx.pulls.flatMap((pull) => reviewRounds(ctx, pull, ctx.pulls.length > 1));
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request opened");
 }
 
-/** The heads a pull request's CI ran at, first run first. @param {Pull} pull @returns {string[]} */
+/** The heads a pull request's CI ran at, first run first. */
 const headsRun = (pull: Pull): string[] => [...new Set(pull.ci.flatMap((run) => (run.headSha ? [run.headSha] : [])))];
 
 /**
  * The check-runs of one head in WAVES: a new wave starts when a run begins more than `WAVE_GAP_MS` after every earlier run finished. Two runs of one name that overlap are two
  * triggers of one wave (measured on #3406: two triggers a few seconds apart), not a re-run; a second wave is checks started again, as the ready mark does.
- * @param {TraceEvent[]} runs one head's runs, by start @returns {TraceEvent[][]}
+ * `runs`: one head's runs, by start
  */
 function wavesOf(runs: TraceEvent[]): TraceEvent[][] {
-  /** @type {TraceEvent[][]} */
   const waves: TraceEvent[][] = [];
   let until = Number.NEGATIVE_INFINITY;
   for (const run of runs) {
@@ -314,13 +293,12 @@ function wavesOf(runs: TraceEvent[]): TraceEvent[][] {
   return waves;
 }
 
-/** Each head's waves, first head first. @param {Pull} pull @returns {{ sha: string, waves: TraceEvent[][] }[]} */
+/** Each head's waves, first head first. */
 const wavesByHead = (pull: Pull): { sha: string; waves: TraceEvent[][]; }[] => headsRun(pull).map((sha) => ({ sha, waves: wavesOf(pull.ci.filter((run) => run.headSha === sha)) }));
 
-/** When the wave's last check-run completed, or `null` while one is still going. @param {TraceEvent[]} wave @returns {number | null} */
-const waveEnd = (wave: TraceEvent[]): number | null => (wave.some((run) => run.completedAt === null || run.completedAt === undefined) ? null : Math.max(...wave.map((run) => /** @type {number} */ (run.completedAt))));
+/** When the wave's last check-run completed, or `null` while one is still going. */
+const waveEnd = (wave: TraceEvent[]): number | null => (wave.some((run) => run.completedAt === null || run.completedAt === undefined) ? null : Math.max(...wave.map((run) => (run.completedAt as number))));
 
-/** @param {Context} ctx @param {Pull} pull @param {boolean} several @returns {Cut[]} */
 function ciRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
   return wavesByHead(pull).flatMap(({ sha, waves }) => waves.map((wave, index) => {
     const committed = pull.heads.find((head) => head.headSha === sha)?.at ?? Number.NEGATIVE_INFINITY;
@@ -331,47 +309,42 @@ function ciRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
   }));
 }
 
-/** @param {Context} ctx @returns {Built} */
 function ciRuns(ctx: Context): Built {
   const runs = ctx.pulls.flatMap((pull) => ciRounds(ctx, pull, ctx.pulls.length > 1));
   return runs.length > 0 ? { runs, why: null } : without("not held: no check-run of any head of the pull requests is in the store");
 }
 
-/** @param {Context} ctx @returns {Built} */
 function queueRuns(ctx: Context): Built {
   const runs = ctx.pulls.flatMap((pull) => (pull.adds.length === 0 ? [] : [cut(ctx, { phase: "queue", label: `${ctx.pulls.length > 1 ? `#${pull.number} ` : ""}first queue entry -> merged`, from: pull.adds[0].at, to: pull.merged?.at ?? null })]));
   if (runs.length > 0) return { runs, why: null };
   return without(ctx.pulls.some((pull) => pull.merged) ? "not reached: merged with no queue entry in the store" : "not reached: no queue entry");
 }
 
-/** @param {Context} ctx @param {Pull} pull @param {boolean} last the last merge of the row, which is the one that closes it */
+/** `last`: the last merge of the row, which is the one that closes it */
 function closeOf(ctx: Context, pull: Pull, last: boolean) {
-  const merged = /** @type {TraceEvent} */ (pull.merged);
+  const merged = (pull.merged as TraceEvent);
   const rowClose = last ? ctx.rowClosed.find((event) => event.at >= merged.at) : undefined;
   return rowClose ?? (pull.closed && pull.closed.at >= merged.at ? pull.closed : undefined);
 }
 
-/** @param {Context} ctx @returns {Built} */
 function mergeRuns(ctx: Context): Built {
   const merged = ctx.pulls.filter((pull) => pull.merged);
-  const lastAt = Math.max(...merged.map((pull) => /** @type {TraceEvent} */ (pull.merged).at));
+  const lastAt = Math.max(...merged.map((pull) => (pull.merged as TraceEvent).at));
   const runs = merged.map((pull) => {
-    const at = /** @type {TraceEvent} */ (pull.merged).at;
+    const at = (pull.merged as TraceEvent).at;
     return cut(ctx, { phase: "merge", label: `${ctx.pulls.length > 1 ? `#${pull.number} ` : ""}merged -> closed`, from: at, to: closeOf(ctx, pull, at === lastAt)?.at ?? null });
   });
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request merged");
 }
 
-/** @type {Record<string, (ctx: Context) => Built>} */
 const BUILDERS: Record<string, (ctx: Context) => Built> = { spec: specRuns, claim: claimRuns, build: buildRuns, verify: verifyRuns, review: reviewRuns, CI: ciRuns, queue: queueRuns, merge: mergeRuns };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // What a session waited on: records only, in the order they claim a moment
 
-/** The end of a span: its own, else (still open) the close, else the reading. @param {Context} ctx @param {number | null | undefined} ms */
+/** The end of a span: its own, else (still open) the close, else the reading. */
 const endOf = (ctx: Context, ms: number | null | undefined) => ms ?? ctx.stop ?? ctx.now;
 
-/** @param {Context} ctx @returns {WaitSource[]} */
 function deferralSources(ctx: Context): WaitSource[] {
   return ctx.events.filter((event) => event.kind === "deferral").map((event) => ({
     source: "deferral-log", inferred: false, evidence: [event.id], label: `order ${event.causeKey} deferred for busy ${event.session} (${event.how})`,
@@ -379,13 +352,11 @@ function deferralSources(ctx: Context): WaitSource[] {
   }));
 }
 
-/** Each label put on and taken off: a hold or an order to a session. A label still on runs to the close or the reading. @param {Context} ctx @returns {WaitSource[]} */
+/** Each label put on and taken off: a hold or an order to a session. A label still on runs to the close or the reading. */
 function holdSources(ctx: Context): WaitSource[] {
-  /** @type {Map<string, TraceEvent>} */
   const on: Map<string, TraceEvent> = new Map();
-  /** @type {WaitSource[]} */
   const held: WaitSource[] = [];
-  const close = (/** @type {TraceEvent} */ put: TraceEvent, /** @type {number} */ to: number) => {
+  const close = (put: TraceEvent, to: number) => {
     const name = put.name ?? "";
     const target = name.startsWith(ANSWER_PREFIX) ? `waiting on ${name.slice(ANSWER_PREFIX.length)}` : "held";
     held.push({ source: "label", inferred: false, evidence: [put.id], label: `label ${name} (${target}; put on by ${put.actor})`, spans: normalize([[put.at, to]]) });
@@ -403,21 +374,20 @@ function holdSources(ctx: Context): WaitSource[] {
   return held.filter((source) => source.spans.length > 0);
 }
 
-/** An order is delivered some time after `wake` typed it: that stretch is recorded (`deliveryLagMs`, delivery minus typing). One wait per addressee: a seat gets dozens, most under a second. @param {Context} ctx @returns {WaitSource[]} */
+/** An order is delivered some time after `wake` typed it: that stretch is recorded (`deliveryLagMs`, delivery minus typing). One wait per addressee: a seat gets dozens, most under a second. */
 function deliverySources(ctx: Context): WaitSource[] {
   const late = ctx.wakes.filter((wake) => (wake.deliveryLagMs ?? 0) > 0);
-  const lag = (/** @type {TraceEvent} */ wake: TraceEvent) => /** @type {number} */ (wake.deliveryLagMs);
+  const lag = (wake: TraceEvent) => (wake.deliveryLagMs as number);
   return [...new Set(late.map((wake) => wake.session))].map((session) => {
     const own = late.filter((wake) => wake.session === session);
-    return { source: "wake-ledger", inferred: false, evidence: own.map((wake) => wake.id), spans: normalize(own.map((wake) => /** @type {Span} */ ([wake.at - lag(wake), wake.at]))),
+    return { source: "wake-ledger", inferred: false, evidence: own.map((wake) => wake.id), spans: normalize(own.map((wake) => ([wake.at - lag(wake), wake.at] as Span))),
       label: `${own.length} order${own.length === 1 ? "" : "s"} to ${session} delivered after being typed (longest ${duration(Math.max(...own.map(lag)))})` };
   });
 }
 
-/** Each queue entry (add to its exit, or to the merge) and each stretch ejected (an unmerged exit to the next entry). @param {Context} ctx @param {Pull} pull @returns {WaitSource[]} */
+/** Each queue entry (add to its exit, or to the merge) and each stretch ejected (an unmerged exit to the next entry). */
 function queueSources(ctx: Context, pull: Pull): WaitSource[] {
   const exits = [...pull.removes, ...(pull.merged ? [pull.merged] : [])].sort(byTime);
-  /** @type {WaitSource[]} */
   const sources: WaitSource[] = [];
   pull.adds.forEach((add, index) => {
     const exit = exits.find((event) => event.at >= add.at);
@@ -431,32 +401,31 @@ function queueSources(ctx: Context, pull: Pull): WaitSource[] {
   return sources;
 }
 
-/** One source per head: the stretch any of its check-runs was going. @param {Context} ctx @param {Pull} pull @returns {WaitSource[]} */
+/** One source per head: the stretch any of its check-runs was going. */
 function ciSources(ctx: Context, pull: Pull): WaitSource[] {
   return headsRun(pull).map((sha) => {
     const runs = pull.ci.filter((run) => run.headSha === sha);
-    const spans = normalize(runs.map((run) => /** @type {Span} */ ([run.startedAt ?? run.at, endOf(ctx, run.completedAt)])));
+    const spans = normalize(runs.map((run) => ([run.startedAt ?? run.at, endOf(ctx, run.completedAt)] as Span)));
     return { source: "CI", inferred: false, evidence: runs.map((run) => run.id), label: `CI running at head ${short(sha)} (${runs.length} check-runs)`, spans };
   });
 }
 
-/** A review round's own span is a record: it began and no review had yet been posted. @param {Cut[]} rounds @param {number} now @returns {WaitSource[]} */
+/** A review round's own span is a record: it began and no review had yet been posted. */
 function reviewSources(rounds: Cut[], now: number): WaitSource[] {
   return rounds.map((round) => ({ source: "review", inferred: false, evidence: [], label: `review not yet posted (${round.label.replace(/ -> review$/, "")})`, spans: normalize([[round.from, round.to ?? now]]) }));
 }
 
-/** The review's own id, which is in the event id (`gh:<repo>#<n>:reviewed:<id>:<sha>`). @param {TraceEvent} review */
+/** The review's own id, which is in the event id (`gh:<repo>#<n>:reviewed:<id>:<sha>`). */
 const reviewIdOf = (review: TraceEvent) => /:reviewed:(\d+):/.exec(review.id)?.[1] ?? review.id;
 
 /**
  * INFERRED: a draft APPROVED and not yet marked ready. Nothing records who it was waiting on, so it is named from three records and marked inferred: the review event, the ledger's
  * delivery of the order about the pull request (to whoever it went to), and that session's own turns in the gap. With no order recorded it says so rather than naming nobody.
- * @param {Context} ctx @param {Pull} pull @returns {WaitSource[]}
  */
 function approvedDraftSource(ctx: Context, pull: Pull): WaitSource[] {
   const approval = pull.reviews.find((review) => review.state === "APPROVED");
   if (!approval || !pull.ready || approval.at >= pull.ready.at) return [];
-  const gap = /** @type {Span} */ ([approval.at, pull.ready.at]);
+  const gap = ([approval.at, pull.ready.at] as Span);
   const orders = ctx.wakes.filter((wake) => wake.pr === pull.number && wake.at >= gap[0] && wake.at <= gap[1]);
   const sessions = [...new Set(orders.map((wake) => wake.session))];
   const turns = ctx.turns.filter((turn) => sessions.includes(turn.session) && turn.at >= gap[0] && turn.at <= gap[1]);
@@ -471,10 +440,8 @@ function approvedDraftSource(ctx: Context, pull: Pull): WaitSource[] {
  * A tool call running, one source per session, read from each turn's own `toolMs` (the store's measure of the stretch between the message that made the call and its result). That
  * stretch is in no turn's span: the span starts after the tool finished. It is placed ending where the turn's span begins, which is within the harness's few seconds of where it
  * ran (an attachment is stamped after the result), and a turn with no `toolMs` (an order before it, a store line from before the field) claims nothing: `null` is not 0 here either.
- * @param {Context} ctx @returns {WaitSource[]}
  */
 function toolSources(ctx: Context): WaitSource[] {
-  /** @type {Map<string, TraceEvent[]>} */
   const bySession: Map<string, TraceEvent[]> = new Map();
   for (const turn of ctx.turns) {
     if (typeof turn.toolMs !== "number" || typeof turn.wallClockMs !== "number") continue;
@@ -483,31 +450,23 @@ function toolSources(ctx: Context): WaitSource[] {
   return [...bySession].map(([session, turns]) => ({
     source: "tool", inferred: false, evidence: turns.map((turn) => turn.id), label: `tool running (${session}, ${turns.length} ${turns.length === 1 ? "call" : "calls"})`,
     spans: normalize(turns.map((turn) => {
-      const spanStart = turn.at - /** @type {number} */ (turn.wallClockMs);
-      return /** @type {Span} */ ([spanStart - /** @type {number} */ (turn.toolMs), spanStart]);
+      const spanStart = turn.at - (turn.wallClockMs as number);
+      return ([spanStart - (turn.toolMs as number), spanStart] as Span);
     })),
   }));
 }
 
-/**
- * @param {Context} ctx @param {Cut[]} reviewCuts @param {number} now
- * @returns {WaitSource[]} in the order they claim a moment: the recorded causes first, and a tool running last, so it names only what nothing else had
- */
+/** Returns in the order they claim a moment: the recorded causes first, and a tool running last, so it names only what nothing else had */
 function waitSources(ctx: Context, reviewCuts: Cut[], now: number): WaitSource[] {
   return [...deferralSources(ctx), ...holdSources(ctx), ...deliverySources(ctx), ...ctx.pulls.flatMap((pull) => queueSources(ctx, pull)),
     ...ctx.pulls.flatMap((pull) => ciSources(ctx, pull)), ...reviewSources(reviewCuts, now), ...ctx.pulls.flatMap((pull) => approvedDraftSource(ctx, pull)), ...toolSources(ctx)];
 }
 
-/**
- * Every moment of `span` as WORKING, WAITING (by the first source that claims it) or unexplained.
- * @param {Span} span @param {{ working: Span[], sources: WaitSource[] }} held
- * @returns {{ workingMs: number, waits: Wait[], unexplainedMs: number }}
- */
+/** Every moment of `span` as WORKING, WAITING (by the first source that claims it) or unexplained. */
 function classify(span: Span, { working, sources }: { working: Span[]; sources: WaitSource[]; }): { workingMs: number; waits: Wait[]; unexplainedMs: number; } {
   const whole = normalize([span]);
   const worked = intersect(whole, working);
   let rest = minus(whole, worked);
-  /** @type {Wait[]} */
   const waits: Wait[] = [];
   for (const source of sources) {
     const hit = intersect(rest, source.spans);
@@ -521,9 +480,10 @@ function classify(span: Span, { working, sources }: { working: Span[]; sources: 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Placing a moment in one phase
 
-/** @typedef {Cut & { end: number }} Resolved a run with its end settled: an open one ends at the reading */
+/** a run with its end settled: an open one ends at the reading */
+type Resolved = Cut & { end: number };
 
-/** The run that began last of those running at `at` (`from <= at < end`, or an empty one at `at`), or `null`. @param {Resolved[]} runs @param {number} at */
+/** The run that began last of those running at `at` (`from <= at < end`, or an empty one at `at`), or `null`. */
 function primaryAt(runs: Resolved[], at: number) {
   const running = runs.filter((run) => run.from <= at && (at < run.end || (run.from === run.end && at === run.end)));
   return running.sort((a, b) => b.from - a.from || PHASES.indexOf(b.phase) - PHASES.indexOf(a.phase))[0] ?? null;
@@ -531,14 +491,11 @@ function primaryAt(runs: Resolved[], at: number) {
 
 /**
  * Cut `[start, end]` at every boundary and give each piece to the phase that began last of those running over it, or to `between`.
- * @param {Resolved[]} runs @param {Span} span
- * @returns {{ exclusive: Map<string, number>, holes: Span[] }} the wall-clock each phase has to itself, and the stretches no phase covers
+ * Returns the wall-clock each phase has to itself, and the stretches no phase covers
  */
 function partition(runs: Resolved[], span: Span): { exclusive: Map<string, number>; holes: Span[]; } {
   const points = [...new Set([span[0], span[1], ...runs.flatMap((run) => [run.from, run.end])].filter((at) => at >= span[0] && at <= span[1]))].sort((a, b) => a - b);
-  /** @type {Map<string, number>} */
   const exclusive: Map<string, number> = new Map();
-  /** @type {Span[]} */
   const holes: Span[] = [];
   for (let i = 0; i + 1 < points.length; i += 1) {
     const [from, to] = [points[i], points[i + 1]];
@@ -552,10 +509,9 @@ function partition(runs: Resolved[], span: Span): { exclusive: Map<string, numbe
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Dollars and tokens
 
-/** @returns {Spend} */
 const emptySpend = (): Spend => ({ turns: 0, priced: 0, unpriced: 0, dollars: 0, tokens: 0 });
 
-/** The store's own `costUsd`; a turn with none is unpriced and is NOT zero dollars. @param {Spend} spend @param {TraceEvent} turn */
+/** The store's own `costUsd`; a turn with none is unpriced and is NOT zero dollars. */
 function addTurn(spend: Spend, turn: TraceEvent) {
   spend.turns += 1;
   const tokens = turn.tokens;
@@ -566,9 +522,8 @@ function addTurn(spend: Spend, turn: TraceEvent) {
   } else spend.unpriced += 1;
 }
 
-/** @param {TraceEvent[]} turns @returns {Spend & { bySession: Record<string, Spend> }} */
 function spendOf(turns: TraceEvent[]): Spend & { bySession: Record<string, Spend>; } {
-  const total = { ...emptySpend(), bySession: /** @type {Record<string, Spend>} */ ({}) };
+  const total = { ...emptySpend(), bySession: ({} as Record<string, Spend>) };
   for (const turn of turns) {
     addTurn(total, turn);
     addTurn(total.bySession[turn.session] ??= emptySpend(), turn);
@@ -579,35 +534,32 @@ function spendOf(turns: TraceEvent[]): Spend & { bySession: Record<string, Spend
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Repeats
 
-/** @param {Pull} pull @param {number} at the head the pull request had at a time: the latest push, review or check-run seen by then @returns {string | null} */
+/** `at`: the head the pull request had at a time: the latest push, review or check-run seen by then */
 function headAt(pull: Pull, at: number): string | null {
   const seen = [...pull.heads.map((e) => ({ at: e.at, sha: e.headSha })), ...pull.reviews.map((e) => ({ at: e.at, sha: e.headSha })), ...pull.ci.map((e) => ({ at: e.startedAt ?? e.at, sha: e.headSha }))]
     .filter((entry) => entry.sha && entry.at <= at).sort((a, b) => a.at - b.at);
   return seen.at(-1)?.sha ?? null;
 }
 
-/** @param {Pull} pull @returns {Omit<Repeat, "phase">[]} */
 function secondReviews(pull: Pull): Omit<Repeat, "phase">[] {
-  /** @type {Map<string, TraceEvent[]>} */
   const at: Map<string, TraceEvent[]> = new Map();
-  for (const review of pull.reviews.filter((e) => e.headSha)) at.set(/** @type {string} */ (review.headSha), [...(at.get(/** @type {string} */ (review.headSha)) ?? []), review]);
+  for (const review of pull.reviews.filter((e) => e.headSha)) at.set((review.headSha as string), [...(at.get(review.headSha as string) ?? []), review]);
   return [...at].flatMap(([sha, reviews]) => reviews.slice(1).map((again) => ({
     kind: "second review at the same head", at: again.at, summary: `#${pull.number}: review ${reviewIdOf(again)} at head ${short(sha)} after review ${reviewIdOf(reviews[0])}`,
     evidence: reviews.slice(0, reviews.indexOf(again) + 1).map((r) => `review ${reviewIdOf(r)} ${r.state} by ${r.actor} at ${stamp(r.at)}`),
   })));
 }
 
-/** @param {Pull} pull @returns {Omit<Repeat, "phase">[]} */
 function requeues(pull: Pull): Omit<Repeat, "phase">[] {
   return pull.adds.flatMap((add, index) => {
     const before = pull.adds.slice(0, index).find((earlier) => headAt(pull, earlier.at) === headAt(pull, add.at) && headAt(pull, add.at) !== null);
     if (!before) return [];
-    return [{ kind: "re-queue at the same head", at: add.at, summary: `#${pull.number}: entered the merge queue again at head ${short(/** @type {string} */ (headAt(pull, add.at)))}`,
+    return [{ kind: "re-queue at the same head", at: add.at, summary: `#${pull.number}: entered the merge queue again at head ${short((headAt(pull, add.at) as string))}`,
       evidence: [`queue entry ${before.id} at ${stamp(before.at)}`, `queue entry ${add.id} at ${stamp(add.at)}`] }];
   });
 }
 
-/** @param {TraceEvent[]} wave @param {string[]} [only] the names to list, else all */
+/** `only`: the names to list, else all */
 function waveText(wave: TraceEvent[], only?: string[]) {
   const runs = wave.filter((run) => !only || only.includes(String(run.name)));
   const names = [...new Set(runs.map((run) => String(run.name)))];
@@ -618,7 +570,6 @@ function waveText(wave: TraceEvent[], only?: string[]) {
 /**
  * Checks run again at a head they had already been run at: a check of a later WAVE whose name ran in an earlier one. A wave of checks no earlier wave ran (the ready mark and the
  * queue start their own) is not a re-run, and neither is a second trigger of the same wave.
- * @param {Pull} pull @returns {Omit<Repeat, "phase">[]}
  */
 function ciReruns(pull: Pull): Omit<Repeat, "phase">[] {
   return wavesByHead(pull).flatMap(({ sha, waves }) => waves.slice(1).flatMap((wave, index) => {
@@ -632,11 +583,9 @@ function ciReruns(pull: Pull): Omit<Repeat, "phase">[] {
   }));
 }
 
-/** A wake whose session and ledger key (without `@deferred`) were delivered before. @param {Context} ctx @returns {Omit<Repeat, "phase">[]} */
+/** A wake whose session and ledger key (without `@deferred`) were delivered before. */
 function rewakes(ctx: Context): Omit<Repeat, "phase">[] {
-  /** @type {Map<string, TraceEvent>} */
   const last: Map<string, TraceEvent> = new Map();
-  /** @type {Omit<Repeat, "phase">[]} */
   const repeats: Omit<Repeat, "phase">[] = [];
   for (const wake of ctx.wakes.filter((e) => e.causeKey)) {
     const key = `${wake.session}\t${String(wake.causeKey).split(DEFERRED_MARK)[0]}`;
@@ -648,7 +597,6 @@ function rewakes(ctx: Context): Omit<Repeat, "phase">[] {
   return repeats;
 }
 
-/** @param {Context} ctx @returns {Omit<Repeat, "phase">[]} */
 function compactions(ctx: Context): Omit<Repeat, "phase">[] {
   return ctx.events.filter((event) => event.kind === "compaction").map((event) => ({ kind: "compaction", at: event.at, summary: `${event.session} compacted its window`, evidence: [event.id] }));
 }
@@ -656,25 +604,21 @@ function compactions(ctx: Context): Omit<Repeat, "phase">[] {
 /** The phase each kind of repeat belongs to by its nature; one that happens whenever (a wake, a compaction) is in whichever phase was running. */
 const OWN_PHASE = { "second review at the same head": "review", "re-queue at the same head": "queue", "CI re-run at the same head": "CI" };
 
-/** @param {Context} ctx @param {Resolved[]} runs @returns {Repeat[]} */
 function repeatsOf(ctx: Context, runs: Resolved[]): Repeat[] {
   const found = [...ctx.pulls.flatMap((pull) => [...secondReviews(pull), ...requeues(pull), ...ciReruns(pull)]), ...rewakes(ctx), ...compactions(ctx)];
-  return found.sort((a, b) => a.at - b.at).map((repeat) => ({ ...repeat, phase: /** @type {Record<string, string>} */ (OWN_PHASE)[repeat.kind] ?? primaryAt(runs, repeat.at)?.phase ?? BETWEEN }));
+  return found.sort((a, b) => a.at - b.at).map((repeat) => ({ ...repeat, phase: (OWN_PHASE as Record<string, string>)[repeat.kind] ?? primaryAt(runs, repeat.at)?.phase ?? BETWEEN }));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The waterfall
 
-/**
- * @typedef {{ phase: string, label: string, from: number, to: number | null, end: number, state: "ended" | "open" | "cut", note?: string, wallClockMs: number,
- *   workingMs: number, waits: Wait[], unexplainedMs: number }} Run
- * @typedef {{ phase: string, state: "ended" | "open" | "cut" | "not reached" | "not held", why: string | null, runs: Run[], wallClockMs: number, exclusiveMs: number, workingMs: number,
- *   waits: Wait[], unexplainedMs: number, spend: ReturnType<typeof spendOf>, repeats: Repeat[] }} Phase
- */
+type Run = { phase: string; label: string; from: number; to: number | null; end: number; state: "ended" | "open" | "cut"; note?: string; wallClockMs: number;
+  workingMs: number; waits: Wait[]; unexplainedMs: number };
+export type Phase = { phase: string; state: "ended" | "open" | "cut" | "not reached" | "not held"; why: string | null; runs: Run[]; wallClockMs: number; exclusiveMs: number; workingMs: number;
+  waits: Wait[]; unexplainedMs: number; spend: ReturnType<typeof spendOf>; repeats: Repeat[] };
 
-/** @param {Run[]} runs @returns {Wait[]} the same wait of several runs, once */
+/** Returns the same wait of several runs, once */
 function mergeWaits(runs: Run[]): Wait[] {
-  /** @type {Map<string, Wait>} */
   const merged: Map<string, Wait> = new Map();
   for (const wait of runs.flatMap((run) => run.waits)) {
     const key = `${wait.source}\t${wait.label}`;
@@ -685,15 +629,12 @@ function mergeWaits(runs: Run[]): Wait[] {
   return [...merged.values()].sort((a, b) => b.ms - a.ms);
 }
 
-/** @param {Cut} cutRun @param {number} now @returns {Resolved} */
 const resolve = (cutRun: Cut, now: number): Resolved => ({ ...cutRun, end: cutRun.to ?? now });
 
-/** @param {Resolved} run @param {{ working: Span[], sources: WaitSource[] }} held @returns {Run} */
 function runOf(run: Resolved, held: { working: Span[]; sources: WaitSource[]; }): Run {
   return { ...run, ...classify([run.from, run.end], held), wallClockMs: run.end - run.from };
 }
 
-/** @param {Resolved[]} runs @param {Span[]} holes @param {{ working: Span[], sources: WaitSource[] }} held @returns {Run[]} */
 function betweenRuns(runs: Resolved[], holes: Span[], held: { working: Span[]; sources: WaitSource[]; }): Run[] {
   return holes.map(([from, to]) => {
     const before = runs.filter((run) => run.end <= from).sort((a, b) => b.end - a.end)[0];
@@ -702,10 +643,9 @@ function betweenRuns(runs: Resolved[], holes: Span[], held: { working: Span[]; s
   });
 }
 
-/** @param {string} phase @param {Built} built @param {{ runs: Run[], exclusive: number, turns: TraceEvent[], repeats: Repeat[] }} part @returns {Phase} */
 function phaseOf(phase: string, built: Built, { runs, exclusive, turns, repeats }: { runs: Run[]; exclusive: number; turns: TraceEvent[]; repeats: Repeat[]; }): Phase {
   const states = new Set(runs.map((run) => run.state));
-  const state = runs.length === 0 ? /** @type {"not reached" | "not held"} */ (built.why?.startsWith("not held") ? "not held" : "not reached")
+  const state = runs.length === 0 ? (built.why?.startsWith("not held") ? "not held" : "not reached" as "not reached" | "not held")
     : states.has("open") ? "open" : states.has("cut") ? "cut" : "ended";
   return {
     phase, state, why: runs.length === 0 ? built.why : null, runs, wallClockMs: runs.reduce((sum, run) => sum + run.wallClockMs, 0), exclusiveMs: exclusive,
@@ -716,9 +656,7 @@ function phaseOf(phase: string, built: Built, { runs, exclusive, turns, repeats 
 
 /**
  * The waterfall of one row's events, read at `now`.
- * @param {{ events: TraceEvent[], now: number }} input `events` as `eventsForRow` returns them (`gh_call`s are ignored)
- * @returns {{ start: number | null, end: number | null, open: boolean, whole: { wallClockMs: number, workingMs: number, waits: Wait[], unexplainedMs: number },
- *   phases: Phase[], between: Phase, spend: ReturnType<typeof spendOf>, repeats: Repeat[], rows: number[] }}
+ * `input`: `events` as `eventsForRow` returns them (`gh_call`s are ignored)
  */
 export function waterfall({ events, now }: { events: TraceEvent[]; now: number; }): {
     start: number | null; end: number | null; open: boolean; whole: { wallClockMs: number; workingMs: number; waits: Wait[]; unexplainedMs: number; };
@@ -733,7 +671,7 @@ export function waterfall({ events, now }: { events: TraceEvent[]; now: number; 
   const held = { working: normalize(ctx.turns.map(turnSpan)), sources: waitSources(ctx, cuts.filter((run) => run.phase === "review"), now) };
   const { exclusive, holes } = start === null || end === null ? { exclusive: new Map(), holes: [] } : partition(runs, [start, end]);
   const turnPhase = new Map(ctx.turns.map((turn) => [turn, primaryAt(runs, turn.at)?.phase ?? BETWEEN]));
-  const turnsIn = (/** @type {string} */ phase: string) => ctx.turns.filter((turn) => turnPhase.get(turn) === phase);
+  const turnsIn = (phase: string) => ctx.turns.filter((turn) => turnPhase.get(turn) === phase);
   const repeats = repeatsOf(ctx, runs);
   const phases = built.map((one) => phaseOf(one.phase, one, { runs: runs.filter((run) => run.phase === one.phase).map((run) => runOf(run, held)), exclusive: exclusive.get(one.phase) ?? 0, turns: turnsIn(one.phase), repeats }));
   const between = phaseOf(BETWEEN, without(""), { runs: betweenRuns(runs, holes, held), exclusive: exclusive.get(BETWEEN) ?? 0, turns: turnsIn(BETWEEN), repeats });
@@ -745,23 +683,20 @@ export function waterfall({ events, now }: { events: TraceEvent[]; now: number; 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Printing
 
-/** @param {Spend} spend */
 function spendText(spend: Spend) {
   const dollars = spend.priced === 0 ? (spend.turns === 0 ? "no turns" : "$? (no priced turn)") : `${spend.unpriced > 0 ? ">= " : ""}$${spend.dollars.toFixed(COST_DECIMALS)}`;
   return `${dollars} over ${spend.priced} priced turns${spend.unpriced > 0 ? `, ${spend.unpriced} UNPRICED (not counted as 0)` : ""}, ${spend.tokens.toLocaleString("en-US")} tokens`;
 }
 
-/** @param {Wait} wait */
 const waitLine = (wait: Wait) => `        WAITING ${duration(wait.ms).padStart(9)}  ${wait.label}${wait.inferred ? `  [INFERRED from: ${wait.evidence.join("; ")}]` : ""}`;
 
-/** @param {Run} run @param {boolean} alone the phase's only run, whose totals its header line already carries */
+/** `alone`: the phase's only run, whose totals its header line already carries */
 function runLines(run: Run, alone: boolean) {
   const where = run.state === "open" ? `${stamp(run.from)} -> OPEN (still running at the reading)` : `${stamp(run.from)} -> ${stamp(run.end)}${run.state === "cut" ? " (CUT at the close: no ending record)" : ""}`;
   const totals = `        wall-clock ${duration(run.wallClockMs)} = WORKING ${duration(run.workingMs)} + WAITING ${duration(run.wallClockMs - run.workingMs - run.unexplainedMs)} + unexplained ${duration(run.unexplainedMs)}`;
   return [`      ${run.label}: ${where}`, ...(alone ? [] : [totals]), ...run.waits.map(waitLine), ...(run.note ? [`        note: ${run.note}`] : [])];
 }
 
-/** @param {Phase} phase */
 function phaseLines(phase: Phase) {
   const head = `  ${phase.phase.padEnd(7)} ${phase.state.toUpperCase()}`;
   if (phase.runs.length === 0) return [`${head}  ${phase.why ?? ""}`];
@@ -775,16 +710,12 @@ function phaseLines(phase: Phase) {
   return lines;
 }
 
-/**
- * The waterfall as text.
- * @param {ReturnType<typeof waterfall>} wf @param {{ title: string, now: number }} head
- * @returns {string[]}
- */
+/** The waterfall as text. */
 export function renderWaterfall(wf: ReturnType<typeof waterfall>, { title, now }: { title: string; now: number; }): string[] {
   const lines = [`WATERFALL ${title}  (read ${stamp(now)}Z)`];
   if (wf.start === null) return [...lines, "  no phase has a record in the store: nothing to draw (is the row's GitHub history ingested? widen --since)"];
   const waiting = wf.whole.wallClockMs - wf.whole.workingMs - wf.whole.unexplainedMs;
-  lines.push(`  whole row ${stamp(wf.start)} -> ${wf.open ? "OPEN" : stamp(/** @type {number} */ (wf.end))}: wall-clock ${duration(wf.whole.wallClockMs)} = WORKING ${duration(wf.whole.workingMs)} + WAITING ${duration(waiting)} + unexplained ${duration(wf.whole.unexplainedMs)}`,
+  lines.push(`  whole row ${stamp(wf.start)} -> ${wf.open ? "OPEN" : stamp(wf.end as number)}: wall-clock ${duration(wf.whole.wallClockMs)} = WORKING ${duration(wf.whole.workingMs)} + WAITING ${duration(waiting)} + unexplained ${duration(wf.whole.unexplainedMs)}`,
     `  spend: ${spendText(wf.spend)}`, ...Object.entries(wf.spend.bySession).map(([session, spend]) => `    ${session.padEnd(22)} ${spendText(spend)}`));
   for (const phase of wf.phases) lines.push(...phaseLines(phase));
   if (wf.between.runs.length > 0 || wf.between.spend.turns > 0) lines.push(...phaseLines(wf.between));

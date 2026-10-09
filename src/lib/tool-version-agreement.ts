@@ -1,4 +1,3 @@
-// @ts-check
 // #3533: IS THE ORG RUNNING THE LATEST `agent-org`? MEASURED, NOT ASSUMED. The host ran `v0.22.0` from 19:12Z (#3443) while a11ign's repository still pinned `^0.7.0`,
 // locked at `0.7.8`: two versions of one tool and nothing reading it, until #3507's config read refused. #3443 scoped the repository pin out and the follower (#3450)
 // could not cross a `0.x` minor, so the gap was invisible by construction: the only version anybody read was the tool checkout's own (`liveToolVersion`, for the
@@ -46,12 +45,12 @@ export const TAG_LAG_MINUTES = 9;
 /** The timer the tick runs on, beside the tool's sources: the cycle is read from it and never typed in. */
 const WORK_TICK_TIMER = fileURLToPath(new URL("../../host/work-tick.timer.in", import.meta.url));
 
-const DURATION_UNITS = /** @type {Readonly<Record<string, number>>} */ ({ s: MS_PER_SECOND, sec: MS_PER_SECOND, m: MS_PER_MINUTE, min: MS_PER_MINUTE, h: MINUTES_PER_HOUR * MS_PER_MINUTE });
+const DURATION_UNITS: Readonly<Record<string, number>> = { s: MS_PER_SECOND, sec: MS_PER_SECOND, m: MS_PER_MINUTE, min: MS_PER_MINUTE, h: MINUTES_PER_HOUR * MS_PER_MINUTE };
 
 /**
  * THE INTERVAL A `work-tick.timer` FIRES AT, read from its `OnUnitActiveSec=` (`2min` is 120000 ms). Refuses a unit with none: the cycle derives from it, so a guess would be a
  * constant typed in again.
- * @param {string} timerText @returns {number} milliseconds
+ * @returns milliseconds
  */
 export function tickIntervalMs(timerText: string): number {
   const match = /^OnUnitActiveSec=\s*(\d+)\s*(s|sec|m|min|h)\s*$/m.exec(timerText);
@@ -63,14 +62,14 @@ export function tickIntervalMs(timerText: string): number {
  * THE RELEASE CYCLE: THE TICK'S INTERVAL, PLUS THE TAG LAG, PLUS ONE MORE TICK. A tag is cut {@link TAG_LAG_MINUTES} after its merge; the work-tick runs `update-tool` first on its
  * NEXT firing (one interval); and one more tick is the grid's own slack (the timer's `AccuracySec`, a tick that ran long). With `OnUnitActiveSec=2min` that is 2 + 9 + 2 = 13
  * minutes. It must EXCEED the update path's latency, and it does by construction: nothing here is shorter than the path it measures.
- * @param {string} timerText the text of `host/work-tick.timer.in` @returns {number} milliseconds
+ * @param timerText the text of `host/work-tick.timer.in` @returns milliseconds
  */
 export function releaseCycleMs(timerText: string): number {
   const tick = tickIntervalMs(timerText);
   return tick + TAG_LAG_MINUTES * MS_PER_MINUTE + tick;
 }
 
-/** The cycle from the timer unit that ships with this tool. @param {(path: string) => string} [read] @returns {number} */
+/** The cycle from the timer unit that ships with this tool. */
 export const shippedReleaseCycleMs = (read: (path: string) => string = (path) => readFileSync(path, "utf8")): number => releaseCycleMs(read(WORK_TICK_TIMER));
 
 /**
@@ -80,30 +79,29 @@ export const shippedReleaseCycleMs = (read: (path: string) => string = (path) =>
  *    still depends on it (after the removal row it does not, and a resolved copy is then a copy that RETURNED)
  *  - `{ kind: "ci", runner, version, resolvesNewest? }` -- `null` is a run that names no version; `resolvesNewest` is a run whose resolver cloned the newest stable tag at run time (#3746)
  *  - any of them with `unreadable: <why>` instead, which is NAMED and never counted as agreeing
- * @typedef {{ kind: "tool" | "worktree" | "ci", runner: string, version?: string | null, commit?: string, resolved?: string | null, declared?: boolean, resolvesNewest?: boolean, unreadable?: string }} RunnerFact
  */
+export type RunnerFact = { kind: "tool" | "worktree" | "ci"; runner: string; version?: string | null; commit?: string; resolved?: string | null; declared?: boolean; resolvesNewest?: boolean; unreadable?: string };
 
 /**
- * @typedef {{ kind: RunnerFact["kind"], runner: string, version: string | null, verdict: "current" | "behind" | "returned" | "none" | "unknown" | "unread", detail: string }} RunnerReading
  * `behind` is any difference from the newest tag AFTER one cycle (an older version is the normal case; a newer one means the remote's list is the stale one, and is as much a disagreement).
  * `returned` is a copy resolved where the worktree declares none. Both are signals; `unknown` and `unread` are not signals and not agreement either.
  */
+export type RunnerReading = { kind: RunnerFact["kind"]; runner: string; version: string | null; verdict: "current" | "behind" | "returned" | "none" | "unknown" | "unread"; detail: string };
 
-/**
- * @typedef {{ newest: string | null, newestCutAt: number | null, cycleMs: number, unreadable: string | null, readings: RunnerReading[],
- *             signals: { runner: string, kind: string, version: string | null, newest: string, detail: string }[] }} Agreement
- */
+export type Agreement = {
+  newest: string | null; newestCutAt: number | null; cycleMs: number; unreadable: string | null; readings: RunnerReading[];
+  signals: { runner: string; kind: string; version: string | null; newest: string; detail: string }[];
+};
 
-/** `0.7.8` and `v0.7.8` are the same release: a package.json says the first, a tag the second. @param {string} version @returns {string} */
+/** `0.7.8` and `v0.7.8` are the same release: a package.json says the first, a tag the second. */
 const asTag = (version: string): string => (version.startsWith("v") ? version : `v${version}`);
 
-/** @param {number} ms @returns {string} */
 const minutesText = (ms: number): string => {
   const minutes = Math.round(ms / MS_PER_MINUTE);
   return minutes >= MINUTES_PER_HOUR * 2 ? `${Math.round(minutes / MINUTES_PER_HOUR)} h` : `${minutes} min`;
 };
 
-/** @param {RunnerFact} fact @returns {string} what the runner is said to run, in the words it would print */
+/** @returns what the runner is said to run, in the words it would print */
 const versionWords = (fact: RunnerFact): string => {
   if (fact.kind === "worktree") return fact.resolved ?? "none";
   if (fact.version === undefined || fact.version === null) return fact.kind === "tool" ? `at no release${fact.commit ? ` (${fact.commit})` : ""}` : "no version";
@@ -113,7 +111,6 @@ const versionWords = (fact: RunnerFact): string => {
 /**
  * ONE RUNNER, against the newest tag. `stale` is whether the newest tag is older than one cycle: only then does a difference become a signal, and when its age could not be read a
  * difference is `unknown` (never a signal on a guess, never agreement).
- * @param {RunnerFact} fact @param {{ newest: string, stale: boolean | null }} against @returns {RunnerReading}
  */
 function readingOf(fact: RunnerFact, { newest, stale }: { newest: string; stale: boolean | null; }): RunnerReading {
   const base = { kind: fact.kind, runner: fact.runner };
@@ -135,13 +132,12 @@ function readingOf(fact: RunnerFact, { newest, stale }: { newest: string; stale:
 /**
  * THE COMPARISON, pure: every fact is handed in. `tags` is the tool's REMOTE tag list (`null` or no stable tag in it is UNREADABLE, reported and never read as agreement);
  * `newestCutAt` is when the newest stable tag was cut, epoch ms (`null` when unread).
- * @param {{ now: number, tags: string[] | null, newestCutAt: number | null, runners: RunnerFact[], cycleMs: number }} facts @returns {Agreement}
  */
 export function agreement({ now, tags, newestCutAt, runners, cycleMs }: { now: number; tags: string[] | null; newestCutAt: number | null; runners: RunnerFact[]; cycleMs: number; }): Agreement {
   const newest = tags === null ? null : chooseReleaseTag(tags, LATEST);
   if (newest === null) {
     const why = tags === null ? "the tool's remote tag list could not be read" : "the tool's remote holds no stable release tag (`vX.Y.Z`)";
-    const readings = runners.map((fact) => /** @type {RunnerReading} */ ({ kind: fact.kind, runner: fact.runner, version: null, verdict: "unread", detail: `UNREAD -- ${why}, so there is nothing to compare it to` }));
+    const readings = runners.map((fact) => ({ kind: fact.kind, runner: fact.runner, version: null, verdict: "unread", detail: `UNREAD -- ${why}, so there is nothing to compare it to` }) as RunnerReading);
     return { newest: null, newestCutAt: null, cycleMs, unreadable: why, readings, signals: [] };
   }
   const stale = newestCutAt === null ? null : now - newestCutAt > cycleMs;
@@ -151,19 +147,16 @@ export function agreement({ now, tags, newestCutAt, runners, cycleMs }: { now: n
   return { newest, newestCutAt, cycleMs, unreadable: null, readings, signals };
 }
 
-/** The one-line account of the newest tag. @param {Agreement} result @param {number} now @returns {string} */
+/** The one-line account of the newest tag. */
 function newestLine(result: Agreement, now: number): string {
   if (result.newest === null) return `agent-org versions: UNREADABLE -- ${result.unreadable}.`;
   const cut = result.newestCutAt === null ? "cut at an unread time" : `cut ${new Date(result.newestCutAt).toISOString().replace(/\.\d+Z$/, "Z")}, ${minutesText(now - result.newestCutAt)} ago`;
   return `agent-org versions: the newest release is ${result.newest} (${cut}; one release cycle is ${minutesText(result.cycleMs)}).`;
 }
 
-/**
- * THE REPORT BOTH `host:check` AND THE ORG-HEALTH TICK PRINT: one result, one text, so the two cannot say different things about the same facts.
- * @param {Agreement} result @param {number} now @returns {string}
- */
+/** THE REPORT BOTH `host:check` AND THE ORG-HEALTH TICK PRINT: one result, one text, so the two cannot say different things about the same facts. */
 export function agreementReport(result: Agreement, now: number): string {
-  const quiet = (/** @type {RunnerReading} */ r: RunnerReading) => r.verdict === "current" || r.verdict === "none";
+  const quiet = (r: RunnerReading) => r.verdict === "current" || r.verdict === "none";
   const named = result.readings.filter((r) => !quiet(r)).toSorted((a, b) => PRINT_ORDER.indexOf(a.verdict) - PRINT_ORDER.indexOf(b.verdict));
   const shown = named.slice(0, MAX_ROWS_PRINTED);
   const rows = shown.map((r) => `  ${r.kind.padEnd("worktree".length)}  ${r.runner}: ${r.detail}\n`).join("");
@@ -175,13 +168,11 @@ export function agreementReport(result: Agreement, now: number): string {
   return `${newestLine(result, now)}\n${rows}${rest}  ${verdict}\n`;
 }
 
-/** @param {unknown} err @returns {string} */
-const why = (err: unknown): string => String(/** @type {any} */ (err)?.message ?? err).split("\n")[0];
+const why = (err: unknown): string => String((err as { message?: unknown } | null | undefined)?.message ?? err).split("\n")[0];
 
 /**
  * git for a reader whose failure is an ANSWER (a commit with no lockfile, a ref this clone does not hold): stderr is captured with the failure and not left on the terminal, which a
  * `host:check` run and a tick's journal would otherwise carry as a line that is not a fault.
- * @param {string} cwd @returns {(args: string[]) => string}
  */
 const quietGit = (cwd: string): (args: string[]) => string => (args) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8", timeout: GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
 
@@ -191,12 +182,8 @@ const quietGit = (cwd: string): (args: string[]) => string => (args) => execFile
  * The tool's REMOTE tag names and when the newest was cut. The list is `git ls-remote --tags --refs origin` in the tool's checkout; the time is the tag's own date when the
  * checkout holds it (release tags are lightweight tags on the release commit, so its commit date IS the cut: measured on v0.23.0, commit 20:15:26Z, GitHub Release 20:15:29Z), else
  * the GitHub Release's `published_at`.
- * @param {{ tool: string }} host
- * @param {{ git?: (args: string[]) => string, gh?: (args: string[]) => string, repo?: string }} [io]
- * @returns {{ tags: string[] | null, newestCutAt: number | null }}
  */
 export function readRemoteTags({ tool }: { tool: string; }, { git = quietGit(tool), gh = defaultGh, repo = "a11ign/agent-org" }: { git?: (args: string[]) => string; gh?: (args: string[]) => string; repo?: string; } = {}): { tags: string[] | null; newestCutAt: number | null; } {
-  /** @type {string[]} */
   let tags: string[];
   try {
     tags = git(["ls-remote", "--tags", "--refs", "origin"]).split("\n").map((line) => line.split("\trefs/tags/")[1]).filter(Boolean);
@@ -207,10 +194,7 @@ export function readRemoteTags({ tool }: { tool: string; }, { git = quietGit(too
   return { tags, newestCutAt: newest === null ? null : tagCutAt(newest, { git, gh, repo }) };
 }
 
-/**
- * When a tag was cut, epoch ms, or `null` when neither source could say.
- * @param {string} tag @param {{ git: (args: string[]) => string, gh: (args: string[]) => string, repo: string }} io @returns {number | null}
- */
+/** When a tag was cut, epoch ms, or `null` when neither source could say. */
 function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => string; gh: (args: string[]) => string; repo: string; }): number | null {
   try {
     const local = git(["for-each-ref", "--format=%(creatordate:unix)", `refs/tags/${tag}`]).trim();
@@ -226,13 +210,9 @@ function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => str
   }
 }
 
-/** @param {string[]} args @returns {string} */
 const defaultGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
 
-/**
- * READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit.
- * @param {{ tool: string }} host @param {{ git?: (args: string[]) => string }} [io] @returns {RunnerFact}
- */
+/** READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit. */
 export function readToolCheckout({ tool }: { tool: string; }, { git = gitIn(tool) }: { git?: (args: string[]) => string; } = {}): RunnerFact {
   const runner = `tool checkout ${tool}`;
   try {
@@ -243,20 +223,16 @@ export function readToolCheckout({ tool }: { tool: string; }, { git = gitIn(tool
   }
 }
 
-/**
- * The worktrees of one checkout, from `git worktree list --porcelain`, those whose directory is gone (`prunable`) left out: they run nothing.
- * @param {string} checkout @param {(args: string[]) => string} [git] @returns {string[]}
- */
+/** The worktrees of one checkout, from `git worktree list --porcelain`, those whose directory is gone (`prunable`) left out: they run nothing. */
 export function worktreePaths(checkout: string, git: (args: string[]) => string = quietGit(checkout)): string[] {
   return git(["worktree", "list", "--porcelain"]).split("\n\n").filter((block) => block.trim() !== "" && !/^prunable\b/m.test(block))
-    .map((block) => /** @type {RegExpExecArray} */ (/^worktree (.+)$/m.exec(block))[1]);
+    .map((block) => (/^worktree (.+)$/m.exec(block) as RegExpExecArray)[1]);
 }
 
 /**
  * WHETHER THE PROJECT'S `main` STILL DEPENDS ON `agent-org`, in any group of its `package.json`, as `origin/main` holds it: that is what says "the removal row (#3534) has merged", and it is read
  * ONCE for the project because a worktree's own `package.json` is whatever branch it is on (a worktree cut before the pin existed declares none and still resolves the shared copy). An unreadable
  * `main` is `true`: the answer then is the version comparison, which signals on any copy that is not the newest, and not a silence.
- * @param {string} checkout @param {(args: string[]) => string} [git] @returns {boolean}
  */
 export function mainDeclaresAgentOrg(checkout: string, git: (args: string[]) => string = quietGit(checkout)): boolean {
   try {
@@ -270,13 +246,12 @@ export function mainDeclaresAgentOrg(checkout: string, git: (args: string[]) => 
 /**
  * READING 2, ONE WORKTREE: the `version` of `node_modules/agent-org/package.json` (read THROUGH the symlink a worktree's `node_modules` is), `null` when it resolves to nothing. `declared` is
  * the PROJECT's ({@link mainDeclaresAgentOrg}) and rides on the fact.
- * @param {string} path @param {{ declared?: boolean, read?: (file: string) => string }} [io] @returns {RunnerFact}
  */
 export function readWorktree(path: string, { declared = true, read = (file) => readFileSync(file, "utf8") }: { declared?: boolean; read?: (file: string) => string; } = {}): RunnerFact {
   try {
     return { kind: "worktree", runner: path, resolved: JSON.parse(read(join(path, "node_modules", "agent-org", "package.json"))).version ?? null, declared };
   } catch (err) {
-    if (/** @type {any} */ (err)?.code === "ENOENT") return { kind: "worktree", runner: path, resolved: null, declared };
+    if ((err as { code?: unknown } | null | undefined)?.code === "ENOENT") return { kind: "worktree", runner: path, resolved: null, declared };
     return { kind: "worktree", runner: path, unreadable: why(err) };
   }
 }
@@ -290,26 +265,26 @@ export const RESOLVER_LINE = /^.*(?:\bagent-org resolved|##\[notice\]resolved) (
 /** A memo value for a run whose resolver took the newest tag at run time: the tag, then this. A bare tag (every memo written before #3746) is a pinned one. */
 const NEWEST_AT_RUN = " newest";
 
-/** The `agent-org` entry of a pnpm lockfile, as the commit its tarball names, or `null` when it has none. @param {string} lockfile @returns {string | null} */
+/** The `agent-org` entry of a pnpm lockfile, as the commit its tarball names, or `null` when it has none. */
 export const lockedCommit = (lockfile: string): string | null => /agent-org\/tar\.gz\/([0-9a-f]{40})/.exec(lockfile)?.[1] ?? null;
+
+export type RunMemo = { get: (runId: number) => string | null | undefined; set: (runId: number, version: string | null) => void };
 
 /**
  * A MEMO OF WHAT A FINISHED RUN'S LOG SAID, by run id: a completed run's log never changes, and reading one is a download the tick would repeat every two minutes. It is not state of the
  * signal (the signal is recomputed from the readings every time); deleting the file costs one download.
- * @typedef {{ get: (runId: number) => string | null | undefined, set: (runId: number, version: string | null) => void }} RunMemo
- * @param {string} path @returns {RunMemo}
  */
 export function memoFile(path: string): RunMemo {
   const load = () => {
     try {
-      return /** @type {Record<string, string | null>} */ (JSON.parse(readFileSync(path, "utf8")));
+      return JSON.parse(readFileSync(path, "utf8")) as Record<string, string | null>;
     } catch {
       return {};
     }
   };
   return {
-    get: (runId) => load()[runId],
-    set: (runId, version) => {
+    get: (runId: number) => load()[runId],
+    set: (runId: number, version: string | null) => {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, JSON.stringify({ ...load(), [runId]: version }));
     },
@@ -322,8 +297,6 @@ export function memoFile(path: string): RunMemo {
  * `ci.yml` last ran on a `push` to `main` on 2026-09-18 and on `merge_group` since, so the `branch=main` question answered that one failed run for ever and no event could change it.
  * Its version is what its commit's LOCKFILE names while the project pins the tool (the tarball's commit, read as the `version` in the tool's own `package.json` at that commit); once it
  * holds no entry, the tag the resolver step printed in the run's log ({@link RESOLVER_LINE}). A run that names no version is `version: null`, which the comparison reports UNKNOWN.
- * @param {{ checkout: string, tool: string, repo: string }} where
- * @param {{ gh?: (args: string[]) => string, git?: (args: string[]) => string, toolGit?: (args: string[]) => string, memo?: RunMemo }} [io] @returns {RunnerFact}
  */
 export function readLastCiRun({ checkout, tool, repo }: { checkout: string; tool: string; repo: string; }, { gh = defaultGh, git = quietGit(checkout), toolGit = quietGit(tool), memo }: { gh?: (args: string[]) => string; git?: (args: string[]) => string; toolGit?: (args: string[]) => string; memo?: RunMemo; } = {}): RunnerFact {
   try {
@@ -340,17 +313,15 @@ export function readLastCiRun({ checkout, tool, repo }: { checkout: string; tool
   }
 }
 
-/** The newest completed `ci.yml` run that gates `main`, or `undefined` when neither question returns one. @param {{ gh: (args: string[]) => string, repo: string }} io @returns {{ id: number, head_sha: string, created_at: string, event: string } | undefined} */
+/** The newest completed `ci.yml` run that gates `main`, or `undefined` when neither question returns one. */
 function gatingRun({ gh, repo }: { gh: (args: string[]) => string; repo: string; }): { id: number; head_sha: string; created_at: string; event: string; } | undefined {
-  const newest = (/** @type {string} */ filter: string) => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/ci.yml/runs?${filter}&status=completed&per_page=1`])).workflow_runs?.[0];
+  const newest = (filter: string) => JSON.parse(gh(["api", `repos/${repo}/actions/workflows/ci.yml/runs?${filter}&status=completed&per_page=1`])).workflow_runs?.[0];
   return newest("event=merge_group") ?? newest("branch=main");
 }
 
 /**
  * The version a run ran, or `null`. The lockfile at the run's commit answers while the project still pins the tool (a commit with none, or one this checkout does not hold, simply has no entry);
  * when it holds no entry the log's resolver line does, and says whether it took the newest tag at run time.
- * @param {{ run: { id: number, head_sha: string }, repo: string }} subject @param {{ gh: (args: string[]) => string, git: (args: string[]) => string, toolGit: (args: string[]) => string, memo?: RunMemo }} io
- * @returns {{ version: string | null, resolvesNewest?: boolean }}
  */
 function ciVersion({ run, repo }: { run: { id: number; head_sha: string; }; repo: string; }, { gh, git, toolGit, memo }: { gh: (args: string[]) => string; git: (args: string[]) => string; toolGit: (args: string[]) => string; memo?: RunMemo; }): { version: string | null; resolvesNewest?: boolean; } {
   const commit = lockedCommit(lockfileAt(run.head_sha, git));
@@ -363,23 +334,22 @@ function ciVersion({ run, repo }: { run: { id: number; head_sha: string; }; repo
   return resolved;
 }
 
-/** @param {string | null} memoized @returns {{ version: string | null, resolvesNewest?: boolean }} */
 function fromMemo(memoized: string | null): { version: string | null; resolvesNewest?: boolean; } {
   if (memoized !== null && memoized.endsWith(NEWEST_AT_RUN)) return { version: memoized.slice(0, -NEWEST_AT_RUN.length), resolvesNewest: true };
   return { version: memoized };
 }
 
-/** A run's log, or "" when GitHub says it has none (expired, or never kept): that is an ANSWER about the run, where any other refusal is rethrown. @param {number} id @param {{ gh: (args: string[]) => string, repo: string }} io @returns {string} */
+/** A run's log, or "" when GitHub says it has none (expired, or never kept): that is an ANSWER about the run, where any other refusal is rethrown. */
 function logOf(id: number, { gh, repo }: { gh: (args: string[]) => string; repo: string; }): string {
   try {
     return gh(["run", "view", String(id), "--repo", repo, "--log"]);
   } catch (err) {
-    if (/log not found/.test(`${/** @type {any} */ (err)?.stderr ?? ""}${/** @type {any} */ (err)?.message ?? ""}`)) return "";
+    if (/log not found/.test(`${(err as { stderr?: unknown } | null | undefined)?.stderr ?? ""}${(err as { message?: unknown } | null | undefined)?.message ?? ""}`)) return "";
     throw err;
   }
 }
 
-/** @param {string} sha @param {(args: string[]) => string} git @returns {string} the lockfile at a commit, empty when there is none */
+/** @returns the lockfile at a commit, empty when there is none */
 function lockfileAt(sha: string, git: (args: string[]) => string): string {
   try {
     return git(["show", `${sha}:pnpm-lock.yaml`]);
@@ -388,14 +358,12 @@ function lockfileAt(sha: string, git: (args: string[]) => string): string {
   }
 }
 
-/** The `owner/name` an origin URL names. @param {string} url @returns {string | null} */
+/** The `owner/name` an origin URL names. */
 export const repoOfOrigin = (url: string): string | null => /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\s*$/.exec(url.trim())?.[1] ?? null;
 
 /**
  * EVERY FACT, FROM THE MACHINE: the host's tool, each worktree of each declared project, and the last CI run of the PRIMARY project. A project's repository that cannot be named is
  * an unread CI reading, never an omitted one.
- * @param {{ tool: string, primary?: string, projects: { id: string, checkout: string }[] }} host
- * @param {{ now?: number, cycle?: () => number, memo?: RunMemo }} [io] @returns {{ now: number, tags: string[] | null, newestCutAt: number | null, runners: RunnerFact[], cycleMs: number }}
  */
 export function readFacts(host: { tool: string; primary?: string; projects: { id: string; checkout: string; }[]; }, { now = Date.now(), cycle = shippedReleaseCycleMs, memo }: { now?: number; cycle?: () => number; memo?: RunMemo; } = {}): { now: number; tags: string[] | null; newestCutAt: number | null; runners: RunnerFact[]; cycleMs: number; } {
   const { tags, newestCutAt } = readRemoteTags(host);
@@ -405,7 +373,6 @@ export function readFacts(host: { tool: string; primary?: string; projects: { id
   return { now, tags, newestCutAt, runners, cycleMs: cycle() };
 }
 
-/** @param {string} checkout @returns {RunnerFact[]} */
 function worktreeFacts(checkout: string): RunnerFact[] {
   try {
     const declared = mainDeclaresAgentOrg(checkout);
@@ -415,7 +382,6 @@ function worktreeFacts(checkout: string): RunnerFact[] {
   }
 }
 
-/** @param {string} checkout @param {string} tool @param {RunMemo | undefined} memo @returns {RunnerFact} */
 function ciFact(checkout: string, tool: string, memo: RunMemo | undefined): RunnerFact {
   try {
     const repo = repoOfOrigin(quietGit(checkout)(["remote", "get-url", "origin"]));

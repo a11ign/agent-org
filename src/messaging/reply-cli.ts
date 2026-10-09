@@ -1,4 +1,3 @@
-// @ts-check
 // `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.mjs` checks a reply as a library;
 // this is the command that builds its four inputs from the host and calls it, so `ceo`'s brief (#2911) names a command that exists.
 //
@@ -51,7 +50,7 @@ const PR_VIEW_FLAGS = new Set(["--repo", "--json"]);
 
 /**
  * `gh api <path>` and nothing after the path (a GET is the default, and every flag that changes it is a token this refuses), or `gh pr view <n> --repo R --json F`.
- * @param {readonly string[]} argv the arguments after `gh`
+ * `argv`: the arguments after `gh`
  * @throws {Error} on anything else
  */
 export function assertReadOnlyGh(argv: readonly string[]) {
@@ -60,12 +59,11 @@ export function assertReadOnlyGh(argv: readonly string[]) {
   if (!isApiRead && !isPrView) throw new Error(`chairman:reply reads only: \`gh ${argv.join(" ")}\` is not a read it makes`);
 }
 
-/** @param {readonly string[]} argv @throws {Error} unless it is `--user show <unit> -p <properties>`, the one question `createGhReaders` asks systemd */
+/** @throws {Error} unless it is `--user show <unit> -p <properties>`, the one question `createGhReaders` asks systemd */
 export function assertReadOnlySystemctl(argv: readonly string[]) {
   if (argv[0] !== "--user" || argv[1] !== "show") throw new Error(`chairman:reply reads only: \`systemctl ${argv.join(" ")}\` is not a read it makes`);
 }
 
-/** @param {string} file @param {(argv: readonly string[]) => void} assertRead @returns {(argv: string[]) => Promise<string>} */
 function guardedRunner(file: string, assertRead: (argv: readonly string[]) => void): (argv: string[]) => Promise<string> {
   return async (argv) => {
     assertRead(argv);
@@ -74,14 +72,14 @@ function guardedRunner(file: string, assertRead: (argv: readonly string[]) => vo
   };
 }
 
-/** The providers this command can reach, keyed by `messaging.provider`. @type {Record<string, (config: import("./config.ts").MessagingOn, deps: {fetch?: typeof fetch}) => any>} */
+/** The providers this command can reach, keyed by `messaging.provider`. */
 const PROVIDERS: Record<string, (config: import("./config.ts").MessagingOn, deps: { fetch?: typeof fetch; }) => any> = {
   telegram: (config, { fetch: fetchImpl }) => createTelegramProvider({
     token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId, fetch: fetchImpl,
   }),
 };
 
-/** @returns {Promise<string>} what is on stdin; "" for a terminal, which would otherwise hang waiting for a person */
+/** Returns what is on stdin; "" for a terminal, which would otherwise hang waiting for a person */
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return "";
   const chunks = [];
@@ -91,13 +89,13 @@ async function readStdin(): Promise<string> {
 
 /**
  * `--to` names the chairman's message this answers, and `messaging:measure` reads time-to-answer off it, so a ref no inbound line holds would be a reply that answers nothing.
- * @param {string | undefined} replyTo @param {string} ledgerPath @returns {boolean} true when it is absent (recorded as null) or the ref of a message the ledger took in
+ * Returns true when it is absent (recorded as null) or the ref of a message the ledger took in
  */
 function isKnownInbound(replyTo: string | undefined, ledgerPath: string): boolean {
   return replyTo === undefined || readLedgerLines(ledgerPath).some((line) => line.direction === "in" && line.messageRef === replyTo);
 }
 
-/** @param {string[]} argv @returns {{text: string | undefined, replyTo: string | undefined, dryRun: boolean}} the text is undefined when it is to be read from stdin */
+/** Returns the parsed arguments; the text is undefined when it is to be read from stdin */
 function parseCommandLine(argv: string[]): { text: string | undefined; replyTo: string | undefined; dryRun: boolean; } {
   const { values, positionals } = parseArgs({ args: argv, options: { to: { type: "string" }, "dry-run": { type: "boolean" } }, allowPositionals: true });
   return { text: positionals.length > 0 ? positionals.join(" ") : undefined, replyTo: values.to, dryRun: values["dry-run"] === true };
@@ -106,22 +104,18 @@ function parseCommandLine(argv: string[]): { text: string | undefined; replyTo: 
 /**
  * A word is flag-shaped when it is `--` and a letter: `--session=liaison`, `--to`. ANY word, not only the first, because `as of 20:59Z --session=liaison` is the same
  * mistake with a sentence in front of it. `--` followed by a letter and not `--` alone, so an em-dash typed as ` -- ` or a rule of dashes is still prose.
- * @param {string} text @returns {string | undefined} the first such word
+ * Returns the first such word
  */
 function flagShapedWord(text: string): string | undefined {
   return text.split(/\s+/).find((word) => /^--[A-Za-z]/.test(word));
 }
 
-/** @param {string} word @returns {string} */
 function flagRefusal(word: string): string {
   return `chairman:reply: REFUSED ${JSON.stringify(word)}: it starts with "--", so it reads as a flag and not as words to the chairman. This command takes \`--to <ref>\`, \`--dry-run\` and the text, `
     + "and nothing else (it asks no session); reword the text. Nothing was sent";
 }
 
-/**
- * What `--dry-run` prints for a text that WOULD send: the stamped text, then what each placeholder resolved to.
- * @param {Extract<Awaited<ReturnType<typeof prepareReply>>, {outcome: "checked"}>} checked @returns {string[]}
- */
+/** What `--dry-run` prints for a text that WOULD send: the stamped text, then what each placeholder resolved to. */
 function dryRunLines({ text, values }: Extract<Awaited<ReturnType<typeof prepareReply>>, { outcome: "checked"; }>): string[] {
   const resolved = Object.entries(values).map(([placeholder, value]) => `chairman:reply:   ${placeholder} = ${value}`);
   return ["chairman:reply: dry run, would send:", text, ...resolved, "chairman:reply: dry run: nothing was sent and nothing was written to the ledger"];
@@ -129,7 +123,7 @@ function dryRunLines({ text, values }: Extract<Awaited<ReturnType<typeof prepare
 
 /**
  * Everything `send` does short of the provider and the ledger: the same checks, the same readers.
- * @param {string} text @param {Parameters<typeof prepareReply>[1]} deps @param {{out: (line: string) => void, err: (line: string) => void}} sinks @returns {Promise<number>} the exit code
+ * Returns the exit code
  */
 async function dryRun(text: string, deps: Parameters<typeof prepareReply>[1], { out, err }: { out: (line: string) => void; err: (line: string) => void; }): Promise<number> {
   const prepared = await prepareReply(text, deps);
@@ -138,7 +132,7 @@ async function dryRun(text: string, deps: Parameters<typeof prepareReply>[1], { 
   return EXIT.ok;
 }
 
-/** @param {Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, {outcome: "refused"}>} refusal @returns {string[]} one line per problem, then the corrected text when the readers' values make it pass, then the sendable text */
+/** Returns one line per problem, then the corrected text when the readers' values make it pass, then the sendable text */
 function refusalLines({ problems, sendable, corrected }: Extract<Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, { outcome: "refused"; }>): string[] {
   const lines = problems.map(({ placeholder, reason }) => `chairman:reply: REFUSED ${placeholder ?? "(free text)"}: ${reason}`);
   if (corrected !== undefined) lines.push(`chairman:reply: corrected, send this instead (every fact in it is re-read when it goes): ${corrected}`);
@@ -146,10 +140,7 @@ function refusalLines({ problems, sendable, corrected }: Extract<Awaited<ReturnT
   return lines;
 }
 
-/**
- * @param {Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>} result
- * @param {{out: (line: string) => void, err: (line: string) => void}} sinks @returns {number} the exit code
- */
+/** Returns the exit code */
 function report(result: Awaited<ReturnType<ReturnType<typeof createReply>["send"]>>, { out, err }: { out: (line: string) => void; err: (line: string) => void; }): number {
   if (result.outcome === "sent") {
     out(`chairman:reply: sent ${result.messageRef}`);
@@ -167,7 +158,6 @@ function report(result: Awaited<ReturnType<ReturnType<typeof createReply>["send"
  * Where the tick writes its completion record, resolved the way `watch.mjs` does (`stateEntryPath("wake-ledger")`). IMPORTED WHEN ASKED, not at the top:
  * `host-config.ts` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.mjs`), so a host that cannot answer
  * must cost `{{gate.*}}` and nothing else.
- * @param {{ home: string, env: Record<string, string | undefined> }} where @returns {Promise<string>}
  */
 async function hostWakeLedgerPath({ home, env }: { home: string; env: Record<string, string | undefined>; }): Promise<string> {
   const { stateEntryPath } = await import("../host-config.ts");
@@ -177,9 +167,7 @@ async function hostWakeLedgerPath({ home, env }: { home: string; env: Record<str
 /**
  * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs`'s `hostReaders` names them for the watcher: the two files `fleet-watch` writes under the
  * project's `runs/`, and the tick's completion record beside the wake ledger. Without them those placeholders refuse ("this host named no fleet-watch state files").
- *
- * @param {{ root: string, wakeLedger: () => Promise<string>, err: (line: string) => void }} where
- * @returns {Promise<{ fleet: { statePath: string, capturesPath: string }, gateRecordPath?: string }>} no `gateRecordPath` when the host could not name one, said on `err`
+ * Returns no `gateRecordPath` when the host could not name one, said on `err`
  */
 async function hostFiles({ root, wakeLedger, err }: { root: string; wakeLedger: () => Promise<string>; err: (line: string) => void; }): Promise<{ fleet: { statePath: string; capturesPath: string; }; gateRecordPath?: string; }> {
   const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
@@ -193,21 +181,20 @@ async function hostFiles({ root, wakeLedger, err }: { root: string; wakeLedger: 
 
 /** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
 const DEFAULT_DEPS = () => ({
-  root: process.cwd(), env: /** @type {Record<string, string | undefined>} */ (process.env), home: homedir(), now: Date.now, fetch: globalThis.fetch,
+  root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now, fetch: globalThis.fetch,
   providers: PROVIDERS, readStdin, wakeLedgerPath: hostWakeLedgerPath, gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 
-/** @param {Error} error @returns {number} a refusal that retrying cannot mend (usage, config, secrets) is `refused`, anything else `failed` */
+/** The exit code: a refusal that retrying cannot mend (usage, config, secrets) is `refused`, anything else `failed` */
 function exitCodeFor(error: Error): number {
-  const isUsage = /** @type {any} */ (error).code?.startsWith?.("ERR_PARSE_ARGS") === true;
+  const isUsage = (error as NodeJS.ErrnoException).code?.startsWith?.("ERR_PARSE_ARGS") === true;
   return isUsage || error instanceof MessagingConfigRefusal || error instanceof SecretFileRefusal ? EXIT.refused : EXIT.failed;
 }
 
 /**
- * @param {string[]} argv the arguments after the script: the text (or stdin), `--to <message ref>` and `--dry-run`
- * @param {Partial<ReturnType<typeof DEFAULT_DEPS>>} [deps]
- * @returns {Promise<number>} the exit code
+ * `argv`: the arguments after the script: the text (or stdin), `--to <message ref>` and `--dry-run`
+ * Returns the exit code
  */
 export async function main(argv: string[], deps: Partial<ReturnType<typeof DEFAULT_DEPS>> = {}): Promise<number> {
   const { root, env, home, now, fetch: fetchImpl, providers, readStdin: stdin, wakeLedgerPath, gh, systemctl, out, err } = { ...DEFAULT_DEPS(), ...deps };

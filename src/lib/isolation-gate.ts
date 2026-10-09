@@ -5,7 +5,6 @@
 // - its import of npm-cli-executable.mjs, now the tool's own copy beside it
 // - `REPO_ROOT`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#3830)
 // ==== end of copy header ====
-// @ts-check
 // command: prove a published package installs and works standalone, by actually installing and running it
 // Can a consumer install this package and use it? Answered by doing it.
 //
@@ -83,34 +82,18 @@ export const SMOKE = "isolation-smoke.mjs";
 /** Somewhere that is definitively not inside the repo, so nothing can resolve by accident. */
 const consumerDir = () => mkdtempSync(join(tmpdir(), "a11y-isolation-"));
 
-/**
- * @param {string} command
- * @param {string[]} args
- * @param {string} cwd
- * @param {Record<string, string | undefined>} [env]
- */
 function run(command: string, args: string[], cwd: string, env?: Record<string, string | undefined>) {
   return execFileSync(command, args,
     { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: env ? { ...process.env, ...env } : undefined });
 }
 
-/**
- * `npm <args>`, via `run` above, WITHOUT ever spawning `npm` itself -- #492.
- * @param {string[]} args
- * @param {string} cwd
- * @param {Record<string, string | undefined>} [env]
- */
+/** `npm <args>`, via `run` above, WITHOUT ever spawning `npm` itself -- #492. */
 function runNpm(args: string[], cwd: string, env?: Record<string, string | undefined>) {
   const npm = npmCliInvocation("npm", args);
   return run(npm.command, npm.args, cwd, env);
 }
 
-/**
- * `pnpm <args>`, the same way and for the same reason -- and the ONE place this gate packs from (#2301).
- * @param {string[]} args
- * @param {string} cwd
- * @param {Record<string, string | undefined>} [env]
- */
+/** `pnpm <args>`, the same way and for the same reason -- and the ONE place this gate packs from (#2301). */
 function runPnpm(args: string[], cwd: string, env?: Record<string, string | undefined>) {
   const pnpm = pnpmCliInvocation(args);
   return run(pnpm.command, pnpm.args, cwd, env);
@@ -121,8 +104,6 @@ function runPnpm(args: string[], cwd: string, env?: Record<string, string | unde
  * banner: a `prepack` script (every package here has one, `tsc --build`) writes `> name@version prepack`
  * to STDOUT ahead of the JSON, so the output is not itself parseable. The object starts at the first line
  * that is exactly `{`, and the nested `{`s of its `files` list are indented, so that line is unambiguous.
- * @param {string} output
- * @returns {{ name: string, version: string, filename: string, files?: { path: string }[] }}
  */
 function packJson(output: string): { name: string; version: string; filename: string; files?: { path: string; }[]; } {
   const start = output.startsWith("{") ? 0 : output.indexOf("\n{\n") + 1;
@@ -130,16 +111,12 @@ function packJson(output: string): { name: string; version: string; filename: st
   return JSON.parse(output.slice(start));
 }
 
-/**
- * @typedef {{ name: string, version: string, dependencies?: Record<string, string>,
- *   peerDependencies?: Record<string, string>, optionalDependencies?: Record<string, string> }} PackedManifest
- */
+type PackedManifest = {
+  name: string; version: string; dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>; optionalDependencies?: Record<string, string>;
+};
 
-/**
- * `[major, minor, patch]` of a plain `x.y.z` version, or `null` for anything else (a prerelease, a range).
- * @param {string} text
- * @returns {[number, number, number] | null}
- */
+/** `[major, minor, patch]` of a plain `x.y.z` version, or `null` for anything else (a prerelease, a range). */
 function parseVersion(text: string): [number, number, number] | null {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(text);
   return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
@@ -151,7 +128,6 @@ const TILDE_FIXES = 2;
 /** How much of a packer's unparseable output an error carries: enough to recognise it, not all of it. */
 const OUTPUT_PREVIEW = 200;
 
-/** @param {number[]} a @param {number[]} b */
 const compareVersions = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 
 /**
@@ -162,9 +138,6 @@ const compareVersions = (a: number[], b: number[]) => a[0] - b[0] || a[1] - b[1]
  *
  * `^` keeps the left-most non-zero part fixed (`^0.1.2` is `>=0.1.2 <0.2.0`, `^0.0.3` is exactly `0.0.3`),
  * which is what makes a `0.x` package's caret narrower than a `1.x` one's and is the easy thing to get wrong.
- * @param {string} version
- * @param {string} range
- * @returns {boolean | null}
  */
 export function satisfies(version: string, range: string): boolean | null {
   const have = parseVersion(version);
@@ -188,12 +161,9 @@ export function satisfies(version: string, range: string): boolean | null {
  * - the `workspace:` protocol, which installs for nobody;
  * - a range that is not one of the forms `satisfies` can read, which nobody can check;
  * - a range the sibling packed BESIDE it does not satisfy, which npm answers from the registry without a word.
- * @param {PackedManifest[]} manifests
- * @returns {string[]}
  */
 export function packedRangeProblems(manifests: PackedManifest[]): string[] {
   const versions = new Map(manifests.map((manifest) => [manifest.name, manifest.version]));
-  /** @type {string[]} */
   const problems: string[] = [];
   for (const manifest of manifests) {
     const declared = { ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.optionalDependencies };
@@ -214,8 +184,6 @@ export function packedRangeProblems(manifests: PackedManifest[]): string[] {
 /**
  * The internal ranges one tarball declares, as `@a11ign/x@range`, for the PASS line: "the ranges are fine" is
  * a claim, and the line that carries it should carry what was read, so a reader can see it was not vacuous.
- * @param {PackedManifest} manifest
- * @returns {string}
  */
 function internalRangesNote(manifest: PackedManifest): string {
   const declared = { ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.optionalDependencies };
@@ -224,10 +192,6 @@ function internalRangesNote(manifest: PackedManifest): string {
   return internal.length ? `; tarball ranges: ${internal.join(", ")}` : "; no internal dependencies";
 }
 
-/**
- * @param {string} tarball
- * @returns {PackedManifest}
- */
 function tarballManifest(tarball: string): PackedManifest {
   return JSON.parse(run("tar", ["-xOf", tarball, "package/package.json"], dirname(tarball)));
 }
@@ -244,15 +208,11 @@ const REGISTRY_RANGE = /^[\^~]\d/;
  *
  * Only `@a11ign/*` — everything else comes from the registry, which is the point of the gate: a
  * dependency npm can actually resolve is not the failure mode being tested.
- * @param {string} packageDir
- * @param {Set<string>} [seen]
- * @returns {string[]}
  */
 export function internalDependencies(packageDir: string, seen: Set<string> = new Set()): string[] {
   const manifest = JSON.parse(readFileSync(join(resolve(packageDir), "package.json"), "utf8"));
   const wanted = { ...manifest.dependencies, ...manifest.peerDependencies };
   const optional = manifest.peerDependenciesMeta ?? {};
-  /** @type {string[]} */
   const dirs: string[] = [];
   for (const dependency of Object.keys(wanted)) {
     if (!dependency.startsWith("@a11ign/") || seen.has(dependency)) continue;
@@ -268,11 +228,12 @@ export function internalDependencies(packageDir: string, seen: Set<string> = new
   return dirs;
 }
 
-/** The directory beside the package asking whose manifest NAMES `dependency`. Found by name, not spelled from
+/**
+ * The directory beside the package asking whose manifest NAMES `dependency`. Found by name, not spelled from
  * it: `packages/pdf` is `@a11ign/documents` (#2705), and a directory spelled from the name did not exist. A
  * name matching no directory falls back to the spelled one, so the caller's "not a package in this repo"
  * refusal still fires with the path it would have looked at.
- * @type {(packageDir: string, dependency: string) => string} */
+ */
 const siblingDir: (packageDir: string, dependency: string) => string = (packageDir, dependency): string => {
   const packagesDir = join(resolve(packageDir), "..");
   const named = readdirSync(packagesDir).find((entry) => {
@@ -290,9 +251,6 @@ const siblingDir: (packageDir: string, dependency: string) => string = (packageD
  * so `@a11ign/screenreader-fleet` would link `worker-fleet`. Reading only the object form would report a package
  * with the shorthand as declaring no bins at all, which is the same "an absence reads as a pass" shape the
  * missing-smoke-test branch above exists to refuse.
- *
- * @param {{ name?: string, bin?: string | Record<string, string> }} manifest
- * @returns {string[]}
  */
 export function declaredBins(manifest: { name?: string; bin?: string | Record<string, string>; }): string[] {
   if (!manifest.bin) return [];
@@ -321,9 +279,7 @@ export function declaredBins(manifest: { name?: string; bin?: string | Record<st
  * EXECUTED says so in its own `isolation-smoke.mjs`, which `packages/cli`'s already does — through the
  * `.bin` shim, for the documented reason that a realpath'd path misses the symlink case.
  *
- * @param {string} consumer the throwaway install directory
- * @param {{ name?: string, bin?: string | Record<string, string> }} manifest
- * @returns {string[]}
+ * @param consumer the throwaway install directory
  */
 export function missingBinShims(consumer: string, manifest: { name?: string; bin?: string | Record<string, string>; }): string[] {
   return declaredBins(manifest).filter((binName) => !existsSync(join(consumer, "node_modules", ".bin", binName)));
@@ -336,8 +292,7 @@ export function missingBinShims(consumer: string, manifest: { name?: string; bin
  * second copy — two derivations of what ships, guarding the same promise, is exactly the fact-stated-
  * twice shape this file's own header names for `referenced-scripts.test.ts`.
  *
- * @param {string} dir the package directory
- * @returns {Set<string>}
+ * @param dir the package directory
  */
 export function packedFiles(dir: string): Set<string> {
   // `--json` gives the file list without unpacking; `--dry-run` so nothing is written. `sandboxGitEnv()`
@@ -376,8 +331,8 @@ export function packedFiles(dir: string): Set<string> {
  * Reported per package rather than thrown, so one dirty checkout names its own file instead of failing the
  * whole gate with a stack trace.
  *
- * @param {string} dir the package directory
- * @returns {string[]} packed paths that git does not track, relative to the package
+ * @param dir the package directory
+ * @returns packed paths that git does not track, relative to the package
  */
 function packedButUntracked(dir: string): string[] {
   let packed;
@@ -407,7 +362,6 @@ function packedButUntracked(dir: string): string[] {
   // `git check-ignore` answers it directly rather than by matching path prefixes, so a change to
   // `.gitignore` cannot silently widen or narrow this. Exit 1 means "none of these are ignored", which is
   // the all-forgotten case rather than an error.
-  /** @type {Set<string>} */
   let ignored: Set<string>;
   try {
     ignored = new Set(run("git", ["check-ignore", "--", ...candidates], dir, sandboxGitEnv()).split("\n").filter(Boolean));
@@ -422,10 +376,6 @@ function packedButUntracked(dir: string): string[] {
  *
  * Its own function because `checkIsolation` reads as a top-down narrative and this is one step of it --
  * and because the lint ceiling said so, which is the Stepdown Rule arriving as an error message.
- *
- * @param {string} consumer
- * @param {{ name?: string, bin?: string | Record<string, string> }} manifest
- * @param {string} name
  */
 function unreachableBinVerdict(consumer: string, manifest: { name?: string; bin?: string | Record<string, string>; }, name: string) {
   const unreachable = missingBinShims(consumer, manifest);
@@ -440,8 +390,6 @@ function unreachableBinVerdict(consumer: string, manifest: { name?: string; bin?
  * What the PASS line says about bins, announced for the reason the private-package skip is announced
  * rather than silent: "no bins declared" and "every declared bin is reachable" are different facts, and a
  * verdict that renders them identically is a gate quietly covering less than its reader thinks.
- *
- * @param {{ name?: string, bin?: string | Record<string, string> }} manifest
  */
 function binNote(manifest: { name?: string; bin?: string | Record<string, string>; }) {
   const declared = declaredBins(manifest);
@@ -454,9 +402,8 @@ function binNote(manifest: { name?: string; bin?: string | Record<string, string
  * that says which stage refused; `note` says what the tarball's own internal ranges were. Its own function because it is the part of `checkIsolation` with two package
  * managers in it, and because the lint ceiling said so.
  *
- * @param {string} dir the package directory
- * @param {string} consumer the throwaway install directory
- * @param {{ name?: string, bin?: string | Record<string, string> }} manifest
+ * @param dir the package directory
+ * @param consumer the throwaway install directory
  */
 function packAndInstall(dir: string, consumer: string, manifest: { name?: string; bin?: string | Record<string, string>; }) {
   // Every sibling this package needs, packed too.
@@ -473,7 +420,7 @@ function packAndInstall(dir: string, consumer: string, manifest: { name?: string
     join(consumer, basename(packJson(runPnpm(["pack", "--pack-destination", consumer, "--json"], source)).filename)));
   // BETWEEN THE TWO HALVES: what pnpm packed is read back before npm is asked to install any of it.
   const packed = tarballs.map(tarballManifest);
-  const note = internalRangesNote(/** @type {PackedManifest} */ (packed[0]));
+  const note = internalRangesNote(packed[0] as PackedManifest);
   const rangeProblems = packedRangeProblems(packed);
   if (rangeProblems.length) {
     return { note, refused: { ok: false, stage: "ranges", name: manifest.name,
@@ -502,7 +449,6 @@ function packAndInstall(dir: string, consumer: string, manifest: { name?: string
 /**
  * Pack, install outside the repo, run the smoke test. Returns a verdict rather than throwing, because the
  * caller needs to report every package rather than stop at the first bad one.
- * @param {string} packageDir
  */
 export function checkIsolation(packageDir: string) {
   const dir = resolve(packageDir);
@@ -541,7 +487,7 @@ export function checkIsolation(packageDir: string) {
     return { ok: true, stage: "smoke", name,
       detail: (output.trim().split("\n").slice(-1)[0] ?? "") + binNote(manifest) + note };
   } catch (error) {
-    const e = /** @type {{ stderr?: string, stdout?: string, message?: string, status?: number }} */ (error);
+    const e = error as { stderr?: string; stdout?: string; message?: string; status?: number };
     const stderr = String(e.stderr ?? e.stdout ?? e.message);
     // Exit 3 is the smoke test DECLINING a check this machine cannot make: guidepup refusing to import where
     // there is no screen reader, a macOS-only host-capacity read on Linux. That is a platform limit, not a
@@ -583,12 +529,9 @@ const LAYERS_JSON = "layers.json";
  *
  * A layer with no `remote` is inside this repository's checkout, which publishes it, so it is not a layer checkout.
  * An absent or unreadable `layers.json` throws: answering "no layers" would pack them again, silently.
- *
- * @returns {string[]}
  */
 function layerCheckoutDirs(): string[] {
   const file = join(REPO_ROOT, LAYERS_JSON);
-  /** @type {{ layers: Record<string, { path: string, remote?: string }> }} */
   let manifest: { layers: Record<string, { path: string; remote?: string; }>; };
   try {
     manifest = JSON.parse(readFileSync(file, "utf8"));
@@ -598,7 +541,7 @@ function layerCheckoutDirs(): string[] {
   return Object.values(manifest.layers).filter((layer) => layer.remote).map((layer) => resolve(REPO_ROOT, layer.path));
 }
 
-/** Is this directory a separate layer's checkout, which this repository's release does not publish? @param {string} dir */
+/** Is this directory a separate layer's checkout, which this repository's release does not publish? */
 function isLayerCheckout(dir: string) {
   return layerCheckoutDirs().includes(resolve(dir));
 }
@@ -606,7 +549,6 @@ function isLayerCheckout(dir: string) {
 /**
  * The layer checkouts present here (holding a `package.json`) that discovery leaves out, by directory name: reported
  * beside the private count, because a gate that quietly covers less than you think is the failure this file exists to prevent.
- * @returns {string[]}
  */
 export function leftOutLayerCheckouts(): string[] {
   return layerCheckoutDirs().filter((dir) => existsSync(join(dir, "package.json"))).map((dir) => basename(dir));

@@ -1,4 +1,3 @@
-// @ts-check
 // `messaging:listen` (a11ign/a11ign#2907): THE LONG-RUNNING PROGRAM THE `chairman-listen` UNIT RUNS. It reads the chairman's ids and the bot
 // token from their files, takes the single-instance lock, and hands Telegram's updates to the inbound core until it is told to stop.
 // `poll.mjs` is the loop; this file is everything that has to be true BEFORE the loop starts, and the exit code after it.
@@ -35,6 +34,7 @@ import { toolVersionLine } from "../lib/tool-version.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 import { createAnswers } from "./answers.ts";
+import type { Answered, GithubWriter } from "./answers.ts";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { createConverse, notReached } from "./converse.ts";
 import { createGithubWriter } from "./github-writer.ts";
@@ -43,6 +43,7 @@ import { createLedger, describeError } from "./ledger.ts";
 import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.ts";
 import { readSecretFile, SecretFileRefusal } from "./secret.ts";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
+import type { Readers } from "./placeholders.ts";
 import { createWatchReaders, hostFiles } from "./watch-list.ts";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
@@ -60,7 +61,8 @@ const WRITE_FAILED_TEXT = "Could not reach GitHub to record that. Nothing was wr
 
 /** The lock is held by a live listener. `holder` is its pid. */
 export class ListenerLockHeld extends Error {
-  /** @param {string} path @param {number} holder */
+  holder: number;
+
   constructor(path: string, holder: number) {
     super(`another messaging:listen is running here (pid ${holder}, lock ${path}): one listener per bot; stop it first`);
     this.name = "ListenerLockHeld";
@@ -68,7 +70,7 @@ export class ListenerLockHeld extends Error {
   }
 }
 
-/** @param {number} pid @returns {string | null} when the process started, as the kernel counts it; null where the kernel does not say (not Linux, or no such process) */
+/** When the process started, as the kernel counts it; null where the kernel does not say (not Linux, or no such process). */
 export function processStart(pid: number): string | null {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -79,25 +81,23 @@ export function processStart(pid: number): string | null {
   }
 }
 
-/** @param {number} pid @returns {boolean} whether a process with this pid exists; one we may not signal still exists */
+/** Whether a process with this pid exists; one we may not signal still exists. */
 function pidExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return /** @type {NodeJS.ErrnoException} */ (error).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
-/**
- * @param {string} path @returns {{ pid: number, start: string | null } | null} who the lock file names, or null when it names nobody readable
- */
+/** Who the lock file names, or null when it names nobody readable. */
 function readLock(path: string): { pid: number; start: string | null; } | null {
   let text;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   const [pidText, start] = text.trim().split(" ");
@@ -105,7 +105,6 @@ function readLock(path: string): { pid: number; start: string | null; } | null {
   return Number.isSafeInteger(pid) && pid > 0 ? { pid, start: start ?? null } : null;
 }
 
-/** @param {{ pid: number, start: string | null }} holder @param {{ exists: (pid: number) => boolean, startOf: (pid: number) => string | null }} probes @returns {boolean} */
 function holderIsLive({ pid, start }: { pid: number; start: string | null; }, { exists, startOf }: { exists: (pid: number) => boolean; startOf: (pid: number) => string | null; }): boolean {
   if (!exists(pid)) return false;
   const current = startOf(pid);
@@ -117,10 +116,6 @@ function holderIsLive({ pid, start }: { pid: number; start: string | null; }, { 
  * Takes the lock or throws `ListenerLockHeld`. Created exclusively (`wx`), so two instances starting together cannot both succeed on a
  * fresh file; a stale file is removed and the exclusive create tried once more. Two instances racing for the SAME stale file are the
  * one gap, and Telegram's 409 is what closes it.
- *
- * @param {string} path
- * @param {{ pid?: number, exists?: (pid: number) => boolean, startOf?: (pid: number) => string | null }} [deps]
- * @returns {{ path: string, release: () => void }}
  */
 export function acquireLock(path: string, { pid = process.pid, exists = pidExists, startOf = processStart }: { pid?: number; exists?: (pid: number) => boolean; startOf?: (pid: number) => string | null; } = {}): { path: string; release: () => void; } {
   mkdirSync(dirname(path), { recursive: true, mode: STATE_DIRECTORY_MODE });
@@ -134,7 +129,7 @@ export function acquireLock(path: string, { pid = process.pid, exists = pidExist
       }
       return { path, release: () => releaseLock(path, pid) };
     } catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const holder = readLock(path);
       if (holder !== null && holderIsLive(holder, { exists, startOf })) throw new ListenerLockHeld(path, holder.pid);
       if (attempt === 2) throw new Error(`${path}: could not take the lock after clearing a stale one`, { cause: error });
@@ -144,12 +139,12 @@ export function acquireLock(path: string, { pid = process.pid, exists = pidExist
   throw new Error(`${path}: unreachable`);
 }
 
-/** @param {string} path @param {number} pid removes the lock only while it is still this process's: a successor's is not ours to delete */
+/** Removes the lock only while it is still this process's: a successor's is not ours to delete. */
 function releaseLock(path: string, pid: number) {
   if (readLock(path)?.pid === pid) unlinkSync(path);
 }
 
-/** @param {string} home @returns {string} where the listener keeps its lock and offset: beside the ledger it shares with the watcher */
+/** Where the listener keeps its lock and offset: beside the ledger it shares with the watcher. */
 export function stateDirectory(home: string): string {
   return dirname(defaultLedgerPath(home));
 }
@@ -160,17 +155,17 @@ export function stateDirectory(home: string): string {
  * and where it is unset the installed layout still answers the directory the command ran in.
  */
 const DEFAULT_DEPS = () => ({
-  root: HOME_CHECKOUT, home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: /** @type {AbortSignal | undefined} */ (undefined),
-  sleep: (/** @type {number} */ ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); }),
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
-  onForward: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
-  converse: /** @type {((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined} */ (undefined),
-  github: /** @type {import("./answers.ts").GithubWriter | undefined} */ (undefined),
-  readers: /** @type {import("./placeholders.ts").Readers | undefined} */ (undefined),
-  env: /** @type {Record<string, string | undefined>} */ (process.env),
+  root: HOME_CHECKOUT, home: homedir(), now: Date.now, fetch: globalThis.fetch, signal: undefined as AbortSignal | undefined,
+  sleep: (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }),
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
+  onForward: undefined as ((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined,
+  converse: undefined as ((accepted: Readonly<Record<string, any>>) => Promise<void> | void) | undefined,
+  github: undefined as GithubWriter | undefined,
+  readers: undefined as Readers | undefined,
+  env: process.env as Record<string, string | undefined>,
 });
 
-/** @param {AbortSignal | undefined} given @returns {AbortSignal} one that also aborts on SIGTERM and SIGINT, so `systemctl stop` ends a long poll at once */
+/** One signal that also aborts on SIGTERM and SIGINT, so `systemctl stop` ends a long poll at once. */
 function stoppableBy(given: AbortSignal | undefined): AbortSignal {
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -185,18 +180,12 @@ function stoppableBy(given: AbortSignal | undefined): AbortSignal {
  * A message `converse` could not take, because it threw before it wrote a ledger line of its own (the queue would not load, which is what a missing
  * `$AGENT_ORG_HOST` looks like, or would not run), is TOLD to the chairman as not delivered and ledgered `refused`, then thrown. One `converse` did account
  * for keeps its own line, and its throw stands: a second line would say the same message was refused after it was queued.
- *
- * @param {{ ledger: { read: () => Record<string, any>[], append: (entry: Record<string, unknown>) => unknown }, send: (message: { text: string, replyTo?: string }) => Promise<{ messageRef: string }>,
- *   converse: (accepted: Readonly<Record<string, any>>) => Promise<unknown> | unknown }} parts
- * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
  */
 export function tellingWhenUndelivered({ ledger, send, converse }: {
         ledger: { read: () => Record<string, any>[]; append: (entry: Record<string, unknown>) => unknown; }; send: (message: { text: string; replyTo?: string; }) => Promise<{ messageRef: string; }>;
         converse: (accepted: Readonly<Record<string, any>>) => Promise<unknown> | unknown;
     }): (accepted: Readonly<Record<string, any>>) => Promise<void> {
-  /** @param {Readonly<Record<string, any>>} accepted @param {unknown} cause @returns {Promise<never>} */
   async function refuse(accepted: Readonly<Record<string, any>>, cause: unknown): Promise<never> {
-    /** @type {{ ref: string | null, error: unknown }} */
     let ack: { ref: string | null; error: unknown; } = { ref: null, error: null };
     try {
       ack = { ref: (await send({ text: notReached(), replyTo: String(accepted.messageId) })).messageRef, error: null };
@@ -231,19 +220,15 @@ export function tellingWhenUndelivered({ ledger, send, converse }: {
  *
  * A reply that carries `actions` is sent with them, and `recordSent` is told the sent message's ref (a11ign/a11ign#3425: the walk's next step is a message the ledger must know to understand a press under it).
  *
- * @param {{ answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<import("./answers.ts").Answered> }, send: (message: { text: string, actions?: { label: string, data: string }[] }) => Promise<any>,
- *   converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, log: (line: string) => void,
- *   clearKeyboard?: (messageRef: string) => Promise<void> }} parts `clearKeyboard` is the provider's; a caller with none draws no keyboards
- * @returns {(accepted: Readonly<Record<string, any>>) => Promise<void>}
+ * `clearKeyboard` is the provider's; a caller with none draws no keyboards.
  */
 export function createForwarder({ answers, send, converse, log, clearKeyboard }: {
-        answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<import("./answers.ts").Answered>; }; send: (message: { text: string; actions?: { label: string; data: string; }[]; }) => Promise<any>;
+        answers: { answer: (accepted: Readonly<Record<string, any>>) => Promise<Answered>; }; send: (message: { text: string; actions?: { label: string; data: string; }[]; }) => Promise<any>;
         converse: (accepted: Readonly<Record<string, any>>) => Promise<void> | void; log: (line: string) => void;
         clearKeyboard?: (messageRef: string) => Promise<void>;
     }): (accepted: Readonly<Record<string, any>>) => Promise<void> {
   return async (accepted) => {
-    /** @type {import("./answers.ts").Answered | null} */
-    let result: import("./answers.ts").Answered | null = null;
+    let result: Answered | null = null;
     try {
       result = await answers.answer(accepted);
     } catch (error) {
@@ -267,10 +252,8 @@ export function createForwarder({ answers, send, converse, log, clearKeyboard }:
  * on its first press (`answers.mjs`: no readers, nothing written) while every other request is answered as it was.
  *
  * `{{fleet.*}}` and `{{gate.*}}` read the files `hostFiles` names, so a `Verify:` over a worker power-on can be read (#3646).
- *
- * @param {{ root: string, now: () => number, err: (line: string) => void }} input @returns {Promise<import("./placeholders.ts").Readers | undefined>}
  */
-export async function verifyingReaders({ root, now, err }: { root: string; now: () => number; err: (line: string) => void; }): Promise<import("./placeholders.ts").Readers | undefined> {
+export async function verifyingReaders({ root, now, err }: { root: string; now: () => number; err: (line: string) => void; }): Promise<Readers | undefined> {
   try {
     return createWatchReaders(trackerRepo(root), now, await hostFiles({ root, err: (line) => err(`messaging:listen: ${line}`) }));
   } catch (error) {
@@ -279,24 +262,21 @@ export async function verifyingReaders({ root, now, err }: { root: string; now: 
   }
 }
 
-/**
- * @param {Parameters<typeof main>[0]} deps @param {{ tokenFile: string, chairmanFile: string }} config @returns {Promise<void>}
- */
 async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: string; chairmanFile: string; }): Promise<void> {
   const { root, home, now, fetch: fetchImpl, sleep, err, signal, onForward, converse, github, readers } = { ...DEFAULT_DEPS(), ...deps };
   const chairman = readChairman(config.chairmanFile);
   const token = readSecretFile(config.tokenFile);
-  const state = stateDirectory(/** @type {string} */ (home));
+  const state = stateDirectory(home);
   const lock = acquireLock(join(state, LOCK_FILE));
   try {
-    const ledger = createLedger({ path: defaultLedgerPath(/** @type {string} */ (home)), now });
+    const ledger = createLedger({ path: defaultLedgerPath(home), now });
     const inbound = createInbound({ ledger, chairman });
     const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
-    const send = (/** @type {{ text: string, replyTo?: string }} */ message: { text: string; replyTo?: string; }) => provider.send(message);
+    const send = (message: { text: string; replyTo?: string; }) => provider.send(message);
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
     // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
-    const verifying = readers ?? (github === undefined ? await verifyingReaders({ root: /** @type {string} */ (root), now, err }) : undefined);
+    const verifying = readers ?? (github === undefined ? await verifyingReaders({ root, now, err }) : undefined);
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, readers: verifying, orders: { liaison: (order) => conversation.orderLiaison(order) } });
     await runListener({
       provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
@@ -307,23 +287,17 @@ async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: str
   }
 }
 
-/** @param {unknown} error @returns {number} the exit code: a refusal that restarting cannot mend is `refused`, anything else `failed` */
+/** The exit code: a refusal that restarting cannot mend is `refused`, anything else `failed`. */
 function exitCodeFor(error: unknown): number {
   return error instanceof MessagingConfigRefusal || error instanceof SecretFileRefusal || error instanceof ListenerLockHeld || error instanceof PollConflictError
     ? EXIT.refused : EXIT.failed;
 }
 
-/**
- * @param {{ root?: string, home?: string, now?: () => number, fetch?: typeof fetch, signal?: AbortSignal, sleep?: (ms: number) => Promise<void>,
- *   out?: (line: string) => void, err?: (line: string) => void, onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void,
- *   converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void, github?: import("./answers.ts").GithubWriter, readers?: import("./placeholders.ts").Readers,
- *   env?: Record<string, string | undefined> }} [deps]
- * @returns {Promise<number>} the exit code
- */
+/** Returns the exit code. */
 export async function main(deps: {
     root?: string; home?: string; now?: () => number; fetch?: typeof fetch; signal?: AbortSignal; sleep?: (ms: number) => Promise<void>;
     out?: (line: string) => void; err?: (line: string) => void; onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void;
-    converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void; github?: import("./answers.ts").GithubWriter; readers?: import("./placeholders.ts").Readers;
+    converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void; github?: GithubWriter; readers?: Readers;
     env?: Record<string, string | undefined>;
 } = {}): Promise<number> {
   const { root, home, out, err, env, github } = { ...DEFAULT_DEPS(), ...deps };

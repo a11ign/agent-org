@@ -1,4 +1,3 @@
-// @ts-check
 // a11ign/a11ign#3513 (slice 6 of #3494): THE TOKEN-EFFICIENCY TRACKER -- `trace --aggregate`. Dollars, tokens and wall-clock per merged row, the overhead of the standing
 // leads, the repeat waste by class and the cache-read share, PER WEEK, so a fix shows a before and an after.
 //
@@ -14,6 +13,8 @@
 import { costOf, eventsForRow, repriceEvents, subjectOf, subjectsOf } from "./store.ts";
 import { BETWEEN, PHASES, waterfall } from "./waterfall.ts";
 import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.ts";
+import type { Tokens, TraceEvent } from "./store.ts";
+import type { PullRequest, RowReading } from "../wakes-per-row.ts";
 
 export const DEFINITIONS = [
   "WEEK: Monday 00:00:00 UTC to the next Monday (UTC is the org's clock). A merged row is in the week of its MERGE time (the last merge of the pull requests that close it). The spend figures (overhead, cache-read share, repeat waste) are by the time of the turn or event, in the same week.",
@@ -64,42 +65,32 @@ export const NOT_HELD = "not held";
 /** The deferral log (#3510) is not merged: this is the one place that says so, and the reader is added with the log. */
 const DEFERRAL_LOG_HELD = false;
 
-/**
- * @typedef {import("./store.ts").TraceEvent} TraceEvent
- * @typedef {import("./store.ts").Tokens} Tokens
- * @typedef {{ row: number, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
- * @typedef {{ dollars: number, priced: number, unpriced: number, turns: number, tokens: number }} Tally
- * @typedef {{ count: number, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number }} Share
- * @typedef {Record<"afterChange" | "unchanged" | "unexplained", Share>} Split
- * @typedef {{ cause: string, deferred: boolean, count: number, keys: number, medianGapMs: number | null, dollars: number | typeof NOT_DERIVABLE, floor: boolean, tokens: number, unpriced: number, split: Split }} RedeliveredCause
- * @typedef {{ id: string, label: string, count: number, dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD, floor: boolean, tokens: number, unpriced?: number, ms?: number, causes?: RedeliveredCause[], split?: Split }} RepeatClass
- */
+export type MergedRow = { row: number; repo: string; firstOpenedAt: number; lastOpenedAt: number; mergedAt: number; pulls: number[]; };
+export type Tally = { dollars: number; priced: number; unpriced: number; turns: number; tokens: number; };
+export type Share = { count: number; dollars: number | typeof NOT_DERIVABLE; floor: boolean; tokens: number; unpriced: number; };
+export type Split = Record<"afterChange" | "unchanged" | "unexplained", Share>;
+export type RedeliveredCause = { cause: string; deferred: boolean; count: number; keys: number; medianGapMs: number | null; dollars: number | typeof NOT_DERIVABLE; floor: boolean; tokens: number; unpriced: number; split: Split; };
+export type RepeatClass = { id: string; label: string; count: number; dollars: number | typeof NOT_DERIVABLE | typeof NOT_HELD; floor: boolean; tokens: number; unpriced?: number; ms?: number; causes?: RedeliveredCause[]; split?: Split; };
 
-/** @param {number} ms the Monday 00:00 UTC of the week holding `ms` */
+/** The Monday 00:00 UTC of the week holding `ms`. */
 export function weekStart(ms: number) {
   const day = Math.floor(ms / MS_PER_DAY);
   return (day - ((day + THURSDAY) % DAYS_PER_WEEK)) * MS_PER_DAY;
 }
 
-/** @param {number[]} values @param {number} percent @returns {number | null} */
 export function nearestRank(values: number[], percent: number): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil((percent / PERCENT) * sorted.length) - 1)];
 }
 
-/** @param {number[]} values */
 const spread = (values: number[]) => ({ n: values.length, p50: nearestRank(values, FIRST_RANK_PERCENT), p90: nearestRank(values, LAST_RANK_PERCENT) });
 
-/** @param {Tokens} tokens */
 const allTokens = (tokens: Tokens) => tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
-/** @param {Tokens} tokens */
 const inputSide = (tokens: Tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
 
-/** @returns {Tally} */
 const emptyTally = (): Tally => ({ dollars: 0, priced: 0, unpriced: 0, turns: 0, tokens: 0 });
 
-/** @param {Tally} tally @param {TraceEvent} turn */
 function addTurn(tally: Tally, turn: TraceEvent) {
   tally.turns += 1;
   tally.tokens += turn.tokens ? allTokens(turn.tokens) : 0;
@@ -109,21 +100,18 @@ function addTurn(tally: Tally, turn: TraceEvent) {
   } else tally.unpriced += 1;
 }
 
-/** @param {TraceEvent} event @param {number} at */
 const inWeek = (event: TraceEvent, at: number) => event.at >= at && event.at < at + WEEK_MS;
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Where an event belongs: the rows it names, by any route the store keeps
 
-/** @typedef {{ rowRepo: string, org: string, prRows: Map<string, number[]> }} Keys */
+type Keys = { rowRepo: string; org: string; prRows: Map<string, number[]>; };
 
-/** `a11ign/a11ign#3513`: the pull request's key, whatever repository it is in. `repo` is the store's short name, `null` for the primary. @param {Keys} keys @param {string | null} repo @param {number} number */
+/** `a11ign/a11ign#3513`: the pull request's key, whatever repository it is in. `repo` is the store's short name, `null` for the primary. */
 const prKey = (keys: Keys, repo: string | null, number: number) => `${repo === null ? keys.rowRepo : `${keys.org}/${repo}`}#${number}`;
 
 /**
  * The rows an event names, and the pull requests it names that close no known row. A `touched` write counts only for a turn: a wake names its subject by the order.
- * @param {TraceEvent} event @param {Keys} keys
- * @returns {{ rows: number[], unresolved: boolean }}
  */
 function subjectsOfEvent(event: TraceEvent, keys: Keys): { rows: number[]; unresolved: boolean; } {
   const rows = new Set([event.row, ...(event.rows ?? []), ...(event.touchedRows ?? [])].filter((row) => typeof row === "number"));
@@ -139,10 +127,6 @@ function subjectsOfEvent(event: TraceEvent, keys: Keys): { rows: number[]; unres
 
 const UNATTRIBUTABLE = /^(unnamed|codex):/;
 
-/**
- * @param {TraceEvent} turn @param {Keys} keys
- * @returns {{ kind: "rowed", rows: number[] } | { kind: "unplaced" | "unmeasured" | "overhead" }}
- */
 function place(turn: TraceEvent, keys: Keys): { kind: "rowed"; rows: number[]; } | { kind: "unplaced" | "unmeasured" | "overhead"; } {
   const { rows, unresolved } = subjectsOfEvent(turn, keys);
   if (rows.length > 0) return { kind: "rowed", rows };
@@ -151,29 +135,23 @@ function place(turn: TraceEvent, keys: Keys): { kind: "rowed"; rows: number[]; }
 }
 
 /**
- * @param {import("../wakes-per-row.ts").PullRequest[]} pulls @param {string} rowRepo
- * @returns {Map<string, number[]>} pull request key -> the rows its body closes (a pull request that closes none is not in it)
+ * Pull request key -> the rows its body closes (a pull request that closes none is not in it).
  */
-function prRowsOf(pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string): Map<string, number[]> {
-  const closing = pulls.map((pull) => /** @type {[string, number[]]} */ ([`${pull.repo}#${pull.number}`, rowsClosedBy(pull.body ?? "", rowRepo)]));
+function prRowsOf(pulls: PullRequest[], rowRepo: string): Map<string, number[]> {
+  const closing = pulls.map((pull) => ([`${pull.repo}#${pull.number}`, rowsClosedBy(pull.body ?? "", rowRepo)] as [string, number[]]));
   return new Map(closing.filter(([, rows]) => rows.length > 0));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The week's spend
 
-/**
- * @typedef {{ turn: TraceEvent, kind: "rowed" | "unplaced" | "unmeasured" | "overhead", rows?: number[] }} Placed
- */
+type Placed = { turn: TraceEvent; kind: "rowed" | "unplaced" | "unmeasured" | "overhead"; rows?: number[]; };
 
-/** @param {Placed[]} turns */
 function spendOf(turns: Placed[]) {
   const all = emptyTally();
   const kinds = { rowed: emptyTally(), unplaced: emptyTally(), unmeasured: emptyTally(), overhead: emptyTally() };
-  /** @type {Map<string, Tally & { onRows: Tally }>} */
   const standing: Map<string, Tally & { onRows: Tally; }> = new Map();
   const input = { cacheRead: 0, side: 0 };
-  /** @type {Map<string, number>} */
   const unpricedModels: Map<string, number> = new Map();
   const unpricedCodex = emptyTally(); // a Codex model PRICES has no row for (#4055): these turns are in no dollar figure, so they are counted on their own line and not inside a total
   const pricedCodex = emptyTally(); // the Codex turns that DO have a sourced rate (#4076): inside the dollar totals, and shown again on a line of their own so the Claude part can be read off
@@ -195,15 +173,14 @@ function spendOf(turns: Placed[]) {
   return { all, ...kinds, standing, input, unpricedModels, unpricedCodex, pricedCodex };
 }
 
-/** A standing lead: not a spawned worker or reviewer, which belong to one row or pull request. @param {string} session */
+/** A standing lead: not a spawned worker or reviewer, which belong to one row or pull request. */
 const isStanding = (session: string) => !/^(worker|reviewer)-/.test(session) && !UNATTRIBUTABLE.test(session);
 
-/** @param {Tally} part @param {Tally} whole */
 function shareOf(part: Tally, whole: Tally) {
   return { dollars: whole.dollars > 0 ? part.dollars / whole.dollars : null, tokens: whole.tokens > 0 ? part.tokens / whole.tokens : null };
 }
 
-/** @param {ReturnType<typeof spendOf>} spend @param {string[]} unreadable the transcripts the ingest could not read: no turn of theirs is in the store, so they are listed, not folded in */
+/** `unreadable` is the transcripts the ingest could not read: no turn of theirs is in the store, so they are listed, not folded in. */
 function spendFigures(spend: ReturnType<typeof spendOf>, unreadable: string[]) {
   const standing = [...spend.standing].filter(([, own]) => own.turns > 0).sort(([a], [b]) => a.localeCompare(b));
   return {
@@ -221,9 +198,8 @@ function spendFigures(spend: ReturnType<typeof spendOf>, unreadable: string[]) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Per merged row
 
-/** The first claim record of each row: the earliest `claimed` event, in one pass. @param {TraceEvent[]} events @returns {Map<number, number>} */
+/** The first claim record of each row: the earliest `claimed` event, in one pass. */
 export function claimsOf(events: TraceEvent[]): Map<number, number> {
-  /** @type {Map<number, number>} */
   const first: Map<number, number> = new Map();
   for (const event of events) {
     if (event.kind === "claimed" && typeof event.row === "number") first.set(event.row, Math.min(first.get(event.row) ?? event.at, event.at));
@@ -231,9 +207,6 @@ export function claimsOf(events: TraceEvent[]): Map<number, number> {
   return first;
 }
 
-/**
- * @param {MergedRow} merged @param {{ byRow: Map<number, Tally>, claims: Map<number, number> }} held
- */
 function rowFigures(merged: MergedRow, { byRow, claims }: { byRow: Map<number, Tally>; claims: Map<number, number>; }) {
   const tally = byRow.get(merged.row);
   const claimedAt = claims.get(merged.row) ?? null;
@@ -242,19 +215,18 @@ function rowFigures(merged: MergedRow, { byRow, claims }: { byRow: Map<number, T
   return { ...base, held: true, turns: tally.turns, tokens: tally.tokens, dollars: tally.priced > 0 ? tally.dollars : null, floor: tally.unpriced > 0, unpriced: tally.unpriced };
 }
 
-/** The dearest first; a tie in dollars is broken by tokens, then by row number, so two runs print the same list. @param {ReturnType<typeof rowFigures>[]} rows */
+/** The dearest first; a tie in dollars is broken by tokens, then by row number, so two runs print the same list. */
 function dearest(rows: ReturnType<typeof rowFigures>[]) {
   return rows.filter((row) => row.dollars !== null)
-    .sort((a, b) => /** @type {number} */ (b.dollars) - /** @type {number} */ (a.dollars) || /** @type {number} */ (b.tokens) - /** @type {number} */ (a.tokens) || a.row - b.row).slice(0, DEAREST);
+    .sort((a, b) => (b.dollars as number) - (a.dollars as number) || (b.tokens as number) - (a.tokens as number) || a.row - b.row).slice(0, DEAREST);
 }
 
-/** @param {ReturnType<typeof rowFigures>[]} rows */
 function perRowSpread(rows: ReturnType<typeof rowFigures>[]) {
   const held = rows.filter((row) => row.held);
   const priced = held.filter((row) => row.dollars !== null);
   return {
     rows: rows.length, noTurns: rows.length - held.length, noPrice: held.length - priced.length, floors: priced.filter((row) => row.floor).length,
-    dollars: spread(priced.map((row) => /** @type {number} */ (row.dollars))), tokens: spread(held.map((row) => /** @type {number} */ (row.tokens))),
+    dollars: spread(priced.map((row) => (row.dollars as number))), tokens: spread(held.map((row) => (row.tokens as number))),
     wallClock: spread(rows.flatMap((row) => (row.wallClockMs === null ? [] : [row.wallClockMs]))), noClaim: rows.filter((row) => row.wallClockMs === null).length,
   };
 }
@@ -263,19 +235,18 @@ function perRowSpread(rows: ReturnType<typeof rowFigures>[]) {
 // Where a row's time and dollars went, by phase (#3511)
 
 const SUM_TOLERANCE = 1e-9;
-/** @typedef {ReturnType<typeof waterfall>} Waterfall */
+type Waterfall = ReturnType<typeof waterfall>;
 
-/** The eight phases and `between`, in the order the report counts them. @param {Waterfall} wf */
+/** The eight phases and `between`, in the order the report counts them. */
 const countedPhases = (wf: Waterfall) => [...wf.phases, wf.between];
 
-/** @param {number[]} values */
 const total = (values: number[]) => values.reduce((sum, value) => sum + value, 0);
 
 /**
  * Each phase's share of the rows' whole wall-clock and whole dollars. The denominators are the rows' OWN totals (their wall-clock from the first phase's start to the last one's end, and
  * the dollars of all their turns), not the sum of the phases, so the shares add up to the whole only if every moment and every turn is in exactly one phase, and a share that does not
  * sum to the whole THROWS: a printed table that leaves a part out would look complete.
- * @param {Waterfall[]} waterfalls only those with a phase record (`start` not null): a row with none has turns and no phases, and its turns would sit in `between`
+ * `waterfalls` are only those with a phase record (`start` not null): a row with none has turns and no phases, and its turns would sit in `between`.
  */
 export function phaseShares(waterfalls: Waterfall[]) {
   const wallClockMs = total(waterfalls.map((wf) => wf.whole.wallClockMs));
@@ -286,7 +257,7 @@ export function phaseShares(waterfalls: Waterfall[]) {
     const spent = total(own.map((one) => one.spend.dollars));
     return { phase, exclusiveMs, wallShare: wallClockMs > 0 ? exclusiveMs / wallClockMs : null, dollars: spent, dollarShare: dollars > 0 ? spent / dollars : null, unpriced: total(own.map((one) => one.spend.unpriced)) };
   });
-  for (const [name, key, whole] of /** @type {const} */ ([["wall-clock", "wallShare", wallClockMs], ["dollars", "dollarShare", dollars]])) {
+  for (const [name, key, whole] of ([["wall-clock", "wallShare", wallClockMs], ["dollars", "dollarShare", dollars]] as const)) {
     const added = total(shares.map((share) => share[key] ?? 0));
     if (whole > 0 && Math.abs(added - 1) > SUM_TOLERANCE) throw new Error(`the phase shares of ${name} add up to ${added}, not the whole: refusing to print a table that leaves a part out`);
   }
@@ -296,7 +267,6 @@ export function phaseShares(waterfalls: Waterfall[]) {
 /**
  * The phase whose turns cost most of the row, and the phase with the most wall-clock to itself. A waterfall with no phase record has none: its turns would all fall in `between`,
  * which would read as a finding about the row when it is only the absence of the row's GitHub history.
- * @param {Waterfall} wf
  */
 export function dearestPhase(wf: Waterfall) {
   if (wf.start === null) return { costliest: null, longest: null };
@@ -312,12 +282,10 @@ export function dearestPhase(wf: Waterfall) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Repeat waste
 
-/**
- * @typedef {{ events: TraceEvent[], turns: TraceEvent[], keys: Keys, at: number, claimed: Set<string>,
- *   turnsOf: { wake: Map<string, TraceEvent[]>, session: Map<string, TraceEvent[]>, row: Map<number, TraceEvent[]> } }} Repeat
- */
+type Repeat = { events: TraceEvent[]; turns: TraceEvent[]; keys: Keys; at: number; claimed: Set<string>;
+  turnsOf: { wake: Map<string, TraceEvent[]>; session: Map<string, TraceEvent[]>; row: Map<number, TraceEvent[]>; }; };
 
-/** Price `turns` once each (a turn another class took is skipped), whole or by its input side. @param {TraceEvent[]} turns @param {Set<string>} claimed @param {"whole" | "input"} part */
+/** Price `turns` once each (a turn another class took is skipped), whole or by its input side. */
 function priceOnce(turns: TraceEvent[], claimed: Set<string>, part: "whole" | "input") {
   let dollars = 0;
   let tokens = 0;
@@ -340,10 +308,10 @@ function priceOnce(turns: TraceEvent[], claimed: Set<string>, part: "whole" | "i
   return { dollars, tokens, floor, priced, unpriced };
 }
 
-/** Every turn unpriced is NOT zero dollars: it is not derivable. @param {ReturnType<typeof priceOnce>} priced */
+/** Every turn unpriced is NOT zero dollars: it is not derivable. */
 const dollarsOf = (priced: ReturnType<typeof priceOnce>) => (priced.priced === 0 && priced.unpriced > 0 ? NOT_DERIVABLE : priced.dollars);
 
-/** A class whose every turn is unpriced is NOT zero dollars: it is not derivable, and says how many turns it could not price. @param {{ id: string, label: string, count: number }} head @param {ReturnType<typeof priceOnce>} priced @returns {RepeatClass} */
+/** A class whose every turn is unpriced is NOT zero dollars: it is not derivable, and says how many turns it could not price. */
 const classOf = (head: { id: string; label: string; count: number; }, priced: ReturnType<typeof priceOnce>): RepeatClass => ({ ...head, dollars: dollarsOf(priced), floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
 
 const DEFERRED_MARK = "@deferred:";
@@ -352,17 +320,16 @@ const DEFERRED_MARK = "@deferred:";
 const CHANGE_KINDS = new Set(["claimed", "released", "labeled", "unlabeled"]);
 /** The head a pull request's key carries (`worker-2667/pr-checks-failing/pr-2669/ed8208fe`): the gate's short prefix of the sha. */
 const HEAD_OF_KEY = /\/pr-(?:[\w.-]+#)?\d+\/([0-9a-f]{7,40})$/;
-const CHANGES = /** @type {const} */ (["afterChange", "unchanged", "unexplained"]);
+const CHANGES = (["afterChange", "unchanged", "unexplained"] as const);
 
-/** The rows and pull requests a subject names, as keys that cannot be mistaken for one another. @param {Partial<TraceEvent>} named @param {Keys} keys */
+/** The rows and pull requests a subject names, as keys that cannot be mistaken for one another. */
 const subjectKeys = (named: Partial<TraceEvent>, keys: Keys) => [
   ...[named.row, ...(named.rows ?? [])].filter((row) => typeof row === "number").map((row) => `row ${row}`),
   ...[named.pr, ...(named.prs ?? [])].filter((pr) => typeof pr === "number").map((pr) => prKey(keys, named.repo ?? null, pr)),
 ];
 
-/** What GitHub saw of each row and pull request, by subject key. @param {TraceEvent[]} events @param {Keys} keys */
+/** What GitHub saw of each row and pull request, by subject key. */
 function githubRecord(events: TraceEvent[], keys: Keys) {
-  /** @type {Map<string, TraceEvent[]>} */
   const record: Map<string, TraceEvent[]> = new Map();
   for (const event of events.filter((candidate) => candidate.source === "github")) {
     for (const subject of subjectKeys(event, keys)) record.set(subject, [...(record.get(subject) ?? []), event]);
@@ -374,28 +341,24 @@ function githubRecord(events: TraceEvent[], keys: Keys) {
  * Whether the order's subject changed between the previous delivery of its key and this repeat, from the store's GITHUB record alone. The subject is the one THE KEY names (not the
  * session's name: a worker's row is the store's attribution, not the order's), so a key that names none is `unexplained`, like a subject the store holds no GitHub event for: with no
  * record, "nothing changed" is not a finding. A change is in (previous delivery, this one]; one at the previous delivery's own instant is what that delivery answered.
- * @param {{ wake: TraceEvent, gapMs: number }} repeat @param {Map<string, TraceEvent[]>} record @param {Keys} keys
- * @returns {typeof CHANGES[number]}
  */
 function changeOf({ wake, gapMs }: { wake: TraceEvent; gapMs: number; }, record: Map<string, TraceEvent[]>, keys: Keys): typeof CHANGES[number] {
   const key = String(wake.causeKey);
   const held = subjectKeys({ ...subjectOf(key), ...subjectsOf(key) }, keys).flatMap((subject) => record.get(subject) ?? []);
   if (held.length === 0) return "unexplained";
   const head = HEAD_OF_KEY.exec(key.split(DEFERRED_MARK)[0])?.[1];
-  const movedAway = (/** @type {TraceEvent} */ event: TraceEvent) => head !== undefined && event.kind === "head_moved" && typeof event.headSha === "string" && !event.headSha.startsWith(head);
+  const movedAway = (event: TraceEvent) => head !== undefined && event.kind === "head_moved" && typeof event.headSha === "string" && !event.headSha.startsWith(head);
   return held.some((event) => event.at > wake.at - gapMs && event.at <= wake.at && (CHANGE_KINDS.has(event.kind) || movedAway(event))) ? "afterChange" : "unchanged";
 }
 
 /**
  * The wakes of the week that repeat an order their session already had, each with its ledger key, the time since that key was last delivered (in this week or before it) and
  * whether the order's subject changed in between.
- * @param {TraceEvent[]} events @param {number} at the week's start @param {Keys} keys
+ * `at` is the week's start.
  */
 function repeatsOf(events: TraceEvent[], at: number, keys: Keys) {
   const record = githubRecord(events, keys);
-  /** @type {Map<string, number>} */
   const lastDelivered: Map<string, number> = new Map();
-  /** @type {{ wake: TraceEvent, key: string, gapMs: number, change: typeof CHANGES[number] }[]} */
   const repeats: { wake: TraceEvent; key: string; gapMs: number; change: typeof CHANGES[number]; }[] = [];
   for (const wake of events.filter((event) => event.kind === "wake" && event.causeKey).sort((a, b) => a.at - b.at)) {
     const key = `${wake.session}\t${String(wake.causeKey).split(DEFERRED_MARK)[0]}`;
@@ -406,32 +369,27 @@ function repeatsOf(events: TraceEvent[], at: number, keys: Keys) {
   return repeats;
 }
 
-/** @typedef {{ count: number, priced: ReturnType<typeof priceOnce> }} Part */
+type Part = { count: number; priced: ReturnType<typeof priceOnce>; };
 
-/** @param {Part} part @returns {Share} */
 const figuresOf = ({ count, priced }: Part): Share => ({ count, dollars: dollarsOf(priced), floor: priced.floor, tokens: priced.tokens, unpriced: priced.unpriced });
 
-/** The several parts as one: their repeats and their priced turns, added. @param {Part[]} parts @returns {Part} */
+/** The several parts as one: their repeats and their priced turns, added. */
 const totalOf = (parts: Part[]): Part => ({ count: parts.reduce((sum, part) => sum + part.count, 0), priced: sumPriced(parts.map((part) => part.priced)) });
 
-/** The three parts of a cause's repeats, each priced once, so they add up to the cause. @param {ReturnType<typeof repeatsOf>} members @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed */
-const partsOf = (members: ReturnType<typeof repeatsOf>, turnsOfWake: Repeat["turnsOf"]["wake"], claimed: Set<string>) => /** @type {Record<typeof CHANGES[number], Part>} */ (Object.fromEntries(CHANGES.map((change) => {
+/** The three parts of a cause's repeats, each priced once, so they add up to the cause. */
+const partsOf = (members: ReturnType<typeof repeatsOf>, turnsOfWake: Repeat["turnsOf"]["wake"], claimed: Set<string>) => (Object.fromEntries(CHANGES.map((change) => {
   const own = members.filter((member) => member.change === change);
   return [change, { count: own.length, priced: priceOnce(own.flatMap(({ wake }) => turnsOfWake.get(wake.id) ?? []), claimed, "whole") }];
-})));
+})) as Record<typeof CHANGES[number], Part>);
 
-/** @param {Record<typeof CHANGES[number], Part>} parts @returns {Split} */
-const splitOf = (parts: Record<typeof CHANGES[number], Part>): Split => /** @type {Split} */ (Object.fromEntries(CHANGES.map((change) => [change, figuresOf(parts[change])])));
+const splitOf = (parts: Record<typeof CHANGES[number], Part>): Split => (Object.fromEntries(CHANGES.map((change) => [change, figuresOf(parts[change])])) as Split);
 
 /**
  * The repeats by gate cause (the wake's own `cause`). A repeat whose key carries `@deferred` is the same order re-sent after a deferral, and is its own row: a deferral retry and a wake that was
  * delivered anyway are different defects. Dollars are priced once per turn through the shared `claimed`, so the rows add up to the class; the dearest cause is first (the chairman's order is in dollars), repeats beside it.
  * Each cause's repeats are split after a change / unchanged / unexplained (`changeOf`), and the three parts are priced apart and added for the cause, so the split adds up to the cause by construction.
- * @param {ReturnType<typeof repeatsOf>} repeats @param {Repeat["turnsOf"]["wake"]} turnsOfWake @param {Set<string>} claimed
- * @returns {{ causes: RedeliveredCause[], parts: Record<typeof CHANGES[number], Part>[] }}
  */
 function causesOf(repeats: ReturnType<typeof repeatsOf>, turnsOfWake: Repeat["turnsOf"]["wake"], claimed: Set<string>): { causes: RedeliveredCause[]; parts: Record<typeof CHANGES[number], Part>[]; } {
-  /** @type {Map<string, typeof repeats>} */
   const groups: Map<string, typeof repeats> = new Map();
   for (const repeat of repeats) {
     const group = `${repeat.wake.cause ?? "unknown"}\t${String(repeat.wake.causeKey).includes(DEFERRED_MARK)}`;
@@ -442,42 +400,37 @@ function causesOf(repeats: ReturnType<typeof repeatsOf>, turnsOfWake: Repeat["tu
     const parts = partsOf(members, turnsOfWake, claimed);
     const priced = sumPriced(CHANGES.map((change) => parts[change].priced));
     const money = classOf({ id: group, label: cause, count: members.length }, priced);
-    return { parts, row: /** @type {RedeliveredCause} */ ({
+    return { parts, row: ({
       cause, deferred: deferred === "true", count: members.length, keys: new Set(members.map(({ key }) => key)).size, medianGapMs: nearestRank(members.map(({ gapMs }) => gapMs), FIRST_RANK_PERCENT),
-      dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced, split: splitOf(parts) }) };
+      dollars: money.dollars, floor: money.floor, tokens: money.tokens, unpriced: priced.unpriced, split: splitOf(parts) } as RedeliveredCause) };
   });
-  const worth = (/** @type {RedeliveredCause} */ row: RedeliveredCause) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
+  const worth = (row: RedeliveredCause) => (typeof row.dollars === "number" ? row.dollars : -1); // a cause with no derivable dollars sorts after every priced one, never as a free one
   entries.sort((a, b) => worth(b.row) - worth(a.row) || b.row.count - a.row.count || b.row.tokens - a.row.tokens || a.row.cause.localeCompare(b.row.cause) || Number(a.row.deferred) - Number(b.row.deferred));
   return { causes: entries.map(({ row }) => row), parts: entries.map(({ parts }) => parts) };
 }
 
-/** @param {ReturnType<typeof priceOnce>[]} tallies @returns {ReturnType<typeof priceOnce>} */
 const sumPriced = (tallies: ReturnType<typeof priceOnce>[]): ReturnType<typeof priceOnce> => tallies.reduce((sum, one) => ({ dollars: sum.dollars + one.dollars, tokens: sum.tokens + one.tokens, floor: sum.floor || one.floor, priced: sum.priced + one.priced, unpriced: sum.unpriced + one.unpriced }),
   { dollars: 0, tokens: 0, floor: false, priced: 0, unpriced: 0 });
 
-/** @param {Repeat} context */
 function redelivered({ events, turnsOf, at, claimed, keys }: Repeat) {
   const repeats = repeatsOf(events, at, keys);
   const { causes, parts } = causesOf(repeats, turnsOf.wake, claimed);
-  const whole = /** @type {Record<typeof CHANGES[number], Part>} */ (Object.fromEntries(CHANGES.map((change) => [change, totalOf(parts.map((own) => own[change]))])));
+  const whole = (Object.fromEntries(CHANGES.map((change) => [change, totalOf(parts.map((own) => own[change]))])) as Record<typeof CHANGES[number], Part>);
   return { ...classOf({ id: "redelivered", label: "re-delivered orders", count: repeats.length }, sumPriced(CHANGES.map((change) => whole[change].priced))), causes, split: splitOf(whole) };
 }
 
-/** The events of one kind, by pull request key, in time order. @param {TraceEvent[]} events @param {string} kind @param {Keys} keys */
+/** The events of one kind, by pull request key, in time order. */
 function byPullRequest(events: TraceEvent[], kind: string, keys: Keys) {
-  /** @type {Map<string, TraceEvent[]>} */
   const groups: Map<string, TraceEvent[]> = new Map();
   for (const event of events.filter((candidate) => candidate.kind === kind && typeof candidate.pr === "number").sort((a, b) => a.at - b.at)) {
-    const key = prKey(keys, event.repo, /** @type {number} */ (event.pr));
+    const key = prKey(keys, event.repo, (event.pr as number));
     groups.set(key, [...(groups.get(key) ?? []), event]);
   }
   return groups;
 }
 
-/** @param {Repeat} context */
 function rereviews({ events, turns, keys, at, claimed }: Repeat) {
   let count = 0;
-  /** @type {TraceEvent[]} */
   const between: TraceEvent[] = [];
   for (const [key, reviews] of byPullRequest(events, "reviewed", keys)) {
     const later = reviews.slice(1).filter((review) => inWeek(review, at));
@@ -489,10 +442,8 @@ function rereviews({ events, turns, keys, at, claimed }: Repeat) {
   return classOf({ id: "rereview", label: "re-reviews", count }, priceOnce(between, claimed, "whole"));
 }
 
-/** @param {Repeat} context */
 function requeues({ events, keys, at, claimed, turnsOf }: Repeat) {
   let count = 0;
-  /** @type {TraceEvent[]} */
   const between: TraceEvent[] = [];
   const exits = byPullRequest(events, "removed_from_merge_queue", keys);
   for (const [key, entries] of byPullRequest(events, "added_to_merge_queue", keys)) {
@@ -507,16 +458,13 @@ function requeues({ events, keys, at, claimed, turnsOf }: Repeat) {
   return classOf({ id: "requeue", label: "re-queues", count }, priceOnce(between, claimed, "whole"));
 }
 
-/** @param {Repeat} context */
 function compactions({ events, turnsOf, at, claimed }: Repeat) {
   const made = events.filter((event) => event.kind === "compaction" && inWeek(event, at));
   const after = made.flatMap((event) => (turnsOf.session.get(event.session) ?? []).filter((turn) => !turn.sidechain && turn.at > event.at).slice(0, 1));
   return classOf({ id: "compaction", label: "compactions (re-read of the window after each)", count: made.length }, priceOnce(after, claimed, "input"));
 }
 
-/** @param {Repeat} context */
 function preambles({ events, turnsOf, at, claimed }: Repeat) {
-  /** @type {Map<string, TraceEvent[]>} */
   const bySession: Map<string, TraceEvent[]> = new Map();
   for (const wake of events.filter((event) => event.kind === "wake").sort((a, b) => a.at - b.at)) bySession.set(wake.session, [...(bySession.get(wake.session) ?? []), wake]);
   const later = [...bySession.values()].flatMap((wakes) => wakes.slice(1)).filter((wake) => inWeek(wake, at));
@@ -524,12 +472,11 @@ function preambles({ events, turnsOf, at, claimed }: Repeat) {
   return classOf({ id: "preamble", label: "preamble reloads at each wake after the first", count: later.length }, priceOnce(first, claimed, "input"));
 }
 
-/** @param {Repeat} context @returns {RepeatClass} */
 function ciReruns({ events, keys, at }: Repeat): RepeatClass {
   const runs = events.filter((event) => event.kind === "ci_run" && typeof event.pr === "number");
   const seen = new Set();
   const again = runs.sort((a, b) => a.at - b.at).filter((run) => {
-    const key = `${prKey(keys, run.repo, /** @type {number} */ (run.pr))}\t${run.name}`;
+    const key = `${prKey(keys, run.repo, (run.pr as number))}\t${run.name}`;
     const repeat = seen.has(key);
     seen.add(key);
     return repeat && inWeek(run, at);
@@ -538,36 +485,30 @@ function ciReruns({ events, keys, at }: Repeat): RepeatClass {
   return { id: "ci-rerun", label: "CI re-runs", count: again.length, dollars: NOT_DERIVABLE, floor: false, tokens: 0, ms };
 }
 
-/** @returns {RepeatClass} */
 const deferredWaits = (): RepeatClass => ({ id: "deferred", label: "deferred waits", count: 0, dollars: DEFERRAL_LOG_HELD ? 0 : NOT_HELD, floor: false, tokens: 0 });
 
-/** Every class for one week, the whole-turn ones before the input-side ones: the ORDER is the definition of who claims a turn. @param {Repeat} context */
+/** Every class for one week, the whole-turn ones before the input-side ones: the ORDER is the definition of who claims a turn. */
 function repeatClasses(context: Repeat) {
   return [redelivered(context), rereviews(context), requeues(context), compactions(context), preambles(context), ciReruns(context), deferredWaits()];
 }
 
-/** The headline: the dollars of the classes that have a derivation, a floor when any class has a turn it could not price (the tokens are every class's: they are measured). @param {RepeatClass[]} classes */
+/** The headline: the dollars of the classes that have a derivation, a floor when any class has a turn it could not price (the tokens are every class's: they are measured). */
 function repeatTotal(classes: RepeatClass[]) {
   const priced = classes.filter((entry) => typeof entry.dollars === "number");
-  return { dollars: priced.reduce((sum, entry) => sum + /** @type {number} */ (entry.dollars), 0), floor: classes.some((entry) => entry.floor), tokens: classes.reduce((sum, entry) => sum + entry.tokens, 0) };
+  return { dollars: priced.reduce((sum, entry) => sum + (entry.dollars as number), 0), floor: classes.some((entry) => entry.floor), tokens: classes.reduce((sum, entry) => sum + entry.tokens, 0) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Wake counts, against wakes-per-row's
 
-/**
- * @typedef {{ row: number, store: number, wakesPerRow: number | null, reason: string }} WakeDifference
- */
+type WakeDifference = { row: number; store: number; wakesPerRow: number | null; reason: string; };
 
 /**
  * How many wakes of each row's own worker and reviewer sessions the store holds, by wakes-per-row's placement rule (a reviewer's wake counts only inside its pull request's
  * open-to-merge window). The standing leads' wakes naming the row are the store's alone and are not in this count.
- * @param {{ events: TraceEvent[], keys: Keys, pulls: import("../wakes-per-row.ts").PullRequest[] }} input
- * @returns {Map<number, number>}
  */
-function storeWakeCounts({ events, keys, pulls }: { events: TraceEvent[]; keys: Keys; pulls: import("../wakes-per-row.ts").PullRequest[]; }): Map<number, number> {
+function storeWakeCounts({ events, keys, pulls }: { events: TraceEvent[]; keys: Keys; pulls: PullRequest[]; }): Map<number, number> {
   const windows = new Map(pulls.map((pull) => [`${pull.repo}#${pull.number}`, { from: Date.parse(pull.createdAt), to: Date.parse(pull.mergedAt) }]));
-  /** @type {Map<number, number>} */
   const counts: Map<number, number> = new Map();
   for (const wake of events.filter((event) => event.kind === "wake" && /^(worker|reviewer)-/.test(event.session))) {
     const target = reviewerTarget(wake.session, keys.rowRepo);
@@ -581,25 +522,19 @@ function storeWakeCounts({ events, keys, pulls }: { events: TraceEvent[]; keys: 
 /**
  * Why the store's count of a row's wakes and wakes-per-row's differ, from what is known of the two: a row wakes-per-row could not measure, a row claimed before the store's
  * ingest window (its first transcripts are not here), else UNEXPLAINED, which is printed as such and counted.
- * @param {{ reading: import("../wakes-per-row.ts").RowReading | undefined, claimedAt: number | null, heldFrom: number | null, store: number }} facts
  */
-function whyDifferent({ reading, claimedAt, heldFrom, store }: { reading: import("../wakes-per-row.ts").RowReading | undefined; claimedAt: number | null; heldFrom: number | null; store: number; }) {
+function whyDifferent({ reading, claimedAt, heldFrom, store }: { reading: RowReading | undefined; claimedAt: number | null; heldFrom: number | null; store: number; }) {
   if (!reading) return "wakes-per-row has no reading for this row (it is not among the rows merged in its window)";
   if (!reading.measured) return `wakes-per-row has it UNMEASURED (${reading.unmeasured})`;
   if (heldFrom !== null && claimedAt !== null && claimedAt < heldFrom) return `the store starts at its ingest window (${new Date(heldFrom).toISOString()}), after the row was claimed`;
   return `UNEXPLAINED: the store holds ${store} wakes and wakes-per-row ${reading.wakes}`;
 }
 
-/**
- * @param {{ merged: MergedRow[], readings: import("../wakes-per-row.ts").RowReading[] | null, wakeCounts: Map<number, number>, claims: Map<number, number>,
- *   heldFrom: number | null }} input
- */
 function compareWakes({ merged, readings, wakeCounts, claims, heldFrom }: {
-        merged: MergedRow[]; readings: import("../wakes-per-row.ts").RowReading[] | null; wakeCounts: Map<number, number>; claims: Map<number, number>;
+        merged: MergedRow[]; readings: RowReading[] | null; wakeCounts: Map<number, number>; claims: Map<number, number>;
         heldFrom: number | null;
     }) {
   if (readings === null) return null;
-  /** @type {WakeDifference[]} */
   const differ: WakeDifference[] = [];
   for (const { row } of merged) {
     const reading = readings.find((candidate) => candidate.row === row);
@@ -616,27 +551,26 @@ function compareWakes({ merged, readings, wakeCounts, claims, heldFrom }: {
 /** The per-row sessions: a spawned worker or reviewer belongs to one row or pull request, so its first turn is a start-up for that row. */
 const SPAWNED = /^(worker|reviewer)-/;
 
-/** The two packages that left the primary repository, and the row that moved each: `at` is that row's closing time, which the caller reads (`null` when it could not). @typedef {{ name: string, repo: string, row: number, oldDir: string, at: number | null }} Move */
+/** The two packages that left the primary repository, and the row that moved each: `at` is that row's closing time, which the caller reads (`null` when it could not). */
+export type Move = { name: string; repo: string; row: number; oldDir: string; at: number | null; };
 export const MOVES = [
   { name: "agent-org", repo: "a11ign/agent-org", row: 2974, oldDir: "packages/agent-org/" },
   { name: "lab", repo: "a11ign/lab", row: 2703, oldDir: "packages/lab/" },
 ];
 
-/** The window of each transcript's first turn, by turn id: its earliest turn in the store that is a main thread's, Claude's own. @param {TraceEvent[]} turns in time order @returns {Map<string, number>} */
+/** The window of each transcript's first turn, by turn id: its earliest turn in the store that is a main thread's, Claude's own. `turns` are in time order. */
 function firstTurnWindows(turns: TraceEvent[]): Map<string, number> {
-  /** @type {Map<string, TraceEvent>} */
   const first: Map<string, TraceEvent> = new Map();
   for (const turn of turns) {
     if (!turn.tokens || turn.sidechain === true || turn.harness === "codex" || !turn.transcript || first.has(turn.transcript)) continue;
     first.set(turn.transcript, turn);
   }
-  return new Map([...first.values()].map((turn) => [turn.id, inputSide(/** @type {Tokens} */ (turn.tokens))]));
+  return new Map([...first.values()].map((turn) => [turn.id, inputSide((turn.tokens as Tokens))]));
 }
 
 /**
  * What the turns of one row read through tools. A turn with no field was stored before the reader (`notHeld`), one with a field and no tokens could not be derived (`notDerivable`), and a Codex
  * reviewer's turn is `unmeasured` (its tools are not Claude's): none of the three is in `heldTokens`, the tokens of the turns that do have the figure, which is what a share is of.
- * @param {TraceEvent[]} turns
  */
 function toolReadOfTurns(turns: TraceEvent[]) {
   const read = { notHeld: 0, notDerivable: 0, unmeasured: 0, heldTurns: 0, heldTokens: 0, total: 0, mixed: 0, byTool: { Read: 0, Grep: 0, Glob: 0 } };
@@ -657,10 +591,10 @@ function toolReadOfTurns(turns: TraceEvent[]) {
   return read;
 }
 
-/** @param {ReturnType<typeof toolReadOfTurns>[]} rows the rows of a cut that have turns */
+/** `rows` are the rows of a cut that have turns. */
 function toolReadFigures(rows: ReturnType<typeof toolReadOfTurns>[]) {
   const held = rows.filter((row) => row.heldTurns > 0);
-  const sum = (/** @type {(row: typeof held[number]) => number} */ pick: (row: typeof held[number]) => number) => held.reduce((all, row) => all + pick(row), 0);
+  const sum = (pick: (row: typeof held[number]) => number) => held.reduce((all, row) => all + pick(row), 0);
   const tokens = sum((row) => row.heldTokens);
   return {
     rows: held.length, notHeldRows: rows.length - held.length, floorRows: held.filter((row) => row.notHeld > 0 || row.notDerivable > 0).length, notDerivableTurns: sum((row) => row.notDerivable),
@@ -671,21 +605,18 @@ function toolReadFigures(rows: ReturnType<typeof toolReadOfTurns>[]) {
 
 /**
  * One cut of the week's rows (a repository, or one side of a move): the per-row figures, the first-turn size and the tokens read through tools.
- * @param {ReturnType<typeof rowFigures>[]} rows @param {{ turnsOfRow: Map<number, TraceEvent[]>, firstWindows: Map<string, number> }} held
  */
 function cutFigures(rows: ReturnType<typeof rowFigures>[], { turnsOfRow, firstWindows }: { turnsOfRow: Map<number, TraceEvent[]>; firstWindows: Map<string, number>; }) {
-  /** @type {Map<string, number>} */
   const first: Map<string, number> = new Map();
   const reads = [];
   for (const row of rows) {
     const turns = turnsOfRow.get(row.row) ?? [];
-    for (const turn of turns) if (SPAWNED.test(turn.session) && firstWindows.has(turn.id)) first.set(turn.id, /** @type {number} */ (firstWindows.get(turn.id)));
+    for (const turn of turns) if (SPAWNED.test(turn.session) && firstWindows.has(turn.id)) first.set(turn.id, (firstWindows.get(turn.id) as number));
     if (row.held) reads.push(toolReadOfTurns(turns));
   }
   return { ...perRowSpread(rows), firstTurn: spread([...first.values()]), toolRead: toolReadFigures(reads) };
 }
 
-/** @param {ReturnType<typeof rowFigures>[]} rows @param {Parameters<typeof cutFigures>[1]} held */
 function byRepository(rows: ReturnType<typeof rowFigures>[], held: Parameters<typeof cutFigures>[1]) {
   const repos = [...new Set(rows.map((row) => row.repo))].sort();
   return repos.map((repo) => ({ repo, ...cutFigures(rows.filter((row) => row.repo === repo), held) }));
@@ -694,12 +625,11 @@ function byRepository(rows: ReturnType<typeof rowFigures>[], held: Parameters<ty
 /**
  * Where a row merged in the primary repository belongs to a package that has since left it, by what its pull requests changed: `package` when every changed path of every pull request is under the
  * package's old directory, `mixed` when some are and some are not, `other` when none is, `unread` when the paths of one of its pull requests were not read.
- * @param {MergedRow} merged @param {{ move: Move, pullPaths: Map<string, string[]> }} input @returns {"package" | "mixed" | "other" | "unread"}
  */
 function placement(merged: MergedRow, { move, pullPaths }: { move: Move; pullPaths: Map<string, string[]>; }): "package" | "mixed" | "other" | "unread" {
   const lists = merged.pulls.map((pull) => pullPaths.get(`${merged.repo}#${pull}`));
   if (lists.some((paths) => paths === undefined || paths.length === 0)) return "unread";
-  const paths = lists.flatMap((list) => /** @type {string[]} */ (list));
+  const paths = lists.flatMap((list) => (list as string[]));
   const inside = paths.filter((path) => path.startsWith(move.oldDir)).length;
   if (inside === paths.length) return "package";
   return inside > 0 ? "mixed" : "other";
@@ -707,14 +637,13 @@ function placement(merged: MergedRow, { move, pullPaths }: { move: Move; pullPat
 
 /**
  * One move's reading of one week. `side` is `before`, `move-week` (the week that holds the move: on neither side), `after`, or `not held` when the move's time was not read.
- * @param {{ move: Move, start: number, rows: ReturnType<typeof rowFigures>[], merged: MergedRow[], rowRepo: string, pullPaths: Map<string, string[]>, held: Parameters<typeof cutFigures>[1] }} input
  */
 function moveOfWeek({ move, start, rows, merged, rowRepo, pullPaths, held }: { move: Move; start: number; rows: ReturnType<typeof rowFigures>[]; merged: MergedRow[]; rowRepo: string; pullPaths: Map<string, string[]>; held: Parameters<typeof cutFigures>[1]; }) {
   const base = { name: move.name, row: move.row, at: move.at };
-  if (move.at === null) return { ...base, side: /** @type {const} */ ("not held"), cut: null, placed: null };
+  if (move.at === null) return { ...base, side: ("not held" as const), cut: null, placed: null };
   const moveWeek = weekStart(move.at);
-  if (start === moveWeek) return { ...base, side: /** @type {const} */ ("move-week"), cut: null, placed: null };
-  if (start > moveWeek) return { ...base, side: /** @type {const} */ ("after"), cut: cutFigures(rows.filter((row) => row.repo === move.repo), held), placed: null };
+  if (start === moveWeek) return { ...base, side: ("move-week" as const), cut: null, placed: null };
+  if (start > moveWeek) return { ...base, side: ("after" as const), cut: cutFigures(rows.filter((row) => row.repo === move.repo), held), placed: null };
   const placed = { package: 0, mixed: 0, other: 0, unread: 0 };
   const ownRows = new Set();
   for (const entry of merged.filter((candidate) => candidate.repo === rowRepo)) {
@@ -722,19 +651,16 @@ function moveOfWeek({ move, start, rows, merged, rowRepo, pullPaths, held }: { m
     placed[where] += 1;
     if (where === "package") ownRows.add(entry.row);
   }
-  return { ...base, side: /** @type {const} */ ("before"), cut: cutFigures(rows.filter((row) => ownRows.has(row.row)), held), placed };
+  return { ...base, side: ("before" as const), cut: cutFigures(rows.filter((row) => ownRows.has(row.row)), held), placed };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The report
 
-/** @param {{ events: TraceEvent[], keys: Keys }} input */
 function indexes({ events, keys }: { events: TraceEvent[]; keys: Keys; }) {
   const turns = events.filter((event) => event.kind === "turn").sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
   const placed = turns.map((turn) => ({ turn, ...place(turn, keys) }));
-  /** @type {Map<number, Tally>} */
   const byRow: Map<number, Tally> = new Map();
-  /** @type {{ wake: Map<string, TraceEvent[]>, session: Map<string, TraceEvent[]>, row: Map<number, TraceEvent[]> }} */
   const turnsOf: { wake: Map<string, TraceEvent[]>; session: Map<string, TraceEvent[]>; row: Map<number, TraceEvent[]>; } = { wake: new Map(), session: new Map(), row: new Map() };
   for (const entry of placed) {
     const { turn } = entry;
@@ -750,8 +676,7 @@ function indexes({ events, keys }: { events: TraceEvent[]; keys: Keys; }) {
 }
 
 /**
- * @param {{ start: number, now: number, held: { from: number | null, basis: string }, unread: number }} input
- * @returns {string | null} why the week is partial, or `null` when the store holds all of it
+ * Why the week is partial, or `null` when the store holds all of it.
  */
 function partialReason({ start, now, held, unread }: { start: number; now: number; held: { from: number | null; basis: string; }; unread: number; }): string | null {
   const reasons = [];
@@ -766,12 +691,10 @@ function partialReason({ start, now, held, unread }: { start: number; now: numbe
  * The report. `readings` is wakes-per-row's `measure` result for each week by its start (`null` for a week it was not run for).
  * `moves` are the packages that left the primary repository (`MOVES`, each with its closing time) and `pullPaths` the paths each pull request of the primary repository changed, by `<repo>#<number>`.
  * `openRows` are the rows GitHub says are open at the reading (`null` when not asked: none is then called open). `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
- * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
- *   readings?: Map<number, import("../wakes-per-row.ts").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null, moves?: Move[], pullPaths?: Map<string, string[]> }} input
  */
 export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null, moves = [], pullPaths = new Map() }: {
-        events: TraceEvent[]; pulls: import("../wakes-per-row.ts").PullRequest[]; rowRepo: string; now: number; since: number; held: { from: number | null; basis: string; };
-        readings?: Map<number, import("../wakes-per-row.ts").RowReading[]>; unreadable?: string[]; unreadRows?: number[]; openRows?: number[] | null; moves?: Move[]; pullPaths?: Map<string, string[]>;
+        events: TraceEvent[]; pulls: PullRequest[]; rowRepo: string; now: number; since: number; held: { from: number | null; basis: string; };
+        readings?: Map<number, RowReading[]>; unreadable?: string[]; unreadRows?: number[]; openRows?: number[] | null; moves?: Move[]; pullPaths?: Map<string, string[]>;
     }) {
   const events = repriceEvents(stored); // every dollar below, the waterfalls' included, is at PRICES now and not at the price the turn was stored with (#3638)
   const keys = { rowRepo, org: rowRepo.split("/")[0], prRows: prRowsOf(pulls, rowRepo) };
@@ -792,7 +715,7 @@ export function aggregate({ events: stored, pulls, rowRepo, now, since, held, re
     const drawn = [...waterfalls.values()].filter((wf) => wf.start !== null);
     weeks.push({
       start, end: start + WEEK_MS, githubUnread, partial: partialReason({ start, now, held, unread: githubUnread }), rows: rows.sort((a, b) => a.row - b.row), perRow: perRowSpread(rows),
-      dearest: dearest(rows).map((row) => ({ ...row, phase: dearestPhase(/** @type {Waterfall} */ (waterfalls.get(row.row))) })),
+      dearest: dearest(rows).map((row) => ({ ...row, phase: dearestPhase((waterfalls.get(row.row) as Waterfall)) })),
       phases: { ...phaseShares(drawn), noRecord: merged.length - drawn.length },
       spend: spendFigures(spendOf(placed.filter((entry) => inWeek(entry.turn, start))), unreadable), repeats: { classes, total: repeatTotal(classes) },
       wakes: compareWakes({ merged, readings: readings.get(start) ?? null, wakeCounts, claims, heldFrom: held.from }),
@@ -805,24 +728,23 @@ export function aggregate({ events: stored, pulls, rowRepo, now, since, held, re
 /**
  * Rows with turns and no merge IN THIS READING, split by what GitHub says of them: still open (`openRows`, read at the run), or not open and not merged in the window of this
  * reading (merged before it, or closed with no merge): their spend is real and in no average. With `openRows` unknown, none is called open.
- * @param {{ byRow: Map<number, Tally>, merged: MergedRow[], openRows: number[] | null }} input
  */
 function unmerged({ byRow, merged, openRows }: { byRow: Map<number, Tally>; merged: MergedRow[]; openRows: number[] | null; }) {
   const done = new Set(merged.map((entry) => entry.row));
   const stillOpen = new Set(openRows ?? []);
   const listed = [...byRow].filter(([row]) => !done.has(row)).map(([row, tally]) => ({
-    row, status: /** @type {"open" | "outside"} */ (stillOpen.has(row) ? "open" : "outside"), turns: tally.turns, tokens: tally.tokens,
+    row, status: (stillOpen.has(row) ? "open" : "outside") as "open" | "outside", turns: tally.turns, tokens: tally.tokens,
     dollars: tally.priced > 0 ? tally.dollars : null, floor: tally.unpriced > 0,
   })).sort((a, b) => (b.dollars ?? -1) - (a.dollars ?? -1) || b.tokens - a.tokens || a.row - b.row);
   return { open: listed.filter((entry) => entry.status === "open"), outside: listed.filter((entry) => entry.status === "outside"), openKnown: openRows !== null };
 }
 
-/** Consecutive COMPLETE weeks only: a partial week is printed and never compared (a week the store holds half of would read as a saving). @param {ReturnType<typeof aggregate>["weeks"]} weeks */
+/** Consecutive COMPLETE weeks only: a partial week is printed and never compared (a week the store holds half of would read as a saving). */
 export function compareWeeks(weeks: ReturnType<typeof aggregate>["weeks"]) {
   const complete = weeks.filter((week) => week.partial === null);
   return complete.slice(1).map((week, index) => {
     const before = complete[index];
-    const delta = (/** @type {number | null} */ a: number | null, /** @type {number | null} */ b: number | null) => (a === null || b === null ? null : b - a);
+    const delta = (a: number | null, b: number | null) => (a === null || b === null ? null : b - a);
     return {
       from: before.start, to: week.start,
       p50Dollars: delta(before.perRow.dollars.p50, week.perRow.dollars.p50), p90Dollars: delta(before.perRow.dollars.p90, week.perRow.dollars.p90),
@@ -835,18 +757,13 @@ export function compareWeeks(weeks: ReturnType<typeof aggregate>["weeks"]) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Text
 
-/** @param {number} ms */
 const day = (ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DD".length);
-/** @param {number} ms */
 const hours = (ms: number) => `${(ms / (60 * 60 * 1000)).toFixed(1)}h`;
-/** @param {number | null} value @param {boolean} [floor] */
 const dollars = (value: number | null, floor: boolean = false) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(DOLLAR_DECIMALS)}`);
-/** @param {number | null} value */
 const percent = (value: number | null) => (value === null ? "n/a" : `${(value * PERCENT).toFixed(SHARE_DECIMALS)}%`);
-/** @param {number | null} value */
 const count = (value: number | null) => (value === null ? "n/a" : Math.round(value).toLocaleString("en-US"));
 
-/** @param {RepeatClass} entry @param {number} githubUnread the merged rows of the week whose GitHub events were not read */
+/** `githubUnread` is the merged rows of the week whose GitHub events were not read. */
 function classLine(entry: RepeatClass, githubUnread: number) {
   const unpriced = entry.unpriced ? ` (${entry.unpriced} turns unpriced)` : "";
   const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens${unpriced}` : `dollars: ${entry.dollars}${unpriced}, ${count(entry.tokens)} tokens`;
@@ -855,25 +772,25 @@ function classLine(entry: RepeatClass, githubUnread: number) {
 }
 
 const MINUTE_MS = 60 * 1000;
-/** A gap between two deliveries: minutes under an hour (a nag every 22 minutes is not "0.4h"), hours above. @param {number | null} ms */
+/** A gap between two deliveries: minutes under an hour (a nag every 22 minutes is not "0.4h"), hours above. */
 const gap = (ms: number | null) => (ms === null ? "n/a" : ms < 60 * MINUTE_MS ? `${Math.round(ms / MINUTE_MS)} min` : hours(ms));
 
-/** One part of a split as a table cell: how many repeats and what they cost. @param {Share} share */
+/** One part of a split as a table cell: how many repeats and what they cost. */
 const shareCell = (share: Share) => `${share.count} ${typeof share.dollars === "number" ? dollars(share.dollars, share.floor) : "n/a"}`;
 const SPLIT_COLUMNS = [["afterChange", "after a change"], ["unchanged", "unchanged"], ["unexplained", "unexplained"]];
 const SPLIT_WIDTH = 16;
 
-/** The three split cells of a row, in the header's order. @param {Split} split */
-const splitCells = (split: Split) => SPLIT_COLUMNS.map(([change]) => shareCell(split[/** @type {keyof Split} */ (change)]).padStart(SPLIT_WIDTH)).join(" ");
+/** The three split cells of a row, in the header's order. */
+const splitCells = (split: Split) => SPLIT_COLUMNS.map(([change]) => shareCell(split[(change as keyof Split)]).padStart(SPLIT_WIDTH)).join(" ");
 
-/** The re-delivered class's table by gate cause, under its line, with each cause's repeats split into after a change / unchanged / unexplained and a closing row for the class; no repeats, no table. @param {RepeatClass} entry */
+/** The re-delivered class's table by gate cause, under its line, with each cause's repeats split into after a change / unchanged / unexplained and a closing row for the class; no repeats, no table. */
 function causeLines(entry: RepeatClass) {
   if (!entry.causes || entry.causes.length === 0) return [];
-  const row = (/** @type {string} */ name: string, /** @type {{ count: number, dollars: number | string, floor: boolean, unpriced?: number, keys?: number, medianGapMs?: number | null }} */ own: { count: number; dollars: number | string; floor: boolean; unpriced?: number; keys?: number; medianGapMs?: number | null; }, /** @type {Split | undefined} */ split: Split | undefined) => {
+  const row = (name: string, own: { count: number; dollars: number | string; floor: boolean; unpriced?: number; keys?: number; medianGapMs?: number | null; }, split: Split | undefined) => {
     const money = typeof own.dollars === "number" ? dollars(own.dollars, own.floor) : `dollars: ${own.dollars}`;
     const keys = own.keys === undefined ? "" : String(own.keys);
     const median = own.medianGapMs === undefined ? "" : gap(own.medianGapMs);
-    return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${keys.padStart(13)}  ${median.padStart(9)}  ${splitCells(/** @type {Split} */ (split)).trimEnd()}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
+    return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${keys.padStart(13)}  ${median.padStart(9)}  ${splitCells((split as Split)).trimEnd()}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
   };
   const rows = entry.causes.map((own) => row(own.deferred ? `${own.cause} @deferred` : own.cause, own, own.split));
   const heads = SPLIT_COLUMNS.map(([, label]) => label.padStart(SPLIT_WIDTH)).join(" ");
@@ -881,7 +798,6 @@ function causeLines(entry: RepeatClass) {
     ...(entry.split ? [row("all causes", entry, entry.split)] : [])];
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function weekLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   const { perRow, spend } = week;
   const head = `WEEK ${day(week.start)} .. ${day(week.end)}  ${week.partial === null ? "complete" : `PARTIAL, not compared: ${week.partial}`}`;
@@ -902,21 +818,18 @@ function weekLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   return [...lines, ...byRepoLines(week), ...phaseLines(week), ...dearestLines(week), ...wakeLines(week)];
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function dearestLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   if (week.dearest.length === 0) return [`  the ${DEAREST} dearest merged rows: none, because no merged row has a priced turn`];
   return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.flatMap((row) => [`    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`,
     `      ${dearestPhaseText(row.phase)}`])];
 }
 
-/** @param {ReturnType<typeof dearestPhase>} phase */
 function dearestPhaseText(phase: ReturnType<typeof dearestPhase>) {
   if (phase.costliest === null && phase.longest === null) return "phases: none (no phase record of this row in the store)";
   const cost = phase.costliest ? `${phase.costliest.phase} ${dollars(phase.costliest.dollars, phase.costliest.floor)} (${percent(phase.costliest.share)} of its turns' dollars)` : "no priced turn";
   return `dearest phase: ${cost}; most wall-clock to itself: ${phase.longest ? `${phase.longest.phase} ${hours(phase.longest.ms)} (${percent(phase.longest.share)})` : "n/a"}`;
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function phaseLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   const { phases } = week;
   if (phases.rows === 0) return [`  PHASE SHARE: none of the ${phases.noRecord} merged rows has a phase record in the store (their GitHub events are not read), so no share is given`];
@@ -924,23 +837,20 @@ function phaseLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
     ...phases.shares.map((share) => `    ${share.phase.padEnd(8)} ${percent(share.wallShare).padStart(6)} of wall-clock (${hours(share.exclusiveMs)} to itself)  ${percent(share.dollarShare).padStart(6)} of dollars (${dollars(share.dollars, share.unpriced > 0)})`)];
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function wakeLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   if (week.wakes === null) return ["  wakes: wakes-per-row was not run for this week, so the counts are not compared"];
   return [`  wakes against wakes-per-row: ${week.wakes.agree} of ${week.wakes.rows} rows agree`,
     ...groupByReason(week.wakes.differ)];
 }
 
-/** @typedef {ReturnType<typeof cutFigures>} Cut */
+type Cut = ReturnType<typeof cutFigures>;
 
-/** @param {Cut} cut */
 function firstTurnText(cut: Cut) {
   const { firstTurn } = cut;
   if (firstTurn.n === 0) return `FIRST-TURN SIZE: ${NOT_HELD} (no first turn of a worker or reviewer session of these rows is in the store)`;
   return `FIRST-TURN SIZE: p50 ${count(firstTurn.p50)}  p90 ${count(firstTurn.p90)} tokens  (n=${firstTurn.n} first turns)`;
 }
 
-/** @param {Cut} cut */
 function toolReadText(cut: Cut) {
   const read = cut.toolRead;
   if (read.rows === 0) return `TOOL-READ TOKENS: ${NOT_HELD} (${read.notHeldRows} of these rows' turns were stored before the reader; they are read again when their transcripts are)`;
@@ -950,22 +860,19 @@ function toolReadText(cut: Cut) {
   return `TOOL-READ TOKENS: ${floor}${count(read.total)} = ${floor}${percent(read.share)} of the tokens of the turns of ${read.rows} rows that have it (${parts}); per row p50 ${count(read.perRow.p50)}  p90 ${count(read.perRow.p90)}${why}`;
 }
 
-/** @param {Cut} cut @param {string} pad */
 function cutLines(cut: Cut, pad: string) {
   const rowsLine = `rows ${cut.rows} (no turn in the store: ${cut.noTurns}; dollars a floor: ${cut.floors})  dollars p50 ${dollars(cut.dollars.p50)}  p90 ${dollars(cut.dollars.p90)} (n=${cut.dollars.n})  tokens p50 ${count(cut.tokens.p50)}  p90 ${count(cut.tokens.p90)} (n=${cut.tokens.n})`;
   return [`${pad}${rowsLine}`, `${pad}${firstTurnText(cut)}`, `${pad}${toolReadText(cut)}`];
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]} week */
 function byRepoLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   if (week.byRepo.length === 0) return ["  BY REPOSITORY: no merged row this week, so no figure"];
   return ["  BY REPOSITORY (the repository of each row's last merged pull request):", ...week.byRepo.flatMap((cut) => [`    ${cut.repo}`, ...cutLines(cut, "      ")])];
 }
 
-/** @param {ReturnType<typeof aggregate>["weeks"][number]["moves"][number]} entry */
 const placedText = (entry: ReturnType<typeof aggregate>["weeks"][number]["moves"][number]) => (entry.placed === null ? "" : ` placed by paths: ${entry.placed.package} on the package, MIXED ${entry.placed.mixed} (on neither side), other ${entry.placed.other}, paths not read ${entry.placed.unread}.`);
 
-/** One move across the report's weeks, each week its own line and never pooled. @param {ReturnType<typeof aggregate>} report @param {number} index */
+/** One move across the report's weeks, each week its own line and never pooled. */
 function moveLines(report: ReturnType<typeof aggregate>, index: number) {
   const move = report.moves[index];
   if (move.at === null) return [`BEFORE AND AFTER THE MOVE, ${move.name} (#${move.row}): ${NOT_HELD}: the closing time of the row was not read, so no week can be placed on a side`];
@@ -983,7 +890,6 @@ function moveLines(report: ReturnType<typeof aggregate>, index: number) {
   return lines;
 }
 
-/** @param {ReturnType<typeof aggregate>} report @param {{ ingestFooter?: string[] }} [footer] */
 export function renderAggregate(report: ReturnType<typeof aggregate>, footer: { ingestFooter?: string[]; } = {}) {
   const lines = ["TRACE --AGGREGATE (a reading at a moment: re-run it, do not quote it)", "", "DEFINITIONS", ...DEFINITIONS.map((line) => `- ${line}`), "",
     `reading taken ${new Date(report.now).toISOString()}; weeks from ${day(report.since)}; the store holds transcripts from ${report.held.from === null ? "an unknown time" : new Date(report.held.from).toISOString()} (${report.held.basis})`, ""];
@@ -998,16 +904,12 @@ export function renderAggregate(report: ReturnType<typeof aggregate>, footer: { 
   return [...lines, ...(footer.ingestFooter ?? [])].join("\n");
 }
 
-/** @param {number | null} value */
 const signed = (value: number | null) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}$${Math.abs(value).toFixed(DOLLAR_DECIMALS)}`);
-/** @param {number | null} value */
 const signedShare = (value: number | null) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}${Math.abs(value * PERCENT).toFixed(SHARE_DECIMALS)} points`);
-/** @param {ReturnType<typeof unmerged>["open"][number]} row */
 const openLine = (row: ReturnType<typeof unmerged>["open"][number]) => `  #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns  (${row.status})`;
 
-/** One line per reason, with the rows it explains and, for a row whose two counts are both known, what they were: a reason is stated once, however many rows share it. @param {WakeDifference[]} differ */
+/** One line per reason, with the rows it explains and, for a row whose two counts are both known, what they were: a reason is stated once, however many rows share it. */
 function groupByReason(differ: WakeDifference[]) {
-  /** @type {Map<string, WakeDifference[]>} */
   const groups: Map<string, WakeDifference[]> = new Map();
   for (const entry of differ) {
     const reason = entry.reason.replace(/\d+ wakes and wakes-per-row \d+$/, "N wakes and wakes-per-row M");

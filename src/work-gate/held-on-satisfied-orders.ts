@@ -1,4 +1,3 @@
-// @ts-check
 // A ROW HELD ON A CONDITION THAT IS ALREADY TRUE, OR ON AN UMBRELLA ROW THAT NAMES NO CONDITION (#4005, the chairman's order, 2026-10-07: "very keen on the root cause
 // being fixed"). Seven `ready` rows sat behind #3778 after `0.3.0` reached `next`: four needed only that a version EXISTS, three needed a tag, and every edge said
 // `blocked-by #3778`, a row of five done-whens, so nothing could say which link was needed or that it was already there.
@@ -22,15 +21,14 @@ const REGISTRY_TIMEOUT_SECONDS = 20;
 const REPORTED_TO = "product-manager";
 
 /**
- * @typedef {{ distTags: (pkg: string) => Record<string, string> | null, tagExists: (tag: string) => boolean | null }} ReleaseReaders
  * What the facts are read WITH. `null` from either is a read that failed, which `conditionHolds` calls unknown.
  */
+export type ReleaseReaders = { distTags: (pkg: string) => Record<string, string> | null, tagExists: (tag: string) => boolean | null };
 
 /**
  * A PACKAGE'S DIST-TAGS FROM THE REGISTRY, or `null` when the read failed. The registry is the authority and the publish workflow's log is not: the registry lags a publish
  * by minutes (measured 2026-10-07: `changeset publish` at 17:13:01Z, `next` visible at 17:15Z), so a wait that read the log would clear before the thing it waits for exists.
  * `-f` makes a 404 (never published) a failed read too, which is an unknown: it cannot be mistaken for "not published" and release a hold early.
- * @param {string} pkg @returns {Record<string, string> | null}
  */
 export function registryDistTags(pkg: string): Record<string, string> | null {
   const url = `https://registry.npmjs.org/-/package/${pkg.replace("/", "%2f")}/dist-tags`;
@@ -47,7 +45,6 @@ export function registryDistTags(pkg: string): Record<string, string> | null {
 /**
  * WHETHER A TAG EXISTS ON THE REMOTE, or `null` when the read failed. `matching-refs` answers an empty list for a tag that is absent, so no HTTP status has to be told
  * apart from "absent" (a 404 from `git/ref` would be absent OR forbidden); it matches by PREFIX, so the exact ref is compared.
- * @param {string} tag @param {{ run: (args: string[]) => string, repo: () => string }} gh @returns {boolean | null}
  */
 export function remoteTagExists(tag: string, { run, repo }: { run: (args: string[]) => string; repo: () => string; }): boolean | null {
   try {
@@ -58,13 +55,8 @@ export function remoteTagExists(tag: string, { run, repo }: { run: (args: string
   }
 }
 
-/**
- * THE RELEASE FACTS THE ITEMS' WAITS NAME, each read once. A reference past `limit` is left OUT, which is an unknown and never "not published".
- * @param {{ items: import("../wait-condition.ts").WaitItem[], readers: ReleaseReaders, limit?: number }} input
- * @returns {Record<string, Record<string, string> | boolean>}
- */
+/** THE RELEASE FACTS THE ITEMS' WAITS NAME, each read once. A reference past `limit` is left OUT, which is an unknown and never "not published". */
 export function readReleaseFacts({ items, readers, limit = MAX_RELEASE_READS }: { items: import("../wait-condition.ts").WaitItem[]; readers: ReleaseReaders; limit?: number; }): Record<string, Record<string, string> | boolean> {
-  /** @type {Record<string, Record<string, string> | boolean>} */
   const releases: Record<string, Record<string, string> | boolean> = {};
   for (const ref of releaseReferencesOf(items).slice(0, limit)) {
     const fact = ref.kind === "npm" ? readers.distTags(ref.pkg) : readers.tagExists(ref.tag);
@@ -73,23 +65,16 @@ export function readReleaseFacts({ items, readers, limit = MAX_RELEASE_READS }: 
   return releases;
 }
 
-/** @param {import("../wait-condition.ts").StaleWait} stale @returns {boolean} a release-state wait holding a `ready` row: the shape this row reports */
+/** @returns a release-state wait holding a `ready` row: the shape this row reports */
 const isHeldReadyRow = ({ item, wait }: import("../wait-condition.ts").StaleWait): boolean => item.kind === "row" && item.labels.includes(READY_LABEL)
   && (wait.state === "published" || wait.state === "latest-next" || wait.state === "tagged");
 
-/**
- * THE STALE WAITS THIS MODULE OWNS, and the rest, which keep `staleWaitOrders`'s text: a release wait on a `ready` row is reported as what it is.
- * @param {import("../wait-condition.ts").StaleWait[]} stale
- * @returns {{ held: import("../wait-condition.ts").StaleWait[], rest: import("../wait-condition.ts").StaleWait[] }}
- */
+/** THE STALE WAITS THIS MODULE OWNS, and the rest, which keep `staleWaitOrders`'s text: a release wait on a `ready` row is reported as what it is. */
 export function splitHeldOnSatisfied(stale: import("../wait-condition.ts").StaleWait[]): { held: import("../wait-condition.ts").StaleWait[]; rest: import("../wait-condition.ts").StaleWait[]; } {
   return { held: stale.filter(isHeldReadyRow), rest: stale.filter((s) => !isHeldReadyRow(s)) };
 }
 
-/**
- * ONE ORDER PER ROW HELD ON A SATISFIED CONDITION, to `product-manager`: the row, the condition now true, and the fields to remove.
- * @param {import("../wait-condition.ts").StaleWait[]} held @param {{ limit: number }} cap @returns {any[]}
- */
+/** ONE ORDER PER ROW HELD ON A SATISFIED CONDITION, to `product-manager`: the row, the condition now true, and the fields to remove. */
 export function heldOnSatisfiedOrders(held: import("../wait-condition.ts").StaleWait[], { limit }: { limit: number; }): any[] {
   return held.slice(0, limit).map(({ item, wait, remove }) => {
     const discriminator = `${subjectRef(item.repoKey, item.number)}:${wait.key}`;
@@ -102,14 +87,13 @@ export function heldOnSatisfiedOrders(held: import("../wait-condition.ts").Stale
 }
 
 /**
- * @typedef {{ item: import("../wait-condition.ts").WaitItem, blocker: number, doneWhens: number }} UmbrellaEdge
  * A `ready` row held by a native edge onto an open row of `doneWhens` (more than one) done-whens, naming no condition.
  */
+export type UmbrellaEdge = { item: import("../wait-condition.ts").WaitItem, blocker: number, doneWhens: number };
 
 /**
  * EVERY UMBRELLA EDGE AMONG THE ITEMS. A blocker that is not among the open rows the tick read is not judged (its done-whens are not known, and an unknown is not an
  * umbrella); a row of one done-when has nothing to choose between. Only the first repository's rows: a `repoKey` row's edge names a row of another tracker.
- * @param {{ items: import("../wait-condition.ts").WaitItem[] }} input @returns {UmbrellaEdge[]}
  */
 export function umbrellaEdges({ items }: { items: import("../wait-condition.ts").WaitItem[]; }): UmbrellaEdge[] {
   const rows = items.filter((item) => item.kind === "row" && item.repoKey === undefined);
@@ -121,10 +105,7 @@ export function umbrellaEdges({ items }: { items: import("../wait-condition.ts")
   }));
 }
 
-/**
- * ONE ORDER PER UMBRELLA EDGE, to `product-manager`. It says what the edge is waiting for (ALL of the blocker's done-whens) and the two ways out.
- * @param {UmbrellaEdge[]} edges @param {{ limit: number }} cap @returns {any[]}
- */
+/** ONE ORDER PER UMBRELLA EDGE, to `product-manager`. It says what the edge is waiting for (ALL of the blocker's done-whens) and the two ways out. */
 export function umbrellaEdgeOrders(edges: UmbrellaEdge[], { limit }: { limit: number; }): any[] {
   return edges.slice(0, limit).map(({ item, blocker, doneWhens }) => {
     const discriminator = `${item.number}:${blocker}`;

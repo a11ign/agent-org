@@ -25,10 +25,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "tsx": "^4.22.4"
+    "node": ">=24"
   },
   "devDependencies": {
     "@a11ign/toolchain": "^0.1.5",
@@ -44,22 +41,21 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "rstest run --config scripts/rstest/rstest.config.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
-    "messaging:listen": "node --import tsx src/messaging/listen.ts",
-    "messaging:watch": "node --import tsx src/messaging/watch.ts",
-    "messaging:pair": "node --import tsx src/messaging/providers/telegram/pair.ts",
-    "ruling:record": "node --import tsx src/ruling-record.ts",
-    "messaging:measure": "node --import tsx src/messaging/measure.ts",
-    "chairman:reply": "node --import tsx src/messaging/reply-cli.ts",
-    "chairman:record": "node --import tsx src/messaging/record.ts",
-    "chairman:correct": "node --import tsx src/messaging/correct.ts",
-    "chairman:ask-ceo": "node --import tsx src/messaging/ask-ceo.ts",
-    "chairman:watch": "node --import tsx src/messaging/watch-list.ts",
-    "chairman:queue": "node --import tsx src/messaging/session-queue.ts"
+    "messaging:listen": "node src/messaging/listen.ts",
+    "messaging:watch": "node src/messaging/watch.ts",
+    "messaging:pair": "node src/messaging/providers/telegram/pair.ts",
+    "ruling:record": "node src/ruling-record.ts",
+    "messaging:measure": "node src/messaging/measure.ts",
+    "chairman:reply": "node src/messaging/reply-cli.ts",
+    "chairman:record": "node src/messaging/record.ts",
+    "chairman:correct": "node src/messaging/correct.ts",
+    "chairman:ask-ceo": "node src/messaging/ask-ceo.ts",
+    "chairman:watch": "node src/messaging/watch-list.ts",
+    "chairman:queue": "node src/messaging/session-queue.ts"
   },
   "files": [
     "src",
     "!src/**/*.test.ts",
-    "!src/**/*.test.mjs",
     "host",
     "LICENSE",
     "README.md"

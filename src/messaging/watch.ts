@@ -1,4 +1,3 @@
-// @ts-check
 // `messaging:watch` (a11ign/a11ign#2903, done-when 5): THE ONE-SHOT PROGRAM THE `chairman-watch` TIMER RUNS. It reads GitHub, asks each
 // source what the chairman should be told, and hands the events to the core. A LEAF module, like the rest of `src/messaging/`.
 //
@@ -44,9 +43,12 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.ts";
+import type { MessagingOn } from "./config.ts";
 import { requestActions, snoozedUntil, walkActions } from "./answers.ts";
 import { createMessenger } from "./core.ts";
 import { createLedger, describeError, foldLedger } from "./ledger.ts";
+import type { KeyRecord } from "./ledger.ts";
+import type { Readers } from "./placeholders.ts";
 import { createTelegramProvider } from "./providers/telegram/send.ts";
 import { readSecretFile, SecretFileRefusal } from "./secret.ts";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
@@ -84,14 +86,13 @@ const MILESTONE_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(issues|pulls)\/\d+$/;
 
 /**
  * `gh api <path>` and nothing after the path: a GET is the default and every flag that would change it (`-X`, `-f`, `-F`, `--input`) is a token this refuses.
- * @param {readonly string[]} argv
  */
 function assertReadOnlyApi(argv: readonly string[]) {
   if (argv.length !== 2 || !(READ_API_PATH.test(argv[1]) || MILESTONE_API_PATH.test(argv[1]))) throw new Error(`chairman-watch reads only: \`gh api ${argv.slice(1).join(" ")}\` is not an allowed read`);
 }
 
 /**
- * @param {readonly string[]} argv the arguments after `gh`
+ * `argv` is the arguments after `gh`.
  * @throws {Error} when the command is anything but a list, or carries a flag the readers do not use
  */
 export function assertReadOnlyGh(argv: readonly string[]) {
@@ -102,13 +103,13 @@ export function assertReadOnlyGh(argv: readonly string[]) {
   if (stray !== undefined) throw new Error(`chairman-watch reads only: \`gh ${verb} ${stray}\` is not an allowed flag`);
 }
 
-/** @param {readonly string[]} argv @returns {Promise<string>} what `gh` printed; the environment (and so the account) is the process's own */
+/** What `gh` printed; the environment (and so the account) is the process's own */
 async function runGh(argv: readonly string[]): Promise<string> {
   const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
   return stdout;
 }
 
-/** @param {string[]} argv @returns {Promise<string>} `systemctl <argv>`: only ever `--user show`, which `createReaders` builds and nothing else reaches */
+/** `systemctl <argv>`: only ever `--user show`, which `createReaders` builds and nothing else reaches */
 async function runSystemctl(argv: string[]): Promise<string> {
   const { stdout } = await execFileAsync("systemctl", argv, { timeout: GH_TIMEOUT_MS, encoding: "utf8" });
   return stdout;
@@ -116,32 +117,26 @@ async function runSystemctl(argv: string[]): Promise<string> {
 
 /**
  * The real reader, over `gh`. `run` is injected so a test owns it, and every command it is given has been through `assertReadOnlyGh`.
- *
- * @param {{ run?: (argv: readonly string[]) => Promise<string> }} [deps]
  */
 export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]) => Promise<string>; } = {}) {
-  /** @param {string[]} argv @returns {Promise<any[]>} */
   async function list(argv: string[]): Promise<any[]> {
     assertReadOnlyGh(argv);
     return JSON.parse(await run(argv));
   }
-  /** @param {string[]} argv @returns {Promise<any>} */
   async function view(argv: string[]): Promise<any> {
     assertReadOnlyGh(argv);
     return JSON.parse(await run(argv));
   }
   return {
-    /** @param {{ repo: string, label: string, comments?: boolean, limit?: number }} query */
     issuesLabelled({ repo, label, comments = false, limit = 100 }: { repo: string; label: string; comments?: boolean; limit?: number; }) {
       const fields = comments ? "number,title,url,updatedAt,comments" : "number,title,url,updatedAt";
       return list(["issue", "list", "-R", repo, "--label", label, "--state", "open", "--json", fields, "--limit", String(limit)]);
     },
-    /** All of one row's comments: the list returns only the oldest hundred (see requests.mjs). @param {{ repo: string, number: number }} query */
+    /** All of one row's comments: the list returns only the oldest hundred (see requests.mjs). */
     async issueComments({ repo, number }: { repo: string; number: number; }) {
       const row = await view(["issue", "view", String(number), "-R", repo, "--json", "comments"]);
       return Array.isArray(row?.comments) ? row.comments : [];
     },
-    /** @param {{ repo: string, sinceMs: number, limit?: number }} query */
     async mergedPullsSince({ repo, sinceMs, limit = 100 }: { repo: string; sinceMs: number; limit?: number; }) {
       const since = new Date(sinceMs).toISOString();
       const pulls = await list(["pr", "list", "-R", repo, "--state", "merged", "--search", `merged:>=${since}`, "--json", "number,mergedAt", "--limit", String(limit)]);
@@ -152,24 +147,26 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
      * The chairman's red-PR count is `red-pr.ts`'s `isBrokenRed` and nothing of this file's own (#3014, the sixth decider #2956 stopped): `labels`
      * is fetched so a `hold:<session>` PR whose only red is the hold's own jobs is not reported as broken. A commit STATUS in `FAILURE`/`ERROR`
      * does not count here, as it counts nowhere else; this org posts none (`pr-review-verdict.sh` posts `success` whatever the verdict).
-     * @param {{ repo: string, limit?: number }} query
      */
     async redPulls({ repo, limit = 100 }: { repo: string; limit?: number; }) {
       return (await list(["pr", "list", "-R", repo, "--state", "open", "--json", "number,labels,statusCheckRollup", "--limit", String(limit)])).filter(isBrokenRed);
     },
-    /** One REST GET, on the CORE pool (the lists above spend GraphQL): what the stall and incident readers use. @param {string} path */
+    /** One REST GET, on the CORE pool (the lists above spend GraphQL): what the stall and incident readers use. */
     api(path: string) {
       return view(["api", path]);
     },
   };
 }
 
-/** @typedef {{ reason: string, key?: string }} Note  A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
+/** A `key` marks a note about one thing, logged once per distinct reason and not once per tick. */
+export type Note = { reason: string; key?: string };
 
-/** @typedef {{ github: any, repo: string, now: number, openKeys: string[], summary: { at: string, timezone: string } | null, readers: Record<string, any>,
- *           history: Record<string, any>[], releaseRepos: readonly string[], milestonesPath: string | null,
- *           watchReaders: import("./placeholders.ts").Readers | undefined }} SourceContext */
-/** @typedef {{ name: string, observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[], notes: Note[] }> }} Source */
+export type SourceContext = {
+  github: any; repo: string; now: number; openKeys: string[]; summary: { at: string; timezone: string } | null; readers: Record<string, any>;
+  history: Record<string, any>[]; releaseRepos: readonly string[]; milestonesPath: string | null;
+  watchReaders: Readers | undefined;
+};
+export type Source = { name: string; observe: (context: SourceContext) => Promise<{ events: Record<string, unknown>[]; notes: Note[] }> };
 
 /**
  * A request that still asks carries the buttons the chairman may press under it (a11ign/a11ign#3423): its options, or Approve, then Explain more and Later.
@@ -179,19 +176,17 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
  *
  * A brief that names an act (`acts`, a11ign/a11ign#3982) adds "Do it for me" to its keyboard; one that names none does not.
  *
- * @param {Record<string, unknown>[]} events @param {{ options: Record<string, { id: string, label: string }[]>, walks: Record<string, true>, acts: Record<string, string> }} offered keyed by event key
- * @returns {Record<string, unknown>[]}
+ * `offered` is keyed by event key.
  */
 function withButtons(events: Record<string, unknown>[], { options, walks, acts }: { options: Record<string, { id: string; label: string; }[]>; walks: Record<string, true>; acts: Record<string, string>; }): Record<string, unknown>[] {
   return events.map((event) => {
     if (event.kind !== "request" || event.resolved === true) return event;
-    const key = /** @type {string} */ (event.key);
+    const key = event.key as string;
     const actions = walks[key] === true ? walkActions() : requestActions(options[key] ?? [], acts[key] ?? null);
     return actions.length === 0 ? event : { ...event, actions };
   });
 }
 
-/** @type {Source} */
 const REQUESTS: Source = {
   name: "requests",
   async observe({ github, repo, now, openKeys, history }) {
@@ -202,7 +197,6 @@ const REQUESTS: Source = {
   },
 };
 
-/** @type {Source} */
 const SUMMARY: Source = {
   name: "summary",
   async observe({ github, repo, now, summary }) {
@@ -218,7 +212,6 @@ const SUMMARY: Source = {
  */
 const FLEET_STATE_MAX_AGE_MS = 130 * 60_000;
 
-/** @param {{ events: Record<string, unknown>[], cannotAsk: { source: string, reason: string }[] }} observation @returns {{ events: Record<string, unknown>[], notes: Note[] }} */
 function observed({ events, cannotAsk }: { events: Record<string, unknown>[]; cannotAsk: { source: string; reason: string; }[]; }): { events: Record<string, unknown>[]; notes: Note[]; } {
   return { events, notes: cannotAsk.map(({ source, reason }) => ({ reason: `cannot-ask ${source}: ${reason}` })) };
 }
@@ -226,12 +219,10 @@ function observed({ events, cannotAsk }: { events: Record<string, unknown>[]; ca
 /**
  * The stall kinds. THE SAMPLE IS TAKEN FIRST, so the history `readTicks` returns includes this run. A sample that could not be taken is a note and
  * the source still runs: it then reads the history it has, and a history that stopped growing is `cannot-ask` by its own age.
- * @type {Source}
  */
 const STALLS: Source = {
   name: "stalls",
   async observe({ now, readers }) {
-    /** @type {Note[]} */
     const notes: Note[] = [];
     try {
       await readers.takeSample?.();
@@ -243,7 +234,6 @@ const STALLS: Source = {
   },
 };
 
-/** @type {Source} */
 const INCIDENTS: Source = {
   name: "incidents",
   async observe({ now, readers }) {
@@ -253,7 +243,6 @@ const INCIDENTS: Source = {
 
 /**
  * A release is told once. The repositories are the ones `project.json` declares as code (`declaredCodeRepos`), and the reader is the same `gh api` on the core pool.
- * @type {Source}
  */
 export const RELEASES: Source = {
   name: "releases",
@@ -265,16 +254,14 @@ export const RELEASES: Source = {
   },
 };
 
-/** @type {Source} */
 export const MILESTONES: Source = {
   name: "milestones",
   async observe({ github, repo, history, milestonesPath }) {
     if (milestonesPath === null) return { events: [], notes: [] };
-    /** @type {import("./sources/milestones.ts").MilestoneReaders} */
-    const readers: import("./sources/milestones.ts").MilestoneReaders = {
-      readIssue: ({ repo: where, number }) => github.api(`repos/${where}/issues/${number}`),
-      readPull: ({ repo: where, number }) => github.api(`repos/${where}/pulls/${number}`),
-      readReleases: ({ repo: where }) => github.api(`repos/${where}/releases?per_page=${RELEASES_PER_PAGE}`),
+    const readers = {
+      readIssue: ({ repo: where, number }: { repo: string; number: number }) => github.api(`repos/${where}/issues/${number}`),
+      readPull: ({ repo: where, number }: { repo: string; number: number }) => github.api(`repos/${where}/pulls/${number}`),
+      readReleases: ({ repo: where }: { repo: string }) => github.api(`repos/${where}/releases?per_page=${RELEASES_PER_PAGE}`),
     };
     const { events, notes, cannotAsk } = await observeMilestones({
       milestones: readMilestonesFile(milestonesPath), readers, seen: seenMilestoneKeys(history), defaultRepo: repo, log: () => {},
@@ -286,7 +273,6 @@ export const MILESTONES: Source = {
 /**
  * What the chairman asked to be kept posted on (`chairman:watch`, a11ign/a11ign#3418): each thing in the ledger's watch list is read through the placeholder vocabulary's
  * readers, and a change of its state is told. A caller that hands over no `watchReaders` constructs none and reads nothing for it.
- * @type {Source}
  */
 export const WATCHED: Source = {
   name: "watched",
@@ -311,12 +297,10 @@ const RELEASES_PER_PAGE = 100;
  * THE RELEASES SOURCE EXISTS ONLY FOR A HOST THAT DECLARES REPOSITORIES TO READ (`releaseRepos`), and `main` hands none to a caller that injected its own `github`.
  * THE MILESTONES SOURCE EXISTS ONLY WHEN `messaging.milestones` NAMES A FILE, and a caller that names none constructs none and reads nothing for it.
  * THE WATCHED SOURCE EXISTS ONLY FOR A CALLER THAT HANDS OVER `watchReaders`, and `main` builds them for a real host only.
- * @param {{ summary: { at: string, timezone: string } | null, readers: Record<string, any> | undefined, releaseRepos: readonly string[], milestonesPath: string | null,
- *   watchReaders: import("./placeholders.ts").Readers | undefined }} input @returns {readonly Source[]}
  */
 function sourcesFor({ summary, readers, releaseRepos, milestonesPath, watchReaders }: {
         summary: { at: string; timezone: string; } | null; readers: Record<string, any> | undefined; releaseRepos: readonly string[]; milestonesPath: string | null;
-        watchReaders: import("./placeholders.ts").Readers | undefined;
+        watchReaders: Readers | undefined;
     }): readonly Source[] {
   const declared = summary === null ? DEFAULT_SOURCES : [...DEFAULT_SOURCES, SUMMARY];
   const withReleases = releaseRepos.length === 0 ? declared : [...declared, RELEASES];
@@ -325,8 +309,8 @@ function sourcesFor({ summary, readers, releaseRepos, milestonesPath, watchReade
   return readers === undefined ? withWatched : [...withWatched, ...HOST_SOURCES];
 }
 
-/** @param {Map<string, import("./ledger.ts").KeyRecord>} state @returns {string[]} the request keys the chairman has been told about and not told cleared */
-function openRequestKeys(state: Map<string, import("./ledger.ts").KeyRecord>): string[] {
+/** The request keys the chairman has been told about and not told cleared */
+function openRequestKeys(state: Map<string, KeyRecord>): string[] {
   return [...state].filter(([key, record]) => record.open && parseRequestKey(key) !== null).map(([key]) => key);
 }
 
@@ -334,14 +318,12 @@ function openRequestKeys(state: Map<string, import("./ledger.ts").KeyRecord>): s
  * THE SNOOZE (`later`, a11ign/a11ign#3423): a request the chairman pressed Later on is not observed for 24 hours, so the core sends it nothing, a reminder or
  * a changed ask included (the core has no notion of a snooze, and the watcher is where an event is chosen). A request that stopped asking is never held back:
  * its cleared notice is how the chairman learns it is gone. `snoozedUntil` ends a snooze at the answer or the clearing, so a re-ask is not swallowed.
- *
- * @param {Record<string, unknown>[]} events @param {{ history: Record<string, any>[], nowMs: number }} context @returns {Record<string, unknown>[]}
  */
 function withoutSnoozed(events: Record<string, unknown>[], { history, nowMs }: { history: Record<string, any>[]; nowMs: number; }): Record<string, unknown>[] {
   return events.filter((event) => event.kind !== "request" || event.resolved === true || typeof event.key !== "string" || snoozedUntil(history, event.key, nowMs) === null);
 }
 
-/** @param {Record<string, any>[]} history @param {Note} note @returns {boolean} whether this exact note about this key is already on the record */
+/** Whether this exact note about this key is already on the record */
 function alreadyNoted(history: Record<string, any>[], note: Note): boolean {
   return history.some((line) => line.status === "invalid" && line.kind === "source-note" && line.key === note.key && line.error === note.reason);
 }
@@ -349,8 +331,6 @@ function alreadyNoted(history: Record<string, any>[], note: Note): boolean {
 /**
  * A note about one KEY is written to the ledger once per distinct reason, so a malformed options block is named when it appears and not
  * every five minutes until somebody edits the comment. A note with no key is a reading of the moment (a read failed) and is logged each time.
- *
- * @param {{ notes: Note[], ledger: ReturnType<typeof createLedger>, history: Record<string, any>[], log: (line: string) => void }} input
  */
 function recordNotes({ notes, ledger, history, log }: { notes: Note[]; ledger: ReturnType<typeof createLedger>; history: Record<string, any>[]; log: (line: string) => void; }) {
   for (const note of notes) {
@@ -363,16 +343,9 @@ function recordNotes({ notes, ledger, history, log }: { notes: Note[]; ledger: R
   }
 }
 
-/**
- * @param {SourceContext} context @param {readonly Source[]} sources
- * @returns {Promise<{ events: Record<string, unknown>[], notes: Note[], failures: string[] }>}
- */
 async function gather(context: SourceContext, sources: readonly Source[]): Promise<{ events: Record<string, unknown>[]; notes: Note[]; failures: string[]; }> {
-  /** @type {Record<string, unknown>[]} */
   const events: Record<string, unknown>[] = [];
-  /** @type {Note[]} */
   const notes: Note[] = [];
-  /** @type {string[]} */
   const failures: string[] = [];
   for (const source of sources) {
     try {
@@ -392,12 +365,6 @@ async function gather(context: SourceContext, sources: readonly Source[]): Promi
  *
  * `readers` is what the stall and incident sources read through (`sources/readers.mjs`). Given, they are asked after the label sources; absent, they are
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
- *
- * @param {{ github: any, provider: any, ledger: ReturnType<typeof createLedger>, now: () => number, repo: string, readers?: Record<string, any>,
- *           summary: { at: string, timezone: string } | null, releaseRepos?: readonly string[], milestonesPath?: string | null,
- *           watchReaders?: import("./placeholders.ts").Readers, log?: (line: string) => void, sources?: readonly Source[],
- *           coreConfig?: object }} input
- * @returns {Promise<{ decisions: { key: string, action: string }[], failures: string[] }>}
  */
 export async function runWatch({
   github, provider, ledger, now, repo, readers, summary, releaseRepos = [], milestonesPath = null, watchReaders, log = () => {},
@@ -405,14 +372,14 @@ export async function runWatch({
 }: {
         github: any; provider: any; ledger: ReturnType<typeof createLedger>; now: () => number; repo: string; readers?: Record<string, any>;
         summary: { at: string; timezone: string; } | null; releaseRepos?: readonly string[]; milestonesPath?: string | null;
-        watchReaders?: import("./placeholders.ts").Readers; log?: (line: string) => void; sources?: readonly Source[];
+        watchReaders?: Readers; log?: (line: string) => void; sources?: readonly Source[];
         coreConfig?: object;
     }): Promise<{ decisions: { key: string; action: string; }[]; failures: string[]; }> {
   const history = ledger.read();
   const openKeys = openRequestKeys(foldLedger(history));
   const { events, notes, failures } = await gather({ github, repo, now: now(), openKeys, summary, readers: readers ?? {}, history, releaseRepos, milestonesPath, watchReaders }, sources);
   recordNotes({ notes, ledger, history, log });
-  const messenger = createMessenger({ provider, ledger, now, config: /** @type {any} */ (coreConfig) });
+  const messenger = createMessenger({ provider, ledger, now, config: coreConfig as Parameters<typeof createMessenger>[0]["config"] });
   const decisions = await messenger.tick(withoutSnoozed(events, { history, nowMs: now() }));
   for (const failure of failures) log(failure);
   return { decisions, failures };
@@ -420,7 +387,6 @@ export async function runWatch({
 
 /**
  * Every repository the project declares as code, each once: the packages whose releases the chairman is told about.
- * @param {string} root @returns {string[]}
  */
 export function declaredCodeRepos(root: string): string[] {
   const declared = JSON.parse(readFileSync(join(root, PROJECT_FILE), "utf8"))?.code;
@@ -428,7 +394,7 @@ export function declaredCodeRepos(root: string): string[] {
   return [...new Set(repos)];
 }
 
-/** @param {string} root @param {string} home @param {(line: string) => void} err @returns {ReturnType<typeof readMessagingConfig> | null} null after saying why */
+/** Null after saying why. */
 function loadConfig(root: string, home: string, err: (line: string) => void): ReturnType<typeof readMessagingConfig> | null {
   try {
     return readMessagingConfig(resolve(root), { home });
@@ -439,17 +405,13 @@ function loadConfig(root: string, home: string, err: (line: string) => void): Re
   }
 }
 
-/** @param {{ decisions: { action: string }[], failures: string[] }} result @returns {number} */
 function exitCodeOf({ decisions, failures }: { decisions: { action: string; }[]; failures: string[]; }): number {
   const refused = decisions.some(({ action }) => action === "failed" || action === "invalid");
   return failures.length > 0 || refused ? EXIT.failed : EXIT.ok;
 }
 
-/**
- * @param {{ config: import("./config.ts").MessagingOn, env: Record<string, string | undefined>, github: unknown, providers: Record<string, unknown> }} input
- * @returns {{ code: number, message: string } | null} why this program will not start, or null
- */
-function refusalToStart({ config, env, github, providers }: { config: import("./config.ts").MessagingOn; env: Record<string, string | undefined>; github: unknown; providers: Record<string, unknown>; }): { code: number; message: string; } | null {
+/** Why this program will not start, or null. */
+function refusalToStart({ config, env, github, providers }: { config: MessagingOn; env: Record<string, string | undefined>; github: unknown; providers: Record<string, unknown>; }): { code: number; message: string; } | null {
   if (github === undefined && !accountIsDeclared(env)) {
     return { code: EXIT.refused, message: "no GitHub account is declared (GH_CONFIG_DIR, or an agent workspace); refusing to read as whoever `gh` last logged in as (#1967)" };
   }
@@ -462,7 +424,7 @@ function refusalToStart({ config, env, github, providers }: { config: import("./
 /** `fleet-watch`'s own default state path (`packages/control/src/fleet-watch.mjs`'s `DEFAULT_STATE_PATH`), relative to the checkout its unit runs in: the one this unit runs in. */
 const FLEET_WATCH_STATE = join("runs", "fleet-watch-state.json");
 
-/** @param {string} root @param {(line: string) => void} err @returns {string | undefined} the work-tick unit's name, or undefined after saying why not */
+/** The work-tick unit's name, or undefined after saying why not. */
 function workTickUnit(root: string, err: (line: string) => void): string | undefined {
   try {
     return `${readUnitsDeclaration(root).prefix}work-tick.service`;
@@ -475,9 +437,6 @@ function workTickUnit(root: string, err: (line: string) => void): string | undef
 /**
  * The reads the stall and incident sources run on, for a real host. An INJECTED `github` is a test's, and these reach systemd, herdr and files a test
  * must not touch, so there are none for it unless the test brings its own.
- *
- * @param {{ root: string, home: string, now: () => number, err: (line: string) => void, github: any }} input
- * @returns {ReturnType<typeof createReaders>}
  */
 function hostReaders({ root, home, now, err, github }: { root: string; home: string; now: () => number; err: (line: string) => void; github: any; }): ReturnType<typeof createReaders> {
   return createReaders({
@@ -492,21 +451,15 @@ function hostReaders({ root, home, now, err, github }: { root: string; home: str
 /**
  * The Telegram provider for a `messaging` key that is on: the token and the chairman's chat id are read HERE, at the moment of building, so a file that has gone
  * wrong since `messaging:check` is refused on the run that needed it. `listen.mjs` reads the same two files the same way.
- *
- * @param {import("./config.ts").MessagingOn} config
- * @param {{ fetch: typeof fetch, log: (line: string) => void }} context
  */
-function telegramProvider(config: import("./config.ts").MessagingOn, { fetch: fetchImpl, log }: { fetch: typeof fetch; log: (line: string) => void; }) {
+function telegramProvider(config: MessagingOn, { fetch: fetchImpl, log }: { fetch: typeof fetch; log: (line: string) => void; }) {
   const token = readSecretFile(config.tokenFile);
   const { chatId } = readChairman(config.chairmanFile);
   return createTelegramProvider({ token, chatId, fetch: fetchImpl, log });
 }
 
-/**
- * @param {{ config: import("./config.ts").MessagingOn, providers: Record<string, (config: any, context: any) => any>, fetch: typeof fetch, err: (line: string) => void }} input
- * @returns {Promise<unknown | null>} the provider, or null after saying why it could not be built (the line names the file and never holds a secret)
- */
-async function buildProvider({ config, providers, fetch: fetchImpl, err }: { config: import("./config.ts").MessagingOn; providers: Record<string, (config: any, context: any) => any>; fetch: typeof fetch; err: (line: string) => void; }): Promise<unknown | null> {
+/** The provider, or null after saying why it could not be built (the line names the file and never holds a secret). */
+async function buildProvider({ config, providers, fetch: fetchImpl, err }: { config: MessagingOn; providers: Record<string, (config: any, context: any) => any>; fetch: typeof fetch; err: (line: string) => void; }): Promise<unknown | null> {
   try {
     return await providers[config.provider](config, { fetch: fetchImpl, log: err });
   } catch (error) {
@@ -521,20 +474,15 @@ async function buildProvider({ config, providers, fetch: fetchImpl, err }: { con
  * and NOT `process.cwd()` (#3485): the unit in tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so a cwd root exited 2 on the project declaration.
  */
 const DEFAULT_DEPS = () => ({
-  root: HOME_CHECKOUT, env: process.env, home: homedir(), now: Date.now, github: /** @type {any} */ (undefined), readers: /** @type {any} */ (undefined),
-  watchReaders: /** @type {import("./placeholders.ts").Readers | undefined} */ (undefined),
-  providers: /** @type {Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>} */ ({ telegram: telegramProvider }), fetch: globalThis.fetch,
-  out: (/** @type {string} */ line: string) => console.log(line), err: (/** @type {string} */ line: string) => console.error(line),
+  root: HOME_CHECKOUT, env: process.env, home: homedir(), now: Date.now, github: undefined as any, readers: undefined as any,
+  watchReaders: undefined as Readers | undefined,
+  providers: { telegram: telegramProvider } as Record<string, (config: any, context: { fetch: typeof fetch; log: (line: string) => void }) => any>, fetch: globalThis.fetch,
+  out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 
-/**
- * @param {{ root?: string, env?: Record<string, string | undefined>, home?: string, now?: () => number, github?: any, readers?: Record<string, any>, watchReaders?: import("./placeholders.ts").Readers,
- *           providers?: Record<string, (config: any, context: { fetch: typeof fetch, log: (line: string) => void }) => any>, fetch?: typeof fetch,
- *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
- * @returns {Promise<number>} the exit code: 0 done (or off), 1 something failed this tick, 2 refused to start
- */
+/** The exit code: 0 done (or off), 1 something failed this tick, 2 refused to start. */
 export async function main(deps: {
-    root?: string; env?: Record<string, string | undefined>; home?: string; now?: () => number; github?: any; readers?: Record<string, any>; watchReaders?: import("./placeholders.ts").Readers;
+    root?: string; env?: Record<string, string | undefined>; home?: string; now?: () => number; github?: any; readers?: Record<string, any>; watchReaders?: Readers;
     providers?: Record<string, (config: any, context: { fetch: typeof fetch; log: (line: string) => void; }) => any>; fetch?: typeof fetch;
     out?: (line: string) => void; err?: (line: string) => void;
 } = {}): Promise<number> {
