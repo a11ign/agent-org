@@ -1,6 +1,6 @@
 // @ts-check
 // THE LEAK SCAN `gate` RUNS (#2792, ADR 0040 decision 6 step 2; a11ign/a11ign#2623). This repository is PUBLIC, so what is committed here is
-// published. The scan reads the tool's OWN generic patterns (`src/lib/generic-leak-patterns.mjs`: a private LAN IPv4 address, a named SSH private key
+// published. The scan reads the tool's OWN generic patterns (`src/lib/generic-leak-patterns.ts`: a private LAN IPv4 address, a named SSH private key
 // file) over every file in the tree and REFUSES on a hit, naming the file and the value. It deliberately does not call `allLeaksIn`, which reads
 // a project's declaration (`.agent-org/project.json`) that this repository does not hold: the tool is configured by the project that runs it.
 //
@@ -9,7 +9,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { GENERIC_LEAK_PATTERNS } from "../../src/lib/generic-leak-patterns.mjs";
+import { GENERIC_LEAK_PATTERNS } from "../../src/lib/generic-leak-patterns.ts";
 
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 

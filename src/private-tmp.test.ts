@@ -43,10 +43,10 @@ function findRstest(from: string): string {
 const RSTEST = findRstest(REPO);
 
 // The real config is read only when it is there: ci.yml's `agentOrg` job lays the tool out WITHOUT `scripts/` (a11ign/a11ign#3872), so a static import
-// of it would fail this whole file at load (and `tsx` is imported only where the config exists, because plain `node` cannot load a `.ts`), and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
+// of it would fail this whole file at load (and the config is imported only where it exists), and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
 const CONFIG_PATH = join(REPO, "scripts", "rstest", "rstest.config.ts");
 const config: { globalSetup?: string[]; setupFiles?: string[] } | undefined = existsSync(CONFIG_PATH)
-  ? (await (await import("tsx/esm/api")).tsImport(pathToFileURL(CONFIG_PATH).href, import.meta.url)).default
+  ? (await import(pathToFileURL(CONFIG_PATH).href)).default
   : undefined;
 
 // `os.tmpdir()` is already this file's private directory when the suite runs under its own config, which is what the LIVE test below asserts.
