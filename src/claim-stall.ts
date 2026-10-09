@@ -444,7 +444,7 @@ export function holderWorkAtRisk(io: HostReads, { merged, ...home }: {
  * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals already say it has been quiet. `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  */
 export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, };
-export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
+export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], waiting?: string, mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
 
 /** @param {(number | null)[]} times @returns {number | null} */
 function latest(times: (number | null)[]): number | null {
@@ -570,7 +570,7 @@ function clockReading(facts: ClaimFacts, ctx: Parameters<typeof claimReading>[1]
   const gone = goneReading(facts, ctx);
   if (gone !== null) return gone;
   if (facts.blockedBy.length > 0) return blockedReading(facts);
-  if (facts.waiting !== null) return { kind: "waiting", waiting: facts.waiting };
+  if (facts.waiting !== null) return waitReading(facts, facts.waiting);
   const cheap = (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt]) as number);
   if (ctx.now - cheap < interval) return { kind: "moving", lastMoveAt: cheap };
   const lastMoveAt = (latest([cheap, facts.file()]) as number);
@@ -702,6 +702,28 @@ function blockedReading(facts: ClaimFacts): Reading {
       : `blocked, but the holder has ${work.dirty} dirty file(s) and ${work.unpushed} unpushed commit(s)` };
   }
   return { kind: "release", why: "blocked", lastMoveAt: null, idleMs: null, nudgedAt: null, edges: facts.blockedBy };
+}
+
+/**
+ * The declared waits a holder CANNOT FINISH THROUGH (#4637, class `row-not-finishable`): a future reading or date (`not-before`), another actor's act
+ * (`answer:<other session>`, `needs:chairman`) and another row's result (a `Waiting-for:` on a row). `fleet-hold` is NOT one: it says the holder's own captures
+ * own the workers, so it is the holder's wait to keep. `answer:<the holder>` never reaches here (`declaredWaitOf` drops it: the row is waiting on the holder).
+ */
+export const WAIT_RELEASE_KINDS: readonly string[] = Object.freeze(["not-before", "answer", "chairman", "blocked-by"]);
+
+/**
+ * A DECLARED wait, and what the holder may do about it. Release (8)'s logic applied to every wait the claimant cannot finish through: a holder
+ * that holds NOTHING (the {@link workAtRisk} predicate (8) uses: no dirty file, no unpushed commit; and `clockReading` already returned `pr-owned` for an open
+ * pull request) has nothing to protect, and keeping the claim only holds an engineer slot and its Region for the length of the wait. A holder
+ * that holds work, or whose tree cannot be read, keeps today's `waiting` reading: the work is its own to ship, and an unreadable tree is not "nothing".
+ * A kind this does not know (or a fact built without one) stays `waiting`, so a new kind of wait cannot start releasing by accident.
+ * @param {ClaimFacts} facts @param {string} waiting @returns {Reading}
+ */
+function waitReading(facts: ClaimFacts, waiting: string): Reading {
+  const kept: Reading = { kind: "waiting", waiting };
+  if (facts.waitKind === undefined || facts.waitKind === null || !WAIT_RELEASE_KINDS.includes(facts.waitKind)) return kept;
+  if (facts.work().state !== "none") return kept;
+  return { kind: "release", why: "wait", lastMoveAt: null, idleMs: null, nudgedAt: null, waiting };
 }
 
 // --- THE FACTS OF ONE ROW ---------------------------------------------------------------------------------------------
@@ -905,7 +927,7 @@ const minutes = (ms: number) => Math.round(ms / MINUTE_MS);
 /**
  * `interrupt` (#3535) is a closed row's per-row instance caught mid-turn: the performer stops it, with no prompt
  */
-export type ReleaseRequest = { row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone" | "closed", branch: string | null, worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string, interrupt?: boolean };
+export type ReleaseRequest = { row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait", branch: string | null, worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[], waiting?: string, mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string, interrupt?: boolean };
 export type StallOrder = { session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string, title?: string, release?: ReleaseRequest, resume?: boolean };
 
 /**
@@ -1014,6 +1036,7 @@ function releaseOrder(facts: Pick<ClaimFacts, "row" | "session" | "branch" | "wo
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.interrupt === true ? { interrupt: true } : {}),
     ...(reading.edges === undefined ? {} : { edges: reading.edges }),
+    ...(reading.waiting === undefined ? {} : { waiting: reading.waiting }),
     ...(reading.mergedPr === undefined ? {} : { mergedPr: reading.mergedPr, answer: "product-manager",
       ...(reading.mergedPrRepoKey === undefined ? {} : { mergedPrRepoKey: reading.mergedPrRepoKey }),
       ...(reading.mergedPrHead === undefined ? {} : { mergedPrHead: reading.mergedPrHead }) }),
@@ -1024,6 +1047,7 @@ function releaseOrder(facts: Pick<ClaimFacts, "row" | "session" | "branch" | "wo
     : reading.why === "stalled" ? `nothing moved for ${release.idleMinutes} minutes and the nudge was not answered`
     : reading.why === "closed" ? `#${facts.row} is CLOSED${reading.interrupt === true ? ` while ${facts.session} is mid-turn on it, so the instance is interrupted` : ""}`
     : reading.why === "blocked" ? `blocked by ${(reading.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing`
+    : reading.why === "wait" ? `${reading.waiting ?? "a declared wait"}, and the holder holds nothing`
     : reading.why === "gone" ? `${facts.session} no longer exists in herdr's own listing${release.openPrs === undefined ? ""
       : `, and ${openPrMentions(release)} is still open (the row is held for product-manager, not returned to the pool)`}`
     : `${mergedPrMention(release)} merged and the row stayed open`;

@@ -220,14 +220,21 @@ const noGit = { git: () => ({ status: 0, out: "" }), exists: () => false, mtime:
 function gateTick(row: object, { prs = [] as object[], agents = listing("idle"), memory = { 2999: { session: "worker-9", idleSince: ago(50) } } as Record<string, unknown> } = {}) {
   return claimStallTick({ rows: [row], claimedComments: [{ number: 2999, comments: [claimComment] }], openPrs: prs, mergedPrs: null, io: noGit,
     repo: "/repo", now: NOW, restartAt: null, agents, stateDir: "/state", ledger: () => "", log: () => undefined,
-    read: () => JSON.parse(JSON.stringify(memory)), write: () => undefined } as never) as { prompt: string; cause: string }[];
+    read: () => JSON.parse(JSON.stringify(memory)), write: () => undefined } as never) as { prompt: string; cause: string; release?: { why: string } }[];
 }
+
+/** the orders that ASK the holder something: #4637 releases a holder holding nothing on a declared wait, and a release is not a nudge */
+const nudgesOf = (orders: { release?: unknown }[]) => orders.filter((o) => o.release === undefined);
 
 test("#2999 through the gate: a row carrying a future `Not-before:` or `needs:chairman` is not nudged, and the same row without one IS", () => {
   assert.equal(gateTick(claimRow("")).length, 1, "the control: an idle holder with no field is nudged");
-  assert.equal(gateTick(claimRow("Not-before: 2099-01-01")).length, 0);
-  assert.equal(gateTick(claimRow("", ["needs:chairman"])).length, 0);
-  assert.equal(gateTick(claimRow("", ["answer:product-manager"])).length, 0, "an answer owed by ANOTHER session is a wait");
+  assert.equal(nudgesOf(gateTick(claimRow("Not-before: 2099-01-01"))).length, 0);
+  assert.equal(nudgesOf(gateTick(claimRow("", ["needs:chairman"]))).length, 0);
+  assert.equal(nudgesOf(gateTick(claimRow("", ["answer:product-manager"]))).length, 0, "an answer owed by ANOTHER session is a wait");
+  // #4637: this holder holds nothing (`noGit` reads a clean, absent tree), so the same three waits RELEASE it instead of leaving it holding a slot
+  for (const wait of [claimRow("Not-before: 2099-01-01"), claimRow("", ["needs:chairman"]), claimRow("", ["answer:product-manager"])]) {
+    assert.deepEqual(gateTick(wait).map((o) => o.release?.why), ["wait"]);
+  }
   assert.equal(gateTick(claimRow("", ["answer:worker-9"])).length, 1, "an answer owed BY THE HOLDER is the row waiting on the holder, which `declaredWait` already refuses to read as one");
 });
 
