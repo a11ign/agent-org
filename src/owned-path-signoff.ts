@@ -48,6 +48,7 @@ import { resolve } from "node:path";
 
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { HOME_CHECKOUT } from "./project-config.ts";
+import { isAcceptancePath } from "./acceptance-file.ts";
 
 const EXIT = { SIGNED: 0, REFUSED: 1, CANNOT_ASK: 2 };
 const REPO = HOME_CHECKOUT;
@@ -80,6 +81,7 @@ export function loadFacts(path = resolve(REPO, "docs/owned-path-facts.json")): {
  * @param {string} changed @param {string[]} owned
  */
 export function isOwned(changed: string, owned: string[]) {
+  if (isAcceptancePath(changed)) return false; // ADR 0044: a pull request's own acceptance file is no owner's path
   return owned.some((prefix) => (prefix.endsWith("/")
     ? changed.startsWith(prefix)
     : changed === prefix || changed.startsWith(`${prefix}/`)));

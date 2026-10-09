@@ -13,6 +13,7 @@
   },
   "exports": {
     "./acceptance-commands": "./src/acceptance-commands.ts",
+    "./acceptance-file": "./src/acceptance-file.ts",
     "./board-data": "./src/board-data.ts",
     "./board-document": "./src/board-document.ts",
     "./leak-patterns": "./src/lib/leak-patterns.mjs",

@@ -28,7 +28,8 @@ import { COMMANDS } from "./commands.mjs";
 
 /** subpath -> the names a project's callers import from it (counted in a11ign/a11ign on origin/main, 2026-10-09). */
 const DECLARED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
-  "./acceptance-commands": ["extractClosesDeclaration", "closesReferences", "hasFullHistoryDeclaration"],
+  "./acceptance-commands": ["extractClosesDeclaration", "closesReferences", "hasFullHistoryDeclaration", "acceptanceSourceOfThisPullRequest"],
+  "./acceptance-file": ["resolveAcceptanceSource", "sectionsTextOf", "sourceLine", "acceptanceFileForBranch", "isAcceptancePath"],
   "./board-data": ["REPO", "gh"],
   "./board-document": ["resolveChromeBinary"],
   "./leak-patterns": ["assertNoLeakInArgv", "leakRefusalReason"],
@@ -101,7 +102,7 @@ test("Node resolves each declared subpath, through the package name, to the file
 test("every declared subpath carries every name a project's callers use", () => {
   assert.deepEqual(interfaceProblems(ROOT, DECLARED_EXPORTS), []);
   // POSITIVE CONTROL for the emptiness above: the walk visited every subpath and every name, so `[]` is a verdict and not a skipped loop.
-  assert.equal(Object.values(DECLARED_EXPORTS).flat().length, 14);
+  assert.equal(Object.values(DECLARED_EXPORTS).flat().length, 20);
 });
 
 test("every declared subcommand is in the command table and names a program that exists", () => {
