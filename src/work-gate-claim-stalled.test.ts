@@ -238,15 +238,20 @@ test("#2470 `answer:<the holder>` is NOT a wait of the holder's (the row waits o
   const ownAnswer = tickWith({ commit: null }, [old], { rows: [row(2407, ["in-progress", "session:worker-7", "answer:worker-7"])] });
   assert.equal(ownAnswer.orders.length, 1, "a session owing the answer on ITS OWN row is the case this cause is for");
   const rulingOwed = tickWith({ commit: null }, [old], { rows: [row(2407, ["in-progress", "session:worker-7", "answer:product-manager"])] });
-  assert.deepEqual(rulingOwed.orders, [], "CONTROL: waiting on someone else's ruling is a declared wait");
+  // #4637: a declared wait is respected for a holder with work to protect, and RELEASES one that holds nothing
+  assert.deepEqual(tickWith({ commit: null, unpushed: 1 }, [old], { rows: [row(2407, ["in-progress", "session:worker-7", "answer:product-manager"])] }).orders, [],
+    "CONTROL: waiting on someone else's ruling is a declared wait, kept while the holder has an unpushed commit");
+  assert.deepEqual(rulingOwed.orders.map((o) => o.release?.why), ["wait"], "and a holder holding nothing is released, not nudged");
 });
 
 test("#2470 a row that DECLARES its wait is not stalled, and a row with no claim record is not evaluated (and says so)", () => {
   const old = claim(N_MIN + 300);
+  // a holder holding work keeps its declared wait (#4637 releases only a holder holding nothing, pinned in `claim-wait-release.test.ts`)
+  const holdingWork = { commit: null, unpushed: 1 };
   for (const labels of [["in-progress", "session:worker-7", "answer:product-manager"], ["in-progress", "session:worker-7", "needs:chairman"]]) {
-    assert.deepEqual(tickWith({ commit: null }, [old], { rows: [row(2407, labels)] }).orders, [], labels.join(","));
+    assert.deepEqual(tickWith(holdingWork, [old], { rows: [row(2407, labels)] }).orders, [], labels.join(","));
   }
-  assert.equal(tickWith({ commit: null }, [old], { rows: [row(2407, ["in-progress", "session:worker-7"], { body: "Not-before: 2099-01-01" })] }).orders.length, 0);
+  assert.equal(tickWith(holdingWork, [old], { rows: [row(2407, ["in-progress", "session:worker-7"], { body: "Not-before: 2099-01-01" })] }).orders.length, 0);
   const unrecorded = tickWith({ commit: null }, [said(N_MIN + 300)]);
   assert.deepEqual(unrecorded.orders, []);
   assert.match(unrecorded.log.join(""), /#2407 carries session:worker-7 but no claim record.*not evaluated/,

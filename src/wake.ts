@@ -5538,7 +5538,7 @@ export type SpareWorktree = { path: string, clean: boolean | "unknown", merge: "
 /**
  * `rows` is EVERY row the instance held, oldest first (#2407), and its ABSENCE is what marks a legacy line: one written before the field existed, which {@link consecutiveClean} counts for nothing. `released` (#2470, #2747) marks a line the GATE wrote when it took a claim back from a stalled, blocked, merged or gone holder: see {@link isReleaseLine}
  */
-export type SpareCycle = { role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[], released?: "stalled" | "blocked" | "merged" | "gone" | "closed" };
+export type SpareCycle = { role: string, row: number | null, at: number, clean: boolean, why: string, rows?: number[], released?: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait" };
 
 /**
  * Was this cycle CLEAN -- the one fact #1950's "20 consecutive clean spawn-and-teardown cycles" counts.
@@ -6576,6 +6576,9 @@ function releaseHeadline(request: ReleaseRequest): string {
   if (request.why === "blocked") {
     return `this row carries an open \`blockedBy\` edge on ${(request.edges ?? []).map((n) => `#${n}`).join(", ")} and the holder holds nothing built`;
   }
+  if (request.why === "wait") {
+    return `this row's only remaining step is a wait the holder cannot finish through (${request.waiting ?? "a declared wait"}, #4637) and the holder holds nothing built`;
+  }
   if (request.why === "closed") {
     return `this row was CLOSED while it still carried the claim${request.interrupt === true ? `, and \`${request.session}\` was mid-turn on it, so its turn was interrupted (#3535)` : " (#3535)"}`;
   }
@@ -6613,6 +6616,8 @@ function releaseComment(request: ReleaseRequest, plan: { keep: boolean; work: Re
       : plan.onOrigin
       ? "The row is back in the pool, BUT its branch is on `origin` with no pull request, so #2031's `row-branch-unshipped` holds it for `product-manager` "
         + "to read first (open the PR, delete the branch, or rename it); the kept worktree waits, and the respawn adopts it once the row is offered."
+      : request.why === "wait"
+      ? "The row is back in the pool with its wait field still on it: the gate offers it again once the wait clears, so no engineer slot is held meanwhile."
       : "The row is back in the pool, and a fresh instance takes it.";
   return `**Claim released by the gate (#2470).** \`${request.session}\` held this row, and ${releaseHeadline(request)}. ${kept} ${next}`;
 }
