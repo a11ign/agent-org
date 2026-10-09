@@ -10,11 +10,17 @@
 // JEV NEVER ACTS. The route is a decision about delivery. Nothing here labels, comments, edits or sends because of an answer: the order's text is agent-written state and
 // the provider is a third party.
 //
+// THE STATE THE PROVIDER SEES IS FACTS (#4631): the cause, its key, the seat, the age of the last delivery of the same key to the same seat, whether main is red and whether a
+// chairman direction is attached. The order's text is not among them, and `triage-provider.ts` whitelists the fields so it cannot become one by accident.
+//
+// A HELD ORDER'S OUTCOME IS NOW READABLE (#4631). When the same cause is offered again to the same seat within a day of a held order's delivery, one `outcome` line says
+// `needed-action: true`. It is a PROXY, and the line says so: the gate emitting a cause again shows it still stands, not that anybody acted on the digest.
+//
 // THE REVERT IS `"provider": "none"` in the host's `triage` block. Routing then asks nobody and writes nothing, and delivery is byte-identical to before. Orders already held
 // still ride or flush, because a revert must not strand what was held under the old setting.
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { triageOrder, type Label, type Triage, type TriageDeps } from "./triage-provider.ts";
+import { triageOrder, type Label, type Triage, type TriageDeps, type TriageOrder } from "./triage-provider.ts";
 
 /** The seats whose wakes cost the most and read the most digest material (the row names them). */
 export const TRIAGE_MANAGERS: readonly string[] = Object.freeze(["ceo", "product-manager", "orchestrator"]);
@@ -25,20 +31,34 @@ const DIGEST_RIDE_BYTES = 16 * 1024;
 const MS_PER_MINUTE = 60_000;
 const DIGEST_CAUSE = "triage-digest";
 const CHAIRMAN = /chairman/i;
+/** The cause `trunk-red.ts` gives the one order a red main produces. */
+const RED_MAIN_CAUSE = "trunk-red";
+/** How long after a held order's delivery its coming back is read as "it needed action". */
+export const OUTCOME_WINDOW_MS = 24 * 60 * MS_PER_MINUTE;
+export const NEEDED_ACTION_PROXY = "a PROXY: the same cause was offered to the same seat again within 24 hours of the held order's delivery, which shows it still stood and not that anybody acted on it";
 
-export type GateOrder = { session: string; causeKey: string; prompt: string; cause?: string; resume?: boolean; decision?: boolean };
+/** `startFresh` is the gate's own mark of a row the chairman prioritised (#4524): the one structured chairman direction an order carries. */
+export type GateOrder = { session: string; causeKey: string; prompt: string; cause?: string; resume?: boolean; decision?: boolean; startFresh?: boolean };
 /** What was decided about one asked order: the ledger line the row calls `triage: { route, via, confidence }`. */
 export type Routing = { route: Label; via: Triage["via"]; confidence?: number };
 /** An order held for the digest: all that is needed to deliver it later, and what the provider said. */
 export type Held = { at: number; causeKey: string; session: string; prompt: string; triage: Routing };
 /** Every asked order, held or not -- the list the measurement reads. */
-export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean };
-type DigestLine = { asked: Asked; prompt?: string } | { delivered: string[]; at: number; carrier: string };
+export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean; answers?: Record<string, string> };
+/** What came of a held order: it was offered again after its delivery. `proxy` says what that does and does not show. */
+export type Outcome = { at: number; causeKey: string; session: string; deliveredAt: number; "needed-action": true; proxy: string };
+type DigestLine = { asked: Asked; prompt?: string } | { delivered: string[]; at: number; carrier: string } | { outcome: Outcome };
+/** The log folded once: what is held, when each held order was last delivered (by seat and cause), and which deliveries already have an outcome line. */
+type Folded = { pending: Held[]; deliveredAt: Map<string, number>; recorded: Set<string> };
 
 /** The digest log sits beside the wake ledger, the way every other piece of the tick's state does. */
 export const digestPathFrom = (ledgerPath: string): string => join(dirname(ledgerPath), "triage-digest");
 
-const causeOf = (order: GateOrder): string => order.cause ?? order.causeKey.split("/")[1] ?? "";
+const causeOf = (order: Pick<GateOrder, "causeKey" | "cause">): string => order.cause ?? order.causeKey.split("/")[1] ?? "";
+const seatKey = (session: string, causeKey: string): string => `${session}\t${causeKey}`;
+
+/** Is this the order a red main produces? The tick asks it of EVERY gate order, so a red main whose order went out a few minutes ago is still known to be red. */
+export const namesRedMain = (order: Pick<GateOrder, "causeKey" | "cause">): boolean => causeOf(order) === RED_MAIN_CAUSE;
 
 /**
  * MAY THIS ORDER BE ASKED ABOUT AT ALL? Only a manager's gate order with a cause. `exclude` is the causeKeys of the orders the tick wrote itself (a stalled order, a pane at a
@@ -51,39 +71,67 @@ export function routable(order: GateOrder, exclude: ReadonlySet<string> = new Se
 }
 
 /** The log, folded in order: a `delivered` line retires what precedes it, so the same cause held again later is live again. A malformed line throws, like the queue's. */
-export function readDigest(path: string, read: typeof readFileSync = readFileSync): Held[] {
+function foldDigest(path: string, read: typeof readFileSync): Folded {
   let raw: string;
   try {
     raw = String(read(path, "utf8"));
   } catch (err) {
-    if ((err as { code?: string })?.code === "ENOENT") return [];
+    if ((err as { code?: string })?.code === "ENOENT") return { pending: [], deliveredAt: new Map(), recorded: new Set() };
     throw err;
   }
   const pending = new Map<string, Held>();
+  const deliveredAt = new Map<string, number>();
+  const recorded = new Set<string>();
   for (const text of raw.split("\n").filter((line) => line.trim() !== "")) {
     const line = JSON.parse(text) as DigestLine;
-    if ("delivered" in line) {
-      for (const key of line.delivered) pending.delete(key);
+    if ("outcome" in line) {
+      recorded.add(`${seatKey(line.outcome.session, line.outcome.causeKey)}\t${line.outcome.deliveredAt}`);
+    } else if ("delivered" in line) {
+      for (const key of line.delivered) {
+        const held = pending.get(key);
+        if (held !== undefined) deliveredAt.set(seatKey(held.session, key), line.at);
+        pending.delete(key);
+      }
     } else if (line.asked.held && typeof line.prompt === "string" && !pending.has(line.asked.causeKey)) {
       const { at, causeKey, session, triage } = line.asked;
       pending.set(causeKey, { at, causeKey, session, prompt: line.prompt, triage });
     }
   }
-  return [...pending.values()];
+  return { pending: [...pending.values()], deliveredAt, recorded };
 }
+
+/** What is held now. */
+export const readDigest = (path: string, read: typeof readFileSync = readFileSync): Held[] => foldDigest(path, read).pending;
 
 const appendLine = (path: string, line: DigestLine): void => {
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify(line)}\n`);
 };
 
-export type RouteDeps = { host: TriageDeps["host"]; digestPath: string; now?: () => number; triage?: typeof triageOrder; triageDeps?: Omit<TriageDeps, "host">; exclude?: ReadonlySet<string> };
+/** What the tick knows that an order does not say. A part left out is NOT KNOWN, and the provider's state then omits the field rather than saying "no". */
+export type TickFacts = { mainRed?: boolean; deliveries?: readonly { at: number; key: string; session: string }[] };
+export type RouteDeps = {
+  host: TriageDeps["host"]; digestPath: string; now?: () => number; triage?: typeof triageOrder;
+  triageDeps?: Omit<TriageDeps, "host">; exclude?: ReadonlySet<string>; facts?: TickFacts;
+};
+
+/** The facts of one order that the provider is asked about. Its text is not among them. */
+function stateOf(order: GateOrder, facts: TickFacts, now: number): TriageOrder {
+  const deliveries = facts.deliveries?.filter((d) => d.key === order.causeKey && d.session === order.session);
+  const last = deliveries === undefined ? undefined : deliveries.length === 0 ? null : Math.max(...deliveries.map((d) => d.at));
+  return {
+    cause: causeOf(order), causeKey: order.causeKey, session: order.session,
+    ...(last === undefined ? {} : { lastDeliveredMinutesAgo: last === null ? null : Math.max(0, Math.round((now - last) / MS_PER_MINUTE)) }),
+    ...(facts.mainRed === undefined ? {} : { mainRed: facts.mainRed }),
+    chairmanDirection: order.startFresh === true || CHAIRMAN.test(order.causeKey),
+  };
+}
 
 /** A provider that throws is a provider that failed: the order is delivered as before, and the line says why. */
-async function askSafely(order: GateOrder, deps: RouteDeps): Promise<Triage> {
+async function askSafely(order: GateOrder, deps: RouteDeps, now: number): Promise<Triage> {
   const ask = deps.triage ?? triageOrder;
   try {
-    return await ask({ cause: causeOf(order), causeKey: order.causeKey, session: order.session }, { ...deps.triageDeps, host: deps.host });
+    return await ask(stateOf(order, deps.facts ?? {}, now), { ...deps.triageDeps, host: deps.host });
   } catch {
     return { route: "wake", via: "none", reason: "the triage read failed" };
   }
@@ -92,16 +140,33 @@ async function askSafely(order: GateOrder, deps: RouteDeps): Promise<Triage> {
 const routing = ({ route, via, confidence }: Triage): Routing => ({ route, via, ...(confidence === undefined ? {} : { confidence }) });
 
 /**
+ * READ A HELD ORDER'S OUTCOME. An order that was held, delivered, and is offered AGAIN to the same seat inside {@link OUTCOME_WINDOW_MS} gets one `outcome` line: it still
+ * stood after the digest carried it. One line per delivery, however many ticks offer it again. Provider `none` never reaches here: it writes nothing.
+ */
+function recordNeededAction(offered: readonly GateOrder[], history: Folded, { digestPath, at }: { digestPath: string; at: number }): void {
+  for (const { session, causeKey } of offered) {
+    const deliveredAt = history.deliveredAt.get(seatKey(session, causeKey));
+    if (deliveredAt === undefined || at - deliveredAt > OUTCOME_WINDOW_MS) continue;
+    const identity = `${seatKey(session, causeKey)}\t${deliveredAt}`;
+    if (history.recorded.has(identity)) continue;
+    history.recorded.add(identity);
+    appendLine(digestPath, { outcome: { at, causeKey, session, deliveredAt, "needed-action": true, proxy: NEEDED_ACTION_PROXY } });
+  }
+}
+
+/**
  * SPLIT THE TICK'S ORDERS INTO WHAT IS DELIVERED NOW AND WHAT IS HELD. Provider `none` or absent returns the orders as they came, asks nobody and writes nothing. Below the
- * host's `minConfidence`, or on any provider error, `triageOrder` itself answers `wake` and the order is delivered as before. An order already held is not asked again.
+ * host's `minConfidence`, or on any provider error, the question that was not answered takes its fallback, which wakes. An order already held is not asked again.
  * The reads run together, so a slow provider costs one timeout and not one per order.
  */
 export async function routeOrders<T extends GateOrder>(orders: readonly T[], deps: RouteDeps): Promise<{ deliver: T[]; held: Held[] }> {
   if ((deps.host.triage?.provider ?? "none") === "none") return { deliver: [...orders], held: [] };
-  const alreadyHeld = new Set(readDigest(deps.digestPath).map((h) => h.causeKey));
+  const history = foldDigest(deps.digestPath, readFileSync);
+  const alreadyHeld = new Set(history.pending.map((h) => h.causeKey));
   const asking = orders.filter((o) => routable(o, deps.exclude) && !alreadyHeld.has(o.causeKey));
-  const answers = new Map(await Promise.all(asking.map(async (o) => [o, await askSafely(o, deps)] as const)));
   const at = (deps.now ?? Date.now)();
+  recordNeededAction(asking, history, { digestPath: deps.digestPath, at });
+  const answers = new Map(await Promise.all(asking.map(async (o) => [o, await askSafely(o, deps, at)] as const)));
   const deliver: T[] = [];
   const held: Held[] = [];
   for (const order of orders) {
@@ -110,7 +175,8 @@ export async function routeOrders<T extends GateOrder>(orders: readonly T[], dep
     if (answer === undefined) { deliver.push(order); continue; }
     const { causeKey, session, prompt } = order;
     const keep = answer.route !== "wake";
-    appendLine(deps.digestPath, { asked: { at, causeKey, session, triage: routing(answer), held: keep }, ...(keep ? { prompt } : {}) });
+    const asked: Asked = { at, causeKey, session, triage: routing(answer), held: keep, ...(answer.answers === undefined ? {} : { answers: answer.answers }) };
+    appendLine(deps.digestPath, { asked, ...(keep ? { prompt } : {}) });
     if (keep) held.push({ at, causeKey, session, prompt, triage: routing(answer) }); else deliver.push(order);
   }
   return { deliver, held };
