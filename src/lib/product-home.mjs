@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// COPIED FROM `scripts/product-home.mjs` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/product-home.ts` at d9ea0c438 (#2658, child 3g of #69; ADR 0040, decision 4; the original was renamed from `.mjs` by a11ign/a11ign#4274, a11ign/a11ign#4515): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 4 NAMED LINES:
 // - `REPO_ROOT`, now the project's checkout (`HOME_CHECKOUT`) and not one directory above `scripts/`, which from four directories below is the HOME directory here (#3074)
 // - its import of `node:path`, which no longer needs `dirname` or `resolve`
 // - its import of `fileURLToPath`, which `REPO_ROOT` was the only user of
+// - the `productHome` signature, whose TYPE ANNOTATIONS the `js-to-ts` sweep gave the original; this copy stays plain JS in a `.mjs` file
 // ==== end of copy header ====
 // @ts-check
 // THE PRODUCT'S HOME, READ FROM THE MANIFEST RATHER THAN WRITTEN DOWN AGAIN -- a LEAF module, deliberately:
