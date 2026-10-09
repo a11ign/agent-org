@@ -47,7 +47,7 @@ const BOARD = {
     row(14, ["backlog"], { title: "Chairman messaging for agent-org, Telegram first: the design and the sequence" }),
   ],
   closedRows: [row(50, ["ready"], { state: "CLOSED", stateReason: "COMPLETED" }),
-    row(51, [], { state: "CLOSED", stateReason: "COMPLETED", title: "Chairman messaging for agent-org, Telegram first: the design and the sequence" })],
+    row(9, [], { state: "CLOSED", stateReason: "COMPLETED", title: "Chairman messaging for agent-org, Telegram first: the design and the sequence" })],
   mergedPrs: [{ number: 900, body: "Acceptance: x\nCloses #10" }],
   waitFacts: { items: { "#50": { state: "closed", labels: [], resolvedAt: NOW, changedAt: NOW } } },
 };
@@ -200,6 +200,9 @@ test("(6) a near-duplicate of a closed row, a near-duplicate of an older open ro
   assert.deepEqual(found({ openRows: [row(41, ["ready"], { title: `${title} again` })], closedRows: [closed] }, QUESTIONS.DUPLICATE), [41]);
   assert.deepEqual(found({ openRows: [row(41, ["ready"], { title: "a wholly different title about fleet provisioning and nothing else" })], closedRows: [closed] }, QUESTIONS.DUPLICATE), []);
   assert.deepEqual(found({ openRows: [row(30, ["ready"], { title }), row(31, ["ready"], { title })] }, QUESTIONS.DUPLICATE), [31], "the later of two open twins, once");
+  const later = row(42, [], { state: "CLOSED", stateReason: "NOT_PLANNED", title });
+  assert.deepEqual(found({ openRows: [row(41, ["ready"], { title })], closedRows: [later] }, QUESTIONS.DUPLICATE), [], "#507: a closed twin filed AFTER the open row is the duplicate, not the row of record");
+  assert.deepEqual(found({ openRows: [row(41, ["ready"], { title })], closedRows: [closed] }, QUESTIONS.DUPLICATE), [41], "CONTROL: the same pair with the closed twin filed first is still found");
   assert.deepEqual(found({ openRows: [row(42, ["ready"], { title: "short title", body: "x" }), row(43, ["ready"], { title: "short title" })] }, QUESTIONS.DUPLICATE), [], "a short title says too little to match on");
   const superseded = (reason: string) => ({ openRows: [row(44, ["backlog"], { body: "Superseded by #45" })], closedRows: [row(45, [], { state: "CLOSED", stateReason: reason, title: "x" })] });
   assert.deepEqual(found(superseded("COMPLETED"), QUESTIONS.DUPLICATE), [44]);

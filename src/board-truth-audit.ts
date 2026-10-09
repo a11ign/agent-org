@@ -251,7 +251,7 @@ function supersededOf(row: BoardRow, known: Map<number, BoardRow>): Finding[] {
 
 /** @param {BoardRow} row @param {BoardRow[]} others @returns {Finding[]} */
 function duplicateOf(row: BoardRow, others: BoardRow[]): Finding[] {
-  const twin = others.find((other) => other.number !== row.number && (other.state === "CLOSED" || other.number < row.number) && nearDuplicates(row, other));
+  const twin = others.find((other) => other.number < row.number && nearDuplicates(row, other));
   return twin ? [finding(row, QUESTIONS.DUPLICATE, "state (open)", `title is a near-duplicate of ${twin.state === "CLOSED" ? "closed" : "open"} #${twin.number}`, ownerOf(row))] : [];
 }
 
