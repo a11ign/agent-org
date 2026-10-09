@@ -15,7 +15,6 @@
  * therefore seeds the variable with a scratch host before its dynamic imports when (and only when) the ambient one has none, and drives
  * the functions with explicit arguments.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -195,17 +194,17 @@ test("POSITIVE CONTROLS: the same unit with the variable in the unit file, or in
 
 test("the leak scan's patterns import in a tree that holds no project and no project-config: `gate` scans BEFORE any project exists", () => {
   const dir = scratch();
-  copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.mjs", import.meta.url)), join(dir, "generic-leak-patterns.mjs"));
+  copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.ts", import.meta.url)), join(dir, "generic-leak-patterns.ts"));
   const env = { ...process.env };
   delete env[HOST_VARIABLE];
-  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.mjs"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.ts"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
     { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout.trim(), "2");
 });
 
-test("`leak-patterns.mjs` still answers the same two patterns, so no importer of it changed", async () => {
-  const { GENERIC_LEAK_PATTERNS } = await import("../lib/leak-patterns.mjs");
-  const { GENERIC_LEAK_PATTERNS: own } = await import("../lib/generic-leak-patterns.mjs");
+test("`leak-patterns.ts` still answers the same two patterns, so no importer of it changed", async () => {
+  const { GENERIC_LEAK_PATTERNS } = await import("../lib/leak-patterns.ts");
+  const { GENERIC_LEAK_PATTERNS: own } = await import("../lib/generic-leak-patterns.ts");
   assert.equal(GENERIC_LEAK_PATTERNS, own);
 });

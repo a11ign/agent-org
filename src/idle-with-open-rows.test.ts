@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 // The project is a recorded one, as `state-label-exactly-one.test.ts`: the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "idle-with-open-rows-"));
@@ -38,7 +38,7 @@ process.env.PATH = `${join(SCRATCH, "fakebin")}:${process.env.PATH}`;
 
 const { idleWithOpenRowsReading, idleLine, IDLE_REASONS } = await import("./idle-with-open-rows.ts");
 const { SIGNALS, idleWithOpenRowsSignal, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
-const { orgHealthNow, engineerSeats } = await import("./work-gate/org-health.mjs");
+const { orgHealthNow, engineerSeats } = await import("./work-gate/org-health.ts");
 
 const NOW = Date.parse("2026-10-07T07:00:00Z");
 const ENGINEERS = ["worker-3905", "worker-3943"];

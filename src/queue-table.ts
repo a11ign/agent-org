@@ -5,7 +5,7 @@
 /**
  * THE HOURLY TABLE, AS A COMMAND RATHER THAN A HABIT -- ceo's ruling, 2026-09-08.
  *
- *   node --import tsx packages/agent-org/src/queue-table.ts [--json]
+ *   node packages/agent-org/src/queue-table.ts [--json]
  *
  * ## Why this exists at all
  *
@@ -39,10 +39,10 @@ import { loadavg } from "node:os";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { behindByCount } from "./queue-stalled.ts";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { newestPerName } from "./newest-check-run.ts";
 import { holdersOf } from "./pr-hold-state.ts";
 import { brokenChecks } from "./red-pr.ts";
@@ -411,7 +411,7 @@ export function armedState(pr: { number: number; auto_merge?: unknown; }, queue:
  *                                         UNEXAMINED. Not a one-line swap: `ageMs` reads
  *                                         `autoMergeRequest.enabledAt`, which a queued PR does not have, and
  *                                         whether the queue owns "behind" for a queued PR is a ruling.
- *   merge-guard/armed-race-rule.mjs       a queued PR does not race -> a push to its branch is allowed. FAILS
+ *   merge-guard/armed-race-rule.ts       a queued PR does not race -> a push to its branch is allowed. FAILS
  *                                         OPEN, by that file's own design ("a convenience guard is not a
  *                                         correctness gate"), so it is a decision to revisit rather than a
  *                                         defect to fix.
@@ -1124,7 +1124,7 @@ export function collect(now = new Date()) {
 }
 
 function main() {
-  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/queue-table.ts" });
+  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node packages/agent-org/src/queue-table.ts" });
   const data = collect();
   if (flagValue(process.argv, "json") !== undefined || process.argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify({

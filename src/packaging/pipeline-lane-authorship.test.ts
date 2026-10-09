@@ -23,7 +23,6 @@
  * The lane data is built here, never read from the project's own `docs/lane-ownership.json`: a test that read it would
  * pass or fail on whether the project had merged its `reviewOnly` field, and the tool's suite must not depend on that.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -272,7 +271,7 @@ case "$*" in
 esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
-    const run = spawnSync(process.execPath, [...TSX_IMPORT, SWEEP], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile,
+    const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile,
       GITHUB_REPOSITORY: "a11ign/a11ign", [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, merged: calls.some((c) => c.startsWith("pr merge")) };

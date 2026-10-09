@@ -3,7 +3,6 @@
  * #4385: the TICK delivers a held digest. `triage-route.test.ts` pins the routing module; this drives `wake.ts`'s own entry with a stub herdr to show the wiring: a
  * quiet tick (no gate order, no queued handoff) still flushes an item held an hour, and one held less is left alone.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -35,7 +34,7 @@ function tick(ageMs: number) {
     const git = join(dir, "git");
     writeFileSync(git, "#!/bin/sh\nexit 1\n");
     chmodSync(git, STUB_MODE);
-    const res = spawnSync(process.execPath, [...TSX_IMPORT, WAKE, `--ledger=${ledger}`], {
+    const res = spawnSync(process.execPath, [WAKE, `--ledger=${ledger}`], {
       input: "", encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST },
     });
     const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");

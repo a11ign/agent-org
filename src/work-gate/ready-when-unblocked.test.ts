@@ -1,4 +1,4 @@
-// no-token: gh -- `ready-when-unblocked.mjs` reaches GitHub only through the `ReadyIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4064)
+// no-token: gh -- `ready-when-unblocked.ts` reaches GitHub only through the `ReadyIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4064)
 // a11ign/a11ign#4064: a cleared row whose filer declared `Ready-when-unblocked: yes` is promoted by the gate; every other cleared row is offered to `product-manager` exactly as before.
 //
 // THE POSITIVE CONTROL for every "not promoted" below is the first test: the SAME harness (`world`, `tick`) promotes a row there, so an empty `calls` is a reading of a wired pass and not of one
@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.ts";
-import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.mjs";
+import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.ts";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
 const TODAY = "2026-10-11";
@@ -18,18 +18,15 @@ const LINE = "Ready-when-unblocked: yes";
 const COMPLETE = `## What it is\n\nthe work\n\n## Region\n\n\`\`\`\nsrc/thing.mjs\n\`\`\`\n\n## Acceptance\n\n\`\`\`bash\nnode --test src/thing.test.mjs\n\`\`\`\n\n## Open-check\n\n\`\`\`\n$ ls src/thing.mjs\nls: cannot access\n\`\`\`\n\n${LINE}\n`;
 const WITHOUT_OPEN_CHECK = `${COMPLETE.split("## Open-check")[0]}${LINE}\n`;
 
-/** @param {number} number @param {Record<string, any>} [more] a row as the tick's open-row read gives it: backlog, one edge, closed */
+/** @param [more] a row as the tick's open-row read gives it: backlog, one edge, closed */
 const tickRow = (number: number, more: Record<string, any> = {}) => ({ number, title: `row ${number}`, labels: [{ name: "backlog" }], body: COMPLETE, blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] }, ...more });
 
 /**
  * A GitHub in memory. `live` is what a fresh read of each row says (labels, body), defaulting to the tick's own; `calls` logs every call; `refuse` makes the promotion refuse; `fail` makes a call throw.
- * @param {{ rows: any[], live?: Record<number, { labels?: string[], body?: string, state?: string, blockedBy?: any }>, merged?: Record<number, { number: number, mergedAt: string }>, refuse?: Record<number, string>, fail?: string[] }} setup
  */
 function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }: { rows: any[]; live?: Record<number, { labels?: string[]; body?: string; state?: string; blockedBy?: any; }>; merged?: Record<number, { number: number; mergedAt: string; }>; refuse?: Record<number, string>; fail?: string[]; }) {
-  /** @type {string[]} */
   const calls: string[] = [];
-  /** @type {import("./ready-when-unblocked.mjs").ReadyIo} */
-  const io: import("./ready-when-unblocked.mjs").ReadyIo = {
+  const io: import("./ready-when-unblocked.ts").ReadyIo = {
     read: (n) => {
       calls.push(`read ${n}`);
       if (fail.includes("read")) throw new Error(`HTTP 502 on read #${n}`);
@@ -43,11 +40,10 @@ function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }: { rows:
 }
 
 /** The tick's two steps in the tick's order: promote what is declared, then ask the order cause about whatever is left. */
-function tick(/** @type {Parameters<typeof world>[0]} */ setup: Parameters<typeof world>[0]) {
+function tick(setup: Parameters<typeof world>[0]) {
   const { io, calls } = world(setup);
   const clearings = unclaimedClearings(setup.rows, TODAY, NOW).filter(({ row }) => declaresReadyWhenUnblocked(row.body));
   const result = promoteReadyWhenUnblocked({ clearings, notStartable: NOT_STARTABLE, now: NOW }, io);
-  /** @type {string[]} */
   const log: string[] = [];
   reportReadyWhenUnblocked(result, (line) => log.push(line));
   const asked = unclaimedBlockerClearedOrders(setup.rows, TODAY, { now: NOW }).map((o) => o.subject);

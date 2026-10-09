@@ -6,9 +6,10 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, 
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.ts";
-import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.mjs";
-import { openStore, QUIET_MS, readStore, TraceEvent } from "./store.mjs";
-import { ingestTranscripts, render } from "./trace.mjs";
+import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.ts";
+import { openStore, QUIET_MS, readStore } from "./store.ts";
+import type { TraceEvent } from "./store.ts";
+import { ingestTranscripts, render } from "./trace.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";

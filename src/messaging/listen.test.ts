@@ -2,7 +2,7 @@
 // @ts-check
 // THE LISTENER'S `onForward` (a11ign/a11ign#3064 done-whens 1 to 4): an accepted MESSAGE that is not an answer reaches `converse`, a BUTTON PRESS and a
 // REPLY TO A REQUEST reach `answers` and never `converse`; a queue that cannot load is TOLD to the chairman and ledgered; the unit sets `AGENT_ORG_HOST`;
-// and the "no consumer yet" line is gone. (`github-writer.test.mjs` drives the real `answers` through the same forwarder against a fixture `gh`.)
+// and the "no consumer yet" line is gone. (`github-writer.test.ts` drives the real `answers` through the same forwarder against a fixture `gh`.)
 //
 // EVERY ACCEPTED VALUE IS MINTED by the real `createInbound` over a real ledger file (never built by hand), and the consumers are recorders: the real
 // `converse` is its own file's test and queues to the host's real queue, which a test must not do. What is NOT stubbed is this file's own choice:
@@ -23,17 +23,17 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.mjs");
-const { createConverse, notReached } = await import("./converse.mjs");
-const { createInbound } = await import("./inbound.mjs");
-const { createLedger, readLedgerLines } = await import("./ledger.mjs");
+const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.ts");
+const { createConverse, notReached } = await import("./converse.ts");
+const { createInbound } = await import("./inbound.ts");
+const { createLedger, readLedgerLines } = await import("./ledger.ts");
 const { createFakeProvider } = await import("./fake-provider.ts");
-const { createOffsetStore, runListener } = await import("./providers/telegram/poll.mjs");
+const { createOffsetStore, runListener } = await import("./providers/telegram/poll.ts");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
 const REQUEST_MESSAGE = 501;
-const SOURCE = readFileSync(fileURLToPath(new URL("./listen.mjs", import.meta.url)), "utf8");
+const SOURCE = readFileSync(fileURLToPath(new URL("./listen.ts", import.meta.url)), "utf8");
 const UNIT = readFileSync(fileURLToPath(new URL("../../host/chairman-listen.service.in", import.meta.url)), "utf8");
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-listen-"));
@@ -341,7 +341,7 @@ describe("the unit and the source", () => {
   });
 
   test("the default onForward no longer says nothing consumes the update (done-when 4)", () => {
-    assert.ok(!/has no consumer yet/.test(SOURCE), "listen.mjs went back to dropping accepted updates with a log line");
+    assert.ok(!/has no consumer yet/.test(SOURCE), "listen.ts went back to dropping accepted updates with a log line");
     assert.match(SOURCE, /onForward \?\? createForwarder\(/, "the default onForward is no longer the forwarder, so this test would pass on a listener that forwards nothing");
     assert.match(SOURCE, /converse: tellingWhenUndelivered\(/, "the converse path is no longer wrapped, so a queue that will not load is dropped again");
   });

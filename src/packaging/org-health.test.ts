@@ -1,6 +1,6 @@
 // no-token: gh -- pure: the four readings are functions of values handed in, `readLastMergedAt` is given a fake `run`, and the one process test below puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
- * `packages/agent-org/src/org-health.mjs` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
+ * `packages/agent-org/src/org-health.ts` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
  * WHEN NOTHING LANDS OR A RED PR AGES.
  *
  * THE THRESHOLDS ARE WRITTEN OUT AS 3 HOURS, 120 MINUTES, 75 TICKS AND 60 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS: a test built from the constant moves
@@ -12,7 +12,6 @@
  * its own account has commented on. Both are OFFERED, through the same entry every "is NOT offered" below goes through. Every clear and every unknown is only worth
  * anything because these two trip.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, cpSync } from "node:fs";
@@ -20,7 +19,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
 //
@@ -282,7 +281,7 @@ test("#4047: a refused read of EITHER repository is unknown, never the other's t
 });
 
 test("#4047: the tick's default reads every declared code repository through readLatestMerge, and hands its repository on", () => {
-  const source = readFileSync(fileURLToPath(new URL("../work-gate/org-health.mjs", import.meta.url)), "utf8");
+  const source = readFileSync(fileURLToPath(new URL("../work-gate/org-health.ts", import.meta.url)), "utf8");
   assert.match(source, /lastMergedAt = \(\) => readLatestMerge\(defaultRun, mergeRepositories\(\)\)/);
   assert.match(source, /\.\.\.lastMerge\(lastMergedAt\(\)\)/);
 });
@@ -432,7 +431,7 @@ const SELF = "red-pr.ts";
 const EXEMPT: Record<string, string> = {
   "merge-queue.ts": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.ts": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
-  "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
+  "work-gate/pr-orders.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
 };
 const EXEMPT_CEILING = 3;
 
@@ -484,7 +483,7 @@ function gateAsAProcess() {
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    return spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    return spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

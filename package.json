@@ -9,26 +9,23 @@
     "url": "git+https://github.com/a11ign/agent-org.git"
   },
   "bin": {
-    "agent-org": "src/bin.mjs"
+    "agent-org": "src/bin.ts"
   },
   "exports": {
     "./acceptance-commands": "./src/acceptance-commands.ts",
     "./acceptance-file": "./src/acceptance-file.ts",
     "./board-data": "./src/board-data.ts",
     "./board-document": "./src/board-document.ts",
-    "./leak-patterns": "./src/lib/leak-patterns.mjs",
-    "./merge-guard-lookups": "./src/merge-guard/lookups.mjs",
+    "./leak-patterns": "./src/lib/leak-patterns.ts",
+    "./merge-guard-lookups": "./src/merge-guard/lookups.ts",
     "./newest-check-run": "./src/newest-check-run.ts",
     "./pr-open": "./src/pr-open.ts",
     "./project-config": "./src/project-config.ts",
-    "./tree-wide-guard": "./src/lib/tree-wide-guard.mjs",
+    "./tree-wide-guard": "./src/lib/tree-wide-guard.ts",
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "tsx": "^4.22.4"
+    "node": ">=24"
   },
   "devDependencies": {
     "@a11ign/toolchain": "^0.1.5",
@@ -44,22 +41,21 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "rstest run --config scripts/rstest/rstest.config.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
-    "messaging:listen": "node --import tsx src/messaging/listen.mjs",
-    "messaging:watch": "node --import tsx src/messaging/watch.mjs",
-    "messaging:pair": "node --import tsx src/messaging/providers/telegram/pair.mjs",
-    "ruling:record": "node --import tsx src/ruling-record.ts",
-    "messaging:measure": "node --import tsx src/messaging/measure.ts",
-    "chairman:reply": "node --import tsx src/messaging/reply-cli.mjs",
-    "chairman:record": "node --import tsx src/messaging/record.mjs",
-    "chairman:correct": "node --import tsx src/messaging/correct.ts",
-    "chairman:ask-ceo": "node --import tsx src/messaging/ask-ceo.ts",
-    "chairman:watch": "node --import tsx src/messaging/watch-list.mjs",
-    "chairman:queue": "node --import tsx src/messaging/session-queue.mjs"
+    "messaging:listen": "node src/messaging/listen.ts",
+    "messaging:watch": "node src/messaging/watch.ts",
+    "messaging:pair": "node src/messaging/providers/telegram/pair.ts",
+    "ruling:record": "node src/ruling-record.ts",
+    "messaging:measure": "node src/messaging/measure.ts",
+    "chairman:reply": "node src/messaging/reply-cli.ts",
+    "chairman:record": "node src/messaging/record.ts",
+    "chairman:correct": "node src/messaging/correct.ts",
+    "chairman:ask-ceo": "node src/messaging/ask-ceo.ts",
+    "chairman:watch": "node src/messaging/watch-list.ts",
+    "chairman:queue": "node src/messaging/session-queue.ts"
   },
   "files": [
     "src",
     "!src/**/*.test.ts",
-    "!src/**/*.test.mjs",
     "host",
     "LICENSE",
     "README.md"

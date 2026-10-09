@@ -1,11 +1,11 @@
 /**
  * RULE: DID EVERY RUN FINISH AFTER main's CURRENT TIP WAS COMMITTED? -- #455's split into
- * `packages/agent-org/src/merge-guard/staleness-rule.mjs`. THE DANGEROUS SHAPE, because the runs are real and look like
+ * `packages/agent-org/src/merge-guard/staleness-rule.ts`. THE DANGEROUS SHAPE, because the runs are real and look like
  * evidence. Measured on #135: newest run 00:08:02Z against a main tipped 00:41:07Z.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stalenessReason } from "../merge-guard/staleness-rule.mjs";
+import { stalenessReason } from "../merge-guard/staleness-rule.ts";
 
 const MAIN_TIP = "2026-09-07T00:41:07Z";
 const AFTER = "2026-09-07T00:45:35Z";
@@ -34,6 +34,6 @@ test("a run with no completedAt is ignored rather than crashing the comparison",
   assert.deepEqual(stalenessReason(runs, MAIN_TIP), []);
 });
 
-test("an empty run list raises no staleness reason -- that absence is checks-rule.mjs's finding, not this one's", () => {
+test("an empty run list raises no staleness reason -- that absence is checks-rule.ts's finding, not this one's", () => {
   assert.deepEqual(stalenessReason([], MAIN_TIP), []);
 });

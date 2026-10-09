@@ -8,10 +8,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
-  from "../row-claim/stale-rule-guard.mjs";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+  from "../row-claim/stale-rule-guard.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 /**
  * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is
@@ -57,17 +58,17 @@ const SPEC = ["packages/agent-org/src/row-claim.ts", "packages/agent-org/src/row
 test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the file that moved", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     detach(root, base);
-    const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.mjs", "export const inBuildReason = () => 'B2';\n");
+    const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => 'B2';\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base); // the checkout sits where it was; origin/main has moved on
 
     const reason = staleRuleReason({ repoRoot: root, files: SPEC });
     assert.ok(reason, "a checkout holding a superseded rule must not produce a verdict at all");
     assert.match(reason, /1 COMMIT\(S\) BEHIND/, "the COUNT, so the reader knows how far behind they are");
-    assert.match(reason, /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.mjs/,
+    assert.match(reason, /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.ts/,
       "and the FILE, because a refusal naming only a number is not followable -- the reader cannot tell "
       + "whether the rule they are being refused by is the one that moved");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -117,9 +118,9 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
   () => {
     const { root, commit } = syntheticRepo();
     try {
-      const base = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
+      const base = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n");
       setRef(root, "refs/remotes/origin/main", base);
-      const moved = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => 'no';\n");
+      const moved = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => 'no';\n");
       setRef(root, "refs/remotes/origin/main", moved);
       detach(root, base);
 
@@ -143,7 +144,7 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
 test("#1014: the rule-file list is DERIVED from row-claim's own import closure, not typed", () => {
   const derived = ruleFiles(resolve(TOOL_ROOT, "src/row-claim.ts"), REPO);
   assert.ok(derived.includes(at("src/row-claim.ts")), "the entry itself");
-  assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.mjs")),
+  assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.ts")),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
     `expected the rule modules beside row-claim.ts, got ${derived.length}: ${derived.join(", ")}`);
@@ -166,9 +167,9 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
   const { root, commit } = syntheticRepo();
   try {
     commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n"); // tracked, so the entry-only pathspec below is one that matches (#3041)
-    const base = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'x';\n");
+    const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'x';\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base);
 
@@ -191,7 +192,7 @@ function importFresh(path: string, query: string) {
 }
 
 /**
- * THE GUARD, AS IT LIVES IN A TOOL CHECKOUT: this repository's own `stale-rule-guard.mjs` (and the two leaf modules it imports) committed into a
+ * THE GUARD, AS IT LIVES IN A TOOL CHECKOUT: this repository's own `stale-rule-guard.ts` (and the two leaf modules it imports) committed into a
  * throwaway repository at `<prefix>src/row-claim/`, then IMPORTED FROM THERE, so `import.meta.url` is the fixture's and `staleRuleReason()` is
  * called with no options -- exactly how `row-claim.ts` calls it. A test that passes `repoRoot` or `files` never reaches the layout decision, which
  * is the one #3041 got wrong (the claim of a spawned engineer died on `ENOENT ... /home/agent/packages/agent-org/src/row-claim.ts`).
@@ -199,12 +200,12 @@ function importFresh(path: string, query: string) {
 async function guardInTool(prefix: string) {
   const { root, commit } = syntheticRepo();
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  for (const rel of ["src/row-claim/stale-rule-guard.mjs", "src/lib/local-import-closure.mjs", "src/lib/git-env.mjs"]) commit(`${prefix}${rel}`, source(rel));
-  commit(`${prefix}src/row-claim/own-pr-health-rule.mjs`, "export const inBuildReason = () => null;\n");
-  const base = commit(`${prefix}src/row-claim.ts`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
+  for (const rel of ["src/row-claim/stale-rule-guard.ts", "src/lib/local-import-closure.ts", "src/lib/git-env.ts"]) commit(`${prefix}${rel}`, source(rel));
+  commit(`${prefix}src/row-claim/own-pr-health-rule.ts`, "export const inBuildReason = () => null;\n");
+  const base = commit(`${prefix}src/row-claim.ts`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.ts";\nexport { inBuildReason };\n');
   setRef(root, "refs/remotes/origin/main", base);
-  const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.mjs"), `fixture=${encodeURIComponent(root)}`);
-  return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.mjs` };
+  const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.ts"), `fixture=${encodeURIComponent(root)}`);
+  return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.ts` };
 }
 
 test("#3041: a guard in the STANDALONE layout (`<root>/src/row-claim/`) derives its own root and refuses BEHIND, never an ENOENT", async () => {
@@ -218,7 +219,7 @@ test("#3041: a guard in the STANDALONE layout (`<root>/src/row-claim/`) derives 
     const reason = guard.staleRuleReason();
     assert.ok(reason, "the checkout is one commit behind on a rule module and must say so");
     assert.match(reason, /1 COMMIT\(S\) BEHIND/);
-    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.mjs/, "naming what moved");
+    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.ts/, "naming what moved");
     assert.doesNotMatch(reason, /ENOENT|packages\/agent-org/, "and nothing of the monorepo's layout");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -229,7 +230,7 @@ test("#3041: a guard in the MONOREPO layout (`<root>/packages/agent-org/src/row-
     assert.equal(guard.staleRuleReason(), null, "the PASS is reachable here too");
     setRef(root, "refs/remotes/origin/main", commit(rule, "export const inBuildReason = () => 'B2';\n"));
     detach(root, base);
-    assert.match(guard.staleRuleReason(), /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.mjs/);
+    assert.match(guard.staleRuleReason(), /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.ts/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -267,18 +268,18 @@ test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own ed
   // reader of their own change gets argued with rather than followed.
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim/runner-rule.mjs", "export const runnerReason = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("packages/agent-org/src/row-claim/blocked-by-rule.mjs", "export const resolveBlockedByOverride = () => null;\n");
+    const moved = commit("packages/agent-org/src/row-claim/blocked-by-rule.ts", "export const resolveBlockedByOverride = () => null;\n");
     setRef(root, "refs/remotes/origin/main", moved);
     detach(root, base);
     // the author's own work, on top of a checkout that is behind: a rule file they are editing on purpose
-    commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'mine';\n");
+    commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'mine';\n");
 
     const reason = staleRuleReason({ repoRoot: root, files: SPEC });
     assert.ok(reason, "still behind on origin/main's change, so it still refuses");
-    assert.match(reason, /blocked-by-rule\.mjs/, "and names what origin/main moved");
-    assert.doesNotMatch(reason, /template-fields-rule\.mjs/,
+    assert.match(reason, /blocked-by-rule\.ts/, "and names what origin/main moved");
+    assert.doesNotMatch(reason, /template-fields-rule\.ts/,
       "and NOT the author's own commit -- three-dot diffs from the merge base, so the message is about "
       + "the tree they are behind, not about them");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -296,19 +297,23 @@ async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
   const { root, commit } = syntheticRepo();
   setRef(root, "refs/remotes/origin/main", commit("package.json", "{}\n"));
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  const files = { "src/row-claim/stale-rule-guard.mjs": source("src/row-claim/stale-rule-guard.mjs"),
-    "src/lib/local-import-closure.mjs": source("src/lib/local-import-closure.mjs"), "src/lib/git-env.mjs": source("src/lib/git-env.mjs"),
-    "src/row-claim/own-pr-health-rule.mjs": "export const inBuildReason = () => null;\n",
-    "src/row-claim.ts": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n' };
+  // The three modules IMPORTED are written as the JavaScript a build would ship: Node 24 will not strip the types of a `.ts` under node_modules (#4389), which is
+  // the measured reason the tool runs from a checkout now. The guard READS `row-claim.ts` and the rule file as text, so those two stay the TypeScript they are.
+  const built = (rel: string) => ts.transpileModule(source(rel), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, rewriteRelativeImportExtensions: true } }).outputText;
+  const files = { "package.json": '{"type":"module"}\n',
+    "src/row-claim/stale-rule-guard.js": built("src/row-claim/stale-rule-guard.ts"),
+    "src/lib/local-import-closure.js": built("src/lib/local-import-closure.ts"), "src/lib/git-env.js": built("src/lib/git-env.ts"),
+    "src/row-claim/own-pr-health-rule.ts": "export const inBuildReason = () => null;\n",
+    "src/row-claim.ts": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.ts";\nexport { inBuildReason };\n' };
   for (const [rel, text] of Object.entries(files)) {
     mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
     writeFileSync(join(root, dir, rel), text);
   }
-  const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.mjs"), `installed=${encodeURIComponent(root)}`);
+  const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.js"), `installed=${encodeURIComponent(root)}`);
   return { root, guard };
 }
 
-const RULE = "src/row-claim/own-pr-health-rule.mjs";
+const RULE = "src/row-claim/own-pr-health-rule.ts";
 
 test("#3188: the installed layout names the install and never answers 'matches no tracked file'", async () => {
   const { root, guard } = await guardInstalled();
@@ -332,7 +337,7 @@ test("#3188: POSITIVE CONTROL -- an installed pin BEHIND main on a rule file is 
     assert.ok(reason, "a pin behind main on a rule module must not produce a verdict");
     assert.match(reason, /INSTALLED COPY OF THE RULE/);
     assert.match(reason, new RegExp(SHA.slice(0, 12)));
-    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.mjs/, "naming what moved");
+    assert.match(reason, /src\/row-claim\/own-pr-health-rule\.ts/, "naming what moved");
     assert.doesNotMatch(reason, /dora\.ts/, "and only the rule files, not everything main changed");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -349,7 +354,7 @@ test("#3188: an installed pin behind main on UNRELATED files is current -- not a
 test("#3188: a compare list at GitHub's cap may have been cut, so it cannot clear the pin", async () => {
   const { root, guard } = await guardInstalled();
   try {
-    const files = Array.from({ length: 300 }, (_, i) => `src/other-${i}.mjs`);
+    const files = Array.from({ length: 300 }, (_, i) => `src/other-${i}.ts`);
     assert.match(guard.staleRuleReason({ compare: () => ({ status: "ahead", files }) }), /BEHIND/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

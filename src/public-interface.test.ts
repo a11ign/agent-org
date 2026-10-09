@@ -2,7 +2,7 @@
  * a11ign/a11ign#4407: A PROJECT REACHES AGENT-ORG BY A DECLARED NAME, NEVER BY A PATH UNDER `src/`.
  *
  * v0.88.0 renamed `src/*.mjs` to `.ts` (#435) and every a11ign pull request's `acceptance / run` threw
- * `ERR_MODULE_NOT_FOUND`, because `reusable-acceptance.yml` imported `src/acceptance-commands.mjs` by path. The sweep is still
+ * `ERR_MODULE_NOT_FOUND`, because `reusable-acceptance.yml` imported `src/acceptance-commands.ts` by path. The sweep is still
  * renaming files, so a project that holds a path repeats the failure with each release. `package.json` therefore carries an
  * `exports` map (subpath -> file) and a `bin`; this file pins WHAT IS DECLARED, which is the only contract.
  *
@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import { COMMANDS } from "./commands.mjs";
+import { COMMANDS } from "./commands.ts";
 
 /** subpath -> the names a project's callers import from it (counted in a11ign/a11ign on origin/main, 2026-10-09). */
 const DECLARED_EXPORTS: Readonly<Record<string, readonly string[]>> = {

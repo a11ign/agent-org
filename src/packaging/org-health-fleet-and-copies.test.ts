@@ -1,12 +1,12 @@
 // no-token: pure -- both readings are functions of values handed in; the one disk read (`readDeclaredCopies`) is given a fake `list`/`read` or reads this checkout's own files, and nothing here calls `gh`, ssh or the fleet.
 /**
- * `packages/agent-org/src/org-health.mjs`, #2937: TWO MORE QUESTIONS THE GATE ASKS ABOUT THE ORG -- a fleet that has captured nothing for a day while something waits for it,
+ * `packages/agent-org/src/org-health.ts`, #2937: TWO MORE QUESTIONS THE GATE ASKS ABOUT THE ORG -- a fleet that has captured nothing for a day while something waits for it,
  * and two copies of the same file that have stopped being the same.
  *
  * THE THRESHOLD IS WRITTEN OUT AS 24 HOURS HERE, NEVER AS `FLEET_IDLE_HOURS`: a test built from the constant moves with it (`org-health.test.ts`'s rule, for its reason).
  *
  * POSITIVE CONTROLS. The idle fleet is replayed as the chairman described it: zero captures for 4.9 days with a `fleet-gated` row waiting. The copies' control is a
- * RECORDED `isolation-gate.mjs` pair (`fixtures/org-health-fleet-and-copies/`, the shape of the real one -- a header naming two import lines -- under a `.txt` suffix, so no tool that walks the tree's modules reads it as one), with ONE BYTE changed: every
+ * RECORDED `isolation-gate.mjs.txt` pair (`fixtures/org-health-fleet-and-copies/`, the shape of the real one -- a header naming two import lines -- under a `.txt` suffix, so no tool that walks the tree's modules reads it as one), with ONE BYTE changed: every
  * "does not trip" below is only worth anything because that does. The pairs are read clean first, so the control is not true for the wrong reason. THAT THE REAL
  * `lib/` COPIES MATCH A11IGN'S ORIGINALS IS A11IGN'S INVARIANT (its `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly), and moved there (#3233):
  * read against a11ign's live tree, an edit to an original turned this suite red for a change that touched neither side.

@@ -1,5 +1,5 @@
 // @ts-check
-// THE "DO IT FOR ME" BUTTON IS DRAWN (a11ign/a11ign#3982, the gap under #3431 Done-when 3). `answers.mjs` handled a `forme` press and no keyboard carried
+// THE "DO IT FOR ME" BUTTON IS DRAWN (a11ign/a11ign#3982, the gap under #3431 Done-when 3). `answers.ts` handled a `forme` press and no keyboard carried
 // one, so no brief could ask for it. A brief that NAMES the act it would do (`Do it for me: <the act>`) now draws a fourth button; a brief that names none draws
 // none, because a press would then OK an unnamed act and D1 (#3427) is that the OK is for a stated act.
 //
@@ -13,12 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { actionData, createInbound } from "./inbound.mjs";
-import { createAnswers, requestActions } from "./answers.mjs";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { FORME_STEP } from "./session-queue.mjs";
-import { NEEDS_CHAIRMAN, parseChairmanAct } from "./sources/requests.mjs";
-import { runWatch } from "./watch.mjs";
+import { actionData, createInbound } from "./inbound.ts";
+import { createAnswers, requestActions } from "./answers.ts";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { FORME_STEP } from "./session-queue.ts";
+import { NEEDS_CHAIRMAN, parseChairmanAct } from "./sources/requests.ts";
+import { runWatch } from "./watch.ts";
 
 const REPO = "a11ign/a11ign";
 const ROW = 3982;
@@ -128,7 +128,7 @@ describe("the button that is drawn is the button that works", () => {
     const drawn = sent.actions.find((action: any) => action.label === "Do it for me");
     const inbound = createInbound({ ledger: ledger(), chairman: CHAIRMAN });
     const labels = new Set(["ready", NEEDS_CHAIRMAN]);
-    const github = /** @type {import("./answers.mjs").GithubWriter} */ (/** @type {unknown} */ ({
+    const github = /** @type {import("./answers.ts").GithubWriter} */ (/** @type {unknown} */ ({
       readRow: async () => ({ state: "OPEN", labels: [...labels], comments: /** @type {any[]} */ (row({ act: true }).comments) }),
       comment: async () => {}, removeLabel: async () => {}, addLabel: async () => {},
     }));

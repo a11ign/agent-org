@@ -19,15 +19,15 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { acquireLock, ListenerLockHeld, main, processStart, EXIT } from "../../listen.mjs";
-import { createInbound } from "../../inbound.mjs";
-import { createLedger, readLedgerLines } from "../../ledger.mjs";
+import { acquireLock, ListenerLockHeld, main, processStart, EXIT } from "../../listen.ts";
+import { createInbound } from "../../inbound.ts";
+import { createLedger, readLedgerLines } from "../../ledger.ts";
 import { runProviderConformance } from "../../provider-contract.ts";
-import { createSecret } from "../../secret.mjs";
+import { createSecret } from "../../secret.ts";
 import {
   ALLOWED_UPDATES, BACKOFF_CEILING_MS, BACKOFF_INITIAL_MS, createOffsetStore, createTelegramPollingProvider, LONG_POLL_SECONDS, nextBackoff,
   nextCursor, PollConflictError, runListener,
-} from "./poll.mjs";
+} from "./poll.ts";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });

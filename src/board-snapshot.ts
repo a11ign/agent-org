@@ -52,7 +52,7 @@ import { statusContradictions, statusCensus, vocabularyDrift } from "./board-sta
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 // #1275: the scoped half, PURE OF `gh` -- see that file's header. The constants live there and are re-exported above,
@@ -730,7 +730,7 @@ export function forgetProcessSnapshot() {
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164, and takes no flags at all -- this entry point only ever takes a snapshot, it never
   // mutates, so there is nothing for a flag to configure.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/board-snapshot.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/board-snapshot.ts" });
   try {
     const path = writeBoardSnapshot();
     process.stdout.write(`wrote ${path}\n`);

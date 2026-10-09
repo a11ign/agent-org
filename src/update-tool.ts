@@ -10,7 +10,7 @@
 // whole of a rollback), and a fix goes forward in the next tag. `release.yml` tags the merge that carries a changeset about nine minutes after it lands (measured
 // from the tag history, #3443), so a shipped-code merge is live then; a merge with NO changeset is never tagged and never live, which is the point.
 //
-//   node --import tsx src/update-tool.ts
+//   node src/update-tool.ts
 //
 // A RELEASE TAG IS NOT AN ANCESTOR OF `main`: the release workflow commits the version bump on top of the merge and pushes that commit as the tag alone, so it is
 // reachable from no branch, and a plain `git fetch origin` does not bring it down. The fetch here NAMES TAGS (`--tags`), and the checkout is of the tag.
@@ -37,7 +37,7 @@
 // A MOVE THAT WOULD DELETE A PROGRAM AN INSTALLED UNIT RUNS IS HELD, NOT MADE (a11ign/a11ign#4392). On 2026-10-09 agent-org#435 renamed `work-tick.mjs` and `update-tool.mjs`;
 // this command moved the checkout under the INSTALLED `a11ign-work-tick.service`, which still named them, and the tick crashed (exit 70). The tick is the only thing that
 // wakes `orchestrator`, whose job is to run `host:install`, so the break kept the one session that could mend it asleep. The programs are read off the installed units
-// and the installed `agent-org` launcher (a copy that `exec`s `src/bin.mjs`: a rename of THAT breaks the command for every agent, not one unit); a tracked file at HEAD
+// and the installed `agent-org` launcher (a copy that `exec`s `src/bin.ts`: a rename of THAT breaks the command for every agent, not one unit); a tracked file at HEAD
 // that the release tag does not have is "lost by the move". With any lost the checkout STAYS, `host-units.ts` reports `host-install-pending` for the holders (the
 // gate's `hostDriftOrders` wakes `orchestrator` with their names), and once the install has rewritten them to name programs the tag HAS the same check passes and the
 // checkout advances. A program already missing at HEAD is not "lost": the move cannot make it worse, and holding for it would hold for ever.
@@ -48,9 +48,9 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.mjs";
-import { gitIn } from "./lib/tool-version.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.ts";
+import { gitIn } from "./lib/tool-version.ts";
 import { isPrimaryWorktree } from "./prune-worktrees.ts";
 
 /** The directory this file is in, real-pathed: the tool is reached through a symlink on some hosts, and git resolves the real one. */
@@ -70,11 +70,10 @@ const tagNames = (run: (args: string[]) => string): string[] => run(["tag", "--l
 /** @param {LostPrograms} lost @param {{ tag: string, tool: string }} where @returns {{ unit: string, problem: string, detail: string }} */
 function hostInstallPendingFinding({ holder, programs }: LostPrograms, { tag, tool }: { tag: string; tool: string }): { unit: string; problem: string; detail: string } {
   const fresh = `${tool}-install-${tag}`;
-  const loader = `${tool}/node_modules/tsx/dist/loader.mjs`;
   return { unit: holder, problem: "host-install-pending",
     detail: `it runs ${programs.join(", ")}, which release ${tag} deletes or renames, so \`update-tool\` HOLDS the tool's checkout (${tool}) where it is and the unit still works. `
       + "THE CHECKOUT MAY NOT BE ADVANCED FIRST: that is the tick crash of 2026-10-09. Install from a fresh tree at the release, then advance, as ONE command line: "
-      + `\`git -C ${tool} worktree add --detach ${fresh} refs/tags/${tag} && (cd ${fresh} && node --import ${loader} src/host-units.ts --install) && (cd ${tool} && node --import tsx src/update-tool.ts)\`, `
+      + `\`git -C ${tool} worktree add --detach ${fresh} refs/tags/${tag} && (cd ${fresh} && node src/host-units.ts --install) && (cd ${tool} && node src/update-tool.ts)\`, `
       + `then \`git -C ${tool} worktree remove --force ${fresh}\`. Post whether a REMOVED line appeared. This finding clears when the installed units and launcher name programs the release has.` };
 }
 
@@ -270,7 +269,7 @@ export function restartLongRunning(units: string[], { exec = execFileSync, out =
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: takes no flags -- a root argument is exactly what this command must not accept.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx src/update-tool.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node src/update-tool.ts" });
   const root = gitIn(HERE)(["rev-parse", "--show-toplevel"]).trim();
   const run = gitIn(root);
   const before = run(["rev-parse", "HEAD"]).trim();

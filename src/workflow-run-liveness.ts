@@ -39,7 +39,7 @@ import { pathToFileURL } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns, checkReasons } from "./merge-guard.ts";
 
@@ -120,10 +120,10 @@ function facts(sha: string) {
 
 function main() {
   const KNOWN_FLAGS = ["--sha"];
-  refuseUnknownFlags(KNOWN_FLAGS, { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/workflow-run-liveness.ts" });
+  refuseUnknownFlags(KNOWN_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/workflow-run-liveness.ts" });
   const sha = flagValue(process.argv, "sha") ?? process.env.GITHUB_SHA;
   if (!sha) {
-    console.error("Usage: node --import tsx packages/agent-org/src/workflow-run-liveness.ts --sha=<commit>\n"
+    console.error("Usage: node packages/agent-org/src/workflow-run-liveness.ts --sha=<commit>\n"
       + "Answers whether the pull request that produced this commit was actually tested before it reached\n"
       + "main, by reading its check RUNS rather than `mergeStateStatus`. Defaults to $GITHUB_SHA.");
     process.exit(EXIT.CANNOT_TELL);

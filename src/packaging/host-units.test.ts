@@ -21,7 +21,6 @@
  * `a11ign-corpus-snapshot.timer` failed the same hour in the quieter way: installed, `enabled`, and
  * `inactive` on a host up for nine days -- `enable` without `--now`, and nothing ever said so.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
@@ -29,7 +28,7 @@ import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSy
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands, humanLoginOnHost, HUMAN_LOGIN_ON_HOST,
@@ -975,10 +974,10 @@ test("#2892: `pnpm run <script>` is followed exactly as `npm run` is, so a unit 
   // The host's units moved from `/usr/bin/npm run` to `%h/.local/bin/pnpm run`. A parser that knew only the
   // first would return no entry point for all four, and `unitsSpendingGh` reads no entry point as "spends
   // nothing" -- the unit leaves the population and every suite stays green.
-  const deps = { repoRoot: "/repo", scripts: { "lab:watch": "node packages/lab/scripts/lab-watch.mjs" },
+  const deps = { repoRoot: "/repo", scripts: { "lab:watch": "node packages/lab/scripts/lab-watch.ts" },
     exists: (() => true) as never };
   assert.deepEqual(entriesFromCommand("%h/.local/bin/pnpm run lab:watch -- --post", deps),
-    ["/repo/packages/lab/scripts/lab-watch.mjs"]);
+    ["/repo/packages/lab/scripts/lab-watch.ts"]);
   assert.deepEqual(opaqueCommands("[Service]\nExecStart=%h/.local/bin/pnpm run lab:watch -- --post\n", deps), [],
     "a followable pnpm command is not opaque");
   assert.deepEqual(opaqueCommands("[Service]\nExecStart=%h/.local/bin/yarn run lab:watch\n", deps),
@@ -991,10 +990,10 @@ test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone 
   // edge to follow, so a closure walk that knew only about imports returned NO gh for it -- measured,
   // before this edge existed -- and the nightly would have shipped undeclared while the check said it was
   // fine. (#3233) The fixture project's nightly has that shape, so the walk is read on a file this file owns.
-  const nightly = join(PROJECT_ROOT, "scripts/release-nightly.mjs");
+  const nightly = join(PROJECT_ROOT, "scripts/release-nightly.ts");
   const hit = ghSpawnReachedFrom(nightly);
   assert.ok(hit, "the nightly reaches a `gh` spawn");
-  assert.match(String(hit), /release\.mjs$/,
+  assert.match(String(hit), /release\.ts$/,
     "through the script it SPAWNS, which no import of its own names");
   assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.ts")), null,
     "POSITIVE CONTROL: a unit entry point that does NOT touch `gh` is not charged for one");
@@ -2216,7 +2215,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
-      const done = spawnSync(process.execPath, [...TSX_IMPORT, entry, ...args], { encoding: "utf8", env });
+      const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
       assert.notEqual(done.stdout, "", `host-units.ts ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
       return done;
     };
@@ -2821,8 +2820,8 @@ test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` 
   const units = readUnitsDeclaration();
   const checkout = PROJECT_ROOT;
   for (const [template, script, pnpmLine] of [
-    ["chairman-listen.service.in", "src/messaging/listen.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:listen"],
-    ["chairman-watch.service.in", "src/messaging/watch.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:watch"],
+    ["chairman-listen.service.in", "src/messaging/listen.ts", "ExecStart=%h/.local/bin/pnpm run messaging:listen"],
+    ["chairman-watch.service.in", "src/messaging/watch.ts", "ExecStart=%h/.local/bin/pnpm run messaging:watch"],
   ] as const) {
     const unit = renderedName(template, units.prefix);
     const plain = shippedUnitText(unit, { host: plainHost3443() }) ?? "";
@@ -2831,7 +2830,7 @@ test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` 
     assert.ok(hasLine(plain, pnpmLine), `POSITIVE CONTROL: today's form runs ${pnpmLine}`);
 
     const installed = shippedUnitText(unit, { host: toolHost3443() }) ?? "";
-    assert.ok(hasLine(installed, `ExecStart=/usr/bin/node --import tsx ${script}`), `${unit} runs the tool's script: ${execCommands(installed).join(" | ")}`);
+    assert.ok(hasLine(installed, `ExecStart=%h/.local/bin/node ${script}`), `${unit} runs the tool's script: ${execCommands(installed).join(" | ")}`);
     assert.ok(hasLine(installed, `WorkingDirectory=${TOOL_3443}`), `${unit} runs from the tool checkout`);
     assert.ok(hasLine(installed, `Environment=AGENT_ORG_HOST=${checkout}/.agent-org/host.json`), `${unit} says where the host's declaration is`);
     assert.doesNotMatch(installed, /^ExecStart=.*pnpm/m, `${unit} no longer runs the project's pinned copy through pnpm`);
@@ -2857,22 +2856,22 @@ test("#3443 + #3464: THE PROPERTY -- every shipped service in tool form runs age
       assert.doesNotMatch(command, /\bpnpm\b|\bnpm\b|packages\/agent-org/, `${unit} runs ${command}, which is not the tool checkout's code`);
       const [program, ...args] = command.split(/\s+/);
       const script = args.find((arg, at) => !arg.startsWith("-") && args[at - 1] !== "--import");
-      assert.ok(program === "/usr/bin/node" || program === "/usr/bin/bash", `${unit}: ${command} is run by an interpreter this walk knows`);
+      assert.ok(program === "%h/.local/bin/node" || program === "/usr/bin/bash", `${unit}: ${command} is run by an interpreter this walk knows`);
       assert.ok(script !== undefined && existsSync(script.startsWith("/") ? script.replace(TOOL_3443, TOOL_ROOT) : join(TOOL_ROOT, script)),
         `${unit}: ${command} names a script of the tool that exists there`);
     }
   }
   const workTick = shippedUnitText(renderedName("work-tick.service.in", units.prefix), { host: toolHost3443() }) ?? "";
-  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`),
+  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} %h/.local/bin/node ${TOOL_3443}/src/update-primary.ts`),
     "POSITIVE CONTROL: the project's beforeTick is rendered, and it is the tool's own update-primary");
 });
 
 test("#3464: a `beforeTick` naming a tool command runs it from the tool, one that does not is the project's own, and an unknown or foreign one REFUSES", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`]);
-  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts --drift`], "arguments follow");
-  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/host-units.ts --install`], "the table's own fixed arguments come first, as in bin.mjs");
+  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} %h/.local/bin/node ${TOOL_3443}/src/update-primary.ts`]);
+  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} %h/.local/bin/node ${TOOL_3443}/src/update-primary.ts --drift`], "arguments follow");
+  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} %h/.local/bin/node ${TOOL_3443}/src/host-units.ts --install`], "the table's own fixed arguments come first, as in bin.ts");
   assert.deepEqual(pre("npm run widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm run widgets:update`], "a command of the project's own is run as written");
   assert.throws(() => pre("agent-org no:such-command"), HostConfigRefusal, "an unknown tool command refuses");
   assert.throws(() => pre("agent-org"), HostConfigRefusal, "and so does a bare `agent-org`");
@@ -2881,7 +2880,7 @@ test("#3464: a `beforeTick` naming a tool command runs it from the tool, one tha
 test("#3464: a tool command is the same command however its words are separated -- a tab or a run of spaces is accepted by parseBeforeTick, so it must not fall back to the project's pinned copy", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`];
+  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} %h/.local/bin/node ${TOOL_3443}/src/update-primary.ts`];
   for (const spelling of ["agent-org\tprimary:update", "agent-org  primary:update", "agent-org \t primary:update"]) {
     const declared = JSON.stringify({ schema: 1, beforeTick: spelling });
     assert.equal(parseBeforeTick(declared), spelling, `POSITIVE CONTROL: parseBeforeTick ACCEPTS ${JSON.stringify(spelling)}, so the rendering below is what decides`);
@@ -2902,14 +2901,14 @@ test("#3627: installed as the tool, the weekly report's service runs the script 
   assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
 });
 
-test("#3515: installed as the tool, the trace pages' service runs publish.mjs from the tool and is told where the host's declaration is", () => {
+test("#3515: installed as the tool, the trace pages' service runs publish.ts from the tool and is told where the host's declaration is", () => {
   const rendered = readFileSync(join(SHIPPED_DIR, "trace-publish.service.in"), "utf8")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/publish\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("trace-publish.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/trace\/publish\.mjs$/m);
+  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/publish\.ts$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
 });
 
@@ -2930,10 +2929,10 @@ test("#4071: the OTel receiver's unit is listed where this guard looks -- classi
 
   const rendered = readFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), "utf8")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("otel-receiver.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/trace\/otel-receiver\.mjs$/m);
+  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/otel-receiver\.ts$/m);
   assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit");
 });
 

@@ -1,20 +1,18 @@
 /**
  * RULE: DID EVERY REQUIRED CONTEXT ACTUALLY RUN AND CONCLUDE? -- #148's other half, #455's split into
- * `packages/agent-org/src/row-claim/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
+ * `packages/agent-org/src/row-claim/checks-rule.ts`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.mjs";
+import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 // THE TOOL'S OWN ROOT, not `HOME_CHECKOUT`: that is the PROJECT's checkout (the product's tree), which holds no
 // `src/` of this tool's and, in a worktree with no host declaration, does not resolve at all (#3953). Every
@@ -132,7 +130,7 @@ test("#902: ordering is by ID, never by array order -- the API does not promise 
 
 test("#902: a run carrying NO id keeps the previous behaviour -- last in array order wins", () => {
   // A caller that has not been taught to fetch ids must not silently lose its runs; it gets exactly what
-  // it got before. `lookupCheckRuns` does carry them, and `lookups.mjs` says why.
+  // it got before. `lookupCheckRuns` does carry them, and `lookups.ts` says why.
   const noIds = [
     { name: "ts", status: "completed", conclusion: "failure" },
     { name: "ts", status: "completed", conclusion: "success" },
@@ -144,7 +142,7 @@ test("#902 MUTATION TARGET: the fix is in the RULE, and `lookupCheckRuns` must c
   // The ordering key has to arrive. `checkReasons` grouping by newest is inert if its caller drops `id`,
   // which is what this file's own subject did until #902 -- a rule that cannot apply, not a rule that is
   // wrong. Asserted against the source, because no unit test of `checkReasons` can see its caller.
-  const source = readFileSync(new URL("../merge-guard/lookups.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../merge-guard/lookups.ts", import.meta.url), "utf8");
   const mapper = /check-runs[\s\S]*?\.map\(([\s\S]*?)\)\);/.exec(source)?.[1] ?? "";
   assert.match(mapper, /\bid: run\.id\b/,
     "lookupCheckRuns no longer carries `id`, so newest-per-name has no ordering key and silently reverts");
@@ -216,19 +214,19 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
 /**
  * #1007: THE CONSUMER ASSERTION IS DELIBERATELY ABSENT, and worker-judge's review of #1008 is why.
  *
- * An earlier version drove `ownPrHealthReason` (`packages/agent-org/src/row-claim/own-pr-health-rule.mjs`) to prove that
+ * An earlier version drove `ownPrHealthReason` (`packages/agent-org/src/row-claim/own-pr-health-rule.ts`) to prove that
  * `row-claim`'s own colour reads the sentence above as a wait rather than RED -- the exact verdict that
  * refused a claim. **#989 dissolves that relationship**: B2 stops reading check state at all, so
  * `colourFor` and its prefix-matching go with it. The assertion pinned a path about to stop existing, and
  * both pull requests were green alone while whichever merged second would have broken.
  *
  * It was also the only reason this file needed a `// no-token: gh` declaration: importing that module
- * pulls `lookups.mjs` into the closure, which spawns `gh`, and the acceptance job has no token. One
+ * pulls `lookups.ts` into the closure, which spawns `gh`, and the acceptance job has no token. One
  * deletion removes the collision, the declaration and the proof burden.
  *
  * NOTHING THIS MODULE OWNS IS LOST. The `STILL RUNNING:` prefix is still asserted above against this
- * module's own output, which is the property `checks-rule.mjs` is responsible for. The other two consumers
- * (`merge-guard.ts`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
+ * module's own output, which is the property `checks-rule.ts` is responsible for. The other two consumers
+ * (`merge-guard.ts`, `armed-race-rule.ts`) read `reasons.length` and never the prefixes -- checked, not
  * assumed -- so after #989 no caller parses these sentences and there is no cross-module contract left to
  * pin from here.
  */
@@ -294,7 +292,7 @@ test("#1009: a SUPERSEDED run counts as unfinished — the replacement has not r
 });
 
 test("#1009: the waiting sentence CLASSIFIES as STILL_RUNNING, not UNCLASSIFIED", () => {
-  // WHY THE WAIT JOINS THE EXISTING SENTENCE INSTEAD OF GETTING A NEW PREFIX. `reason-kind.mjs` maps a
+  // WHY THE WAIT JOINS THE EXISTING SENTENCE INSTEAD OF GETTING A NEW PREFIX. `reason-kind.ts` maps a
   // reason to a kind by PREFIX and returns `UNCLASSIFIED` for anything it does not recognise -- silently.
   // A new prefix would be a second copy of the sentence, in another file, with nothing comparing them,
   // and #188's reconciliation log would file every waiting refusal under `UNCLASSIFIED` while every test
@@ -335,7 +333,7 @@ test("#1101: NO test file imports another test file — the cause, not the sympt
     "these import a TEST file, so its tests run again inside the importer and every count that file "
     + "reports is inflated:\n  " + offenders.join("\n  ")
     + "\nPut the shared value in a plain module beside the tests -- `check-run-fixtures.ts` is the one "
-    + "this row created, and `leak-patterns.mjs` the pattern it follows.");
+    + "this row created, and `leak-patterns.ts` the pattern it follows.");
 
   // THE CONTROL, and my FIRST version of it was the same defect one level out. It asserted that some
   // file matched the IMPORT pattern -- true whatever the offender pattern does -- so narrowing the
@@ -361,15 +359,11 @@ test("#1101: this file's reported test count equals what it declares", () => {
   // test runner sets it for its own children, and a child that sees it emits the **v8 serialiser**
   // regardless of `--test-reporter` -- so the spawn returned bytes in neither format and the count could
   // not be read at all. **The harness was shaping the output it was being used to measure.**
-  // TSX'S OWN ENTRY, not `node_modules/.bin/tsx`: npm makes that a symlink to a JS file, which `node` can run;
-  // pnpm makes it a shell-script shim, which `node` cannot (#2297). FOUND BY RESOLUTION, not as `<tool root>/node_modules/tsx`: CI lays
-  // this tool at `project/packages/agent-org` with the dependencies in `project/node_modules`, so a path built from the tool's root
-  // finds no tsx there and the child printed nothing (#3953, measured on agent-org#343's first run). `tsx`'s `exports` hides
-  // `dist/cli.mjs`, so the resolved entry is its neighbour.
+  // NODE ITSELF RUNS THE `.ts` (#4389): the host Node strips the types, so there is no loader to find and no `tsx` entry to resolve (#2297, #3953).
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [...TSX_IMPORT, join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
+    ["--test", "--test-reporter=tap", file],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
   assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}${run.stderr.slice(0, 300)}`);
@@ -386,7 +380,7 @@ test("#1101: this file's reported test count equals what it declares", () => {
 // injected -- and `pr-open`'s acceptance check refused on exactly that:
 //
 //     REFUSED npx tsx --test …/merge-guard-checks-rule.test.ts -> needs `token`, which this job does
-//     not have -- merge-guard-checks-rule.test.ts requires token via mergeReadiness -> gh -> lookups.mjs:26
+//     not have -- merge-guard-checks-rule.test.ts requires token via mergeReadiness -> gh -> lookups.ts:26
 //
 // **Satisfying the row would have disqualified this file from the job that runs acceptance commands.**
 // So they live in `merge-guard.test.ts` and `workflow-run-liveness.test.ts`, which already import those

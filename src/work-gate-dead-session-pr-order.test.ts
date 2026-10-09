@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { perPullRequestOrders, DEAD_OWNER_FALLBACK } from "./work-gate/pr-orders.mjs";
+import { perPullRequestOrders, DEAD_OWNER_FALLBACK } from "./work-gate/pr-orders.ts";
 import { routeWithFallback, deliver } from "./wake.ts";
 
 type Agent = { label: string, status: string };

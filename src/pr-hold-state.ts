@@ -80,7 +80,7 @@ export function holdReasonOf(pr: { body?: string; comments?: any[]; labels?: any
 }
 
 /**
- * IS THIS HELD PR STILL EXCUSED? THE LABEL ALONE NO LONGER SAYS SO (#2996): `red-pr.ts`, `org-health.mjs` and the claim treated
+ * IS THIS HELD PR STILL EXCUSED? THE LABEL ALONE NO LONGER SAYS SO (#2996): `red-pr.ts`, `org-health.ts` and the claim treated
  * `hold:*` as proof of health and a freeze that ended stood for four hours. A hold is excused while a condition it names is
  * UNRESOLVED OR UNKNOWN, while a `manual` hold is younger than `MANUAL_WAIT_HOURS`, and while a hold with NO reason has been quiet
  * for less than that. A PR that is not held is not excused: there is nothing to excuse.

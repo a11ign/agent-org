@@ -20,14 +20,14 @@
 // generating and the publishing are separate acts and a bad report can be seen before it is posted.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { READY_LABEL, BACKLOG_LABEL, SESSION_PREFIX } from "./project-vocabulary.ts";
 import {
   REPO, MILESTONE, HOURS_MS, MINUTE_MS, MEDIAN, READ_SET,
   gh, git, issues, milestone, mergeState, misAuthored, reported, daysUntil, readSetIsNotMain, countable,
   conflictMetrics, readyRows} from "./board-data.ts";
 import { editionDay } from "./board-discussion.ts";
-import { liveToolVersion } from "./lib/tool-version.mjs";
+import { liveToolVersion } from "./lib/tool-version.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.ts";
 

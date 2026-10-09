@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { DEFAULT_GRACE_MINUTES, parseCheck, settleRulings, rulingOrder } from "./ruling-check.ts";
 
 export const RULINGS_FILE = "rulings.jsonl";
@@ -143,6 +143,6 @@ export function main(argv: string[] = process.argv.slice(2), { stateDir = stateE
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   refuseUnknownFlags(["--session=", "--session", "--on=", "--on", "--check=", "--check", "--grace=", "--grace", "--at=", "--at"],
-    { entry: import.meta.url, command: "node --import tsx src/ruling-record.ts" });
+    { entry: import.meta.url, command: "node src/ruling-record.ts" });
   process.exitCode = main();
 }

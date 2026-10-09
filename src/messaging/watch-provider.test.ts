@@ -13,9 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { readLedgerLines } from "./ledger.mjs";
-import { defaultLedgerPath } from "./state.mjs";
-import { main } from "./watch.mjs";
+import { readLedgerLines } from "./ledger.ts";
+import { defaultLedgerPath } from "./state.ts";
+import { main } from "./watch.ts";
 
 const REPO = "a11ign/a11ign";
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
@@ -50,7 +50,7 @@ function host({ tokenMode = OWNER_ONLY, paired = true, summary = undefined }: { 
   return { root, home };
 }
 
-/** A GitHub reader with one row waiting on the chairman: the same rows `requests.test.mjs` sends for, so exactly one request is due. */
+/** A GitHub reader with one row waiting on the chairman: the same rows `requests.test.ts` sends for, so exactly one request is due. */
 const github = /** @type {any} */ ({
   issuesLabelled: async (/** @type {{ label: string }} */ query: { label: string; }) => (query.label === "needs:chairman"
     ? [{ number: 2885, title: "Row 2885 needs a decision", url: `https://github.com/${REPO}/issues/2885`, comments: [] }] : []),

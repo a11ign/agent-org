@@ -57,8 +57,8 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { REPO } from "./project-identity.ts";
-import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.mjs";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
 // resolved -- immediately followed by `#<number>`. Used only to LOCATE the phrase in the body for a
@@ -93,7 +93,7 @@ export type ResolvedIssue = number | { repo?: string, number: number };
 /**
  * Pure. Compares what `declaration` DECLARED against what `resolved` GitHub actually RESOLVED, and
  * reports the difference named -- never just that one exists. `resolved: null` means the lookup itself
- * failed (this repo's own rule throughout `merge-guard/lookups.mjs`: "could not ask" and "asked and got
+ * failed (this repo's own rule throughout `merge-guard/lookups.ts`: "could not ask" and "asked and got
  * nothing" are different states) and is reported as `ok: null`, distinct from a real, examined mismatch.
  *
  * `declaration.kind` of `"missing"`/`"malformed"` is treated as declaring NOTHING for this comparison --
@@ -228,7 +228,7 @@ export function mismatchVerdict(report: { ok: false; reasons: string[]; }, under
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/closes-mismatch-check.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
   const prNumber = Number(process.argv[2]);
   if (!prNumber) {
     console.error("usage: closes-mismatch-check.ts <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
@@ -252,7 +252,7 @@ function main() {
     // a GraphQL blip, not just this one PR -- a real cost, weighed and accepted anyway: the alternative
     // (allow on `null`) makes the check go silent EXACTLY when the API is unwell, which is the one moment
     // an author is least able to notice its absence. This repo's own rule throughout `merge-guard/
-    // lookups.mjs` is that "could not ask" and "asked and got nothing" are different states and neither
+    // lookups.ts` is that "could not ask" and "asked and got nothing" are different states and neither
     // may read as clean -- the same choice `merge-guard.ts --ci-gate` already makes (exit 2, CANNOT ASK,
     // never treated as READY). A transient GraphQL failure is rare and retriable (push again, or the
     // `update-branch` sweep's own re-push re-runs this); a real accidental closure sailing through

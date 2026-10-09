@@ -10,7 +10,7 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localImports } from "../lib/local-import-closure.mjs";
+import { localImports } from "../lib/local-import-closure.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 
 /** This checkout: the tool is its own tree, so `src/packaging` up two is a place the tool owns, not a project file. */
@@ -24,7 +24,7 @@ const PROJECT_DECLARATION = ".agent-org/project.json";
 /**
  * The project's files a copied tool reads at import: its declaration, and the plugin that declaration names (imported DYNAMICALLY, so
  * `localImports` cannot see it). The plugin is READ from the declaration rather than listed by name, so the project renaming it
- * (`causes.mjs` to `causes.ts`, a11ign/a11ign#4393) cannot break a test here before this list moves.
+ * (`causes.ts` to `causes.ts`, a11ign/a11ign#4393) cannot break a test here before this list moves.
  */
 function projectFiles(): string[] {
   const declaration = JSON.parse(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION), "utf8")) as { causes?: { module?: string } };
@@ -57,7 +57,7 @@ function copyInto(target: string, source: string): void {
  */
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
   for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
-  // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under tsx.
+  // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under node.
   writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of projectFiles()) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
   const hostSource = process.env[HOST_ENV] ?? join(HOME_CHECKOUT, ".agent-org/host.json");

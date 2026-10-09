@@ -2,8 +2,8 @@
 // no-token: gh -- every event is a fixture; `swimlane` is a pure function and calls nothing
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { laneOf, lanesOf, swimlane } from "./swimlane.mjs";
-import { waterfall } from "./waterfall.mjs";
+import { laneOf, lanesOf, swimlane } from "./swimlane.ts";
+import { waterfall } from "./waterfall.ts";
 
 const REPO_ROW = 9001;
 const PR = 9100;

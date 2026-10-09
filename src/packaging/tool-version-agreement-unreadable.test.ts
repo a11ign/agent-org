@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The host file is set FIRST and the tool imported AFTER it, as `tool-version-agreement.test.ts` does (`org-health.mjs` resolves its project at import, #3233).
+// The host file is set FIRST and the tool imported AFTER it, as `tool-version-agreement.test.ts` does (`org-health.ts` resolves its project at import, #3233).
 const SCRATCH = mkdtempSync(join(tmpdir(), "tool-version-unreadable-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const PROJECT = join(SCRATCH, "project");
@@ -22,7 +22,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { agreement, readLastCiRun, memoFile, RESOLVER_LINE } = await import("../lib/tool-version-agreement.mjs");
+const { agreement, readLastCiRun, memoFile, RESOLVER_LINE } = await import("../lib/tool-version-agreement.ts");
 const { toolVersionReading } = await import("../org-health.ts");
 
 const MINUTE = 60_000;

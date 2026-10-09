@@ -19,12 +19,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BASELINE_FILE, checkMjsRatchet, findBaselineRoot, isScriptSource, type Baseline } from "@a11ign/toolchain/mjs-ratchet";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
 
 const HERE = fileURLToPath(import.meta.url);
@@ -37,15 +37,20 @@ const scriptFilesIn = (root: string): string[] => execFileSync("git", ["-C", roo
   .split("\0").filter((path) => path !== "" && isScriptSource(path) && existsSync(join(root, path)));
 
 /**
- * A scratch copy of the real tree's script files beside `baseline`: no `.git`, so the function WALKS it, which is the path the gate's copy takes. Every control
+ * THE TREE HOLDS NO SCRIPT SOURCE ANY MORE (#4389, the end state), so the controls cannot borrow a real one: each makes its own. The check reads names and the baseline, never
+ * content, so a one-line stand-in is a script source as far as it can tell, and a `.cjs` is there to prove the extension list is read and not only `.mjs`.
+ */
+const STAND_INS = ["src/lib/stand-in-one.mjs", "src/lib/stand-in-two.mjs", "src/trace/stand-in-three.cjs"];
+
+/**
+ * A scratch tree holding `files` beside `baseline`: no `.git`, so the function WALKS it, which is the path the gate's copy takes. Every control
  * below judges one of these, so none of them can touch the committed baseline.
  */
 function scratchTree({ files, baseline }: { files: string[]; baseline: Baseline }): string {
   const root = mkdtempSync(join(tmpdir(), "mjs-ratchet-"));
-  const source = findBaselineRoot(JUDGED);
   for (const path of files) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
-    copyFileSync(join(source, path), join(root, path));
+    writeFileSync(join(root, path), "export {};\n");
   }
   writeFileSync(join(root, BASELINE_FILE), JSON.stringify(baseline));
   return root;
@@ -60,55 +65,53 @@ function judgeScratch({ files, baseline }: { files: string[]; baseline: Baseline
   }
 }
 
+const listing = (files: string[]): Baseline => ({ files: files.map((path) => basename(path)).sort(), exceptions: [] });
+
 test("the tool's real tree passes against the committed baseline", (t) => {
   const result = checkMjsRatchet({ from: JUDGED });
   t.diagnostic(result.message);
   assert.ok(result.ok, result.message);
 });
 
-test("the ratchet RUNS: the baseline sits at the repository root and the tree it judges holds files", () => {
-  // POSITIVE CONTROL for the emptiness a count of zero would hide: a walk that read nothing agrees with an empty baseline.
+/** The two workflow helpers #4389 leaves: `.github/` is outside that row's Region, so a row of its own carries them (the baseline lists exactly these, and nothing under `src/`). */
+const LEFT_IN_GITHUB = [".github/scripts/leak-scan.mjs", ".github/scripts/workflow-paths.mjs"];
+
+test("THE END STATE: nothing under `src/` is a script source, and the baseline lists only the workflow helpers outside it", () => {
   const root = findBaselineRoot(JUDGED);
   // In the gate's copy this file has no baseline above it (that is why JUDGED is the named checkout), so the walk from itself is only asked where it is meant to work.
   if (!process.env[TOOL_REPO_ENV]) assert.equal(root, findBaselineRoot(dirname(HERE)), "walking up from this file and from its directory find one root");
-  const result = checkMjsRatchet({ from: JUDGED });
-  assert.ok(result.count > 0, "the check counted no file at all");
-  assert.ok(result.baselineCount > 0, "the committed baseline lists no file at all");
-  assert.ok(scriptFilesIn(root).some((path) => path === "src/lib/git-env.mjs"), "the listing no longer finds a source file that is known to be there");
+  assert.deepEqual(baselineAt(root), listing(LEFT_IN_GITHUB));
+  assert.deepEqual(scriptFilesIn(root).filter((path) => path.startsWith("src/")), []);
+  if (!process.env[TOOL_REPO_ENV]) assert.deepEqual(scriptFilesIn(root), LEFT_IN_GITHUB);
+});
+
+test("POSITIVE CONTROL for that emptiness of `src/`: the check SEES a script source and refuses it against the empty baseline, naming it", () => {
+  const result = judgeScratch({ files: STAND_INS, baseline: { files: [], exceptions: [] } });
+  assert.equal(result.ok, false);
+  assert.equal(result.count, STAND_INS.length, "the walk did not count every stand-in, so a zero above could be a walk that reads nothing");
+  for (const path of STAND_INS) assert.ok(result.message.includes(basename(path)), `the failure does not name ${path}`);
 });
 
 test("a baseline with one name removed FAILS and names the file", () => {
-  const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const removed = "git-env.mjs";
-  const index = baseline.files.indexOf(removed);
-  assert.notEqual(index, -1, `${removed} is not in the committed baseline, so this control proves nothing`);
-  const result = judgeScratch({ files, baseline: { ...baseline, files: baseline.files.filter((_, at) => at !== index) } });
+  const baseline = listing(STAND_INS);
+  assert.equal(judgeScratch({ files: STAND_INS, baseline }).ok, true, "CONTROL: the full listing passes");
+  const result = judgeScratch({ files: STAND_INS, baseline: { ...baseline, files: baseline.files.filter((name) => name !== "stand-in-one.mjs") } });
   assert.equal(result.ok, false);
-  assert.match(result.message, /git-env\.mjs/);
-});
-
-test("the same tree against an EMPTIED baseline fails and names every file", () => {
-  const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const result = judgeScratch({ files, baseline: { files: [], exceptions: [] } });
-  assert.equal(result.ok, false);
-  for (const path of files) assert.ok(result.message.includes(basename(path)), `the failure does not name ${path}`);
+  assert.match(result.message, /stand-in-one\.mjs/);
 });
 
 test("a tree that holds FEWER files than the baseline passes and says the baseline can be lowered", () => {
-  const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const result = judgeScratch({ files: files.filter((path) => basename(path) !== "git-env.mjs"), baseline: baselineAt(findBaselineRoot(JUDGED)) });
+  const result = judgeScratch({ files: STAND_INS.slice(1), baseline: listing(STAND_INS) });
   assert.equal(result.ok, true, result.message);
   assert.match(result.message, /lower/i);
   assert.ok(result.count < result.baselineCount, "the check did not see a tree smaller than its baseline");
 });
 
 test("an exception with no `why` FAILS", () => {
-  const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "a tool that reads only this name" }] } });
+  const baseline = listing(STAND_INS);
+  const withWhy = judgeScratch({ files: STAND_INS, baseline: { ...baseline, exceptions: [{ path: STAND_INS[0]!, why: "a tool that reads only this name" }] } });
   assert.doesNotMatch(withWhy.message, /has no `why`/, "an exception with a reason is not refused for lacking one");
-  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "" }] } });
+  const withoutWhy = judgeScratch({ files: STAND_INS, baseline: { ...baseline, exceptions: [{ path: STAND_INS[0]!, why: "" }] } });
   assert.equal(withoutWhy.ok, false);
   assert.match(withoutWhy.message, /has no `why`/);
 });

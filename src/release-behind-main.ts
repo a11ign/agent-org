@@ -4,7 +4,7 @@
 // THE CLASS: a pull request changes a package's shipped code, carries no changeset, and merges; nothing then releases it (screenreader-worker#25 and #26).
 // Row 1's gate (`changeset-required` in a11ign/toolchain) stops that at the pull request. This is the reading for what gate cannot see: a repository that has not
 // adopted it, a wrong `no-release:` line, a release that fails after the merge. It looks at `main` against the LATEST RELEASE, so it sees a release that never started,
-// beside `release-run-failed` (#4001), which sees one that ran and failed. `org-health.mjs` turns the verdicts into the `release-behind-main` signal.
+// beside `release-run-failed` (#4001), which sees one that ran and failed. `org-health.ts` turns the verdicts into the `release-behind-main` signal.
 //
 // A LEAF: it imports no org-health or work-gate name (the signal's name and the order text live there), so both can import it.
 //

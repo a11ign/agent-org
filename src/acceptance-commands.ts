@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-check
 // command: run a PR's own stated Acceptance/Refutation command(s) and report RAN/REFUSED/MISSING
 // NOTHING HAS EVER RUN A ROW'S ACCEPTANCE COMMAND -- pipeline unit 2, #353. Every PR body in this repo
 // carries an `Acceptance:` line and its own PR argues its case; the only thing that has ever executed it
@@ -69,12 +68,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { changedFiles } from "./lib/changed-files.mjs";
-import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
-import { toolImports } from "./lib/installed-tool-imports.mjs";
-import { resolveTypescript } from "./lib/resolve-typescript.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { changedFiles } from "./lib/changed-files.ts";
+import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.ts";
+import { toolImports } from "./lib/installed-tool-imports.ts";
+import { resolveTypescript } from "./lib/resolve-typescript.ts";
 import { defectClassReport } from "./defect-class-line.ts"; // #4123
 import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "./acceptance-file.ts"; // ADR 0044
 import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
@@ -109,8 +108,6 @@ export type JobCapabilities = { history: boolean, token: boolean, fleet: boolean
 // is EXPORTED, pure, and takes `resources` as a parameter rather than closing over `RESOURCES`, so a test
 // can show a fixture project's OWN list (an empty one included) derives its own two working lists, without
 // swapping the module's own import-time binding of `RESOURCES`.
-/** @param {readonly { pattern: RegExp, reason: string, named: boolean }[]} resources
- * @returns {{ patterns: [RegExp, string][], namedNotInvoked: Set<RegExp> }} */
 export function resourcePatternsFrom(resources: readonly { pattern: RegExp; reason: string; named: boolean; }[]): { patterns: [RegExp, string][]; namedNotInvoked: Set<RegExp>; } {
   return {
     patterns: resources.map(({ pattern, reason }) => [pattern, reason]),
@@ -157,7 +154,7 @@ const DECLARED_YES_REASON = `is declared by the row itself ("${FLEET_QUESTION}?"
  * `"yes"`, or `null` for a body that has no such section OR whose answer is not an unambiguous No/Yes
  * (`Partly`, prose, empty). **`null` means UNDECLARED, and undeclared rows derive exactly as they did
  * before this existed**: absence and "could not read it" are never promoted to an answer.
- * @param {string} body a row body @returns {"no" | "yes" | null}
+ * @param body a row body
  */
 export function declaredFleetAnswer(body: string): "no" | "yes" | null {
   if (typeof body !== "string") return null;
@@ -182,8 +179,8 @@ export function declaredFleetAnswer(body: string): "no" | "yes" | null {
  * both are answering. CORPUS_PATTERNS is deliberately NOT included: a `runs/`-reading gate is a verdict
  * somebody else must report, which is a different rule from "this command needs hardware nobody else has".
  *
- * @param {string} body a row body
- * @returns {string | null} the reason the matched command needs the fleet or lab, or null
+ * @param body a row body
+ * @returns the reason the matched command needs the fleet or lab, or null
  */
 export function fleetOrLabAcceptance(body: string): string | null {
   // THE RAW SECTION, not `extractAcceptanceSection`'s commands -- and that is the correction review
@@ -206,7 +203,6 @@ export function fleetOrLabAcceptance(body: string): string | null {
 /**
  * The reason of the first of `patterns` that matches `section`: a NAMED pattern is read against
  * `namedPatternText` (#1912, #1988), an invocation against the whole span.
- * @param {string} section @param {readonly [RegExp, string][]} patterns @returns {string | null}
  */
 function patternReason(section: string, patterns: readonly [RegExp, string][]): string | null {
   const named = namedPatternText(section);
@@ -225,7 +221,6 @@ function patternReason(section: string, patterns: readonly [RegExp, string][]): 
  * somebody running `fleet:status`, while a NAMED thing -- a variable, a unit, a place -- may be a test's
  * subject or, here, the work a row says it will NOT do. The conservative direction is to over-route an
  * invocation, which a reader can see and correct, rather than to under-route one silently.
- * @param {string} section @returns {string}
  */
 function namedPatternText(section: string): string {
   return withoutBulletProse(withoutScopeDisclaimer(section));
@@ -238,8 +233,7 @@ function namedPatternText(section: string): string {
  *
  * The form is derived, not assumed: the pattern is re-tested against the span with only the disclaimer
  * removed, so a mention that survives that is the bullet rule's and one that does not is this row's.
- * @param {string} body a row body
- * @returns {{ reason: string, form: "bullet" | "scope disclaimer" } | null}
+ * @param body a row body
  */
 export function untrimmedFleetMention(body: string): { reason: string; form: "bullet" | "scope disclaimer"; } | null {
   const section = extractLabeledSection(body, ACCEPTANCE_FIELD);
@@ -261,8 +255,7 @@ export function untrimmedFleetMention(body: string): { reason: string; form: "bu
  * pattern that lost is named); a No that an INVOCATION overrode (`routed: true`, and the pattern that won
  * is named); a Yes that no pattern backed (`routed: true`, `reason: null`). A row that declares nothing has
  * nothing to disagree with -- that is `untrimmedFleetMention`'s territory.
- * @param {string} body a row body
- * @returns {{ declared: "no" | "yes", routed: boolean, reason: string | null } | null}
+ * @param body a row body
  */
 export function declarationDisagreement(body: string): { declared: "no" | "yes"; routed: boolean; reason: string | null; } | null {
   const declared = declaredFleetAnswer(body);
@@ -294,8 +287,6 @@ export function declarationDisagreement(body: string): { declared: "no" | "yes";
  * block at a numbered clause, a heading, or a blank line followed by unindented text, so `Done when`'s
  * clauses -- #1241's two founding rows are exactly that shape -- survive it. A row stating a real
  * hardware dependency still routes; only the paragraph saying the work is OUT does not.
- * @param {string} section
- * @returns {string}
  */
 function withoutScopeDisclaimer(section: string): string {
   let inFence = false;
@@ -328,8 +319,6 @@ function withoutScopeDisclaimer(section: string): string {
  * NOT A PROOF, A CONVENTION. A bullet that genuinely does the thing (`- run systemctl ...`) now answers
  * null -- the direction #1241 called unsafe -- so `row-file` says so when it happens (see
  * `untrimmedFleetMention`), and the fix is to write that step as a numbered clause, which is read.
- * @param {string} section
- * @returns {string}
  */
 function withoutBulletProse(section: string): string {
   let inFence = false;
@@ -360,7 +349,7 @@ function withoutBulletProse(section: string): string {
  *
  * ONE FUNCTION FOR BOTH, because it is one Markdown rule and #1988 would otherwise have been a second
  * spelling of it that could drift from this one.
- * @param {string} line a non-blank line outside any fence @param {boolean} afterBlank
+ * @param line a non-blank line outside any fence
  */
 function endsLazyBlock(line: string, afterBlank: boolean) {
   if (/^\s/.test(line)) return false;
@@ -425,8 +414,6 @@ const SHELL_BLOCK_KEYWORDS = new Set(["for", "while", "until", "if", "case", "se
  * `cd` IS NOT THE COMMAND: its exit code proves nothing and the command after the `&&` is what runs, so that
  * is the token whose executable, refusal or prose reading the line gets. `UNVERIFIABLE_BUILTINS` is the
  * opposite case -- `echo` IS the command and says nothing -- which is why `cd` is skipped, not listed there.
- * @param {string} command
- * @returns {string | undefined}
  */
 function firstRealToken(command: string): string | undefined {
   const tokens = stripLeadingCd(command).trim().split(/\s+/).filter(Boolean);
@@ -442,8 +429,6 @@ const EXECUTE_BITS = 0o111;
  * without a subprocess so `classifyCommand` stays pure (this file's own stated invariant) even for this
  * check. A token containing `/` is checked directly as a path (a relative or absolute script, never
  * `$PATH`-searched); anything else is searched across `$PATH`'s own directories, exactly as a shell would.
- * @param {string} token
- * @returns {boolean}
  */
 function commandExists(token: string): boolean {
   const isExecutableFile = (path: string) => {
@@ -504,8 +489,6 @@ const HISTORY_ISH_PATTERN = /^\s*(?:\*\*|__)?History\s*:/i;
  *
  * Extracted rather than inlined so `commandLinesAfter` stays under the complexity gate -- a called
  * function's branches are not the caller's, the same reason `postBlockedByNoteIfAny` exists next door.
- * @param {string} trimmed
- * @returns {boolean}
  */
 function isHistoryDeclarationLine(trimmed: string): boolean {
   return HISTORY_FULL_PATTERN.test(trimmed) || HISTORY_ISH_PATTERN.test(trimmed);
@@ -515,8 +498,6 @@ function isHistoryDeclarationLine(trimmed: string): boolean {
  * Does the PR body ask for this run's checkout to carry full history (#497)? A PR carrying the line with
  * no historical fixture in its Acceptance command pays only time, never a wrong verdict -- see this
  * file's own header and #497's own "what it must not become" for why that asymmetry is deliberate.
- * @param {string | null | undefined} body
- * @returns {boolean}
  */
 export function hasFullHistoryDeclaration(body: string | null | undefined): boolean {
   return HISTORY_FULL_PATTERN.test(body ?? "");
@@ -551,7 +532,7 @@ const HAND_RUN_PATTERN = /^[^\S\r\n]*(?:\*\*|__)?Hand-run:[^\S\r\n]*(?:\*\*|__)?
 // `isHistoryDeclarationLine` for the full argument, which is the same one.
 const HAND_RUN_ISH_PATTERN = /^\s*(?:\*\*|__)?Hand-run\s*:/i;
 
-/** #2099: is this line an attempt at the `Hand-run:` declaration, recognised or not? @param {string} trimmed */
+/** #2099: is this line an attempt at the `Hand-run:` declaration, recognised or not? */
 function isHandRunDeclarationLine(trimmed: string) {
   return HAND_RUN_PATTERN.test(trimmed) || HAND_RUN_ISH_PATTERN.test(trimmed);
 }
@@ -561,8 +542,6 @@ function isHandRunDeclarationLine(trimmed: string) {
  * recognised or near-miss? One function so `commandLinesAfter` pays ONE branch for the whole family: the
  * caller sits at this repo's complexity gate, and every declaration added since has had to be free there
  * (`isHistoryDeclarationLine` was extracted for exactly this, and says so).
- * @param {string} trimmed
- * @returns {boolean}
  */
 function isDeclarationLine(trimmed: string): boolean {
   return isHistoryDeclarationLine(trimmed) || isHandRunDeclarationLine(trimmed);
@@ -573,8 +552,6 @@ function isDeclarationLine(trimmed: string): boolean {
  *
  * The reason is returned rather than a boolean, because every message this declaration produces quotes
  * it: a `NOT RUN` line naming no reason is the prose it replaces with extra steps.
- * @param {string | null | undefined} body
- * @returns {string | null}
  */
 export function handRunDeclaration(body: string | null | undefined): string | null {
   const match = HAND_RUN_PATTERN.exec(body ?? "");
@@ -620,9 +597,6 @@ export function handRunDeclaration(body: string | null | undefined): string | nu
  * new section reader, and it lands on #527's side rather than #540's. A second `Acceptance:` is a
  * DUPLICATE because "which one do I run" is a real question with different answers; evidence has no such
  * question. Two pasted runs are two pasted runs, so reading every one of them guesses at nothing.
- *
- * @param {string | null | undefined} body
- * @returns {string | null}
  */
 export function handRunEvidence(body: string | null | undefined): string | null {
   const lines = String(body ?? "").split(/\r\n|\r|\n/);
@@ -661,8 +635,6 @@ const HAND_RUN_OUTPUT_PLAIN = /^(?:\*\*|__)?Hand-run\s+output:(?:\*\*|__)?/i;
  * already on `## Acceptance — old read vs new`. `## Hand-run output (2026-09-23)` names the section; it
  * is not somebody's pasted run, and counting it would make the heading its own evidence. The plain form
  * has no such ambiguity: its colon is required to match at all, so anything after it was meant as content.
- * @param {string} trimmed
- * @returns {{ matched: boolean, inline: string }}
  */
 function handRunOutputHeader(trimmed: string): { matched: boolean; inline: string; } {
   if (HAND_RUN_OUTPUT_HEADING.test(trimmed)) return { matched: true, inline: "" };
@@ -678,8 +650,6 @@ function handRunOutputHeader(trimmed: string): { matched: boolean; inline: strin
  * and GitHub's own template convention hides its guidance in `<!-- ... -->` -- which every author leaves
  * in place. Counting either would make the heading the evidence for itself, which is the emptiest form of
  * the very shape this check exists to refuse.
- * @param {string} text
- * @returns {boolean}
  */
 function pastedSomething(text: string): boolean {
   return text.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/)
@@ -696,8 +666,6 @@ function pastedSomething(text: string): boolean {
  * that refused itself for being named after the thing it fixed. A command that reaches `gh` DEEPER than
  * its first token (a script that spawns it) is already `SPAWNS_GH`'s question, answered by the closure
  * walk with the chain that found it.
- * @param {string} command
- * @returns {boolean}
  */
 function needsToken(command: string): boolean {
   const token = firstRealToken(command);
@@ -708,10 +676,6 @@ function needsToken(command: string): boolean {
  * #2099: the `token` refusal for a command, or `null` when this job can honestly attempt it. Extracted
  * rather than inlined in `classifyCommand`, which sits AT the complexity gate -- a called function's
  * branches are not the caller's, the same reason `isHistoryDeclarationLine` exists next door.
- * @param {string} command
- * @param {JobCapabilities} capabilities
- * @param {"ACCEPTANCE" | "REFUTATION"} [section]
- * @returns {Classification | null}
  */
 function tokenRefusal(command: string, capabilities: JobCapabilities, section?: "ACCEPTANCE" | "REFUTATION"): Classification | null {
   if (capabilities.token || !needsToken(command)) return null;
@@ -727,7 +691,6 @@ function tokenRefusal(command: string, capabilities: JobCapabilities, section?: 
  * is refused exactly as before, and #1116's rule is broken in the direction that teaches people the
  * declaration is decorative. The FACT is one string either way; only the sentence that says what to do
  * next differs.
- * @param {string} command @param {"ACCEPTANCE" | "REFUTATION"} [section]
  */
 function noTokenReason(command: string, section?: "ACCEPTANCE" | "REFUTATION") {
   const remedy = section === "REFUTATION"
@@ -745,8 +708,6 @@ function noTokenReason(command: string, section?: "ACCEPTANCE" | "REFUTATION") {
  * What THIS acceptance job can offer a test that names a requirement (#510). `token`/`fleet` are fixed
  * facts about the job itself; `history` is the one thing a PR body can change. `docs/pipeline.md` states
  * this in prose (#511); this is the same fact read by code, never re-typed.
- * @param {string | null | undefined} body
- * @returns {JobCapabilities}
  */
 export function jobCapabilities(body: string | null | undefined): JobCapabilities {
   // `corpus: false` unconditionally -- `runs/` is gitignored, so a GitHub-hosted runner never has one
@@ -768,8 +729,6 @@ const REQUIRES_HEADER = /^\/\/\s*requires:\s*(.+)$/m;
  * an unrecognised word (a typo, a future capability this job has not learned) must never be silently
  * dropped, because that would make a mistyped requirement read as "needs nothing," exactly the silent-pass
  * shape this row exists to end. `unmetRequirements` below is where an unknown word is judged, not here.
- * @param {string} text
- * @returns {string[]}
  */
 export function testFileRequirements(text: string): string[] {
   const match = REQUIRES_HEADER.exec(text);
@@ -810,8 +769,8 @@ export function testFileRequirements(text: string): string[] {
 const WRITES_HEADER = /^\/\/\s*writes:\s*(\S+)\s*$/m;
 
 /**
- * @param {string} text
- * @returns {string | null} the declared path (e.g. `runs/git-fixture-cache`), or null if undeclared.
+ *
+ * @returns the declared path (e.g. `runs/git-fixture-cache`), or null if undeclared.
  */
 function declaredWritePath(text: string): string | null {
   const match = WRITES_HEADER.exec(text);
@@ -830,8 +789,6 @@ const WRITE_CALL_PATTERN = /\b(?:mkdirSync|writeFileSync|createWriteStream)\s*\(
  * `runsRoot()`-based path construction names, AND the file genuinely writes there? Both must hold, or the
  * declaration is wrong rather than merely unverifiable: naming a real subdirectory this file never writes
  * to is exactly as wrong as naming one it does not even mention.
- * @param {string} codeOnly
- * @param {string} writesPath
  */
 function writeDeclarationHolds(codeOnly: string, writesPath: string) {
   const subdir = writesPath.replace(/^runs\//, "");
@@ -842,7 +799,7 @@ function writeDeclarationHolds(codeOnly: string, writesPath: string) {
 // the fourth instance in two days of the identical shape #382 already named: "an opt-in declaration
 // cannot catch the file whose author did not know there was something to declare, which is the whole
 // population that matters." So this job's capability check no longer trusts the header alone; it walks
-// the SAME local-import closure `gh-token-jobs.test.ts` already walks (`packages/guards/src/local-import-closure.mjs`,
+// the SAME local-import closure `gh-token-jobs.test.ts` already walks (`packages/guards/src/local-import-closure.ts`,
 // shared rather than reimplemented -- see that module's header) and asks each file in it a factual
 // question about what it DOES, never about what it merely mentions.
 //
@@ -863,7 +820,6 @@ function writeDeclarationHolds(codeOnly: string, writesPath: string) {
 // below builds each pattern from CONCATENATED fragments, so the searched-for substring never appears
 // contiguously in this file's own source -- the file that defines "what counts as a real read" cannot
 // itself read as one.
-/** @param {string} a @param {string} b @returns {string} */
 const fingerprint = (a: string, b: string): string => a + b;
 
 /**
@@ -882,11 +838,9 @@ const fingerprint = (a: string, b: string): string => a + b;
  *
  * `acorn` was the alternative and is deliberately not used: it resolves here only as another package's
  * transitive dependency, which would make this guard hostage to somebody else's tree.
- * @type {typeof import("typescript") | null | undefined}
  */
 let typescriptModule: typeof import("typescript") | null | undefined = undefined;
 
-/** @returns {typeof import("typescript") | null} */
 function loadTypescript(): typeof import("typescript") | null {
   if (typescriptModule !== undefined) return typescriptModule;
   try {
@@ -895,7 +849,7 @@ function loadTypescript(): typeof import("typescript") | null {
     void error; // pre-install: the caller falls back to the full-text scan, which over-charges
     typescriptModule = null;
   }
-  return typescriptModule;
+  return typescriptModule as typeof import("typescript") | null;
 }
 
 /**
@@ -928,12 +882,11 @@ function loadTypescript(): typeof import("typescript") | null {
  * OFFSETS ARE PRESERVED: a body is replaced by spaces of the same length, keeping newlines, exactly as
  * `stripComments` does. So `lineNumberOf` still reports the real line of whatever survives.
  *
- * @param {string} codeOnly the file's text, comments already stripped
- * @param {string} fileName for the parser's diagnostics only
- * @param {Set<string>} imported the names the importing file's reachable code uses from this module
- * @param {boolean} isEntry
- * @param {ClosureMemo} [memo] the parse is kept here, so a file reached from many entries is parsed once
- * @returns {{ scope: string, referenced: Set<string> | null }}
+ * @param codeOnly the file's text, comments already stripped
+ * @param fileName for the parser's diagnostics only
+ * @param imported the names the importing file's reachable code uses from this module
+ *
+ * @param [memo] the parse is kept here, so a file reached from many entries is parsed once
  */
 function reachableScope(codeOnly: string, fileName: string, imported: Set<string>, isEntry: boolean, memo: ClosureMemo = createClosureMemo()): { scope: string; referenced: Set<string> | null; } {
   const ts = loadTypescript();
@@ -952,10 +905,6 @@ function reachableScope(codeOnly: string, fileName: string, imported: Set<string
  * Every identifier the code that can run uses -- skipping import and export declarations, and, when `kept` is
  * given, a top-level function declaration nobody reaches and the entry guard. `kept === null` is the entry: all
  * of it runs.
- * @param {typeof import("typescript")} ts
- * @param {import("typescript").SourceFile} source
- * @param {Set<string> | null} kept
- * @returns {Set<string>}
  */
 function referencedNames(ts: typeof import("typescript"), source: import("typescript").SourceFile, kept: Set<string> | null): Set<string> {
   const names: Set<string> = new Set();
@@ -973,11 +922,9 @@ export type StatementFacts = { identifiers: string[], isGuard: boolean, function
  * its fixpoint, for every set of names an importer reaches, and re-walking the whole tree each time was the largest cost left in the scan. Keyed on
  * the parsed source itself, so a changed file (a new parse) can never read an old answer. Import and export declarations are not statements here:
  * they bind or list a name and run nothing.
- * @type {WeakMap<import("typescript").SourceFile, StatementFacts[]>}
  */
 const statementFacts: WeakMap<import("typescript").SourceFile, StatementFacts[]> = new WeakMap();
 
-/** @param {typeof import("typescript")} ts @param {import("typescript").SourceFile} source */
 function topLevelStatements(ts: typeof import("typescript"), source: import("typescript").SourceFile) {
   const held = statementFacts.get(source);
   if (held !== undefined) return held;
@@ -985,7 +932,6 @@ function topLevelStatements(ts: typeof import("typescript"), source: import("typ
   ts.forEachChild(source, (statement) => {
     if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) return;
     const identifiers: string[] = [];
-    /** @param {import("typescript").Node} node */
     const collect = (node: import("typescript").Node) => {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
       if (ts.isIdentifier(node)) identifiers.push(node.text);
@@ -1005,8 +951,6 @@ function topLevelStatements(ts: typeof import("typescript"), source: import("typ
 /**
  * A top-level `if` whose condition reads `import.meta.url` -- `if (import.meta.url === pathToFileURL(...).href)
  * main();` -- runs its body only when the module is the entry, so nothing in it is reached by an import.
- * @param {typeof import("typescript")} ts @param {import("typescript").Node} node
- * @param {import("typescript").SourceFile} source
  */
 function isEntryGuard(ts: typeof import("typescript"), node: import("typescript").Node, source: import("typescript").SourceFile) {
   return ts.isIfStatement(node) && node.expression.getText(source).includes("import.meta.url");
@@ -1014,15 +958,9 @@ function isEntryGuard(ts: typeof import("typescript"), node: import("typescript"
 
 /**
  * The module's text with every body `kept` does not reach blanked -- #967's rule, now keyed on reachability.
- * @param {typeof import("typescript")} ts
- * @param {import("typescript").SourceFile} source
- * @param {string} codeOnly
- * @param {Set<string>} kept
- * @returns {string}
  */
 function blankUnkept(ts: typeof import("typescript"), source: import("typescript").SourceFile, codeOnly: string, kept: Set<string>): string {
   const bodies: [number, number][] = [];
-  /** @param {import("typescript").Node} node */
   const visit = (node: import("typescript").Node) => {
     const body = (node as { body?: import("typescript").Node }).body;
     // A DECLARATION IS BLANKED WHOLE, SIGNATURE INCLUDED. `export function runsRoot() {` is top-level text
@@ -1068,7 +1006,7 @@ const DECLARED_SPAWNS = [...CHARGED_SPAWNS, "npmCliInvocation"];
  * #1449: A `gh` SPAWN, NOT THE TWO LETTERS -- one of `CHARGED_SPAWNS` with `gh` as its whole quoted first argument.
  * The ONE copy: the token charge below uses it, and `gh-token-jobs.test.ts` imports it, so the spawns that make a
  * test need a token and the spawns that make a CI job need GH_TOKEN cannot drift apart. `execFile` joined it on #1449;
- * `npmCliInvocation` did not, because it runs only npm's own CLIs (`npm-cli-executable.mjs`), never `gh`.
+ * `npmCliInvocation` did not, because it runs only npm's own CLIs (`npm-cli-executable.ts`), never `gh`.
  */
 export const SPAWNS_GH = new RegExp(`(?:${CHARGED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])gh\\1`);
 
@@ -1121,8 +1059,6 @@ const NO_TOKEN_DECLARATION = /^\/\/[ \t]*no-token:[ \t]*(\S+)(?:[ \t]+--[ \t].*)
 /**
  * Every line of `text` that starts like a `// no-token:` declaration, with the name it declares -- `fn: null`
  * when the line cannot be read as one.
- * @param {string} text
- * @returns {{ line: number, fn: string | null }[]}
  */
 function noTokenHeaders(text: string): { line: number; fn: string | null; }[] {
   return text.split("\n").flatMap((raw, i) => {
@@ -1143,8 +1079,6 @@ function noTokenHeaders(text: string): { line: number; fn: string | null; }[] {
  * substance while its check kept passing. So the name as the WHOLE quoted first argument of a spawn is a use
  * too. It stays a SHAPE, never a mention: `gh` in prose, in an identifier, or as a later argument to a spawn
  * of another command still holds.
- * @param {string} entryCodeOnly
- * @param {string} fnName
  */
 function noTokenDeclarationHolds(entryCodeOnly: string, fnName: string) {
   const called = new RegExp(`\\b${fnName}\\s*\\(`).test(entryCodeOnly);
@@ -1154,9 +1088,6 @@ function noTokenDeclarationHolds(entryCodeOnly: string, fnName: string) {
 
 /**
  * Where in `text` a 1-indexed line number sits for a given match index.
- * @param {string} text
- * @param {number} index
- * @returns {number}
  */
 function lineNumberOf(text: string, index: number): number {
   return text.slice(0, index).split("\n").length;
@@ -1167,7 +1098,6 @@ export type ClosureHit = { requirement: "token" | "corpus" | "history", file: st
 /**
  * #1636: the names of `bound` that reachable code actually uses -- or every bound name when there was no parser to say (`referenced === null`),
  * which over-charges.
- * @param {string[]} bound @param {Set<string> | null} referenced @returns {Set<string>}
  */
 function keepReferenced(bound: string[], referenced: Set<string> | null): Set<string> {
   return new Set(referenced === null ? bound : bound.filter((name) => referenced.has(name)));
@@ -1185,13 +1115,11 @@ export type ClosureMemo = { sources: Map<string, { text: string, codeOnly: strin
  * IT IS PASSED, NEVER GLOBAL, and that is the whole safety argument: `acceptance-commands.test.ts` rewrites a fixture at the same path and asks
  * again, so a module-level cache would answer for the old text. A caller that omits it gets a fresh memo per call, which is what it always had.
  * `scopes` and `matches` are keyed by what decides them (the file, the names reached in it, whether it is the entry), not by the entry that asked.
- * @returns {ClosureMemo}
  */
 export function createClosureMemo(): ClosureMemo {
   return { sources: new Map(), parsed: new Map(), scopes: new Map(), edges: new Map(), visited: new Map() };
 }
 
-/** @param {ClosureMemo} memo @param {string} file @returns {{ text: string, codeOnly: string }} */
 function sourceOf(memo: ClosureMemo, file: string): { text: string; codeOnly: string; } {
   let held = memo.sources.get(file);
   if (held === undefined) {
@@ -1202,7 +1130,6 @@ function sourceOf(memo: ClosureMemo, file: string): { text: string; codeOnly: st
   return held;
 }
 
-/** @param {ClosureMemo} memo @param {typeof import("typescript")} ts @param {string} file @param {string} codeOnly */
 function parsedSource(memo: ClosureMemo, ts: typeof import("typescript"), file: string, codeOnly: string) {
   let source = memo.parsed.get(file);
   if (source === undefined) {
@@ -1215,8 +1142,6 @@ function parsedSource(memo: ClosureMemo, ts: typeof import("typescript"), file: 
 /**
  * `reachableScope` for one visit, kept by what decides it: the file, the names reached in it, and whether it is the entry. Two entries that reach the
  * same module by the same names read one answer, and that sharing is the whole saving.
- * @param {ClosureMemo} memo
- * @param {{ file: string, codeOnly: string, names: Set<string>, isEntry: boolean }} visit
  */
 function scopeFor(memo: ClosureMemo, { file, codeOnly, names, isEntry }: { file: string; codeOnly: string; names: Set<string>; isEntry: boolean; }) {
   const key = `${isEntry ? "entry" : "module"}\0${file}\0${[...names].sort().join(",")}`;
@@ -1230,8 +1155,6 @@ function scopeFor(memo: ClosureMemo, { file, codeOnly, names, isEntry }: { file:
 
 /**
  * `pattern` over `text`, answered once per scope: the patterns carry no `g` flag, so a match is a pure function of the text.
- * @param {{ matches: Map<number, RegExpExecArray | null> }} scope
- * @param {{ index: number, pattern: RegExp, text: string }} probe
  */
 function matchOf({ matches }: { matches: Map<number, RegExpExecArray | null>; }, { index, pattern, text }: { index: number; pattern: RegExp; text: string; }) {
   if (!matches.has(index)) matches.set(index, pattern.exec(text));
@@ -1241,8 +1164,6 @@ function matchOf({ matches }: { matches: Map<number, RegExpExecArray | null>; },
 /**
  * Every file `file` imports that the closure walk follows, with the names it reaches in each: the relative imports, and (#3103) the tool's own
  * `agent-org/src/...` ones, which a project reaches it through and `localImports` cannot see.
- * @param {string} file @param {Set<string> | null} referenced @param {ClosureMemo} [memo]
- * @returns {{ target: string, names: Set<string> }[]}
  */
 function closureEdges(file: string, referenced: Set<string> | null, memo: ClosureMemo = createClosureMemo()): { target: string; names: Set<string>; }[] {
   let bound = memo.edges.get(file);
@@ -1262,8 +1183,6 @@ function closureEdges(file: string, referenced: Set<string> | null, memo: Closur
  * A directory exists, so `existsSync(dir)` is true and `readFileSync(dir)` throws `EISDIR` (#3026): a
  * directory is "no entry to walk", exactly as a missing path is, never a file to read and never an error to
  * swallow. `throwIfNoEntry: false` so a missing path answers false rather than throwing `ENOENT`.
- * @param {string} path
- * @returns {boolean}
  */
 function isFile(path: string): boolean {
   return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
@@ -1283,9 +1202,8 @@ function isFile(path: string): boolean {
  *
  * #827: `token`'s mirror, checked once against `entry` itself before the walk begins -- see `NO_TOKEN_DECLARATION`'s
  * own header for why the declaration cannot live beside the risky call the way `// writes:` does.
- * @param {string} entry absolute path to the entry file
- * @param {ClosureMemo} [memo] (#3549) shared across entries by a caller scanning a tree that is not changing under it; see `createClosureMemo`
- * @returns {ClosureHit[]}
+ * @param entry absolute path to the entry file
+ * @param [memo] (#3549) shared across entries by a caller scanning a tree that is not changing under it; see `createClosureMemo`
  */
 export function deriveClosureRequirements(entry: string, memo: ClosureMemo = createClosureMemo()): ClosureHit[] {
   const found: Map<string, ClosureHit> = new Map();
@@ -1321,8 +1239,6 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
    * A `corpus` hit is checked against the file's own `// writes:` declaration first: verified, it exempts
    * the WHOLE closure (#731); claimed but not borne out, it is recorded as a wrong declaration rather than
    * silently trusted or silently overridden.
-   * @param {{ requirement: "token" | "corpus" | "history", file: string, text: string, codeOnly: string,
-   *           match: RegExpExecArray, chain: string[] }} found_
    */
   const recordHit = ({ requirement, file, text, codeOnly, match, chain }: {
           requirement: "token" | "corpus" | "history"; file: string; text: string; codeOnly: string;
@@ -1337,7 +1253,6 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
   };
   // #1636: `seen` maps a file to the names already scanned for it. A second edge bringing a name the first did not
   // is scanned again with the union, so the order imports are met in can never hide a reachable body.
-  /** @param {string} file @param {string[]} chain @param {Map<string, Set<string>>} seen @param {Set<string>} names */
   const walk = (file: string, chain: string[], seen: Map<string, Set<string>>, names: Set<string>) => {
     const prior = seen.get(file);
     if ((prior && [...names].every((name) => prior.has(name))) || !isFile(file)) return;
@@ -1382,8 +1297,6 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
  * fixing a plain `corpus` refusal edits the test; a reader fixing a wrong `// writes:` (or, #827, `// no-
  * token:`) edits the comment that no longer describes what the file does, a different fix at a different
  * spot.
- * @param {ClosureHit} hit
- * @returns {string}
  */
 export function closureRequirementMessage(hit: ClosureHit): string {
   const { requirement, file, line, chain, wrongDeclaration, malformedDeclaration } = hit;
@@ -1436,10 +1349,6 @@ export function closureRequirementMessage(hit: ClosureHit): string {
  *
  * TOKEN ONLY. `// writes:` is checked incrementally per file rather than once at the entry, so the same
  * sentence would be wrong about where it goes; naming one remedy correctly beats naming two loosely.
- *
- * @param {{requirement: string, chain: string[], wrongDeclaration?: boolean, malformedDeclaration?: boolean}} hit
- * @param {string[]} hops
- * @returns {string}
  */
 function noTokenRemedy(hit: { requirement: string; chain: string[]; wrongDeclaration?: boolean; malformedDeclaration?: boolean; }, hops: string[]): string {
   if (hit.requirement !== "token" || hit.wrongDeclaration || hit.malformedDeclaration) return "";
@@ -1460,9 +1369,6 @@ function noTokenRemedy(hit: { requirement: string; chain: string[]; wrongDeclara
  * Which of `entry`'s closure-derived requirements this job's `capabilities` do NOT satisfy, each with the
  * human-facing chain message -- the derived counterpart to `unmetRequirements`, which only ever sees what
  * a header DECLARED.
- * @param {string} entry
- * @param {JobCapabilities} capabilities
- * @returns {{ requirement: string, message: string }[]}
  */
 export function unmetClosureRequirements(entry: string, capabilities: JobCapabilities): { requirement: string; message: string; }[] {
   return deriveClosureRequirements(entry)
@@ -1474,9 +1380,6 @@ export function unmetClosureRequirements(entry: string, capabilities: JobCapabil
  * Which of `requirements` this job's `capabilities` do NOT satisfy -- named, not counted, because "needs
  * history" and "needs a token" send an author to opposite fixes (#510's own acceptance). A requirement
  * word `capabilities` has no key for reads as unmet, never as satisfied by default.
- * @param {string[]} requirements
- * @param {JobCapabilities} capabilities
- * @returns {string[]}
  */
 export function unmetRequirements(requirements: string[], capabilities: JobCapabilities): string[] {
   return requirements.filter((req) => (capabilities as Record<string, boolean>)[req] !== true);
@@ -1508,9 +1411,6 @@ export function unmetRequirements(requirements: string[], capabilities: JobCapab
  * command that DOES run all of them through the gate having been charged nothing, which is the
  * 2026-09-09 failure above in the other direction. So this is no longer a bare yes/no: `suiteScriptsFor`
  * names the scripts, and `testFilesRunBy` charges the union of their own globs.
- *
- * @param {string} command
- * @returns {boolean}
  */
 export function runsTheWholeSuite(command: string): boolean {
   return suiteScriptsFor(command).length > 0;
@@ -1556,9 +1456,6 @@ const SUITE_COMMAND = new RegExp(
  * names, and the union is `testFilesRunBy`'s to take.
  *
  * Deduplicated, because `pnpm test && pnpm test` runs one population twice and requires it once.
- *
- * @param {string} command
- * @returns {string[]}
  */
 export function suiteScriptsFor(command: string): string[] {
   return [...new Set([...command.trim().matchAll(SUITE_COMMAND)].map((match) => match[1]))];
@@ -1586,8 +1483,6 @@ const LAB_FETCH_PLAYBOOK = "packages/control/ansible/lab-fetch.yml";
 
 /**
  * One raw whitespace-delimited token, reduced to the repo-relative path it names, or `null`.
- * @param {string} rawToken
- * @returns {string | null}
  */
 function acceptancePathToken(rawToken: string): string | null {
   const unquoted = rawToken.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
@@ -1628,10 +1523,10 @@ function acceptancePathToken(rawToken: string): string | null {
  * `scripts/git-hooks/pre-push`. Each is a real file this cannot speak about; none of them is refused
  * wrongly.
  *
- * @param {string} command
- * @param {{ trackedDirs?: string[] }} [options] the tree's top-level directories; a test passes its own
+ *
+ * @param [options] the tree's top-level directories; a test passes its own
  *   so the rule can be checked without reading the repository it runs in
- * @returns {string[]} deduplicated, in the order the command names them
+ * @returns deduplicated, in the order the command names them
  */
 export function acceptancePathTokens(command: string, { trackedDirs = trackedTopLevelDirs() }: { trackedDirs?: string[]; } = {}): string[] {
   const tracked = new Set(trackedDirs);
@@ -1650,8 +1545,8 @@ export function acceptancePathTokens(command: string, { trackedDirs = trackedTop
  * filer can make without a corpus, so it must see exactly the tokens that filter removes. Two spellings
  * of "which words in this command are paths" is the drift #959 is about, one document along.
  *
- * @param {string} command
- * @returns {string[]} deduplicated, in the order the command names them
+ *
+ * @returns deduplicated, in the order the command names them
  */
 function commandPathTokens(command: string): string[] {
   // #419's rule, unchanged: bash ignores an unquoted `#` and everything after it, so token extraction
@@ -1689,11 +1584,11 @@ function commandPathTokens(command: string): string[] {
  * case (every path exists) must not pay for it or depend on it. The tracked-file list is read on the same
  * terms, only for a path the Region excused.
  *
- * @param {string} body a row body
- * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[], trackedFiles?: string[] }} [deps]
+ * @param body a row body
+ *
  *   `trackedFiles` is the tree's tracked paths; a test passes its own so the twin lookup can be checked
  *   without the repository it runs in
- * @returns {{ path: string, command: string, twins?: string[] }[]} each absent path with the command that
+ * @returns each absent path with the command that
  *   named it, and `twins` when it is absent only in the sense that a same-named file lives elsewhere
  */
 export function unresolvedAcceptancePaths(body: string, deps: { exists?: (path: string) => boolean; trackedDirs?: string[]; regionEntries?: string[]; trackedFiles?: string[]; } = {}): { path: string; command: string; twins?: string[]; }[] {
@@ -1729,7 +1624,6 @@ function trackedFiles() {
 /**
  * Tracked files OTHER than `path` that bear its basename -- the BASENAME and not the directory, because
  * the directory is exactly what a filer misremembers. Sorted, so the refusal is stable.
- * @param {string} path @param {string[]} tracked
  */
 function trackedTwinsOf(path: string, tracked: string[]) {
   const name = basename(path);
@@ -1744,8 +1638,6 @@ const NEW_FILE_PATTERN = /^[^\S\r\n]*(?:\*\*|__)?New-file:[^\S\r\n]*(?:\*\*|__)?
  * THE PATHS A ROW SAYS IT WILL CREATE ON PURPOSE, though a tracked file already bears the basename (#2192).
  * The genuine case is real -- 5 of 642 tracked `*.test.ts` basenames occur more than once -- and a check
  * with no way through it would be a wall, the shape #741 ruled against.
- * @param {string} body
- * @returns {string[]}
  */
 export function declaredNewFiles(body: string): string[] {
   return [...body.matchAll(NEW_FILE_PATTERN)].map((match) => match[1]);
@@ -1756,10 +1648,8 @@ export function declaredNewFiles(body: string): string[] {
  * #741's ruling is that a refusal stating no way forward is not a refusal a filer can follow, and here
  * there are exactly two, because the rule itself has exactly two arms -- for the Region-vouched shape
  * (#2192) they are the same two arms with different wording, so each half names both.
- * @param {string} body @param {string} tool the CLI to name in the refusal
- * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[], trackedFiles?: string[],
- *   primaryCheckout?: string | null }} [deps] `primaryCheckout` is #4322's, see `primaryCheckoutCdReason`
- * @returns {string | null}
+ *  @param tool the CLI to name in the refusal
+ * @param [deps] `primaryCheckout` is #4322's, see `primaryCheckoutCdReason`
  */
 export function acceptancePathsReason(body: string, tool: string, deps: {
     exists?: (path: string) => boolean; trackedDirs?: string[]; regionEntries?: string[]; trackedFiles?: string[];
@@ -1785,8 +1675,7 @@ const CD_AT_COMMAND_POSITION = /(?:^|&&|\|\||[;|(]|\b(?:ba|z)?sh\s+-\w*c\s+['"])
  * The directory inside `checkout` that `command` `cd`s into, or null. A subdirectory counts: it is the same checkout.
  * Only the two spellings #4220 carries (a bare `cd <path> && cmd`, and the same inside `bash -c '...'`) are claimed; `--prefix` and `-C`
  * are not (#4322, done-when 2).
- * @param {string} command @param {string} checkout the project's own primary checkout
- * @returns {string | null}
+ *  @param checkout the project's own primary checkout
  */
 export function cdIntoCheckout(command: string, checkout: string): string | null {
   const root = checkout.replace(/\/+$/, "");
@@ -1801,7 +1690,6 @@ export function cdIntoCheckout(command: string, checkout: string): string | null
  * The project's own primary checkout, READ FROM THE HOST'S DECLARATION and not typed here (#4322 done-when 4): a project checked out
  * elsewhere is protected the same way. `null` is "cannot tell" -- no declaration is readable, as on a CI runner -- and never "there is
  * none", so the callers skip the check rather than pass it.
- * @returns {string | null}
  */
 function primaryCheckoutOfHost(): string | null {
   try {
@@ -1821,9 +1709,8 @@ function primaryCheckoutOfHost(): string | null {
  * A `cd` into ANOTHER repository's checkout is not this check's business (the `Hand-run:` convention, unchanged), and a body that
  * DECLARES `Hand-run:` keeps that declaration's meaning: a human runs it and chose the directory. The refusal is for the undeclared line.
  *
- * @param {string} body @param {string} tool the CLI to name in the refusal
- * @param {{ primaryCheckout?: string | null }} [deps] a test names the checkout; `null` is "cannot tell" and skips the check
- * @returns {string | null}
+ *  @param tool the CLI to name in the refusal
+ * @param [deps] a test names the checkout; `null` is "cannot tell" and skips the check
  */
 export function primaryCheckoutCdReason(body: string, tool: string, { primaryCheckout = primaryCheckoutOfHost() }: { primaryCheckout?: string | null; } = {}): string | null {
   const section = extractAcceptanceSection(body);
@@ -1838,7 +1725,6 @@ export function primaryCheckoutCdReason(body: string, tool: string, { primaryChe
     + "refused here, and a command a human is meant to run takes a `Hand-run: <who runs it and why>` line.";
 }
 
-/** @param {{ path: string, command: string }[]} absent @param {string} tool */
 function absentPathsRefusal(absent: { path: string; command: string; }[], tool: string) {
   if (absent.length === 0) return null;
   const named = absent.map(({ path, command }) => `\`${path}\` (named by \`${command}\`)`).join("; ");
@@ -1853,7 +1739,6 @@ function absentPathsRefusal(absent: { path: string; command: string; }[], tool: 
     + "extension are not checked here, so a path missing from this list was not confirmed to exist.";
 }
 
-/** @param {{ path: string, command: string, twins?: string[] }[]} vouched @param {string} tool */
 function vouchedPathsRefusal(vouched: { path: string; command: string; twins?: string[]; }[], tool: string) {
   if (vouched.length === 0) return null;
   const named = vouched.map(({ path, command, twins = [] }) =>
@@ -1888,8 +1773,8 @@ function vouchedPathsRefusal(vouched: { path: string; command: string; twins?: s
  * -- which is what makes this a reading of the playbook rather than a second statement of it. If that
  * test fails, this function is wrong and the playbook is right.
  *
- * @param {string} playbook the text of `lab-fetch.yml`
- * @returns {Record<string, string>} artifact name -> its path on the lab, values unquoted
+ * @param playbook the text of `lab-fetch.yml`
+ * @returns artifact name -> its path on the lab, values unquoted
  */
 export function labFetchArtifacts(playbook: string): Record<string, string> {
   const lines = playbook.split("\n");
@@ -1913,7 +1798,6 @@ export function labFetchArtifacts(playbook: string): Record<string, string> {
 
 /**
  * `lab-fetch.yml`'s own `{{ ... }}` parameters and `*` globs, as a pattern a concrete path matches.
- * @param {string} labPath @returns {RegExp}
  */
 function labPathPattern(labPath: string): RegExp {
   // SPLIT on the placeholders rather than substituting a sentinel through them: a sentinel has to be a
@@ -1932,9 +1816,6 @@ function labPathPattern(labPath: string): RegExp {
  * The extension comes from the LAB path for the reason that task states -- every artifact was JSON until
  * `promoted-weights` (safetensors) and `promoted-changeset` (markdown), and a hardcoded `.json` here would
  * name a file after a format it is not. A globbed source keeps the extension after its last dot.
- *
- * @param {string} artifact @param {string} out @param {string} labPath
- * @returns {string}
  */
 function labFetchLocalPath(artifact: string, out: string, labPath: string): string {
   const extension = /(\.[A-Za-z0-9]+)$/.exec(labPath)?.[1] ?? ".json";
@@ -1943,7 +1824,6 @@ function labFetchLocalPath(artifact: string, out: string, labPath: string): stri
 
 /**
  * Every `-e artifact=<name>` a `lab:fetch` invocation carries, with that same command's `-e out=`.
- * @param {string[]} commands @returns {{ artifact: string, out: string, command: string }[]}
  */
 function labFetchesIn(commands: string[]): { artifact: string; out: string; command: string; }[] {
   const fetches: { artifact: string; out: string; command: string; }[] = [];
@@ -1983,9 +1863,8 @@ function labFetchesIn(commands: string[]): { artifact: string; out: string; comm
  * WHAT IT THEREFORE DOES NOT CATCH: a read of some OTHER artifact's lab path, and a read whose path sits
  * inside a quoted argument `acceptancePathToken` cannot isolate. Both are silent misses, not wrong answers.
  *
- * @param {string} body a row body
- * @param {{ playbook?: string }} [deps] the playbook text, so the rule can be checked without the file
- * @returns {{ artifact: string, labPath: string, localPath: string, command: string }[]}
+ * @param body a row body
+ * @param [deps] the playbook text, so the rule can be checked without the file
  */
 export function labFetchPathHits(body: string, deps: { playbook?: string; } = {}): { artifact: string; labPath: string; localPath: string; command: string; }[] {
   const section = extractAcceptanceSection(body);
@@ -2011,9 +1890,7 @@ export function labFetchPathHits(body: string, deps: { playbook?: string; } = {}
  * The refusal `row-file` prints, or `null`. NAMES THE PATH MEANT, because that is the whole remedy: there
  * is exactly one right answer here, unlike the two-armed rule above, and a refusal that made the filer go
  * and read an Ansible playbook to find it would be followable only in principle (#741).
- * @param {string} body @param {string} tool the CLI to name in the refusal
- * @param {{ playbook?: string }} [deps]
- * @returns {string | null}
+ *  @param tool the CLI to name in the refusal
  */
 export function labFetchPathReason(body: string, tool: string, deps: { playbook?: string; } = {}): string | null {
   const hits = labFetchPathHits(body, deps);
@@ -2045,8 +1922,7 @@ export function labFetchPathReason(body: string, tool: string, deps: { playbook?
  * `EXECUTED NOTHING` refusal it already gets, which is correct and is not what this row changes: the
  * fault there is that the line was never written as a command, and it needs a different fix from this one.
  *
- * @param {string} body a row body @param {string} tool the CLI to name in the refusal
- * @returns {string | null}
+ * @param body a row body @param tool the CLI to name in the refusal
  */
 export function handRunAcceptanceReason(body: string, tool: string): string | null {
   const section = extractAcceptanceSection(body);
@@ -2086,9 +1962,6 @@ const SCRIPT_DELEGATION = /\b(?:p?npm|node\s+\S*pnpm\.mjs)\s+run\s+([\w:-]+)/g;
  *
  * `seen` is cycle protection, not memoisation: `a -> b -> a` in a scripts file would otherwise recurse
  * forever, and a scripts file is not this module's to trust.
- *
- * @param {Record<string, unknown> | undefined} scripts @param {string} name @param {Set<string>} seen
- * @returns {string[]}
  */
 function suiteGlobsOf(scripts: Record<string, unknown> | undefined, name: string, seen: Set<string> = new Set()): string[] {
   if (seen.has(name)) return [];
@@ -2117,8 +1990,7 @@ function suiteGlobsOf(scripts: Record<string, unknown> | undefined, name: string
  * hole this function was added to close -- and an unrecognised script name must reach that throw rather
  * than fall through to "this command names no test files", which is how `pnpm run test:all` used to pass.
  *
- * @param {string} script a `package.json` script name, e.g. `test`, `test:ts`, `test:org`, `test:all`
- * @returns {string[]}
+ * @param script a `package.json` script name, e.g. `test`, `test:ts`, `test:org`, `test:all`
  */
 export function suiteTestFiles(script: string): string[] {
   const cached = suiteFilesCache.get(script);
@@ -2152,8 +2024,6 @@ export function suiteTestFiles(script: string): string[] {
  * whether the command was `tsx --test` or a whole suite, so `rstest run --include <file>` -- the form a
  * row is now REQUIRED to write -- was charged nothing, and the same corpus-requiring file was refused
  * spelled one way and handed to the runner spelled the other.
- * @param {string} command
- * @returns {string[]}
  */
 function testFilesRunBy(command: string): string[] {
   const named = namedTestFiles(command);
@@ -2172,7 +2042,7 @@ const PACKAGE_SCRIPT_RUN = /(?:^|&&|\|\||;)\s*p?npm\s+run\s+([\w:-]+)(?![:\w-])/
 /**
  * #2724: the ONE file `scriptBody` runs, when it is nothing but a bare `node <file>` invocation -- optional
  * leading env assignments (the same shape `firstRealToken` already strips), optional trailing flags, but no
- * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node --import tsx packages/agent-org/src/settle-closed-rows.ts`)
+ * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.ts`)
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
  *
@@ -2180,9 +2050,6 @@ const PACKAGE_SCRIPT_RUN = /(?:^|&&|\|\||;)\s*p?npm\s+run\s+([\w:-]+)(?![:\w-])/
  * file named is the file run": the project runs the tool through its `bin`, so the file is the PROGRAM the tool's
  * command table names for `<command>`, under the tool's `src/`. `commands` is that table (`commandTable`); a
  * command it does not name, or no table, resolves to `null`.
- * @param {string} scriptBody
- * @param {CommandTable | null} [commands]
- * @returns {string | null}
  */
 export function singleNodeInvocation(scriptBody: string, commands: CommandTable | null = commandTable()): string | null {
   if (/&&|\|\||\||;/.test(scriptBody)) return null;
@@ -2197,8 +2064,6 @@ const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
 /**
  * The command name when `tokens` run the tool through its `bin` (`agent-org <command>`, `pnpm exec agent-org
  * <command>`, `pnpm exec agent-org <command>`), else null. A flag where the command should be is no command.
- * @param {string[]} tokens
- * @returns {string | null}
  */
 export function agentOrgCommand(tokens: string[]): string | null {
   const at = tokens[0] === "agent-org" ? 0
@@ -2209,7 +2074,7 @@ export function agentOrgCommand(tokens: string[]): string | null {
 }
 
 /**
- * A command name -> the program under the tool's `src/` that runs it: `src/commands.mjs`'s `COMMANDS` (#3068).
+ * A command name -> the program under the tool's `src/` that runs it: `src/commands.ts`'s `COMMANDS` (#3068).
  */
 export type CommandTable = Record<string, string>;
 
@@ -2218,25 +2083,24 @@ export type CommandTable = Record<string, string>;
 const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
- * The tool's command table: `COMMANDS` exported by `./commands.mjs`, which a11ign/a11ign#3068 adds. NULL while
+ * The tool's command table: `COMMANDS` exported by `./commands.ts`, which a11ign/a11ign#3068 adds. NULL while
  * that file does not exist -- the one state this reads as "no table" -- and a THROW when it exists without a
  * `COMMANDS` object, because a table this cannot read would resolve every `agent-org <command>` to nothing,
  * which is the silent weakening this exists to prevent. Read with `require`, which loads an ES module
  * synchronously, since the classifier is synchronous all the way up.
- * @returns {CommandTable | null}
  */
 function commandTable(): CommandTable | null {
   let loaded;
   try {
-    loaded = createRequire(import.meta.url)("./commands.mjs");
+    loaded = createRequire(import.meta.url)("./commands.ts");
   } catch (cause) {
     const absent = (cause as { code?: string, message?: string }).code === "MODULE_NOT_FOUND"
-      && String((cause as Error).message).includes("commands.mjs");
+      && String((cause as Error).message).includes("commands.ts");
     if (absent) return null;
     throw cause;
   }
   if (loaded === null || typeof loaded.COMMANDS !== "object" || loaded.COMMANDS === null) {
-    throw new Error("src/commands.mjs exists but exports no `COMMANDS` object (command name -> program file under "
+    throw new Error("src/commands.ts exists but exports no `COMMANDS` object (command name -> program file under "
       + "src/), which is what the acceptance classifier reads `agent-org <command>` through (a11ign/a11ign#3063)");
   }
   return loaded.COMMANDS;
@@ -2245,8 +2109,6 @@ function commandTable(): CommandTable | null {
 /**
  * The absolute path under the tool's `src/` of `program`, or null when it names no script file or climbs out of
  * `src/` (a `..` segment, or an absolute path): a file the tool would not run is no file this should charge.
- * @param {unknown} program
- * @returns {string | null}
  */
 function programFile(program: unknown): string | null {
   if (typeof program !== "string" || !SCRIPT_FILE.test(program)) return null;
@@ -2261,9 +2123,6 @@ function programFile(program: unknown): string | null {
  * but never for an arbitrary package script name, because nothing before this asked `pnpm run <script>` what
  * file it runs. `SUITE_SCRIPTS` is excluded: those name a `*.test.ts` glob, already walked by
  * `testFilesRunBy`'s own suite-script branch, not a single module this function would resolve to one file.
- * @param {string} command
- * @param {CommandTable | null} commands
- * @returns {string[]}
  */
 function operationalScriptEntries(command: string, commands: CommandTable | null): string[] {
   let scripts;
@@ -2291,8 +2150,6 @@ const NAMED_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
  * scripts/rstest/rstest.config.ts` names a file that exists and is no test -- and a flag's `=value`
  * (`--include=<file>`) is a file the runner is given, so it is read too. A token that is no file falls
  * out later on `existsSync`, so `rstest`, `run` and the flags need no list here.
- * @param {string} command
- * @returns {string[]}
  */
 function namedTestFiles(command: string): string[] {
   const base = leadingCdTarget(command);
@@ -2300,7 +2157,7 @@ function namedTestFiles(command: string): string[] {
   return base === null ? files : files.map((file) => (isAbsolute(file) ? file : resolve(base, file)));
 }
 
-/** @param {string} command @returns {string[]} the tokens of a non-`tsx` command that look like a test file */
+/** @returns the tokens of a non-`tsx` command that look like a test file */
 function otherRunnerTestFiles(command: string): string[] {
   const withoutTrailingComment = stripLeadingCd(command).replace(/(?:^|\s)#.*$/, "");
   return withoutTrailingComment.split(/\s+/).filter(Boolean)
@@ -2316,8 +2173,6 @@ const LEADING_CD = /^\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|]+))\s*&&\s*/;
  * The directory a leading `cd <dir> &&` moves to, or null. The runner's file arguments are relative to it,
  * so `namedTestFiles` resolves them there rather than against this process's own directory -- a file
  * named after a `cd` is the file the command runs, not the same relative path somewhere else.
- * @param {string} command
- * @returns {string | null}
  */
 function leadingCdTarget(command: string): string | null {
   const match = LEADING_CD.exec(command);
@@ -2327,8 +2182,6 @@ function leadingCdTarget(command: string): string | null {
 /**
  * `command` without a leading `cd <dir> &&`. Before #3026 the `tsx --test` arm took EVERY non-flag token, so
  * the `cd` target was read as a test file, and a directory that exists reached `readFileSync` (`EISDIR`).
- * @param {string} command
- * @returns {string}
  */
 function stripLeadingCd(command: string): string {
   return command.replace(LEADING_CD, "");
@@ -2339,8 +2192,6 @@ function stripLeadingCd(command: string): string {
  * `testFileArgumentsResolve` so the #510 requirements check below reads the SAME tokenisation rather than
  * risking a second, independently-written answer to "what files does this command name" (this file's own
  * most-repeated lesson, one row up).
- * @param {string} command
- * @returns {string[]}
  */
 function tsxTestFileArgs(command: string): string[] {
   const withoutTrailingComment = stripLeadingCd(command).replace(/(?:^|\s)#.*$/, "");
@@ -2361,9 +2212,6 @@ function tsxTestFileArgs(command: string): string[] {
  * as a fact about the tests rather than an opaque code. Glob arguments and files that do not exist are
  * skipped here on purpose: whether a file exists at all is `testFileArgumentsResolve`'s own question, and
  * a glob's members are not individually readable without expanding it, which this check does not attempt.
- * @param {string} command
- * @param {JobCapabilities} capabilities
- * @returns {{ requirement: string, files: string[] }[]}
  */
 export function unmetCommandRequirements(command: string, capabilities: JobCapabilities): { requirement: string; files: string[]; }[] {
   const byRequirement: Map<string, string[]> = new Map();
@@ -2387,10 +2235,9 @@ export function unmetCommandRequirements(command: string, capabilities: JobCapab
  * #2724: `operationalScriptEntries` joins `testFilesRunBy` here, and ONLY here -- an operational script
  * carries no `// requires:` header for `unmetCommandRequirements` to read, so widening that one too would
  * add a population it can never say anything about.
- * @param {string} command
- * @param {JobCapabilities} capabilities
- * @param {CommandTable | null} [commands] the tool's command table, for an `agent-org <command>` script body
- * @returns {{ requirement: string, message: string }[]}
+ *
+ *
+ * @param [commands] the tool's command table, for an `agent-org <command>` script body
  */
 export function unmetCommandClosureRequirements(command: string, capabilities: JobCapabilities, commands: CommandTable | null = commandTable()): { requirement: string; message: string; }[] {
   const out: { requirement: string; message: string; }[] = [];
@@ -2417,8 +2264,6 @@ export function unmetCommandClosureRequirements(command: string, capabilities: J
  * header omits `history` but whose real dependency needs it is exactly the shape this whole row exists
  * to stop reading as "unused." Checked via `deriveClosureRequirements` directly, not `capabilities`: this
  * question is "does the command use it," never "does the job have it."
- * @param {string[]} commands
- * @returns {boolean}
  */
 function anyCommandUsesHistory(commands: string[]): boolean {
   return commands.some((command) => {
@@ -2433,9 +2278,6 @@ function anyCommandUsesHistory(commands: string[]): boolean {
 /**
  * #446/#2178: WHY A LINE'S FIRST TOKEN CANNOT BE A CHECK, or null when it can -- split out of
  * `classifyCommand`, which had reached the complexity ceiling with the shell-keyword reason added.
- * @param {string} token
- * @param {(token: string) => boolean} exists
- * @returns {Classification | null}
  */
 function proseFirstToken(token: string, exists: (token: string) => boolean): Classification | null {
   const bareToken = token.replace(/^['"]|['"]$/g, "");
@@ -2482,11 +2324,6 @@ function proseFirstToken(token: string, exists: (token: string) => boolean): Cla
  * this job cannot honestly interpret, not a new one. `UNNEGATED` only: `! pnpm run mutate ...` already
  * un-inverts the exit code at the shell level, so it is left alone -- refusing it too would be enforcing
  * an opinion about the rejected #386/#440 idiom rather than catching the actual collision.
- *
- * @param {string} command
- * @param {{ commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
- *           section?: "ACCEPTANCE" | "REFUTATION", commands?: CommandTable | null }} [deps]
- * @returns {Classification}
  */
 export function classifyCommand(command: string,
   { commandExists: exists = commandExists, capabilities = FULL_CAPABILITIES, section, commands }: {
@@ -2545,9 +2382,6 @@ export function classifyCommand(command: string,
  * Deliberately NOT a shell parser. This is the list of constructs that relocate the arguments, and
  * anything outside it is still tokenised as before -- a guard that refuses what it does not recognise
  * would refuse every ordinary command the moment someone added a new flag.
- *
- * @param {string} command
- * @returns {string | null}
  */
 function unparseableConstruct(command: string): string | null {
   const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
@@ -2581,9 +2415,6 @@ function unparseableConstruct(command: string): string | null {
  * ever match. Stripped for TOKEN EXTRACTION only, never from the command that actually runs: bash was
  * always going to ignore it, so removing it here only makes this check agree with what execution already
  * does.
- *
- * @param {string} command
- * @returns {{ ok: true } | { ok: false, missing: string[] } | { ok: false, unparseable: string }}
  */
 export function testFileArgumentsResolve(command: string): { ok: true; } | { ok: false; missing: string[]; } | { ok: false; unparseable: string; } {
   if (!/\btsx\s+--test\b/.test(command)) return { ok: true };
@@ -2651,8 +2482,6 @@ const SECTION_FIELD_NAMES = [ACCEPTANCE_FIELD, "Refutation", "Mutation"];
  * of correctly-ignored mentions is indistinguishable, to an author skimming it, from one that declares a
  * real command). Widening the match to be more forgiving of one direction reliably breaks the other; both
  * behaviours are currently correct and in tension, which is why the anchor stays exactly this strict.
- * @param {string} fieldName
- * @returns {{ heading: RegExp, plain: RegExp }}
  */
 function sectionHeaderPatterns(fieldName: string): { heading: RegExp; plain: RegExp; } {
   return {
@@ -2666,9 +2495,6 @@ function sectionHeaderPatterns(fieldName: string): { heading: RegExp; plain: Reg
  * whether its trailing text is a command at all. `inline: null` means "matched, but nothing here is a
  * command" (a title-only heading); `inline: ""` and a non-empty string are both real captures, exactly as
  * the bare-header and inline-command shapes already behaved.
- * @param {string} fieldName
- * @param {string} line
- * @returns {{ matched: false } | { matched: true, inline: string | null }}
  */
 function matchSectionHeader(fieldName: string, line: string): { matched: false; } | { matched: true; inline: string | null; } {
   const { heading, plain } = sectionHeaderPatterns(fieldName);
@@ -2688,9 +2514,6 @@ function matchSectionHeader(fieldName: string, line: string): { matched: false; 
  * header was invisible -- not truncated, not warned about, simply never looked at again. See this file's
  * own header comment for why the remedy here is to report the ambiguity (a new DUPLICATE outcome) rather
  * than to concatenate every section the way #527 concatenates repeated `Closes:` lines.
- * @param {string} fieldName
- * @param {string[]} lines
- * @returns {number[]}
  */
 function headerIndices(fieldName: string, lines: string[]): number[] {
   return lines
@@ -2720,10 +2543,6 @@ function headerIndices(fieldName: string, lines: string[]): number[] {
  * #540: MORE THAN ONE HEADER RETURNS `{ kind: "duplicate" }` -- naming every occurrence's line number and
  * raw text -- rather than picking one silently. THE JOB FAILS on it, same as MISSING, because a body this
  * parser cannot read unambiguously is not one it should guess at.
- *
- * @param {string} fieldName
- * @param {string | null | undefined} body
- * @returns {Section}
  */
 function extractSection(fieldName: string, body: string | null | undefined): Section {
   const text = body ?? "";
@@ -2755,10 +2574,6 @@ function extractSection(fieldName: string, body: string | null | undefined): Sec
   return commands.length > 0 ? { kind: "commands", commands } : { kind: "missing" };
 }
 
-/**
- * @param {string | null | undefined} body
- * @returns {Section}
- */
 export function extractAcceptanceSection(body: string | null | undefined): Section {
   return extractSection(ACCEPTANCE_FIELD, body);
 }
@@ -2769,8 +2584,6 @@ export function extractAcceptanceSection(body: string | null | undefined): Secti
  * correctly refusing a known-bad input) was reported as this job's own failure for doing exactly what it
  * set out to prove. Optional, unlike `Acceptance:` -- most PRs never refuse anything, so its absence is
  * not a MISSING verdict, it just means there is nothing more to run.
- * @param {string | null | undefined} body
- * @returns {Section}
  */
 export function extractRefutationSection(body: string | null | undefined): Section {
   return extractSection("Refutation", body);
@@ -2781,8 +2594,6 @@ export function extractRefutationSection(body: string | null | undefined): Secti
  * file's header says to read it before adding a section reader. This job still never RUNS it (see the
  * SCOPED TO `Acceptance:` ONLY note above); the reader is for `pr-open.ts`, which runs it on the AUTHOR's
  * machine, where the objection to executing a mutation on a shared runner does not apply.
- * @param {string | null | undefined} body
- * @returns {Section}
  */
 export function extractMutationSection(body: string | null | undefined): Section {
   return extractSection("Mutation", body);
@@ -2803,8 +2614,6 @@ export function extractMutationSection(body: string | null | undefined): Section
  * OPENS with a backtick and has a later closing one is still exactly the #419 shape; everything after the
  * close is discarded the same way `extractSection`'s own inline-command form already discards everything
  * before a header's colon -- a boundary the author drew, not text this parser gets to keep by default.
- * @param {string} command
- * @returns {string}
  */
 function unwrapBackticks(command: string): string {
   if (/^`[^`]+`$/.test(command)) return command.slice(1, -1);
@@ -2834,10 +2643,6 @@ function unwrapBackticks(command: string): string {
 // would silently drop a command's own arguments.
 const TRAILING_COMMENTARY = /\s+—.*$/;
 
-/**
- * @param {string} command
- * @returns {string}
- */
 function stripTrailingCommentary(command: string): string {
   return command.replace(TRAILING_COMMENTARY, "").trimEnd();
 }
@@ -2883,8 +2688,6 @@ const WORD_ENDING_METACHARACTERS = new Set(["|", "&", ";", "(", ")", "<", ">", "
  * It is deliberately NOT a full shell parser: `$(…)`, backticks and heredocs also span lines, and none of
  * them is the measured shape (#1989's four-line `node --input-type=module -e '…'`). A shape this does not
  * recognise is read exactly as it was before -- one line, one command -- rather than guessed at.
- * @param {string} text
- * @returns {boolean}
  */
 export function endsInsideQuote(text: string): boolean {
   let quote: string | null = null;
@@ -2921,8 +2724,6 @@ export function endsInsideQuote(text: string): boolean {
  * operator inside an open string never reaches it. A trailing `# comment` after the operator is not looked
  * through: bash would still continue, but reading that line as complete is the pre-#2178 behaviour, not a
  * new one, and the author can move the comment.
- * @param {string} text
- * @returns {boolean}
  */
 export function endsInOperator(text: string): boolean {
   return /(?<!\\)(?:&&|\|\|?|\|&)\s*$/.test(text);
@@ -2952,11 +2753,10 @@ export function endsInOperator(text: string): boolean {
  * bare one). Without it an unclosed quote -- a real typo, not a continuation -- would swallow the closing
  * fence and every section after it, turning one malformed command into a body this parser reads wrongly
  * end to end.
- * @param {string[]} lines
- * @param {number} startIndex
- * @param {string} firstLine
- * @param {number} limit exclusive index past which no line may be consumed
- * @returns {{ command: string, consumed: number }}
+ *
+ *
+ *
+ * @param limit exclusive index past which no line may be consumed
  */
 function joinContinuations(lines: string[], startIndex: number, firstLine: string, limit: number): { command: string; consumed: number; } {
   let command = firstLine;
@@ -2980,10 +2780,6 @@ function joinContinuations(lines: string[], startIndex: number, firstLine: strin
  * stop. Inside a fence that is the closing fence; in a bare block it is the first line that would have
  * ended the block anyway (blank, markdown heading, or another section's header), so a continuation can
  * never consume a line the loop itself would have stopped at.
- * @param {string[]} lines
- * @param {number} startIndex
- * @param {boolean} inFence
- * @returns {number}
  */
 function blockEndAfter(lines: string[], startIndex: number, inFence: boolean): number {
   for (let i = startIndex + 1; i < lines.length; i++) {
@@ -2998,8 +2794,6 @@ function blockEndAfter(lines: string[], startIndex: number, inFence: boolean): n
  * #438's stop rule, as a predicate: is this line another section's bare header? Named because
  * `blockEndAfter` has to ask the identical question the loop asks, and a second regex that could disagree
  * about what ends a block is this repository's most-recorded shape one level up.
- * @param {string} trimmed
- * @returns {boolean}
  */
 function isSectionHeaderLine(trimmed: string): boolean {
   // #2118: `Hand-run output` joins the stop set through its OWN predicate rather than through
@@ -3038,10 +2832,6 @@ function isSectionHeaderLine(trimmed: string): boolean {
  * is skipped while NO command has been found yet, and still ends the block the moment one has -- which
  * keeps `Acceptance:` + blank + `Mutation:` reading as MISSING (correct: the block never gains a command)
  * while letting `## Acceptance` + blank + a real command through.
- *
- * @param {string[]} lines
- * @param {number} headerIndex
- * @returns {string[]}
  */
 function commandLinesAfter(lines: string[], headerIndex: number): string[] {
   const commands = [];
@@ -3106,13 +2896,6 @@ function commandLinesAfter(lines: string[], headerIndex: number): string[] {
  * Runs one command and produces its report line and pass/fail -- shared between `Acceptance:` (success is
  * exit 0) and `Refutation:` (success is any NON-zero exit, #438), so classification and the file-argument
  * check cannot drift between the two the way a second, independently-written parser would risk.
- *
- * @param {string} command
- * @param {(command: string) => number} run
- * @param {{ prefix: "ACCEPTANCE" | "REFUTATION", isPass: (code: number) => boolean,
- *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
- *           handRun?: string | null }} options
- * @returns {{ line: string, ok: boolean, executed: boolean, handRun?: boolean }}
  */
 function runOneCommand(command: string, run: (command: string) => number, { prefix, isPass, commandExists: exists, capabilities, handRun }: {
         prefix: "ACCEPTANCE" | "REFUTATION"; isPass: (code: number) => boolean;
@@ -3207,9 +2990,6 @@ function runOneCommand(command: string, run: (command: string) => number, { pref
  * author can find and consolidate them without re-reading the whole body to work out where "the" header
  * even is anymore. Shared between `Acceptance:` and `Refutation:` for the same reason `runOneCommand` is:
  * one wording, never two independently-drifting ones.
- * @param {"ACCEPTANCE" | "REFUTATION"} prefix
- * @param {{ occurrences: { line: number, text: string }[] }} section
- * @returns {string}
  */
 function duplicateSectionLine(prefix: "ACCEPTANCE" | "REFUTATION", section: { occurrences: { line: number; text: string; }[]; }): string {
   const named = section.occurrences.map((o) => `line ${o.line}: "${o.text}"`).join(", ");
@@ -3225,8 +3005,6 @@ function duplicateSectionLine(prefix: "ACCEPTANCE" | "REFUTATION", section: { oc
  * FOLLOWABLE (#1116): it names the exact heading to add, not merely the state it found. A refusal whose
  * remedy the author has to infer is one they route around -- and the route around this one is to delete
  * the `Hand-run:` line, which costs the row the declaration that made it honest.
- * @param {"ACCEPTANCE" | "REFUTATION"} prefix
- * @returns {string}
  */
 function missingHandRunOutputLine(prefix: "ACCEPTANCE" | "REFUTATION"): string {
   return `${prefix}: NO HAND-RUN OUTPUT -- every command above is a declared hand-run and this body `
@@ -3243,12 +3021,6 @@ function missingHandRunOutputLine(prefix: "ACCEPTANCE" | "REFUTATION"): string {
  * `ok`. Split out of `acceptanceReport` purely to keep that function's complexity within this repo's
  * ESLint budget -- the Acceptance and Refutation branches were one algorithm with a different `isPass`,
  * duplicated as two loops.
- * @param {string[]} commands
- * @param {(command: string) => number} run
- * @param {{ prefix: "ACCEPTANCE" | "REFUTATION", isPass: (code: number) => boolean,
- *           commandExists?: (token: string) => boolean, capabilities?: JobCapabilities,
- *           handRun?: string | null, handRunEvidence?: string | null }} options
- * @returns {{ lines: string[], ok: boolean }}
  */
 function runSectionCommands(commands: string[], run: (command: string) => number, options: {
         prefix: "ACCEPTANCE" | "REFUTATION"; isPass: (code: number) => boolean;
@@ -3329,14 +3101,13 @@ function runSectionCommands(commands: string[], run: (command: string) => number
  * there is nothing more to run, never a failure in its own right. A DUPLICATE of either (#540) fails the
  * job exactly like MISSING does -- an ambiguous body is not one this parser should guess at.
  *
- * @param {string | null | undefined} body
- * @param {(command: string) => number} run
- * @param {{ commandExists?: (token: string) => boolean, capabilities?: JobCapabilities }} [deps] forwarded
+ *
+ *
+ * @param [deps] forwarded
  *   to `classifyCommand` (#446/#510) -- `commandExists` defaults to the real `$PATH` check; `capabilities`
  *   defaults to `jobCapabilities(body)`, so `main()` needs no changes at all to pick up the real job's
  *   environment, and a test overrides either to stay independent of what happens to be true of the machine
  *   or body the suite runs against.
- * @returns {{ ok: boolean, lines: string[] }}
  */
 export function acceptanceReport(body: string | null | undefined, run: (command: string) => number, deps: { commandExists?: (token: string) => boolean; capabilities?: JobCapabilities; } = {}): { ok: boolean; lines: string[]; } {
   // #2099: `handRun` is read from the body and is NOT overridable by `deps` -- unlike `capabilities`,
@@ -3404,8 +3175,6 @@ export function acceptanceReport(body: string | null | undefined, run: (command:
  * carrying flags/pipes/quoting -- the same trust boundary `merge-guard.ts`'s `--ci-gate` and this
  * project's other CI-invoked scripts already accept, contained by `pull_request`'s read-only token and
  * fork checkout rather than by refusing shell syntax).
- * @param {string} command
- * @returns {number}
  */
 function runForReal(command: string): number {
   try {
@@ -3460,9 +3229,6 @@ const CLOSES_MENTIONED_PATTERN = new RegExp(`\\b${CLOSES_FIELD}\\b`, "i");
  * that isn't digits) is MALFORMED, distinct from MISSING for the same reason `Acceptance:`'s own malformed
  * "none" is distinct from silence -- a check that cannot tell "wrote something wrong" from "wrote nothing"
  * cannot tell an author who tried from one who never noticed the field.
- *
- * @param {string | null | undefined} body
- * @returns {ClosesDeclaration}
  */
 export function extractClosesDeclaration(body: string | null | undefined): ClosesDeclaration {
   const text = body ?? "";
@@ -3500,8 +3266,6 @@ export function extractClosesDeclaration(body: string | null | undefined): Close
  * THE VERDICT. `ok: false` on both MISSING and MALFORMED -- deliberately the same boolean, because both
  * mean this job cannot tell what the PR closes, and a job that fails on one but not the other invites an
  * author to reach for the vaguer of the two whenever the precise one is inconvenient.
- * @param {string | null | undefined} body
- * @returns {{ ok: boolean, line: string }}
  */
 export function closesDeclarationReport(body: string | null | undefined): { ok: boolean; line: string; } {
   const declaration = extractClosesDeclaration(body);
@@ -3522,8 +3286,6 @@ export function closesDeclarationReport(body: string | null | undefined): { ok: 
 /**
  * #2617: every row a `closes` declaration names, WITH the repository each lives in -- `repo` null for a bare `#N`, which is the pull
  * request's OWN repository's. A declaration that never named a repository has no `references`, so they are built from `numbers`.
- * @param {{ kind: "closes", numbers: number[], references?: ClosesReference[] }} declaration
- * @returns {ClosesReference[]}
  */
 export function closesReferences(declaration: { kind: "closes"; numbers: number[]; references?: ClosesReference[]; }): ClosesReference[] {
   return declaration.references ?? declaration.numbers.map((number) => ({ repo: null, number }));
@@ -3554,8 +3316,6 @@ const TEST_FILE_PATTERN = /(?:\.test\.(?:ts|tsx|mjs|cjs|js)|(?:^|\/)test_[^/]+\.
 
 /**
  * Pure. Which of these repo-relative paths are test files -- the ones a `Mutation:` record is owed for.
- * @param {string[]} paths
- * @returns {string[]}
  */
 export function testFilesAmong(paths: string[]): string[] {
   return paths.filter((path) => TEST_FILE_PATTERN.test(path));
@@ -3577,8 +3337,6 @@ export type DiffReading = { ok: true, files: string[], added?: string[] } | { ok
  * WHY MISSING STOPPED FAILING. It checked that a LINE EXISTED, never that a mutant ran, so it failed a pull request on
  * paperwork. The project's `mutation-comment.yml` now runs a machine-chosen mutant set on the lines the pull request
  * added and posts the survivors as a comment; the line stays, printed, so the omission is still visible to a reviewer.
- * @param {{ body: string | null | undefined, diff: DiffReading }} input
- * @returns {{ ok: boolean, line: string }}
  */
 export function mutationRecordReport({ body, diff }: { body: string | null | undefined; diff: DiffReading; }): { ok: boolean; line: string; } {
   if (!diff.ok) {
@@ -3630,7 +3388,6 @@ const FENCE_LINE = /^\s*```/;
 const PROMPTED_COMMAND = /^\s*\$\s+\S/;
 const UNPROMPTED_COMMAND = /^\s*(?:pnpm|npx|npm|node|git|gh|grep|rg|sed|awk|cat|ls|find|python3?|bash|sh|wc)\b/;
 
-/** @param {string | undefined} line @returns {boolean} */
 function looksLikeCommand(line: string | undefined): boolean {
   return line !== undefined && (PROMPTED_COMMAND.test(line) || UNPROMPTED_COMMAND.test(line));
 }
@@ -3638,8 +3395,6 @@ function looksLikeCommand(line: string | undefined): boolean {
 /**
  * The body of every `## Measured` heading, each up to the next heading OUTSIDE a fence -- a `# comment`
  * line inside a fenced block is shell text, not a heading.
- * @param {string} body
- * @returns {string[][]}
  */
 function measuredSections(body: string): string[][] {
   const lines = body.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/);
@@ -3657,8 +3412,6 @@ function measuredSections(body: string): string[][] {
 
 /**
  * Does one of the section's fenced blocks hold a command with something it printed directly beneath?
- * @param {string[]} section
- * @returns {boolean}
  */
 function hasCommandWithOutput(section: string[]): boolean {
   for (const fence of section.join("\n").match(/```[\s\S]*?```/g) ?? []) {
@@ -3673,8 +3426,6 @@ function hasCommandWithOutput(section: string[]): boolean {
 /**
  * THE VERDICT for `## Measured`: absent (nothing claimed), present with a command and its output beneath
  * (passes), present without one, or declared twice (both fail, as a duplicate `Mutation:` does).
- * @param {string | null | undefined} body
- * @returns {{ ok: boolean, line: string }}
  */
 export function measuredSectionReport(body: string | null | undefined): { ok: boolean; line: string; } {
   const sections = measuredSections(body ?? "");
@@ -3696,8 +3447,6 @@ export function measuredSectionReport(body: string | null | undefined): { ok: bo
  * whatever the base did since. The checkout is depth 1, so the parent is fetched when it is missing. A HEAD that is not
  * a merge commit would show only its LAST commit and under-read the PR, so it is UNREADABLE, not guessed at.
  * Deleted files are excluded: there is no test left to owe a mutant.
- * @param {string} [cwd]
- * @returns {DiffReading}
  */
 export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): DiffReading {
   const git = (...args: string[]) =>
@@ -3727,8 +3476,6 @@ export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): Diff
  * different question -- "is this work `ts` has already done" -- and `test:org` and `test:all` answer yes
  * to it while answering no to the other. Two questions, two predicates; widening the capability one to
  * serve this would break the gate it exists for.
- *
- * @param {string} command
  */
 function duplicatesTheTsJob(command: string) {
   return /(?:^|&&|\|\||;)\s*p?npm\s+(?:run\s+)?(?:test|test:ts|test:org|test:all)(?![:\w-])/
@@ -3749,8 +3496,8 @@ function duplicatesTheTsJob(command: string) {
  * and leaves the judgment with the author -- the way `no-magic-numbers` is a warning in this repo rather
  * than an error.
  *
- * @param {string[]} commands the Acceptance commands as declared
- * @returns {string[]} zero or one note line
+ * @param commands the Acceptance commands as declared
+ * @returns zero or one note line
  */
 export function wholeSuiteNote(commands: string[]): string[] {
   const offenders = commands.filter((command) => duplicatesTheTsJob(command));
@@ -3778,7 +3525,6 @@ export type BodyReport = { name: string, report: (input: BodyReportInput) => { o
  *
  * ORDER IS THE ORDER CI PRINTS THEM IN, and `acceptance` is first because it is the one that RUNS something.
  * Not frozen, so a test can add an entry and watch `checkBody` run it; nothing in the tree appends to it.
- * @type {BodyReport[]}
  */
 export const CI_BODY_REPORTS: BodyReport[] = [
   { name: "acceptance", report: (input) => {
@@ -3804,8 +3550,6 @@ export const CI_BODY_REPORTS: BodyReport[] = [
 /**
  * ADR 0044: THE SOURCE THE `Acceptance:` FAMILY IS READ FROM, resolved once per input. The file the pull request ADDS under `.acceptance/` when
  * it adds one, else the body. A caller that resolved it already (`checkBody` does, to leak-check the file's text) hands it in.
- * @param {BodyReportInput} input
- * @returns {AcceptanceSource}
  */
 export function acceptanceSourceOf({ body, diff, acceptance, readFile = (path) => readFileSync(path, "utf8") }: BodyReportInput): AcceptanceSource {
   if (acceptance !== undefined) return acceptance;
@@ -3815,8 +3559,6 @@ export function acceptanceSourceOf({ body, diff, acceptance, readFile = (path) =
 /**
  * The same, for a caller that holds only the body: the public entry for the workflow's own reads of the sections (`hasFullHistoryDeclaration`),
  * which must come from the same text the commands do. Reads the checkout at `cwd`.
- * @param {string} body @param {string} [cwd]
- * @returns {AcceptanceSource}
  */
 export function acceptanceSourceOfThisPullRequest(body: string, cwd: string = process.cwd()): AcceptanceSource {
   return acceptanceSourceOf({ body, run: () => 0, diff: changedFilesOfThisPullRequest(cwd), readFile: (path) => readFileSync(join(cwd, path), "utf8") });
@@ -3824,8 +3566,6 @@ export function acceptanceSourceOfThisPullRequest(body: string, cwd: string = pr
 
 /**
  * #4123: the rows the body's `Closes` names, none for `Closes: none`, missing or malformed (the `closes` report refuses those itself).
- * @param {string} body
- * @returns {{ repo: string | null, number: number }[]}
  */
 function closedRowsOf(body: string): { repo: string | null; number: number; }[] {
   const declaration = extractClosesDeclaration(body);
@@ -3837,8 +3577,6 @@ function closedRowsOf(body: string): { repo: string | null; number: number; }[] 
  * (`reusable-acceptance.yml`: no `GH_TOKEN`), so it cannot ask GitHub. A step BEFORE it, which runs no author code, may write
  * `ACCEPTANCE_ROW_LABELS={"owner/repo#7":["defect",...]}`; with none set there is no reader, and the class report says NOT CHECKED rather than pass.
  * A row the map does not name THROWS, so a half-filled map is UNKNOWN for that row and not "no defect label".
- * @param {NodeJS.ProcessEnv} env
- * @returns {((row: { repo: string | null, number: number }) => string[]) | undefined}
  */
 export function rowLabelsFromEnv(env: NodeJS.ProcessEnv): ((row: { repo: string | null; number: number; }) => string[]) | undefined {
   if (!env.ACCEPTANCE_ROW_LABELS) return undefined;
@@ -3850,7 +3588,6 @@ export function rowLabelsFromEnv(env: NodeJS.ProcessEnv): ((row: { repo: string 
   };
 }
 
-/** @param {{ ok: boolean, line: string }} verdict */
 function oneLine({ ok, line }: { ok: boolean; line: string; }) {
   return { ok, lines: [line] };
 }
@@ -3859,9 +3596,6 @@ function oneLine({ ok, line }: { ok: boolean; line: string; }) {
  * Every report in `reports`, run in order and ALL of them, so an author fixing a body is told every refusal at
  * once rather than one per round trip. `reports` is read at call time, which is what lets a test see a
  * report added to `CI_BODY_REPORTS` reach a caller that never named it.
- * @param {BodyReportInput} input
- * @param {BodyReport[]} [reports]
- * @returns {{ ok: boolean, lines: string[] }}
  */
 export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] = CI_BODY_REPORTS): { ok: boolean; lines: string[]; } {
   // Resolved once, so the file is read once and every report that reads the `Acceptance:` family reads the same text.
@@ -3871,7 +3605,7 @@ export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] =
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/acceptance-commands.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.ts" });
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.

@@ -2,7 +2,7 @@
  * THE TOOL'S OWN SOURCE, READ OFF DISK -- the one population the census guards in this directory walk (a11ign/a11ign#3106).
  *
  * WHY THE FILESYSTEM AND NOT `git ls-files`: `ci.yml` copies this checkout into `project/packages/agent-org` of a project checkout and runs
- * the suite from the project's root, where the copy is UNTRACKED, so a `git ls-files` walk (`lib/tree-wide-guard.mjs`) finds the project's
+ * the suite from the project's root, where the copy is UNTRACKED, so a `git ls-files` walk (`lib/tree-wide-guard.ts`) finds the project's
  * files and none of the tool's. Resolved from `import.meta.url`, `TOOL_SRC` is this tool's `src/` in both layouts.
  *
  * `packaging/` IS LEFT OUT of the non-test population: in the project layout `ci.yml` rsyncs the project's own non-test helpers into it, and

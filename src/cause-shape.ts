@@ -1,7 +1,7 @@
 // @ts-check
 // #2621 (child 3e of #69): THE SHAPE OF A CAUSE DECLARATION, `{cause, group, profile}`, split out of
 // `cause-declaration.ts` for one reason -- a LEAF, import-free like `claim-labels.ts`, because a project
-// plugin (`.agent-org/plugins/causes.mjs`) must build declarations with `declareCause` and `GROUPS`
+// plugin (`.agent-org/plugins/causes.ts`) must build declarations with `declareCause` and `GROUPS`
 // WITHOUT importing `cause-declaration.ts` itself. That file's own top-level await DYNAMICALLY IMPORTS
 // the plugin to read the project's causes, so a plugin that imported it back would be a cycle neither
 // side can finish: `cause-declaration.ts` awaits the plugin's module evaluation, which awaits

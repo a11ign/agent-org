@@ -70,7 +70,7 @@ import { existsSync, readdirSync, readFileSync, lstatSync, readlinkSync, renameS
 import { basename, dirname, join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.ts` records:
 // files in this package run before `pnpm install`, where a package specifier dies.
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, nestedWorktrees, recordRemoval, worktreeBranch } from "./worktree-removal.ts";
 
@@ -787,7 +787,7 @@ function refusalLines(refused: Verdict[]): string[] {
 
 async function main() {
   refuseUnknownFlags(["--apply", "--tmp", "--fixtures-only"],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/prune-tmp.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/prune-tmp.ts" });
   // THE DEFAULT IS THE LISTING, for the reason `prune-worktrees.ts` paid for: a command whose name reads
   // as a report, on a host with eight live sessions, is one somebody runs to LOOK. There is deliberately
   // no timer for the REVIEW and SCRATCHPAD families -- #2166 puts that decision one cycle after the named list, which is

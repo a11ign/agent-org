@@ -42,7 +42,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 export const EXIT = { DONE: 0, COULD_NOT_TRIGGER: 1, CANNOT_ASK: 2 };
 
@@ -59,7 +59,7 @@ export function needsGateSweep(checkRunCount: number): boolean {
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/trunk-sweep.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {

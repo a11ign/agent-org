@@ -20,21 +20,20 @@
 // ... AND "CHEAP" IS A CLAIM THE TICK NOW CARRIES THE EVIDENCE FOR (a11ign/a11ign#3566). Two to ten minutes of wall clock was measured on 2026-10-04
 // and nobody could say whether it was the host or the children, so every tick appends one `tick-cost` line: wall and CPU per phase, children's CPU
 // included, and the commands started, by name.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { completionPath, writeCompletion } from "./lib/tick-completion.mjs";
-import { toolVersionLine } from "./lib/tool-version.mjs";
+import { completionPath, writeCompletion } from "./lib/tick-completion.ts";
+import { toolVersionLine } from "./lib/tool-version.ts";
 import { refreshTickSnapshot } from "./tick-snapshot.ts";
 import { clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, slowThresholdSeconds, slowTickOrders, tickMarkerPath,
   writeStartMarker } from "./work-tick-health.ts";
-import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, setCensusPhase, summariseCensus } from "./lib/spawn-census.mjs";
+import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, setCensusPhase, summariseCensus } from "./lib/spawn-census.ts";
 
 // Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
 export { childrenCpuMs };
@@ -51,7 +50,7 @@ import { readAgents, blockedSessions, readHandoffs, handoffQueuePath, ledgerPath
 /**
  * `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused; `70` it CRASHED (#3038).
  *
- * `CRASH` is `src/lib/crash-exit.mjs`'s code, and is the one the unit does NOT declare a success. It is a code of its own because `node`
+ * `CRASH` is `src/lib/crash-exit.ts`'s code, and is the one the unit does NOT declare a success. It is a code of its own because `node`
  * exits `1` on any uncaught exception and `1` is ATTENTION here, so a crash used to read as "orders had nowhere to go".
  */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
@@ -61,7 +60,7 @@ export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
  * gate that threw would be read as a busy org whose orders were handed to `wake` with nothing on stdin, and `wake` exits `1` for ATTENTION.
  * The unit's own `--import` covers the tick itself and cannot reach a child, so the tick passes it down.
  */
-const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.mjs", import.meta.url).href, ...TSX_IMPORT];
+const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.ts", import.meta.url).href];
 
 /** work-gate's own contract, named here so the mapping below reads as a mapping and not as magic numbers. */
 export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
@@ -248,7 +247,7 @@ export type Run = { recordPath: string, costPath: string, censusPath: string, ma
  */
 function startRun(ledgerPath: string, wakeArgs: string[]): Run {
   const censusPath = join(dirname(ledgerPath), `tick-census.${process.pid}.jsonl`);
-  const preload = `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`;
+  const preload = `--import=${new URL("./lib/spawn-census.ts", import.meta.url).href}`;
   process.env[CENSUS_ENV] = censusPath;
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
   installSpawnCensus(censusPath);
@@ -474,7 +473,7 @@ export function refreshSnapshotOrSay({ declaration = homeProjectDeclaration, con
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-tick.ts",
+    entry: import.meta.url, command: "node packages/agent-org/src/work-tick.ts",
   });
   const passthrough = process.argv.slice(2);
   const ledgerPath = ledgerPathFrom(passthrough);

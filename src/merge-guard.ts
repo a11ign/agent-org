@@ -22,7 +22,7 @@
 // A verification that shares a failure mode with the action verifies nothing -- the same rule as checking
 // `/health` over HTTP rather than through the deploy channel that just failed.
 //
-//   node --import tsx packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]
+//   node packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]
 //
 // Exit codes are the contract:
 //   0  READY      -- based on main, every required context present and concluded, tested against this main
@@ -34,26 +34,26 @@
 //
 // Three changes to this one file in one night produced two conflicts and a deadlock between rules nobody
 // read together (#442, the armed-race rule and the ancestry rule interacting under strict protection --
-// see `packages/agent-org/src/merge-guard/armed-race-rule.mjs` for the full account). Each check now lives in its own
+// see `packages/agent-org/src/merge-guard/armed-race-rule.ts` for the full account). Each check now lives in its own
 // file under `packages/agent-org/src/merge-guard/`, with its own test, so a rule can be read, changed and
 // mutation-checked without touching the seven others:
 //
-//   packages/agent-org/src/merge-guard/base-rule.mjs          is the PR based on `main`?               (#148)
-//   packages/agent-org/src/merge-guard/head-tip-rule.mjs       does GitHub's recorded head match the tip? (#294/#195)
-//   packages/agent-org/src/merge-guard/checks-rule.mjs         did every required context run and conclude? (#148)
-//   packages/agent-org/src/merge-guard/staleness-rule.mjs      did every run finish after main's CURRENT tip? (#100/#135)
-//   packages/agent-org/src/merge-guard/ancestry-rule.mjs       does this head CONTAIN main's tip?        (#182/#165)
-//   packages/agent-org/src/merge-guard/claimed-row-rule.mjs    would arming close a row someone else holds? (#249)
-//   packages/agent-org/src/merge-guard/pr-hold-rule.mjs        is somebody else actively working this PR?  (#266/#258)
-//   packages/agent-org/src/merge-guard/armed-race-rule.mjs     would a push race an already-armed merge?    (#386/#442)
+//   packages/agent-org/src/merge-guard/base-rule.ts          is the PR based on `main`?               (#148)
+//   packages/agent-org/src/merge-guard/head-tip-rule.ts       does GitHub's recorded head match the tip? (#294/#195)
+//   packages/agent-org/src/merge-guard/checks-rule.ts         did every required context run and conclude? (#148)
+//   packages/agent-org/src/merge-guard/staleness-rule.ts      did every run finish after main's CURRENT tip? (#100/#135)
+//   packages/agent-org/src/merge-guard/ancestry-rule.ts       does this head CONTAIN main's tip?        (#182/#165)
+//   packages/agent-org/src/merge-guard/claimed-row-rule.ts    would arming close a row someone else holds? (#249)
+//   packages/agent-org/src/merge-guard/pr-hold-rule.ts        is somebody else actively working this PR?  (#266/#258)
+//   packages/agent-org/src/merge-guard/armed-race-rule.ts     would a push race an already-armed merge?    (#386/#442)
 //
 // Two more modules hold shared machinery that is not itself a refusal rule, so splitting it per-rule
 // would recreate the fact-stated-twice shape rather than fix it:
 //
-//   packages/agent-org/src/merge-guard/reason-kind.mjs         classifies a reason string -- read by every rule's own
+//   packages/agent-org/src/merge-guard/reason-kind.ts         classifies a reason string -- read by every rule's own
 //                                                test AND by the reconciliation log below
-//   packages/agent-org/src/merge-guard/lookups.mjs             the network/process calls every rule's facts come from
-//   packages/agent-org/src/merge-guard/reconciliation.mjs      #188's verdict log and its `--reconcile` comparison
+//   packages/agent-org/src/merge-guard/lookups.ts             the network/process calls every rule's facts come from
+//   packages/agent-org/src/merge-guard/reconciliation.ts      #188's verdict log and its `--reconcile` comparison
 //
 // This file composes them (`mergeReadiness`, the full composition; `mergeSafetyVerdict`, the narrower
 // self-reference-safe one), re-exports every name a rule module owns (so the five existing importers --
@@ -65,28 +65,28 @@ import { realpathSync } from "node:fs";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
-import { reasonKind } from "./merge-guard/reason-kind.mjs";
+import { reasonKind } from "./merge-guard/reason-kind.ts";
 import { gh, lookup, lookupRequiredContexts, lookupBranchTip, lookupCheckRuns, lookupClosingIssues }
-  from "./merge-guard/lookups.mjs";
-import { baseReason } from "./merge-guard/base-rule.mjs";
-import { headTipMismatchReason } from "./merge-guard/head-tip-rule.mjs";
-import { SATISFIED, checkReasons } from "./merge-guard/checks-rule.mjs";
-import { stalenessReason } from "./merge-guard/staleness-rule.mjs";
-import { ancestryReason } from "./merge-guard/ancestry-rule.mjs";
+  from "./merge-guard/lookups.ts";
+import { baseReason } from "./merge-guard/base-rule.ts";
+import { headTipMismatchReason } from "./merge-guard/head-tip-rule.ts";
+import { SATISFIED, checkReasons } from "./merge-guard/checks-rule.ts";
+import { stalenessReason } from "./merge-guard/staleness-rule.ts";
+import { ancestryReason } from "./merge-guard/ancestry-rule.ts";
 import {
   closingClaimReasons, claimedCloseCoveredBy, applyAllowClaimedClose,
-} from "./merge-guard/claimed-row-rule.mjs";
-import { prHoldReasons } from "./merge-guard/pr-hold-rule.mjs";
+} from "./merge-guard/claimed-row-rule.ts";
+import { prHoldReasons } from "./merge-guard/pr-hold-rule.ts";
 import { holdersOf, HOLD_PREFIX } from "./pr-hold-state.ts";
-import { racesAnArmedMerge, lookupArmedPrStatus } from "./merge-guard/armed-race-rule.mjs";
+import { racesAnArmedMerge, lookupArmedPrStatus } from "./merge-guard/armed-race-rule.ts";
 import {
   appendJsonl, gitCommonDir, verdictLogPath, agreementLogPath, recordVerdict, latestVerdictFor,
   realOutcomeFor, reconcile,
-} from "./merge-guard/reconciliation.mjs";
+} from "./merge-guard/reconciliation.ts";
 
 // RE-EXPORTED so every existing importer keeps working unchanged -- see the header above for who reads
 // which. Each name is now DEFINED in its own rule/shared module; this is the one place all of them are
@@ -113,11 +113,11 @@ const EXIT = { READY: 0, REFUSED: 1, CANNOT_ASK: 2 };
  * permanently rather than only the unsafe ones. `gate` already answers "did CI pass" by construction
  * (branch protection requires it, and it is `if: always()` over every sibling's `result`) — this answers
  * the one question `strict=false` (#277) left nobody answering that does not depend on whether CI has
- * finished: does this head match what the platform thinks it is (`head-tip-rule.mjs`, #294).
+ * finished: does this head match what the platform thinks it is (`head-tip-rule.ts`, #294).
  *
  * TWO RULES ARE DELIBERATELY NOT COMPOSED HERE, and both cost a live near-miss to find before they
  * shipped — `dispatcher` drove this function against the real, moving queue and measured both refusing
- * the NORMAL case. See `ancestry-rule.mjs` and `claimed-row-rule.mjs` for the full account of each; in
+ * the NORMAL case. See `ancestry-rule.ts` and `claimed-row-rule.ts` for the full account of each; in
  * short, ancestry refuses almost every open PR under `strict=false`'s normal throughput, and the claimed-
  * row rule needs a `session` identity a CI job does not have and would otherwise refuse its own PR's
  * merge as "closing a stranger's row".
@@ -392,7 +392,7 @@ function armedCheckCommand(branch: string) {
  * `--allow-claimed-close=<name>`'s value, refusing (never silently) a bare boolean -- #249's follow-up,
  * 2026-09-07: it must be a CHECKABLE claim naming who was confirmed with, not an honor system.
  *
- * KEPT HERE, not in `claimed-row-rule.mjs`, deliberately -- #455: this is the one place in that rule's
+ * KEPT HERE, not in `claimed-row-rule.ts`, deliberately -- #455: this is the one place in that rule's
  * whole surface that touches `process.argv` directly, and this file already reads argv and already calls
  * `refuseUnknownFlags` for the entire command. Moving it into the rule module would make that module a
  * second, untracked CLI entry point -- `cli-flags.test.ts`'s argv-reading census discovers exactly this
@@ -411,7 +411,7 @@ function readAllowClaimedClose(): string | null {
 
 function main() {
   refuseUnknownFlags(["--reconcile", "--session", "--allow-claimed-close", "--ci-gate", "--armed-check"],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/merge-guard.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/merge-guard.ts" });
 
   if (flagValue(process.argv, "armed-check") !== undefined) {
     armedCheckCommand((flagValue(process.argv, "armed-check") as string));
@@ -420,10 +420,10 @@ function main() {
 
   const number = process.argv.slice(2).find((arg) => /^\d+$/.test(arg));
   if (!number) {
-    console.error("Usage: node --import tsx packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]\n"
-      + "       node --import tsx packages/agent-org/src/merge-guard.ts --reconcile <pr-number>\n"
-      + "       node --import tsx packages/agent-org/src/merge-guard.ts --ci-gate <pr-number>\n"
-      + "       node --import tsx packages/agent-org/src/merge-guard.ts --armed-check=<branch>\n"
+    console.error("Usage: node packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]\n"
+      + "       node packages/agent-org/src/merge-guard.ts --reconcile <pr-number>\n"
+      + "       node packages/agent-org/src/merge-guard.ts --ci-gate <pr-number>\n"
+      + "       node packages/agent-org/src/merge-guard.ts --armed-check=<branch>\n"
       + "Answers whether that PR has actually been tested, by reading its check RUNS rather than\n"
       + "`mergeStateStatus` -- which reports CLEAN for a PR that has never run a check. `--reconcile`\n"
       + "compares the last recorded verdict against the PR's real, terminal outcome (#188). `--ci-gate` is\n"

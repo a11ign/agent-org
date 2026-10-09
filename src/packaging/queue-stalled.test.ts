@@ -8,7 +8,6 @@
  * against real, captured output rather than a guessed shape. See queue-stalled.ts's own header for the
  * incident (#232/#281, 12.5 PR-hours invisible) and why `mergeable` is not the instrument.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -32,7 +31,7 @@ import { newestConclusion } from "../newest-check-run.ts";
 // recurring shape, and the fix for a vocabulary split walked straight into it.
 // ---------------------------------------------------------------------------------------------------
 
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.ts";
 import { readEjections, decide, stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate.ts";
 
@@ -136,8 +135,8 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
     "packages/agent-org/src/board-document.ts",
     "scripts/board-only-check.mjs",
     "packages/agent-org/src/board-report.ts",
-    "scripts/ci-changed.mjs",
-    "packages/guards/src/isolation-gate.mjs",
+    "scripts/ci-changed.ts",
+    "packages/guards/src/isolation-gate.ts",
     "",
     "Auto-merging packages/agent-org/src/board-data.ts",
     "CONFLICT (content): Merge conflict in packages/agent-org/src/board-data.ts",
@@ -149,7 +148,7 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
   assert.equal(result.conflict, true);
   assert.deepEqual(result.files, [
     "packages/agent-org/src/board-data.ts", "packages/agent-org/src/board-document.ts", "scripts/board-only-check.mjs",
-    "packages/agent-org/src/board-report.ts", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
+    "packages/agent-org/src/board-report.ts", "scripts/ci-changed.ts", "packages/guards/src/isolation-gate.ts",
   ]);
 });
 
@@ -352,7 +351,7 @@ test("headCommittedAt: empty stdout on a successful exit is also `null`, not an 
 test("queue-stalled.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -367,7 +366,7 @@ test("queue-stalled.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, n
   try {
     const env = { ...process.env };
     delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [...TSX_IMPORT, SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };

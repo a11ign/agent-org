@@ -1,9 +1,9 @@
 // command: mark or query whether this checkout is the fleet-driving primary, which the hooks read
 // MARK THIS CHECKOUT AS THE FLEET-DRIVING ONE — the opt-in the hooks read.
 //
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts           # is it marked?
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts --set     # mark it
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts --unset   # stop treating this checkout as the primary
+//   node packages/agent-org/src/mark-primary-checkout.ts           # is it marked?
+//   node packages/agent-org/src/mark-primary-checkout.ts --set     # mark it
+//   node packages/agent-org/src/mark-primary-checkout.ts --unset   # stop treating this checkout as the primary
 //
 // `pre-commit` and `post-checkout` guard the checkout the fleet is driven from: nothing may be committed
 // there and it may only sit detached at `origin/main`, because `assertFleetRunsThisCheckout` hashes the
@@ -20,12 +20,12 @@
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 // GIT_* SCRUBBED, and it is load-bearing rather than ceremony HERE of all places. An inherited `GIT_DIR`
 // -- exported by any hook that invoked us -- would point these `git config --local` calls at whatever
 // repository that variable names, so a command whose entire job is "mark THIS checkout" would read, or
 // SET, the mark on another one. That is the 2026-09-06 GIT_DIR leak aimed at the guard for it.
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 const KEY = "a11y.primaryCheckout";
 

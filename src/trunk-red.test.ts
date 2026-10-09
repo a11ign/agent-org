@@ -1,7 +1,7 @@
 // no-token: gh -- `readFixRow` answers from an injected `github` seam, and `trunkRedOrders` takes a fixture reading; no `gh` is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFixRow } from "./messaging/sources/readers.mjs";
+import { readFixRow } from "./messaging/sources/readers.ts";
 import { trunkRedOrders } from "./trunk-red.ts";
 
 /**

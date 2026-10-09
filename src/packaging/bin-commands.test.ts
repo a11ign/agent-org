@@ -5,7 +5,7 @@
 /**
  * #3068: `agent-org <command>` -- THE COMMAND TABLE AND THE BIN'S REFUSALS.
  *
- * `commands.mjs` is the ONE table from a command name to the program under `src/` that runs it, read by `bin.mjs` to dispatch and by
+ * `commands.ts` is the ONE table from a command name to the program under `src/` that runs it, read by `bin.ts` to dispatch and by
  * `acceptance-commands.ts` (#3063) to resolve a project script `agent-org <command>`. Pinned here:
  *   (c) an unknown name, and no name at all, REFUSE (exit 2) and list the commands -- there is no default command -- and they do it in a
  *       directory that holds no project, because refusing needs none;
@@ -13,7 +13,6 @@
  * POSITIVE CONTROLS: the programs found by the header scan are not an empty set (the INTERNAL ones are among them), and the
  * dispatch of a KNOWN name yields the program and the table's own fixed arguments, so the refusals are not simply "everything refuses".
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -21,11 +20,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { planInvocation } from "../bin.mjs";
-import { COMMANDS, FIXED_ARGS, INTERNAL } from "../commands.mjs";
+import { planInvocation } from "../bin.ts";
+import { COMMANDS, FIXED_ARGS, INTERNAL } from "../commands.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const BIN = join(SRC, "bin.mjs");
+const BIN = join(SRC, "bin.ts");
 const REFUSED = 2;
 const HEADER = /^\/\/ command:/m;
 const NOT_A_COMMAND = "(not a command)";
@@ -79,7 +78,7 @@ test("every COMMANDS entry names a program that exists under src/, none climbs o
 });
 
 test("the table's keys are written once each: an object literal silently keeps the LAST of a duplicated key", () => {
-  const source = readFileSync(join(SRC, "commands.mjs"), "utf8");
+  const source = readFileSync(join(SRC, "commands.ts"), "utf8");
   const block = source.slice(source.indexOf("export const COMMANDS"), source.indexOf("export const FIXED_ARGS"));
   const written = [...block.matchAll(/^ {2}"([^"]+)":/gm)].map((match) => match[1]);
   assert.equal(written.length, Object.keys(COMMANDS).length, "a key is written twice");
@@ -117,7 +116,7 @@ for (const [what, argv, pattern] of [
   test(`(c) ${what} REFUSES and lists the commands, in a directory that holds no project`, () => {
     const scratch = mkdtempSync(join(tmpdir(), "bin-commands-"));
     try {
-      const run = spawnSync(process.execPath, [...TSX_IMPORT, BIN, ...argv], { cwd: scratch, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
+      const run = spawnSync(process.execPath, [BIN, ...argv], { cwd: scratch, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
       assert.equal(run.status, REFUSED, run.stderr);
       assert.match(run.stderr, pattern);
       for (const command of ["row-file", "pr:open", "board:settle"]) assert.ok(run.stderr.includes(`  ${command}\n`), `${command} is not listed:\n${run.stderr}`);

@@ -24,9 +24,9 @@ name: ci
 # modules and fixtures that were not extracted. a11ign/a11ign deleted that package (#3505) and takes a11ign/lab as a pinned tag, so the job lays the lab at the tag the project's
 # `layers.json` pins AT `PROJECT_REF` (the project's own `project/scripts/lay-layer.mjs`) and copies those siblings (never a test) beside the tests, without overwriting anything this repository has.
 #
-# NODE IS PINNED TO 22.22.1, NOT `22`: on 22.23.3 (what `22` resolved to on 2026-10-02) the suite's one tree-walking observer, `walk-scope.mjs`, sees
-# tsx probe `<name>.mts` beside every `<name>.mjs` it imports and fails `board-reported-data-integrity.test.ts` for reads outside its declared scope
-# (reproduced locally on both versions, 22.22.1 green and 22.23.3 red, same tree). Move the pin only by re-running the suite on the new version.
+# NODE IS PINNED TO 24.21.0, NOT `24`, and it must be 24: Node 24 strips types itself, and a `.ts` run by a plain `node` (every ExecStart, every package script, `leak-scan.mjs`'s import) needs it
+# (a11ign/a11ign#4389; the distro 22 cannot). The pin was 22.22.1 because on 22.23.3 the suite's tree-walking observer saw tsx probe `<name>.mts` beside every import: tsx is gone, so that
+# cause is too. Move the pin only by re-running the suite on the new version (24.21.0: 7583 tests, the 33 failures all fail on main too).
 #
 # NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
@@ -66,7 +66,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
-          node-version: 22.22.1
+          node-version: 24.21.0
       - name: Every path a workflow names exists in this repository
         run: node .github/scripts/workflow-paths.mjs
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
@@ -170,7 +170,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22.22.1
+          node-version: 24.21.0
       - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml, tsx)
         # The toolchain is named EXACT beside `package.json`'s `^0.1.5` for the same reason as in `suite` (a11ign/a11ign#4308): the range resolved 0.1.6, which has no `dist/`.
         run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.1.5"

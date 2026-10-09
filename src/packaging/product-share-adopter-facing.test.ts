@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decide, rowKind, productRegionsOf, offeredByShare, recordEngineerStarts } from "../work-gate.ts";
-import { adopterRowKind } from "../work-gate/org-health.mjs";
+import { adopterRowKind } from "../work-gate/org-health.ts";
 
 const CODE = [
   { key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }, { key: "documents", repo: "a11ign/documents" },

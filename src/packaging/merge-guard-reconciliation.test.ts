@@ -1,6 +1,6 @@
 /**
  * #188: A GUARD WHOSE WRONG ANSWERS ARE ABSORBED BY ANOTHER MECHANISM HAS NO FAILURE SIGNAL.
- * #455's split into `packages/agent-org/src/merge-guard/reconciliation.mjs`.
+ * #455's split into `packages/agent-org/src/merge-guard/reconciliation.ts`.
  *
  * #182 was caught only because strict branch protection refused what the guard passed -- its own
  * wrongness was invisible until somebody happened to run `gh pr update-branch` right after. This records
@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   recordVerdict, latestVerdictFor, realOutcomeFor, reconcile,
-} from "../merge-guard/reconciliation.mjs";
+} from "../merge-guard/reconciliation.ts";
 
 function withTempLogDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "merge-guard-log-"));

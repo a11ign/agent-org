@@ -20,7 +20,7 @@
  * NO UNIT IS RENAMED AND NONE IS REINSTALLED BY THIS ROW: the rendered names are asserted equal to the installed ones,
  * and rows 4 and 5 (the shadow run and the extraction) are where an install happens.
  *
- * WHAT IT DOES NOT COVER, said so it cannot be read as covered. `wake.ts`, `work-gate.ts` and `lib/worktree-resolution.mjs` still name
+ * WHAT IT DOES NOT COVER, said so it cannot be read as covered. `wake.ts`, `work-gate.ts` and `lib/worktree-resolution.ts` still name
  * `/home/agent` (two constants and some prose); they belong to rows 3b and 3c, whose Regions those files are. That the constants equal a11ign's
  * `host.json` was asserted here until #3233, and is a11ign's to assert.
  */
@@ -105,7 +105,8 @@ const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
   // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
   // #3038 MOVED THIS ONE, deliberately: `ExecStart` runs under the crash-exit preload and the header says why `SuccessExitStatus` lists 1.
-  "a11ign-work-tick.service": "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3",
+  // #4389 MOVED THIS ONE, deliberately: `ExecStart` runs `%h/.local/bin/node` on the `.ts` with no `--import tsx`; the host Node strips the types itself.
+  "a11ign-work-tick.service": "6f128077955f11e824ec1956fc377ed1944f85590a70e387672c7756c56c68b9",
   "a11ign-work-tick.timer": "7daa5c14c8c1db69424b7f5dfac22c8168858f2fd9f8eaaa95530a07b3e0b931",
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.

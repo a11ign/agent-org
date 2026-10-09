@@ -64,10 +64,10 @@
 // "arm the standing queue", and running the sweep anyway would answer a question nobody asked.
 //
 // THE IMPORT IS RELATIVE, never `@a11ign/screenreader-fleet/cli-flags`. The package specifier resolves to
-// `dist/cli-flags.mjs`, so it needs `pnpm install` AND a build to have happened -- and this job deliberately has
+// `dist/cli-flags.ts`, so it needs `pnpm install` AND a build to have happened -- and this job deliberately has
 // neither, only `actions/checkout`. #330 and #331 are what that circular bootstrap costs: a top-level
 // workspace import in `build-packages.mjs` took `main` down, and every worktree symlinking `node_modules`
-// to a sibling's inherited a stale `dist` and never saw it fail locally. `cli-flags.mjs` itself imports
+// to a sibling's inherited a stale `dist` and never saw it fail locally. `cli-flags.ts` itself imports
 // only `node:path`, `node:fs` and `node:url`, so the relative form needs nothing installed.
 //
 // Exit codes are the contract:
@@ -75,7 +75,7 @@
 //   1  at least one PR could not be armed. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.ts";
@@ -443,7 +443,7 @@ function sleepSync(ms: number) {
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/auto-arm-sweep.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {

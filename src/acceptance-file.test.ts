@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { checkBody, main, standingAgainstRegion, EXIT_NOTHING_SENT } from "./pr-open.ts";
 import { acceptanceFileForBranch, isAcceptancePath, resolveAcceptanceSource, sourceLine } from "./acceptance-file.ts";
 import { isOwned } from "./owned-path-signoff.ts";
-import { fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+import { fileOverlapReason } from "./row-claim/file-overlap-rule.ts";
 
 const CLOSES = "Closes: none -- a test body";
 const PASSING = 'node -e "process.exit(0)"';

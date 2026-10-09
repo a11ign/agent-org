@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFiledBy, createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file.ts";
-import { adopterRowKind, adopterFacingDeclared, milestoneClockFact } from "../work-gate/org-health.mjs";
+import { adopterRowKind, adopterFacingDeclared, milestoneClockFact } from "../work-gate/org-health.ts";
 import { milestoneClockReading } from "../org-health.ts";
 import { parseProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";

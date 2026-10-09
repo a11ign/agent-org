@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, withPrOwners, readWorktreeStamps, stampLookup } from "../work-gate.ts";
-import { ownerOfPr, UNOWNED_PR_SESSION } from "../work-gate/pr-orders.mjs";
+import { ownerOfPr, UNOWNED_PR_SESSION } from "../work-gate/pr-orders.ts";
 
 type Fixture = Record<string, unknown>;
 type Order = { cause: string, session: string, causeKey: string, prompt: string };

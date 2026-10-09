@@ -1,10 +1,10 @@
-// no-token: gh -- reaches `fileOverlapReason` through `row-claim/file-overlap-rule.mjs`, whose own `lookup*` readers spawn `gh`; nothing here calls one (#2542)
+// no-token: gh -- reaches `fileOverlapReason` through `row-claim/file-overlap-rule.ts`, whose own `lookup*` readers spawn `gh`; nothing here calls one (#2542)
 /**
  * #2542: THE B4 POSITIVE CONTROL OF THE `work-gate.ts` SPLIT.
  *
- * The split exists because B4 (`row-claim/file-overlap-rule.mjs`) compares a row's Region against the files of open
+ * The split exists because B4 (`row-claim/file-overlap-rule.ts`) compares a row's Region against the files of open
  * pull requests, so two org fixes that both name `work-gate.ts` serialise even when they edit different orders.
- * Moving the pull-request orders into `work-gate/pr-orders.mjs` only helps if a Region NAMING that module is still
+ * Moving the pull-request orders into `work-gate/pr-orders.ts` only helps if a Region NAMING that module is still
  * a Region B4 reads. This is the control: two Regions that both name the module DO collide, so a fix to one of its
  * orders waits behind another fix to one of its orders, and behind nothing else.
  *
@@ -15,10 +15,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { fileOverlapReason } from "../row-claim/file-overlap-rule.mjs";
+import { fileOverlapReason } from "../row-claim/file-overlap-rule.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 
-const MODULE = "packages/agent-org/src/work-gate/pr-orders.mjs";
+const MODULE = "packages/agent-org/src/work-gate/pr-orders.ts";
 const SHIM = "packages/agent-org/src/work-gate.ts";
 
 /** A row body whose fenced Region names the given files, in the shape `row-file.ts` files them. */
@@ -37,13 +37,13 @@ test("#2542: the module the row moves the orders into exists, and is a path a Re
   assert.deepEqual(regionOf(MODULE), [MODULE], "the fenced Region parses to the module's own path");
 });
 
-test("#2542 DONE-WHEN 2: two Regions that both name work-gate/pr-orders.mjs COLLIDE", () => {
+test("#2542 DONE-WHEN 2: two Regions that both name work-gate/pr-orders.ts COLLIDE", () => {
   const first = regionOf(MODULE, "packages/lab/src/packaging/work-gate.test.ts");
   const second = pr(2600, regionOf(MODULE));
   const { reason } = fileOverlapReason(first, [second]);
   assert.ok(reason, "one fix to an order in the module must wait behind another fix to an order in the module");
   assert.match(reason as string, /#2600/, "and the refusal names the PR it waits behind");
-  assert.match(reason as string, /work-gate\/pr-orders\.mjs/, "and the file it collides on");
+  assert.match(reason as string, /work-gate\/pr-orders\.ts/, "and the file it collides on");
 });
 
 test("#2542: the control is not a function that refuses everything -- a Region NOT naming the module goes through", () => {
@@ -71,7 +71,7 @@ test("#2542: a Region naming the SHIM still collides with a PR on the shim, and 
 
 /** Every family module under `work-gate/`, spelled the way a Region names it (the project's tree, as MODULE above). */
 const FAMILIES = ["pr-orders", "lab-job-orders", "org-health", "pr-owners", "row-call-count-orders", "claim-stall-tick"]
-  .map((name) => `packages/agent-org/src/work-gate/${name}.mjs`);
+  .map((name) => `packages/agent-org/src/work-gate/${name}.ts`);
 
 test("#2898: every family module exists, and a Region names it as itself", () => {
   for (const family of FAMILIES) {

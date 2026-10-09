@@ -50,8 +50,8 @@
 //      see the workflow step for what treats it as one)
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { newestConclusion, newestRun, normaliseConclusion, SUCCESS, workflowRunIdOf } from "./newest-check-run.ts";
@@ -391,7 +391,7 @@ function reportExaminedPr(result: ReturnType<typeof examinePr>, sinks: { stalled
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/queue-stalled.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {

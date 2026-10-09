@@ -14,7 +14,6 @@
  * needs a live failure; `docs/known-gaps.md` says so. (b) `last_refresh` needs no codex at all and is measured
  * from the credential file's real shape.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -312,7 +311,7 @@ test("#2401 THE GATE: `main` emits the incident to `ceo` beside the reviewer's o
     mkdirSync(join(home, ".codex"), { recursive: true });
     writeFileSync(join(home, ".cache/a11ign", REVIEWER_REGISTRY_FILE), JSON.stringify({ "reviewer-9001": { spawnedAt: T0 } }));
     writeFileSync(join(home, ".codex/auth.json"), authFile(new Date(T0 + MIN).toISOString()));
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8",
       env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
     assert.ok(orders.some((o) => o.session === "reviewer-9001" && o.cause === "draft-awaiting-verdict"),

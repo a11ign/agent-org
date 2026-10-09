@@ -9,12 +9,12 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { agentArgs, profileFor } from "../worker-profile.ts";
 import { addressed } from "../wake.ts";
 import {
   MEASUREMENT_TAIL, assertGhRead, earlyRefusal, fleetAnswerOf, launchArgs, normalizeArgv, pilotRowsOf, runPilot, successOf, userTurn,
-} from "./headless-pilot.mjs";
+} from "./headless-pilot.ts";
 
 const CAPS = { maxTurns: 40, maxBudgetUsd: 2.5 };
 const NAMED_ON = 4200;

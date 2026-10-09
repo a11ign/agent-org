@@ -1,4 +1,3 @@
-// @ts-check
 // THE `messaging` KEY AND `messaging:check` (a11ign/a11ign#2901 done-whens 1 and 4), against a plain object or a project root in a temp
 // directory and a stand-in home, so nothing here reads the real `~/.config`.
 //
@@ -11,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { DEFAULT_SUMMARY, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.mjs";
+import { DEFAULT_SUMMARY, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.ts";
 import { runMessagingCheck } from "./check.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-config-"));
@@ -22,13 +21,11 @@ mkdirSync(SECRETS, { recursive: true });
 
 const VALID = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/chairman.json" };
 
-/** @param {unknown} messaging @returns {unknown} a whole `project.json` document holding it */
+/** A whole `project.json` document holding `messaging`. */
 const documentWith = (messaging: unknown): unknown => ({ schema: 1, messaging });
 
-/** @param {unknown} parsed */
 const parse = (parsed: unknown) => parseMessagingConfig(parsed, { home: HOME });
 
-/** @param {unknown} parsed @param {RegExp} field */
 function refusedAt(parsed: unknown, field: RegExp) {
   assert.throws(() => parse(parsed), (error) => error instanceof MessagingConfigRefusal && field.test(error.field), `expected a refusal naming ${field}`);
 }
@@ -64,7 +61,6 @@ describe("absent reads as OFF, and a present key reads ON (the pair is the posit
 
 describe("milestones is opt-in, a path inside the project (a11ign/a11ign#3414)", () => {
   const ROOT = join(scratch, "milestone-root");
-  /** @param {unknown} milestones */
   const parseIn = (milestones: unknown) => parseMessagingConfig(documentWith({ ...VALID, ...(milestones === undefined ? {} : { milestones }) }), { home: HOME, root: ROOT });
 
   test("no `milestones` key reads back null: the source is opt-in and constructs nothing", () => {
@@ -79,7 +75,7 @@ describe("milestones is opt-in, a path inside the project (a11ign/a11ign#3414)",
     assert.equal(config.milestones, join(ROOT, ".agent-org/chairman-milestones.json"));
   });
 
-  for (const [name, value] of /** @type {[string, unknown][]} */ ([["a path that climbs out of the project", "../elsewhere.json"], ["an absolute path outside it", "/etc/passwd"], ["an empty string", ""], ["null", null], ["a number", 3]])) {
+  for (const [name, value] of ([["a path that climbs out of the project", "../elsewhere.json"], ["an absolute path outside it", "/etc/passwd"], ["an empty string", ""], ["null", null], ["a number", 3]] as [string, unknown][])) {
     test(`${name} is refused, naming messaging.milestones`, () => refusedAt(documentWith({ ...VALID, milestones: value }), /^messaging\.milestones$/));
   }
 });
@@ -123,7 +119,7 @@ describe("summary is opt-in, its field defaults and its refusals (done-when 4)",
 });
 
 describe("a malformed key is a NAMED refusal, never a silent off", () => {
-  for (const [label, messaging] of /** @type {[string, unknown][]} */ ([["null", null], ["a string", "on"], ["an array", []], ["true", true]])) {
+  for (const [label, messaging] of ([["null", null], ["a string", "on"], ["an array", []], ["true", true]] as [string, unknown][])) {
     test(`the key being ${label}`, () => refusedAt(documentWith(messaging), /^messaging$/));
   }
 
@@ -143,7 +139,7 @@ describe("a malformed key is a NAMED refusal, never a silent off", () => {
 });
 
 describe("reading the file, and messaging:check", () => {
-  /** @param {string} name @param {unknown} document @returns {string} a project root holding it */
+  /** A project root holding `document`. */
   function projectRoot(name: string, document: unknown): string {
     const root = join(scratch, name);
     mkdirSync(join(root, ".agent-org"), { recursive: true });
@@ -227,7 +223,7 @@ describe("reading the file, and messaging:check", () => {
 
   test("check makes no network call", () => {
     const real = globalThis.fetch;
-    globalThis.fetch = /** @type {typeof fetch} */ (() => { throw new Error("messaging:check reached the network"); });
+    globalThis.fetch = (() => { throw new Error("messaging:check reached the network"); }) as typeof fetch;
     try {
       assert.equal(runMessagingCheck({ root: projectRoot("check-net", documentWith(VALID)), home: HOME }).exitCode, 0);
     } finally {

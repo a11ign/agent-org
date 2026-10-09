@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** Exit codes are the contract: 0 nothing needs attention, 1 something does, 2 could not ask. */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
@@ -678,7 +678,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 
 /** @returns {{ weekly: boolean }} */
 function parseArgs(): { weekly: boolean; } {
-  refuseUnknownFlags(["--weekly"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/org-watch.ts" });
+  refuseUnknownFlags(["--weekly"], { entry: import.meta.url, command: "node packages/agent-org/src/org-watch.ts" });
   return { weekly: process.argv.includes("--weekly") };
 }
 

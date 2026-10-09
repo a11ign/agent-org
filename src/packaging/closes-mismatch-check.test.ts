@@ -1,7 +1,7 @@
 // no-token: lookupClosingIssues
 // #827. Every fact this file feeds a decider is INJECTED, and the three CLI tests run the script against a fake
 // `gh` first on PATH that answers from files, so nothing here reaches GitHub. The closure walk still finds
-// `lookups.mjs`'s `gh` through `closes-mismatch-check.ts`'s import; reaching it live is not what is tested.
+// `lookups.ts`'s `gh` through `closes-mismatch-check.ts`'s import; reaching it live is not what is tested.
 /**
  * #549: a PR body can declare `Closes: none` and still close two issues, and nothing compared what the
  * author DECLARED against what GitHub RESOLVED. Measured live, same day: #545 declared `none` and closed
@@ -11,7 +11,6 @@
  * INJECTED `resolved` array rather than a live `closingIssuesReferences` query -- the same "inject the
  * fact, never fetch it" shape every other `merge-guard/*-rule.test.ts` file already uses.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -256,7 +255,7 @@ esac
 `);
   chmodSync(fake, 0o755);
   // Resolved from this file, not the working directory: the tool sits at `packages/agent-org/` in the project and at the root of its own checkout.
-  const result = spawnSync(process.execPath, [...TSX_IMPORT, CHECK_CLI, "2810"], {
+  const result = spawnSync(process.execPath, [CHECK_CLI, "2810"], {
     encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PR_BODY: body },
   });
   return { status: result.status, out: result.stdout, // null when the check never asked: the sibling query is skipped unless this PR's own facts already fit

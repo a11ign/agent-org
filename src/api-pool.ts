@@ -6,7 +6,7 @@
 // (#2003) is not a style choice. `work-gate.ts` needs the identical reading on its refusal path, and its
 // own header states the constraint that forbids importing the owner: **it must run before any `pnpm install` or
 // build**. `queue-table.ts` reaches `queue-stalled.ts`, `newest-check-run.ts`, `pr-hold-state.ts`,
-// `repo-identity.mjs` and `git-env.mjs`; the gate runs 720 times a day and would pay that graph on every
+// `repo-identity.mjs` and `git-env.ts`; the gate runs 720 times a day and would pay that graph on every
 // one of them to use a function it calls only when already refusing. `region-paths.ts`'s own header
 // records this exact trade being made before, for the same reason.
 //

@@ -22,7 +22,7 @@ import { COMPACT_THRESHOLD_TOKENS, deliver as settlingDeliver, spawnableRole, sp
   from "../wake.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
   from "../arm-pr.ts";
-import { laneReason, runnerReason } from "../row-claim/runner-rule.mjs";
+import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";

@@ -13,7 +13,6 @@
  *
  * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.ts`, which would charge it with a `history` requirement it has no use for.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { toolNodeModules } from "./tool-node-modules.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,7 +23,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
-const NODE = "/usr/bin/node";
+const NODE = "%h/.local/bin/node";
 const CHILD_TIMEOUT_MS = 30_000;
 const REFUSED = 2;
 
@@ -73,7 +72,7 @@ function scratchHost(): Scratch {
   return { home, project, hostFile };
 }
 
-const { localImports } = await import("../lib/local-import-closure.mjs");
+const { localImports } = await import("../lib/local-import-closure.ts");
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -100,7 +99,7 @@ function renderedToolForm(name: string, host: Scratch, tool: string): string {
   // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
   const script = join(dirname(host.project), "render.mjs");
   writeFileSync(script, RENDER);
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, script, ...modules, name, host.hostFile, host.project, tool],
+  const run = spawnSync(process.execPath, [script, ...modules, name, host.hostFile, host.project, tool],
     { env: { AGENT_ORG_HOST: host.hostFile }, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   assert.equal(run.status, 0, `rendering ${name} in tool form failed: ${run.stderr}`);
   return run.stdout;
@@ -123,7 +122,7 @@ function environmentOf(unit: string, home: string): Record<string, string> {
   return env;
 }
 
-/** Starts the unit's `ExecStart` as a child from the unit's `WorkingDirectory` with the unit's environment. `/usr/bin/node` is the unit's; it is run as the node of this process. */
+/** Starts the unit's `ExecStart` as a child from the unit's `WorkingDirectory` with the unit's environment. `%h/.local/bin/node` is the unit's; it is run as the node of this process. */
 function startUnit(unit: string, home: string): Started {
   const [workingDirectory] = directiveOf(unit, "WorkingDirectory");
   const [execStart, ...extra] = directiveOf(unit, "ExecStart");
@@ -137,11 +136,11 @@ function startUnit(unit: string, home: string): Started {
 
 /** What each unit does when it starts for a project with messaging off: the next real step after the declaration is read. */
 const UNITS = [
-  { name: "chairman-listen", entry: "src/messaging/listen.mjs", stdout: /messaging: OFF/ },
-  { name: "chairman-watch", entry: "src/messaging/watch.mjs", stdout: /^$/ },
+  { name: "chairman-listen", entry: "src/messaging/listen.ts", stdout: /messaging: OFF/ },
+  { name: "chairman-watch", entry: "src/messaging/watch.ts", stdout: /^$/ },
 ];
 
-/** The tool's own files this entry imports, so a copy of the tool can run it (the files; `preFixTool` adds `node_modules` for the loader). */
+/** The tool's own files this entry imports, so a copy of the tool can run it (the files; `preFixTool` adds `node_modules`). */
 function closureOf(entry: string): Set<string> {
   const files = new Set<string>();
   const visit = (file: string): void => {
@@ -161,7 +160,7 @@ function preFixTool(entry: string): string {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(file, target);
   }
-  // The unit's `--import tsx` resolves from its WorkingDirectory, so the copy is given what a checkout of the tool has: its `package.json` and `node_modules`.
+  // The unit's program resolves its packages from its WorkingDirectory, so the copy is given what a checkout of the tool has: its `package.json` and `node_modules`.
   writeFileSync(join(tool, "package.json"), '{"type":"module"}');
   symlinkSync(toolNodeModules(), join(tool, "node_modules"));
   const copied = join(tool, entry);

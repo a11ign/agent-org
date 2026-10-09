@@ -36,14 +36,14 @@ import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync,
   renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { LATEST } from "./lib/release-tag.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { LATEST } from "./lib/release-tag.ts";
 import { installPendingFindings } from "./update-tool.ts";
-import { localImports, stripComments } from "./lib/local-import-closure.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.mjs";
+import { localImports, stripComments } from "./lib/local-import-closure.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.ts";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.ts";
-import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
+import { COMMANDS, FIXED_ARGS } from "./commands.ts";
 import { pnpmDrift } from "./host-pnpm.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
@@ -66,7 +66,7 @@ export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
  * beside the project it serves only when `$AGENT_ORG_HOST` says so (#2879).
  */
 export const REPO_ROOT = HOME_CHECKOUT;
-// The tool's own `src/`, where `commands.mjs`'s programs live: known from where this module runs, never from the project's layout.
+// The tool's own `src/`, where `commands.ts`'s programs live: known from where this module runs, never from the project's layout.
 const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -99,7 +99,7 @@ export const TOOL_ENTRIES = Object.freeze([
   "agent-org",
   // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
-  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.mjs`, which decides whether a head has moved; the timer is only a clock.
+  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.ts`, which decides whether a head has moved; the timer is only a clock.
   "trace-publish.service.in", "trace-publish.timer.in",
   // a11ign/a11ign#3849: the /tmp fixture janitor's pair, and the user-level tmpfiles rule that ages the private tmp root out (not a unit: `installTmpfiles` copies it).
   "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
@@ -113,7 +113,7 @@ export const TOOL_ENTRIES = Object.freeze([
  * TEMPLATES THAT SHIP ONLY FOR A PROJECT THAT ASKS FOR THEM (#2901; docs/messaging.md decision 1, "Optional and off by default"): template -> the
  * top-level key of `.agent-org/project.json` whose PRESENCE turns it on. Absent, the unit is not in `shippedUnits`, so `host:check` neither lists
  * nor misses it, `host:install` does not write it, and an installed copy is an orphan that the install removes -- deleting the key is the off switch.
- * Presence only: whether the key is VALID is `messaging/config.mjs`'s refusal, and an invalid one still installs the clock, which then refuses.
+ * Presence only: whether the key is VALID is `messaging/config.ts`'s refusal, and an invalid one still installs the clock, which then refuses.
  */
 export const OPTIONAL_UNITS = (Object.freeze({
   "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
@@ -246,7 +246,7 @@ function beforeTicksOf(host: HostConfig, read: typeof readFileSync): BeforeTick[
   });
 }
 
-/** How a `beforeTick` names one of the TOOL's own commands (`bin.mjs`'s table) instead of a program of the project's. */
+/** How a `beforeTick` names one of the TOOL's own commands (`bin.ts`'s table) instead of a program of the project's. */
 const TOOL_COMMAND_WORD = "agent-org";
 
 /**
@@ -262,10 +262,10 @@ const namesToolCommand = (command: string): boolean => commandWords(command)[0] 
 
 /**
  * A `beforeTick` AS THE UNIT RUNS IT. One that names a tool command (`agent-org primary:update`) runs that command's program from the
- * tool checkout, through the same table `bin.mjs` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
+ * tool checkout, through the same table `bin.ts` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
  * is `agent-org primary:update` from the copy its lockfile pins, a second version of the tool running on every tick (#3464). Any other
  * command is the project's own and is run as written. An unknown tool command REFUSES, since a unit that quietly ran nothing would leave
- * the checkout it was declared to move stale. The loader is the tool's own, by absolute path: the command runs in the PROJECT's checkout (`env -C`), which holds no `tsx`.
+ * the checkout it was declared to move stale. The program is named by absolute path, and `node` is the host Node that strips types (#4388), because the command runs in the PROJECT's checkout (`env -C`), not the tool's.
  * @param {string} tool @param {string} command
  */
 function beforeTickCommand(tool: string, command: string) {
@@ -274,14 +274,14 @@ function beforeTickCommand(tool: string, command: string) {
   if (!Object.hasOwn(COMMANDS, name)) {
     throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
   }
-  return ["/usr/bin/node", "--import", `${tool}/node_modules/tsx/dist/loader.mjs`, `${tool}/src/${(COMMANDS as Record<string, string>)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
+  return ["%h/.local/bin/node", `${tool}/src/${(COMMANDS as Record<string, string>)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
 }
 
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
 const WORK_TICK_TEMPLATE = "work-tick.service.in";
 
 /** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `pnpm run primary:update`. */
-export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/update-tool.ts";
+export const TOOL_UPDATE_EXEC = "%h/.local/bin/node --import=./src/lib/crash-exit.ts src/update-tool.ts";
 
 /**
  * DECISION 3'S FORM OF THE `work-tick` UNIT: exactly three lines change, and nothing else in the text does. `WorkingDirectory` becomes
@@ -308,7 +308,7 @@ export function workTickToolForm(rendered: string, tool: string, beforeTicks: Be
   return [
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
     [/^ExecStartPre=.*$/m, steps.join("\n")],
-    [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs --import tsx packages\/agent-org\/src\/work-tick\.ts$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts"],
+    [/^ExecStart=%h\/\.local\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.ts packages\/agent-org\/src\/work-tick\.ts$/m, "ExecStart=%h/.local/bin/node --import=./src/lib/crash-exit.ts src/work-tick.ts"],
   ].reduce((text, [anchor, line]) => replaceOnce(text, (anchor as RegExp), (line as string)), rendered);
 }
 
@@ -353,7 +353,7 @@ export function readProjectRepo(checkout: string, read: typeof readFileSync): st
  */
 const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, string]>>> = Object.freeze({
   "worktree-prune.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=/usr/bin/node --import tsx src/prune-worktrees.ts --apply $CHECKOUT"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=%h/.local/bin/node src/prune-worktrees.ts --apply $CHECKOUT"],
   ],
   "board-report.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
@@ -366,38 +366,38 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   ],
   // THE /TMP FIXTURE JANITOR (a11ign/a11ign#3849): run from the tool's checkout, like the prune above it.
   "tmp-prune.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "ExecStart=/usr/bin/node --import tsx src/prune-tmp.ts --apply --fixtures-only"],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "ExecStart=%h/.local/bin/node src/prune-tmp.ts --apply --fixtures-only"],
   ],
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/publish.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/publish\.ts$/m, "ExecStart=%h/.local/bin/node src/trace/publish.ts"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
-  // (`messaging:listen` -> `src/messaging/listen.mjs`, `messaging:watch` -> `src/messaging/watch.mjs`), run directly, which is the form `worktree-prune` has.
+  // (`messaging:listen` -> `src/messaging/listen.ts`, `messaging:watch` -> `src/messaging/watch.ts`), run directly, which is the form `worktree-prune` has.
   "chairman-listen.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/listen.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=%h/.local/bin/node src/messaging/listen.ts"],
   ],
   "chairman-watch.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/watch.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=%h/.local/bin/node src/messaging/watch.ts"],
   ],
   // THE OTEL RECEIVER (a11ign/a11ign#4071): run from the tool's checkout, like the trace pages' script.
   "otel-receiver.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/otel-receiver.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.ts$/m, "ExecStart=%h/.local/bin/node src/trace/otel-receiver.ts"],
   ],
   // THE DRAINED KERNEL REBOOT (a11ign/a11ign#4053): run from the tool's checkout, like the receiver above.
   "kernel-reboot.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/host-kernel\.ts --reboot$/m, "ExecStart=/usr/bin/node --import tsx src/host-kernel.ts --reboot"],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/host-kernel\.ts --reboot$/m, "ExecStart=%h/.local/bin/node src/host-kernel.ts --reboot"],
   ],
   "shadow-window.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/shadow-window\.ts /m, "ExecStart=/usr/bin/node --import tsx src/shadow-window.ts "],
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/shadow-window\.ts /m, "ExecStart=%h/.local/bin/node src/shadow-window.ts "],
   ],
 });
 
 /**
  * THE UNIT AS IT IS INSTALLED WHEN `host.json` NAMES A `tool`: the template's rendering with decision 3's lines changed. Every service
  * runs from the tool's checkout and is told where the host's declaration is, because the tool resolves its project from that and
- * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node --import tsx src/work-gate.ts` from the checkout, with no `AGENT_ORG_HOST`, died on
+ * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node src/work-gate.ts` from the checkout, with no `AGENT_ORG_HOST`, died on
  * `<home>/.agent-org/project.json`). A template this does not know is returned as it rendered: a timer names no path of its own.
  * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[], repo?: string | null }} where
  */
@@ -658,7 +658,7 @@ export function entriesFromCommand(command: string, { repoRoot = REPO_ROOT, scri
   return programCandidates(command, { repoRoot, scripts, cwd }).filter((entry) => exists(entry));
 }
 
-/** The first argument node would run as a script: past its flags, and past the VALUE of a spaced `--import` (`--import tsx`), which is not a path. */
+/** The first argument node would run as a script: past its flags, and past the VALUE of a spaced `--import` (`--import <module>`), which is not a path. */
 function scriptOfNode(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--import") i += 1;
@@ -680,7 +680,7 @@ function scriptOfNode(args: string[]): string | undefined {
  * EXTRACTED RATHER THAN RETYPED, and that is the point: a second copy of this resolution would be a
  * second answer to "what does this unit run", and `regionRefusalReason`'s own header already records
  * what a hand-written second reader cost when it disagreed with the shared one in BOTH directions.
- * A unit run from the TOOL'S checkout (`toolForm`, #2974) starts `node --import tsx src/work-tick.ts`, which is relative to the tool and not to the
+ * A unit run from the TOOL'S checkout (`toolForm`, #2974) starts `node src/work-tick.ts`, which is relative to the tool and not to the
  * project, so a `cwd` adds that base as a SECOND candidate; the caller's `exists` keeps the real one.
  * @param {string} command
  * @param {{ repoRoot?: string, scripts?: Record<string, string>, cwd?: string }} [deps]
@@ -695,7 +695,7 @@ export function programCandidates(command: string, { repoRoot = REPO_ROOT,
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      // node's own leading options (`--import=<preload>`, #3038; `--import tsx`, ADR 0043 decision 8) are not the script; `bash -c` stays unread, as `isPath` says.
+      // node's own leading options (`--import=<preload>`, #3038) are not the script; `bash -c` stays unread, as `isPath` says.
       const script = tool === "node" ? scriptOfNode(argv.slice(1)) : argv[1];
       // The project's scripts run the tool through its one bin (`agent-org worktrees:prune`, #2975), which is the table's program, not a path.
       const command = agentOrgCommand([tool, ...argv.slice(1)]);
@@ -1823,7 +1823,7 @@ function zshenvNote(unit: string, why: string): Finding {
 /**
  * #3533: WHICH `agent-org` RELEASE EVERY RUNNER RUNS, read from the machine: the tool checkout, each worktree's resolved copy and the last `ci.yml` run, against the newest release tag of the
  * tool's remote. `null` is a host that declares no tool (nothing to compare). It is NOT part of `--json`: that is the gate's instrument and the org-health tick reads the same comparison itself
- * (`readToolAgreement`), so a finding here would wake a session twice for one fact. Both call `lib/tool-version-agreement.mjs`, so the two print one reading.
+ * (`readToolAgreement`), so a finding here would wake a session twice for one fact. Both call `lib/tool-version-agreement.ts`, so the two print one reading.
  * @param {{ host?: HostConfig, now?: number, facts?: ReturnType<typeof readFacts> }} [deps] @returns {{ now: number, result: ReturnType<typeof agreement> } | null}
  */
 export function readToolVersionAgreement({ host = homeHostConfig(), now = Date.now(), facts }: { host?: HostConfig; now?: number; facts?: ReturnType<typeof readFacts>; } = {}): { now: number; result: ReturnType<typeof agreement>; } | null {
@@ -2971,7 +2971,7 @@ function remedy(drift: Finding[]): string {
  * THE GATE SPAWNS THIS RATHER THAN IMPORTING IT, and the reason is measured rather than stylistic. A
  * direct `import { hostUnitDrift }` in `work-gate.ts` costs nothing at load -- +1 file on a closure of
  * 21, 39.3ms against 39.4ms -- but it drags this file's `git log --all` (`addedOnSomeRef`) into the
- * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.mjs`, which most of the
+ * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.ts`, which most of the
  * packaging suite reaches. MEASURED with `deriveClosureRequirements` over
  * `packages/lab/src/packaging/*.test.ts`: the files deriving a `history` requirement go from **4 to 28**.
  * That is a standing `History: full` tax on 24 test files that will never call this code, levied on

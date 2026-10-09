@@ -31,7 +31,7 @@ import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer, isLeadSeat, FYI_STALE_MS } from "./wake.ts";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
@@ -51,7 +51,7 @@ import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, recor
  */
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 
-/** herdr, one call, as `prompt:session` runs it. Exported so `converse.mjs` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
+/** herdr, one call, as `prompt:session` runs it. Exported so `converse.ts` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
 export const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
 /**
@@ -422,7 +422,7 @@ export const NEEDS_DECISION_FLAG = "--needs-decision";
 export type Stance = "decision" | "fyi" | "undeclared" | "order";
 /**
  * `ORDER` (#3562) IS FOR A PROGRAMMATIC CALLER ONLY, with no flag: a real order that asks for no answer. It wakes its seat as a decision does, but it is
- * not exempt from the deep-queue refusal, which `converse.mjs` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
+ * not exempt from the deep-queue refusal, which `converse.ts` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
  * author who types no flag is UNDECLARED, which reads as an FYI.
  * @type {{DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order"}}
  */
@@ -681,7 +681,7 @@ function main() {
   // definition both use. Accepting it is what lets a test, or an operator on a second org, point both
   // halves of the queue at the same place.
   refuseUnknownFlags(["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/prompt-session.ts" });
+    entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.ts" });
   // NO FLAG IS PART OF THE PROMPT -- `parseStance` strips them, and its comment carries why.
   const parsed = parseStance(process.argv.slice(2));
   if ("refusal" in parsed && parsed.refusal) {

@@ -16,7 +16,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { armabilityOf } from "./pr-hold-state.ts";
 import { authorshipVerdict } from "./lane-ownership.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
@@ -1081,7 +1081,7 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
 }
 
 function main() {
-  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/arm-pr.ts" });
+  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.ts" });
   process.exitCode = runArmPr({ argv: process.argv, env: process.env });
 }
 

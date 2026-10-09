@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { PROVENANCE } from "./answers.mjs";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { attribution, EXIT, createRecorder, main, quoted } from "./record.mjs";
-import { defaultLedgerPath } from "./state.mjs";
+import { PROVENANCE } from "./answers.ts";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { attribution, EXIT, createRecorder, main, quoted } from "./record.ts";
+import { defaultLedgerPath } from "./state.ts";
 
 const NOW = Date.parse("2026-10-04T15:00:00Z");
 const REPO = "a11ign/a11ign";
@@ -34,16 +34,16 @@ const sha256Of = (text: string): string => createHash("sha256").update(text, "ut
 /** The check case 1 makes. @param {string} body @returns {boolean} true when the comment carries the line only the listener may write */
 const speaksAsChairman = (body: string): boolean => body.includes(PROVENANCE) || /Chairman answered via Telegram/i.test(body);
 
-/** @returns {import("./record.mjs").Ledger} an empty ledger in its own file, with the clock at NOW */
-function freshLedger(): import("./record.mjs").Ledger {
+/** @returns {import("./record.ts").Ledger} an empty ledger in its own file, with the clock at NOW */
+function freshLedger(): import("./record.ts").Ledger {
   return createLedger({ path: join(scratch, `ledger-${nextCase += 1}.jsonl`), now: () => NOW });
 }
 
 /**
- * What `inbound.mjs` writes for a message (the receipt, with a hash and no words) and `converse.mjs` after it (the ref).
- * @param {import("./record.mjs").Ledger} ledger @param {{ref?: string, updateId?: number, words?: string, sha256?: string | null}} [message]
+ * What `inbound.ts` writes for a message (the receipt, with a hash and no words) and `converse.ts` after it (the ref).
+ * @param {import("./record.ts").Ledger} ledger @param {{ref?: string, updateId?: number, words?: string, sha256?: string | null}} [message]
  */
-function takeIn(ledger: import("./record.mjs").Ledger, { ref = REF, updateId = 11, words = WORDS, sha256 = sha256Of(words) }: { ref?: string; updateId?: number; words?: string; sha256?: string | null; } = {}) {
+function takeIn(ledger: import("./record.ts").Ledger, { ref = REF, updateId = 11, words = WORDS, sha256 = sha256Of(words) }: { ref?: string; updateId?: number; words?: string; sha256?: string | null; } = {}) {
   ledger.append({ direction: "in", updateId, verdict: "forward", reason: null, kind: "message", userId: 7, chatId: 7, chatType: "private", length: words.length, sha256 });
   ledger.append({ direction: "in", origin: "converse", updateId, messageRef: ref, verdict: "queued", handoff: "handoff/liaison/x", ackRef: "46", error: null });
 }
@@ -237,9 +237,9 @@ describe("chairman:record as a command", () => {
     assert.deepEqual(result.lines().map((line) => line.step), ["failed"]);
   });
 
-  test("record.mjs never names the chairman's provenance line outside a comment and never reaches GitHub but through the writer it is handed", () => {
-    const source = readFileSync(new URL("./record.mjs", import.meta.url), "utf8");
-    assert.equal(/PROVENANCE|Chairman answered via Telegram/.test(source.replace(/^\/\/.*$/gm, "")), false, "record.mjs never names the chairman's provenance line outside a comment");
+  test("record.ts never names the chairman's provenance line outside a comment and never reaches GitHub but through the writer it is handed", () => {
+    const source = readFileSync(new URL("./record.ts", import.meta.url), "utf8");
+    assert.equal(/PROVENANCE|Chairman answered via Telegram/.test(source.replace(/^\/\/.*$/gm, "")), false, "record.ts never names the chairman's provenance line outside a comment");
     assert.equal(/execFile|child_process|fetch\(/.test(source), false);
   });
 });

@@ -1,6 +1,6 @@
 /**
  * RULE: DOES THE ROW BEING CLAIMED CARRY ITS OWN OPEN `blockedBy` EDGE? -- #1886. See
- * `packages/agent-org/src/row-claim/blocked-by-edge-rule.mjs` for the full account: `row-claim.ts` never
+ * `packages/agent-org/src/row-claim/blocked-by-edge-rule.ts` for the full account: `row-claim.ts` never
  * imported `waiting-condition.ts` at all, so a row the gate correctly shelves (an open `blockedBy` edge)
  * could still be claimed directly by anyone who found it by label instead of through the gate -- #1852
  * carried an open `blockedBy` on #1878/#1883 while mislabelled `ready`, and neither B2 nor B4 has anything
@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   blockedByEdgeReason, lookupBlockedByEdge,
-} from "../row-claim/blocked-by-edge-rule.mjs";
+} from "../row-claim/blocked-by-edge-rule.ts";
 
 // --- blockedByEdgeReason: THE VERDICT, PURE ---
 

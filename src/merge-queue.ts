@@ -21,8 +21,8 @@
  *
  * So the queue is asked for, never assembled:
  *
- *   node --import tsx packages/agent-org/src/merge-queue.ts            # what is mergeable RIGHT NOW, and why each other PR is not
- *   node --import tsx packages/agent-org/src/merge-queue.ts --merge N  # merge PR N through `gh pr merge`, or refuse with the reason
+ *   node packages/agent-org/src/merge-queue.ts            # what is mergeable RIGHT NOW, and why each other PR is not
+ *   node packages/agent-org/src/merge-queue.ts --merge N  # merge PR N through `gh pr merge`, or refuse with the reason
  *
  * It never runs `git merge` and never pushes. Landing a PR is `gh pr merge`, which cannot merge a branch
  * that has no PR, and refuses one whose checks are not green.
@@ -45,10 +45,10 @@ import { appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { gitCommonDir } from "./merge-guard.ts";
 import { REPO } from "./project-identity.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { newestPerName } from "./newest-check-run.ts";
 
 /** The exit codes the header documents, one name each (#1482). */
@@ -309,6 +309,6 @@ export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, log
 
 function main() {
   // Guarded per #164: reads --merge; --json/--state go to gh.
-  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/merge-queue.ts" });
+  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/merge-queue.ts" });
   process.exitCode = runMergeQueue({ argv: process.argv });
 }

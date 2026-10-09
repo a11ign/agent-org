@@ -26,7 +26,7 @@
 //
 // #1408. `lookupArmedPrStatus` is called here only with an injected `run`, `requiredContexts` and `checkRuns`, and
 // `racesAnArmedMerge` is pure, so nothing in this file calls `gh`. The closure walk reaches it through `merge-guard.ts`'s
-// module graph (`lookups.mjs`) rather than through anything this file runs -- #1275's census shim shows that: 0 `gh`
+// module graph (`lookups.ts`) rather than through anything this file runs -- #1275's census shim shows that: 0 `gh`
 // calls from this file, against 1 before.
 import { test } from "node:test";
 import assert from "node:assert/strict";

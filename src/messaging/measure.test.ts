@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { EXIT, main } from "./measure.ts";
-import { defaultLedgerPath } from "./state.mjs";
+import { defaultLedgerPath } from "./state.ts";
 
 const NOW = Date.parse("2026-10-04T12:00:00Z");
 const scratch = mkdtempSync(join(tmpdir(), "messaging-measure-"));

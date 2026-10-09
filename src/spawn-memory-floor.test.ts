@@ -10,7 +10,6 @@
  * THE READING IS NEVER THE HOST'S: every test hands the gate a fixture, so a host that is short of memory today cannot
  * turn one of them red -- the property a test of a memory gate most needs.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
@@ -21,7 +20,7 @@ import { join } from "node:path";
 import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
 } from "./spawn-memory-floor.ts";
-import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
+import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.ts";
 import { deliver } from "./wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
@@ -250,7 +249,7 @@ function tick(dir: string, meminfoText: string | null) {
   } else {
     env[MEMINFO_ENV] = join(dir, "no-such-meminfo");
   }
-  const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${join(dir, "wts")}`],
+  const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${join(dir, "wts")}`],
     { input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8", env });
   return { ran, calls: existsSync(log) ? readFileSync(log, "utf8") : "" };
 }

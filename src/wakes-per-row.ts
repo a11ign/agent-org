@@ -535,7 +535,7 @@ function gh(args: string[]): string {
  * @returns {Promise<PullRequest[]>}
  */
 export async function readMergedPulls(repo: string, window: { from: number; to: number; }, ghJson: (args: string[]) => any = (args) => JSON.parse(gh(["api", ...args]))): Promise<PullRequest[]> {
-  const { listMergedPulls } = await import("./trace/trace.mjs"); // at the call, not at load: `trace` and the modules it loads import this one, and a static import back is a cycle that crashed `aggregate.test.mjs` and `map.test.ts` (`NOT_DERIVABLE` read before it was initialised)
+  const { listMergedPulls } = await import("./trace/trace.ts"); // at the call, not at load: `trace` and the modules it loads import this one, and a static import back is a cycle that crashed `aggregate.test.mjs` and `map.test.ts` (`NOT_DERIVABLE` read before it was initialised)
   try {
     return listMergedPulls({ repo, window, gh: ghJson });
   } catch (cause) {

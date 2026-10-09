@@ -1,5 +1,5 @@
 /**
- * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `packages/agent-org/src/merge-guard/lookups.mjs`.
+ * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `packages/agent-org/src/merge-guard/lookups.ts`.
  * `null` on failure, never an empty answer -- most of these need a live `gh`/`git` to exercise fully, so
  * only the offline-testable parsing is driven here; each rule's own test covers what the LOOKUP feeds it.
  */
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lookupBranchTip, lookup, lookupRequiredContexts } from "../merge-guard/lookups.mjs";
+import { lookupBranchTip, lookup, lookupRequiredContexts } from "../merge-guard/lookups.ts";
 
 test("lookupBranchTip reads the real tip of a real branch in this repo", () => {
   const tip = lookupBranchTip("main");

@@ -1,4 +1,4 @@
-// no-token: prepareContext -- the orders port and the GitHub writer are injected fixtures and nothing here calls it; `answers.mjs` only carries it in through the `converse.mjs` import (#3581)
+// no-token: prepareContext -- the orders port and the GitHub writer are injected fixtures and nothing here calls it; `answers.ts` only carries it in through the `converse.ts` import (#3581)
 // @ts-check
 // ANSWERS ON THE ROW (a11ign/a11ign#2908 done-whens 1 to 5), over a real ledger file, the real `createInbound` (so every accepted value is
 // minted, never built) and a fixture GitHub writer that records each call. Nothing here reaches a network.
@@ -12,11 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.mjs";
-import { actionData, createInbound, parseButtonData } from "./inbound.mjs";
-import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.mjs";
-import { FORME_STEP, verifyApproval } from "./session-queue.mjs";
-import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.mjs";
+import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.ts";
+import { actionData, createInbound, parseButtonData } from "./inbound.ts";
+import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.ts";
+import { FORME_STEP, verifyApproval } from "./session-queue.ts";
+import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.ts";
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The label the done-when names. In production the wiring builds it from the vocabulary's answer prefix; here it is spelled out so the order is pinned against the literal. */
@@ -174,7 +174,7 @@ describe("a button press (done-whens 1 and 4)", () => {
     assert.match(String(h.lines().find((line) => line.step === "failed")?.error), /set-answer failed/);
   });
 
-  test("an option the brief does not offer writes nothing; data that is not ours never gets this far (inbound.mjs drops it)", async () => {
+  test("an option the brief does not offer writes nothing; data that is not ours never gets this far (inbound.ts drops it)", async () => {
     const h = harness();
     const result = await h.hear(press(1, { data: buttonData("Z") }));
     assert.equal(/** @type {any} */ (result).reason, "option-not-offered");

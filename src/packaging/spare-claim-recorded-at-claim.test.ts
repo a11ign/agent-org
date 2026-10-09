@@ -8,7 +8,6 @@
  * is exactly what a deleted `recordHeldRow` goes around. The `gh` is a small stateful stub, so a claim LANDS here (the label it writes is the
  * label the next read sees) and a release is the label going away, which is all `instanceNow` can see of one.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, copyFileSync, existsSync } from "node:fs";
@@ -16,7 +15,7 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { sparePathsFrom } from "../wake.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
@@ -88,7 +87,7 @@ function makeFixture(): Fixture {
 const teardown = (fixture: Fixture) => rmSync(fixture.dir, { recursive: true, force: true, maxRetries: 5 });
 
 function claim(fixture: Fixture, session: string, row: number, command = "claim") {
-  return spawnSync(process.execPath, [...TSX_IMPORT, fixture.entry, command, String(row), `--session=${session}`], {
+  return spawnSync(process.execPath, [fixture.entry, command, String(row), `--session=${session}`], {
     encoding: "utf8",
     env: { ...sandboxGitEnv(), ...fixture.env, HOME: fixture.dir, GH_STATE: join(fixture.dir, "gh-state.json"),
       PATH: `${fixture.dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#4387 drives the CLI" },

@@ -5,7 +5,7 @@
 // needed.
 //
 // This started life inside `row-reachability.ts`, and moving it here (#462, B4) is not a style choice:
-// `row-claim/file-overlap-rule.mjs` needs the identical extraction -- a row's Region must mean the same
+// `row-claim/file-overlap-rule.ts` needs the identical extraction -- a row's Region must mean the same
 // set of files to both tools, or the fact-stated-twice shape recurs with a second regex that can disagree
 // about what counts as a path -- but `row-reachability.ts` itself imports
 // `@a11ign/screenreader-fleet/cli-flags` (a package specifier, fine for its own CLI parsing, fatal before
@@ -16,14 +16,14 @@
 // `reportReachability`) precisely so importing it would not become the default; reaching into it for one
 // regex would have quietly defeated that.
 
-// The one import, and it stays leaf-shaped: `git-env.mjs` imports nothing itself, so `row-claim.ts`'s
+// The one import, and it stays leaf-shaped: `git-env.ts` imports nothing itself, so `row-claim.ts`'s
 // pre-install import graph gains no package specifier. Every git spawn in this repo scrubs `GIT_*`
 // (`git-spawn-classification.test.ts`), including a read-only one: an inherited `GIT_DIR` would have this
 // module list another repository's root files and report on them as though they were ours.
 import { execFileSync } from "node:child_process";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 /** @type {Map<string, string[]>} one answer per checkout: the question is about a repository, so the answer is keyed by it. */
 const topLevelCache: Map<string, string[]> = new Map();
@@ -85,7 +85,7 @@ export function pathInProse() {
  * #1186: DIRECTORY ENTRIES IN A REGION, AND HOW MANY FILES EACH ONE RESERVES.
  *
  * A `/`-terminated entry is a DECLARATION OF EVERY FILE BENEATH IT -- `regionCovers` has a directory
- * branch and B4 uses it (`file-overlap-rule.mjs:56`, per #941, deliberately). So `packages/` in a Region
+ * branch and B4 uses it (`file-overlap-rule.ts:56`, per #941, deliberately). So `packages/` in a Region
  * refuses any row whose PR touches anything under `packages/` for as long as that row is open.
  *
  * **That is not a no-op, it is a blanket reservation, and it reads as a small Region.** A one-line Region
@@ -97,7 +97,7 @@ export function pathInProse() {
  * was `region.includes(f)`, plain string equality, standing in for `regionCovers`. Both readings produce
  * the same `declaredRegionFiles` output, so nothing about that output could have separated them.
  *
- * THIS DOES NOT CHANGE B4. `file-overlap-rule.mjs` is correct and is out of this row's Region; the fix is
+ * THIS DOES NOT CHANGE B4. `file-overlap-rule.ts` is correct and is out of this row's Region; the fix is
  * at declaration time, where #1158 put the surfacing of a path the parser cannot place.
  *
  * @param {string} body a row body

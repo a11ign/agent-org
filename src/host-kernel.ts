@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "nod
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readAgents, absentSeats } from "./herdr-agents.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { stateEntryPath } from "./host-config.ts";
@@ -95,7 +95,7 @@ export function kernelNotes({ uname = realUname, bootEntries = realBootEntries }
   if (reading.state === "current") return [];
   if (reading.state === "not-read") return [{ unit: "kernel", problem: "NOT READ", detail: `${reading.why}. Whether a newer kernel is installed is unknown, not "no".` }];
   return [{ unit: "kernel", problem: `newer kernel installed, not running: ${reading.installed} over ${reading.running}`,
-    detail: "apt installed it and the host has not booted it. The drained reboot is `node --import tsx src/host-kernel.ts --reboot`: it stops the tick timer, waits for "
+    detail: "apt installed it and the host has not booted it. The drained reboot is `node src/host-kernel.ts --reboot`: it stops the tick timer, waits for "
       + "no seat mid-turn and no host job, runs `sudo systemctl reboot` (the one granted command) and reads the host back after boot." }];
 }
 
@@ -166,7 +166,7 @@ function readBackFindings(record: RebootRecord | null, bootedAt: () => number): 
   }
   if (!readBackOwed(record, booted)) return [];
   return [{ unit: "kernel", problem: "REBOOT NOT READ BACK",
-    detail: `the host rebooted at ${new Date(record.at).toISOString()} (${record.from} to ${record.to}) and nothing has posted the reading yet: \`node --import tsx src/host-kernel.ts --read-back\`.` }];
+    detail: `the host rebooted at ${new Date(record.at).toISOString()} (${record.from} to ${record.to}) and nothing has posted the reading yet: \`node src/host-kernel.ts --read-back\`.` }];
 }
 
 /** @returns {number} when this boot happened, in ms */
@@ -321,7 +321,7 @@ function valueOf(flags: string[], name: string): string | undefined {
 }
 
 async function main() {
-  refuseUnknownFlags(["--reboot", "--read-back", "--row", "--self"], { entry: import.meta.url, command: "node --import tsx src/host-kernel.ts" });
+  refuseUnknownFlags(["--reboot", "--read-back", "--row", "--self"], { entry: import.meta.url, command: "node src/host-kernel.ts" });
   const flags = process.argv.slice(2);
   const row = valueOf(flags, "--row");
   const self = valueOf(flags, "--self");

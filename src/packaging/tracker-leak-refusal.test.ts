@@ -19,7 +19,7 @@
  * first.
  *
  * Every writer wrapper -- `row-file` (`fileRefusalReason`), `pr-open`/`pr-edit` (`checkBody`),
- * `tracker-comment` (`editRefusal`) -- now calls `leakRefusalReason` (in `leak-patterns.mjs`, beside
+ * `tracker-comment` (`editRefusal`) -- now calls `leakRefusalReason` (in `leak-patterns.ts`, beside
  * `allLeaksIn`) BEFORE its own `gh` call. This file proves the wiring, not a second copy of the
  * predicate.
  *
@@ -39,7 +39,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.mjs";
+import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { fileRefusalReason, createIssue } from "../row-file.ts";
 import { checkBody } from "../pr-open.ts";

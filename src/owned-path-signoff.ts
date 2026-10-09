@@ -4,7 +4,7 @@
 /**
  * A CHANGE TO A CORPUS-INVALIDATING PATH MUST NAME THE FACTS IT DID NOT MOVE — #356.
  *
- *   node --import tsx packages/agent-org/src/owned-path-signoff.ts --diff=<file of changed paths> --body=<file with the PR body>
+ *   node packages/agent-org/src/owned-path-signoff.ts --diff=<file of changed paths> --body=<file with the PR body>
  *
  * ## Why a check and not a CODEOWNERS review
  *
@@ -46,7 +46,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { isAcceptancePath } from "./acceptance-file.ts";
 
@@ -210,7 +210,7 @@ const readOrNull = (path: string | undefined): string | null => {
 
 function main() {
   refuseUnknownFlags(["--diff=", "--body=", "--facts="],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/owned-path-signoff.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/owned-path-signoff.ts" });
   const diffText = readOrNull(flagValue(process.argv, "diff"));
   const bodyText = readOrNull(flagValue(process.argv, "body"));
   const factsPath = flagValue(process.argv, "facts");

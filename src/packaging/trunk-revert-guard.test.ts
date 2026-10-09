@@ -25,7 +25,6 @@
 //
 // Verified against the entry's own code by #827's mechanism, so if `trunkRedOrders` ever starts doing its
 // own lookups this refuses rather than trusting the comment.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -35,7 +34,7 @@ import { dirname, join } from "node:path";
 // #2154: the repository goes through the #2158 helper, so a full `/tmp` reports the HOST as the cause
 // instead of a bare `Disk quota exceeded` from inside `git`.
 import { buildSandbox } from "../lib/sandbox-exhaustion.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../trunk-revert-guard.ts";
@@ -212,7 +211,7 @@ test("ACCEPTANCE (#411, criterion 2): the incident shape is REFUSED, naming the 
   + "paths no branch commit ever touched", () => {
   let out;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
     assert.fail("expected the guard to refuse and exit non-zero");
   } catch (cause) {
     const err = cause as { status?: number, stderr?: string };
@@ -233,7 +232,7 @@ test("ACCEPTANCE (#411, criterion 2): the incident shape is REFUSED, naming the 
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (the #354 shape) is NOT refused -- the half "
   + "that decides whether this survives a week", () => {
-  const out = execFileSync("node", [...TSX_IMPORT, SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8" });
+  const out = execFileSync("node", [SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8" });
   assert.match(out, /PASS/);
   assert.match(out, /explained by a real commit/, "PASS because the deletion was explained, not because nothing was checked");
 });
@@ -243,7 +242,7 @@ test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (the #354 shape) is 
 test("trunk-revert-guard.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--merge=abc", "--bogus"],
+    execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
       { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
@@ -257,7 +256,7 @@ test("trunk-revert-guard.ts refuses an unknown flag rather than silently ignorin
 test("trunk-revert-guard.ts refuses to run without --merge", () => {
   let threw = false;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -279,7 +278,7 @@ test("C3 ACCEPTANCE, COMPOSED: the incident REFUSAL, once trunkGate fails on it,
   // and `throws` alone cannot see it. That is the whole defect in one line.
   let status: number | undefined;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, stdio: "pipe" });
+    execFileSync("node", [SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, stdio: "pipe" });
   } catch (cause) {
     status = (cause as { status?: number }).status;
   }
@@ -307,7 +306,7 @@ test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never 
   // The legitimate-deletion shape PASSES, so trunkGate's guard step succeeds and the job does not fail on this
   // step: there is no order to emit in this branch, which is the point -- the positive control for a wake is
   // "nobody is woken", not "a different, harmless order is computed".
-  const out = execFileSync("node", [...TSX_IMPORT, SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+  const out = execFileSync("node", [SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   assert.match(out, /PASS/);
 });
 

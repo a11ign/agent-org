@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { perPullRequestOrders, checklessPrOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.mjs";
+import { perPullRequestOrders, checklessPrOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.ts";
 import { decide } from "./work-gate.ts";
 
 type Order = { session: string, fallback?: string, fallbackPrompt?: string, cause: string, causeKey: string, prompt: string };

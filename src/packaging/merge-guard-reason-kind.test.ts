@@ -1,12 +1,12 @@
 /**
  * WHICH reason a refusal is, not just that there was one -- #455's split into
- * `packages/agent-org/src/merge-guard/reason-kind.mjs`. Kept as ONE list rather than distributed per rule: "the guard
+ * `packages/agent-org/src/merge-guard/reason-kind.ts`. Kept as ONE list rather than distributed per rule: "the guard
  * refused for ancestry and GitHub merged it" and "the guard refused for a missing check and GitHub merged
  * it" are different bugs, and #188's reconciliation log needs to tell them apart from a bare verdict.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 test("reasonKind classifies every reason shape the rule modules actually produce", () => {
   // A reason this cannot classify is worth knowing about immediately, not discovering later in a log

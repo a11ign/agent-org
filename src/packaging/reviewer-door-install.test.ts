@@ -19,7 +19,7 @@ const { REVIEWER_DOOR_SOURCE, driftReport, hostUnitDrift, reviewerDoorDrift, rev
 const here = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
 const INSTALLER = here("../reviewer/install-reviewer-bin.sh");
 const WAKE = here("../wake.ts");
-const PR_ORDERS = here("../work-gate/pr-orders.mjs");
+const PR_ORDERS = here("../work-gate/pr-orders.ts");
 /** The door as it stood before #3030, 7,227 bytes: the very file the reviewers were running on 2026-10-03. */
 const PRE_3030 = readFileSync(here("./fixtures/reviewer-door/pr-review-verdict.pre-3030.sh"), "utf8");
 const INCIDENT_BYTES = 7227;
@@ -121,7 +121,7 @@ test("2. the detector refuses the bare name and accepts the installed path (both
   assert.equal(bareDoorName("post it as `A11Y_REVIEWER_SESSION=reviewer-6 $HOME/reviewer/bin/pr-review-verdict <n>`"), false);
 });
 
-test("2. every order in wake.ts and pr-orders.mjs that tells a reviewer to post names the installed path", () => {
+test("2. every order in wake.ts and pr-orders.ts that tells a reviewer to post names the installed path", () => {
   const orders = [WAKE, PR_ORDERS].flatMap((file) => readFileSync(file, "utf8").split("\n").map((text, i) => ({ file, text, line: i + 1 })))
     .filter(({ text }) => instructsToPost(text));
   assert.ok(orders.length >= 2, "positive control: both files carry an order that names the door");

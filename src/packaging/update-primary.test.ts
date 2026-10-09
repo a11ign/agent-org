@@ -3,17 +3,16 @@
  * `primary:update` is the ONE sanctioned way to move the primary checkout (#126), which makes it the only
  * place a rebuild can live and be reached every time.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.ts";
-import { changedFiles } from "../lib/changed-files.mjs";
+import { changedFiles } from "../lib/changed-files.ts";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.ts";
 
@@ -214,7 +213,7 @@ test("#1384 ACCEPTANCE: a move that changed the lockfile runs pnpm install, BEFO
   assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["pnpm-lock.yaml"] }],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.equal(git.some((argv) => argv[0] === "diff"), false,
-    "#939: the paths come from packages/guards/src/changed-files.mjs, never from a second spelling of the diff");
+    "#939: the paths come from packages/guards/src/changed-files.ts, never from a second spelling of the diff");
   assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"], ["pnpm", "run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });
@@ -293,7 +292,7 @@ test("#1384 lockfileMoved through the REAL changed-files helper: the root lockfi
     assert.equal(lockfileMoved(changed, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
     assert.equal(lockfileMoved(changed, lockfile, movedAway), true,
       "a lockfile moved AWAY is a lockfile move. NOT a pin on #939's --no-renames: measured, this stays true with "
-      + "the flag removed from changed-files.mjs, because the pathspec excludes the destination. What keeps this "
+      + "the flag removed from changed-files.ts, because the pathspec excludes the destination. What keeps this "
       + "read on the helper is changed-files-renames.test.ts and the ACCEPTANCE test's no-diff-through-run line");
   });
 });
@@ -387,12 +386,12 @@ test("#2781 UNASKABLE is null, never a clean reading: a linked worktree, and a r
 
 test("#2781 the CLI `--drift` only READS: from a worktree it answers asked:false and moves nothing", () => {
   const entry = fileURLToPath(new URL("../update-primary.ts", import.meta.url));
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, entry, "--drift"], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, [entry, "--drift"], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   const parsed = JSON.parse(run.stdout);
   assert.equal(typeof parsed.asked, "boolean");
   assert.equal(parsed.asked, parsed.drift !== null, "asked and the reading agree");
-  const refused = spawnSync(process.execPath, [...TSX_IMPORT, entry, "--nonsense"], { encoding: "utf8" });
+  const refused = spawnSync(process.execPath, [entry, "--nonsense"], { encoding: "utf8" });
   assert.notEqual(refused.status, 0, "an unknown flag is still refused (#164)");
 });
 

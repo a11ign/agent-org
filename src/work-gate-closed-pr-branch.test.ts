@@ -16,8 +16,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { afterTsx } from "./tsx-import.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (`claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool imported AFTER it, so the
 // acceptance command as written -- no `$AGENT_ORG_HOST` -- runs.
@@ -183,7 +182,7 @@ type Ran = { cmd: string; args: string[]; cwd: string };
 function fakeHost(tree: string, { status = "", ahead = "0" }: { status?: string; ahead?: string } = {}) {
   const ran: Ran[] = [];
   const exec = (cmd: string, rawArgs: string[], { cwd }: { cwd: string }) => {
-    const args = afterTsx(rawArgs);
+    const args = rawArgs;
     ran.push({ cmd, args, cwd });
     if (cmd === "git" && args[0] === "worktree") return { status: 0, output: `worktree /host/primary\nHEAD abc\nbranch refs/heads/main\n\n${tree}\n` };
     if (cmd === "git" && args[0] === "status") return { status: 0, output: status };

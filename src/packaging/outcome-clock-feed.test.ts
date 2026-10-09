@@ -12,7 +12,6 @@
  * POSITIVE CONTROL: "a claimed row past the bound is named" is the non-empty case that "just under is not named" and "nothing is claimed" are read against, and
  * the first is RED against the call as it stood (the mutation is in the PR).
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, cpSync } from "node:fs";
@@ -20,7 +19,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "outcome-clock-feed-project-"));
@@ -72,7 +71,7 @@ function gate({ prs = [], rows = [], claimed = [] }: { prs?: Record<string, unkn
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Order);
     return { clock: orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE), stderr: ran.stderr };
   } finally {
@@ -123,7 +122,7 @@ test("A CLAIMED ROW IS CLOCKED WHILE A PR IS TOO: the one order names both, the 
 
 test("THE CLEANUP: nothing in `src` reads a head commit for the clock any more (`readHeadCommittedAt` and its `GH_READS` entry are deleted, not left beside it)", async () => {
   const gateModule = await import("../work-gate.ts");
-  const orgHealthModule = await import("../work-gate/org-health.mjs");
+  const orgHealthModule = await import("../work-gate/org-health.ts");
   assert.equal("readHeadCommittedAt" in gateModule, false);
   assert.equal("readHeadCommittedAt" in orgHealthModule, false);
   assert.equal("conditionalOnQuietStalledPr" in gateModule.GH_READS, false);

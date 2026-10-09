@@ -1,6 +1,6 @@
 [Unit]
 # THE OTEL RECEIVER -- a11ign/a11ign#4071 (#4055 step zero, last item). Claude Code's own OpenTelemetry events, received on LOOPBACK and appended to the trace store as
-# `source: "otel"`, one record per API request, carrying the `org.role` the process was launched with. `src/trace/otel-receiver.mjs` has the design.
+# `source: "otel"`, one record per API request, carrying the `org.role` the process was launched with. `src/trace/otel-receiver.ts` has the design.
 #
 # A LONG-RUNNING SERVICE NO CLOCK STARTS, like `chairman-listen.service` (`LONG_RUNNING_TEMPLATES`): `enable --now` on the SERVICE is what runs it. It listens on
 # 127.0.0.1:4318 (OTLP/HTTP's port) and nowhere else, with no flag to change the address; a process reaches it only by being launched with
@@ -24,7 +24,7 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 # a `gh` call in would act as a person.
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
-ExecStart=/usr/bin/node --import tsx packages/agent-org/src/trace/otel-receiver.mjs
+ExecStart=%h/.local/bin/node packages/agent-org/src/trace/otel-receiver.ts
 
 # RESTART WHAT FAILED. A port already taken is a failure that mends when the other listener goes, and the program reads a store it can lose without losing anything: the ids it
 # refuses are in the file, scanned again at each start.

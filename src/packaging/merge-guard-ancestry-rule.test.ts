@@ -1,12 +1,12 @@
 /**
  * RULE: DOES THIS HEAD CONTAIN main's TIP? -- #182/#165, #455's split into
- * `packages/agent-org/src/merge-guard/ancestry-rule.mjs`. The clock cannot answer this: a run can finish AFTER main's tip
+ * `packages/agent-org/src/merge-guard/ancestry-rule.ts`. The clock cannot answer this: a run can finish AFTER main's tip
  * was committed while the branch still does not CONTAIN that commit, which is what ordinary concurrent
  * merging produces. `null` must never fall through to "contains it" -- that IS the false pass #182 fixed.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ancestryReason } from "../merge-guard/ancestry-rule.mjs";
+import { ancestryReason } from "../merge-guard/ancestry-rule.ts";
 
 test("behindBy: 0 raises no reason -- the common, up-to-date case", () => {
   assert.deepEqual(ancestryReason(0), []);

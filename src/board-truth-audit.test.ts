@@ -14,7 +14,7 @@ import { CLAIM_FRESH_MS, QUESTIONS, TABLE_ROW, boardTruthAudit, boardTruthTable,
 import { declaredRowsFromBody } from "./close-rows-for-merged-pr.ts";
 import { boardTruthReading, orgHealthOrders, orgHealthReadings, SIGNALS } from "./org-health.ts";
 import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall.ts";
-import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.mjs";
+import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const MINUTE = 60_000;

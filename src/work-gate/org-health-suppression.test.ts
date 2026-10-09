@@ -1,4 +1,4 @@
-// no-token: gh -- `org-health-suppression.mjs` reads and writes only a directory it is given (a temp one per test) and reaches nothing else (a11ign/a11ign#4065, #4055 move 1b).
+// no-token: gh -- `org-health-suppression.ts` reads and writes only a directory it is given (a temp one per test) and reaches nothing else (a11ign/a11ign#4065, #4055 move 1b).
 //
 // WHAT THE TESTS SHOW, each with its positive control beside it: a `page` class is delivered on first sight and not again inside the window (the control: it IS delivered again once the window has passed,
 // and a different key is delivered at once); a `digest` class is never delivered by itself and is counted in the digest (the control: the same harness delivers it at the crossing); the crossing is
@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "node:test";
 import { SIGNALS } from "../org-health.ts";
-import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS, classAndKeyOf, quietOrgHealth, suppressionPaths } from "./org-health-suppression.mjs";
+import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS, classAndKeyOf, quietOrgHealth, suppressionPaths } from "./org-health-suppression.ts";
 
 const T0 = Date.parse("2026-10-09T00:00:00Z");
 const HOUR = 3_600_000;

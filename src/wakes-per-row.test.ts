@@ -1,7 +1,6 @@
 // a11ign/a11ign#3452: wakes per merged row. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub.
 // no-token: gh -- every source is an injected fixture; the only `gh` calls in the module are `readMergedPulls`'s default and `readClaimedAt`; the tests inject `readMergedPulls`'s reader and call no other
 // The worker-3390 fixture is the worked example on the row, in the real record shape (a `user` record whose string content is wrapped in `<pasted_content`).
-import { TSX_IMPORT } from "./tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -358,7 +357,7 @@ function runCommand(ghBody: any) {
     writeFileSync(join(home, "bin", "gh"), `#!/bin/sh\n${ghBody}\n`);
     chmodSync(join(home, "bin", "gh"), 0o755);
     const script = fileURLToPath(new URL("./wakes-per-row.ts", import.meta.url));
-    return spawnSync(process.execPath, [...TSX_IMPORT, script, "--from", "2026-10-04T00:00:00Z", "--to", "2026-10-04T13:00:00Z", "--repos", "a11ign/a11ign"], {
+    return spawnSync(process.execPath, [script, "--from", "2026-10-04T00:00:00Z", "--to", "2026-10-04T13:00:00Z", "--repos", "a11ign/a11ign"], {
       encoding: "utf8", timeout: 60_000, env: { ...process.env, HOME: home, PATH: `${join(home, "bin")}:${process.env.PATH}` },
     });
   } finally {

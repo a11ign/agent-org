@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createMessenger } from "../core.mjs";
+import { createMessenger } from "../core.ts";
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { DEFAULT_STALL_CONFIG, TICK_INTERVAL_MS, allIdleEvents, noMergeEvents, observeStalls } from "./stall.mjs";
+import { createLedger } from "../ledger.ts";
+import { DEFAULT_STALL_CONFIG, TICK_INTERVAL_MS, allIdleEvents, noMergeEvents, observeStalls } from "./stall.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

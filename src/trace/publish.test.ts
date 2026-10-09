@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync as rmSyncOf, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CLOSED_ROWS_MAX_PAGES, conditionalReader, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, pageStillHolds, parseArgs, parseReply, publish, readStamp, readValidators, recentClosedRows, ROW_PAGE_MAX_AGE_MS, runPublisher, saveValidators, Stamp, STAMP_FILE, VALIDATORS_FILE, WantedRow, whyRun } from "./publish.mjs";
+import { CLOSED_ROWS_MAX_PAGES, conditionalReader, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, pageStillHolds, parseArgs, parseReply, publish, readStamp, readValidators, recentClosedRows, ROW_PAGE_MAX_AGE_MS, runPublisher, saveValidators, Stamp, STAMP_FILE, VALIDATORS_FILE, WantedRow, whyRun } from "./publish.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const MINUTE = 60 * 1000;

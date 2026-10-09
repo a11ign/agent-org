@@ -4,7 +4,6 @@
 // and `organization.id` are replaced by "REDACTED" (they identify a person, and nothing here reads them). Nothing in them is invented: change a value and you are no longer testing the exporter.
 // no-token: gh -- no `gh` call is made; the receiver listens on loopback with port 0 and a temp store.
 // THE UNIT'S HOST-UNIT ASSERTIONS ARE NOT HERE: `host-units.ts` reads git history, which CI's acceptance job does not have, and a command that imports it is REFUSED there (a11ign/a11ign#4071); they are in `src/packaging/host-units.test.ts`.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -13,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createReceiver, eventsOfOtlpLogs, LOOPBACK, parseArgs, UNATTRIBUTED } from "./otel-receiver.mjs";
+import { createReceiver, eventsOfOtlpLogs, LOOPBACK, parseArgs, UNATTRIBUTED } from "./otel-receiver.ts";
 import { Server,IncomingMessage,ServerResponse } from "http";
 import { URL } from "url";
 
@@ -24,7 +23,7 @@ const REQUEST_ID = "req_011CfpSK96NthX9vPNsW9X2b";
 const made: string[] = [];
 const tmpDir = (prefix: string) => { const dir = mkdtempSync(join(tmpdir(), prefix)); made.push(dir); return dir; };
 after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "otel-receiver.mjs");
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "otel-receiver.ts");
 
 /** A copy of an export with every attribute named in `drop` removed, on the resource and on each log record. */
 function withoutAttributes(payload: { resourceLogs: { resource: { attributes: { key: string; value: { stringValue: string; }; }[]; droppedAttributesCount: number; }; scopeLogs: { scope: { name: string; version: string; }; logRecords: ({ timeUnixNano: string; observedTimeUnixNano: string; body: { stringValue: string; }; attributes: ({ key: string; value: { stringValue: string; intValue?: undefined; doubleValue?: undefined; }; }|{ key: string; value: { intValue: number; stringValue?: undefined; doubleValue?: undefined; }; }|{ key: string; value: { doubleValue: number; stringValue?: undefined; intValue?: undefined; }; })[]; droppedAttributesCount: number; }|{ timeUnixNano: string; observedTimeUnixNano: string; body: { stringValue: string; }; attributes: ({ key: string; value: { stringValue: string; intValue?: undefined; boolValue?: undefined; }; }|{ key: string; value: { intValue: number; stringValue?: undefined; boolValue?: undefined; }; }|{ key: string; value: { boolValue: boolean; stringValue?: undefined; intValue?: undefined; }; })[]; droppedAttributesCount: number; })[]; }[]; }[]; }, drop: string|any[]) {
@@ -196,7 +195,7 @@ test("THE PROGRAM, STARTED AS THE UNIT STARTS IT, receives a post and appends it
   const port = await new Promise((resolve) => {
     const probe = createNetServer().listen(0, LOOPBACK, () => { const { port: free } = probe.address(); probe.close(() => resolve(free)); });
   });
-  const child = spawn(process.execPath, [...TSX_IMPORT, SCRIPT, `--port=${port}`, `--store=${storePath}`], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, `--port=${port}`, `--store=${storePath}`], { stdio: ["ignore", "pipe", "pipe"] });
   try {
     await new Promise((resolve, reject) => {
       child.once("error", reject);

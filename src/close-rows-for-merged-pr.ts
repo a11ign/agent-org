@@ -86,7 +86,7 @@
 //   3  every row closed, but one or more Statuses did not move for a cause OTHER than an unreadable Project
 //      (#1299). A run whose every refusal is `project-unreadable` exits 0 with a DEGRADED line: see `closeRowsExit`.
 //
-//   node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
+//   node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
 import { execFileSync } from "node:child_process";
 import { settleClosedStatus, unsettledVerdict } from "./settle-closed-status.ts";
 // The token-carrying half, imported HERE (an entry point) and injected, so the pure module stays pure.
@@ -96,9 +96,9 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never `@a11y-witness/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
 // nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
-// not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.mjs` imports only
+// not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.ts` imports only
 // `node:path`, `node:fs` and `node:url`.
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 // #804: A LEAF IMPORT, safe under the identical no-`pnpm install`/no-build constraint the rest of this header
 // names -- `claim-labels.ts` imports nothing at all, so it cannot be part of a cycle. This replaced two
 // rounds of "duplicate the constant locally instead" (#754 for CLAIM_LABEL/STARTED_LABEL, #782 for
@@ -116,10 +116,10 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
 // module through its import closure. Guarded in `gh` rather than at the one call site, the way
 // `row-claim.ts`, `carry-branch.ts` and `stranded-branches.ts` do it, so every call added tomorrow is
-// covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.mjs`
+// covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.ts`
 // imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
 // carries above.
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 
@@ -314,7 +314,7 @@ export function orphanedRowReport({ row, prNumber, sha, branch, declaration }: {
  * of one that does.
  *
  * The real parser is also a heavier import than this path should carry: `acceptance-commands.ts` pulls
- * `region-paths.ts`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
+ * `region-paths.ts`, `local-import-closure.ts` and `cli-flags.ts` behind it, and this job runs with
  * `actions/checkout` and nothing else (see this file's own header on why that matters).
  *
  * @param {string} body @returns {string} the declaration as written, or a stated absence -- never a guess
@@ -729,14 +729,14 @@ function exitAfterSweep(code: number): never {
 function main() {
   refuseUnknownFlags([], {
     entry: import.meta.url,
-    command: "node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
+    command: "node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
   });
 
   const repo = process.env.GITHUB_REPOSITORY;
   const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
   if (!repo || !number) {
     console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
-      + "  node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
+      + "  node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
     process.exit(EXIT.CANNOT_ASK);
   }
 

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { CI_BODY_REPORTS, runCiBodyReports, mutationRecordReport, measuredSectionReport }
   from "../acceptance-commands.ts";
 import { checkBody, main, EXIT_NOTHING_SENT } from "../pr-open.ts";
-import { COMMANDS, FIXED_ARGS } from "../commands.mjs";
+import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 
 const ACCEPTANCE = 'Acceptance: node -e "process.exit(0)"';
 const CLOSES = "Closes: none — a reason";

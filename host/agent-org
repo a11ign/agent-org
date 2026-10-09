@@ -7,4 +7,4 @@
 #
 # It holds NO version of the tool. @@tool@@ is host.json's `tool`, rendered at install time, and that checkout is only ever moved by
 # `update-tool` (a detached checkout at the newest release tag), so this runs whatever the host runs and is never a second version.
-exec node "@@tool@@/src/bin.mjs" "$@"
+exec node "@@tool@@/src/bin.ts" "$@"

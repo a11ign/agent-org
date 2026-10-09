@@ -3,7 +3,7 @@
  * #3675: THE WORK GATE REQUIRES THE PROJECT'S ROSTER, AND SAYS SO WHEN IT IS ABSENT.
  *
  * #2174 once wanted the gate to load with no `.agent-org/roles`. It no longer can, and the ruling on #3675 is that it need not: `work-gate.ts` reaches
- * `arm-pr.ts` through `auto-arm-sweep.ts` and `work-gate/org-health.mjs`, and `arm-pr.ts` reads `sessions.json` at import. `project-roles.ts` refuses a missing
+ * `arm-pr.ts` through `auto-arm-sweep.ts` and `work-gate/org-health.ts`, and `arm-pr.ts` reads `sessions.json` at import. `project-roles.ts` refuses a missing
  * roles directory on purpose (#2621: nothing is defaulted to another project's value). What matters is that the refusal is the NAMED one, so this pins the
  * outcome rather than leaving it to three comments.
  *
@@ -11,7 +11,6 @@
  * Direction one leaves the roles directory out and expects the `roles.dir` refusal; direction two is the SAME copy plus the smallest `sessions.json` `arm-pr.ts` accepts and
  * expects a clean load, which is the control for the first: a copy that failed for any other reason would fail here too.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -36,7 +35,7 @@ function loadGate({ roster }: { roster?: object }) {
       mkdirSync(join(root, ".agent-org/roles"), { recursive: true });
       writeFileSync(join(root, ".agent-org/roles/sessions.json"), JSON.stringify(roster));
     }
-    const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e",
       `import(${JSON.stringify(pathToFileURL(copy.entry).href)}).then(m => { if (typeof m.decide !== 'function') throw new Error('decide missing'); })`],
     { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
     return { status: run.status, stderr: run.stderr };

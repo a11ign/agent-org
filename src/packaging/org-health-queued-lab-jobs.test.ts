@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { orgHealthNow, fleetWaitingFacts, dispatchedLabJobsOrSay } from "../work-gate.ts";
-import { dispatchedJobNames, readDispatchedLabJobs } from "../work-gate/lab-job-orders.mjs";
+import { dispatchedJobNames, readDispatchedLabJobs } from "../work-gate/lab-job-orders.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");

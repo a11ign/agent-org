@@ -12,13 +12,13 @@
 // `pre-commit`/`post-checkout` already use, imported rather than restated.
 import { execFileSync } from "node:child_process";
 import { isPrimaryWorktree } from "./prune-worktrees.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { pathToFileURL } from "node:url";
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
-import { changedFiles } from "./lib/changed-files.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts";
+import { changedFiles } from "./lib/changed-files.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
 /** The checkout `primary:update` moves: the PROJECT's (`HOME_CHECKOUT`), which is the tool's own `src` up three only when `$AGENT_ORG_HOST` is unset (#2879). */
@@ -82,7 +82,7 @@ export const LOCKFILE = "pnpm-lock.yaml";
  * A HEAD that did not move asks nothing: there is no range, and a `git diff` of a commit against itself
  * would be a question whose answer is empty by construction.
  *
- * ASKED THROUGH `packages/guards/src/changed-files.mjs`, the one place this repository asks git which paths a range
+ * ASKED THROUGH `packages/guards/src/changed-files.ts`, the one place this repository asks git which paths a range
  * touched (#939), so a lockfile moved away is listed under the path it left. `changed` is that helper,
  * injected so a test can answer for git.
  *
@@ -324,7 +324,7 @@ function runTool(root: string, argv: string[]) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: `--drift` only READS (the gate spawns it, #2781); --detach/--quiet go to git.
-  refuseUnknownFlags(["--drift"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/update-primary.ts" });
+  refuseUnknownFlags(["--drift"], { entry: import.meta.url, command: "node packages/agent-org/src/update-primary.ts" });
   if (process.argv.slice(2).includes("--drift")) {
     const drift = readPrimaryDrift();
     process.stdout.write(`${JSON.stringify({ asked: drift !== null, drift })}\n`);

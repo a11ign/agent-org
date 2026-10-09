@@ -1,7 +1,7 @@
 // no-token: gh -- pure: the clock is a function of facts handed in, and the one process test puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
- * THE OUTCOME CLOCK (#3486, the chairman's "how do we make sure nothing happens again?", 2026-10-04): `overdueReading` in `org-health.mjs` and its facts in
- * `work-gate/org-health.mjs`. EVERY OPEN PR AND EVERY CLAIMED ROW HAS AN AGE SINCE IT OPENED; ONLY A MERGE OR A CLOSE STOPS IT; NO STATE EXEMPTS IT.
+ * THE OUTCOME CLOCK (#3486, the chairman's "how do we make sure nothing happens again?", 2026-10-04): `overdueReading` in `org-health.ts` and its facts in
+ * `work-gate/org-health.ts`. EVERY OPEN PR AND EVERY CLAIMED ROW HAS AN AGE SINCE IT OPENED; ONLY A MERGE OR A CLOSE STOPS IT; NO STATE EXEMPTS IT.
  *
  * THE BOUNDS ARE WRITTEN OUT AS 100 AND 135 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS, for the reason `org-health.test.ts` gives for its own: a test
  * built from the constant moves with it. `the bounds are the measurement's` pins the literals to the exports in ONE place, with the measurement beside them.
@@ -18,7 +18,6 @@
  * THE POSITIVE CONTROL OF EVERY "is not overdue" BELOW IS THE SAME FIXTURE ONE MILLISECOND OLDER: the shape is only worth being called clear because the same
  * state, aged by that millisecond, trips, through the same entry (`orgHealthTick`).
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, cpSync } from "node:fs";
@@ -26,7 +25,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "outcome-clock-project-"));
@@ -45,7 +44,7 @@ const orgHealth = await import("../org-health.ts");
 const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS, overdueReading, orgHealthTick } = orgHealth;
 const { stallReasonOf, STALL_REASON } = await import("../work-gate.ts");
 const { WAIT_FIELDS } = await import("../idle-claimant.ts");
-const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.mjs");
+const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
@@ -64,7 +63,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const label = (...names: string[]) => names.map((name) => ({ name }));
 const BOT = { login: "a11ign-ai-workers" };
 
-type Moves = import("../work-gate/claim-stall-tick.mjs").ClaimMoves;
+type Moves = import("../work-gate/claim-stall-tick.ts").ClaimMoves;
 type HoldersIn = { moves: Map<number, Moves> | null; agents: { label: string; status: string }[] | null };
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string };
 type Items = ReturnType<typeof overdueFacts>["items"];
@@ -429,7 +428,7 @@ test("THE GATE AS A PROCESS raises #149's shape -- a HELD PR with a fresh commen
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Order);
     const offered = orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE);
     assert.equal(offered.length, 1, ran.stderr);

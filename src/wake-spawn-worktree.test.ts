@@ -11,7 +11,6 @@
  * fixture with ONE thing changed, and each asserts the row is UNCLAIMED again against the fake board -- which the
  * success case shows is not simply always true.
  */
-import { afterTsx } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -69,7 +68,7 @@ function fakeHost(over: { claimExit?: number; claimOutput?: string; existing?: s
     return { status: 0, output: `DECLINED -- #${ROW} is unclaimed again\n` };
   };
   const exec = (command: string, rawArgs: string[], { cwd, env }: { cwd: string; env: Record<string, string> }) => {
-    const args = afterTsx(rawArgs);
+    const args = rawArgs;
     calls.push({ command, args, cwd, env });
     if (command === "git") {
       events.push(`git ${args.join(" ")}`);

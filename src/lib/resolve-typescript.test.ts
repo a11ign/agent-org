@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const RESOLVER = fileURLToPath(new URL("./resolve-typescript.mjs", import.meta.url));
+const RESOLVER = fileURLToPath(new URL("./resolve-typescript.ts", import.meta.url));
 const WITH_API = "module.exports = { version: VERSION, ScriptTarget: { Latest: 99 }, createSourceFile() {}, forEachChild() {} };";
 const NATIVE_COMPILER = "module.exports = { version: VERSION };";
 
@@ -38,8 +38,8 @@ function directoryHolding(version: string, entry: string): string {
 
 async function resolverIn(toolTree: string) {
   mkdirSync(join(toolTree, "lib"), { recursive: true });
-  cpSync(RESOLVER, join(toolTree, "lib", "resolve-typescript.mjs"));
-  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.mjs")).href);
+  cpSync(RESOLVER, join(toolTree, "lib", "resolve-typescript.ts"));
+  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.ts")).href);
   return module.resolveTypescript as (where?: { from?: string }) => { version: string };
 }
 

@@ -11,7 +11,6 @@
  * Every fixture lives under ONE base directory made at the top and removed in `after`, so this file leaves `/tmp` as it found it (#3848). No
  * test reads or writes the real `/tmp`; the one that needs `/proc` builds a fake `proc` directory, which is the shape `processStrings` reads.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -223,7 +222,7 @@ test("#3868: the CLI prints the count on its first line", () => {
   fixture(root, "watch-cli-cnt1", { hoursOld: 6 });
   mkdirSync(join(root, "other"));
   const env = { ...process.env, AGENT_ORG_HOST: HOST };
-  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.equal(listed.stdout.split("\n")[0], "tmp-entries: 2");
 });
@@ -316,11 +315,11 @@ test("#3849: the CLI over a fixture root, dry by default and removing under --ap
   const root = fresh("cli");
   const dir = fixture(root, "watch-cli-cli1", { hoursOld: 6 });
   const env = { ...process.env, AGENT_ORG_HOST: HOST };
-  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 1/);
   assert.ok(existsSync(dir));
-  const applied = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only", "--apply"], { encoding: "utf8", env });
+  const applied = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only", "--apply"], { encoding: "utf8", env });
   assert.equal(applied.status, 0, applied.stderr);
   assert.match(applied.stdout, /removed 1 of 1/);
   assert.equal(existsSync(dir), false);
@@ -335,7 +334,7 @@ test("#3849: the service runs niced and at the idle IO class, with the fixtures-
   const service = directives(shipped("tmp-prune.service.in"));
   assert.match(service, /^Nice=19$/m, "nice -n 19");
   assert.match(service, /^IOSchedulingClass=idle$/m, "ionice -c3 is the idle class");
-  assert.match(service, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m);
+  assert.match(service, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m);
   const timer = directives(shipped("tmp-prune.timer.in"));
   assert.match(timer, /^OnUnitInactiveSec=1min$/m);
   const timeout = Number(/^TimeoutStartSec=(\d+)$/m.exec(service)?.[1]);
@@ -345,11 +344,11 @@ test("#3849: the service runs niced and at the idle IO class, with the fixtures-
 test("#3849: installed as the tool, the janitor runs prune-tmp.ts from the tool, niced, and told where the host's declaration is", () => {
   const rendered = shipped("tmp-prune.service.in")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("tmp-prune.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/prune-tmp\.ts --apply --fixtures-only$/m);
+  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/prune-tmp\.ts --apply --fixtures-only$/m);
   assert.match(installed, /^Nice=19$/m);
 });
 

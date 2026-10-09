@@ -4,7 +4,6 @@
 // THE FIXTURE is 6 causes over the three managers in a window of one day: three common (`answer-owed` 120 wakes, `org-health` 60, `pr-checks-failing` 30) and three RARE ones (`trunk-red` 1,
 // `chairman-blocked` 2, and wakes with no cause at all, 3): 216 wakes. At size 20 the proportional share of each rare cause is far under one place, so only the one-place-each rule puts them
 // in; at size 151 their share exceeds what they have, so they give ALL of it. The hand-computed quotas are in the comments beside each test.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -12,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.mjs";
+import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
 
 const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");
@@ -163,8 +162,8 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
   made.push(dir);
   const store = join(dir, "events.ndjson");
   writeFileSync(store, `${EVENTS.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
-  const run = (...args: (string|undefined)[]) => spawnSync(process.execPath, [...TSX_IMPORT, script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
+  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
+  const run = (...args: (string|undefined)[]) => spawnSync(process.execPath, [script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
   const first = run("--seed", "4074");
   assert.equal(first.status, 0, first.stderr);
   assert.equal(run("--seed", "4074").stdout, first.stdout, "reproducible through the command");
@@ -178,7 +177,7 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
 
 // ---- a11ign/a11ign#4183: the scorer, over the FROZEN #4074 fixture and fake predictions. No model, no `gh`, no store, no sampler.
 import { readFileSync } from "node:fs";
-import { BAR, loadLabels, renderPrompt, renderScore, scoreTriage } from "./triage-sample.mjs";
+import { BAR, loadLabels, renderPrompt, renderScore, scoreTriage } from "./triage-sample.ts";
 
 const { rows: SHEET, definitions: DEFINITIONS } = loadLabels();
 const UNREADABLE = [3, 44, 45, 57, 88, 98];
@@ -291,8 +290,8 @@ test("--score reads the frozen labels and the predictions file, and never the st
   writeFileSync(store, "this is not json\n");
   writeFileSync(good, JSON.stringify(answering(A_WAKE.position, "digest")));
   writeFileSync(bad, JSON.stringify(asPredictions().slice(1)));
-  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
-  const run = (...args: string[]) => spawnSync(process.execPath, [...TSX_IMPORT, script, ...args], { encoding: "utf8" });
+  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
   const sampler = run("--seed", "4074", "--store", store);
   assert.equal(sampler.status, 1, "positive control: the sampler DOES read this store, and it cannot");
   assert.match(sampler.stderr, /JSON/);

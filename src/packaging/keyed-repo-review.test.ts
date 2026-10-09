@@ -45,8 +45,8 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
 const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
-const { ownerOfPr } = await import("../work-gate/pr-orders.mjs");
-const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
+const { ownerOfPr } = await import("../work-gate/pr-orders.ts");
+const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
   linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.ts");
 

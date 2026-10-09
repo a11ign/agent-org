@@ -38,11 +38,11 @@
 //   2  the board could not be read for any OTHER cause. INCONCLUSIVE, never "fine".
 //   3  one or more Statuses did not move. NAMED, never counted.
 //
-//   node --import tsx packages/agent-org/src/settle-closed-rows.ts
+//   node packages/agent-org/src/settle-closed-rows.ts
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
   closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal } from "./settle-closed-status.ts";
 // The repository this pass reads, from the one place that names it.
@@ -120,7 +120,7 @@ function settleOne(n: number, heldStatus: string | null): import("./settle-close
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/settle-closed-rows.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/settle-closed-rows.ts" });
 
   let items;
   try {

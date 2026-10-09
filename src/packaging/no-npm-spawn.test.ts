@@ -5,9 +5,9 @@
  *
  * The package manager is `pnpm`. A script that runs `npm run x` inside node is the same defect as one in a brief, and the one nobody sees by
  * reading a manifest, so the programs this tool ships are held to it by a walk of their source. This asks whether a spawn should be of npm at
- * all; whether it is safe on Windows is `lib/npm-cli-executable.mjs`'s question.
+ * all; whether it is safe on Windows is `lib/npm-cli-executable.ts`'s question.
  *
- * ONE NAMED FILE, `ALLOWED`, `src/lib/isolation-gate.mjs`: the CONSUMER half of the isolation gate installs the packed tarballs with npm into a
+ * ONE NAMED FILE, `ALLOWED`, `src/lib/isolation-gate.ts`: the CONSUMER half of the isolation gate installs the packed tarballs with npm into a
  * directory that is not a workspace, because that is the install a user gets. npm is the point. It carries a one-line `STAYS npm` comment,
  * pinned here. Nothing else is exempt: the primary-update script was carried as named debt until a11ign/a11ign#3108 spelled its build `pnpm`.
  *
@@ -23,7 +23,7 @@ import { toolSources, type ToolFile } from "./tool-source.ts";
 
 /** The named files that keep npm, and why. The reason is for a reader; the test pins the FILE NAMES. */
 const ALLOWED: Record<string, string> = {
-  "src/lib/isolation-gate.mjs": "the consumer half installs the packed tarballs with npm, outside any workspace",
+  "src/lib/isolation-gate.ts": "the consumer half installs the packed tarballs with npm, outside any workspace",
 };
 
 /** Every comment in an allowlisted file that says why, matched by this exact opening. */
@@ -78,7 +78,7 @@ test("a fixture spawnSync(\"npm\", ...) is REFUSED, naming the file and the line
 
 test("the same spelling in an allowlisted file passes, and in the same file under another name it does not", () => {
   const source = 'spawnSync("npm", ["view", "a11ign"]);\n';
-  assert.deepEqual(refusals({ "src/lib/isolation-gate.mjs": source }), []);
+  assert.deepEqual(refusals({ "src/lib/isolation-gate.ts": source }), []);
   assert.equal(refusals({ "src/lib/isolation-gate-copy.mjs": source }).length, 1);
 });
 
@@ -133,7 +133,7 @@ test("positive control: the walk is not empty, and finds the spawn that IS exemp
 });
 
 test("the exemption is EXACTLY this named file, so a new one is a decision made here and not a convenience", () => {
-  assert.deepEqual(Object.keys(ALLOWED), ["src/lib/isolation-gate.mjs"]);
+  assert.deepEqual(Object.keys(ALLOWED), ["src/lib/isolation-gate.ts"]);
 });
 
 test("the allowlisted file says in a `STAYS npm` comment why it does", () => {

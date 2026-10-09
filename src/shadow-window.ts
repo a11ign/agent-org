@@ -25,7 +25,6 @@
 // or refusal row first). Never a state file or the handoff queue; the live directory is read and never written -- EXCEPT the window's
 // marker, which `--arm` creates and the window's own end removes, and which nothing else here touches. The record path and the
 // copy path are both refused when they resolve inside the live directory, because either would be a write there.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync }
   from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -33,10 +32,10 @@ import { dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { diffOrders, refuseLiveStateDir, LIVE_STATE_DIR } from "./shadow-gate.ts";
 import { SHADOW_WINDOW_MARKER, parseShadowRecord } from "./shadow-reads.ts";
-import { localImports } from "./lib/local-import-closure.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { localImports } from "./lib/local-import-closure.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
-import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** `0` a tick was recorded, or there was none to record; `2` a path was refused or an input could not be read. */
 export const EXIT = { OK: 0, REFUSED: 2 };
@@ -184,7 +183,7 @@ async function runAsCandidateChild(modulePath: string) {
  * @returns {{ exit: number | null, orders: any[] | null, error: string | null }}
  */
 export function runCandidate({ module, args, copyDir }: { module: string; args: unknown; copyDir: string; }): { exit: number | null; orders: any[] | null; error: string | null; } {
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, SELF, "--candidate-child", `--module=${module}`], {
+  const run = spawnSync(process.execPath, [SELF, "--candidate-child", `--module=${module}`], {
     input: JSON.stringify(args), encoding: "utf8", timeout: CANDIDATE_TIMEOUT_MS, maxBuffer: CANDIDATE_MAX_BUFFER,
     env: { ...process.env, [STATE_DIR_ENV]: copyDir },
   });
@@ -493,7 +492,7 @@ function armReport({ t0, tEnd, hardStop, candidate, tool, files }: ReturnType<ty
 
 async function main() {
   const known = ["--live-dir=", "--copy-dir=", "--record=", "--candidate=", "--candidate-child", "--module=", "--window-timer=", "--arm"];
-  refuseUnknownFlags(known, { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/shadow-window.ts" });
+  refuseUnknownFlags(known, { entry: import.meta.url, command: "node packages/agent-org/src/shadow-window.ts" });
   const argv = process.argv.slice(2);
   if (argv.includes("--candidate-child")) return runAsCandidateChild(String(flagValue(argv, "module")));
   const copyDir = flagValue(argv, "copy-dir"), recordPath = flagValue(argv, "record"), candidate = flagValue(argv, "candidate");

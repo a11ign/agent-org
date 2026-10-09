@@ -16,7 +16,6 @@
  * record with one gap holds a gap row AND still counts every tick, the closure check names a file that differs and then stops complaining once it is
  * restored, and the same exit status 2 is a SUCCESS for the live unit and a FAILURE for the shadow one.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -29,7 +28,7 @@ import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_sh
 import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.ts";
 import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
 import { homeHostConfig } from "../host-config.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -39,7 +38,7 @@ const T0 = Date.parse("2026-10-02T12:00:00Z");
 const TIMER = "a11ign-shadow-window.timer";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 /** The digest of the work-tick unit the host runs today, restated from `host-tool-install.test.ts` so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3"; // #2974: the pnpm line; the plain rendering, see `plainHost`
+const TODAYS_WORK_TICK_SHA = "6f128077955f11e824ec1956fc377ed1944f85590a70e387672c7756c56c68b9"; // #2974: the pnpm line; the plain rendering, see `plainHost`
 /** a11ign's host with no `tool`, so the digest above is of the template whether or not the cut has set the key. */
 const plainHost = (() => {
   const plain: Record<string, unknown> = { ...homeHostConfig() };
@@ -456,7 +455,7 @@ test("an ordinary windowed tick leaves the live directory's bytes alone, apart f
 
 /** The runner inherits `AGENT_ORG_HOST`: blanking it made the child resolve its project by counting directories up from `src`, which standalone is the home directory (#3098). */
 function cli(r: Rig, ...flags: string[]) {
-  return spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
+  return spawnSync(process.execPath, [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
     { encoding: "utf8" });
 }
 
@@ -485,7 +484,7 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     git("init", "-q");
     git("commit", "-q", "--allow-empty", "-m", "snapshot");
     const gate = join(tool, "src", "work-gate.ts");
-    const armCli = () => spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
+    const armCli = () => spawnSync(process.execPath, [RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
       { encoding: "utf8" });
     const shared = join(tool, "src", "host-config.ts");
     const original = readFileSync(shared, "utf8");

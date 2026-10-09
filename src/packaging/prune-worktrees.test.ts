@@ -11,13 +11,12 @@
  *
  * GIT_* SCRUBBED on every spawn, including this file's own fixture-building `git()` helper: if `GIT_DIR`
  * happened to be set (this hook exports it into a hook environment, which is exactly why
- * `packages/guards/src/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
+ * `packages/guards/src/git-env.ts` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
  * `GIT_DIR` names instead of the intended disposable `/tmp` repo -- the identical class of defect closed
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.
  */
 // no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` hand it a stub `gh`; proven by running this file with `gh` shimmed to exit 4.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -32,7 +31,7 @@ import {
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.ts";
 import { stampWorktree } from "../worktree-owner.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
 } from "../worktree-removal.ts";
@@ -498,7 +497,7 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
  */
 const runCli = (repoRoot: string, ...args: string[]) => {
   try {
-    const stdout = execFileSync(process.execPath, [...TSX_IMPORT, PRUNE_CLI, repoRoot, ...args],
+    const stdout = execFileSync(process.execPath, [PRUNE_CLI, repoRoot, ...args],
       { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return { status: 0, stdout, stderr: "" };
   } catch (err) {

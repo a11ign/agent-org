@@ -12,7 +12,7 @@ pnpm exec agent-org <command> [args]
 ```
 
 `agent-org` with no command, or a name that is not a command, refuses and lists the commands. There is no default command. A command is the
-name a project's `package.json` script used (`row-file`, `pr:open`, `board:settle`), and `src/commands.mjs` is the table.
+name a project's `package.json` script used (`row-file`, `pr:open`, `board:settle`), and `src/commands.ts` is the table.
 
 ## The project is the repository you run it in
 
@@ -30,17 +30,19 @@ The tool reads `.agent-org/project.json` of the project it serves, and never ans
 `package.json`. The tests are not shipped: they read the project's tree and run in this repository's CI.
 
 `typescript` is a peer dependency, resolved from the project's directory first and the tool's own tree second, so the tool parses the project's code
-with the project's compiler. Tested on Node 22.22.1.
+with the project's compiler. Tested on Node 24.21.0.
 
 ## Source is TypeScript
 
-**A new source file is `.ts`, and a `.mjs` you touch may convert in the same pull request** (ADR 0043, a11ign/a11ign#3550). `src/packaging/mjs-ratchet.test.ts` judges the
-`.js`/`.mjs`/`.cjs` source files against `mjs-ratchet.baseline.json` and fails on a file the baseline does not list, so the count can only go down and there is no raise.
-The mapping from `@ts-check` JSDoc to types is in the ADR's table.
+**Every source file is `.ts`, run by `node file.ts` with no loader** (ADR 0043, a11ign/a11ign#3550, #4389). Node 24 strips the types itself
+(`process.features.typescript` prints `strip`), `engines.node` is `>=24`, and `tsx` is not a dependency. `src/packaging/mjs-ratchet.test.ts` judges the
+`.js`/`.mjs`/`.cjs` files against `mjs-ratchet.baseline.json` and fails on a file the baseline does not list, so the count can only go down and there is no raise.
+The mapping from `@ts-check` JSDoc to types is in the ADR's table. Type stripping erases syntax and nothing else, so `enum`, `namespace` and parameter properties are
+refused (`erasableSyntaxOnly`), and a relative import names the `.ts` file.
 
-**One limit, until the tool is built rather than run from source:** a `.ts` that a shipped command imports does not load under the host's `node` (22.22.1 is built without
-TypeScript support, and node does not strip types under `node_modules`). So a new source file is `.ts`, unless a shipped command imports it; then raise the pin in this diff and say why.
-Convert only files that run under `tsx` (tests, test support, CI and dev tools): `src/messaging/fake-provider.ts` is the first, and a file a command reaches stays `.mjs`.
+**One limit: Node refuses to strip types under `node_modules`** (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, measured on 24.21.0 and decided on the real path). So the tool
+runs from a checkout outside `node_modules`, which is what `host/agent-org` and the `AGENT_ORG_TOOL` clone are; a copy a package manager installs under `node_modules` can
+be read but not run.
 
 ## Releases
 

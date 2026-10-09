@@ -10,15 +10,15 @@
  *   2. a walk of the tool's `src` finds NO quoted status word, `lane:`/`session:`/`answer:` prefix
  *      or milestone title as a real CODE literal outside the vocabulary module -- the ratchet ADR 0040
  *      measured at 43 files and this row promised to end at 0. Comments are stripped first, this repo's own
- *      convention (`local-import-closure.mjs`'s `stripComments`): a comment MENTIONING a word is not the
+ *      convention (`local-import-closure.ts`'s `stripComments`): a comment MENTIONING a word is not the
  *      same defect as CODE reading it. The collisions that are not vocabulary are declared below with
  *      their reasons, and since #3232 the invariant is judged against the base the change merges into:
  *      a hit this change ADDS must be declared, and one it removes passes (`lib/pin-ratchet.ts`).
  *   3. a SECOND project's vocabulary, run through the same reader, changes what `row-file.ts` refuses (a
- *      milestone it does not have, a label outside its set), what `row-claim/runner-rule.mjs`'s lane rule
+ *      milestone it does not have, a label outside its set), what `row-claim/runner-rule.ts`'s lane rule
  *      reads, and, with an empty `resources` list, what `acceptance-commands.ts` would let an Acceptance
  *      run -- through the injectable seams those three files now carry for exactly this reason, mirroring
- *      `row-claim/file-overlap-rule.mjs`'s own `deps` pattern. This is what "project-agnostic" means and the
+ *      `row-claim/file-overlap-rule.ts`'s own `deps` pattern. This is what "project-agnostic" means and the
  *      only thing that shows the reader is not a11ign's constants in a trench coat.
  *   4. each field is REFUSED naming it when missing or mistyped, never answered with a11ign's value.
  */
@@ -33,7 +33,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { stripComments } from "../lib/local-import-closure.mjs";
+import { stripComments } from "../lib/local-import-closure.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import {
@@ -44,12 +44,12 @@ import {
 } from "../project-vocabulary.ts";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
 import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.ts";
-import { laneReason } from "../row-claim/runner-rule.mjs";
+import { laneReason } from "../row-claim/runner-rule.ts";
 import { resourcePatternsFrom } from "../acceptance-commands.ts";
-import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
+import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";
 import {
   IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,
-} from "../messaging/sources/summary.mjs";
+} from "../messaging/sources/summary.ts";
 
 // A mutation reaches into fields the fixture's own type would have to pretend are optional and mistyped,
 // which is the point of it -- the same tradeoff `project-config.test.ts` accepts for the identical reason.
@@ -157,12 +157,12 @@ const nonVocabulary = (file: string, literals: string[], reason: string): Declar
  * its own entry, so two changes that each add one are each judged against their own base, and a hit that goes away needs nothing edited.
  */
 const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
-  // `messaging/sources/requests.mjs` and `summary.mjs`: these ARE vocabulary labels, listed for the claim-labels reason below. Both sources are
+  // `messaging/sources/requests.ts` and `summary.ts`: these ARE vocabulary labels, listed for the claim-labels reason below. Both sources are
   // declared LEAF modules (they import nothing from the tool, so the messenger runs where the tool's declaration is not read), so they keep their
   // own copy, and the test "the messaging sources' label literals equal the vocabulary's" pins each value equal to the vocabulary's, which is what
   // stops the copy drifting.
-  ...nonVocabulary("messaging/sources/requests.mjs", ['"needs:chairman"'], "a leaf module's own copy of a vocabulary label, pinned equal to it below"),
-  ...nonVocabulary("messaging/sources/summary.mjs", ['"ready"', '"in-progress"', '"needs:chairman"'], "a leaf module's own copy of vocabulary labels, pinned equal to them below"),
+  ...nonVocabulary("messaging/sources/requests.ts", ['"needs:chairman"'], "a leaf module's own copy of a vocabulary label, pinned equal to it below"),
+  ...nonVocabulary("messaging/sources/summary.ts", ['"ready"', '"in-progress"', '"needs:chairman"'], "a leaf module's own copy of vocabulary labels, pinned equal to them below"),
   // The four claim-lifecycle labels: `claim-labels.ts` is a pinned, import-free LEAF (#804, `ready-label-audit.test.ts`) -- the one file this row
   // does NOT move them out of. See this file's own header and `project-vocabulary.ts`'s header for why: moving them would either break that
   // leaf's no-import contract or state the same four facts twice, and `project-vocabulary.ts` imports them from here instead (assertion 1, above,
@@ -183,9 +183,9 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // not the row `ready` label.
   ...nonVocabulary("work-gate.ts", ["`blocked`"], "the `herdr` status mentioned in a report string"),
   ...nonVocabulary("work-gate.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
-  // `work-gate/pr-orders.mjs`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
+  // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
-  ...nonVocabulary("work-gate/pr-orders.mjs", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+  ...nonVocabulary("work-gate/pr-orders.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
 ];
 
 test("the messaging sources' label literals equal the vocabulary's", () => {

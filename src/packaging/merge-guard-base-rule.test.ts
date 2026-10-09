@@ -1,5 +1,5 @@
 /**
- * RULE: IS THIS PR BASED ON `main`? -- half of the #148 case, #455's split into `packages/agent-org/src/merge-guard/base-rule.mjs`.
+ * RULE: IS THIS PR BASED ON `main`? -- half of the #148 case, #455's split into `packages/agent-org/src/merge-guard/base-rule.ts`.
  *
  * `ci.yml` triggers on `pull_request: branches: [main]`, so a PR based on another open PR's branch runs
  * no workflow at all and the branch protection covering `main` protects nothing here. Measured on #148:
@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseReason } from "../merge-guard/base-rule.mjs";
+import { baseReason } from "../merge-guard/base-rule.ts";
 
 test("a PR based on main raises no reason -- the common case must stay silent", () => {
   assert.deepEqual(baseReason({ baseRefName: "main" }), []);

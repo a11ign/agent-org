@@ -11,7 +11,6 @@
  * would pass for a command that writes nothing anywhere. The CLI half runs against a fixture project so its declared keys are exact; the lift half reads the
  * host's declaration like its sibling `gate-lifts-resolved-holds.test.ts`, and asserts first that it declares `agent-org`.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,7 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.ts";
 import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
-import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.mjs";
+import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.ts";
 
 const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";
@@ -87,7 +86,7 @@ function hold(repos: FakeState["repos"], ...argv: string[]) {
     writeFileSync(state, JSON.stringify({ repos, calls: [] }));
     writeFileSync(join(dir, "gh"), FAKE_GH);
     chmodSync(join(dir, "gh"), EXECUTABLE);
-    const result = spawnSync(process.execPath, [...TSX_IMPORT, CLI, ...argv], { encoding: "utf8",
+    const result = spawnSync(process.execPath, [CLI, ...argv], { encoding: "utf8",
       env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir, FAKE_GH_STATE: state, AGENT_ORG_HOST: fixtureProject(dir) } });
     const after = JSON.parse(readFileSync(state, "utf8")) as FakeState;
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, repos: after.repos, calls: after.calls.map((c) => c.join(" ")) };

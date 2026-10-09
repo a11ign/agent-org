@@ -10,7 +10,6 @@
  * `Finished`: node exits `1` on any uncaught exception, and `1` is the contract's ATTENTION, which the unit declares a success
  * (`SuccessExitStatus=0 1 2`). The same collision lives in the gate child (`GATE.WORK` is `1`) and in the `ExecStartPre=-` update step.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -23,7 +22,7 @@ import { renderTemplate, templateValues, parseHostConfig } from "../host-config.
 import { EXIT, GATE, afterGate } from "../work-tick.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 
 /** Run a temporary entry module under node, with or without the preload. */
 function runEntry(body: string, { preload }: { preload: boolean }) {
@@ -31,7 +30,7 @@ function runEntry(body: string, { preload }: { preload: boolean }) {
   try {
     const entry = join(dir, "entry.mjs");
     writeFileSync(entry, body);
-    return spawnSync(process.execPath, [...TSX_IMPORT, ...(preload ? [`--import=${PRELOAD}`] : []), entry], { encoding: "utf8" });
+    return spawnSync(process.execPath, [...(preload ? [`--import=${PRELOAD}`] : []), entry], { encoding: "utf8" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -83,16 +82,16 @@ test("#3038 layer 1: the crash code is in NEITHER form's SuccessExitStatus, and 
 test("#3038 layers 1 and 3: the tick and the update step both run under the preload, in both forms, and the update's `-` stays", () => {
   const { shipped, tool } = renderedUnits();
   assert.deepEqual(directive(shipped, "ExecStart"),
-    ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts"]);
-  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts"]);
+    ["ExecStart=%h/.local/bin/node --import=./packages/agent-org/src/lib/crash-exit.ts packages/agent-org/src/work-tick.ts"]);
+  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=%h/.local/bin/node --import=./src/lib/crash-exit.ts src/work-tick.ts"]);
   assert.deepEqual(directive(tool, "ExecStartPre")[0], `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
     "the `-` stays: a failed update is still not a reason to stop the org");
-  assert.match(TOOL_UPDATE_EXEC, /--import=\.\/src\/lib\/crash-exit\.mjs --import tsx src\/update-tool\.ts$/);
+  assert.match(TOOL_UPDATE_EXEC, /--import=\.\/src\/lib\/crash-exit\.ts src\/update-tool\.ts$/);
   assert.match(shipped, /^# `1` HERE IS THE CONTRACT'S ATTENTION AND NOT node's CRASH/m, "the template's header says which `1` this is");
 });
 
 test("#3038: a unit's script is still found behind node's own leading options, and `bash -c` is still read as nothing", () => {
-  const found = programCandidates("/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", { repoRoot: "/r", scripts: {} });
+  const found = programCandidates("/usr/bin/node --import=./src/lib/crash-exit.ts src/work-tick.ts", { repoRoot: "/r", scripts: {} });
   assert.deepEqual(found, ["/r/src/work-tick.ts"], "without this the unit leaves `unitsSpendingGh`'s population, silently");
   assert.deepEqual(programCandidates("/usr/bin/bash -c 'echo hi'", { repoRoot: "/r", scripts: {} }), []);
   assert.deepEqual(programCandidates("/usr/bin/node src/update-tool.ts", { repoRoot: "/r", scripts: {} }), ["/r/src/update-tool.ts"]);
@@ -120,7 +119,7 @@ function tickWith({ gate, wake }: { gate: string; wake: string }) {
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  writeFileSync(${JSON.stringify(marker)}, "ran");\n  ${wake}\n}\n`);
     mkdirSync(join(dir, "empty"));
     // `--ledger=<path>` (the `=` form is the only one `flagValue` reads) puts the handoff queue beside it, so a real queued order cannot make a quiet tick deliver.
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, join(src, "work-tick.ts"), `--ledger=${join(dir, "ledger.jsonl")}`], {
+    const ran = spawnSync(process.execPath, [join(src, "work-tick.ts"), `--ledger=${join(dir, "ledger.jsonl")}`], {
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
 
     });

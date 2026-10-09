@@ -31,7 +31,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 
 /** `0` a report was produced; `2` nothing could be read, which is NOT an org that spent nothing. */
 export const EXIT = { REPORTED: 0, CANNOT_ASK: 2 };
@@ -284,7 +284,7 @@ export function table(rows: Map<string, { turns: number; fresh: number; cacheRea
 
 function main() {
   refuseUnknownFlags(["--claude-root", "--codex-root", "--since"], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/token-audit.ts",
+    entry: import.meta.url, command: "node packages/agent-org/src/token-audit.ts",
   });
   const home = process.env.HOME ?? "";
   const claudeRoot = flagValue(process.argv, "claude-root") ?? join(home, ".claude", "projects");

@@ -52,13 +52,13 @@
 //      EXCEPT when every refusal is `project-unreadable` (the token cannot read the Project, #546): that exits 0
 //      with a DEGRADED line naming the rows -- `closeRowsExit`'s bridge, shared with the immediate path.
 //
-//   node --import tsx packages/agent-org/src/close-rows-sweep.ts [--window=<minutes>]
+//   node packages/agent-org/src/close-rows-sweep.ts [--window=<minutes>]
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never the package specifier -- this job runs with `actions/checkout` and nothing else, the
 // identical reason close-rows-for-merged-pr.ts's own header gives (#330/#331).
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // #1227: `settleClosedStatus` is imported rather than re-derived, for the reason this file's own header
 // gives about `stripClaimLabels`: a second copy of that decision is the "fact stated twice" shape.
 import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRateLimit }
@@ -215,7 +215,7 @@ function exitAfterSweep(code: number): never {
 }
 
 function main() {
-  refuseUnknownFlags(["--window"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/close-rows-sweep.ts" });
+  refuseUnknownFlags(["--window"], { entry: import.meta.url, command: "node packages/agent-org/src/close-rows-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {

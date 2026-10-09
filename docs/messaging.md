@@ -10,7 +10,7 @@ read from files on the host, by reference (decision 1, "Secret by reference only
 
 ## Decision 1. A provider-free core, and optional providers
 
-`src/messaging/` is a **leaf**: it imports nothing from the tool and reads no project checkout, so its tests (`*.test.mjs`, on
+`src/messaging/` is a **leaf**: it imports nothing from the tool and reads no project checkout, so its tests (`*.test.ts`, on
 `node:test`) run in this repository's own `gate`, which cannot run the tool's suite (it needs a project checkout, ADR 0040
 decision 8).
 
@@ -56,7 +56,7 @@ decision 8).
   session can produce it. **The liaison reaches `ceo` in one way**: `chairman:ask-ceo`, which runs `prompt:session ceo --needs-decision` and refuses a
   question that names nothing that clears it (below). **One exception, and it is the chairman's (2026-10-04, `a11ign/a11ign#3538`): a message the
   liaison's queue refuses (the seat is not running, its inbox is full) is passed to `ceo` and the chairman is told so in plain words, because his message
-  is never dropped.** `converse.mjs` holds the two recipients as constants, and a test scans every file under `src/messaging/` for a second caller of the queue.
+  is never dropped.** `converse.ts` holds the two recipients as constants, and a test scans every file under `src/messaging/` for a second caller of the queue.
   **There is no code path from a chat message to a worker.** `createInbound(...).handle` forwards a value branded with a
   module-private symbol (after the classifier, for the configured chairman), and the only function that writes a chairman-attributed
   row comment accepts nothing else.
@@ -128,7 +128,7 @@ closed**: `ans:<option id>` (one of the options the brief offered) or `act:<word
 
 ### A physical or account ask is walked through (C2, `a11ign/a11ign#3425`; shipped, and its live check is #3425's)
 
-A brief with a `Steps:` list is a procedure. `walk.mjs` sends the first step with Done / Stuck / Explain more under it; on Done the step's `Verify: {{placeholder}} is|contains <value>` is READ through the
+A brief with a `Steps:` list is a procedure. `walk.ts` sends the first step with Done / Stuck / Explain more under it; on Done the step's `Verify: {{placeholder}} is|contains <value>` is READ through the
 checked-facts vocabulary at that moment, and only a read that shows it moves the walk on. A read that fails, or says something else, tells him plainly that it is not seen, and offers Done again, Stuck and Later. A
 step with no `Verify:` is confirmed on Done alone, and the message says "I can't check that one from here". After the last verified step the request is answered on its row through the same path as any other
 press, and the closing message says what it unblocked. **The walk's memory is the ledger** (one `direction: "walk"` line per transition), so a restart finds it where it was.
@@ -136,7 +136,7 @@ press, and the closing message says what it unblocked. **The walk's memory is th
 ## Where it runs
 
 The host executes the tool from the monorepo copy today and from this repository's checkout after the cut-over
-(`a11ign/a11ign#2623`). **Nothing here edits `work-gate.mjs`, `wake.mjs` or any file of the shadow window's import closure**: events
+(`a11ign/a11ign#2623`). **Nothing here edits `work-gate.ts`, `wake.ts` or any file of the shadow window's import closure**: events
 come from a SEPARATE watcher unit (the `fleet-watch` / `lab-watch` pattern) that reads GitHub and the ledger, never from inside the
 tick.
 
@@ -166,18 +166,18 @@ is cleared before each order and has no memory of the conversation.
 
 | Row | What it is | Where |
 |---|---|---|
-| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.mjs`, `ledger.mjs`, `rate-limit.mjs`, `provider-contract.mjs`, `fake-provider.ts` |
-| 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.mjs`, `check.mjs`, `host/chairman-watch.*.in` |
-| 3 | The Telegram provider: send, silent, split, retry, pairing | `providers/telegram/send.mjs`, `providers/telegram/pair.mjs` |
-| 4 | The one-shot program the timer runs, and the request and summary sources | `watch.mjs`, `sources/requests.mjs`, `sources/summary.mjs` |
-| 5 | The stall and incident sources, every read injected | `sources/stall.mjs`, `sources/incidents.mjs` |
-| 5b | The real reads for row 5, wired into `watch.mjs`, and the `messaging:watch` package script | `sources/readers.mjs`, `watch.mjs`, `package.json` |
+| 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.ts`, `ledger.ts`, `rate-limit.ts`, `provider-contract.ts`, `fake-provider.ts` |
+| 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.ts`, `check.ts`, `host/chairman-watch.*.in` |
+| 3 | The Telegram provider: send, silent, split, retry, pairing | `providers/telegram/send.ts`, `providers/telegram/pair.ts` |
+| 4 | The one-shot program the timer runs, and the request and summary sources | `watch.ts`, `sources/requests.ts`, `sources/summary.ts` |
+| 5 | The stall and incident sources, every read injected | `sources/stall.ts`, `sources/incidents.ts` |
+| 5b | The real reads for row 5, wired into `watch.ts`, and the `messaging:watch` package script | `sources/readers.ts`, `watch.ts`, `package.json` |
 | 6 | **Live, first real message and the units installed** (a host act; closed 2026-10-04) | `host/chairman-watch.*.in` |
-| 7 | Stage 2's inbound core (identity, the classifier, the branded value) | `inbound.mjs`, `classify.mjs` |
-| 8 | The Telegram long poll and the listener unit | `providers/telegram/poll.mjs`, `listen.mjs`, `host/chairman-listen.service.in` |
-| 9 | Answers: a button or a reply resolves a request on its row | `answers.mjs` |
-| 10 | Conversation in: a free message queued for the liaison (it was `ceo` when the row was written; decision 2(b)) | `converse.mjs` |
-| 11 | Conversation out: replies are checked facts | `placeholders.mjs`, `reply.mjs`, `reply-cli.mjs` |
+| 7 | Stage 2's inbound core (identity, the classifier, the branded value) | `inbound.ts`, `classify.ts` |
+| 8 | The Telegram long poll and the listener unit | `providers/telegram/poll.ts`, `listen.ts`, `host/chairman-listen.service.in` |
+| 9 | Answers: a button or a reply resolves a request on its row | `answers.ts` |
+| 10 | Conversation in: a free message queued for the liaison (it was `ceo` when the row was written; decision 2(b)) | `converse.ts` |
+| 11 | Conversation out: replies are checked facts | `placeholders.ts`, `reply.ts`, `reply-cli.ts` |
 | 12 | `ceo`'s brief and the known gaps say what the code cannot enforce | `.agent-org/roles/ceo.md` and `docs/known-gaps.md` in `a11ign/a11ign` |
 | 13 | **Live, the round trip** (a host act; closed 2026-10-05) | the ledger, and the rows it wrote |
 
@@ -185,21 +185,21 @@ is cleared before each order and has no memory of the conversation.
 
 | Row | What it is | Where |
 |---|---|---|
-| A1 #3410 | The daily summary is opt-in and absent means off | `config.mjs`, `sources/summary.mjs` |
-| A7 #3411 | How fast the org acknowledges and answers is readable from the ledger | `measure.mjs` (`messaging:measure`) |
-| A2 #3412 | A request reaches the chairman as a brief | `sources/requests.mjs` |
-| A3 #3413 | A release shipping is told in one line | `sources/releases.mjs` |
-| A4 #3414, A8 #3422 | A milestone moving is told, and the first milestones are declared | `sources/milestones.mjs` |
-| A5 #3418 | The watch list: "keep me posted on X" is recorded once, told when X changes, and ends when X ends | `watch-list.mjs`, `sources/watched.mjs` (`chairman:watch`) |
-| A6 #3419 | An incident or stall message says what it is, its impact, and what is being done | `sources/incidents.mjs`, `sources/stall.mjs` |
+| A1 #3410 | The daily summary is opt-in and absent means off | `config.ts`, `sources/summary.ts` |
+| A7 #3411 | How fast the org acknowledges and answers is readable from the ledger | `measure.ts` (`messaging:measure`) |
+| A2 #3412 | A request reaches the chairman as a brief | `sources/requests.ts` |
+| A3 #3413 | A release shipping is told in one line | `sources/releases.ts` |
+| A4 #3414, A8 #3422 | A milestone moving is told, and the first milestones are declared | `sources/milestones.ts` |
+| A5 #3418 | The watch list: "keep me posted on X" is recorded once, told when X changes, and ends when X ends | `watch-list.ts`, `sources/watched.ts` (`chairman:watch`) |
+| A6 #3419 | An incident or stall message says what it is, its impact, and what is being done | `sources/incidents.ts`, `sources/stall.ts` |
 | B1 #3415 | A seat that is never cleared | `"persistent": true` in `.agent-org/roles/sessions.json` |
-| B3 #3420 | The checked facts the liaison may state beyond issue, PR and run: fleet, gate, release | `placeholders.mjs` |
+| B3 #3420 | The checked facts the liaison may state beyond issue, PR and run: fleet, gate, release | `placeholders.ts` |
 | B5 #3421 | The liaison's brief and its roster entry | `.agent-org/roles/liaison.md` and `sessions.json` in `a11ign/a11ign` |
-| B2 #3416 | The chairman's messages go to the liaison, acknowledged at once in words; `ceo` is the fallback (#3538) | `converse.mjs` |
-| B4 #3417 | The liaison records the chairman's answers on the row and fixes what he says is wrong; `chairman:ask-ceo` (#3490) | `record.mjs`, `correct.mjs`, `ask-ceo.mjs` |
-| C1 #3423 | Buttons are drawn, and the vocabulary is closed | `providers/telegram/send.mjs`, `answers.mjs` |
-| C2 #3425 | A physical or account ask is walked through, one verified step at a time | `walk.mjs`, `sources/requests.mjs` |
-| D1 #3427 | "Do it for me": a queue for the chairman's own session, written only after his OK | `session-queue.mjs` (`chairman:queue`) |
+| B2 #3416 | The chairman's messages go to the liaison, acknowledged at once in words; `ceo` is the fallback (#3538) | `converse.ts` |
+| B4 #3417 | The liaison records the chairman's answers on the row and fixes what he says is wrong; `chairman:ask-ceo` (#3490) | `record.ts`, `correct.ts`, `ask-ceo.ts` |
+| C1 #3423 | Buttons are drawn, and the vocabulary is closed | `providers/telegram/send.ts`, `answers.ts` |
+| C2 #3425 | A physical or account ask is walked through, one verified step at a time | `walk.ts`, `sources/requests.ts` |
+| D1 #3427 | "Do it for me": a queue for the chairman's own session, written only after his OK | `session-queue.ts` (`chairman:queue`) |
 
 **Not done:** **E2 #3431, which is the live one**: the liaison seat is started, one real conversation is had, and the first before-and-after readings are taken. Until then the chairman's
 messages that the liaison's queue refuses go to `ceo`, which is what the fallback in 2(b) is for. **C2's live check is #3425's** (the walk-through is merged and its tests pass; it has not been walked on a real request). E3 `a11ign/a11ign#3430`
@@ -212,15 +212,15 @@ Nothing in this row sends a message to anyone.
 
 | File | What it is |
 |---|---|
-| `src/messaging/event.mjs` | `normalizeEvent`: the one door an event comes in through; throws a `TypeError` naming the field. |
-| `src/messaging/core.mjs` | `createMessenger({ provider, ledger, now, config }).tick(events)`; the pure `planNotification`; `composeText`, `composeDigest`. |
-| `src/messaging/ledger.mjs` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
-| `src/messaging/rate-limit.mjs` | The token bucket and the hourly cap, on an injected clock. |
+| `src/messaging/event.ts` | `normalizeEvent`: the one door an event comes in through; throws a `TypeError` naming the field. |
+| `src/messaging/core.ts` | `createMessenger({ provider, ledger, now, config }).tick(events)`; the pure `planNotification`; `composeText`, `composeDigest`. |
+| `src/messaging/ledger.ts` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
+| `src/messaging/rate-limit.ts` | The token bucket and the hourly cap, on an injected clock. |
 | `src/messaging/provider-contract.ts` | `runProviderConformance(provider)`. |
 | `src/messaging/fake-provider.ts` | The in-memory provider that passes it, and records what it was given. |
 
 The clock, the ledger path and the provider are injected, so every test is hermetic and fast. The core takes no `fetch`: only a
-provider reaches a network. `node --test "src/messaging/**/*.test.mjs"` runs in `gate`.
+provider reaches a network. `node --test "src/messaging/**/*.test.ts"` runs in `gate`.
 
 ### Choices row 1 made that the design did not spell out
 
@@ -254,7 +254,7 @@ Each is a decision a later row may revisit, and each is pinned by a test.
 
 ## Rows 5 and 5b: the stall and incident sources, and what reads for them
 
-`sources/stall.mjs` and `sources/incidents.mjs` decide; `sources/readers.mjs` reads. Each reader throws on a failed call and the source turns the
+`sources/stall.ts` and `sources/incidents.ts` decide; `sources/readers.ts` reads. Each reader throws on a failed call and the source turns the
 throw into `cannot-ask`: no event, one log line, never a "cleared".
 
 | Reader | What it reads | Feeds |
@@ -282,15 +282,15 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
   own in the body; `src/trunk-red.test.ts` follows that sentence through `readFixRow`, so the two cannot drift apart. The `incident` label is not created by anything: the
   sentence says to `gh label create incident` first when `gh` reports it missing. **The other keys (`incident:gate-crash`, `incident:fleet-down`, `incident:ci-permission`, `stall:*`)
   have no standing order that opens a fix, so no instruction of theirs can carry the sentence: label it by hand until one exists.**
-- **What is being done is the newest comment by an ORG account on that row, quoted with its age** (`readers.mjs`'s `ORG_LOGINS`, restated from `hand-fix-ledger.mjs` because
+- **What is being done is the newest comment by an ORG account on that row, quoted with its age** (`readers.ts`'s `ORG_LOGINS`, restated from `hand-fix-ledger.ts` because
   the sources are a leaf). A comment from anyone else is not the org's word. A row the org has not commented on says so, which is not `nobody has picked this up yet`; a read that
-  failed says `I could not read it`, and the event is still sent. The path `issues/<n>/comments` was added to `watch.mjs`'s `READ_API_PATH`: without it every live read
+  failed says `I could not read it`, and the event is still sent. The path `issues/<n>/comments` was added to `watch.ts`'s `READ_API_PATH`: without it every live read
   would be refused and every message would say `I could not read it`.
 - **A cleared message says how long it lasted, as `at least` the time since the chairman was told.** The sources keep no state and a resolved reading no longer holds when the
   thing began, so the only memory of an episode is the ledger, and what it holds is the send. The floor is honest; a start it cannot know is `not known`, never a short one.
 
 - **The gate's last COMPLETED tick is a record the tick writes, not systemd's timestamp (#3040).** `InactiveEnterTimestamp` answers "did the unit run", and a tick
-  that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.mjs` writes
+  that died at import moves it exactly as a good one: on 2026-10-02 it advanced on every one of 63 crashed ticks. `work-tick.ts` writes
   `work-tick-completion.json` (time and exit code) beside the wake ledger only when it reaches the end of `main()`, so a tick that threw writes nothing and a
   tick that exited 1 (orders with nowhere to go) still does. `readGateUnit` takes `lastRecordAt` from it and THROWS when it is absent or unreadable, which the source
   turns into `cannot-ask`. A unit that is `failed`, or whose last COMPLETED tick is more than three intervals old, is the incident, and its text says which
@@ -301,8 +301,8 @@ throw into `cannot-ask`: no event, one log line, never a "cleared".
   could not be read is not written, and the source then reads a history that stopped growing, which is `cannot-ask` once it is more than three ticks old.
 - **A row is "waiting" when it is open, labelled `ready`, and carries none of `blocked`, `hold*`, `answer:*`.** That approximates the gate's own order list,
   which this program may not call: a row held by a `Not-before` date still counts, and a pull request awaiting a reviewer does not.
-- **`fleet-watch` runs hourly, so its file is up to an hour old on a healthy host.** `incidents.mjs`'s 30-minute default would have read half of every
-  hour as "the watcher stopped"; `watch.mjs` passes 130 minutes (two missed firings and a margin).
+- **`fleet-watch` runs hourly, so its file is up to an hour old on a healthy host.** `incidents.ts`'s 30-minute default would have read half of every
+  hour as "the watcher stopped"; `watch.ts` passes 130 minutes (two missed firings and a margin).
 - **A failed run's annotations are read once.** A completed run's never change, so they are kept by run id in `ci-annotations.json`, six runs per
   watcher run at most. **A failed run not yet read makes `readCiRuns` throw** (`cannot-ask`), because an unread run is not a clear one. A run that
   fails to START (`startup_failure`) has no job to carry an annotation and is not read: a permission refusal of that shape is not seen.
@@ -320,7 +320,7 @@ GraphQL and are not counted here):
 | `actions/runs/<id>/jobs`, then `check-runs/<id>/annotations` per failed job | only for a failed run not read before: at most 6 runs, each ONCE ever |
 | `releases?per_page=100` (the `releases` source, a11ign/a11ign#3413) | one per declared code repository (four for this project) |
 
-**Four calls per run when nothing new has failed and nothing is sent** (`readers.test.mjs` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
+**Four calls per run when nothing new has failed and nothing is sent** (`readers.test.ts` pins the list), so 1,152 a day at the five-minute timer: about 48 an hour, about 1%
 of the account's 5,000-point core pool. **The `releases` source adds one call per declared code repository on top** (four here, so eight a run, 2,304 a day, about 2%: computed from the table, not measured). Measured once on 2026-10-02 against the live repository: a double sample plus one asking of every source made 8
 calls, the 5 above and 3 annotation calls, which are not repeated. The account is the unit's declared `GH_CONFIG_DIR`, never
 a person's (#1967); `assertReadOnlyGh` admits `gh api <path>` for seven REST paths and nothing after the path, so no flag can turn the read into a write.
@@ -339,7 +339,7 @@ and row 6 is blocked by it, so the unit is not installed while the alarm would f
 
 ## The releases source (a11ign/a11ign#3413, chairman point 2 of #3409)
 
-A release of a declared package is told in one line, `<package> <version> is out: <first sentence of the release notes>`, the release page last. `sources/releases.mjs` reads
+A release of a declared package is told in one line, `<package> <version> is out: <first sentence of the release notes>`, the release page last. `sources/releases.ts` reads
 `gh api repos/<repo>/releases?per_page=100` for every `code` repository `project.json` declares and emits `release:<repo>@<tag>` for each PUBLISHED release not yet seen, oldest first.
 The core's kind `release` has no hold-down, never reminds, is not silent and is never cleared: a release is a thing that happened, not a condition that stands.
 
@@ -352,14 +352,14 @@ The core's kind `release` has no hold-down, never reminds, is not silent and is 
 
 ## Stage 2, the inbound core (row 7 of 13)
 
-`src/messaging/inbound.mjs` and `src/messaging/classify.mjs`: **who may speak through the chat, and what becomes of what they say.**
+`src/messaging/inbound.ts` and `src/messaging/classify.ts`: **who may speak through the chat, and what becomes of what they say.**
 Still no provider and no listener (rows 8-10): the functions take an update, shaped like Telegram's `getUpdates` entry, and
 return what the caller must do. Nothing here fetches, sends, deletes or forwards.
 
 | File | What it is |
 |---|---|
-| `src/messaging/inbound.mjs` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
-| `src/messaging/classify.mjs` | `classifyText(text)` -> `forward`, `drop` (a definite secret), `withhold` (one token shaped like a pasted secret; the chairman may resend it with "not a secret") or `refuse` (a deletion, or spending), with a one-line `reply`. |
+| `src/messaging/inbound.ts` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
+| `src/messaging/classify.ts` | `classifyText(text)` -> `forward`, `drop` (a definite secret), `withhold` (one token shaped like a pasted secret; the chairman may resend it with "not a secret") or `refuse` (a deletion, or spending), with a one-line `reply`. |
 
 ### The threat model of the inbound path
 
@@ -368,13 +368,13 @@ What the design defends, and against whom:
 
 | Who or what | What they could try | What stops it | Where it is pinned |
 |---|---|---|---|
-| A stranger messaging the bot | Be taken for the chairman | Identity: `from.id`, `chat.id` AND `chat.type == "private"` must all match; the ids are integers or the update is dropped | `inbound.test.mjs`, "identity" |
+| A stranger messaging the bot | Be taken for the chairman | Identity: `from.id`, `chat.id` AND `chat.type == "private"` must all match; the ids are integers or the update is dropped | `inbound.test.ts`, "identity" |
 | A stranger adding the bot to a group | Speak to the organisation from a chat the chairman is also in | The right user in a group is a distinct drop (`not-private-chat`); the drop names the chat so the listener can leave it | same |
 | Anyone forwarding or editing | Put third-party words in the chairman's mouth, or change a message after it was judged | A forward and an edit are dropped | same |
 | An update with a missing or doubled field | Make `undefined === undefined` accept it | A chairman with a missing id refuses to start; an update without an integer `update_id`, a sender, or exactly one payload is `malformed` | same |
 | A replayed or duplicated batch | Act on one instruction twice | Dedupe by the provider's update id, remembered in the ledger so it survives a restart | "a replayed update id" |
 | Code in this repository | Forge an "accepted" value: by hand, by copying one, by minting one for other ids (`createInbound` with a chairman of its own), or by skipping the classifier (`acceptUpdate` alone) | The value is branded with a module-private Symbol AND registered, with the ids it was minted for, in a module-private WeakMap. Only `handle` mints, and only after the classifier said forward; `acceptUpdate` returns a plain value that is not accepted. **`isAccepted(value, chairman)` makes the caller name the chairman it is configured with** and compares both ids | "no other module can produce the branded value" |
-| The chairman's own slip | Paste a credential, delete a repository, spend money from a phone | The classifier, below | `classify.test.mjs` |
+| The chairman's own slip | Paste a credential, delete a repository, spend money from a phone | The classifier, below | `classify.test.ts` |
 | A reader of the delivery log | Recover what was said | A line holds ids, a reason, a length and a sha256: never the text, and no hash at all for a secret | "a clean message's line" |
 
 ### (d) in three layers, and which one is the guarantee
@@ -417,10 +417,10 @@ Each is a decision a later row may revisit, and each is pinned by a test.
   vocabulary** instead (a11ign/a11ign#3423): `ans:<option id>` (the shape a brief's options block accepts) or `act:<word>` for one of
   `approve`, `done`, `stuck`, `later`, `explain`, `forme`. Anything else is dropped as `unknown-callback-data`, with a hash of the data in
   its ledger line, and is never forwarded. The press is then routed by the ledger-known message it sits under, never by the data
-  (`answers.mjs`): an option, `approve` or `done` resolves the request; `later` snoozes its reminders for 24 hours (one ledger line, the label
+  (`answers.ts`): an option, `approve` or `done` resolves the request; `later` snoozes its reminders for 24 hours (one ledger line, the label
   stays, so it is not an answer, and the watcher does not observe the request until the snooze ends, or the request is answered or cleared);
-  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.mjs`, the only module that queues); `forme` ("Do it for me") writes ONE ledger line,
-  `{direction: "answer", step: "forme", via: "button", messageRef}` (`answers.mjs`), leaves the label alone because a press is not an answer, and tells him
+  `explain` and `stuck` each queue ONE order for the `liaison` (through `converse.ts`, the only module that queues); `forme` ("Do it for me") writes ONE ledger line,
+  `{direction: "answer", step: "forme", via: "button", messageRef}` (`answers.ts`), leaves the label alone because a press is not an answer, and tells him
   his session was asked. A press on a message whose request is answered or no longer asking is told so and its keyboard is taken off
   (`editMessageReplyMarkup`). The Telegram provider draws `actions` as `reply_markup.inline_keyboard`, one button per row, on the first part of
   a split message only; a request with more options than fit (6) carries no keyboard, since a partial one is a quieter wrong than none.
@@ -474,7 +474,7 @@ pnpm run chairman:ask-ceo -- --row=3333 --message=45      (the question on stdin
 ```
 
 It is `prompt:session ceo --needs-decision` with two refusals in front, both before anything is sent: the ref is not in the ledger, or **the question carries no `Waiting-for:` line
-that the gate reads**. The predicate is `parseWaits` (`wait-condition.mjs`), the parser `work:tick` and `org-health` run, asked whether any wait in the text is `closed`, `merged`,
+that the gate reads**. The predicate is `parseWaits` (`wait-condition.ts`), the parser `work:tick` and `org-health` run, asked whether any wait in the text is `closed`, `merged`,
 `labelled` or `unlabelled` on a row. So `Waiting-for: unlabelled answer:ceo #3490` passes (the label coming off the row is the answer), and `Waiting-for: soon`, `Waiting-for: manual`,
 a bare `#3490` in a sentence and a `Waiting-for:` line inside a code fence do not.
 
@@ -485,9 +485,9 @@ what the gate can later find true. It is not a promise that the condition is a g
 
 **The target is `ceo` and nothing else** (`RECIPIENT`; `parseArgs` is strict, so a `--to` is refused). **The order is sent by running `prompt:session`, not by importing its queue**, so it has
 the same refusals, the same `decision: true` entry and a sender derived from the caller's herdr workspace, which is `liaison` only when it is run in the liaison's seat; the order's first line
-names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported as queued and never retried.** One consequence to know: `converse.test.mjs` bounds the callers of the queue under
-`src/messaging/` by scanning for the queue's functions and `prompt-session.mjs`, and `ask-ceo.mjs` runs the command by name, so the scan does not see it. It is a second sender to a session
-other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.mjs` pins its own single target.
+names the liaison either way. **Exit `2` of `prompt:session` is QUEUED, reported as queued and never retried.** One consequence to know: `converse.test.ts` bounds the callers of the queue under
+`src/messaging/` by scanning for the queue's functions and `prompt-session.ts`, and `ask-ceo.ts` runs the command by name, so the scan does not see it. It is a second sender to a session
+other than the liaison, from a command the liaison runs and not from a chat message, which is the path that scan exists to bound; `ask-ceo.test.ts` pins its own single target.
 
 ### `chairman:queue`: "can you do it for me?" (a11ign/a11ign#3427, D1 of #3409)
 
@@ -497,10 +497,10 @@ pnpm run chairman:queue -- status                                               
 pnpm run chairman:queue -- list | take <id> | done <id> --result=<one line> [--hand-fix]  the chairman's session's side
 ```
 
-**There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600, in a directory that must be 0700: `add` refuses a looser one and does not re-mode it), and `session-queue.test.mjs` fails if a module under
+**There is no executor.** The queue is a file only a human's session reads (`~/.local/state/agent-org/messaging/chairman-session-queue.jsonl`, 0600, in a directory that must be 0700: `add` refuses a looser one and does not re-mode it), and `session-queue.test.ts` fails if a module under
 `src/messaging/` that touches it also spawns a process. The org never holds the credential the act needs; the ask says what, why and what result is wanted, and the chairman's session does the rest.
 **An ask needs his OK, verified as `chairman:record` verifies one**: a message ref the ledger took in with his words hashing to the receipt's, or a "Do it for me" press line (`direction: "answer"`, `step: "forme"`,
-`via: "button"`, written by `answers.mjs`, one per message). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may
+`via: "button"`, written by `answers.ts`, one per message). One OK is one ask. Text carrying a credential shape is refused with the file unchanged; a deletion or a purchase is not, because that refusal is about what the CHAT may
 pass on and not about what his own session may be asked.
 **What happened to an ask is in the delivery ledger** (`direction: "queue"`: `read`, `take`, `done`), so the file holds one kind of line and is never rewritten. `list` and `take` write `lastRead`, which is
 the only thing the liaison can say about his session: it cannot say it is running. `done --hand-fix` counts into `messaging:measure`.

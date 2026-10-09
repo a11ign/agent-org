@@ -39,7 +39,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO } from "./board-data.ts";
 import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.ts";
 import { readAgents } from "./wake.ts";
@@ -177,7 +177,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url,
-    command: "node --import tsx packages/agent-org/src/fleet-gated-nightly.ts" });
+    command: "node packages/agent-org/src/fleet-gated-nightly.ts" });
 
   const result = performFiring();
   if (result.kind === "cannot-ask") {

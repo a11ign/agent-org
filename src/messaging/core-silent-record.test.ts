@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createMessenger } from "./core.mjs";
+import { createMessenger } from "./core.ts";
 import { createFakeProvider } from "./fake-provider.ts";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
+import { createLedger, readLedgerLines } from "./ledger.ts";
 
 const START = Date.parse("2026-10-04T09:00:00Z");
 const scratch = mkdtempSync(join(tmpdir(), "messaging-silent-"));

@@ -6,7 +6,6 @@
 // `gh` token, and since #2221 reads a named test file's import closure, `wake.test.ts` and
 // `prompt-session.test.ts` are both refused there (`route` and `clearContext` reach wake.ts's `gh` runner).
 // Nothing below calls either, so this file is the one the row's Acceptance can actually RUN.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -164,7 +163,7 @@ test("END TO END: the real command records --decision on the queue and strips it
   // that writes the entry we are reading back.
   inTempDir((dir) => {
     const run = (...args: string[]) => spawnSync(process.execPath,
-      [...TSX_IMPORT, fileURLToPath(new URL("../prompt-session.ts", import.meta.url)),
+      [fileURLToPath(new URL("../prompt-session.ts", import.meta.url)),
         `--ledger=${join(dir, "wake-ledger")}`, ...args],
       { encoding: "utf8", env: { ...process.env, PATH: dir }, timeout: 30_000 });
     const asked = run("ceo", "Ratify", "64", "KiB?", DECISION_FLAG);

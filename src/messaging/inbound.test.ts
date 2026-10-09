@@ -14,14 +14,13 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { register } from "tsx/esm/api";
 
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
-import { parseChairmanOptions } from "./sources/requests.mjs";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.ts";
+import { parseChairmanOptions } from "./sources/requests.ts";
 
 // The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
-// `listen.test.mjs` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.
+// `listen.test.ts` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
@@ -334,19 +333,18 @@ describe("a replayed update id is acted on once (done-when 4)", () => {
 
 describe("no other module can produce the branded value (done-when 5)", () => {
   const here = new URL(".", import.meta.url);
-  const modules = readdirSync(here).filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"));
+  const modules = readdirSync(here).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"));
   const accepted = /** @type {any} */ (harness().handle(update(130))).accepted;
 
-  test("the population is real: this scan sees inbound.mjs and the other modules", () => {
-    assert.ok(modules.includes("inbound.mjs"));
+  test("the population is real: this scan sees inbound.ts and the other modules", () => {
+    assert.ok(modules.includes("inbound.ts"));
     assert.ok(modules.length >= 6, `only ${modules.length} modules found`);
   });
 
-  test("nothing a module exports is the brand, the registry or the minted value; only inbound.mjs exports a way to mint one", async () => {
-    // BOTH COPIES FROM ONE KIND OF IMPORT: the scan below `import()`s each module natively, through tsx's loader registered here (these modules reach `.ts`), so `inbound.mjs` there is Node's copy and the static import above is rstest's, and
+  test("nothing a module exports is the brand, the registry or the minted value; only inbound.ts exports a way to mint one", async () => {
+    // BOTH COPIES FROM ONE KIND OF IMPORT: the scan below `import()`s each module natively (Node strips the types), so `inbound.ts` there is Node's copy and the static import above is rstest's, and
     // `value === createInbound` is false across the two. The minter, the checker and the brand all come from the copy the scan reads.
-    const unregister = register();
-    const native = await import(pathToFileURL(join(here.pathname, "inbound.mjs")).href);
+    const native = await import(pathToFileURL(join(here.pathname, "inbound.ts")).href);
     const nativeAccepted = native.createInbound({ ledger: createLedger({ path: join(scratch, "native-brand.jsonl"), now: Date.now }), chairman: CHAIRMAN }).handle(update(130)).accepted;
     const brand = Object.getOwnPropertySymbols(nativeAccepted)[0];
     assert.ok(brand, "a minted value carries a symbol (control: the scan below has something to look for)");
@@ -360,14 +358,13 @@ describe("no other module can produce the branded value (done-when 5)", () => {
         if (typeof value === "function" && value === native.createInbound) (mintersByModule[name] ??= []).push(exportName);
       }
     }
-    unregister();
-    assert.deepEqual(mintersByModule, { "inbound.mjs": ["createInbound"] });
-    assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.mjs is a decision, and this list is where it is made");
+    assert.deepEqual(mintersByModule, { "inbound.ts": ["createInbound"] });
+    assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.ts is a decision, and this list is where it is made");
   });
 
-  test("only inbound.mjs names the brand: no other source can mint, or even spell, it", () => {
+  test("only inbound.ts names the brand: no other source can mint, or even spell, it", () => {
     const naming = modules.filter((name) => /chairman-accepted-update|\bMINTED\b/.test(readFileSync(new URL(name, here), "utf8")));
-    assert.deepEqual(naming, ["inbound.mjs"]);
+    assert.deepEqual(naming, ["inbound.ts"]);
   });
 
   test("a forgery is not accepted: a copy, a spread, JSON, a prototype, an Object.assign, and a copy that reads the symbol by reflection", () => {

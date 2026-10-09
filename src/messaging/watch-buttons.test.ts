@@ -11,14 +11,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { actionData, createInbound } from "./inbound.mjs";
-import { createAnswers, requestActions } from "./answers.mjs";
+import { actionData, createInbound } from "./inbound.ts";
+import { createAnswers, requestActions } from "./answers.ts";
 import { createFakeProvider } from "./fake-provider.ts";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { createSecret } from "./secret.mjs";
-import { createTelegramProvider } from "./providers/telegram/send.mjs";
-import { NEEDS_CHAIRMAN } from "./sources/requests.mjs";
-import { runWatch } from "./watch.mjs";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { createSecret } from "./secret.ts";
+import { createTelegramProvider } from "./providers/telegram/send.ts";
+import { NEEDS_CHAIRMAN } from "./sources/requests.ts";
+import { runWatch } from "./watch.ts";
 
 const REPO = "a11ign/a11ign";
 const ROW = 3423;
@@ -86,7 +86,7 @@ const press = (id: number, data: string, messageId: string) => ({
 /** @param {ReturnType<typeof watcher>} w @param {Record<string, any>} github @returns {{ press: (data: string, id: number) => Promise<any> }} the listener's half, over the same ledger */
 function listener(w: ReturnType<typeof watcher>, github: Record<string, any>): { press: (data: string, id: number) => Promise<any>; } {
   const inbound = createInbound({ ledger: w.ledger(), chairman: CHAIRMAN });
-  const answers = createAnswers({ ledger: w.ledger(), github: /** @type {import("./answers.mjs").GithubWriter} */ (github), chairman: CHAIRMAN, answerLabel: "answer:ceo", now: w.now });
+  const answers = createAnswers({ ledger: w.ledger(), github: /** @type {import("./answers.ts").GithubWriter} */ (github), chairman: CHAIRMAN, answerLabel: "answer:ceo", now: w.now });
   return {
     async press(data, id) {
       const messageId = w.lines().find((line) => line.key === KEY && line.status === "sent")?.providerMessageId;

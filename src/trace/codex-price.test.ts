@@ -2,9 +2,9 @@
 // no-token: gh -- nothing here reaches GitHub
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregate, renderAggregate } from "./aggregate.mjs";
-import { eventsOfCodexSession } from "./codex-turns.mjs";
-import { costOf, PRICES } from "./store.mjs";
+import { aggregate, renderAggregate } from "./aggregate.ts";
+import { eventsOfCodexSession } from "./codex-turns.ts";
+import { costOf, PRICES } from "./store.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const tokens = (input: number, output: number, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite5m: 0, cacheWrite1h: 0 });

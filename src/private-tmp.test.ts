@@ -43,10 +43,10 @@ function findRstest(from: string): string {
 const RSTEST = findRstest(REPO);
 
 // The real config is read only when it is there: ci.yml's `agentOrg` job lays the tool out WITHOUT `scripts/` (a11ign/a11ign#3872), so a static import
-// of it would fail this whole file at load (and `tsx` is imported only where the config exists, because plain `node` cannot load a `.ts`), and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
+// of it would fail this whole file at load (and the config is imported only where it exists), and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
 const CONFIG_PATH = join(REPO, "scripts", "rstest", "rstest.config.ts");
 const config: { globalSetup?: string[]; setupFiles?: string[] } | undefined = existsSync(CONFIG_PATH)
-  ? (await (await import("tsx/esm/api")).tsImport(pathToFileURL(CONFIG_PATH).href, import.meta.url)).default
+  ? (await import(pathToFileURL(CONFIG_PATH).href)).default
   : undefined;
 
 // `os.tmpdir()` is already this file's private directory when the suite runs under its own config, which is what the LIVE test below asserts.
@@ -142,13 +142,13 @@ function runFixture(name: string, files: Record<string, string>, extraEnv: NodeJ
   mkdirSync(base, { recursive: true });
   for (const [file, body] of Object.entries(files)) writeFileSync(join(dir, file), body);
   writeFileSync(
-    join(dir, "rstest.config.mjs"),
+    join(dir, "rstest.config.ts"),
     `export default { root: ${JSON.stringify(dir)}, include: ["*.fixture.test.js"], globals: true, pool: { type: "forks" },
        globalSetup: [${JSON.stringify(SETUP)}], setupFiles: [${JSON.stringify(FILE_SETUP)}] };`,
   );
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv, [BASE_ENV]: base, RSTEST_NO_AGENT: "1" };
   delete env[RUN_ROOT_ENV];
-  const result = spawnSync(RSTEST, ["run", "--config", join(dir, "rstest.config.mjs")], { cwd: dir, env, encoding: "utf8" });
+  const result = spawnSync(RSTEST, ["run", "--config", join(dir, "rstest.config.ts")], { cwd: dir, env, encoding: "utf8" });
   assert.equal(result.error, undefined, `the child rstest did not start: ${result.error?.message}`);
   return { status: result.status, output: `${result.stdout}${result.stderr}`, base, runs: readdirSync(base) };
 }

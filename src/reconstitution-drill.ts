@@ -9,11 +9,11 @@
 // section asks for, without a human re-typing the roster by hand each time.
 //
 // Usage:
-//   node --import tsx packages/agent-org/src/reconstitution-drill.ts                          # against this checkout
-//   node --import tsx packages/agent-org/src/reconstitution-drill.ts --checkout=<path>        # against an already-cloned path
-//   node --import tsx packages/agent-org/src/reconstitution-drill.ts --clone --repo-url=<url> # do the actual git clone first
-//   node --import tsx packages/agent-org/src/reconstitution-drill.ts --json                   # machine-readable
-//   node --import tsx packages/agent-org/src/reconstitution-drill.ts --out-dir=<dir>          # one file per agent, ready to paste
+//   node packages/agent-org/src/reconstitution-drill.ts                          # against this checkout
+//   node packages/agent-org/src/reconstitution-drill.ts --checkout=<path>        # against an already-cloned path
+//   node packages/agent-org/src/reconstitution-drill.ts --clone --repo-url=<url> # do the actual git clone first
+//   node packages/agent-org/src/reconstitution-drill.ts --json                   # machine-readable
+//   node packages/agent-org/src/reconstitution-drill.ts --out-dir=<dir>          # one file per agent, ready to paste
 //
 // A found gap (a roster row with no message block, a missing role file, no memory index) is REPORTED, not
 // thrown past -- this script's whole purpose is to surface exactly that, which is what
@@ -24,8 +24,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 const README_REL = ".agent-org/roles/README.md";
 const MEMORY_INDEX_REL = ".agent-org/roles/memory/MEMORY.md";
@@ -163,7 +163,7 @@ function cloneFresh(repoUrl: string) {
 
 function main() {
   refuseUnknownFlags(["--checkout", "--clone", "--repo-url", "--json", "--out-dir"],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/reconstitution-drill.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/reconstitution-drill.ts" });
   const argv = process.argv.slice(2);
   const flag: (name: string) => string | undefined = (name): string | undefined => argv.find((a) => a.startsWith(`${name}=`))?.split("=").slice(1).join("=");
   /** @param {string} name */

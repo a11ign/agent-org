@@ -10,7 +10,6 @@
  * counted from `a11ign-work-tick.service`'s journal in #2845). It must report a stall AND a non-zero idle-minute figure; every "not offered / not counted"
  * below is only worth anything because that window IS read as a stall through the same entry.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -140,7 +139,7 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
 
 test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
-  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
+  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.ts, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
   const next = ci.slice(from + 1).search(/\n {2}[\w-]+:\n/);
@@ -509,7 +508,7 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
   // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
   // The child finds the project the way this file does: through the host file, which a stripped environment would otherwise lose.
   const host = process.env[HOST_ENV] === undefined ? {} : { [HOST_ENV]: process.env[HOST_ENV] };
-  const out = execFileSync(process.execPath, [...TSX_IMPORT, new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
+  const out = execFileSync(process.execPath, [new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
     { encoding: "utf8", env: { HOME: home, PATH: "", ...host } });
   assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
   assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");

@@ -4,7 +4,7 @@
 //
 //   pnpm run messaging:measure -- --window=24h        (the default)
 //
-// **TIME TO ACKNOWLEDGE** is two lines of one update: the receipt line `inbound.mjs` writes (`direction: "in"`, no `origin`) and the `converse` line, whose `ackAt` is when the
+// **TIME TO ACKNOWLEDGE** is two lines of one update: the receipt line `inbound.ts` writes (`direction: "in"`, no `origin`) and the `converse` line, whose `ackAt` is when the
 // acknowledgement went out (`ackRef` names it). `ackAt` is read when the line has it; a line written before a11ign/a11ign#3416 has none, and its `ts` stands in for it (`ts` is
 // written AFTER the queue write and any refusal message, so it overstates the time to acknowledge). **TIME TO ANSWER** is the receipt to the first `replied` line whose `replyTo` is the message's ref, which is why
 // `chairman:reply --to` exists: a reply that names nothing (`replyTo: null`) answers no message here, and is not guessed at.
@@ -25,8 +25,8 @@ import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { describeError, readLedgerLines } from "./ledger.mjs";
-import { defaultLedgerPath } from "./state.mjs";
+import { describeError, readLedgerLines } from "./ledger.ts";
+import { defaultLedgerPath } from "./state.ts";
 
 export const EXIT = Object.freeze({ ok: 0, refused: 2 });
 const DEFAULT_WINDOW_HOURS = 24;

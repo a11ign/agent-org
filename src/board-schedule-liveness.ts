@@ -50,7 +50,7 @@ import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO, ROOT, gh } from "./board-data.ts";
 import { editionDay } from "./board-discussion.ts";
 

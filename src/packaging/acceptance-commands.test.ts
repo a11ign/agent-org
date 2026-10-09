@@ -6,7 +6,6 @@
  * actually executed, exit code is the verdict), REFUSED (needs the fleet/lab/runs/, named, never gates),
  * MISSING (no acceptance line at all -- must FAIL, never read as a pass).
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { after, test } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
@@ -1292,8 +1291,8 @@ test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing --
 // #3063: the monorepo runs the tool through its `bin` (`agent-org <command>`, #3068/#3069), not `node <file>`. The
 // bin spawns nothing itself, so a script resolved to it would be charged for nothing: `npm run board:settle` would
 // read `runnable` against a job with no token. The command -> program mapping is the tool's command table
-// (`src/commands.mjs`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
-const TABLE = { "board:settle": "settle-closed-rows.ts", "messaging:listen": "messaging/listen.mjs",
+// (`src/commands.ts`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
+const TABLE = { "board:settle": "settle-closed-rows.ts", "messaging:listen": "messaging/listen.ts",
   "escapes": "../package.json.mjs", "no-file": "notes.txt" };
 const COMMAND_BODY = "agent-org board:settle";
 
@@ -1319,7 +1318,7 @@ test("#3063 singleNodeInvocation: `agent-org <command>` resolves to the PROGRAM 
   assert.equal(singleNodeInvocation("pnpm exec agent-org board:settle --dry-run", TABLE), settle);
   assert.equal(singleNodeInvocation("npx agent-org board:settle", TABLE), settle);
   assert.equal(singleNodeInvocation("FOO=1 agent-org board:settle", TABLE), settle);
-  assert.equal(singleNodeInvocation("agent-org messaging:listen", TABLE), join(TOOL_SRC, "messaging", "listen.mjs"));
+  assert.equal(singleNodeInvocation("agent-org messaging:listen", TABLE), join(TOOL_SRC, "messaging", "listen.ts"));
   assert.ok(existsSync(settle), "the program the cases above resolve to must exist, or the classify case proves nothing");
 });
 
@@ -1360,7 +1359,7 @@ test("#3063 ACCEPTANCE: `npm run board:settle` is REFUSED for `token` when the s
 test("#3063 a bin script whose command the table does not name stays RUNNABLE, and one whose program spawns "
   + "nothing does too -- the refusal tracks the program the table names, not the bin's name", () => {
   assert.equal(classifyAgainstScript("agent-org no-such-command").verdict, "runnable");
-  assert.equal(classifyAgainstScript("agent-org board:settle", { "board:settle": "lib/git-env.mjs" }).verdict,
+  assert.equal(classifyAgainstScript("agent-org board:settle", { "board:settle": "lib/git-env.ts" }).verdict,
     "runnable");
 });
 
@@ -1419,12 +1418,12 @@ test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.ts describes the three
     + `found: ${hits.map((h) => closureRequirementMessage(h)).join("; ")}`);
 });
 
-test("#621 local-import-closure.mjs's own JSDoc example is not read as a real import -- it demonstrates "
+test("#621 local-import-closure.ts's own JSDoc example is not read as a real import -- it demonstrates "
   + "`import { collect } from \"./board-data.ts\"` as prose, and a comment-unaware walk treated that "
   + "as a genuine edge into board-data.ts, adding a phantom \"token\" hit with a nonsensical chain "
   + "(\"classifyCommand -> localImports -> collect -> board-data.ts\") to any file merely importing "
   + "`localImports` from it", () => {
-  const hits = deriveClosureRequirements("packages/guards/src/local-import-closure.mjs");
+  const hits = deriveClosureRequirements("packages/guards/src/local-import-closure.ts");
   assert.deepEqual(hits, [], "the shared closure-walk module must derive nothing from its own docstring");
 });
 
@@ -1491,7 +1490,7 @@ test("#3103 deriveClosureRequirements: a RELATIVE entry importing a tool module 
     writeFileSync(join(dir, "sub", "x.test.mjs"), `import { q } from "${"agent-org" + "/src/nobody-installed.mjs"}";\nexport const x = q;\n`);
     const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.ts", import.meta.url).href)};`
       + ` console.log(JSON.stringify(deriveClosureRequirements("sub/x.test.mjs")));`;
-    const out = execFileSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
     assert.deepEqual(JSON.parse(out), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1506,7 +1505,7 @@ test("#3103 deriveClosureRequirements: the tool is followed through a dynamic im
     const namespaced = join(dir, "namespaced.test.mjs");
     writeFileSync(namespaced, `import * as reader from "${"agent-org" + "/src/reader.mjs"}";\nexport const x = reader;\n`);
     assert.deepEqual(deriveClosureRequirements(namespaced).map((h) => h.requirement), ["history"]);
-    // Out of scope by design (`installed-tool-imports.mjs`'s header): another package's code is not charged to the project.
+    // Out of scope by design (`installed-tool-imports.ts`'s header): another package's code is not charged to the project.
     mkdirSync(join(dir, "node_modules", "other-pkg"), { recursive: true });
     writeFileSync(join(dir, "node_modules", "other-pkg", "reader.mjs"), `export const q = ["${spell("--is-shallow-repo", "sitory")}"];\n`);
     const other = join(dir, "other.test.mjs");
@@ -3553,7 +3552,7 @@ test("#2305: `main()` is WIRED -- a missing record is PRINTED and exits 0 (a11ig
   withGitSandbox(({ dir, run, commit }) => {
     mergedPullRequest(dir, run, commit);
     const job = (body: string) => spawnSync("node",
-      [...TSX_IMPORT, new URL("../acceptance-commands.ts", import.meta.url).pathname],
+      [new URL("../acceptance-commands.ts", import.meta.url).pathname],
       { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
     const base = "Acceptance: none \u2014 the test is the check\n\nCloses: none \u2014 test\n";
     const missing = job(base);
@@ -3626,7 +3625,7 @@ test("#2308: two `## Measured` sections fail rather than pick one", () => {
 });
 
 test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints its line", () => {
-  const run = (body: string) => spawnSync(process.execPath, [...TSX_IMPORT, join(TOOL_SRC, "acceptance-commands.ts")],
+  const run = (body: string) => spawnSync(process.execPath, [join(TOOL_SRC, "acceptance-commands.ts")],
     { encoding: "utf8", env: { ...process.env, PR_BODY: body } });
   const bad = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l")}`);
   assert.match(bad.stdout, /MEASURED: MALFORMED/);

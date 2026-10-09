@@ -1,4 +1,3 @@
-// @ts-check
 // THE ORG FIXES WHAT IT IS TOLD ABOUT AND DOES NOT LOOK (#2936, the chairman's "why isn't the agent org self healing ... surely
 // the ceo should be optimising?", 2026-10-01). #2841, #2842, #2845, #2847, #2853 and #2882/#2912 each closed the exact instance
 // the chairman's own session found; nothing asked "is anything landing".
@@ -48,14 +47,13 @@
 // unknown says why on stderr -- a line that repeats for a persistent refusal and is therefore offered by `repeating-lines.ts`.
 //
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports this, and it runs before any `pnpm install`/build.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { canStrip, describeBad, type NodeStripFact } from "./node-strips-types.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { spenderPhrase } from "./gh-ledger.ts";
 // A LEAF (`claim-labels.ts` imports nothing), so the label is read from where it is declared, as `repeating-lines.ts` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
@@ -68,7 +66,7 @@ import { brokenChecks } from "./red-pr.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, PARKED_LABEL, STALE_WAIT_GRACE_MINUTES, isItemWait, namedDoneWhens, parseWaits, pastGrace } from "./wait-condition.ts";
 import { holdersOf } from "./pr-hold-state.ts";
-import { declaredClosedRows } from "./row-claim/file-overlap-rule.mjs";
+import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
@@ -226,24 +224,20 @@ const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIG
  */
 export type Reading = { signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null, discriminator?: string, prompt?: string };
 
-export type ToolAgreement = import("./lib/tool-version-agreement.mjs").Agreement;
+export type ToolAgreement = import("./lib/tool-version-agreement.ts").Agreement;
 
-/** @param {number} ms @returns {string} the UTC hour a time falls in, `2026-10-01T07`: the discriminator's resolution */
+/** @returns the UTC hour a time falls in, `2026-10-01T07`: the discriminator's resolution */
 const hourOf = (ms: number): string => new Date(ms).toISOString().slice(0, 13);
-/** @param {number} ms */
 const isoOf = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
-/** @param {number} ms @param {number} now */
 const ageText = (ms: number, now: number) => {
   const minutes = Math.max(0, Math.round((now - ms) / MS_PER_MINUTE));
   return minutes >= HOURS_FROM_MINUTES ? `${Math.round(minutes / MINUTES_PER_HOUR)} h` : `${minutes} min`;
 };
 
-/** @param {number} minutes @returns {number} hours to one decimal place */
+/** @returns hours to one decimal place */
 const hoursOf = (minutes: number): number => Math.round((minutes / MINUTES_PER_HOUR) * 10) / 10;
 
-/** @param {string} signal @param {string} why @returns {Reading} */
 const unknown = (signal: string, why: string): Reading => ({ signal, status: "unknown", detail: why });
-/** @param {string} signal @returns {Reading} */
 const clear = (signal: string): Reading => ({ signal, status: "clear", detail: "" });
 
 /**
@@ -254,9 +248,6 @@ const clear = (signal: string): Reading => ({ signal, status: "clear", detail: "
  * hours is clear whatever the work reading says, so a refused work read cannot turn a healthy tick into an unknown.
  *
  * `lastMergedIn` (#4047) is the repository that merge was in, named in the detail when the caller knows it.
- *
- * @param {{ now: number, lastMergedAt: number | null, lastMergedIn?: string | null, work: { greenPrs: number, claimableRows: number } | null }} input
- * @returns {Reading}
  */
 export function noMergeReading({ now, lastMergedAt, lastMergedIn = null, work }: { now: number; lastMergedAt: number | null; lastMergedIn?: string | null; work: { greenPrs: number; claimableRows: number; } | null; }): Reading {
   if (lastMergedAt === null) return unknown(SIGNALS.NO_MERGE, "the last merge could not be read, so the gap is not known");
@@ -283,9 +274,7 @@ export type RedPr = { number: number | string, owner: string | null, redSince: n
  * alone offered `ceo` its own freeze every day of it (#2883). THE HOLD'S OWN TWO JOBS ARE LEFT OUT and every other red is dated by
  * ITSELF: a held PR with a real `ts / run` failure is red since THAT check finished, not since the hold's `gate` did.
  * `options.holdStands` is `red-pr.ts`'s: whether the hold still EXCUSES (#2996), so a hold whose reason is gone dates the red it caused.
- * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
- * @param {{ holdStands?: (pr: any) => boolean }} [options]
- * @returns {number | null} epoch ms of the earliest broken check, `null` for none or for a broken check GitHub gave no time
+ * @returns epoch ms of the earliest broken check, `null` for none or for a broken check GitHub gave no time
  */
 export function redSinceOf(pr: { labels?: any[]; statusCheckRollup?: any[]; }, options?: { holdStands?: (pr: any) => boolean; }): number | null {
   const times = brokenChecks(pr, options).map((check) => check.failedAt).filter(Number.isFinite);
@@ -298,7 +287,6 @@ export function redSinceOf(pr: { labels?: any[]; statusCheckRollup?: any[]; }, o
  * NO PUSH IS ASSUMED BY CONSTRUCTION, and the reason is a fact about this repo: the head is the one that went red, and a push
  * makes a new head with a new run, so a PR still red on its head has had none. THE OWNER'S COMMENT IS WHAT IS LEFT TO ASK. A PR WITH NO OWNER IS ALWAYS UNATTENDED: no
  * account is "its owner's", so a comment on it is not an owner's act and cannot excuse it (the 2026-10-01 case, #2941).
- * @param {RedPr} pr @param {number} now
  */
 function isUnattended(pr: RedPr, now: number) {
   if (pr.redSince === null || now - pr.redSince < RED_PR_MINUTES * MS_PER_MINUTE) return false;
@@ -310,8 +298,6 @@ function isUnattended(pr: RedPr, now: number) {
 /**
  * SIGNAL 2: A RED PR NOBODY IS ON. `failingChecksOrder` woke the owner on the first red, and nothing asks whether that produced
  * a fix. `redPrs` is `null` for a refused PR read; one PR with no time makes the answer unknown unless another PR trips.
- * @param {{ now: number, redPrs: RedPr[] | null }} input
- * @returns {Reading}
  */
 export function redPrReading({ now, redPrs }: { now: number; redPrs: RedPr[] | null; }): Reading {
   if (redPrs === null) return unknown(SIGNALS.RED_PR, "the open pull requests could not be read");
@@ -335,8 +321,6 @@ export function redPrReading({ now, redPrs }: { now: number; redPrs: RedPr[] | n
  *
  * KEYED ON THE ROW REFS, NOT AN HOUR, because the counter carries ticks and no time: an hour derived from `now` minus the ticks
  * drifts by a tick's jitter and would re-ask across an hour boundary. The set of refs changes only when a row enters or leaves.
- * @param {{ refusals: Record<string, { reason: string, ticks: number }> | null }} input
- * @returns {Reading}
  */
 export function refusedRowReading({ refusals }: { refusals: Record<string, { reason: string; ticks: number; }> | null; }): Reading {
   if (refusals === null) return unknown(SIGNALS.REFUSED_ROW, "the claim-refusal counter was not read");
@@ -355,8 +339,6 @@ export function refusedRowReading({ refusals }: { refusals: Record<string, { rea
  * the tick it appears (#2781) and is CONSUMED here, not rebuilt: this adds the AGE, which is what says that the first telling did
  * not produce a fix. `drift` is `null` when the primary could not be asked (a linked worktree, CI, a git refusal), and `since` is
  * `null` when the drift carried nothing to date it by.
- * @param {{ now: number, drift: { behind: number, ahead: number, dirty: string[] } | null, since: number | null }} input
- * @returns {Reading}
  */
 export function primaryReading({ now, drift, since }: { now: number; drift: { behind: number; ahead: number; dirty: string[]; } | null; since: number | null; }): Reading {
   if (drift === null) return unknown(SIGNALS.PRIMARY, "the primary checkout could not be asked (a linked worktree, CI, or git refused)");
@@ -386,9 +368,6 @@ export type FleetWaiting = { rows: (number | string)[], labJobs: string[] };
  * read says. `fleet === null` is a read that was refused or never made, and IT IS NEVER "IDLE": a fleet that could not be asked
  * says nothing about captures. A count of zero beside a last capture INSIDE the window contradicts itself, and is stated as unknown
  * rather than believed either way.
- *
- * @param {{ now: number, fleet: FleetCaptures | null, waiting: FleetWaiting | null }} input
- * @returns {Reading}
  */
 export function fleetIdleReading({ now, fleet, waiting }: { now: number; fleet: FleetCaptures | null; waiting: FleetWaiting | null; }): Reading {
   if (fleet === null) return unknown(SIGNALS.FLEET_IDLE, "the fleet's captures could not be read, so it is not known to be idle");
@@ -414,10 +393,10 @@ export function fleetIdleReading({ now, fleet, waiting }: { now: number; fleet: 
  */
 export type OverdueCandidate = { kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null, boundMinutes?: number };
 
-/** @param {number} minutes @returns {string} how long an item has been open: minutes under two hours, hours to one decimal after */
+/** @returns how long an item has been open: minutes under two hours, hours to one decimal after */
 const openFor = (minutes: number): string => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
 
-/** @param {OverdueCandidate} item @returns {number} the minutes it may stay open before it is overdue: its own when it carries one, else its kind's */
+/** @returns the minutes it may stay open before it is overdue: its own when it carries one, else its kind's */
 const boundOf = (item: OverdueCandidate): number => item.boundMinutes ?? (item.kind === "pr" ? OVERDUE_PR_MINUTES : OVERDUE_ROW_MINUTES);
 
 /**
@@ -430,8 +409,6 @@ const boundOf = (item: OverdueCandidate): number => item.boundMinutes ?? (item.k
  *
  * KEYED ON THE SET OF `kind#number:reason`, not an hour: a merge or a close takes an item out of the set, a new overdue item adds to it, and a reason
  * changing re-asks, because who owes the next move has changed.
- * @param {{ now: number, items: OverdueCandidate[] | null, unread?: string[] }} input
- * @returns {Reading}
  */
 export function overdueReading({ now, items, unread = [] }: { now: number; items: OverdueCandidate[] | null; unread?: string[]; }): Reading {
   if (items === null) return unknown(SIGNALS.OVERDUE, "the open pull requests could not be read");
@@ -456,9 +433,6 @@ export function overdueReading({ now, items, unread = [] }: { now: number; items
  * SIGNAL 8: A WAIT STANDS ALTHOUGH THE CONDITION IT NAMES IS TRUE (#2996). The setter was ordered by the gate on the first tick the condition
  * held (`staleWaitOrders`); this is the question of whether that produced a removal, asked `STALE_WAIT_GRACE_MINUTES` later. `stale` is
  * `null` for a refused read of the rows and PRs. A wait whose condition could not be dated makes the answer unknown unless another trips.
- * @param {{ now: number, stale: { item: { kind: string, number: number, repoKey?: string }, wait: { text: string, key: string }, setter: string,
- *           resolvedAt: number | null }[] | null }} input
- * @returns {Reading}
  */
 export function staleWaitReading({ now, stale }: {
         now: number; stale: {
@@ -487,8 +461,6 @@ export function staleWaitReading({ now, stale }: {
  * SIGNAL 9: A WAIT THAT NAMES NO REASON, QUIET FOR `MANUAL_WAIT_HOURS` (#2996). `hold:*`, `answer:*` and the blocked label do not clear themselves, so with
  * no readable `Waiting-for:` nothing can ever say they are over. THE AGE IS TIME SINCE THE ITEM'S LAST ACTIVITY (this signal's own; the outcome clock runs from the opening): an item somebody
  * is working on is not stalled, and the wait's own start is not on the list read. A wait on `manual` is not here -- it is COUNTED in the detail.
- * @param {{ now: number, bare: { item: { kind: string, number: number, repoKey?: string }, fields: string[], quietSince: number | null, atOnce?: boolean }[] | null, manual?: number }} input
- * @returns {Reading}
  */
 export function waitWithoutReasonReading({ now, bare, manual = 0 }: { now: number; bare: { item: { kind: string; number: number; repoKey?: string; }; fields: string[]; quietSince: number | null; atOnce?: boolean; }[] | null; manual?: number; }): Reading {
   if (bare === null) return unknown(SIGNALS.WAIT_WITHOUT_REASON, "the rows and pull requests carrying waits could not be read");
@@ -513,7 +485,6 @@ export function waitWithoutReasonReading({ now, bare, manual = 0 }: { now: numbe
 /**
  * WHEN A BARE WAIT BECAME NAMEABLE, or `null` while it is not. A `parked` row with no reason is nameable at once (#4230): a park with no reason is the defect itself, so it does not wait
  * out the quiet hours a `hold:*` earns, and `now` stands in for an activity time nobody read. Every other bare wait is nameable `MANUAL_WAIT_HOURS` after the item's last activity.
- * @param {{ quietSince: number | null, atOnce?: boolean }} bare @param {number} now @returns {number | null}
  */
 function bareTrippedAt({ quietSince, atOnce }: { quietSince: number | null; atOnce?: boolean; }, now: number): number | null {
   if (atOnce === true) return quietSince ?? now;
@@ -532,8 +503,6 @@ export type StalledOrder = { kind: "deferred" | "queue", name: string, since: nu
  *
  * STRICTLY OVER, as `refusalReport`'s `isOverdue` is, so the signal and the `UNDELIVERED` line it sits beside agree on the minute. Keyed on the SET of names,
  * not an hour: one order delivered or one more stalled changes it, and an unchanged set holds for the two hours the cause holds for.
- * @param {{ now: number, stalled: StalledOrder[] | null }} input
- * @returns {Reading}
  */
 export function orderStallReading({ now, stalled }: { now: number; stalled: StalledOrder[] | null; }): Reading {
   if (stalled === null) return unknown(SIGNALS.ORDER_STALLED, "the waker's record of deferred orders and queued orders could not be read");
@@ -558,8 +527,6 @@ export type PromptPane = { session: string, pane: string, prompt: string, since:
  * which is a stated unknown and never a clear. A pane that reads as idle WITH NO PROMPT is not in `panes` at all, so it is never raised here.
  *
  * STRICTLY OVER, as {@link orderStallReading} is. Keyed on the set of sessions and panes, so one stuck pane is one signal however many ticks it lasts.
- * @param {{ now: number, panes: PromptPane[] | null }} input
- * @returns {Reading}
  */
 export function panePromptReading({ now, panes }: { now: number; panes: PromptPane[] | null; }): Reading {
   if (panes === null) return unknown(SIGNALS.PANE_AT_PROMPT, "herdr's panes could not be read");
@@ -592,8 +559,6 @@ export type AutoOffFact = { unreadable: string } | { refusal: AutoOffRefusal | n
  * that did not look), whose last tick is older than `AUTO_OFF_RECORD_STALE_MINUTES` before `readAt` (the timer had stopped), or that is inconsistent (`since` after
  * `at`). STRICTLY OVER, as {@link orderStallReading} is. Keyed on `since`, so one unbroken refusal is one signal
  * however long it lasts and however often its reason changes; a tick that proceeds ends the run and the next refusal is a new one.
- * @param {{ now: number, autoOff: AutoOffFact }} input
- * @returns {Reading}
  */
 export function autoOffRefusalReading({ now, autoOff }: { now: number; autoOff: AutoOffFact; }): Reading {
   const signal = SIGNALS.AUTO_OFF_REFUSING;
@@ -614,17 +579,14 @@ export function autoOffRefusalReading({ now, autoOff }: { now: number; autoOff: 
     detail: `fleet auto-off has refused to power workers off for ${ageText(refusal.since, now)} (\`${refusal.reason}\`): ${refusal.detail.slice(0, MAX_QUOTED_CHARS)}` };
 }
 
-/** @param {unknown} value @returns {value is Record<string, any>} */
 const isObject = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
-/** @param {unknown} value @returns {value is number} */
 const isTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 /**
  * THE REFUSAL RECORD, from the mirror file as text: `{ readAt, record }`, `record` being the control plane's state file verbatim (`{}` when it has none). Anything
  * that is not a mirror this reading can believe is `unreadable` with the reason, never a `null` refusal: absent and malformed are different from "refused nothing".
- * @param {string | null} text `null` for a file that could not be read
- * @param {string} path only for the sentence
- * @returns {AutoOffFact}
+ * @param text `null` for a file that could not be read
+ * @param path only for the sentence
  */
 export function parseAutoOffMirror(text: string | null, path: string): AutoOffFact {
   if (text === null) return { unreadable: `\`${path}\` could not be read, so whether fleet auto-off is refusing is not known` };
@@ -647,8 +609,6 @@ export function parseAutoOffMirror(text: string | null, path: string): AutoOffFa
  * THE FLEET'S REFUSAL RECORD, as `fleet-watch` mirrored it (`AUTO_OFF_MIRROR_PATH`) from the control plane. NEVER THROWS, and never ssh: the file is read off this
  * checkout like any other. A checkout `fleet-watch` does not run in holds no mirror, or one nobody keeps current, and the reading says so: that is the answer, not a
  * defect of the reader.
- * @param {{ root?: string, read?: (path: string) => string }} [where]
- * @returns {AutoOffFact}
  */
 export function readAutoOffRefusal({ root = DEFAULT_ROOT, read = (path) => readFileSync(path, "utf8") }: { root?: string; read?: (path: string) => string; } = {}): AutoOffFact {
   const path = resolve(root, AUTO_OFF_MIRROR_PATH);
@@ -671,8 +631,6 @@ export type PoolReading = { account: string | null, resource: string, remaining:
  * (#4148) A LOW POOL NAMES ITS SPENDER: for a GRAPHQL pool the detail adds who spent that account's last hour, off the `host/gh` ledger beside the config this tick ran under
  * (`spenderOf`; the default reads it). "Low" with no name is a signal nobody can act on, and the first reading of the burner took a hand-run awk. Only the DETAIL carries it:
  * the discriminator is unchanged, so one spent window is still one signal. A ledger that cannot be read leaves the detail as it was and says so, never a guess.
- * @param {{ pools: PoolReading[] | null, spenderOf?: (account: string) => string | null }} input
- * @returns {Reading}
  */
 export function poolLowReading({ pools, spenderOf = ledgerSpender }: { pools: PoolReading[] | null; spenderOf?: (account: string) => string | null; }): Reading {
   if (pools === null) return unknown(SIGNALS.POOL_LOW, "no API pool was read this tick");
@@ -688,12 +646,11 @@ export function poolLowReading({ pools, spenderOf = ledgerSpender }: { pools: Po
 /** The config directory `host/gh` writes this process's ledger under: the one `gh` itself reads, else the default. */
 const ledgerDir = () => process.env.GH_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "gh");
 
-/** @param {string} account @returns {string | null} */
 const ledgerSpender = (account: string): string | null => spenderPhrase(join(ledgerDir(), "gh-calls.tsv"), account);
 
 /**
  * `. Spender: ...` for each low GRAPHQL pool whose account is named, else "". An account the ledger cannot say anything of reads `UNREADABLE`, because the omission would look
- * like a clean answer. @param {PoolReading[]} low @param {(account: string) => string | null} spenderOf
+ * like a clean answer.
  */
 function spendersOf(low: PoolReading[], spenderOf: (account: string) => string | null) {
   const accounts = [...new Set(low.filter((p) => p.resource === "graphql" && p.account !== null).map((p) => (p.account as string)))];
@@ -708,8 +665,6 @@ function spendersOf(low: PoolReading[], spenderOf: (account: string) => string |
  * row in two is read two ways by two readers. KEYED ON THE NUMBERS AND THEIR KIND, not an hour: the set changes only when a row enters, leaves
  * or changes kind, so one standing set is one order however many ticks it lasts. `null` is a refused read, which is unknown and never clear.
  * #4048: GIVEN `now`, a row with no state label younger than `FILING_GRACE_MS` is a row `row-file` is still filing (it adds the label last), not a finding.
- * @param {{ rows: { number: number, state?: string, createdAt?: string, labels?: (string | { name?: string })[] }[] | null, now?: number }} input
- * @returns {Reading}
  */
 export function stateLabelReading({ rows, now }: { rows: { number: number; state?: string; createdAt?: string; labels?: (string | { name?: string; })[]; }[] | null; now?: number; }): Reading {
   if (rows === null) return unknown(SIGNALS.STATE_LABEL, "the open rows could not be read, so no row is known to be in exactly one state");
@@ -732,8 +687,6 @@ export function stateLabelReading({ rows, now }: { rows: { number: number; state
  * which is unknown and never clear. The detail IS the day's table, count first (`boardTruthTable`), so the order carries each row and the field to fix. It trips the tick a
  * row disagrees and is KEYED ON THE ROW AND QUESTION PAIRS, so one standing set is one order however many ticks it lasts. An UNREAD question alone does not trip: it is named
  * in the table's count line and reported UNKNOWN here so it is said, not assumed clear.
- * @param {{ audit: { findings: { question: string, number: number }[], unread: string[] } | null, day?: string }} input
- * @returns {Reading}
  */
 export function boardTruthReading({ audit, day = "today" }: { audit: { findings: { question: string; number: number; }[]; unread: string[]; } | null; day?: string; }): Reading {
   if (audit === null) return unknown(SIGNALS.BOARD_TRUTH, "the board could not be read, so no row is known to agree with reality");
@@ -752,8 +705,6 @@ export function boardTruthReading({ audit, day = "today" }: { audit: { findings:
  * with nothing unoffered is finished and clear. It trips THE TICK THE CONDITION HOLDS, with no grace (the chairman's order: within one tick), and clears the tick an
  * engineer holds a row. KEYED ON THE KINDS OF REASON (and the `READY_UNOFFERED` numbers, the one defect), not on every row, so a backlog row filed while idle is not a
  * second order; a new KIND of reason is.
- * @param {{ idle: import("./idle-with-open-rows.ts").IdleRows }} input
- * @returns {Reading}
  */
 export function idleWithOpenRowsSignal({ idle }: { idle: import("./idle-with-open-rows.ts").IdleRows; }): Reading {
   if (idle === null) return clear(SIGNALS.IDLE_WITH_OPEN_ROWS);
@@ -808,9 +759,6 @@ const labelNames = (pr: CirclePr) => (pr.labels ?? []).map((l) => (typeof l === 
  * THE FINDING IS THE STRUCTURE, NOT A CLOCK: the row's reason names the PR (`overlaps ${name},` -- the words B4 writes), the PR is held, parked or red (an UNHELD, green PR on the same file is a
  * real collision and is not named), and a route leads from the PR back to the row. That cannot clear itself, so no bound is waited for before it is said; the order is the tick's and holds two hours.
  * It decides on what the gate already read (the shelved map, the PRs, the open rows) and makes no call.
- *
- * @param {{ shelved: ReadonlyMap<number, string>, prs: CirclePr[], rows: CircleRow[], trackerRepo?: string }} input
- * @returns {ShelvedCircle[]}
  */
 export function shelvedCircles({ shelved, prs, rows, trackerRepo = homeProjectDeclaration().tracker[0].repo }: { shelved: ReadonlyMap<number, string>; prs: CirclePr[]; rows: CircleRow[]; trackerRepo?: string; }): ShelvedCircle[] {
   const circles: ShelvedCircle[] = [];
@@ -829,8 +777,6 @@ export function shelvedCircles({ shelved, prs, rows, trackerRepo = homeProjectDe
 
 /**
  * SIGNAL: A ROW SHELVED AGAINST THE PR THAT WAITS ON IT (#4401). `circles` is {@link shelvedCircles}' answer; `null` is a tick whose pull-request or Ready read was refused, which is unknown and NEVER clear.
- * @param {{ circles: ShelvedCircle[] | null }} input
- * @returns {Reading}
  */
 export function shelvedCircleReading({ circles }: { circles: ShelvedCircle[] | null; }): Reading {
   if (circles === null) return unknown(SIGNALS.SHELVED_CIRCLE, "the pull requests or the gate's own shelving list could not be read");
@@ -847,10 +793,9 @@ export type CopyPair = { original: string, copy: string, allowedLines: number | 
 
 /**
  * SIGNAL (#3533): A RUNNER OF `agent-org` THAT IS NOT ON THE NEWEST RELEASE FOR LONGER THAN ONE RELEASE CYCLE, whichever of the three kinds it is (the tool checkout, a worktree's resolved
- * copy, the last `ci.yml` run on `main`). The comparison is `lib/tool-version-agreement.mjs`'s, which `host:check` calls too; THIS only turns its result into a reading. `agreement` is `undefined`
+ * copy, the last `ci.yml` run on `main`). The comparison is `lib/tool-version-agreement.ts`'s, which `host:check` calls too; THIS only turns its result into a reading. `agreement` is `undefined`
  * when the caller does not ask (a host that declares no tool), `null` when the read was refused, else what the child read returned (`{ result }`). Keyed on the newest tag: one release, one signal,
  * and the next release is a new one. A runner the read could not say anything about is an `unknown` and never a clear.
- * @param {{ agreement: { result: ToolAgreement } | null }} input @returns {Reading}
  */
 export function toolVersionReading({ agreement }: { agreement: { result: ToolAgreement; } | null; }): Reading {
   if (agreement === null) return unknown(SIGNALS.TOOL_VERSION, "the read of which `agent-org` version every runner runs did not return");
@@ -869,14 +814,13 @@ export function toolVersionReading({ agreement }: { agreement: { result: ToolAgr
 }
 
 /**
- * THE READ, in a CHILD: `lib/tool-version-agreement.mjs --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
+ * THE READ, in a CHILD: `lib/tool-version-agreement.ts --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
  * those readers would carry the history readers into every test that reaches the tick (`host-units.ts`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
  * declares no tool); `null` is a read that failed, which the reading says. NEVER THROWS.
- * @param {(args: string[]) => string} [run] @returns {{ now: number, result: ToolAgreement } | null | undefined}
  */
-export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...TSX_IMPORT, ...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
+export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
   try {
-    const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.mjs"), "--json"]));
+    const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.ts"), "--json"]));
     return parsed.asked === false ? undefined : parsed;
   } catch {
     return null;
@@ -887,7 +831,6 @@ export function readToolAgreement(run: (args: string[]) => string = (args) => ex
  * SIGNAL (ADR 0043 Decision 8, a11ign/a11ign#4390): A `node` THE HOST RUNS CANNOT STRIP TYPES, so `node <file>.ts` would die there. The facts are `node-strips-types.ts`'s (the PATH `node` and every `node` a
  * rendered unit names, asked once per run); THIS turns them into a reading. `fact` is `undefined` when the caller does not ask and `null` when the read was refused. A binary that could not be run is
  * tripped, never clear: absence is not a pass. Keyed on the bad binaries, so the same breakage is one signal however many ticks see it and a different binary is a new one.
- * @param {{ fact: NodeStripFact | null }} input @returns {Reading}
  */
 export function nodeCannotStripReading({ fact }: { fact: NodeStripFact | null; }): Reading {
   if (fact === null) return unknown(SIGNALS.NODE_CANNOT_STRIP, "the read of what each `node` prints for `process.features.typescript` did not return");
@@ -923,8 +866,7 @@ export type TeamAccessFact = { teams: TeamAccess[] } | { unreadable: string };
  * A READ THAT CANNOT RUN IS UNKNOWN, NEVER CLEAR. `GET orgs/<org>/teams/<slug>/repos` answers 404 to a token that cannot see the team, and an EMPTY
  * listing is the same blindness wearing a 200 (a declared team that reaches nothing has not been read), so each is `unknown` with its reason, as is a
  * declaration that could not be read or declares no team. A trip stands over an unread team: what WAS read is not unread.
- * @param {{ access: TeamAccessFact }} input `access` is `readTeamAccess`'s answer; `undefined` (not asked) never reaches here
- * @returns {Reading}
+ * @param input `access` is `readTeamAccess`'s answer; `undefined` (not asked) never reaches here
  */
 export function teamAccessReading({ access }: { access: TeamAccessFact; }): Reading {
   if ("unreadable" in access) return unknown(SIGNALS.TEAM_ACCESS, access.unreadable);
@@ -943,7 +885,7 @@ export function teamAccessReading({ access }: { access: TeamAccessFact; }): Read
     detail: `${found.length} team level(s) differ from the declaration: ${named}${more}` };
 }
 
-/** @param {TeamAccess} access @returns {{ key: string, text: string }[]} one entry per repository, `team:repo` keyed so a second repository is a new trip */
+/** @returns one entry per repository, `team:repo` keyed so a second repository is a new trip */
 function teamDifferences({ team, layer, exceptions = {}, declared, reached }: TeamAccess): { key: string; text: string; }[] {
   if (reached === null || reached.length === 0) return [];
   const held = new Map(reached.map(({ repo, level }) => [repo, level]));
@@ -959,7 +901,7 @@ function teamDifferences({ team, layer, exceptions = {}, declared, reached }: Te
   return [...found].map(([repo, text]) => ({ key: `${team}:${repo}`, text }));
 }
 
-/** @param {string} text @returns {TeamRepository[] | null} `null` for a line that is not six fields: a partial listing is not a reading */
+/** @returns `null` for a line that is not six fields: a partial listing is not a reading */
 export function parseTeamListing(text: string): TeamRepository[] | null {
   const rows = [];
   for (const line of text.split("\n").filter((l) => l.trim() !== "")) {
@@ -977,8 +919,6 @@ export function parseTeamListing(text: string): TeamRepository[] | null {
  * malformed key is a named reason and never a silent off, so a project that mistyped it is told on the next tick rather than believing it is watched.
  * A team may carry `exceptions`, `{ "<owner>/<name>": "<level>" }`: the level it is DELIBERATELY kept at on that one repository instead of `layer`
  * (a11ign/a11ign#4467: `bots` stays off `a11ign/.github`, which would otherwise be a permanent trip). See `teamExceptionsOf` for what is refused.
- * @param {string} root @param {(path: string) => string} read
- * @returns {{ declaration: undefined } | { unreadable: string } | { org: string, declared: string[], teams: { team: string, layer: string, exceptions: Record<string, string> }[] }}
  */
 function readTeamDeclaration(root: string, read: (path: string) => string): { declaration: undefined; } | { unreadable: string; } | { org: string; declared: string[]; teams: { team: string; layer: string; exceptions: Record<string, string>; }[]; } {
   const project = `${root}/.agent-org/project.json`;
@@ -994,7 +934,6 @@ function readTeamDeclaration(root: string, read: (path: string) => string): { de
   }
 }
 
-/** @param {any} file @param {string} where @returns {ReturnType<typeof readTeamDeclaration>} */
 function teamDeclarationOf(file: any, where: string): ReturnType<typeof readTeamDeclaration> {
   const declared = Object.keys(file?.repositories ?? {}).filter((k) => !k.startsWith("_"));
   const orgs = new Set(declared.map((repo) => repo.split("/")[0]));
@@ -1012,8 +951,7 @@ function teamDeclarationOf(file: any, where: string): ReturnType<typeof readTeam
 const EXCEPTION_LEVELS = Object.freeze(["none", ...TEAM_LEVELS.filter((level) => level !== "admin")]);
 
 /**
- * @param {{ team: string, exceptions?: any }} t @param {string[]} declared
- * @returns {string | undefined} why the team's `exceptions` cannot be believed, or `undefined` when it is absent or sound. An exception naming a repository the declaration
+ * @returns why the team's `exceptions` cannot be believed, or `undefined` when it is absent or sound. An exception naming a repository the declaration
  * does not list is refused rather than ignored: it would expect nothing of anything, and a mistyped name must be told on the next tick, not believed to be watching.
  */
 function teamExceptionsOf({ team, exceptions }: { team: string; exceptions?: any; }, declared: string[]): string | undefined {
@@ -1031,8 +969,6 @@ function teamExceptionsOf({ team, exceptions }: { team: string; exceptions?: any
  * THE FACT FOR `teamAccessReading`: the declaration, then ONE paginated REST call per declared team on the core pool (`gh api` spends core, never GraphQL, `gh-api-budget.md`).
  * `undefined` is "not asked" (the project declares no `teamAccess`), `{ unreadable }` a read that failed, and a team GitHub refused is `reached: null` with its own reason.
  * NEVER THROWS.
- * @param {(args: string[]) => string} run @param {{ root?: string, read?: (path: string) => string }} [io]
- * @returns {TeamAccessFact | undefined}
  */
 export function readTeamAccess(run: (args: string[]) => string, { root = HOME_CHECKOUT, read = (path) => readFileSync(path, "utf8") }: { root?: string; read?: (path: string) => string; } = {}): TeamAccessFact | undefined {
   const found = readTeamDeclaration(root, read);
@@ -1041,7 +977,6 @@ export function readTeamAccess(run: (args: string[]) => string, { root = HOME_CH
   return { teams: found.teams.map(({ team, layer, exceptions }) => ({ team, layer, exceptions, declared: found.declared, ...readTeamRepositories(run, found.org, team) })) };
 }
 
-/** @param {(args: string[]) => string} run @param {string} org @param {string} team @returns {{ reached: TeamRepository[] | null, why: string }} */
 function readTeamRepositories(run: (args: string[]) => string, org: string, team: string): { reached: TeamRepository[] | null; why: string; } {
   try {
     const reached = parseTeamListing(run(["api", `orgs/${org}/teams/${team}/repos?per_page=${TEAM_PAGE_SIZE}`, "--paginate", "--jq", TEAM_LISTING_JQ]));
@@ -1051,7 +986,7 @@ function readTeamRepositories(run: (args: string[]) => string, org: string, team
   }
 }
 
-/** @param {string} text @returns {{ body: string, complete: boolean }} the text with the copy header block removed, wherever it sits */
+/** @returns the text with the copy header block removed, wherever it sits */
 function withoutCopyHeader(text: string): { body: string; complete: boolean; } {
   const lines = text.split("\n");
   const start = lines.findIndex((line) => COPY_HEADER_START.test(line));
@@ -1063,7 +998,6 @@ function withoutCopyHeader(text: string): { body: string; complete: boolean; } {
 /**
  * How many lines of `lines` have no counterpart left in `against`, counted as a MULTISET so a moved or duplicated line is not
  * mistaken for an edit and an edit is one line on each side.
- * @param {string[]} lines @param {string[]} against @returns {number}
  */
 function linesWithoutCounterpart(lines: string[], against: string[]): number {
   const left = new Map();
@@ -1078,13 +1012,11 @@ function linesWithoutCounterpart(lines: string[], against: string[]): number {
 }
 
 /**
- * @param {CopyPair} pair
- * @returns {{ verdict: "same" | "drifted" | "unknown", why: string }}
  * A copy drifts when more of the ORIGINAL'S lines are changed or gone than its OWN HEADER names, or when a header that names NOTHING
  * sits above a copy with lines the original lacks. THE HEADER'S COUNT IS THE ALLOWANCE, which is what lets the pair list be discovered
  * rather than declared a second time -- and its price is stated here: a one-byte change ON a line the header already names is inside
  * the allowance, and so are the copy's own extra lines once the header names any change, because the header counts the original's
- * lines it changed and ONE of them can become several (`changed-packages.mjs`'s `REPO` became four lines under "3 NAMED LINES", #2884). `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly and
+ * lines it changed and ONE of them can become several (`changed-packages.ts`'s `REPO` became four lines under "3 NAMED LINES", #2884). `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly and
  * is the exact check; this is the cheap one that runs on every tick.
  */
 function judgePair(pair: CopyPair): { verdict: "same" | "drifted" | "unknown"; why: string; } {
@@ -1101,12 +1033,10 @@ function judgePair(pair: CopyPair): { verdict: "same" | "drifted" | "unknown"; w
 }
 
 /**
- * SIGNAL 6: A DECLARED COPY NO LONGER MATCHES ITS ORIGINAL (#2937). `packages/guards/src/isolation-gate.mjs` and
- * `packages/agent-org/src/lib/isolation-gate.mjs` were edited identically BY HAND in #2921: a drift waiting to happen unless a question
+ * SIGNAL 6: A DECLARED COPY NO LONGER MATCHES ITS ORIGINAL (#2937). `packages/guards/src/isolation-gate.ts` and
+ * `packages/agent-org/src/lib/isolation-gate.ts` were edited identically BY HAND in #2921: a drift waiting to happen unless a question
  * reads it. `pairs` is `null` for a read that could not run; an EMPTY list is stated as unknown too, because a discovery that finds
  * no copy in a tree that holds nineteen has not found a clean tree.
- * @param {{ pairs: CopyPair[] | null }} input
- * @returns {Reading}
  */
 export function copyDriftReading({ pairs }: { pairs: CopyPair[] | null; }): Reading {
   if (pairs === null) return unknown(SIGNALS.COPIES, "the declared copies could not be read");
@@ -1125,7 +1055,7 @@ export function copyDriftReading({ pairs }: { pairs: CopyPair[] | null; }): Read
     detail: `${drifted.length} declared cop${drifted.length === 1 ? "y" : "ies"} drifted from the original: ${named.join("; ")}${more}` };
 }
 
-/** @param {(path: string) => string} read @param {string} path @returns {string | null} the text, or `null` for a file that cannot be read: absent is not empty */
+/** @returns the text, or `null` for a file that cannot be read: absent is not empty */
 function readOrNull(read: (path: string) => string, path: string): string | null {
   try {
     return read(path);
@@ -1138,8 +1068,6 @@ function readOrNull(read: (path: string) => string, path: string): string | null
  * THE DECLARED COPIES OF A CHECKOUT, discovered from the headers: every file in `COPIES_DIR` whose header names its original. `null`
  * when the directory cannot be listed. Each pair's original is read here and is `null` in the pair when it cannot be.
  * `root` is the PROJECT, where each copy's original is read; `toolRoot` is where the copies themselves are.
- * @param {{ root?: string, toolRoot?: string, list?: (dir: string) => string[], read?: (path: string) => string }} [where]
- * @returns {CopyPair[] | null}
  */
 export function readDeclaredCopies({ root = DEFAULT_ROOT, toolRoot = TOOL_ROOT, list = (dir) => readdirSync(dir), read = (path) => readFileSync(path, "utf8") }: { root?: string; toolRoot?: string; list?: (dir: string) => string[]; read?: (path: string) => string; } = {}): CopyPair[] | null {
   let names;
@@ -1169,9 +1097,6 @@ export function readDeclaredCopies({ root = DEFAULT_ROOT, toolRoot = TOOL_ROOT, 
  * WHEN THE PRIMARY STOPPED BEING CURRENT: the committer date of the oldest commit `origin/main` has that HEAD lacks, else the
  * oldest modified time among its dirty tracked files. INFERRED from git and the filesystem, not logged: nothing records the moment
  * `primary:update` first failed. `null` when neither can be read.
- * @param {{ behind: number, dirty: string[] } | null} drift
- * @param {{ root: string, run?: (args: string[]) => string, mtimeOf?: (path: string) => number }} where
- * @returns {number | null}
  */
 export function primaryStandingSince(drift: { behind: number; dirty: string[]; } | null, { root, run = (args) => execFileSync("git", args, { cwd: root, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
   mtimeOf = (path) => statSync(`${root}/${path}`).mtimeMs }: { root: string; run?: (args: string[]) => string; mtimeOf?: (path: string) => number; }): number | null {
@@ -1190,8 +1115,6 @@ export function primaryStandingSince(drift: { behind: number; dirty: string[]; }
 /**
  * THE LAST MERGE OF ONE REPOSITORY: `{ at }` (`at` is `null` for a repository with no merged PR among the newest-updated), or `null` when the
  * read was refused or unparseable. The two are told apart because only the second says nothing about the repository.
- * @param {(args: string[]) => string} run @param {string} repo
- * @returns {{ at: number | null } | null}
  */
 function askLastMerge(run: (args: string[]) => string, repo: string): { at: number | null; } | null {
   try {
@@ -1210,8 +1133,6 @@ function askLastMerge(run: (args: string[]) => string, repo: string): { at: numb
  * THE LAST MERGE, as epoch ms, or `null`. ONE REST CALL on the core pool: the newest-UPDATED closed PRs, of which the latest
  * `merged_at` is the answer (merging updates the PR, so every recent merge is among them). `null` -- refused, unparseable, or no
  * merged PR in the window -- is a stated unknown, never "long ago": a refusal says nothing about when the last merge was.
- * @param {(args: string[]) => string} run @param {string} repo
- * @returns {number | null}
  */
 export function readLastMergedAt(run: (args: string[]) => string, repo: string): number | null {
   return askLastMerge(run, repo)?.at ?? null;
@@ -1222,8 +1143,6 @@ export function readLastMergedAt(run: (args: string[]) => string, repo: string):
  * in the project's repository alone tripped `no-merge-while-work-exists` falsely twice in a day. ONE call per repository. A repository
  * whose read is refused makes the answer `null` (unknown): the others' older times would put a merge further back than it may be, and that
  * is a false trip. A repository with no merged PR in its window says nothing and is skipped; none anywhere is `null` too.
- * @param {(args: string[]) => string} run @param {readonly string[]} repos
- * @returns {{ at: number, repo: string } | null}
  */
 export function readLatestMerge(run: (args: string[]) => string, repos: readonly string[]): { at: number; repo: string; } | null {
   const asked = repos.map((repo) => ({ repo, merge: askLastMerge(run, repo) }));
@@ -1248,7 +1167,7 @@ export type FailedJob = { name: string, steps: string[] };
  */
 export type ReleaseRuns = { runs: ReleaseRun[], jobs?: FailedJob[] | null, pending?: string[] | null };
 
-/** @param {ReleaseRun[]} runs @returns {ReleaseRun | undefined} the newest run that concluded `success` or `failure`: the one that says whether the last release happened */
+/** @returns the newest run that concluded `success` or `failure`: the one that says whether the last release happened */
 export function newestReleaseVerdict(runs: ReleaseRun[]): ReleaseRun | undefined {
   return [...runs].filter((r) => RELEASE_VERDICTS.includes(String(r.conclusion))).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
 }
@@ -1258,8 +1177,6 @@ export function newestReleaseVerdict(runs: ReleaseRun[]): ReleaseRun | undefined
  * that was cancelled, skipped or is still going neither trips nor clears it (the `status` runs `release.yml` skips on every commit must not read as a release). Any event
  * counts, because a failed release is a failed release whatever started it. A list with no verdict in it is UNKNOWN, never clear: a window of skipped runs says nothing.
  * The jobs and the pending changesets are the DETAIL of a failure already certain, so a refusal of either is said in the detail and does not turn the trip into an unknown.
- * @param {{ releaseRuns: ReleaseRuns | null }} input
- * @returns {Reading}
  */
 export function releaseFailedReading({ releaseRuns }: { releaseRuns: ReleaseRuns | null; }): Reading {
   const signal = SIGNALS.RELEASE_FAILED;
@@ -1272,7 +1189,6 @@ export function releaseFailedReading({ releaseRuns }: { releaseRuns: ReleaseRuns
     detail: `release.yml on main FAILED and no later run succeeded: run ${verdict.id} (${verdict.event}) at ${verdict.sha.slice(0, 9)}, ${failedJobsText(releaseRuns.jobs)}; ${pendingText(releaseRuns.pending)}; ${verdict.url}` };
 }
 
-/** @param {FailedJob[] | null | undefined} jobs @returns {string} */
 function failedJobsText(jobs: FailedJob[] | null | undefined): string {
   if (!jobs) return "the failing job could not be read (read the run)";
   if (jobs.length === 0) return "no job of it reports failure (read the run)";
@@ -1280,7 +1196,6 @@ function failedJobsText(jobs: FailedJob[] | null | undefined): string {
   return `${named.join("; ")}${jobs.length > MAX_NAMED ? `; and ${jobs.length - MAX_NAMED} more` : ""}`;
 }
 
-/** @param {string[] | null | undefined} pending @returns {string} */
 function pendingText(pending: string[] | null | undefined): string {
   if (!pending) return "the pending changesets could not be read";
   if (pending.length === 0) return "no changeset is pending in .changeset/";
@@ -1290,8 +1205,6 @@ function pendingText(pending: string[] | null | undefined): string {
 /**
  * THE FACT FOR `releaseFailedReading`: ONE REST CALL on the core pool for the newest `release.yml` runs on `main`, and, only while the newest verdict is a failure, TWO MORE
  * (that run's jobs, and `.changeset/` on `main`). `null` is a refused or unparseable list, a stated unknown and never "no failure". NEVER THROWS.
- * @param {(args: string[]) => string} run @param {string} repo
- * @returns {ReleaseRuns | null}
  */
 export function readReleaseRuns(run: (args: string[]) => string, repo: string): ReleaseRuns | null {
   const runs = tryJson(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/release.yml/runs`, "-f", "branch=main", "-f", `per_page=${RELEASE_RUN_WINDOW}`,
@@ -1306,7 +1219,7 @@ export function readReleaseRuns(run: (args: string[]) => string, repo: string): 
     pending: Array.isArray(files) ? files.filter((name) => name.endsWith(".md") && name !== "README.md") : null };
 }
 
-/** @param {() => string} read @returns {any} the parsed output, or `null` for a refusal or text that is not JSON: a stated gap for the caller, never an empty answer */
+/** @returns the parsed output, or `null` for a refusal or text that is not JSON: a stated gap for the caller, never an empty answer */
 function tryJson(read: () => string): any {
   try {
     return JSON.parse(read());
@@ -1320,8 +1233,6 @@ function tryJson(read: () => string): any {
  * `release-run-failed` (signal 18), which sees a release that ran and failed; this sees one that never started. ONE READING PER TRIPPED REPOSITORY, each with its own discriminator
  * (`release-behind-main@<repo>@<oldest sha>`), so a later commit does not re-raise it and one repository's order does not re-key another's. The verdicts are `release-behind-main.ts`'s.
  * A repository whose read was refused is UNKNOWN, never clear, and its being unknown does not hide another's trip: a trip and the unknowns are both returned.
- * @param {{ now: number, behind: import("./release-behind-main.ts").RepoFact[] | null }} input
- * @returns {Reading[]}
  */
 export function releaseBehindReadings({ now, behind }: { now: number; behind: import("./release-behind-main.ts").RepoFact[] | null; }): Reading[] {
   const signal = SIGNALS.RELEASE_BEHIND_MAIN;
@@ -1343,8 +1254,6 @@ export function releaseBehindReadings({ now, behind }: { now: number; behind: im
  * WHAT IT WILL NOT DO. A label naming no class in the index is `unknown class`, reported by name and in no way a class (a typo must not invent a repeat, and must not hide one: the row
  * stays unread until relabelled). A refused read of the labels or the file is `unknown`, never "no repeats". An OPEN row is not an instance (`readClassRepeat` lists closed rows only).
  * The detail ends with the instance counts of every class read, so "which class has the most" is printed beside the offer.
- * @param {{ now: number, classRepeat: import("./class-repeat.ts").ClassRepeatFact | null }} input
- * @returns {Reading[]}
  */
 export function classRepeatReadings({ now, classRepeat }: { now: number; classRepeat: import("./class-repeat.ts").ClassRepeatFact | null; }): Reading[] {
   const signal = SIGNALS.CLASS_REPEAT;
@@ -1375,17 +1284,16 @@ function rowCovering(classRepeat: { filings?: Record<string, import("./class-rep
   return filing !== undefined && "filed" in filing && filing.covers === newestOccurrence(group).key ? filing.filed : null;
 }
 
-/** @param {import("./class-repeat.ts").ClassRow[]} rows @returns {string} */
 const rowsText = (rows: import("./class-repeat.ts").ClassRow[]): string => rows.map((r) => `#${r.number}`).join(", ");
 
-/** @param {import("./class-repeat.ts").ClassGroup} group @returns {string} what the group holds: its closed rows, and its failure-ledger refs when it has any */
+/** @returns what the group holds: its closed rows, and its failure-ledger refs when it has any */
 function occurrencesText(group: import("./class-repeat.ts").ClassGroup): string {
   if (group.events.length === 0) return `${group.rows.length} closed rows, ${rowsText(group.rows)}, newest first`;
   const rows = group.rows.length === 0 ? "" : `${group.rows.length} closed rows ${rowsText(group.rows)}, newest first; `;
   return `${occurrencesOf(group)} occurrences (${rows}${group.events.length} failure-ledger refs: ${group.events.join(", ")})`;
 }
 
-/** @param {import("./class-repeat.ts").ClassGroup[]} groups @returns {string} every class read with its instance count, the most first */
+/** @returns every class read with its instance count, the most first */
 function classCountsText(groups: import("./class-repeat.ts").ClassGroup[]): string {
   const counted = groups.filter((g) => g.entry !== null).sort((a, b) => occurrencesOf(b) - occurrencesOf(a) || a.id.localeCompare(b.id));
   return `instances per class, most first: ${counted.map((g) => `${g.id} ${occurrencesOf(g)}`).join(", ")}`;
@@ -1399,7 +1307,6 @@ function filingText(filing: import("./class-repeat.ts").Filing | undefined): str
     : `A class row, ${filing.filed}, was filed for an earlier occurrence and does not cover this one. `;
 }
 
-/** @param {string} signal @param {import("./class-repeat.ts").ClassGroup} group @param {string} beside @param {import("./class-repeat.ts").Filing} [filing] @returns {Reading} */
 function classRepeatTripped(signal: string, group: import("./class-repeat.ts").ClassGroup, beside: string, filing?: import("./class-repeat.ts").Filing): Reading {
   const entry = (group.entry as import("./class-repeat.ts").FailureClass);
   const guard = entry.guard ?? `NONE IN FORCE (${entry.guardNote ?? "the index says nothing more"}), so the first thing to fix is that there is no guard`;
@@ -1430,8 +1337,7 @@ export type MilestoneClockFact = { primaries: { number: number, title: string }[
  * NO PRIMARY MILESTONE IS CLEAR AND SAYS SO, and so is a primary milestone with no open row (nothing to alarm about). TWO marked primary is UNKNOWN: the rule is one at a time,
  * and a clock that picked one would be answering for `ceo`. THE KEY IS THE MILESTONE AND THE NAMED ROW, so a changed named row re-asks and a later tick naming the same one does not.
  *
- * @param {{ now: number, fact: MilestoneClockFact | null }} input `fact` is `null` for an open-row list that was not read
- * @returns {Reading}
+ * @param input `fact` is `null` for an open-row list that was not read
  */
 export function milestoneClockReading({ now, fact }: { now: number; fact: MilestoneClockFact | null; }): Reading {
   const signal = SIGNALS.MILESTONE_CLOCK;
@@ -1467,14 +1373,7 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
  * THE READINGS, in a fixed order: the four of #2936, then the two of #2937 and the outcome clock (#3486, which replaced #2970's) WHEN ITS FACT IS GIVEN. An OMITTED fact (`undefined`) is
  * "this caller does not ask", which is silent; `null` is "asked and refused", which is a stated unknown. The two must not share a
  * value, or a gate that never wired the fleet read would log an unknown every tick for a fault nobody can fix from the log.
- * @param {{ now: number, lastMergedAt: number | null, lastMergedIn?: string | null, work: { greenPrs: number, claimableRows: number } | null, redPrs: RedPr[] | null,
- *           refusals: Record<string, { reason: string, ticks: number }> | null,
- *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
- *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
- *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, nodeStrips?: NodeStripFact | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.ts").IdleRows, shelvedCircle?: ShelvedCircle[] | null, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
- *           classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null, milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null }} facts `shelvedCircle` (#4401) is `shelvedCircles`' answer over the shelving list and pull requests the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
- * @returns {Reading[]}
+ * @param facts `shelvedCircle` (#4401) is `shelvedCircles`' answer over the shelving list and pull requests the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  */
 export function orgHealthReadings(facts: {
         now: number; lastMergedAt: number | null; lastMergedIn?: string | null; work: { greenPrs: number; claimableRows: number; } | null; redPrs: RedPr[] | null;
@@ -1548,7 +1447,7 @@ const REMEDY = (Object.freeze({
     + "request is closed or merged is the second (`reviewer teardown` ends those by itself when it can see them). A trust prompt on a clone is the "
     + "reviewer's own codex config to edit, not a tick's.",
   [SIGNALS.TOOL_VERSION]: "Each runner named has run an older `agent-org` than the newest release for longer than one release cycle (the tick's interval, the tag lag and one more tick), so \"the org runs the latest\" "
-    + "is not true of it. READ `node src/lib/tool-version-agreement.mjs` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
+    + "is not true of it. READ `node src/lib/tool-version-agreement.ts` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
     + "the newest tag: read the tick's first journal line and why it did not. A `worktree` runner resolves a COPY of the dependency through its `node_modules`: until the removal row (#3534) merges it is the pin, "
     + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
   [SIGNALS.NODE_CANNOT_STRIP]: "Each `node` named cannot strip types (`process.features.typescript` is not `strip` or `transform`, or the binary could not be run), so any unit or script that runs a `.ts` "
@@ -1600,14 +1499,12 @@ const REMEDY = (Object.freeze({
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
 }) as Readonly<Record<string, string>>);
 
-/** @param {string} signal @returns {string[]} who is ordered: the signal's first reader if it has one, then `ceo`, who takes every signal */
+/** @returns who is ordered: the signal's first reader if it has one, then `ceo`, who takes every signal */
 const readersOf = (signal: string): string[] => [...(FIRST_READERS[signal] ? [FIRST_READERS[signal]] : []), OFFERED_TO];
 
 /**
  * ONE ORDER PER TRIPPED SIGNAL, to `ceo` (and to the signal's first reader where `FIRST_READERS` names one), the numbers in the prompt. THE PROMPT CARRIES THE OTHER TRIPPED SIGNALS, because a
  * session is delivered one order per tick (`repeating-lines.ts`' reason). An unknown or clear reading emits nothing here.
- * @param {Reading[]} readings
- * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
 export function orgHealthOrders(readings: Reading[]): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
   const tripped = readings.filter((r) => r.status === "tripped");
@@ -1631,7 +1528,6 @@ export function orgHealthOrders(readings: Reading[]): { session: string; cause: 
 /**
  * A tree that holds copy headers but NONE of their originals is an extracted tool, not a product checkout, and there is nothing to
  * compare it against: no reading, which is not "clear" and not "unknown" (a stated unknown here would repeat every tick forever).
- * @param {CopyPair[] | null} pairs @returns {CopyPair[] | null | undefined}
  */
 function copiesToCompare(pairs: CopyPair[] | null): CopyPair[] | null | undefined {
   if (pairs !== null && pairs.length > 0 && pairs.every((pair) => pair.originalText === null)) return undefined;
@@ -1645,8 +1541,6 @@ function copiesToCompare(pairs: CopyPair[] | null): CopyPair[] | null | undefine
  * THE COPIES ARE READ HERE, from disk, when the caller gives none: they are files of the checkout the tick runs from, so no
  * caller has them already, and a leaf that reads them keeps `work-gate.ts` out of it. In an extracted tree no original is
  * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
- * @param {Parameters<typeof orgHealthReadings>[0]} facts
- * @param {{ log?: (line: string) => void, readCopies?: () => CopyPair[] | null, readAutoOff?: () => AutoOffFact }} [io]
  */
 export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal() }: { log?: (line: string) => void; readCopies?: () => CopyPair[] | null; readAutoOff?: () => AutoOffFact; } = {}) {
   try {

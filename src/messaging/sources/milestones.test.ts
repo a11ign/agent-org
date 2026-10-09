@@ -12,12 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createMessenger } from "../core.mjs";
-import { normalizeEvent } from "../event.mjs";
+import { createMessenger } from "../core.ts";
+import { normalizeEvent } from "../event.ts";
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { MILESTONES, assertReadOnlyGh, runWatch } from "../watch.mjs";
-import { BASELINE_KEY, MilestonesRefusal, milestoneKey, observeMilestones, parseMilestones, readMilestonesFile, seenMilestoneKeys } from "./milestones.mjs";
+import { createLedger } from "../ledger.ts";
+import { MILESTONES, assertReadOnlyGh, runWatch } from "../watch.ts";
+import { BASELINE_KEY, MilestonesRefusal, milestoneKey, observeMilestones, parseMilestones, readMilestonesFile, seenMilestoneKeys } from "./milestones.ts";
 
 const TRACKER = "a11ign/a11ign";
 const SPLIT = { key: "split-move-1", what: "nvda-worker has moved to its own repository", when: { row: 2701, closed: true } };

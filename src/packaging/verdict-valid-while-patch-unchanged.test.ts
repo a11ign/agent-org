@@ -96,7 +96,7 @@ test("#3045 (1) `MERGE_FROM_MAIN` and `isMergeFromMain` are DELETED, not kept as
   const ban = /\bisMergeFromMain\b|\bMERGE_FROM_MAIN\b|\breviewChainOf\b/;
   // The positive control for the emptiness below: the pattern matches the very names the row deletes.
   assert.ok(ban.test("const MERGE_FROM_MAIN = /x/; function isMergeFromMain(c) {} reviewChainOf(pr)"));
-  const files = [join(dir, "work-gate.ts"), join(dir, "work-gate", "pr-orders.mjs"), join(dir, "review-verdict.ts")];
+  const files = [join(dir, "work-gate.ts"), join(dir, "work-gate", "pr-orders.ts"), join(dir, "review-verdict.ts")];
   assert.equal(files.length, 3);
   for (const file of files) assert.ok(!ban.test(readFileSync(file, "utf8").replace(/^\s*(\/\/|\*|\/\*\*).*$/gm, "")), `${file} still names the headline test`);
 });

@@ -24,8 +24,8 @@
 // It writes to stdout by default. `--post` publishes it as a comment on the board-report issue, so the
 // generating and the publishing are separate acts and a bad report can be seen before it is posted.
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { changedFiles } from "./lib/changed-files.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { changedFiles } from "./lib/changed-files.ts";
 import { readFileSync, existsSync, readdirSync} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
@@ -38,7 +38,7 @@ import { READY_LABEL } from "./claim-labels.ts";
 // The gate predicates live in `board-gates.ts` (#429), a module with no process in it, so a test of the
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.
 import { latestVerdictGate } from "./board-gates.ts";
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 import { foundByChairman } from "./found-by-chairman.ts";
 export { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "./board-gates.ts";
 

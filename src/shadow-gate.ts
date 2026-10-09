@@ -41,7 +41,7 @@ export const LIVE_STATE_DIR = stateEntryPath("");
  *
  * A directory that is not there yet cannot be a symlink to the live one, but a LITERAL path match must
  * still be caught before anything is created -- so absence falls back to a normalised compare rather than
- * throwing, the same shape `worktree-resolution.mjs`'s `realOrNull` uses one level up (there returning
+ * throwing, the same shape `worktree-resolution.ts`'s `realOrNull` uses one level up (there returning
  * `null` for the caller to classify; here the caller is a single equality check, so the fallback value
  * itself is the answer).
  * @param {string} dir @param {typeof realpathSync} realpath

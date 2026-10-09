@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { classifyText, REASON, REPLIES, VERDICT } from "./classify.mjs";
+import { classifyText, REASON, REPLIES, VERDICT } from "./classify.ts";
 
 const GITHUB_TOKEN = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
 const PRIVATE_KEY_HEADER = ["-----BEGIN ", "OPENSSH PRIVATE", " KEY-----"].join("");
@@ -201,7 +201,7 @@ describe("#3442: benign sentences beside each pattern are forwarded: the positiv
     "the login page is broken", "pin the version of node", "the pass rate is 98%", "a secret santa for the team", "we need a token budget for the model",
     "agent/chairman-messaging-a-credential-3442", "chairman-messaging-a-credential-3442", "ab8753d91c3f2e1d0a9b8c7d6e5f4a3b2c1d0e9f",
     "https://github.com/a11ign/agent-org/pull/138", "https://github.com/a11ign/a11ign/issues/3442#issuecomment-4172938475618",
-    "packages/lab/CLAUDE.md", "classify.test.mjs", "Report_Final_v2.pdf", "docs/what-asserted-versus-referred-was-measured-at",
+    "packages/lab/CLAUDE.md", "classify.test.ts", "Report_Final_v2.pdf", "docs/what-asserted-versus-referred-was-measured-at",
     "internationalisation", "that is my password", "dan.beck@example.com", "createInboundForwarder",
   ];
 

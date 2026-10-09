@@ -9,11 +9,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart, Move } from "./aggregate.mjs";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { eventsOfTranscript, PRICES, TraceEvent } from "./store.mjs";
-import { parseMergePaths, readMergePaths, readMoves } from "./trace.mjs";
-import { waterfall } from "./waterfall.mjs";
+import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart, Move } from "./aggregate.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
+import { eventsOfTranscript, PRICES, TraceEvent } from "./store.ts";
+import { parseMergePaths, readMergePaths, readMoves } from "./trace.ts";
+import { waterfall } from "./waterfall.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso: string) => Date.parse(iso);
@@ -25,7 +25,7 @@ const near = (actual: unknown, expected: number) => assert.ok(Math.abs(actual - 
 
 const SONNET = "claude-sonnet-5-5";
 let serial = 0;
-const WRITE_1H_FACTOR = 2; // store.mjs's own: a 1-hour cache write costs twice the input rate
+const WRITE_1H_FACTOR = 2; // store.ts's own: a 1-hour cache write costs twice the input rate
 /**
  * A turn event in the store's shape. `tokens` is [input, output, cacheRead, cacheWrite1h]; `cost` null is an unpriced turn.
  * A report prices a turn from `PRICES` and ignores the cost on its line (#3638), so a fixture that wants a turn to cost `cost` dollars gives it a model of its own with a flat rate

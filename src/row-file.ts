@@ -77,7 +77,7 @@
 //   written."
 //
 // NOT A SECOND IMPLEMENTATION. `missingTemplateFields` is #707's own pure function, imported from
-// `row-claim/template-fields-rule.mjs` unchanged -- the identical rule row-claim already enforces at
+// `row-claim/template-fields-rule.ts` unchanged -- the identical rule row-claim already enforces at
 // claim time, asked here one step earlier. A body that would pass this refuses nothing later, and a body
 // that would fail `row-claim claim` cannot be filed in the first place.
 //
@@ -97,11 +97,11 @@ import {
 } from "./acceptance-commands.ts";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { leakRefusalReason } from "./lib/leak-patterns.mjs";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { missingTemplateFields, templateFieldsReason, wholeSuiteAcceptanceReason }
-  from "./row-claim/template-fields-rule.mjs";
-import { waitingLanguageWarning } from "./row-claim/waiting-language-rule.mjs";
+  from "./row-claim/template-fields-rule.ts";
+import { waitingLanguageWarning } from "./row-claim/waiting-language-rule.ts";
 import { moveProjectStatus, filedByLine, fetchLabels as fetchIssueLabels, ensureLabelsExist } from "./row-claim.ts";
 import { PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
@@ -110,10 +110,10 @@ import { DEFECT_LABEL } from "./defect-class-line.ts"; // #4123
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { rowTracker, trackerNamed } from "./row-tracker.ts"; // #4078
-import { adopterFacingDeclared, adopterRowKind } from "./work-gate/org-health.mjs"; // #4378
+import { adopterFacingDeclared, adopterRowKind } from "./work-gate/org-health.ts"; // #4378
 import { PRIMARY_MILESTONE_LINE } from "./org-health.ts"; // #4378
 import { parseWaits, umbrellaEdge } from "./wait-condition.ts";
-import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.mjs"; // #4020
+import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.ts"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.ts";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
@@ -2039,7 +2039,7 @@ const PROMOTE_FLAG = "--promote=";
 
 /**
  * The row this invocation promotes, or `null` when `--promote=` is absent, empty, or names something
- * that is not a positive integer. Read through `flagValue`, the shared extractor `cli-flags.mjs` owns,
+ * that is not a positive integer. Read through `flagValue`, the shared extractor `cli-flags.ts` owns,
  * rather than a sixteenth hand-rolled copy of the same three lines -- that file's own header records
  * what the one copy that drifted did.
  *

@@ -57,7 +57,6 @@
 // never touches `process.exitCode`, for the identical reason `reportReachability`'s own failure does not:
 // "I could not tell you whether it is claimed" and "I could not log that I told you" are different
 // failures, and conflating them would make a full disk read as an unreadable board.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync, writeFileSync, renameSync } from "node:fs";
@@ -67,29 +66,29 @@ import { fileURLToPath } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.ts";
 import { gitCommonDir, appendJsonl } from "./merge-guard.ts";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
-import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
+import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.ts";
 import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file
 import { readJsonObject, writeJsonObject } from "./claim-stall.ts";
-import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
-import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
-import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
-import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
-import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.mjs";
-import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
+import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.ts";
+import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";
+import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.ts";
+import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
+import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
+import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
 // `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
 // it may not re-derive it: "both parse a trailing `-<n>` out of an `ls-remote` listing, and #2014's
 // `rowBranchesOnOrigin` is the tested spelling". The FAILURE POLICY stayed here -- see `rowBranchesOnOrigin`
 // below, which still throws -- because the gate's is deliberately different.
-import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.ts";
 import { claimRefusal, recordRemoval } from "./worktree-removal.ts";
 
@@ -100,7 +99,7 @@ import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER, STATE_LABELS, stateLab
 import { BLOCKED_LABEL, BACKLOG_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { worktreeOwner, stampWorktree, OWNER_FILE } from "./worktree-owner.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 
 // #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.ts and re-exported
 // here, not declared in this file -- see claim-labels.ts's own header for why. Every existing
@@ -616,7 +615,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  *
  * #989: THE CHECK-STATE DEPS ARE GONE. B2 used to read the session's own PR colour and this paragraph
  * explained why `requiredContexts`/`checkRuns` were injected separately from `run` -- they reach `gh`
- * through `merge-guard/lookups.mjs`'s own helper, so a fixture injecting `run` alone placed a real network
+ * through `merge-guard/lookups.ts`'s own helper, so a fixture injecting `run` alone placed a real network
  * call. B2 now asks whether a ROW is in build and reads no check state at all, so the deps have no
  * subject; callers still passing them are simply ignored, which is why no test had to change for it.
  * #2617: `repo` is the TRACKER the row lives in (default the first), and every read below that is about a ROW -- B2's held rows, the
@@ -722,7 +721,7 @@ function claimedRegionsVerdict(myFiles: string[], claimed: { number: number; fil
  * `ineligible` string apart -- that function returns one string for B2, B4 and #1886's `blockedBy`-edge
  * check alike, and the override must never apply to the other two (a file-overlap refusal, or a refusal
  * from the ROW'S OWN `blockedBy` edge, has nothing to do with the claimant's own PR being unhealthy -- see
- * `blocked-by-edge-rule.mjs`'s own header for why that one gets no override at all). The `blockedBy`
+ * `blocked-by-edge-rule.ts`'s own header for why that one gets no override at all). The `blockedBy`
  * PARAMETER here is the raw `--blocked-by=#N` FLAG VALUE, unrelated to the row's own GitHub `blockedBy`
  * edge despite the shared name -- one is an override argument a session types, the other is state GitHub
  * records on the issue. A flag value present while the refusal is NOT a B2 one, or absent entirely, is a
@@ -1161,7 +1160,7 @@ function reportReachability(issueNumber: number): { code: number | null; output:
     // exact defect for entry-point guards built by string concatenation; it is the same trap read from
     // the other end.
     const out = execFileSync("node",
-      [...TSX_IMPORT, fileURLToPath(new URL("row-reachability.ts", import.meta.url)), String(issueNumber)],
+      [fileURLToPath(new URL("row-reachability.ts", import.meta.url)), String(issueNumber)],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     process.stdout.write(out);
     return { code: 0, output: out };
@@ -1201,7 +1200,7 @@ export function dispatchRow(issueNumber: number, mySession: string, deps: { run?
  *
  * `blockedBy` (#741) is the raw `--blocked-by=#N` flag value -- releases B2 ONLY, and only when the
  * claimant's own open PR already carries a qualifying measurement comment and `#N` is confirmed open;
- * see `blocked-by-rule.mjs`. Absent, B2 behaves exactly as it always has.
+ * see `blocked-by-rule.ts`. Absent, B2 behaves exactly as it always has.
  *
  * @param {number} issueNumber
  * @param {string} mySession
@@ -2240,22 +2239,22 @@ function recordCheckSafely(entry: Parameters<typeof recordCheck>[1]) {
 
 function usage() {
   return "Usage:\n"
-    + "  node --import tsx packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
-    + "  node --import tsx packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
-    + "  node --import tsx packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
-    + "  node --import tsx packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
+    + "  node packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
+    + "  node packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
+    + "  node packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
+    + "  node packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
     + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #2748: omitting --adopt still does this when the target is your OWN --session's already-stamped tree and your predecessor instance is independently confirmed gone, never merely quiet; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
     + "-- #987: in a claim COMMENT, so a path of ANY length works, where a label capped it at 41 characters, "
     + "so a future escalation can tell portable from held, and decline can remove the worktree safely; "
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
     + "PR, and only while #N is open)\n"
-    + "  node --import tsx packages/agent-org/src/row-claim.ts decline <issue-number> --session=<name> [--keep-worktree] "
+    + "  node packages/agent-org/src/row-claim.ts decline <issue-number> --session=<name> [--keep-worktree] "
     + "[--predecessor-gone] [--answer=<session>]    (give it back; #665: also "
     + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
     + "#2748: --predecessor-gone additionally attests --session's holder is confirmed gone (never implied by --keep-worktree "
     + "alone), so an ordinary same-session reclaim can later adopt the tree it left; "
     + `--answer= releases to that session's \`${ANSWER_PREFIX}\` label instead of \`${READY_LABEL}\`)\n`
-    + "  node --import tsx packages/agent-org/src/row-claim.ts conflict <issue-number> --found=<text>     (#226: reality differed)\n";
+    + "  node packages/agent-org/src/row-claim.ts conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
 
 /**
@@ -2876,7 +2875,7 @@ async function main() {
   // the bare status-read shape below, and a guard listing only `--session` would refuse the command's
   // own documented invocation. A flag guard that has not been merged forward is a guard that breaks the
   // thing it protects.
-  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/row-claim.ts" });
+  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.ts" });
   // #1352: FIRST OF ALL, where it was launched. From the primary checkout or a plain clone this refuses before any read,
   // exit 2 -- the "could not determine at all" outcome every consumer already classifies, as the stale-rule guard does.
   if (launchGate("row-claim")) {

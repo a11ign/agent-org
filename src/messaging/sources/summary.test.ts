@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createMessenger } from "../core.mjs";
+import { createMessenger } from "../core.ts";
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { SUMMARY_LIST_LIMIT, localClock, observeSummary, summaryDue, summaryKey } from "./summary.mjs";
+import { createLedger } from "../ledger.ts";
+import { SUMMARY_LIST_LIMIT, localClock, observeSummary, summaryDue, summaryKey } from "./summary.ts";
 
 const REPO = "a11ign/a11ign";
 const LONDON = { at: "08:00", timezone: "Europe/London" };

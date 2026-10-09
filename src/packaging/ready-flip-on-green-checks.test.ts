@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, performActions } from "../work-gate.ts";
-import { requiredWhenNeeded } from "../work-gate/pr-orders.mjs";
+import { requiredWhenNeeded } from "../work-gate/pr-orders.ts";
 
 const HEAD = "a".repeat(40);
 const OLDER = "b".repeat(40);

@@ -30,7 +30,7 @@ IOSchedulingClass=idle
 # scratchpad can be a live session's, a test fixture cannot be anyone's current work. ONE RUN REMOVES AT MOST `MAX_REMOVALS_PER_RUN` ENTRIES, one call
 # each with a pause after it, and never a whole tree at once; what a run cannot finish is renamed `.prune-tmp-doomed-*`, which the next run finishes
 # first, so a run killed mid-batch (`TimeoutStartSec`, a reboot, an OOM) leaves a state the next one completes.
-ExecStart=/usr/bin/node --import tsx packages/agent-org/src/prune-tmp.ts --apply --fixtures-only
+ExecStart=%h/.local/bin/node packages/agent-org/src/prune-tmp.ts --apply --fixtures-only
 
 # A RUN IS ~300 REMOVALS AND 20 ms PAUSES, SO ABOUT TEN SECONDS. This bound is for a hung disk, not a slow run, and it must be shorter than the
 # timer's interval so a stuck run cannot stack on the next.

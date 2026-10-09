@@ -1,4 +1,4 @@
-// a11ign/a11ign#4073: `trace/growth.mjs`. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub (the one directory tree read is built under the temporary directory).
+// a11ign/a11ign#4073: `trace/growth.ts`. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub (the one directory tree read is built under the temporary directory).
 // no-token: gh -- every transcript below is a fixture; `requestsOf` and `summarise` are pure and call no `gh`
 //
 // THE FIXTURE `WORKER` is one seat's main thread, and the hand-computed figures are in the comments beside the assertion that uses them. Its cache reads are 0, 100, 150, 400, 410:
@@ -8,14 +8,13 @@
 //   m3 cr 400  calls Bash + Read     growth 400-150 = 250, written by m2, caused by the tool m1 called: Bash
 //   m4 cr 410  calls nothing         growth 410-400 = 10, written by m3, caused by m2's tool: Grep
 // A reading that blamed the tool called by the request BEFORE the one measured would call m3's 250 `Grep`; the assertions on it are the negative control of the attribution.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, Request, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
+import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, Request, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.ts";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const stamp = (n: number) => new Date(T0 + n * 1000).toISOString();
@@ -217,7 +216,7 @@ test("a marker resets the window of the thread it is written in: a subagent's ow
 });
 
 // THE BY-COMMAND FIXTURE `SHELL`: every request's writer is a Bash call with a command of its own, one per kind the row names. Cache reads rise by 10 each request, so each request's growth is 10 and
-// the command that wrote it is the one called two requests before. Request k is therefore blamed on the command of request k-2 (see the attribution comment at the top of `growth.mjs`).
+// the command that wrote it is the one called two requests before. Request k is therefore blamed on the command of request k-2 (see the attribution comment at the top of `growth.ts`).
 const COMMANDS = ["git status", "gh issue view 12 --json title", "gh pr list --state open", "grep -rn foo src | head -20", "cd /tmp/x && git log -3", "S=/tmp/y; sed -n '1,5p' f", "echo \"unclosed", "git status", "git diff", "ls", "ls"];
 const SHELL = lines([
   order(0),
@@ -284,7 +283,7 @@ test("the command refuses a flag it does not know and names --by-command as one 
   try {
     mkdirSync(join(root, "p"));
     writeFileSync(join(root, "p", "s.jsonl"), SHELL);
-    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [...TSX_IMPORT, new URL("./growth.mjs", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
+    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [new URL("./growth.ts", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
     const split = run("--by-command");
     assert.equal(split.status, 0, split.stderr);
     assert.match(split.stdout, /\| git status \| 2 \|/);

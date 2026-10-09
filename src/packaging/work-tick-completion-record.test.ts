@@ -10,7 +10,6 @@
  * On 2026-10-02 the work-tick unit ran 63 ticks that each died at import (15:23Z to about 17:40Z) and `InactiveEnterTimestamp` advanced on every one
  * exactly as on a good tick. The tick therefore writes a record of its own, and ONLY when it reaches the end of `main()`; the incident reads that.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -19,12 +18,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT } from "../work-tick.ts";
-import { COMPLETION_FILE, completionPath, readCompletion, writeCompletion } from "../lib/tick-completion.mjs";
-import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/incidents.mjs";
-import { TICK_INTERVAL_MS } from "../messaging/sources/stall.mjs";
+import { COMPLETION_FILE, completionPath, readCompletion, writeCompletion } from "../lib/tick-completion.ts";
+import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/incidents.ts";
+import { TICK_INTERVAL_MS } from "../messaging/sources/stall.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 const TICKS = 63;
 
 type Tick = { gate: string; wake?: string; tickPrefix?: string; recordIsADirectory?: boolean };
@@ -52,7 +51,7 @@ function runTick({ gate, wake = "process.exit(0);", tickPrefix = "", recordIsADi
     const record = completionPath(ledger);
     if (recordIsADirectory) mkdirSync(record);
     const before = Date.now();
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
 
     });

@@ -23,8 +23,8 @@
 // editing `board-summary-check.ts`, and the row is unstartable anyway because the function it is about
 // is not in it. Region contention is the easier half and falls out of the same walk.
 //
-//   node --import tsx packages/agent-org/src/row-reachability.ts <issue-number>
-//   node --import tsx packages/agent-org/src/row-reachability.ts --row=<issue-number>
+//   node packages/agent-org/src/row-reachability.ts <issue-number>
+//   node packages/agent-org/src/row-reachability.ts --row=<issue-number>
 //
 // IT REPORTS; IT NEVER REFUSES A CLAIM. A row can be worth starting for reasons this cannot see -- the
 // blocking PR may land in ten minutes, or the worker may intend to build on that branch deliberately.
@@ -39,9 +39,9 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { regionPathsFromBody, declaredRegionFiles, declaresNoCommit } from "./region-paths.ts";
 // #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
 import { BLOCKED_LABEL } from "./project-vocabulary.ts";
@@ -53,7 +53,7 @@ const git: (args: string[]) => string = (args): string => execFileSync("git", ar
 const gh: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // PATH extraction moved to `./region-paths.ts` (#462, B4) -- a leaf module with no further imports, so
-// `row-claim/file-overlap-rule.mjs` can read the SAME extraction this file uses without dragging this
+// `row-claim/file-overlap-rule.ts` can read the SAME extraction this file uses without dragging this
 // file's own `@a11ign/screenreader-fleet/cli-flags` import (fine for THIS file's `main()`, fatal before
 // `pnpm install`/`pnpm run build` if reached from a pre-install entry) into its import graph.
 
@@ -689,11 +689,11 @@ function main() {
   // `packages/{lab,worker-fleet}/{src,scripts}` and cannot see top-level `scripts/` -- which is #164, and
   // is why this file could have shipped unguarded without a single test objecting. Guarding it because it
   // is right, not because something asked.
-  refuseUnknownFlags(["--row"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/row-reachability.ts" });
+  refuseUnknownFlags(["--row"], { entry: import.meta.url, command: "node packages/agent-org/src/row-reachability.ts" });
   const argv = process.argv.slice(2);
   const row = Number(argv.map((a) => a.replace(/^--row=/, "")).find((a) => /^\d+$/.test(a)));
   if (!row) {
-    console.error("Usage: node --import tsx packages/agent-org/src/row-reachability.ts <issue-number>\n"
+    console.error("Usage: node packages/agent-org/src/row-reachability.ts <issue-number>\n"
       + "Answers whether a row can be STARTED today, computed from the tree rather than from its labels.");
     process.exit(EXIT.CANNOT_ASK);
   }

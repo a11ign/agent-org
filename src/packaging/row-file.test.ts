@@ -12,14 +12,13 @@
  * #735: the FILING-side twin of #707's claim-side gate -- `packages/agent-org/src/row-file.ts` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
  * SAME rule `row-claim` already enforces at claim time (`missingTemplateFields`, imported unchanged from
- * `row-claim/template-fields-rule.mjs`), asked one step earlier so the cost lands on whoever holds the
+ * `row-claim/template-fields-rule.ts`), asked one step earlier so the cost lands on whoever holds the
  * context rather than whoever claims the row later.
  *
  * #771: it also REQUIRES `--session=<name>` (the same flag `row-claim.ts` uses) and writes
  * `Filed-by: <session>` into the body that actually reaches `gh` -- see `row-claim.ts`'s `filedByLine`
  * for the read side.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -704,7 +703,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK di
 test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
   assert.throws(
     () => execFileSync("node",
-      [...TSX_IMPORT, CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
+      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
@@ -717,7 +716,7 @@ test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", (
 test("REAL CLI: --session= itself is a KNOWN flag to the guard, never refused as unrecognised", () => {
   assert.throws(
     () => execFileSync("node",
-      [...TSX_IMPORT, CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
+      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1, `expected the section-check refusal, got: ${e.stderr}`);
@@ -731,7 +730,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
   + "refused by the SECTION check instead, proving the guard did not swallow it as unknown", () => {
   assert.throws(
     () => execFileSync("node",
-      [...TSX_IMPORT, CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
+      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
       { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
@@ -745,7 +744,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
 
 test("REAL CLI: no --session= at all refuses with its own message, distinct from the section refusal", () => {
   assert.throws(
-    () => execFileSync("node", [...TSX_IMPORT, CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8", env: CLI_ENV }),
+    () => execFileSync("node", [CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1);

@@ -1,6 +1,6 @@
 // @ts-check
 // THE GITHUB WRITER AND THE WIRING (a11ign/a11ign#3062 done-whens 2 and 3): `createGithubWriter` against a fixture `gh` that records its argv, and
-// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.mjs`'s forwarder, with a fake Telegram.
+// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.ts`'s forwarder, with a fake Telegram.
 // Nothing here reaches a network or runs `gh`.
 //
 // POSITIVE CONTROLS: "resolves when the label is absent" is also what a writer that swallows every failure reports, so the same call with a
@@ -13,14 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { buttonData, createAnswers } from "./answers.mjs";
-import { createGithubWriter } from "./github-writer.mjs";
-import { createInbound } from "./inbound.mjs";
-import { createLedger, deliveryLine, STATUS } from "./ledger.mjs";
-import { createConverse } from "./converse.mjs";
-import { createForwarder } from "./listen.mjs";
-import { runListener } from "./providers/telegram/poll.mjs";
-import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.mjs";
+import { buttonData, createAnswers } from "./answers.ts";
+import { createGithubWriter } from "./github-writer.ts";
+import { createInbound } from "./inbound.ts";
+import { createLedger, deliveryLine, STATUS } from "./ledger.ts";
+import { createConverse } from "./converse.ts";
+import { createForwarder } from "./listen.ts";
+import { runListener } from "./providers/telegram/poll.ts";
+import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.ts";
 
 const REPO = "a11ign/a11ign";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });

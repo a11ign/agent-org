@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 // The project is a recorded one, as `idle-with-open-rows.test.ts`: the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "shelved-circle-"));
@@ -35,8 +35,8 @@ writeFileSync(join(SCRATCH, "fakebin", "gh"), `#!/bin/sh\necho "$@" >> "${GH_LOG
 chmodSync(join(SCRATCH, "fakebin", "gh"), 0o755);
 process.env.PATH = `${join(SCRATCH, "fakebin")}:${process.env.PATH}`;
 
-const { fileOverlapReason, declaredClosedRows } = await import("./row-claim/file-overlap-rule.mjs");
-const { orgHealthNow } = await import("./work-gate/org-health.mjs");
+const { fileOverlapReason, declaredClosedRows } = await import("./row-claim/file-overlap-rule.ts");
+const { orgHealthNow } = await import("./work-gate/org-health.ts");
 const { SIGNALS, shelvedCircles, shelvedCircleReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
 
 const TRACKER = "a11ign/a11ign";

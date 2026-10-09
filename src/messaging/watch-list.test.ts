@@ -1,4 +1,4 @@
-// no-token: prepareContext -- the provider, the ledger and the readers are injected fixtures and nothing here calls it; `watch.mjs` only carries it in through `WATCHED`'s `requestActions` import (#3581)
+// no-token: prepareContext -- the provider, the ledger and the readers are injected fixtures and nothing here calls it; `watch.ts` only carries it in through `WATCHED`'s `requestActions` import (#3581)
 // @ts-check
 // `chairman:watch`: THE LIST (a11ign/a11ign#3418, acceptance 4 to 6). The ledger is real and the readers are a world the test moves.
 //
@@ -12,15 +12,15 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "./fake-provider.ts";
-import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.mjs";
-import { createLedger } from "./ledger.mjs";
-import { parsePlaceholders, readPlaceholders } from "./placeholders.mjs";
-import { defaultLedgerPath } from "./state.mjs";
-import { WATCHED, runWatch } from "./watch.mjs";
-import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.mjs";
+import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.ts";
+import { createLedger } from "./ledger.ts";
+import { parsePlaceholders, readPlaceholders } from "./placeholders.ts";
+import { defaultLedgerPath } from "./state.ts";
+import { WATCHED, runWatch } from "./watch.ts";
+import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
-// THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
+// THE FIXTURE (the same in `sources/watched.test.ts`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
 // between ticks, answering as the placeholder vocabulary's `Readers`, and a ledger that already holds the chairman's message.
 const TRACKER = "a11ign/a11ign";
 /** The ref of a message the ledger took in from the chairman. */

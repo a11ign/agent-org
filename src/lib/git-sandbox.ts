@@ -38,7 +38,7 @@ import { mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv, KNOWN_GIT_REDIRECT_VARS } from "./git-env.mjs";
+import { sandboxGitEnv, KNOWN_GIT_REDIRECT_VARS } from "./git-env.ts";
 
 // Re-exported rather than redefined: `packages/guards/src/git-env.ts` is the ONE PLACE the GIT_* strip is stated,
 // because a copy of a defensive filter is exactly the "fact stated twice" shape this repo's CLAUDE.md

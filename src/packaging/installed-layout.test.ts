@@ -13,22 +13,25 @@
  * (b) The same installed tool, run from a directory with no declaration, REFUSES naming `.agent-org/project.json` and the directory it looked
  *     in. It is the positive control for (a): the refusal exists, so the pass is not vacuous.
  * One table says which LAYOUT answers what (monorepo, the tool's own checkout, installed), and `$AGENT_ORG_HOST` wins in all three.
- * The installed directory is read for what a project gets: `src/bin.mjs`, `host/`, `LICENSE`, and no test file.
+ * The installed directory is read for what a project gets: `src/bin.ts`, `host/`, `LICENSE`, and no test file.
+ *
+ * #4389: THE PINNED COPY DOES NOT RUN IN PLACE, AND (a)-(c) RUN IT FROM OUTSIDE `node_modules`. Node 24 strips types from a `.ts` and refuses to under
+ * `node_modules` (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, measured on 24.21.0), and a git dependency is installed there as raw source. So the first
+ * test below pins that refusal, which is also the positive control for the rest: the same package, copied to a directory that is no `node_modules`, runs.
+ * That copy is the shipped mechanism's shape (the host's `agent-org` launcher and `AGENT_ORG_TOOL` run the tool from a checkout), not a loader.
  *
  * THE PROBE COMMAND IS `worktrees:prune`, NOT `row-file --help` (the row's wording): `row-file` refuses without `--session=`, and every program
- * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.mjs`: "an ignored flag runs the default and reports success"), so no command
+ * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.ts`: "an ignored flag runs the default and reports success"), so no command
  * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.ts`, so it exits 0 exactly when the project resolved.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PNPM_TIMEOUT_MS = 120_000;
@@ -116,18 +119,10 @@ function pnpm(cwd: string, ...args: string[]) {
   return spawnSync("pnpm", [...args], { cwd, encoding: "utf8", env: cleanEnv(), timeout: PNPM_TIMEOUT_MS });
 }
 
-/**
- * The `tsx` THIS run loads, which the installed tool is handed in place of a registry copy. The tool depends on `tsx` (`bin.mjs` loads it), and `pnpm add --offline`
- * resolves it from a metadata cache a CI runner does not have; a `link:` override needs no registry and still gives `bin.mjs` a real loader to resolve beside itself.
- */
-function runningTsx(): string {
-  return dirname(createRequire(import.meta.url).resolve("tsx/package.json"));
-}
-
 /** An empty project, with or without its own `typescript`, that has `agent-org` installed from the tagged repository. */
 function installedProject({ withTypescript }: { withTypescript: boolean }) {
   const project = projectRepository();
-  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true, pnpm: { overrides: { tsx: `link:${runningTsx()}` } } }));
+  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true }));
   const typescript = withTypescript ? [`typescript@file:${fixtureTypescript()}`] : [];
   const added = pnpm(project, "add", "--offline", "-D", ...typescript, `agent-org@git+file://${taggedTool()}#semver:^0.1.0`);
   return { project, added };
@@ -145,19 +140,33 @@ const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../proj
 
 const installed = installedProject({ withTypescript: true });
 const toolDir = (project: string) => join(project, "node_modules", "agent-org");
-const binOf = (project: string) => join(toolDir(project), "src", "bin.mjs");
+
+/** The installed package copied to a directory that is no `node_modules`: the one place Node 24 will strip its types, and where the tool is run from (#4389). */
+function outsideNodeModules(project: string): string {
+  const copy = join(scratch(), "agent-org");
+  cpSync(realpathSync(toolDir(project)), copy, { recursive: true });
+  return copy;
+}
+const standaloneCopy = installed.added.status === 0 ? outsideNodeModules(installed.project) : "";
+const binOf = () => join(standaloneCopy, "src", "bin.ts");
 
 function runInstalled(cwd: string, ...args: string[]) {
-  return spawnSync(process.execPath, [...TSX_IMPORT, binOf(installed.project), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
+  return spawnSync(process.execPath, [binOf(), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
 }
 
 test("(a) the tool installs through `pnpm add -D` as a git dependency pinned by `#semver:`", () => {
   assert.equal(installed.added.status, 0, `${installed.added.stdout}\n${installed.added.stderr}`);
-  assert.ok(existsSync(binOf(installed.project)), "the installed package has no src/bin.mjs");
+  assert.ok(existsSync(join(toolDir(installed.project), "src", "bin.ts")), "the installed package has no src/bin.ts");
 });
 
-test("(a) a command runs from the installed tool with no NODE_PATH and no AGENT_ORG_HOST, serving the repository it is run in", () => {
+test("(a) #4389 the pinned copy REFUSES where it is installed: Node 24 will not strip types under node_modules, and the package is raw source (the positive control for the runs below)", () => {
   const run = pnpm(installed.project, "exec", "agent-org", "worktrees:prune");
+  assert.notEqual(run.status, 0, "the pinned copy ran in place, so the trap this row measured is gone and the copy below is no longer needed");
+  assert.match(run.stderr, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
+});
+
+test("(a) the same package outside node_modules runs a command with no NODE_PATH and no AGENT_ORG_HOST, serving the repository it is run in", () => {
+  const run = runInstalled(installed.project, "worktrees:prune");
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.doesNotMatch(run.stderr, /REFUSED/);
 });
@@ -169,9 +178,9 @@ test("(a) a subdirectory of the project is the same project: the repository, not
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
 });
 
-test("(a) `typescript` resolves to the PROJECT's, through the installed tool, with no NODE_PATH", () => {
-  const url = pathToFileURL(join(toolDir(installed.project), "src", "lib", "resolve-typescript.mjs")).href;
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
+test("(a) `typescript` resolves to the PROJECT's, through the tool, with no NODE_PATH", () => {
+  const url = pathToFileURL(join(standaloneCopy, "src", "lib", "resolve-typescript.ts")).href;
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
     { cwd: installed.project, encoding: "utf8", env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), FIXTURE_TYPESCRIPT);
@@ -186,23 +195,23 @@ test("(b) POSITIVE CONTROL: the same installed tool, run where no declaration is
   assert.doesNotMatch(run.stderr, /ENOENT/);
 });
 
-test("(b) outside any git repository it REFUSES naming the working directory and that it is not a repository", () => {
+test("(b) outside any git repository it REFUSES naming the working directory and that it is in no repository holding a declaration", () => {
   const outside = scratch();
   const run = runInstalled(outside, "worktrees:prune");
   assert.notEqual(run.status, 0);
-  assert.ok(run.stderr.includes(PROJECT_FILE) && run.stderr.includes(outside) && run.stderr.includes("not inside a git repository"), run.stderr);
+  assert.ok(run.stderr.includes(PROJECT_FILE) && run.stderr.includes(outside) && run.stderr.includes("is not inside a repository that holds one"), run.stderr);
 });
 
 test("(c) `agent-org no-such-command` from the installed tool REFUSES and lists the commands", () => {
-  const run = pnpm(installed.project, "exec", "agent-org", "no-such-command");
+  const run = runInstalled(installed.project, "no-such-command");
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /`no-such-command` is not a command/);
   assert.ok(run.stderr.includes("  row-file\n"), run.stderr);
 });
 
-test("what a project gets: src/bin.mjs, host/, LICENSE, README.md and no test file, and why none is needed at run time", () => {
+test("what a project gets: src/bin.ts, host/, LICENSE, README.md and no test file, and why none is needed at run time", () => {
   const dir = toolDir(installed.project);
-  for (const entry of ["src/bin.mjs", "src/commands.mjs", "host", "LICENSE", "README.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
+  for (const entry of ["src/bin.ts", "src/commands.ts", "host", "LICENSE", "README.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
   const tests = (readdirSync(dir, { recursive: true }) as string[]).filter((path) => /\.test\.(ts|mjs)$/.test(path));
   assert.deepEqual(tests, [], "a test file was installed: they read the project's tree and run in this repository's CI, so a project has no use for them");
   assert.ok(existsSync(join(dir, "src")) && readdirSync(join(dir, "src")).length > MIN_INSTALLED_SRC_ENTRIES, "the installed src/ is nearly empty: the positive control for the line above");
@@ -291,11 +300,11 @@ for (const [layout, tool, cwd] of [
 
 // ---- where `typescript` is looked for ------------------------------------------------------------------------------------------------------
 
-/** `resolve-typescript.mjs` copied into a scratch tool tree (so its own `node_modules` is the one this test lays out), and imported. */
+/** `resolve-typescript.ts` copied into a scratch tool tree (so its own `node_modules` is the one this test lays out), and imported. */
 async function resolverIn(toolTree: string) {
   mkdirSync(join(toolTree, "lib"), { recursive: true });
-  cpSync(join(TOOL_ROOT, "src", "lib", "resolve-typescript.mjs"), join(toolTree, "lib", "resolve-typescript.mjs"));
-  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.mjs")).href);
+  cpSync(join(TOOL_ROOT, "src", "lib", "resolve-typescript.ts"), join(toolTree, "lib", "resolve-typescript.ts"));
+  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.ts")).href);
   return module.resolveTypescript as (where?: { from?: string }) => { version: string };
 }
 

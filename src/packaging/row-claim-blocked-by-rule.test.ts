@@ -1,8 +1,8 @@
 /**
  * `--blocked-by=#N` -- #741: releases B2 ONLY, and only when the claimant's own open PR already carries a
  * measurement comment (every failing assertion, deduplicated per check from the newest run, shown outside
- * the PR's diff) and `#N` is confirmed open. See `packages/agent-org/src/row-claim/blocked-by-rule.mjs` for the full
- * account and why every lookup here FAILS CLOSED -- the opposite of `own-pr-health-rule.mjs`'s own
+ * the PR's diff) and `#N` is confirmed open. See `packages/agent-org/src/row-claim/blocked-by-rule.ts` for the full
+ * account and why every lookup here FAILS CLOSED -- the opposite of `own-pr-health-rule.ts`'s own
  * fail-open convention, because this is the override path itself.
  */
 import { test } from "node:test";
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import {
   MEASUREMENT_MARKER, parseBlockedByFlag, findMeasurementComment, lookupOwnPrComments,
   lookupIssueOpenState, resolveBlockedByOverride, blockedByExceptionNote,
-} from "../row-claim/blocked-by-rule.mjs";
+} from "../row-claim/blocked-by-rule.ts";
 
 // --- parseBlockedByFlag: pure ---
 

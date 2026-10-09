@@ -3,7 +3,6 @@
 //
 // THE POSITIVE CONTROL for every "writes nothing" below is the first test: the SAME harness (`world`, `run`) un-parks a row there, so an empty `calls` is a reading of a wired pass and not of
 // a pass that cannot write. Each "untouched" case differs from a transitioning one by ONE fact.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +12,7 @@ import { test } from "node:test";
 import { boardTruthAudit, QUESTIONS } from "./board-truth-audit.ts";
 import { PARKED_LABEL } from "./work-gate.ts";
 import { MUTEX_LABELS } from "./ready-label-audit.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import * as unpark from "./unpark-satisfied.ts";
 import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, githubIo, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.ts";
 
@@ -298,7 +297,7 @@ function promoteFromPrimary(fx: { primary: string; fakeBin: string; }, deps?: { 
 test("(#4202) CONTROL: row-file launched from a checkout whose .git is a directory is refused -- the guard stays, and the refusal is what the tick met", () => {
   const fx = fixture();
   try {
-    const ran = (() => { try { execFileSync(process.execPath, [...TSX_IMPORT, new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String((error as any).stderr); } })();
+    const ran = (() => { try { execFileSync(process.execPath, [new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String((error as any).stderr); } })();
     assert.match(ran, /REFUSED -- launched from .*which is not a linked worktree: its \.git is a directory/, "the primary-checkout fixture is the real refused shape");
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
@@ -350,5 +349,5 @@ test("(#4202) PIN: every script the gate starts that carries a launch guard is r
   // The positive control: the scan finds the children (update-primary, host-units, row-file) and finds row-file guarded.
   assert.deepEqual(children, ["host-units.ts", "row-file.ts", "update-primary.ts"]);
   assert.deepEqual(guarded, ["row-file.ts"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
-  assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[\.\.\.TSX_IMPORT, ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
+  assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
 });

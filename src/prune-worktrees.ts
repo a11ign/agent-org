@@ -78,8 +78,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-// RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.ts` imports this file before
+import { sandboxGitEnv } from "./lib/git-env.ts";
+// RELATIVE for the same reason as `cli-flags.ts` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, recordRemoval, rowsClosed } from "./worktree-removal.ts";
@@ -1211,7 +1211,7 @@ export function formatStranded({ examined, stranded, unreadable = [] }: ReturnTy
 async function main() {
   // Guarded per #164: positional repo root; git flags go onward.
   refuseUnknownFlags(["--apply"],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/prune-worktrees.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/prune-worktrees.ts" });
   // THE DEFAULT IS THE LISTING, AND IT IS THE WRONG WAY ROUND UNTIL IT IS NOT. Measured 2026-09-09: a
   // session ran `pnpm run worktrees:prune` to READ its breakdown before writing a row about worktree
   // accounting, and it removed three worktrees belonging to three other sessions. No work was lost -- the
@@ -1238,7 +1238,7 @@ import { realpathSync } from "node:fs";
 // #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.ts` imports this file now, and
 // `close-rows-for-merged-pr.ts`, `close-rows-sweep.ts` and `workflow-run-liveness.ts` run it before
 // `pnpm install`, where a package specifier dies (`pre-install-import-graph.test.ts`).
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();
 }

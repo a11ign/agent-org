@@ -1,11 +1,10 @@
-// @ts-check
 // `chairman:ask-ceo` (a11ign/a11ign#3490, B4b, split from #3417; epic #3409): THE LIAISON ASKS `ceo` FOR A RULING, AND A QUESTION THAT NAMES NOTHING THAT CLEARS IT IS REFUSED.
 //
 //   pnpm run chairman:ask-ceo -- --row=3333 --message=45        (the question on stdin, and a `Waiting-for:` line in it)
 //
 // It is `prompt:session ceo --needs-decision` with two refusals in front, and nothing else. Both are checked BEFORE anything is sent, so a refusal queues nothing:
 //
-//   1. **The `--message` ref must be an accepted inbound line** (`record.mjs`'s `checkMessage`, ref only): the liaison asks because the chairman said something, and a ref the
+//   1. **The `--message` ref must be an accepted inbound line** (`record.ts`'s `checkMessage`, ref only): the liaison asks because the chairman said something, and a ref the
 //      ledger does not hold is a question about nothing. The question's words are the LIAISON'S, so they are not hashed against the chairman's.
 //   2. **THE TEXT MUST NAME WHAT CLEARS IT, AS DATA THE GATE READS.** A waiting condition is data, not a sentence: a ruling asked as prose stalls, because nothing in the org reads
 //      prose. The predicate is `clearingWait`: the text carries a `Waiting-for:` line that `parseWaits` (`wait-condition.ts`, the parser the gate itself runs) reads as a
@@ -23,8 +22,10 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { pnpmCliInvocation } from "../lib/npm-cli-executable.mjs";
-import { checkMessage, runCommand } from "./record.mjs";
+import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
+import type { RowRef } from "./answers.ts";
+import { checkMessage, runCommand } from "./record.ts";
+import type { Ledger, Outcome } from "./record.ts";
 
 /** The only session a ruling is asked of. Changing it is changing what the liaison may ask, and the test pins it. */
 export const RECIPIENT = "ceo";
@@ -35,23 +36,18 @@ const PROMPT_EXIT = Object.freeze({ delivered: 0, refused: 1, queued: 2 });
 /** The kinds of wait whose condition is about a row and can be read: `manual` and `unreadable` say nothing that would end. */
 const READABLE_WAITS = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
 
-type Outcome = import("./record.mjs").Outcome;
-type RowRef = import("./answers.mjs").RowRef;
 /** One run of `pnpm run prompt:session`. */
 type Invocation = { args: string[]; input: string; cwd: string; env: Record<string, string | undefined> };
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
 /** `wait-condition.ts`'s `parseWaits`. */
 type ParseWaits = (text: string) => { state: string }[];
 
-/**
- * @param {string} text @param {ParseWaits} parseWaits
- * @returns {boolean} does the text carry a `Waiting-for:` line the gate reads as a condition on a row
- */
+/** Does the text carry a `Waiting-for:` line the gate reads as a condition on a row. */
 export function namesWhatClearsIt(text: string, parseWaits: ParseWaits): boolean {
   return parseWaits(text).some((wait: { state: string; }) => READABLE_WAITS.includes(wait.state));
 }
 
-/** @param {{ref: string, row: RowRef, text: string}} order @returns {string} the question, with the liaison named as its author and the row and message it is about in front */
+/** The question, with the liaison named as its author and the row and message it is about in front. */
 export function orderText({ ref, row, text }: { ref: string; row: RowRef; text: string; }): string {
   return [
     `Asked of you by the liaison, for a ruling; not from a session and not written by the chairman. It follows the chairman's Telegram message ${ref}.`,
@@ -61,7 +57,7 @@ export function orderText({ ref, row, text }: { ref: string; row: RowRef; text: 
   ].join("\n");
 }
 
-/** @param {Ran} ran @returns {Outcome} what `prompt:session` did, in its own words: a refusal is not paraphrased, and exit 2 is a success */
+/** What `prompt:session` did, in its own words: a refusal is not paraphrased, and exit 2 is a success. */
 function outcomeOf(ran: Ran): Outcome {
   const said = (ran.stderr + ran.stdout).trim();
   if (ran.error !== undefined || ran.status === null) return { outcome: "failed", say: `could not run prompt:session (${ran.error?.message ?? "it was killed"}); nothing is known to have been sent, so do not assume it was` };
@@ -71,15 +67,11 @@ function outcomeOf(ran: Ran): Outcome {
 }
 
 /**
- * @param {{ledger: import("./record.mjs").Ledger, parseWaits: ParseWaits, run: (invocation: Invocation) => Ran, cwd: string, env: Record<string, string | undefined>}} ports
- *   `run` is the command's one effect; a test passes one that records what it was given.
+ * `run` is the command's one effect; a test passes one that records what it was given.
  */
-export function createAsker({ ledger, parseWaits, run, cwd, env }: { ledger: import("./record.mjs").Ledger; parseWaits: ParseWaits; run: (invocation: Invocation) => Ran; cwd: string; env: Record<string, string | undefined>; }) {
+export function createAsker({ ledger, parseWaits, run, cwd, env }: { ledger: Ledger; parseWaits: ParseWaits; run: (invocation: Invocation) => Ran; cwd: string; env: Record<string, string | undefined>; }) {
   return {
-    /**
-     * @param {{row: RowRef, ref: string, text: string}} question `text` is the liaison's own question
-     * @returns {Promise<Outcome>} never throws for a refusal: it is a value
-     */
+    /** `text` is the liaison's own question. Never throws for a refusal: it is a value. */
     async ask({ row, ref, text }: { row: RowRef; ref: string; text: string; }): Promise<Outcome> {
       const checked = checkMessage(ledger.read(), { ref, text: null });
       if (!checked.ok) return { outcome: "refused", say: checked.why };
@@ -94,7 +86,7 @@ export function createAsker({ ledger, parseWaits, run, cwd, env }: { ledger: imp
 }
 
 /**
- * @param {Invocation} invocation @returns {Ran} `pnpm run prompt:session` in the project's checkout, with the caller's environment so the sender is the caller's workspace.
+ * `pnpm run prompt:session` in the project's checkout, with the caller's environment so the sender is the caller's workspace.
  *   pnpm is reached through `pnpmCliInvocation` and never spawned by name (`pnpm.cmd` on Windows is refused by CVE-2024-27980; `no-npm-spawn.test.ts` holds the tree to it). The helper throws when
  *   it finds no pnpm, and that is a value here, `error`, so the outcome is `failed` and says nothing was sent.
  */
@@ -108,12 +100,12 @@ function runPnpm({ args, input, cwd, env }: Invocation): Ran {
   }
 }
 
-/** @returns {Promise<ParseWaits>} the gate's own parser: imported when asked, as `correct.mjs` does the vocabulary, so this file loads outside a configured host */
+/** The gate's own parser: imported when asked, as `correct.mjs` does the vocabulary, so this file loads outside a configured host */
 async function gateParser(): Promise<ParseWaits> {
   return (await import("../wait-condition.ts")).parseWaits;
 }
 
-/** @param {string[]} argv @param {Partial<Parameters<typeof runCommand>[0]["deps"]> & {parseWaits?: ParseWaits, run?: (invocation: Invocation) => Ran}} [deps] @returns {Promise<number>} the exit code */
+/** Returns the exit code. */
 export function main(argv: string[], deps: Partial<Parameters<typeof runCommand>[0]["deps"]> & { parseWaits?: ParseWaits; run?: (invocation: Invocation) => Ran; } = {}): Promise<number> {
   return runCommand({
     name: "chairman:ask-ceo", argv, deps,

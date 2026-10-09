@@ -20,7 +20,6 @@
  * AND THE POSITIVES ARE NOT OPTIONAL, for `review-verdict.test.ts`'s reason one level up: a `decide` that
  * returned `[]` for everything satisfies every "no order" case perfectly and would wake nobody, ever.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
@@ -2041,9 +2040,9 @@ test("a SUPERSEDED red run does not wake anyone -- the newest run per name is wh
  * sentence. This test is why the next person inherits a checked number.
  */
 test("the gate's read count is counted, not remembered", () => {
-  // THIRTEEN since #4126 added the closed-row class read (`readClassRepeat`: one REST call, core pool) that `org-health.mjs`'s class-repeat signal needs.
-  // TWELVE since #4001 added the release read (`readReleaseRuns`: one REST call, core pool) that `org-health.mjs`'s release-run-failed signal needs.
-  // ELEVEN since #2936 added the last-merge read (`readLastMergedAt`: one REST call, core pool) that `org-health.mjs`'s no-merge signal needs.
+  // THIRTEEN since #4126 added the closed-row class read (`readClassRepeat`: one REST call, core pool) that `org-health.ts`'s class-repeat signal needs.
+  // TWELVE since #4001 added the release read (`readReleaseRuns`: one REST call, core pool) that `org-health.ts`'s release-run-failed signal needs.
+  // ELEVEN since #2936 added the last-merge read (`readLastMergedAt`: one REST call, core pool) that `org-health.ts`'s no-merge signal needs.
   // TEN since #2641 added the merged-or-closed pull request answer read (`readClosedAnswerRows`'s third call; one
   // `label list` still serves both searches).
   // NINE since #2075 added the per-issue Project 1 membership read (`readRowsOffBoard`: one GraphQL call per 100 open rows).
@@ -3841,7 +3840,7 @@ test("#2286: THROUGH wake's ledger, ten hours of an unanswered row is 2 deliveri
 // `ready-row-unclaimed` had stopped matching at the claim, and `blocker-cleared` is the only cause whose
 // subject is a row somebody already holds. The same hour, `orchestrator` held #1918 while it acquired an
 // open `blockedBy` on #2100 -- the same defect wearing the other marker, and the one a claim-time rule
-// (`blocked-by-edge-rule.mjs`, #1886) can never reach because the edge arrives AFTER the claim.
+// (`blocked-by-edge-rule.ts`, #1886) can never reach because the edge arrives AFTER the claim.
 
 const CLAIM_RECORD = { id: "IC_claim", body: "<!-- row-claim: claim record -->\n**Claim record** -- claimed by `worker-capture`." };
 const CONSTRAINT = { id: "IC_constraint",
@@ -3933,7 +3932,7 @@ test("#2110: a REPLACED body constraint is a new question, because the key is th
  * `blocker-cleared` makes. #1918 was claimed by `orchestrator` while clean and acquired an open edge on
  * #2100 afterwards. The report that produced this half was itself wrong about the cause -- it concluded
  * `claimRow` never reads `blockedBy`, when #1886 closed COMPLETED 2026-09-22T05:28:36Z and
- * `blocked-by-edge-rule.mjs` refuses such a claim before B4. That refusal is what makes the inference
+ * `blocked-by-edge-rule.ts` refuses such a claim before B4. That refusal is what makes the inference
  * here sound: an OPEN edge on a row that IS claimed can only have arrived after the claim.
  */
 test("#2110: #1918 gained an open `blockedBy` on #2100 while `orchestrator` held it", () => {
@@ -4754,7 +4753,7 @@ test("#2174: decide() routes it, and only when it is handed drift", () => {
  * gate loads in 39.3ms against 39.4ms without it.
  *
  * IT IS NOT FREE ON THE AXIS THE ROW DID NOT NAME. `host-units.ts` calls `git log --all`, so importing
- * it puts a `history` capability requirement into `work-gate.ts` -- which `row-claim/runner-rule.mjs`
+ * it puts a `history` capability requirement into `work-gate.ts` -- which `row-claim/runner-rule.ts`
  * reaches, and most of the packaging suite imports THAT. Measured both ways: **4 test files derive a
  * `history` requirement, and 28 do with the import.** So the gate spawns instead, and these two
  * assertions are the standing version of that measurement -- if somebody "simplifies" the spawn into an
@@ -4899,7 +4898,7 @@ test("#2174: work-gate.ts loads in a tree with NO node_modules, host-units edge 
   assert.ok(existsSync(join(root, "packages/agent-org/host/work-tick.service.in")) && existsSync(join(root, ".agent-org/project.json")),
     "the control: both directories really came across whole");
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
     + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
   { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });

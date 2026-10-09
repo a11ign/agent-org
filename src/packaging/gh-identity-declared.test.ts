@@ -40,7 +40,6 @@
 // Wiring each of the ~30 files to name the account on ITS OWN error path (question 1's "report on the
 // refusal path" answer, already done for `work-gate.ts`'s `CANNOT ASK`) is real, sizeable follow-up work
 // this row does not attempt, and is reported as such rather than claimed done.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -50,9 +49,9 @@ import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { declaredGhAccount } from "../gh-identity.ts";
 import { homeHostConfig } from "../host-config.ts";
-import { localImports, stripComments } from "../lib/local-import-closure.mjs";
+import { localImports, stripComments } from "../lib/local-import-closure.ts";
 import { SPAWNS_GH } from "../acceptance-commands.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
@@ -295,7 +294,7 @@ test("#1984: an unreadable host declaration degrades to UNKNOWN rather than cras
     const hostFile = join(dir, "host.json");
     // A primary the project reader accepts and none of the fields (`home`, `gh`, ...) the host reader requires.
     writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "a11ign", projects: [{ id: "a11ign", checkout: REPO }] }));
-    const out = execFileSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script], {
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
       encoding: "utf8",
       env: { ...process.env, AGENT_ORG_HOST: hostFile },
     });
@@ -370,7 +369,7 @@ function fixtureRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "gh-population-"));
   const files: Record<string, string> = {
     "packages/cli/src/action/post-comment.ts": SPAWN,
-    "packages/control/src/corpus-release.mjs": SPAWN,
+    "packages/control/src/corpus-release.ts": SPAWN,
     "packages/lab/src/lab-spawn.mjs": SPAWN,
     "scripts/direct.mjs": SPAWN,
     "scripts/via-import.mjs": 'import "./helper.mjs";\n',
@@ -405,7 +404,7 @@ test("#1984: the gh-spawning population is real -- a walk that matched nothing m
   // finds fewer (or more -- the comment and the test file are the negative controls) and says which.
   assert.deepEqual(population.map((p) => p.file).sort(), [
     "packages/cli/src/action/post-comment.ts",
-    "packages/control/src/corpus-release.mjs",
+    "packages/control/src/corpus-release.ts",
     "packages/lab/src/lab-spawn.mjs",
     "scripts/direct.mjs",
     "scripts/helper.mjs",
@@ -415,7 +414,7 @@ test("#1984: the gh-spawning population is real -- a walk that matched nothing m
 
   const environments = Object.fromEntries(population.map((p) => [p.file, p.environment]));
   assert.equal(environments["packages/cli/src/action/post-comment.ts"], "github-actions");
-  assert.equal(environments["packages/control/src/corpus-release.mjs"], "control-plane");
+  assert.equal(environments["packages/control/src/corpus-release.ts"], "control-plane");
   assert.equal(environments["packages/lab/src/lab-spawn.mjs"], "lab");
   assert.equal(environments["scripts/direct.mjs"], "agent-host",
     "the environments already excluded must not have swallowed the whole population -- if they did, the "

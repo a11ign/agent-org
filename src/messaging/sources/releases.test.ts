@@ -13,9 +13,9 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { RELEASES, assertReadOnlyGh, declaredCodeRepos, runWatch } from "../watch.mjs";
-import { baselineKey, firstSentence, observeReleases, releaseKey, seenKeys } from "./releases.mjs";
+import { createLedger } from "../ledger.ts";
+import { RELEASES, assertReadOnlyGh, declaredCodeRepos, runWatch } from "../watch.ts";
+import { baselineKey, firstSentence, observeReleases, releaseKey, seenKeys } from "./releases.ts";
 
 const REPO = "a11ign/agent-org";
 const OTHER = "a11ign/screenreader-worker";

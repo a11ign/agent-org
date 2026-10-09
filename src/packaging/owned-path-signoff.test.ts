@@ -37,13 +37,13 @@ const SIGNED = "CAPTURE_PROTOCOL_VERSION: unchanged\nweights: unchanged\n";
 test("a change to an owned path WITH a full sign-off is GREEN — the half that gets forgotten", () => {
   // Without this the check is a blanket refusal wearing a predicate's clothes, and the first thing anyone
   // does with a blanket refusal is route around it.
-  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.mjs"], body: SIGNED, facts: FACTS });
+  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.ts"], body: SIGNED, facts: FACTS });
   assert.equal(v.code, 0, `expected SIGNED, got: ${v.reasons.join(" | ")}`);
 });
 
 test("a change to an owned path with NO sign-off is refused, and it names each missing fact", () => {
   const v = signoffVerdict({
-    changed: ["packages/nvda-worker/src/capture-core.mjs"], body: "Fixes a typo.", facts: FACTS,
+    changed: ["packages/nvda-worker/src/capture-core.ts"], body: "Fixes a typo.", facts: FACTS,
   });
   assert.equal(v.code, 1);
   assert.match(v.reasons[0], /CAPTURE_PROTOCOL_VERSION/);
@@ -55,7 +55,7 @@ test("a change to an owned path with NO sign-off is refused, and it names each m
 test("NAMING A FACT WITHOUT A STATE IS REFUSED — this is the 'I checked' case", () => {
   // The sharpest test here. A body that lists every fact id reads as complete and asserts nothing.
   const v = signoffVerdict({
-    changed: ["packages/nvda-worker/src/capture-core.mjs"],
+    changed: ["packages/nvda-worker/src/capture-core.ts"],
     body: "I checked CAPTURE_PROTOCOL_VERSION and weights.",
     facts: FACTS,
   });
@@ -87,7 +87,7 @@ test("ANY line naming a fact satisfies it, not just the FIRST — #603's own bug
     "CAPTURE_PROTOCOL_VERSION: unchanged",
     "weights: unchanged",
   ].join("\n");
-  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.mjs"], body, facts: FACTS });
+  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.ts"], body, facts: FACTS });
   assert.equal(v.code, 0, `expected SIGNED (a later line states it), got: ${v.reasons.join(" | ")}`);
 });
 
@@ -97,7 +97,7 @@ test("CONTRADICTING states for the same fact across two lines is a real finding,
     "Actually, CAPTURE_PROTOCOL_VERSION: bumped -- correcting the line above.",
     "weights: unchanged",
   ].join("\n");
-  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.mjs"], body, facts: FACTS });
+  const v = signoffVerdict({ changed: ["packages/nvda-worker/src/capture-core.ts"], body, facts: FACTS });
   assert.equal(v.code, 1, "document order must not silently pick one of two disagreeing lines");
   assert.match(v.reasons.join("\n"), /CONTRADICTING/);
   assert.match(v.reasons.join("\n"), /CAPTURE_PROTOCOL_VERSION: unchanged/);

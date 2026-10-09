@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runProviderConformance } from "../../provider-contract.ts";
-import { createSecret } from "../../secret.mjs";
-import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.mjs";
+import { createSecret } from "../../secret.ts";
+import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.ts";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAT_ID = 4242;
@@ -76,7 +76,7 @@ test("done-when 1: the provider passes runProviderConformance, and the checks it
   for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted", "actions-are-accepted"]) {
     assert.ok(passed.includes(check), `${check} did not run: ${JSON.stringify({ passed, skipped })}`);
   }
-  // `poll` is the polling provider's (poll.mjs), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
+  // `poll` is the polling provider's (poll.ts), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
   assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["poll-returns-updates-and-honours-abort"]);
   assert.equal(provider.capabilities.buttons, true, "and the provider says so");
 });

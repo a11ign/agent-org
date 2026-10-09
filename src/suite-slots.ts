@@ -32,7 +32,7 @@
 // **A RUNNER IS NOT THIS HOST.** With `CI` set the command runs as it is: no slot and no renice.
 //
 // THE TWO ENTRY POINTS: `pnpm run verify` (a11y-witness's `scripts/verify.mjs` calls {@link runUnderSlot} on ITSELF, so the whole run takes one slot however many steps it runs beside each
-// other), and the full agent-org suite, `node --import tsx src/suite-slots.ts suite`, which did not exist as one command. `node --import tsx src/suite-slots.ts run -- <command>` is the same for any other full run.
+// other), and the full agent-org suite, `node src/suite-slots.ts suite`, which did not exist as one command. `node src/suite-slots.ts run -- <command>` is the same for any other full run.
 
 import { spawn } from "node:child_process";
 import { accessSync, appendFileSync, constants, mkdirSync, readFileSync } from "node:fs";
@@ -277,10 +277,10 @@ export const insideSlot = (env: Record<string, string | undefined> = process.env
 /** The root of this repository's checkout: where the full suite's globs are relative to. */
 const TOOL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The full agent-org suite, as CI's `gate` runs it: every test file, one `node --test`. */
-export const SUITE_COMMAND = Object.freeze({ command: process.execPath, args: ["--import", "tsx", "--test", "src/**/*.test.ts", "src/**/*.test.mjs"], cwd: TOOL_ROOT });
+export const SUITE_COMMAND = Object.freeze({ command: process.execPath, args: ["--test", "src/**/*.test.ts"], cwd: TOOL_ROOT });
 
-const USAGE = "usage: node --import tsx src/suite-slots.ts suite                     (the full agent-org suite, in a slot)\n"
-  + "       node --import tsx src/suite-slots.ts run [--label=<text>] -- <command> [args...]   (any full run, in a slot)\n";
+const USAGE = "usage: node src/suite-slots.ts suite                     (the full agent-org suite, in a slot)\n"
+  + "       node src/suite-slots.ts run [--label=<text>] -- <command> [args...]   (any full run, in a slot)\n";
 
 /** @param {string[]} argv @returns {Promise<number>} the exit code */
 export async function main(argv: string[]): Promise<number> {

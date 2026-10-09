@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { mergeReadiness, mergeSafetyVerdict } from "../merge-guard.ts";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const REQUIRED = ["changed", "ts", "python", "ansible", "docs", "changeset"];
@@ -252,16 +252,16 @@ test("mergeSafetyVerdict: THE #262 REGRESSION -- closing a row THIS PR's own aut
 test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-check", () => {
   const files = [
     "../merge-guard.ts",
-    "../merge-guard/base-rule.mjs",
-    "../merge-guard/head-tip-rule.mjs",
-    "../merge-guard/checks-rule.mjs",
-    "../merge-guard/staleness-rule.mjs",
-    "../merge-guard/ancestry-rule.mjs",
-    "../merge-guard/claimed-row-rule.mjs",
-    "../merge-guard/pr-hold-rule.mjs",
-    "../merge-guard/armed-race-rule.mjs",
-    "../merge-guard/lookups.mjs",
-    "../merge-guard/reconciliation.mjs",
+    "../merge-guard/base-rule.ts",
+    "../merge-guard/head-tip-rule.ts",
+    "../merge-guard/checks-rule.ts",
+    "../merge-guard/staleness-rule.ts",
+    "../merge-guard/ancestry-rule.ts",
+    "../merge-guard/claimed-row-rule.ts",
+    "../merge-guard/pr-hold-rule.ts",
+    "../merge-guard/armed-race-rule.ts",
+    "../merge-guard/lookups.ts",
+    "../merge-guard/reconciliation.ts",
   ];
   for (const file of files) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -281,12 +281,12 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
  * THE ORIENTATION SEAM (#188): every `behindBy` in this file's own fixtures above is INJECTED, so a
  * reversed `compare/<head>...main` in either real fetch would leave every one of them green while
  * production read the wrong number. There are now TWO live call sites -- `merge-guard.ts`'s own
- * `facts()` (the ancestry rule's input) and `armed-race-rule.mjs`'s `lookupArmedPrStatus` (#442's
+ * `facts()` (the ancestry rule's input) and `armed-race-rule.ts`'s `lookupArmedPrStatus` (#442's
  * behind-by check) -- and #455's split makes it possible for one to be fixed and the other missed, so
  * both are scanned rather than trusting that fixing one fixes both.
  */
 test("both real behindBy fetches are oriented main...head, never the reverse (#188)", () => {
-  for (const file of ["../merge-guard.ts", "../merge-guard/armed-race-rule.mjs"]) {
+  for (const file of ["../merge-guard.ts", "../merge-guard/armed-race-rule.ts"]) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.match(src, /compare\/main\.\.\.\$\{pr\.headRefOid\}/,
       `${file}: must ask GitHub how far main is ahead of this head, not the reverse`);

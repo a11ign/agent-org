@@ -15,7 +15,6 @@
  *
  * HAND-RUN: the pair needs a clone of a11ign on the host (`HOST_CLONE`), which CI's `gate` job here has none of, so the file skips there and says why.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -25,7 +24,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const run = promisify(execFile);
 
@@ -155,7 +154,7 @@ function cloneAt(ref: string): string {
 const isTest = (path: string): boolean => /\.test\.(ts|mjs)$/.test(path);
 
 /**
- * Leaves a project of the pair imports by their `.mjs` name. `FIRST_REF`'s `.agent-org/plugins/causes.mjs` imports `cause-shape.mjs`; a11ign/a11ign#4272
+ * Leaves a project of the pair imports by their `.mjs` name. `FIRST_REF`'s `.agent-org/plugins/causes.ts` imports `cause-shape.mjs`; a11ign/a11ign#4272
  * renamed the leaf to `.ts`, so the laid-out copy keeps the old name as a re-export, and the pair still reads what a11ign held at each commit.
  */
 const RENAMED_LEAVES: readonly string[] = ["cause-shape"];
@@ -188,7 +187,7 @@ async function verdictsOf(project: string, basename: string): Promise<Map<string
   const file = join("packages/agent-org/src/packaging", `${basename}.test.ts`);
   // NODE_TEST_CONTEXT is how a `node --test` child learns it is nested and writes a binary stream instead of the TAP asked for.
   const { AGENT_ORG_HOST: _host, NODE_TEST_CONTEXT: _nested, ...env } = process.env;
-  const child = await run("node", [...TSX_IMPORT, "--test", "--test-reporter=tap", file], { cwd: project, env, maxBuffer: 1 << 28 }).catch((failed: { stdout?: string }) => failed);
+  const child = await run("node", ["--test", "--test-reporter=tap", file], { cwd: project, env, maxBuffer: 1 << 28 }).catch((failed: { stdout?: string }) => failed);
   return parseTap(basename, String((child as { stdout?: string }).stdout ?? ""));
 }
 

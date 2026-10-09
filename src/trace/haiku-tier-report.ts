@@ -16,9 +16,9 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import type { TraceEvent } from "./store.mjs";
-import { eventsForRow, readStore, repriceEvents } from "./store.mjs";
-import { defaultStore } from "./otel-receiver.mjs";
+import type { TraceEvent } from "./store.ts";
+import { eventsForRow, readStore, repriceEvents } from "./store.ts";
+import { defaultStore } from "./otel-receiver.ts";
 import { HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { REPO } from "../project-identity.ts";
 
