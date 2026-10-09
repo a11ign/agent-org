@@ -14,7 +14,7 @@ VERDICT pass: 3 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
 
 Mutation (each applied with a script, run against both test files, restored from a copy and `diff`ed identical; never `git checkout --`). Failures are of the 13 tests in the two files:
   - the guard never refuses: 11 fail; the two that pass are the allowed-case controls.
-  - the guard always refuses: 12 fail, including every allowed-case control but the one that asserts nothing is labelled.
+  - the guard always refuses: 12 fail; the one that passes asserts only that a closed row is not labelled.
   - the writer does not ask the guard (`if (false && refusal !== null)`): all 3 `org-health.test.ts` tests fail, and no guard test.
   - the replay clause removed: 2 fail (the guard's "already labelled" test and the writer's replayed-question case), and no other.
 
