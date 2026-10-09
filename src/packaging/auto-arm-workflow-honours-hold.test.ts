@@ -51,8 +51,8 @@ function runArmStep(labels: string[]): Outcome {
         PATH: `${dir}:${process.env.PATH}`,
         // The step's own literals (HOLD_PREFIX) first; the `${{ }}` expressions are the runner's, so they are supplied here.
         ...Object.fromEntries(Object.entries(step.env ?? {}).filter(([, v]) => !String(v).includes("${{"))),
-        A11IGN_BOT_TOKEN: "",
-        FALLBACK_TOKEN: "fallback",
+        // `gh` is the recorder above, so the minted token (`steps.octo-sts.outputs.token`, a11ign/a11ign#4199) only has to exist.
+        GH_TOKEN: "minted",
         PULL_REQUEST: "311",
         REPOSITORY: "a11ign/agent-org",
         PR_LABELS: JSON.stringify(labels),
