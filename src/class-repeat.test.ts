@@ -223,6 +223,14 @@ test("the index parser takes the shape of the real file and refuses anything els
   assert.deepEqual(groupByClass([], [{ number: 1, closedAt: 0, classes: ["a", "b"] }]).map((g) => g.id), ["a", "b"], "one row under two labels is an instance of each");
 });
 
+test("a ledger counter is no class: it is left out of the groups, a real event kind is grouped, and an unknown key is still a stranger (#4618)", () => {
+  const repeat = (classKey: string) => ({ classKey, refs: ["a", "b"], newestAt: 1 });
+  assert.deepEqual(groupByClass([], [], [repeat("unclassified"), repeat("unidentified-caller-order")]), [], "both counters are absent");
+  const index = [{ id: "hand-reroute", name: "n", guard: null, guardNote: "n" }];
+  assert.deepEqual(groupByClass(index, [], [repeat("hand-reroute")]).map((g) => [g.id, g.entry?.id]), [["hand-reroute", "hand-reroute"]], "a real event kind is still grouped");
+  assert.deepEqual(groupByClass(index, [], [repeat("unclassified"), repeat("mystery-kind")]).map((g) => [g.id, g.entry]), [["mystery-kind", null]], "an unknown key is a stranger beside a counter");
+});
+
 const REAL = join(HOME_CHECKOUT, FAILURE_CLASSES_PATH);
 test("the project's real failure-classes.json parses and every class has an id, a name and a guard or a guardNote",
   { skip: existsSync(REAL) ? false : `${REAL} is absent on this host (the project checkout is not at a commit that has the seed, #4125)` }, () => {

@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
+import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
@@ -170,15 +170,19 @@ export function readClassRepeat(run: (args: string[]) => string, repo: string, i
  */
 export type ClassGroup = { id: string, entry: FailureClass | null, rows: ClassRow[], events: string[], eventsNewestAt: number | null };
 
+/** The ledger keys that COUNT orders (`prompt-session.ts`, #4452) and name no failure class; one list, imported from the ledger, not a second spelling. */
+const LEDGER_COUNTER_KINDS: ReadonlySet<string> = new Set([UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND]);
+
 /**
  * EVERY CLASS ID THE ROWS OR THE LEDGER NAME, with its rows newest first. One row under two classes is an instance of each. Membership is the label and, for a ledger kind, the kind's name
- * and nothing else. A ledger repeat of an id no row carries is a group with no rows.
+ * and nothing else. A ledger repeat of an id no row carries is a group with no rows. A ledger COUNTER (`unclassified`, `unidentified-caller-order`) is no class at all: it is left out, so it is neither a
+ * stranger read as `UNKNOWN` every tick nor a candidate for a class row (#4618). A key that is neither indexed nor a counter is still a stranger, which is what the reading is for.
  * @param {FailureClass[]} index @param {ClassRow[]} rows @param {LedgerRepeat[]} [ledger] @returns {ClassGroup[]}
  */
 export function groupByClass(index: FailureClass[], rows: ClassRow[], ledger: LedgerRepeat[] = []): ClassGroup[] {
   const byId: Map<string, ClassRow[]> = new Map();
   for (const row of rows) for (const id of new Set(row.classes)) byId.set(id, [...(byId.get(id) ?? []), row]);
-  for (const { classKey } of ledger) if (!byId.has(classKey)) byId.set(classKey, []);
+  for (const { classKey } of ledger) if (!byId.has(classKey) && !LEDGER_COUNTER_KINDS.has(classKey)) byId.set(classKey, []);
   const newestFirst = (a: ClassRow, b: ClassRow) => ((b.closedAt ?? 0) - (a.closedAt ?? 0)) || b.number - a.number;
   return [...byId].map(([id, group]) => {
     const seen = ledger.find((repeat) => repeat.classKey === id);
