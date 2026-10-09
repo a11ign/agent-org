@@ -1,10 +1,10 @@
 // #4633: which known failure class is an incident? A fake `fetch`, a fake `readKey`, a fixture index and a temp directory only: no network, no real key, no corpus.
 // no-token: gh -- nothing here calls `gh`; every dependency is injected
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { classifyIncident, parseFailureClasses, type FailureClass } from "./class-repeat.ts";
+import { classifyChildArgv, classifyIncident, labelUnclassedRows, liveClassRepeatIo, liveMatchIo, parseClassifyArgv, parseFailureClasses, readClassRepeat, type FailureClass, type MatchIo, type UnclassedRow } from "./class-repeat.ts";
 import { classOfKind, FLAT_CLASS_LIMIT, incidentState, matchFailureClass, NONE_OF_THESE, NO_GUARD, recordLabelOutcome, type Incident } from "./class-match.ts";
 import { decisionLogPathFrom, type DecisionDeps } from "./decision-provider.ts";
 import { parseHostConfig } from "./host-config.ts";
@@ -274,4 +274,172 @@ test("replay of the 2026-10-09 copy-drift rows: the kind rule groups none of the
   }
   assert.deepEqual([...ruleOnly], []);
   assert.deepEqual([...grouped], [["class:copy-drift", [4370, 4371, 4515, 4557, 4569, 4582]]]);
+});
+
+// ---- the production path: the gate's tick lists and remembers, a child asks and labels ----
+
+const CLASS_INDEX = JSON.stringify({ classes: [{ id: "copy-drift", name: "the copy-drift failure", guard: null }] });
+const listing = (rows: { number: number; title?: string; labels?: string[]; state?: string; pr?: boolean }[]) => JSON.stringify(rows.map((r) => ({
+  number: r.number, state: r.state ?? "closed", closed_at: "2026-10-09T10:00:00Z", pull_request: r.pr ?? false, title: r.title ?? `row ${r.number}`, labels: r.labels ?? ["defect"],
+})));
+
+/** A fake `gh`: answers the one listing it is given and records every other call. */
+function fakeGh(rows: string) {
+  const writes: string[][] = [];
+  const reads: string[][] = [];
+  const run = (args: string[]): string => {
+    if (args[0] === "api") { reads.push(args); return rows; }
+    writes.push(args);
+    return "";
+  };
+  return { run, writes, reads };
+}
+
+function tick(rows: Parameters<typeof listing>[0], opts: { match?: Partial<MatchIo>; asked?: object; now?: number } = {}) {
+  const dir = tmpDir("class-match-tick-");
+  const statePath = join(dir, "asked.json");
+  if (opts.asked !== undefined) writeFileSync(statePath, JSON.stringify(opts.asked));
+  const gh = fakeGh(listing(rows));
+  const asks: { repo: string; rows: UnclassedRow[] }[] = [];
+  const outcomes: [number, boolean][] = [];
+  const match: MatchIo = { statePath, ask: (repo, rs) => asks.push({ repo, rows: rs }), outcome: (row, kept) => outcomes.push([row, kept]), ...opts.match };
+  const logs: string[] = [];
+  const read = () => readClassRepeat(gh.run, "o/r", {
+    root: dir, read: (p) => (p.endsWith("failure-classes.json") ? CLASS_INDEX : readFileSync(p, "utf8")), now: opts.now ?? Date.parse("2026-10-09T10:30:00Z"), match, log: (l) => logs.push(l),
+  });
+  const memory = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {});
+  return { gh, asks, outcomes, read, memory, logs, statePath };
+}
+
+test("the tick asks about a closed, unlabelled defect row once: it is remembered before anything is asked, and the next tick asks nobody", () => {
+  const t = tick([{ number: 10, title: "copies drifted" }, { number: 11, labels: ["defect", "class:copy-drift"] }, { number: 12, labels: ["enhancement"] }, { number: 13, pr: true }, { number: 14, state: "open" }]);
+  t.read();
+  assert.deepEqual(t.asks, [{ repo: "o/r", rows: [{ number: 10, title: "copies drifted" }] }]);
+  assert.deepEqual(Object.keys(t.memory()), ["10"]);
+  t.read();
+  assert.equal(t.asks.length, 1, "a remembered row is not asked again");
+});
+
+test("the tick asks about at most three rows, newest first, and takes the rest on later ticks", () => {
+  const t = tick([10, 11, 12, 13, 14].map((number) => ({ number })));
+  t.read();
+  assert.deepEqual(t.asks[0].rows.map((r) => r.number), [10, 11, 12]);
+  t.read();
+  assert.deepEqual(t.asks[1].rows.map((r) => r.number), [13, 14]);
+});
+
+test("a caller that gives no match io reads no listing and asks nobody, so a host without the provider is as it was", () => {
+  const asks: unknown[] = [];
+  const reads = (match?: MatchIo): number => {
+    const gh = fakeGh("[]");
+    readClassRepeat(gh.run, "o/r", { root: "/nowhere", read: () => CLASS_INDEX, now: 0, log: () => {}, ...(match === undefined ? {} : { match }) });
+    return gh.reads.length;
+  };
+  const without = reads();
+  const withMatch = reads({ statePath: join(tmpDir("class-match-off-"), "asked.json"), ask: (...a) => asks.push(a), outcome: () => {} });
+  assert.equal(withMatch, without + 1, "the listing is the one read `match` adds");
+  assert.deepEqual(asks, [], "and an empty listing asks nobody");
+});
+
+test("a refused or malformed listing is logged, nothing is remembered and nothing is asked", () => {
+  const t = tick([{ number: 10 }], { match: {} });
+  const bad = readClassRepeat((args) => { if (args.some((a) => String(a).includes("title"))) throw new Error("HTTP 403 rate limited"); return "[]"; }, "o/r", {
+    root: "/nowhere", read: () => CLASS_INDEX, match: { statePath: t.statePath, ask: () => assert.fail("asked"), outcome: () => {} }, log: (l) => t.logs.push(l),
+  });
+  assert.ok("index" in bad);
+  assert.match(t.logs.join(""), /failed \(HTTP 403 rate limited\)/);
+  assert.deepEqual(t.memory(), {});
+});
+
+test("an applied label is `removed` the tick a human takes it off, `kept` after a day, and recorded once", () => {
+  const at = Date.parse("2026-10-08T10:00:00Z");
+  const asked = { "10": { at, label: "class:copy-drift" }, "11": { at, label: "class:copy-drift" }, "12": { at: at + 20 * 3_600_000, label: "class:copy-drift" }, "13": { at, label: null } };
+  const t = tick([{ number: 10, labels: ["defect"] }, { number: 11, labels: ["defect", "class:copy-drift"] }, { number: 12, labels: ["defect", "class:copy-drift"] }, { number: 13, labels: ["defect"] }], { asked });
+  t.read();
+  assert.deepEqual(t.outcomes, [[10, false], [11, true]], "10 lost it, 11 held it a day, 12 is only 14 hours old, 13 was never labelled");
+  t.read();
+  assert.equal(t.outcomes.length, 2, "each is recorded once");
+});
+
+test("the child applies the label the provider names, creating it first, and writes nothing for none-of-these", async () => {
+  const r = rig({ triage: JEV, reply: [{ body: choice("copy-drift", 0.95) }, { body: choice(NONE_OF_THESE, 0.95) }] });
+  const gh = fakeGh("[]");
+  const dir = tmpDir("class-match-child-");
+  const statePath = join(dir, "asked.json");
+  const index = parseFailureClasses(CLASS_INDEX)!;
+  const applied = await labelUnclassedRows([{ number: 10, title: "copies drifted" }, { number: 11, title: "a red PR" }], { run: gh.run, repo: "o/r", index, deps: r.deps, statePath, now: () => 5 });
+  assert.deepEqual(applied, { 10: "class:copy-drift", 11: null });
+  assert.deepEqual(gh.writes.map((w) => w.slice(0, 3).join(" ")), ["label create class:copy-drift", "issue edit 10"]);
+  assert.deepEqual(gh.writes[1], ["issue", "edit", "10", "--repo", "o/r", "--add-label", "class:copy-drift"]);
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { 10: { at: 5, label: "class:copy-drift" }, 11: { at: 5, label: null } });
+  assert.deepEqual(r.log().map((l) => l.id), ["row-10", "row-11"]);
+});
+
+test("the child with no provider labels nothing and a refused label call does not stop the next row", async () => {
+  const none = rig();
+  const gh = fakeGh("[]");
+  const index = parseFailureClasses(CLASS_INDEX)!;
+  const statePath = join(tmpDir("class-match-child-"), "asked.json");
+  assert.deepEqual(await labelUnclassedRows([{ number: 10, title: "copies drifted" }], { run: gh.run, repo: "o/r", index, deps: none.deps, statePath }), { 10: null });
+  assert.deepEqual(gh.writes, []);
+
+  const refusing = rig({ triage: JEV });
+  const lines: string[] = [];
+  const run = (args: string[]): string => { if (args[0] === "issue" && args[2] === "10") throw new Error("HTTP 422"); return ""; };
+  const applied = await labelUnclassedRows([{ number: 10, title: "a" }, { number: 11, title: "b" }], { run, repo: "o/r", index, deps: refusing.deps, statePath, log: (l) => lines.push(l) });
+  assert.deepEqual(applied, { 10: null, 11: "class:copy-drift" });
+  assert.match(lines.join(""), /could not label #10 as class:copy-drift \(HTTP 422\)/);
+});
+
+test("the whole path, on the 2026-10-09 rows: the tick queues three at a time, the child labels the six copy-drift rows and not #4607", async () => {
+  const rows = COPY_DRIFT_ROWS.map(([number, title]) => ({ number, title }));
+  const dir = tmpDir("class-match-e2e-");
+  const gh = fakeGh(listing(rows));
+  const answering = (async (_u: string, init: any) => {
+    const title: string = JSON.parse(init.body).state.title;
+    return { ok: true, status: 200, json: async () => choice(/cop(y|ies)/.test(title) ? "copy-drift" : NONE_OF_THESE, 0.95) };
+  }) as unknown as typeof fetch;
+  const deps = { ...rig({ triage: JEV }).deps, fetch: answering };
+  const index = parseFailureClasses(CLASS_INDEX)!;
+  const statePath = join(dir, "asked.json");
+  const labelled: number[] = [];
+  const match: MatchIo = {
+    statePath, outcome: () => {},
+    ask: (repo, batch) => { void labelUnclassedRows(batch, { run: gh.run, repo, index, deps, statePath, now: () => 1 }).then((a) => labelled.push(...Object.entries(a).filter(([, l]) => l !== null).map(([n]) => Number(n)))); },
+  };
+  const read = () => readClassRepeat(gh.run, "o/r", { root: dir, read: () => CLASS_INDEX, match, log: () => {}, now: 0 });
+  for (let i = 0; i < 4; i += 1) { read(); await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setTimeout(resolve, 20)); }
+  assert.deepEqual(labelled.sort(), [4370, 4371, 4515, 4557, 4569, 4582]);
+  const edited = gh.writes.filter((w) => w[0] === "issue").map((w) => Number(w[2])).sort();
+  assert.deepEqual(edited, labelled);
+  assert.ok(!edited.includes(4607));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(statePath, "utf8"))).map(Number).sort(), [...COPY_DRIFT_ROWS.map(([n]) => n)].sort());
+});
+
+test("liveMatchIo exists only for a jev host with the use switched on, and its ask spawns this file detached", () => {
+  const jev = withTriage(JEV);
+  const base = { statePath: "/s" };
+  assert.equal(liveMatchIo({ host: withTriage(), switches: ON, ...base }), undefined);
+  assert.equal(liveMatchIo({ host: withTriage({ provider: "none" }), switches: ON, ...base }), undefined);
+  assert.equal(liveMatchIo({ host: jev, switches: {}, ...base }), undefined);
+  assert.equal(liveMatchIo({ host: jev, switches: { "failure-class-match": false }, ...base }), undefined);
+  const spawned: { command: string; args: string[]; options: any }[] = [];
+  let unreffed = false;
+  const io = liveMatchIo({ host: jev, switches: ON, ...base, spawnChild: ((command: string, args: string[], options: any) => { spawned.push({ command, args, options }); return { unref: () => { unreffed = true; } }; }) as any });
+  io!.ask("o/r", [{ number: 10, title: "t" }]);
+  assert.deepEqual([spawned.length, unreffed, spawned[0].options.detached, spawned[0].options.stdio], [1, true, true, "ignore"]);
+  assert.deepEqual(parseClassifyArgv(spawned[0].args), { repo: "o/r", rows: [{ number: 10, title: "t" }] });
+});
+
+test("the child's argv round-trips, and an argv that is not one is refused", () => {
+  const rows = [{ number: 10, title: 'a "quoted" title; rm -rf $HOME' }];
+  assert.deepEqual(parseClassifyArgv(classifyChildArgv("o/r", rows)), { repo: "o/r", rows });
+  for (const argv of [[], ["--classify-unclassed"], ["--classify-unclassed", "o/r", "not json"], ["--classify-unclassed", "o/r", '[{"number":"x","title":1}]']]) assert.equal(parseClassifyArgv(argv), null);
+});
+
+test("the live gate's io carries the match io (undefined on a host without the provider, which is why the key is what is pinned)", () => {
+  const io = liveClassRepeatIo();
+  assert.ok("match" in io, "liveClassRepeatIo() names `match`, so the gate's readClassRepeat reaches the labelling");
+  assert.ok(io.match === undefined || typeof io.match.ask === "function");
+  assert.ok(io.match === undefined || io.match.statePath.endsWith("class-match-asked.json"));
 });

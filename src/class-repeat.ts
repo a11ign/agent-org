@@ -7,15 +7,16 @@
 // repeat means the guard failed. `org-health.ts` turns what this file reads into the `class-repeat` signal.
 //
 // A LEAF: it imports no org-health or work-gate name (the signal's name and the order text live there), so both can import it.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
-import type { DecisionDeps } from "./decision-provider.ts";
-import { matchFailureClass, type ClassMatch, type Incident } from "./class-match.ts";
-import { stateEntryPath } from "./host-config.ts";
+import { decisionLogPathFrom, decisionSwitchesPath, readSwitches, type DecisionDeps } from "./decision-provider.ts";
+import { matchFailureClass, recordLabelOutcome, type ClassMatch, type Incident } from "./class-match.ts";
+import { homeHostConfig, stateEntryPath, type HostConfig } from "./host-config.ts";
+import { processState } from "./triage-provider.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
 /** Where the index lives under the project checkout. */
@@ -154,6 +155,8 @@ function readClosedRowRepeats(run: (args: string[]) => string, repo: string, { r
 export type ClassRepeatIo = {
   root?: string, read?: (path: string) => string, now?: number,
   ledgerPath?: string, readLedger?: (path: string) => string, fileRow?: (argv: string[]) => string, statePath?: string, session?: string, log?: (line: string) => void,
+  /** The labelling of rows nobody classed (#4633). OPT-IN like `fileRow`: absent means the listing is not read and nothing is asked. */
+  match?: MatchIo,
 };
 
 /**
@@ -167,7 +170,9 @@ export function readClassRepeat(run: (args: string[]) => string, repo: string, i
   if ("unreadable" in closed) return closed;
   const { now = Date.now(), ledgerPath, readLedger = (path: string) => readFileSync(path, "utf8") } = io;
   const withLedger = ledgerPath === undefined ? closed : { ...closed, ledger: readLedgerRepeats({ ledgerPath, read: readLedger, now }) };
-  return io.fileRow === undefined ? withLedger : { ...withLedger, filings: fileClassRepeats(withLedger, { run, repo, ...io, fileRow: io.fileRow, now }) };
+  const fact = io.fileRow === undefined ? withLedger : { ...withLedger, filings: fileClassRepeats(withLedger, { run, repo, ...io, fileRow: io.fileRow, now }) };
+  if (io.match !== undefined) queueUnclassedRows(run, repo, { ...io.match, now, log: io.log });
+  return fact;
 }
 
 /**
@@ -259,7 +264,7 @@ export function runRowFile(argv: string[]): string {
 
 /** What the live gate passes `readClassRepeat` to read the ledger and file class rows. Beside it and not defaulted into it: see `ClassRepeatIo`. */
 export function liveClassRepeatIo(): ClassRepeatIo {
-  return { ledgerPath: stateEntryPath(FAILURE_LEDGER_FILE), fileRow: runRowFile, statePath: stateEntryPath(FILED_CLASSES_STATE) };
+  return { ledgerPath: stateEntryPath(FAILURE_LEDGER_FILE), fileRow: runRowFile, statePath: stateEntryPath(FILED_CLASSES_STATE), match: liveMatch() };
 }
 
 /** The line `primaryLaunchDecision` prints before `row-file` does anything, when the gate runs from the primary checkout: it says the launch was allowed, never why a filing was refused. */
@@ -340,18 +345,18 @@ function worthFiling(group: ClassGroup, now: number): boolean {
 }
 
 /** @returns what the memory file holds; an absent file is an empty memory and an unreadable one is REPORTED and read as empty (the next filing is then refused as a duplicate title if the row is open) */
-function readRemembered(statePath: string, log: (line: string) => void): Remembered {
+function readRemembered<T extends object = Remembered>(statePath: string, log: (line: string) => void): T {
   try {
     const parsed = JSON.parse(readFileSync(statePath, "utf8"));
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : ({} as T);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") log(`class-repeat: ${statePath} is unreadable (${firstLine(err)}); a class already filed may be filed again (#4451)\n`);
-    return {};
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") log(`class-repeat: ${statePath} is unreadable (${firstLine(err)}); what it remembered may be done again (#4451)\n`);
+    return {} as T;
   }
 }
 
 /** Remember what was filed. A refused write is REPORTED: the next tick then files the class again, and `row-file` refuses a title an open row has. */
-function writeRemembered(statePath: string, remembered: Remembered, log: (line: string) => void): void {
+function writeRemembered<T extends object = Remembered>(statePath: string, remembered: T, log: (line: string) => void): void {
   try {
     mkdirSync(dirname(statePath), { recursive: true });
     const scratch = `${statePath}.${process.pid}.tmp`;
@@ -403,3 +408,161 @@ export function fileClassRepeats(fact: { index: FailureClass[], rows: ClassRow[]
   if (landed) writeRemembered(statePath, remembered, log);
   return filings;
 }
+
+// ---- LABELLING THE INCIDENTS NOBODY CLASSED (#4633) ----
+//
+// The second-occurrence rule counts rows carrying one `class:<id>` label, so a defect nobody labelled is never counted. THE GATE'S TICK IS SYNCHRONOUS AND THE PROVIDER IS NOT, so the tick does
+// the cheap half: it lists the closed `defect` rows that carry no `class:` label and are not yet remembered, remembers them BEFORE anything is asked (a row is asked about once, whatever
+// came of it), and hands them to a detached child -- this file run as a program, the way `runRowFile` runs `row-file` -- that asks `classifyIncident` and applies the label. A host with
+// no provider, no key or the use switched off queues nothing at all (`liveMatchIo` is `undefined`), so nothing is listed, remembered or spawned.
+
+/** Where the rows already asked about are remembered between ticks: `{ [row]: { at, label, outcome? } }`. */
+const ASKED_STATE = "class-match-asked.json";
+/** The label that makes a closed row an incident: a defect, as `row-file --kind defect` writes it. */
+const DEFECT_LABEL = "defect";
+/** At most this many rows are put to the provider in one tick, so a backlog is worked down and never a burst. */
+const MAX_ASKED_PER_TICK = 3;
+/** A label still on its row this long after the provider applied it is `kept`; one a human took off is `removed` at once. */
+const LABEL_KEPT_AFTER_MS = 24 * 60 * 60 * 1000;
+const CLASSIFY_FLAG = "--classify-unclassed";
+const MATCH_ROW_PROJECTION = "[.[] | {number, state, pull_request: (.pull_request != null), title, labels: [.labels[].name]}]";
+
+/** What one row is when it is asked about: its number and title, never its body. */
+export type UnclassedRow = { number: number, title: string };
+type Asked = Record<string, { at: number, label: string | null, outcome?: "kept" | "removed" }>;
+export type MatchIo = { statePath: string, ask: (repo: string, rows: UnclassedRow[]) => void, outcome: (row: number, kept: boolean) => void };
+type MatchTick = MatchIo & { now: number, log?: (line: string) => void };
+
+const decisionIdOf = (row: number): string => `row-${row}`;
+
+type ListedRow = { number: number, title: string, labels: string[] };
+/** The closed non-PR rows of the newest-updated window, or `null` for a listing that is not the projection's shape. */
+function listForMatch(run: (args: string[]) => string, repo: string): ListedRow[] | null {
+  const entries = JSON.parse(run(["api", "--method", "GET", `repos/${repo}/issues`, "-f", "state=closed", "-f", "sort=updated", "-f", "direction=desc",
+    "-f", `per_page=${RECENT_CLOSED_WINDOW}`, "--jq", MATCH_ROW_PROJECTION]));
+  if (!Array.isArray(entries)) return null;
+  return entries.filter((e) => e?.state === "closed" && e.pull_request !== true && typeof e.number === "number" && typeof e.title === "string" && Array.isArray(e.labels))
+    .map((e) => ({ number: e.number, title: e.title, labels: e.labels.filter((l: unknown): l is string => typeof l === "string") }));
+}
+
+/** `kept` or `removed`, for each label the provider applied whose fate is now known: the row lost it, or has carried it a day. Each is recorded once. */
+function settleOutcomes(asked: Asked, listed: Map<number, ListedRow>, { now, outcome }: Pick<MatchTick, "now" | "outcome">): boolean {
+  let settled = false;
+  for (const [key, entry] of Object.entries(asked)) {
+    const row = listed.get(Number(key));
+    if (entry.label === null || entry.outcome !== undefined || row === undefined) continue;
+    const kept = row.labels.includes(entry.label);
+    if (kept && now - entry.at < LABEL_KEPT_AFTER_MS) continue;
+    entry.outcome = kept ? "kept" : "removed";
+    outcome(Number(key), kept);
+    settled = true;
+  }
+  return settled;
+}
+
+/**
+ * THE TICK'S HALF: settle the outcomes of labels already applied, then take the newest closed `defect` rows with no `class:` label that were never asked about, remember them, and hand them to
+ * `ask`. NEVER THROWS: a refused listing is logged and the next tick tries again, nothing remembered. Without a readable memory nothing is asked, since a row could not be told from a new one.
+ */
+function queueUnclassedRows(run: (args: string[]) => string, repo: string, tick: MatchTick): void {
+  const log = tick.log ?? ((line: string) => process.stderr.write(line));
+  try {
+    const listed = listForMatch(run, repo);
+    if (listed === null) return log("class-repeat: the closed rows could not be read as a listing, so no incident was matched to a class (#4633)\n");
+    const asked = readRemembered<Asked>(tick.statePath, log);
+    const settled = settleOutcomes(asked, new Map(listed.map((row) => [row.number, row])), tick);
+    const batch = listed.filter((row) => row.labels.includes(DEFECT_LABEL) && !row.labels.some((l) => l.startsWith(CLASS_LABEL_PREFIX)) && asked[String(row.number)] === undefined)
+      .slice(0, MAX_ASKED_PER_TICK).map(({ number, title }) => ({ number, title }));
+    for (const row of batch) asked[String(row.number)] = { at: tick.now, label: null };
+    if (settled || batch.length > 0) writeRemembered(tick.statePath, asked, log);
+    if (batch.length > 0) tick.ask(repo, batch);
+  } catch (err) {
+    log(`class-repeat: matching incidents to a class failed (${firstLine(err)}); the next tick tries again (#4633)\n`);
+  }
+}
+
+type ClassifyIo = { run: (args: string[]) => string, repo: string, index: FailureClass[], deps: DecisionDeps, statePath: string, now?: () => number, log?: (line: string) => void };
+
+/**
+ * THE CHILD'S HALF: ask `classifyIncident` about each row and apply the label it names. The label is created first (a class with no closed row has none yet), then put on the row.
+ * `none-of-these` writes nothing to GitHub. Each row's answer is remembered as it lands, and a refused `gh` call is logged and leaves the row remembered, not retried: it was asked about once.
+ */
+export async function labelUnclassedRows(rows: UnclassedRow[], { run, repo, index, deps, statePath, now = Date.now, log = (line) => process.stderr.write(line) }: ClassifyIo): Promise<Record<number, string | null>> {
+  const applied: Record<number, string | null> = {};
+  for (const row of rows) {
+    const { label } = await classifyIncident({ kind: DEFECT_LABEL, title: row.title, cause: "" }, index, { ...deps, id: decisionIdOf(row.number) });
+    applied[row.number] = null;
+    try {
+      if (label !== null) {
+        run(["label", "create", label, "--repo", repo, "--force", "--description", CLASS_LABEL_DESCRIPTION]);
+        run(["issue", "edit", String(row.number), "--repo", repo, "--add-label", label]);
+        applied[row.number] = label;
+        log(`class-repeat: matched #${row.number} to ${label} (#4633)\n`);
+      }
+    } catch (err) {
+      log(`class-repeat: could not label #${row.number} as ${label} (${firstLine(err)}) (#4633)\n`);
+    }
+    const asked = readRemembered<Asked>(statePath, log);
+    asked[String(row.number)] = { at: now(), label: applied[row.number] };
+    writeRemembered(statePath, asked, log);
+  }
+  return applied;
+}
+
+/** The argv a detached child is given: this file, the flag, the repository and the rows as JSON. */
+export const classifyChildArgv = (repo: string, rows: UnclassedRow[]): string[] =>
+  [fileURLToPath(import.meta.url), CLASSIFY_FLAG, repo, JSON.stringify(rows)];
+
+/** The repository and rows a child was given, or `null` for an argv that is not that. */
+export function parseClassifyArgv(argv: string[]): { repo: string, rows: UnclassedRow[] } | null {
+  const at = argv.indexOf(CLASSIFY_FLAG);
+  if (at < 0 || typeof argv[at + 1] !== "string" || typeof argv[at + 2] !== "string") return null;
+  try {
+    const rows = JSON.parse(argv[at + 2]);
+    const valid = Array.isArray(rows) && rows.every((r) => typeof r?.number === "number" && typeof r.title === "string");
+    return valid ? { repo: argv[at + 1], rows: rows.map((r) => ({ number: r.number, title: r.title })) } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `gh` as the child runs it: the gate's own environment (and so its account), the same call shape `run` has everywhere in this file. */
+const liveGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+/**
+ * THE MATCH IO FOR THE LIVE GATE, or `undefined` when nothing could be asked: no `jev` provider declared, or the use `failure-class-match` not switched on in `.agent-org/decisions.json`.
+ * `undefined` is what keeps a host without the provider exactly as it was: no listing, no memory file, no process.
+ * @param {{ host: HostConfig, switches: Readonly<Record<string, boolean | undefined>>, statePath: string, spawnChild?: typeof spawn }} input
+ */
+export function liveMatchIo({ host, switches, statePath, logPath, spawnChild = spawn }: {
+  host: Readonly<HostConfig>, switches: Readonly<Record<string, boolean | undefined>>, statePath: string, logPath?: string, spawnChild?: typeof spawn,
+}): MatchIo | undefined {
+  if (host.triage?.provider !== "jev" || switches["failure-class-match"] !== true) return undefined;
+  return {
+    statePath,
+    ask: (repo, rows) => { spawnChild(process.execPath, classifyChildArgv(repo, rows), { detached: true, stdio: "ignore", env: process.env }).unref(); },
+    outcome: (row, kept) => recordLabelOutcome(decisionIdOf(row), kept, { logPath }),
+  };
+}
+
+function liveMatch(): MatchIo | undefined {
+  try {
+    const host = homeHostConfig();
+    const switches = readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: () => {}, state: processState, read: readFileSync });
+    return liveMatchIo({ host, switches, statePath: stateEntryPath(ASKED_STATE), logPath: decisionLogPathFrom(stateEntryPath("wake-ledger")) });
+  } catch {
+    // A host declaration that cannot be read is a host with nothing to ask: the tick's other reads say so, and this one is optional.
+    return undefined;
+  }
+}
+
+/** The child: read the index and the host, ask, label. Exits quietly when it is given nothing it understands. */
+async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const given = parseClassifyArgv(argv);
+  if (given === null) return;
+  const index = parseFailureClasses(readFileSync(join(HOME_CHECKOUT, FAILURE_CLASSES_PATH), "utf8")) ?? [];
+  const deps: DecisionDeps = { host: homeHostConfig(), switchesPath: decisionSwitchesPath(HOME_CHECKOUT), logPath: decisionLogPathFrom(stateEntryPath("wake-ledger")) };
+  await labelUnclassedRows(given.rows, { run: liveGh, repo: given.repo, index, deps, statePath: stateEntryPath(ASKED_STATE) });
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main().catch((err) => process.stderr.write(`class-repeat: matching incidents to a class failed (${firstLine(err)}) (#4633)\n`));
