@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/tree-wide-guard.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
-// its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 9 NAMED LINES: the original is TypeScript since a11ign/a11ign#4273 and this copy stays plain JS under `// @ts-check`, so each of the nine is a TYPE the original writes inline and this copy writes as JSDoc or leaves to inference: `tsModule`'s declaration (1); `typescriptModule`'s signature (1) and its return cast (1); `declareTreeWideGuard`'s signature (1); `lsFilesCache`'s declaration (1); `defaultGitLsFiles`'s declaration (1); the `WalkedFile` type, an exported `type` in the original and a `@typedef` here (1); `walkTree`'s signature (1); and `scriptKindOf`'s declaration (1).
+// COPIED FROM `packages/guards/src/tree-wide-guard.ts` at f3b5c5f59 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// its package. The product keeps its original and the two can drift, with no cross-repository pin: org-health's `copies-drifted` reading compares them.
+// CHANGED FROM THE ORIGINAL, 10 NAMED LINES: the original is TypeScript since a11ign/a11ign#4273 and this copy stays plain JS under `// @ts-check`, so each of the nine is a TYPE the original writes inline and this copy writes as JSDoc or leaves to inference: `tsModule`'s declaration (1); `typescriptModule`'s signature (1) and its return cast (1); `declareTreeWideGuard`'s signature (1); `lsFilesCache`'s declaration (1); `defaultGitLsFiles`'s declaration (1); the `WalkedFile` type, an exported `type` in the original and a `@typedef` here (1); `walkTree`'s signature (1); and `scriptKindOf`'s declaration (1). The tenth is its one import, `./git-env.mjs` here where the original reads `./git-env.ts`, because the tool's own `git-env.mjs` sits beside it.
 // ==== end of copy header ====
 // @ts-check
 // THE TREE-WIDE-GUARD MARKER -- #716/#704, ceo's ruling 2026-09-09.
 //
-// `packages/guards/src/tree-wide-guards.mjs`'s discovery used to grep comment-stripped source for the literal
+// `packages/guards/src/tree-wide-guards.ts`'s discovery used to grep comment-stripped source for the literal
 // substring "ls-files" -- a real fix for the mention-vs-use trap (a comment describing a tree walk no
 // longer counted), but still "a test deriving its expectations from source TEXT", this repo's own
 // most-repeated defect shape (CLAUDE.md, "A LIST OF FIELDS TO CHECK", "signal regexes broke whenever...").
@@ -16,12 +16,12 @@
 // always one draft away from a false positive.
 //
 // So: a TREE-WIDE GUARD is a test that IMPORTS this module -- a real ES import statement, parsed the same
-// way `local-import-closure.mjs` (#621, B8) derives a test's requirements from its import closure rather
+// way `local-import-closure.ts` (#621, B8) derives a test's requirements from its import closure rather
 // than scanning its text. A guard declares its own membership by importing `declareTreeWideGuard` and
 // calling it; the population is then a fact the tree computes from the import graph, never a keyword a
 // future guard might happen to share or fail to spell the expected way.
 //
-//   node packages/guards/src/tree-wide-guards.mjs     one path per line, for `npm run guards:sweep`
+//   node packages/guards/src/tree-wide-guards.ts     one path per line, for `npm run guards:sweep`
 import { execFileSync } from "node:child_process";
 import { extname } from "node:path";
 import { createRequire } from "node:module";
@@ -54,7 +54,7 @@ export function _typescriptLoadedForTests() {
 
 /**
  * Call this once, at module scope, in any test whose own population is the whole tracked tree rather than
- * one file. The return value carries no meaning -- `packages/guards/src/tree-wide-guards.mjs`'s discovery only checks
+ * one file. The return value carries no meaning -- `packages/guards/src/tree-wide-guards.ts`'s discovery only checks
  * that the CALL exists (never merely the import), the same "imported is not used" distinction
  * `git-spawn-classification.test.ts`'s own `usesCanonicalHelper` already draws for the identical reason.
  * @returns {true}

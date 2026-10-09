@@ -1,6 +1,6 @@
-// COPIED FROM `scripts/test-support/git-sandbox.ts` at 24d448b0b (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
-// its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../packages/guards/src/git-env.mjs` and is now the tool's own copy beside it.
+// COPIED FROM `scripts/test-support/git-sandbox.ts` at a0a4e91c8 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// its package. The product keeps its original and the two can drift, with no cross-repository pin: org-health's `copies-drifted` reading compares them.
+// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which is `../../packages/guards/src/git-env.ts` and is here the tool's own copy beside it.
 // ==== end of copy header ====
 /**
  * A test that spawns `git` inside a disposable directory is one `GIT_DIR` away from operating on the
@@ -40,7 +40,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv, KNOWN_GIT_REDIRECT_VARS } from "./git-env.mjs";
 
-// Re-exported rather than redefined: `packages/guards/src/git-env.mjs` is the ONE PLACE the GIT_* strip is stated,
+// Re-exported rather than redefined: `packages/guards/src/git-env.ts` is the ONE PLACE the GIT_* strip is stated,
 // because a copy of a defensive filter is exactly the "fact stated twice" shape this repo's CLAUDE.md
 // warns about -- see that file's header for why production git-spawning code needs the identical
 // function and cannot simply import THIS module (worker-fleet publishes as `bin`; this file lives
