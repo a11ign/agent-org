@@ -10,9 +10,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ownsPr, RUNGS } from "./pr-ownership.mjs";
-import { claimFactsFrom, readClaim } from "./claim-stall.mjs";
-import { claimRecordComment } from "./row-claim.mjs";
+import { ownsPr, RUNGS } from "./pr-ownership.ts";
+import { claimFactsFrom, readClaim } from "./claim-stall.ts";
+import { claimRecordComment } from "./row-claim.ts";
 
 const ROW = 3390;
 const SESSION = "worker-3390";
@@ -31,7 +31,7 @@ const IO = { git: (_dir: string, args: string[]) => (args[0] === "worktree" ? { 
 
 type Pr = { number: number; headRefName?: string; title?: string; labels?: { name: string }[]; mergedAt?: string; repoKey?: string };
 
-/** The real claim comment: written by `row-claim.mjs`'s own writer, so a change to its format breaks this. */
+/** The real claim comment: written by `row-claim.ts`'s own writer, so a change to its format breaks this. */
 const claimComment = { body: claimRecordComment({ session: SESSION, branch: BRANCH, worktree: undefined }),
   createdAt: new Date(CLAIMED_AT).toISOString(), author: { login: "a11ign-ai-workers" } };
 

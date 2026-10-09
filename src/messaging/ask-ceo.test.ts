@@ -5,7 +5,7 @@
 // SAME fixture with one thing taken away, and the runner is shown to be called in case 1, so "nothing was sent" in cases 2 to 4 is not a runner that never ran. The predicate (case 3)
 // is a pair, and a second pair shows it is the gate's grammar and not a look for the word: `Waiting-for: soon` and a bare `#3490` in a sentence are refused, as `manual` is.
 //
-// Run with the host's declaration (`AGENT_ORG_HOST`), because the predicate IS the gate's own parser, `wait-condition.mjs`, which reads it at import. Without it the cases that need the
+// Run with the host's declaration (`AGENT_ORG_HOST`), because the predicate IS the gate's own parser, `wait-condition.ts`, which reads it at import. Without it the cases that need the
 // parser are skipped, NAMING the reason, and the last case fails if they were skipped for any reason but the host's absence.
 
 import assert from "node:assert/strict";
@@ -34,7 +34,7 @@ const WITHOUT_CLEARS = QUESTION.replace(`\n${CLEARS}`, "");
 /** @type {import("./ask-ceo.ts").Invocation[]} */
 let seen: import("./ask-ceo.ts").Invocation[] = [];
 /** @type {{parseWaits: import("./ask-ceo.ts").ParseWaits} | {reason: string}} */
-const gate: { parseWaits: import("./ask-ceo.ts").ParseWaits; } | { reason: string; } = await import("../wait-condition.mjs").then((module) => ({ parseWaits: module.parseWaits }), (error) => ({ reason: describeError(error) }));
+const gate: { parseWaits: import("./ask-ceo.ts").ParseWaits; } | { reason: string; } = await import("../wait-condition.ts").then((module) => ({ parseWaits: module.parseWaits }), (error) => ({ reason: describeError(error) }));
 const skip = "reason" in gate ? gate.reason : false;
 /** rstest's shim refuses a `describe()` option (a dropped `{ skip }` would RUN what node:test skips), so the skip is on each test it covers. */
 const hosted = (/** @type {string} */ name: string, /** @type {() => void | Promise<void>} */ body: () => void | Promise<void>) => test(name, { skip }, body);

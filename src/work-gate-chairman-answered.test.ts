@@ -15,7 +15,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, readChairmanBlocked, chairmanReadsRefused, CHAIRMAN_LOGINS } from "./work-gate.mjs";
+import { decide, readChairmanBlocked, chairmanReadsRefused, CHAIRMAN_LOGINS } from "./work-gate.ts";
 
 const T0 = "2026-10-03T14:05:56Z"; // #3228 labelled
 const T1 = "2026-10-04T10:17:05Z"; // the chairman's session commented

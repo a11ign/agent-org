@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 // @ts-ignore -- a leaf .mjs with JSDoc types
-import { unwaitedStockRows } from "./unwaited-stock-rows.mjs";
+import { unwaitedStockRows } from "./unwaited-stock-rows.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-09T00:00:00Z");

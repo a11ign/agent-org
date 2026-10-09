@@ -49,7 +49,7 @@ jobs:
           # THE LABELS COME THROUGH `env:`, NEVER INTERPOLATED INTO THE SCRIPT: a label name is typed by whoever can label, and `${{ }}` inside `run:` is
           # pasted into the shell as text.
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-          # MIRRORS `HOLD_PREFIX` in src/pr-hold-state.mjs, which `armabilityOf` reads for `arm-pr.mjs` and `auto-arm-sweep.mjs`. This job runs on
+          # MIRRORS `HOLD_PREFIX` in src/pr-hold-state.ts, which `armabilityOf` reads for `arm-pr.mjs` and `auto-arm-sweep.mjs`. This job runs on
           # `actions/checkout` alone and must stay that way, so it cannot import the predicate; `auto-arm-workflow-honours-hold.test.ts` fails if the two drift.
           HOLD_PREFIX: "hold:"
         run: |
@@ -57,7 +57,7 @@ jobs:
           # read as a failed arm when the PR is exactly as it was asked to be (a11ign/a11ign#3867).
           holders=$(printf '%s' "$PR_LABELS" | jq -r --arg prefix "$HOLD_PREFIX" '[.[] | select(startswith($prefix))] | join(", ")')
           if [ -n "$holders" ]; then
-            echo "AUTO-ARM: not arming #${PULL_REQUEST} in ${REPOSITORY}: held by ${holders} (armabilityOf, src/pr-hold-state.mjs: a ${HOLD_PREFIX} label IS the hold)"
+            echo "AUTO-ARM: not arming #${PULL_REQUEST} in ${REPOSITORY}: held by ${holders} (armabilityOf, src/pr-hold-state.ts: a ${HOLD_PREFIX} label IS the hold)"
             exit 0
           fi
           echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with the Octo STS token"

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseLedger } from "../wakes-per-row.mjs";
+import { parseLedger } from "../wakes-per-row.ts";
 import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.mjs";
 import { openStore, QUIET_MS, readStore, TraceEvent } from "./store.mjs";
 import { ingestTranscripts, render } from "./trace.mjs";

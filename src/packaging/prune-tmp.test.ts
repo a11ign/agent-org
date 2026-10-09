@@ -1,5 +1,5 @@
 /**
- * #2166: THE GUARD FOR `prune-tmp.mjs` -- and the half that matters is the REFUSALS.
+ * #2166: THE GUARD FOR `prune-tmp.ts` -- and the half that matters is the REFUSALS.
  *
  * The row this file closes was filed because a 16G RAM-backed `/tmp` reached 80% and a write failed with
  * `disk quota exceeded`, while the root disk read 47%. The obvious remedy -- a sweep keyed to `rv-*` --
@@ -31,6 +31,7 @@
  * total, and the two that do count (the `rv-*` blind-spot control) compare two sets over the SAME fixture
  * in the same moment.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -41,8 +42,8 @@ import {
   ACTIVITY_WINDOW_MS, REVIEW_PREFIXES, SCRATCHPAD_ROOT,
   classifyEntry, familyOf, formatReport, heldEntries, newestMtimeMs, openPullRequests,
   processStrings, pruneTmp as pruneTmpWithClaims, removePath, selfSessions, sweepablePaths,
-} from "../prune-tmp.mjs";
-import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+} from "../prune-tmp.ts";
+import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host. The tests that ARE about
@@ -51,7 +52,7 @@ process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("removal-log-"), "worktree-rem
 const pruneTmp = (root: string, deps: NonNullable<Parameters<typeof pruneTmpWithClaims>[1]> = {}) =>
   pruneTmpWithClaims(root, { claim: () => ({ refused: false }), ...deps });
 
-const CLI = fileURLToPath(new URL("../prune-tmp.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../prune-tmp.ts", import.meta.url));
 
 const LIVE_SESSION = "5913388d-3a80-4a63-9453-b4c7583486f6";
 const DEAD_SESSION = "0b472b7e-ba86-4a9d-9f77-6793dc60461a";
@@ -198,7 +199,7 @@ test("REFUSED: a path a REAL running process holds open, read through the REAL /
   const other = scratchpad(root, "1284648c-2242-4e93-b448-b33d52294c79");
   const file = join(held, "scratchpad", "notes.txt");
   const child = spawn(process.execPath,
-    ["-e", `const fs=require("node:fs");fs.openSync(${JSON.stringify(file)},"r");setTimeout(()=>{},60000)`],
+    [...TSX_IMPORT, "-e", `const fs=require("node:fs");fs.openSync(${JSON.stringify(file)},"r");setTimeout(()=>{},60000)`],
     { stdio: "ignore" });
   try {
     waitFor(() => heldEntries([held], processStrings()) !== "unknown"
@@ -444,20 +445,20 @@ function fakeGh(root: string, json: string): string {
 test("the CLI defaults to the listing, and only --apply removes -- the argv path, run as a process", () => {
   // `dryRun` is decided in argv and nowhere else, so it is exercised rather than reasoned about. The
   // default is the listing because a command whose name reads as a report is one somebody runs to LOOK --
-  // `prune-worktrees.mjs` paid for the other way round by deleting three sessions' worktrees.
+  // `prune-worktrees.ts` paid for the other way round by deleting three sessions' worktrees.
   const root = makeRoot();
   const dead = scratchpad(root, DEAD_SESSION);
   const open = leftover(root, "rv-2049-y");
   for (const path of [dead, open]) age(path, 100);
   const env = { ...process.env, PATH: `${fakeGh(root, '[{"number":2049}]')}:${process.env.PATH}` };
 
-  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 2 classified path\(s\)/);
   assert.match(listed.stdout, new RegExp(`${open}\\s+\\[review\\] -- pull request #2049 is OPEN`));
   assert.ok(existsSync(dead), "the default run must not have removed anything");
 
-  const removed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--apply"], { encoding: "utf8", env });
+  const removed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--apply"], { encoding: "utf8", env });
   assert.equal(removed.status, 0, removed.stderr);
   assert.match(removed.stdout, /removed 1 of 2 classified path\(s\)/);
   assert.equal(existsSync(dead), false);
@@ -466,10 +467,10 @@ test("the CLI defaults to the listing, and only --apply removes -- the argv path
 
 test("the CLI refuses a flag it does not read, and a --tmp that is not there", () => {
   const root = makeRoot();
-  const typo = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--dry-run"], { encoding: "utf8" });
+  const typo = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--dry-run"], { encoding: "utf8" });
   assert.notEqual(typo.status, 0, "a flag this command ignores must not run the default and report success");
   assert.match(typo.stderr + typo.stdout, /--dry-run/);
-  const missing = spawnSync(process.execPath, [CLI, `--tmp=${join(root, "nope")}`], { encoding: "utf8" });
+  const missing = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${join(root, "nope")}`], { encoding: "utf8" });
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /does not exist -- nothing was read or written/);
 });
@@ -479,7 +480,7 @@ function waitFor(ready: () => boolean, timeoutMs = 10_000): void {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (ready()) return;
-    spawnSync(process.execPath, ["-e", "setTimeout(()=>{},50)"]);
+    spawnSync(process.execPath, [...TSX_IMPORT, "-e", "setTimeout(()=>{},50)"]);
   }
   assert.fail("the child process never appeared in /proc holding its fd");
 }
@@ -536,7 +537,7 @@ test("#2782 DONE-WHEN 1: a removal is logged BEFORE the delete, names the worktr
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines.map((l) => l.event), ["removing", "removed"]);
   assert.equal(lines[0].path, dead);
-  assert.equal(lines[0].caller, "prune-tmp.mjs");
+  assert.equal(lines[0].caller, "prune-tmp.ts");
   assert.match(lines[0].owner, new RegExp(`${tree}=worker-2000`), "the owner file is read before the tree is gone");
   assert.match(lines[0].detail, /holds worktree\(s\)/);
   assert.match(linesAtDelete[0], /"event":"removing"/, "the line was already on disk when the delete ran");

@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3892)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3892)
 /**
  * #3892: A READY ROW WHOSE BRANCH'S PULL REQUEST WAS CLOSED UNMERGED IS OFFERED, NOT SHELVED.
  *
@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { afterTsx } from "./tsx-import.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (`claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool imported AFTER it, so the
 // acceptance command as written -- no `$AGENT_ORG_HOST` -- runs.
@@ -36,8 +37,8 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { partitionUnclaimed, rowBranchOrders, readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace, decide } = await import("./work-gate.mjs");
-const { spawnClaimer, spawnableRole, spawnedPrompt } = await import("./wake.mjs");
+const { partitionUnclaimed, rowBranchOrders, readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace, decide } = await import("./work-gate.ts");
+const { spawnClaimer, spawnableRole, spawnedPrompt } = await import("./wake.ts");
 const { writeFileSync: stamp } = await import("node:fs");
 
 const ROW = 3505;
@@ -181,7 +182,8 @@ type Ran = { cmd: string; args: string[]; cwd: string };
 /** An `exec` that answers the git reads a replacement's claim makes and records every call; `tree` is the porcelain block for the previous holder's tree. */
 function fakeHost(tree: string, { status = "", ahead = "0" }: { status?: string; ahead?: string } = {}) {
   const ran: Ran[] = [];
-  const exec = (cmd: string, args: string[], { cwd }: { cwd: string }) => {
+  const exec = (cmd: string, rawArgs: string[], { cwd }: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
     ran.push({ cmd, args, cwd });
     if (cmd === "git" && args[0] === "worktree") return { status: 0, output: `worktree /host/primary\nHEAD abc\nbranch refs/heads/main\n\n${tree}\n` };
     if (cmd === "git" && args[0] === "status") return { status: 0, output: status };

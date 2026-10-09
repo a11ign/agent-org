@@ -6,14 +6,14 @@
  * facts, git calls and review checkouts even once the import no longer died.
  *
  *   1. A SCAN of the non-test `packages/agent-org/src/*.mjs` finds no `import.meta.url` resolved three levels up in any of the
- *      three shapes the tree spells it, except `project-config.mjs`'s own `beside` (the named `SELF`). The scan flags a fixture string of
+ *      three shapes the tree spells it, except `project-config.ts`'s own `beside` (the named `SELF`). The scan flags a fixture string of
  *      each shape first, so an empty result is not an empty scan.
  *   2. A CHILD `node` per module, with `$AGENT_ORG_HOST` naming a fixture host whose primary checkout is a scratch directory and `src`
  *      copied to `<scratch>/tool/src`, prints the root-derived value, and it names the fixture checkout and not the directory above
  *      `tool`. With the variable unset the in-tree value is the product checkout, as before.
  *
  * #2879 (child 5d-4): `new URL("../../../", import.meta.url)` with a TRAILING SLASH is a third spelling of the same thing, in
- * `board-snapshot-scope.mjs`, `host-units.mjs` and `update-primary.mjs`. #2875's census did not match it; the scan now does, and the
+ * `board-snapshot-scope.ts`, `host-units.ts` and `update-primary.ts`. #2875's census did not match it; the scan now does, and the
  * three modules take `HOME_CHECKOUT`. `host-units`'s `REPO_ROOT` is the PROJECT's checkout and not the tool's: what it reads there (`.agent-org/units`,
  * `package.json` scripts, git history) is the project's, and `SHIPPED_DIR` is the tool's own location and stays `import.meta.url`-relative.
  *
@@ -22,6 +22,7 @@
  * only that one spelled it), and a child proves its git calls run in the fixture checkout: `filesChangedAgainstOrigin()` answers with
  * a file committed there, which a `cwd` of `packages/` or the directory above `tool` cannot.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -29,10 +30,10 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { changedFiles } from "../lib/changed-files.mjs";
-import { snapshotDirFor } from "../board-snapshot-scope.mjs";
+import { snapshotDirFor } from "../board-snapshot-scope.ts";
 
 // Two trees: the PROJECT's checkout, which the fixtures copy from, and the TOOL's own `src`, which is what is scanned and copied.
 const REPO = HOME_CHECKOUT;
@@ -40,7 +41,7 @@ const SRC = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const CHILD_TIMEOUT_MS = 60_000;
 
 /** The one file allowed to spell it: `resolveHomeCheckout`'s `beside`, the in-tree answer when `$AGENT_ORG_HOST` is unset. */
-const SELF = { file: "project-config.mjs", reason: "it IS the one place the tool finds itself: `beside` is HOME_CHECKOUT's in-tree default" };
+const SELF = { file: "project-config.ts", reason: "it IS the one place the tool finds itself: `beside` is HOME_CHECKOUT's in-tree default" };
 
 /**
  * `import.meta.url` resolved three levels up: `resolve(dirname(fileURLToPath(import.meta.url)), "../../..")`, `new URL("../../..", import.meta.url)`
@@ -53,13 +54,13 @@ function upThreeSpellings(source: string): boolean {
 }
 
 /**
- * Non-test `.mjs` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
+ * Non-test `.mjs` and `.ts` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
  * keeps the product's spelling of the root unless its header names an edit: `changed-packages.mjs` did, and from `src/lib` that is
  * `packages/`, not the checkout (#2884). None of the other `lib/` files spells it, so no `lib/` file needs an exemption.
  */
 const nonTestModules = (): string[] =>
   [".", "lib"].flatMap((dir) => readdirSync(join(SRC, dir))
-    .filter((name) => name.endsWith(".mjs") && !/\.test\./.test(name))
+    .filter((name) => /\.(mjs|ts)$/.test(name) && !/\.test\./.test(name))
     .map((name) => join(dir, name)));
 
 test("POSITIVE CONTROL: the scan flags a fixture string of each of the three shapes", () => {
@@ -70,7 +71,7 @@ test("POSITIVE CONTROL: the scan flags a fixture string of each of the three sha
   // Built, not spelled: this file must not itself carry the three-up spelling it tests for in the tree-wide grep.
   assert.equal(upThreeSpellings(`const R = fileURLToPath(new URL("${"../".repeat(3)}", import.meta.url));`), true, "the trailing-slash shape (#2879)");
   assert.equal(upThreeSpellings('const own = new URL("../host/", import.meta.url);'), false, "one level up is the tool's own directory");
-  assert.equal(upThreeSpellings('const own = new URL("./board-report.mjs", import.meta.url);'), false, "a path inside src is the tool's own location");
+  assert.equal(upThreeSpellings('const own = new URL("./board-report.ts", import.meta.url);'), false, "a path inside src is the tool's own location");
   assert.equal(upThreeSpellings('const R = HOME_CHECKOUT;'), false);
 });
 
@@ -87,7 +88,7 @@ test("no non-test packages/agent-org/src/*.mjs or src/lib/*.mjs resolves import.
   const offenders = nonTestModules()
     .filter((name) => name !== SELF.file)
     .filter((name) => upThreeSpellings(readFileSync(join(SRC, name), "utf8")));
-  assert.deepEqual(offenders, [], "each should take HOME_CHECKOUT from project-config.mjs");
+  assert.deepEqual(offenders, [], "each should take HOME_CHECKOUT from project-config.ts");
 });
 
 const scratchDirs: string[] = [];
@@ -110,9 +111,9 @@ function fixtureProject(): string {
   mkdirSync(join(checkout, ".agent-org"), { recursive: true });
   mkdirSync(join(checkout, "docs"), { recursive: true });
   cpSync(join(REPO, ".agent-org/project.json"), join(checkout, ".agent-org/project.json"));
-  // `cause-declaration.mjs` requires the plugin the declaration names at import. a11ign's imports the product's `src` by relative
+  // `cause-declaration.ts` requires the plugin the declaration names at import. a11ign's imports the product's `src` by relative
   // path, which a second project does not have, so the fixture project brings a plugin of its own, declaring no causes.
-  cpSync(join(REPO, ".agent-org/roles"), join(checkout, ".agent-org/roles"), { recursive: true }); // `project-roles.mjs` refuses a project without its role briefs
+  cpSync(join(REPO, ".agent-org/roles"), join(checkout, ".agent-org/roles"), { recursive: true }); // `project-roles.ts` refuses a project without its role briefs
   mkdirSync(join(checkout, ".agent-org/plugins"), { recursive: true });
   writeFileSync(join(checkout, ".agent-org/plugins/causes.mjs"), "export const causeDeclarations = [];\n");
   writeFileSync(join(checkout, "docs/lane-ownership.json"), JSON.stringify(FIXTURE_LANES));
@@ -133,6 +134,7 @@ function standaloneTree(): { src: string; aboveTool: string } {
   const aboveTool = scratch();
   const src = join(aboveTool, "tool", "src");
   cpSync(SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return { src, aboveTool };
 }
 
@@ -173,23 +175,23 @@ function inTreeChangedAgainstOrigin(): string[] {
 }
 
 const MODULES: Module[] = [
-  { name: "board-data ROOT", file: "board-data.mjs", answer: "m.ROOT",
+  { name: "board-data ROOT", file: "board-data.ts", answer: "m.ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "lane-ownership loadLanes()", file: "lane-ownership.mjs", answer: "m.loadLanes()?.lanes.map((l) => l.lane)",
+  { name: "lane-ownership loadLanes()", file: "lane-ownership.ts", answer: "m.loadLanes()?.lanes.map((l) => l.lane)",
     expectedInFixture: () => ["fixture-lane"], expectedInTree: JSON.parse(readFileSync(join(REPO, "docs/lane-ownership.json"), "utf8")).lanes.map((l: { lane: string }) => l.lane) },
-  { name: "owned-path-signoff loadFacts()", file: "owned-path-signoff.mjs", answer: "m.loadFacts()?.owned",
+  { name: "owned-path-signoff loadFacts()", file: "owned-path-signoff.ts", answer: "m.loadFacts()?.owned",
     expectedInFixture: () => FIXTURE_FACTS.owned, expectedInTree: JSON.parse(readFileSync(join(REPO, "docs/owned-path-facts.json"), "utf8")).owned },
-  { name: "region-paths rootFilesOnMain()", file: "region-paths.mjs", answer: `m.rootFilesOnMain().files.has(${JSON.stringify(FIXTURE_ROOT_FILE)})`,
+  { name: "region-paths rootFilesOnMain()", file: "region-paths.ts", answer: `m.rootFilesOnMain().files.has(${JSON.stringify(FIXTURE_ROOT_FILE)})`,
     expectedInFixture: () => true, expectedInTree: false },
-  { name: "wake REPO_ROOT", file: "wake.mjs", answer: "m.REPO_ROOT",
+  { name: "wake REPO_ROOT", file: "wake.ts", answer: "m.REPO_ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "work-gate REPO_CHECKOUT", file: "work-gate.mjs", answer: "m.REPO_CHECKOUT",
+  { name: "work-gate REPO_CHECKOUT", file: "work-gate.ts", answer: "m.REPO_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "board-snapshot-scope SNAPSHOT_DIR", file: "board-snapshot-scope.mjs", answer: "m.SNAPSHOT_DIR",
+  { name: "board-snapshot-scope SNAPSHOT_DIR", file: "board-snapshot-scope.ts", answer: "m.SNAPSHOT_DIR",
     expectedInFixture: (checkout) => join(checkout, "runs", "board-snapshots"), expectedInTree: snapshotDirFor(REPO) },
-  { name: "host-units REPO_ROOT", file: "host-units.mjs", answer: "m.REPO_ROOT",
+  { name: "host-units REPO_ROOT", file: "host-units.ts", answer: "m.REPO_ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.mjs", answer: "m.PRIMARY_CHECKOUT",
+  { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.ts", answer: "m.PRIMARY_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "lib/changed-packages filesChangedAgainstOrigin()", file: "lib/changed-packages.mjs", answer: "m.filesChangedAgainstOrigin()",
     prepare: commitPastOriginMain, expectedInFixture: () => [FIXTURE_CHANGED_FILE], expectedInTree: inTreeChangedAgainstOrigin() },
@@ -201,7 +203,7 @@ function readIn(src: string, module: Module, host: string | undefined): unknown 
   delete env[HOST_ENV];
   if (host !== undefined) env[HOST_ENV] = host;
   const program = `const m = await import(${JSON.stringify(join(src, module.file))}); console.log(JSON.stringify(${module.answer}));`;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", program], { env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", program], { env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   assert.equal(child.status, 0, `${module.name}: the child failed:\n${child.stderr}`);
   return JSON.parse(child.stdout.trim().split("\n").at(-1) as string);
 }

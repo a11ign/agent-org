@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stallReasonOf, stallOrderOf, stalledPrOrders, ownerOfPr, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, decide, CAUSES, stalledPrFacts }
-  from "../work-gate.mjs";
+  from "../work-gate.ts";
 import { hungCheckOf, CHECK_RUNNING_TOO_LONG_MINUTES } from "../work-gate/pr-orders.mjs";
 
 const REQUIRED = ["gate"];

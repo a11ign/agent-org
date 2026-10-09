@@ -1,7 +1,7 @@
 /**
  * #2619 (child 3d of #69): THE PROJECT'S VOCABULARY -- the row template's field names and the
  * label/milestone/lane-prefix/shared-resource words the machinery reads (ADR 0040, decision 1, surface 2),
- * read from `.agent-org/project.json`'s `vocabulary` key by `project-vocabulary.mjs`.
+ * read from `.agent-org/project.json`'s `vocabulary` key by `project-vocabulary.ts`.
  *
  * Four claims, each with its control in this file:
  *   1. a11ign's declaration, read through the reader, gives EXACTLY today's values for every label,
@@ -14,9 +14,9 @@
  *      same defect as CODE reading it. The collisions that are not vocabulary are declared below with
  *      their reasons, and since #3232 the invariant is judged against the base the change merges into:
  *      a hit this change ADDS must be declared, and one it removes passes (`lib/pin-ratchet.ts`).
- *   3. a SECOND project's vocabulary, run through the same reader, changes what `row-file.mjs` refuses (a
+ *   3. a SECOND project's vocabulary, run through the same reader, changes what `row-file.ts` refuses (a
  *      milestone it does not have, a label outside its set), what `row-claim/runner-rule.mjs`'s lane rule
- *      reads, and, with an empty `resources` list, what `acceptance-commands.mjs` would let an Acceptance
+ *      reads, and, with an empty `resources` list, what `acceptance-commands.ts` would let an Acceptance
  *      run -- through the injectable seams those three files now carry for exactly this reason, mirroring
  *      `row-claim/file-overlap-rule.mjs`'s own `deps` pattern. This is what "project-agnostic" means and the
  *      only thing that shows the reader is not a11ign's constants in a trench coat.
@@ -24,7 +24,7 @@
  */
 // no-token: openMilestones
 //
-// This file imports `labelsOutOfRelease`/`saysOutOfRelease` from `row-file.mjs`, whose closure also
+// This file imports `labelsOutOfRelease`/`saysOutOfRelease` from `row-file.ts`, whose closure also
 // defines `openMilestones` (a `gh api` read, unrelated to either function) -- the whole-file over-charge
 // this declaration exists for (#827). Every call here is pure, with every input given directly; nothing
 // in this file calls or spawns `openMilestones`, and nothing else in the closure needs a token either.
@@ -41,11 +41,11 @@ import {
   FLEET_QUESTION, LANES_FILE_PATH, LANE_ANY_LABEL, LANE_PREFIX, NEEDS_CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL,
   OUT_OF_RELEASE_MILESTONE, READY_LABEL, RESOURCES, ROAD_TO_VERSION_ONE_MILESTONE, SESSION_PREFIX,
   STARTED_LABEL, WAS_READY_LABEL, parseVocabulary,
-} from "../project-vocabulary.mjs";
-import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.mjs";
-import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.mjs";
+} from "../project-vocabulary.ts";
+import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
+import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.ts";
 import { laneReason } from "../row-claim/runner-rule.mjs";
-import { resourcePatternsFrom } from "../acceptance-commands.mjs";
+import { resourcePatternsFrom } from "../acceptance-commands.ts";
 import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
 import {
   IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,
@@ -115,7 +115,7 @@ function walkForVocabularyHits(dir: string, exclude: Set<string>): Record<string
       const path = join(at, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(path);
-      } else if (entry.name.endsWith(".mjs") && !/\.test\./.test(entry.name) && !exclude.has(entry.name)) {
+      } else if (/\.(mjs|ts)$/.test(entry.name) && !/\.test\./.test(entry.name) && !exclude.has(entry.name)) {
         const hits = vocabularyHitsIn(readFileSync(path, "utf8"));
         if (hits.length > 0) found[path] = hits;
       }
@@ -163,26 +163,26 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // stops the copy drifting.
   ...nonVocabulary("messaging/sources/requests.mjs", ['"needs:chairman"'], "a leaf module's own copy of a vocabulary label, pinned equal to it below"),
   ...nonVocabulary("messaging/sources/summary.mjs", ['"ready"', '"in-progress"', '"needs:chairman"'], "a leaf module's own copy of vocabulary labels, pinned equal to them below"),
-  // The four claim-lifecycle labels: `claim-labels.mjs` is a pinned, import-free LEAF (#804, `ready-label-audit.test.ts`) -- the one file this row
-  // does NOT move them out of. See this file's own header and `project-vocabulary.mjs`'s header for why: moving them would either break that
-  // leaf's no-import contract or state the same four facts twice, and `project-vocabulary.mjs` imports them from here instead (assertion 1, above,
+  // The four claim-lifecycle labels: `claim-labels.ts` is a pinned, import-free LEAF (#804, `ready-label-audit.test.ts`) -- the one file this row
+  // does NOT move them out of. See this file's own header and `project-vocabulary.ts`'s header for why: moving them would either break that
+  // leaf's no-import contract or state the same four facts twice, and `project-vocabulary.ts` imports them from here instead (assertion 1, above,
   // pins the values equal).
-  ...nonVocabulary("claim-labels.mjs", ['"ready"', '"was-ready"', '"in-progress"', '"started"'], "the import-free leaf the claim-lifecycle labels are defined in (#804)"),
+  ...nonVocabulary("claim-labels.ts", ['"ready"', '"was-ready"', '"in-progress"', '"started"'], "the import-free leaf the claim-lifecycle labels are defined in (#804)"),
   // #3942: the same leaf holds `STATE_LABELS`, whose `backlog` and `blocked` ARE vocabulary labels. It cannot import the vocabulary (no imports, same contract), so it keeps its
   // own copy and `state-label-exactly-one.test.ts` ("STATE_LABELS is the six names ...") pins each equal to the vocabulary's, which is what stops the copy drifting.
-  ...nonVocabulary("claim-labels.mjs", ['"backlog"', '"blocked"'], "the import-free leaf's own copy of two vocabulary labels in STATE_LABELS, pinned equal to them (#3942)"),
-  // `claim-stall.mjs`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
+  ...nonVocabulary("claim-labels.ts", ['"backlog"', '"blocked"'], "the import-free leaf's own copy of two vocabulary labels in STATE_LABELS, pinned equal to them (#3942)"),
+  // `claim-stall.ts`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
-  ...nonVocabulary("claim-stall.mjs", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
-  // `wake.mjs`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.mjs`'s `why: "blocked"`
+  ...nonVocabulary("claim-stall.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
+  // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`
   // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
-  ...nonVocabulary("wake.mjs", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.mjs`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake.mjs", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
-  // `work-gate.mjs`: the same `herdr` STATUS mentioned in a report string, and `run(["pr", "ready", ...])` -- GitHub's own `gh pr ready` CLI verb,
+  ...nonVocabulary("wake.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake.ts", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
+  // `work-gate.ts`: the same `herdr` STATUS mentioned in a report string, and `run(["pr", "ready", ...])` -- GitHub's own `gh pr ready` CLI verb,
   // not the row `ready` label.
-  ...nonVocabulary("work-gate.mjs", ["`blocked`"], "the `herdr` status mentioned in a report string"),
-  ...nonVocabulary("work-gate.mjs", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
+  ...nonVocabulary("work-gate.ts", ["`blocked`"], "the `herdr` status mentioned in a report string"),
+  ...nonVocabulary("work-gate.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `work-gate/pr-orders.mjs`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
   ...nonVocabulary("work-gate/pr-orders.mjs", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
@@ -196,11 +196,11 @@ test("the messaging sources' label literals equal the vocabulary's", () => {
 });
 
 /**
- * Files the walk skips whole, each with its reason. `project-vocabulary.mjs` is where the literals are declared. `prefix-pins.mjs` is the project's
+ * Files the walk skips whole, each with its reason. `project-vocabulary.ts` is where the literals are declared. `prefix-pins.mjs` is the project's
  * lab helper, which the gate copies in beside the tests (`rsync` from `packages/lab/src/packaging/`, ci.yml) so that `packaging/` tests that import it
  * can run; it pins the `lane:` prefix for the project's own lab tests, is no part of the tool, and is not in this repository.
  */
-const WALK_SKIPS = new Set(["project-vocabulary.mjs", "prefix-pins.mjs"]);
+const WALK_SKIPS = new Set(["project-vocabulary.ts", "prefix-pins.mjs"]);
 
 /** Every distinct (file, literal) the walk of `srcDir` finds, named relative to it. */
 function vocabularyEntries(srcDir: string): string[] {
@@ -209,10 +209,10 @@ function vocabularyEntries(srcDir: string): string[] {
 }
 
 test("#2619 ACCEPTANCE, MUTATION TARGET: a walk of the tool's src finds no vocabulary literal in "
-  + "CODE outside project-vocabulary.mjs that this change ADDED without a declaration above", () => {
+  + "CODE outside project-vocabulary.ts that this change ADDED without a declaration above", () => {
   const current = vocabularyEntries(join(TOOL_ROOT, "src"));
   // Positive control: the walk finds the declared leaf copies, so an empty answer cannot pass for "none was added".
-  assert.ok(current.includes(hitName("claim-labels.mjs", '"ready"')), "the walk did not find the claim-labels leaf: it is reading the wrong tree");
+  assert.ok(current.includes(hitName("claim-labels.ts", '"ready"')), "the walk did not find the claim-labels leaf: it is reading the wrong tree");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], scan: (root) => vocabularyEntries(join(root, "src")), current, declared: DECLARED_NON_VOCABULARY_HITS,
   });
@@ -320,7 +320,7 @@ function refusalOf(parsed: unknown): ProjectDeclarationRefusal {
 /** @param field the field the refusal must name, and the message must repeat it */
 function assertRefusedFor(parsed: unknown, field: string): void {
   const refusal = refusalOf(parsed);
-  assert.equal(refusal.field, field, refusal.message);
+  assert.equal((refusal as any).field, field, refusal.message);
   assert.ok(refusal.message.includes(`\`${field}\``), `the message must name the field: ${refusal.message}`);
 }
 
@@ -370,7 +370,7 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
     mutated((d) => delete d.vocabulary.labels.blocked),
     mutated((d) => delete d.vocabulary.prefixes.answer),
     mutated((d) => delete d.vocabulary.fleetQuestion),
-  ].map((doc) => refusalOf(doc).field);
+  ].map((doc) => (refusalOf(doc) as any).field);
   assert.deepEqual(fields, ["vocabulary.labels.blocked", "vocabulary.prefixes.answer", "vocabulary.fleetQuestion"]);
   assert.equal(new Set(fields).size, fields.length);
 });

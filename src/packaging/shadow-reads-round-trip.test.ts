@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "../work-gate.mjs";
-import { SHADOW_READS_DIR, SHADOW_WINDOW_MARKER, parseShadowRecord, tapShadowReads } from "../shadow-reads.mjs";
+import { decide } from "../work-gate.ts";
+import { SHADOW_READS_DIR, SHADOW_WINDOW_MARKER, parseShadowRecord, tapShadowReads } from "../shadow-reads.ts";
 
 const FIRST_TICK = 1_790_000_000_000;
 

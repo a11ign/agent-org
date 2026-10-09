@@ -2,7 +2,7 @@
 //
 // Every `gh` call in this file is a fixture: `runArmPr` and `main` take an injected `run`/`login`, and the sweep is
 // driven as a real process with a fake `gh` first on PATH that records its calls and answers from a script. True of
-// the IMPORT (`arm-pr.mjs` and `pr-open.mjs` spawn `gh`) and false of every CALL.
+// the IMPORT (`arm-pr.ts` and `pr-open.ts` spawn `gh`) and false of every CALL.
 /**
  * #3254, #1756 RULING ITEM 7: `ceo`, `product-manager` and `orchestrator` do not author pull requests touching
  * `.github/workflows/`, and nothing made that true. Four PRs from `a11ign-ai-leads` touched the pipeline in about a day
@@ -23,6 +23,7 @@
  * The lane data is built here, never read from the project's own `docs/lane-ownership.json`: a test that read it would
  * pass or fail on whether the project had merged its `reviewOnly` field, and the tool's suite must not depend on that.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -30,11 +31,11 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
-import { laneLabelsFor } from "../row-file.mjs";
-import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN } from "../lane-ownership.mjs";
-import { runArmPr, EXIT } from "../arm-pr.mjs";
-import { main, EXIT_NOTHING_SENT } from "../pr-open.mjs";
+import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
+import { laneLabelsFor } from "../row-file.ts";
+import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN } from "../lane-ownership.ts";
+import { runArmPr, EXIT } from "../arm-pr.ts";
+import { main, EXIT_NOTHING_SENT } from "../pr-open.ts";
 
 const LEADS = "a11ign-ai-leads";
 const WORKERS = "a11ign-ai-workers";
@@ -238,7 +239,7 @@ test("#3254: a login pr-open cannot read REFUSES a pipeline diff -- unreadable i
 
 // --- the sweep: the same predicate, or arm-pr's refusal is undone one job later ---
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 const FIXTURE_PROJECT = fileURLToPath(new URL("./fixtures/host-project-paths/project", import.meta.url));
 
 /**
@@ -271,7 +272,7 @@ case "$*" in
 esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
-    const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile,
+    const run = spawnSync(process.execPath, [...TSX_IMPORT, SWEEP], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile,
       GITHUB_REPOSITORY: "a11ign/a11ign", [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, merged: calls.some((c) => c.startsWith("pr merge")) };

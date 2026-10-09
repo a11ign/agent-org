@@ -14,9 +14,9 @@
  * side). Editing a11ign's `host.json` and reinstalling the unit is #2623's cut-over, after the shadow window.
  *
  * WHAT IT DOES NOT COVER. `stateDir` is READ and VALIDATED here, and the readers of the org's state entries that already derive their
- * paths from one ledger path (`wake.mjs`'s queue, spare, reviewer and kept-claim paths) are shown to follow it. FOUR CONSTANTS STILL
- * SPELL `~/.cache/a11ign` -- `DRAIN_MARKER` and `REVIEWER_STATE_DIR` in `work-gate.mjs`, `LIVE_STATE_DIR` in `shadow-gate.mjs`, and the
- * default of `ledgerPathFrom` in `wake.mjs` -- and those files are other rows' Regions, so wiring them to `stateFilePath` is not done
+ * paths from one ledger path (`wake.ts`'s queue, spare, reviewer and kept-claim paths) are shown to follow it. FOUR CONSTANTS STILL
+ * SPELL `~/.cache/a11ign` -- `DRAIN_MARKER` and `REVIEWER_STATE_DIR` in `work-gate.ts`, `LIVE_STATE_DIR` in `shadow-gate.ts`, and the
+ * default of `ledgerPathFrom` in `wake.ts` -- and those files are other rows' Regions, so wiring them to `stateFilePath` is not done
  * here. The last test below reads `ledgerPathFrom([])` so that the residue is a named value rather than a claim of absence.
  */
 import { test } from "node:test";
@@ -26,17 +26,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.mjs";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
-  from "../host-config.mjs";
-import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.mjs";
-import { updateTool } from "../update-tool.mjs";
+  from "../host-config.ts";
+import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.ts";
+import { updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** The digest of the `work-tick` unit the host runs today: the one `host-project-paths.test.ts` pins as `TODAYS_TEXT`, restated so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8";
+const TODAYS_WORK_TICK_SHA = "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3";
 
 /**
  * a11ign's host with its `tool` taken out. #2974 (cut-over 3 of 6) SET `tool` in a11ign's `host.json`, so the real host now renders the tool
@@ -97,7 +97,7 @@ test("#2793: a malformed `tool` or `stateDir` is REFUSED NAMING THE FIELD", () =
   ];
   assert.ok(cases.length >= 10, "POSITIVE CONTROL: the table is not empty");
   for (const [what, extra, field] of cases) {
-    assert.equal(refusal(() => parse(acmeHost(extra))).field, field, `${what} must be refused, naming \`${field}\``);
+    assert.equal((refusal(() => parse(acmeHost(extra))) as any).field, field, `${what} must be refused, naming \`${field}\``);
   }
 });
 
@@ -117,9 +117,9 @@ test("#2793: a project's `beforeTick` is read, ABSENT is null, and a malformed o
     ["a newline", '{"beforeTick":"npm run x\\nrm y"}'],
   ];
   for (const [what, text] of bad) {
-    assert.equal(refusal(() => parseBeforeTick(text, "project.json")).field, "beforeTick", `${what} must be refused, naming \`beforeTick\``);
+    assert.equal((refusal(() => parseBeforeTick(text, "project.json")) as any).field, "beforeTick", `${what} must be refused, naming \`beforeTick\``);
   }
-  assert.equal(refusal(() => parseBeforeTick("{not json")).field, "(file)");
+  assert.equal((refusal(() => parseBeforeTick("{not json")) as any).field, "(file)");
 });
 
 // --- 2. the unit: today's text without `tool`, decision 3's three lines with it ------------------------------------------------------
@@ -167,14 +167,14 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
     assert.deepEqual(linesOnlyIn(plain, installed), [
       "WorkingDirectory=" + dirs.widgets,
       "ExecStartPre=-%h/.local/bin/pnpm run primary:update",
-      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts",
     ], "the three lines that leave");
     assert.deepEqual(linesOnlyIn(installed, plain), [
       "WorkingDirectory=" + dirs.tool,
       `Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`,
       "ExecStartPre=-" + TOOL_UPDATE_EXEC,
       `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`,
-      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts",
     ], "the tool's path, then the tool update and THEN the declared beforeTick, then the shorter ExecStart");
     const order = installed.split("\n").filter((line) => line.startsWith("ExecStartPre="));
     assert.deepEqual(order, ["ExecStartPre=-" + TOOL_UPDATE_EXEC, `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`],
@@ -183,8 +183,8 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
 });
 
 test("#2793: the tool update the rendered ExecStartPre names EXISTS, at the path it names relative to the tool's `src/`", () => {
-  const script = /node --import=\.\/src\/lib\/crash-exit\.mjs (src\/update-tool\.mjs)$/.exec(TOOL_UPDATE_EXEC)?.[1];
-  assert.equal(script, "src/update-tool.mjs", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
+  const script = /node --import=\.\/src\/lib\/crash-exit\.mjs --import tsx (src\/update-tool\.ts)$/.exec(TOOL_UPDATE_EXEC)?.[1];
+  assert.equal(script, "src/update-tool.ts", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
   assert.ok(existsSync(join(SHIPPED_DIR, "..", script ?? "")), "the monorepo keeps the tool's `src/` at packages/agent-org/src");
 });
 
@@ -202,9 +202,9 @@ test("#2793: a template edited out from under the tool form REFUSES, and never i
 test("#2793: a project whose declaration cannot be read, or holds a bad beforeTick, refuses the render", () => {
   withProjects((dirs) => {
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "npm run x | tee y" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick");
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick");
     rmSync(join(dirs.gadgets, ".agent-org/project.json"));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "(file)",
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "(file)",
       "an unreadable declaration is a refusal, not a skipped project whose checkout would go stale unseen");
   });
 });
@@ -212,12 +212,12 @@ test("#2793: a project whose declaration cannot be read, or holds a bad beforeTi
 test("#3464: a tool command in a beforeTick is for the host's PRIMARY project only, since the tool resolves its project from the host, not from where it runs", () => {
   withProjects((dirs) => {
     writeFileSync(join(dirs.widgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
-    assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} /usr/bin/node ${dirs.tool}/src/update-primary\\.mjs$`, "m"),
+    assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} /usr/bin/node --import ${dirs.tool}/node_modules/tsx/dist/loader\\.mjs ${dirs.tool}/src/update-primary\\.ts$`, "m"),
       "POSITIVE CONTROL: the primary (widgets) may declare one, and it renders");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org\tprimary:update" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick",
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick",
       "a TAB between the words is the same command, so the foreign project is refused for it too and not let through as 'the project's own'");
   });
 });
@@ -252,7 +252,7 @@ test("#2974: the prune and the board report take their project from the checkout
   withProjects((dirs) => {
     const toolHost = hostAt(dirs, { tool: dirs.tool });
     const prune = nonComment(serviceOf(toolHost, "worktree-prune"));
-    assert.ok(prune.includes(`ExecStart=/usr/bin/node src/prune-worktrees.mjs --apply ${dirs.widgets}`),
+    assert.ok(prune.includes(`ExecStart=/usr/bin/node --import tsx src/prune-worktrees.ts --apply ${dirs.widgets}`),
       `the prune is handed the repository it prunes (its cwd is the tool's now): ${prune.join(" | ")}`);
     const report = nonComment(serviceOf(toolHost, "board-report"));
     assert.ok(report.includes("ExecStart=/usr/bin/bash host/board-report-dispatch.sh"));
@@ -292,7 +292,7 @@ test("#2974: a repository that is not owner/name is refused naming the field, be
   withProjects((dirs) => {
     for (const bad of ["acme", "acme/widgets extra", "acme/widgets\nExecStartPre=/bin/false", "", 7]) {
       declareRepo(dirs.widgets, bad);
-      assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "code[0].repo", `${JSON.stringify(bad)} must be refused`);
+      assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "code[0].repo", `${JSON.stringify(bad)} must be refused`);
     }
   });
 });
@@ -306,7 +306,7 @@ test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four s
 });
 
 test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
-  // `unitEntryPoints` resolved `node src/work-tick.mjs` against the project and found nothing, so the unit that spends the most rate limit
+  // `unitEntryPoints` resolved `node src/work-tick.ts` against the project and found nothing, so the unit that spends the most rate limit
   // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
   // Its project is THIS run's checkout, not the host's absolute path, which a CI runner does not have: the tool form reads each project's `beforeTick`.
   const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;
@@ -335,11 +335,11 @@ test("#2793: a fixture host's `stateDir` moves every state path the readers deri
 });
 
 test("#2793: a host with no `stateDir` gets a REFUSAL from `stateFilePath`, never a11ign's directory", () => {
-  assert.equal(refusal(() => stateFilePath(parse(acmeHost()), "wake-ledger")).field, "stateDir");
-  assert.equal(refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
+  assert.equal((refusal(() => stateFilePath(parse(acmeHost()), "wake-ledger")) as any).field, "stateDir");
+  assert.equal((refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")) as any).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
 });
 
-// --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.mjs`'s, #3443) ---------------------------------
+// --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.ts`'s, #3443) ---------------------------------
 
 /** git in a directory, with every `GIT_*` variable stripped so a leaked one cannot reach a real repository. */
 const gitAt = (dir: string) => (args: string[]) => execFileSync("git", args, { cwd: dir, env: sandboxGitEnv(), encoding: "utf8" });

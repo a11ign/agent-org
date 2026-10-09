@@ -1,10 +1,10 @@
 [Unit]
 # THE CHAIRMAN-MESSAGING WATCHER -- a11ign/a11ign#2901, row 2 of 13 (design: #2899, docs/messaging.md decision 1). It is the SEPARATE watcher
 # unit the design asks for, in the `fleet-watch` / `lab-watch` pattern: events come from a clock that reads GitHub and the ledger, never from
-# inside `work-tick`, so nothing here edits `work-gate.mjs` or `wake.mjs`.
+# inside `work-tick`, so nothing here edits `work-gate.ts` or `wake.ts`.
 #
 # **OPTIONAL, AND OFF BY DEFAULT.** This template is installed ONLY when `.agent-org/project.json` carries a `messaging` key
-# (`OPTIONAL_UNITS` in host-units.mjs). With the key absent `host:check` does not list it, `host:install` does not write it, and an installed
+# (`OPTIONAL_UNITS` in host-units.ts). With the key absent `host:check` does not list it, `host:install` does not write it, and an installed
 # copy is reported as an orphan and removed, so deleting the key is also how the chairman turns this off.
 #
 # THE PROGRAM IT RUNS (`messaging:watch`) IS ROWS 4 AND 5's: this row ships the clock and the switch, not what the clock calls. With the key

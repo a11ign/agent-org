@@ -18,7 +18,7 @@
 // several tests copy an import closure into a scratch directory that has no `.agent-org/project.json`; a read at import would refuse there
 // for a reason that has nothing to do with the test.
 
-import { homeProjectDeclaration } from "../project-config.mjs";
+import { homeProjectDeclaration } from "../project-config.ts";
 import { GENERIC_LEAK_PATTERNS } from "./generic-leak-patterns.mjs";
 
 export { GENERIC_LEAK_PATTERNS };

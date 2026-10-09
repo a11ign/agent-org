@@ -9,31 +9,32 @@
  * yields no order only because the row with the SAME clock and NO commit yields one; and a second reading with a move after the nudge
  * releases nothing only because the same second reading with none releases. Nothing here is asserted against an empty population.
  */
+import { TSX_IMPORT, afterTsx } from "./tsx-import.ts";
 import { test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
-import { decide, claimStallTick, claimStallsNow, readElsewherePrs, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+import { decide, claimStallTick, claimStallsNow, readElsewherePrs, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
   queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine, thrashEscalationPrompt,
   pruneGoneKeptClaims, readKeptClaims, writeKeptClaims, PRIMARY_CHECKOUT,
-} from "./wake.mjs";
+} from "./wake.ts";
 import {
   claimRecordComment, claimRow, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
   implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
-} from "./row-claim.mjs";
+} from "./row-claim.ts";
 import { unknownFlags } from "./lib/cli-flags.mjs";
-import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
+import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
-} from "./claim-stall.mjs";
+} from "./claim-stall.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -56,7 +57,7 @@ type Order = { session: string; cause: string; causeKey: string; prompt: string;
 type Facts = Parameters<typeof claimReading>[0];
 type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
 
-/** The claim record exactly as `row-claim.mjs` writes it -- the REAL writer, so a change to its format breaks these. */
+/** The claim record exactly as `row-claim.ts` writes it -- the REAL writer, so a change to its format breaks these. */
 const claim = (minutesAgo: number, { session = "worker-7", author = "a11ign-ai-workers" } = {}): Comment => ({
   body: claimRecordComment({ session, branch: BRANCH, worktree: WORKTREE }), createdAt: iso(ago(minutesAgo)), author: { login: author },
 });
@@ -115,7 +116,7 @@ type Agent = { label: string; status: string };
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
   // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
-  elsewhere = undefined as import("./claim-stall.mjs").ElsewherePrs | undefined,
+  elsewhere = undefined as import("./claim-stall.ts").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null } = {}) {
@@ -1106,7 +1107,7 @@ test("#2470 (10) `decline --answer=<session>` releases to that session's `answer
 type ReleaseRequest = Parameters<typeof performRelease>[0];
 type ReleaseDeps = Parameters<typeof performRelease>[1];
 const STALL: ReleaseRequest = { row: 2407, session: "worker-7", why: "stalled", branch: BRANCH, worktree: WT, idleMinutes: 250, nudgedAt: ago(130) };
-const ROW_CLAIM_MJS = /row-claim\.mjs$/;
+const ROW_CLAIM_MJS = /row-claim\.ts$/;
 
 /** A release host: every seam a release reaches, recording. `herdr` lists worker-7 and can refuse a close; `row-claim decline` can fail. */
 function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: string; status: string }[]; closeFails?: boolean;
@@ -1126,7 +1127,8 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
     if (o.closeFails && args.includes("close")) throw new Error("herdr: refused");
     return "";
   };
-  const exec = (cmd: string, args: string[], opts: { cwd: string }) => {
+  const exec = (cmd: string, rawArgs: string[], opts: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
     execs.push({ cmd, args, cwd: opts.cwd });
     if (ROW_CLAIM_MJS.test(args[0] ?? "") && args[1] === "decline") {
       const status = o.declineStatus ?? 0;
@@ -1310,7 +1312,8 @@ function spawnHost(o: { kept?: typeof KEPT | null; claimStatus?: number; treeGon
   const execs: { args: string[]; cwd: string }[] = [];
   const fs = new Set<string>(o.kept && !o.treeGone ? [o.kept.worktree] : []);
   const forgotten: number[] = [];
-  const exec = (cmd: string, args: string[], { cwd }: { cwd: string }) => {
+  const exec = (cmd: string, rawArgs: string[], { cwd }: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
     execs.push({ args: cmd === "git" ? ["git", ...args] : args, cwd });
     if (cmd === "git" && args[0] === "worktree") fs.add(args[3]);
     if (cmd === "node" && args[1] === "claim") {
@@ -1695,7 +1698,7 @@ test("#2470 the git argv is VALID for real git: `--no-optional-locks` is a GLOBA
 
 // --- the tick, driven through its ENTRY: a release that does not land is not a quiet tick --------------------------------------------------
 
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 
 test("#2470 the wake ENTRY performs the gate's release order, and one that does NOT land is an ATTENTION exit with a line, never a quiet tick", () => {
   const dir = mkdtempSync(join(tmpdir(), "claim-stall-tick-"));
@@ -1718,7 +1721,7 @@ echo '{"labels":[{"name":"in-progress"},{"name":"session:worker-7"}]}'
     const release = { session: "worker-7", cause: "claim-stalled", subject: "row-2407", discriminator: "release-stalled", prompt: "RELEASE",
       causeKey: "worker-7/claim-stalled/row-2407/release-stalled",
       release: { row: 2407, session: "worker-7", why: "stalled", branch: null, worktree: null, idleMinutes: 250, nudgedAt: 1 } };
-    const tick = (stdin: string) => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+    const tick = (stdin: string) => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
       input: stdin, encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const ran = tick(`${JSON.stringify(release)}\n`);
     assert.match(ran.stdout, /NOT RELEASED worker-7's workspace could not be closed/, ran.stdout + ran.stderr);
@@ -1798,13 +1801,13 @@ test("#2470 (9) a pane interrupted for LESS than the settle time is left alone (
   assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS + 1), [], "one millisecond short");
   assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS), ["worker-7"], "settled: resumed");
   assert.deepEqual(seen(null), [], "a session whose last activity cannot be established is left alone");
-  assert.match(readFileSync(new URL("./wake.mjs", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
+  assert.match(readFileSync(new URL("./wake.ts", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
     "and the prompt itself tells a deliberately stopped session what to do");
 });
 
-test("#2841 every argv wake.mjs sends to row-claim.mjs passes row-claim's REAL flag guard, and the guard refuses one flag short of that", () => {
+test("#2841 every argv wake.ts sends to row-claim.ts passes row-claim's REAL flag guard, and the guard refuses one flag short of that", () => {
   // Callers covered: `performRelease` (decline: --keep-worktree, --predecessor-gone, --answer=), `spawnClaimer.claim` (claim: fresh and --adopt=),
-  // and `releaseClaim`'s undo (decline, plain and --keep-worktree). Those are every `ROW_CLAIM` spawn in wake.mjs; no other src/ file spawns it.
+  // and `releaseClaim`'s undo (decline, plain and --keep-worktree). Those are every `ROW_CLAIM` spawn in wake.ts; no other src/ file spawns it.
   const argvs: { from: string; args: string[] }[] = [];
   const release = (o: { answer?: string; spare?: boolean }, from: string) => {
     const r = releaseHost({ world: { dirty: [{ file: "a.mjs", ago: 900 }], unpushed: 2 } });
@@ -1910,7 +1913,7 @@ test("#2864 the wake ENTRY prunes a gone tree's kept record on a QUIET tick -- e
     execFileSync("mkdir", [live]);
     const record = (branch: string, worktree: string) => ({ worktree, branch, from: "worker-1", at: NOW, why: "merged", dirty: 0, unpushed: 0 });
     writeFileSync(join(dir, "kept-claims.json"), JSON.stringify({ 9: record("agent/merged-9", join(dir, "gone")), 7: record("agent/live-7", live) }));
-    const tick = () => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+    const tick = () => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
       input: "", encoding: "utf8", env: { ...process.env, HOME: dir, PATH: process.env.PATH ?? "" } });
     const ran = tick();
     assert.equal(ran.status, 0, ran.stdout + ran.stderr);
@@ -2013,7 +2016,7 @@ test("#3076 a GONE release with open pull requests names each by its key, a home
   assert.equal("openPrRepoKeys" in home.release!, false, "CONTROL: a home-only release carries no key field, so it is today's order");
 });
 
-test("#3076 the release COMMENT wake.mjs writes carries the key for a merged and for an open pull request elsewhere, and is today's for a home one", () => {
+test("#3076 the release COMMENT wake.ts writes carries the key for a merged and for an open pull request elsewhere, and is today's for a home one", () => {
   const merged = releaseHost();
   performRelease({ ...STALL, why: "merged", mergedPr: 38, mergedPrRepoKey: "agent-org", answer: "product-manager" }, merged.deps);
   assert.match(merged.comment(), /agent-org#38 MERGED and this row stayed open/);

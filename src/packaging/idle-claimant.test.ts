@@ -10,13 +10,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   idleClaimantReading, idleNudgePrompt, WAIT_FIELDS, IDLE_CLAIMANT_MINUTES, IDLE_CLAIMANT_MS, IDLE_STATUSES, EVIDENCE_LABEL, HOLD_LABEL_PREFIX,
-} from "../idle-claimant.mjs";
-import { HOLD_PREFIX } from "../pr-hold-state.mjs";
+} from "../idle-claimant.ts";
+import { HOLD_PREFIX } from "../pr-hold-state.ts";
 import {
   claimReading, claimStalledOrders, nextStallState, nudgeKey, claimFactsFrom,
-} from "../claim-stall.mjs";
-import { claimRecordComment } from "../row-claim.mjs";
-import { AWAITING_EVIDENCE_LABEL, claimStallTick } from "../work-gate.mjs";
+} from "../claim-stall.ts";
+import { claimRecordComment } from "../row-claim.ts";
+import { AWAITING_EVIDENCE_LABEL, claimStallTick } from "../work-gate.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");
@@ -99,7 +99,7 @@ for (const kind of Object.keys(WAIT_FIELDS)) {
 
 test("#2999 `awaiting-evidence` is the gate's own label, and `blocked` (a claim with no referent) is NOT a wait field", () => {
   assert.equal(EVIDENCE_LABEL, AWAITING_EVIDENCE_LABEL);
-  assert.equal(HOLD_LABEL_PREFIX, HOLD_PREFIX, "#3569: the leaf's restatement of the hold prefix cannot drift from `pr-hold-state.mjs`'s");
+  assert.equal(HOLD_LABEL_PREFIX, HOLD_PREFIX, "#3569: the leaf's restatement of the hold prefix cannot drift from `pr-hold-state.ts`'s");
   assert.equal(Object.hasOwn(WAIT_FIELDS, "blocked"), false);
 });
 

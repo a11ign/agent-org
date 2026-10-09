@@ -8,7 +8,7 @@ set -euo pipefail
 # #2620 (child 3f of #69): THE REPOSITORY AND THE WORKFLOW ARE THE PROJECT'S, not this tool's, so they are read from the
 # project's declaration. The unit's WorkingDirectory is the project's checkout, so the declaration is the file beside it.
 # A missing file or field FAILS the dispatch (`set -e` sees the `node` exit), which is the point: a default here would
-# dispatch the WRONG project's board silently, the failure `project-config.mjs` refuses to have anywhere else.
+# dispatch the WRONG project's board silently, the failure `project-config.ts` refuses to have anywhere else.
 DECLARATION="${AGENT_ORG_PROJECT:-.agent-org/project.json}"
 declared() {
   node -e '

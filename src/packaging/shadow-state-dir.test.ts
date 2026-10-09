@@ -18,9 +18,10 @@
  *      directory it may empty.
  *   3. UNSET IS TODAY'S BEHAVIOUR (`host-state-dir-wiring.test.ts` pins the strings; here the control is that the copy is NOT among them).
  *
- * The last test runs the runner end to end with the REAL `work-gate.mjs` imported by the candidate, because the first three read the seam and
+ * The last test runs the runner end to end with the REAL `work-gate.ts` imported by the candidate, because the first three read the seam and
  * only this one reads the seam as the runner arranges it.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -28,21 +29,21 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COPY_MARKER, READS_DIR, STATE_DIR_ENV, shadowTick } from "../shadow-window.mjs";
-import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "../host-config.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { COPY_MARKER, READS_DIR, STATE_DIR_ENV, shadowTick } from "../shadow-window.ts";
+import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "../host-config.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";
 const STDERR_EXCERPT = 400;
-/** The fixture project's checkout must hold a `project.json`, because `project-config.mjs` reads it from the host's primary (#2873).
+/** The fixture project's checkout must hold a `project.json`, because `project-config.ts` reads it from the host's primary (#2873).
  * This file reads the four state paths, not the vocabulary, so a11ign's own checkout stands in for the fixture's. */
 const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 const READER = `
-  const gate = await import(${JSON.stringify(`${SRC}work-gate.mjs`)});
-  const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.mjs`)});
-  const wake = await import(${JSON.stringify(`${SRC}wake.mjs`)});
+  const gate = await import(${JSON.stringify(`${SRC}work-gate.ts`)});
+  const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.ts`)});
+  const wake = await import(${JSON.stringify(`${SRC}wake.ts`)});
   process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: gate.REVIEWER_STATE_DIR,
     LIVE_STATE_DIR: shadow.LIVE_STATE_DIR, ledger: wake.ledgerPathFrom([]) }));`;
 
@@ -72,7 +73,7 @@ function readFour(root: string, shadowDir: string | undefined, hostStateDir?: st
     gh: { workers: "/srv/acme/workers", leads: "/srv/acme/leads", leadsHeader: ["acme leads"], leadsWorkspaces: [{ id: "w1", role: "lead" }] },
   }));
   env.AGENT_ORG_HOST = file;
-  return spawnSync(process.execPath, ["--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
+  return spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
 }
 
 test("the runner and the gate agree on the variable's name and the marker's", () => {
@@ -136,7 +137,7 @@ test("end to end: the runner hands the REAL gate's state paths its copy, and the
     writeFileSync(join(live, READS_DIR, `${tickMs}.json`), JSON.stringify({ tick: tickMs, args: { prs: [], readyRows: [] }, orders: [] }));
     // The candidate IS the real gate, wrapped only so the paths it resolved at import come back as an order the record can carry.
     const candidate = join(root, "candidate.mjs");
-    writeFileSync(candidate, `import { decide as real, REVIEWER_STATE_DIR, DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate.mjs`)};
+    writeFileSync(candidate, `import { decide as real, REVIEWER_STATE_DIR, DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate.ts`)};
 export function decide(args) {
   return [...real(args), { causeKey: "paths", cause: "paths", session: "s", subject: REVIEWER_STATE_DIR, discriminator: DRAIN_MARKER, prompt: "p" }];
 }`);

@@ -11,7 +11,7 @@
 //
 // #827/#790. Every test in this file drives a PURE function (`prRow`, `nonSuccessByName`,
 // `branchPrefixCensus`, `renderBranchPrefixes`, ...) or passes its own injected `run` fixture to a
-// fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.mjs`'s real `gh`/`git` wrappers are declared in
+// fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.ts`'s real `gh`/`git` wrappers are declared in
 // the same module these tests import from, which is why a closure walk reaches them, but nothing here
 // ever calls the real ones. #1405: that was not true of the budget line -- `render()` read it live through
 // `apiBudget()`, two `gh` calls per render and 24 per run. `collect()` reads it now, and `render()` is handed it.
@@ -25,7 +25,7 @@ import { prRow, nonSuccessByName, newestPerName, render, fetchRefs, renderStalle
   renderMergedChecks, STALL_MINUTES, EXIT, hostState, hostContention, reliefFor, topConsumers, isRed, renderBudget,
   fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes, apiBudget, ghHeaders, requiredContexts,
   openPRs, armedState, queueEntries, renderOpenPRs, QUEUE_QUERY }
-  from "../queue-table.mjs";
+  from "../queue-table.ts";
 
 const NOW = new Date("2026-09-09T08:00:00Z");
 /** A host with room, so tests about OTHER sections are not decided by section 5. */
@@ -243,7 +243,7 @@ test("merged PRs whose times could not be read is INCOMPLETE; nothing merged at 
 // host holding 12 GB compressed.
 // ---------------------------------------------------------------------------------------------------
 import { renderHost, GIT_PROCESS_CEILING, LOAD_CEILING }
-  from "../queue-table.mjs";
+  from "../queue-table.ts";
 
 const HOST = { compressedMb: 2000, inactiveMb: 3000, freeMb: 180, pageouts: 1000,
   load: 2, gitProcesses: 3, worktrees: 12, topConsumers: null };
@@ -558,7 +558,7 @@ test("#681 gitProcessCount: pgrep's exit 1 is a real ZERO, and any other failure
  * sha, and every non-code event. **That is precisely the class of check that can be red on main while
  * blocking nothing, which is the class this section exists to surface.**
  */
-import { mergeCommitsOnMain } from "../queue-table.mjs";
+import { mergeCommitsOnMain } from "../queue-table.ts";
 
 test("#737 mergeCommitsOnMain reads the FIRST-PARENT chain and names the PR each merge carries", () => {
   const log = [
@@ -611,7 +611,7 @@ test("#737 a direct commit to main with a red check still counts, with no PR num
  *
  * `.metadata_never_index` was measured on 2026-09-09 and does not work per-directory: placed on all 68
  * worktrees at 12:47Z and verified present, `mds_stores` read 54.8% at 12:45Z and 80% at 12:52Z. #734
- * corrected the claim in `.gitignore` and `scripts/spotlight-exclude.mjs` — and missed `queue-table.mjs`'s
+ * corrected the claim in `.gitignore` and `scripts/spotlight-exclude.mjs` — and missed `queue-table.ts`'s
  * relief line and `docs/pipeline.md`'s remedy table, **which are the two a reader actually reaches**.
  *
  * The fix was found by grepping for the SENTENCE rather than revisiting the file that was edited. That is
@@ -792,8 +792,8 @@ test("#1405 apiBudget reads both pools through the injected run, with the argv t
     ["api", "repos/a11ign/a11ign", "-i", "--jq", ".name"],
     ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
   ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
-  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.mjs` so
-  // `work-gate.mjs`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
+  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.ts` so
+  // `work-gate.ts`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
   // fixture sends neither header, so both read `null` -- which is the honest answer and not a zero.
   assert.deepEqual(budget, {
     core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null, resource: null, resetAt: null },
@@ -834,7 +834,7 @@ test("#1405 render() draws the budget it is HANDED, and says it could not read o
 });
 
 test("#1405 wiring: collect() reads the budget LAST through the live runner, and render() reads none", () => {
-  const source = readFileSync(new URL("../queue-table.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../queue-table.ts", import.meta.url), "utf8");
   const body = (name: string) => {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, `function ${name} is in the script`);
@@ -1078,7 +1078,7 @@ test("#2245 a failing REST list is still `null` -- the queue call does not paper
 });
 
 // ---------------------------------------------------------------------------------------------------
-// #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.mjs, THROUGH THE REAL openPRs READ.
+// #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.ts, THROUGH THE REAL openPRs READ.
 // ---------------------------------------------------------------------------------------------------
 
 /** What `checksOnSha`'s `--jq` prints: REST check runs, one JSON object a line, `conclusion` LOWER-CASE. */
@@ -1141,11 +1141,13 @@ function codeOutsideArmedState(source: string): string {
   assert.ok(start >= 0, "armedState is in the script");
   const end = uncommented.indexOf("\n}\n", start);
   assert.ok(end > start, "armedState's body ends");
+  // A TYPE ANNOTATION names the fields without reading them: `queueEntries`' return type is a shape, not a derivation.
   return (uncommented.slice(0, start) + uncommented.slice(end))
-    .replace(/export const QUEUE_QUERY =[\s\S]*?;\n/, "");
+    .replace(/export const QUEUE_QUERY =[\s\S]*?;\n/, "")
+    .replace(/(export function queueEntries\([^\n]*\)): Map<[^\n]*> \| null \{/, "$1 {");
 }
 
-const queueTableSource = () => readFileSync(new URL("../queue-table.mjs", import.meta.url), "utf8");
+const queueTableSource = () => readFileSync(new URL("../queue-table.ts", import.meta.url), "utf8");
 
 test("#2245 no second derivation of `armed`, however spelled: the fields are read only inside armedState", () => {
   const outside = codeOutsideArmedState(queueTableSource());

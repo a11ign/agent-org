@@ -15,7 +15,7 @@
  *  3. THE DEFAULT IS REAL, by the ONE test in the tree that does not inject. A `sleep` that defaulted to a no-op would
  *     make every test fast and the production path silently instant. It costs five seconds on purpose.
  *
- * #2688 EXTENDS THIS TO `/compact`: the same seam ({@link settleAfter} in `wake.mjs`) backs both commands, so the same
+ * #2688 EXTENDS THIS TO `/compact`: the same seam ({@link settleAfter} in `wake.ts`) backs both commands, so the same
  * three pins apply to it -- and `contextRoot` is fixed to an EMPTY directory throughout, so a fixture naming a real
  * org label (`ceo`, `reviewer-2546`) is never compacted by a coincidence of a shared host's real transcripts.
  */
@@ -24,8 +24,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, CLEAR_SETTLE_MS, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
-import { clearThenPrompt } from "../prompt-session.mjs";
+import { deliver, deliverHandoffs, CLEAR_SETTLE_MS, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { clearThenPrompt } from "../prompt-session.ts";
 
 const ROSTER = ["ceo", "product-manager", "orchestrator", "worker-capture", "worker-judge", "worker-tooling"];
 const agents = (labels: string[]) => labels.map((label) => ({ label, status: "idle" }));

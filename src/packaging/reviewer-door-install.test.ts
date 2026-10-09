@@ -11,14 +11,14 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.mjs` resolves one (#3233)
+import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
 const { REVIEWER_DOOR_SOURCE, driftReport, hostUnitDrift, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorPath, reviewerDoorState }
-  = await import("../host-units.mjs");
+  = await import("../host-units.ts");
 
 const here = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
 const INSTALLER = here("../reviewer/install-reviewer-bin.sh");
-const WAKE = here("../wake.mjs");
+const WAKE = here("../wake.ts");
 const PR_ORDERS = here("../work-gate/pr-orders.mjs");
 /** The door as it stood before #3030, 7,227 bytes: the very file the reviewers were running on 2026-10-03. */
 const PRE_3030 = readFileSync(here("./fixtures/reviewer-door/pr-review-verdict.pre-3030.sh"), "utf8");
@@ -121,7 +121,7 @@ test("2. the detector refuses the bare name and accepts the installed path (both
   assert.equal(bareDoorName("post it as `A11Y_REVIEWER_SESSION=reviewer-6 $HOME/reviewer/bin/pr-review-verdict <n>`"), false);
 });
 
-test("2. every order in wake.mjs and pr-orders.mjs that tells a reviewer to post names the installed path", () => {
+test("2. every order in wake.ts and pr-orders.mjs that tells a reviewer to post names the installed path", () => {
   const orders = [WAKE, PR_ORDERS].flatMap((file) => readFileSync(file, "utf8").split("\n").map((text, i) => ({ file, text, line: i + 1 })))
     .filter(({ text }) => instructsToPost(text));
   assert.ok(orders.length >= 2, "positive control: both files carry an order that names the door");
@@ -147,7 +147,7 @@ test("3. host:install's door step leaves a byte-identical, executable door at th
 });
 
 test("3. the door step is part of `host:install`, not just exported", () => {
-  const main = readFileSync(here("../host-units.mjs"), "utf8").split("\n");
+  const main = readFileSync(here("../host-units.ts"), "utf8").split("\n");
   const at = main.findIndex((l) => l.trim() === "reviewerDoorInstall();");
   assert.ok(at > 0 && main.slice(at - 6, at).some((l) => l.includes("--install")), "reviewerDoorInstall() is called inside the --install branch of main()");
 });

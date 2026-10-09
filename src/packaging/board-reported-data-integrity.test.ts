@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 // #929: THIS GUARD READS ONLY `docs`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull
@@ -89,7 +89,7 @@ test("no two recorded entries share an identity or an order", () => {
  * read, which is this project's oldest defect: unchecked is not clean.
  */
 test("every entry directory on disk is named in REPORTED_KINDS", async () => {
-  const { REPORTED_KINDS, reported } = await import("../board-data.mjs");
+  const { REPORTED_KINDS, reported } = await import("../board-data.ts");
   const root = path.join(REPO, "docs/board/reported");
   const onDisk = readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory()).map((e) => e.name);

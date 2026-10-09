@@ -1,5 +1,5 @@
-// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Importing anything from `work-gate.mjs` reaches `defaultRun`
-// (`execFileSync("gh", ...)`, work-gate.mjs:162), and this file never lets it run: every seam here is
+// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Importing anything from `work-gate.ts` reaches `defaultRun`
+// (`execFileSync("gh", ...)`, work-gate.ts:162), and this file never lets it run: every seam here is
 // handed an injected `run`. Measured 2026-09-23 -- 173/173 pass with `gh` off `PATH` entirely and
 // `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset, which is what makes this a verified claim rather than
 // a hopeful one. Without it the acceptance job refuses the row's own declared command and verifies
@@ -9,7 +9,7 @@
  *
  * Six sessions each held a standing cron and woke every 10-30 minutes to ask a question one API call
  * answers -- 672 model turns a day, most finding nothing, which exhausted a weekly allowance in three
- * days. `work-gate.mjs` is that question, asked for free. So the failures that matter here are the ones
+ * days. `work-gate.ts` is that question, asked for free. So the failures that matter here are the ones
  * that would either put the org back to sleep or wake all of it:
  *
  * A REFUSED READ MUST NEVER READ AS QUIET. Both readers return `null` for a refusal and never `[]`
@@ -20,6 +20,7 @@
  * AND THE POSITIVES ARE NOT OPTIONAL, for `review-verdict.test.ts`'s reason one level up: a `decide` that
  * returned `[]` for everything satisfies every "no order" case perfectly and would wake nobody, ever.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
@@ -28,12 +29,12 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { shippedUnits } from "../host-units.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.mjs";
-import { patchIdOfDiff } from "../review-verdict.mjs";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.ts";
+import { patchIdOfDiff } from "../review-verdict.ts";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
@@ -57,22 +58,22 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, dec
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
   refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
   pipelineCodeownerReviewMissing, bareAnswerLabelOrders, readRowTimeline }
-  from "../work-gate.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
+  from "../work-gate.ts";
+import { SESSION_PREFIX } from "../project-vocabulary.ts";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
-// can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
+// can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
 import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
-  MAX_DELIVERIES, deliveryCounts } from "../wake.mjs";
+  MAX_DELIVERIES, deliveryCounts } from "../wake.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 import { primaryLaunchRefusal, launchCheckoutOf }
-  from "../board-snapshot-scope.mjs";
+  from "../board-snapshot-scope.ts";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
-import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.mjs";
+import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
@@ -327,12 +328,12 @@ test("#912: the exit contract keeps four states, and 0 is QUIET on purpose", () 
 // ---------------------------------------------------------------------------------------------------
 // #2685: AN OUTAGE THAT FAILS gh/GraphQL CALLS INDEPENDENTLY PER CAUSE MUST NOT DOUBLE-COUNT.
 //
-// `wake.mjs`'s `outageOf` already asks whether a causeKey's own addressed SESSION is unavailable
+// `wake.ts`'s `outageOf` already asks whether a causeKey's own addressed SESSION is unavailable
 // (#2256); #2031's pool-exhaustion guard asks about the POOL. Neither asks whether GITHUB ITSELF refused
 // THIS TICK's reads -- so, before this row, two causes stuck for the SAME shared connectivity reason each
 // reach `escalateStuck` on their own and label two DIFFERENT rows `answer:ceo` for what is really one
-// outage. `refusedReadCount`/`sharedReadOutage`/`markOutageReads` are `work-gate.mjs`'s half of the fix;
-// `deliver`'s `outaged` (wake.mjs) is the other.
+// outage. `refusedReadCount`/`sharedReadOutage`/`markOutageReads` are `work-gate.ts`'s half of the fix;
+// `deliver`'s `outaged` (wake.ts) is the other.
 
 test("#2685: refusedReadCount counts nulls only -- an empty-but-successful read is not a refusal", () => {
   assert.equal(refusedReadCount([[], [], []]), 0, "three quiet lanes, none of them refused");
@@ -383,7 +384,7 @@ test("#2685 BEFORE: two causes capped for a shared reason still escalate as two,
 
 test("#2685 AFTER: work-gate's shared-outage reading collapses the SAME two causes to ONE signal", () => {
   // THIS TICK'S OWN READS: three of four independent lanes refused together -- the shape `sharedReadOutage`
-  // exists to recognise, built from the SAME `refusedReadCount` `work-gate.mjs`'s `main` feeds it.
+  // exists to recognise, built from the SAME `refusedReadCount` `work-gate.ts`'s `main` feeds it.
   const outageNow = sharedReadOutage(refusedReadCount([null, [], null, null]));
   assert.equal(outageNow, true, "three of four reads refused the same tick is GitHub's own outage, not one lane's");
 
@@ -618,7 +619,7 @@ test("the order tells ceo to CLEAR a stale label, or the count stops meaning any
 
 /**
  * THE TURN THIS REMOVES, MEASURED. All three unclaimed Ready rows (#1452, #1397, #1320) declared
- * `.github/workflows/release.yml`, which open draft #1695 already touched, so `row-claim.mjs` refused
+ * `.github/workflows/release.yml`, which open draft #1695 already touched, so `row-claim.ts` refused
  * every one of them on B4. The gate offered all three every two minutes anyway. `ceo` was woken for
  * #1452, ran sixteen shell commands, rediscovered the refusal, posted it on the row, messaged
  * `product-manager` and stopped -- re-deriving a hold a PRIOR `ceo` session had already recorded.
@@ -689,7 +690,7 @@ const claimOrderPrompt = () => {
 };
 
 /**
- * THE ORDER AS THE ENGINEER READS IT (#2405): the gate leaves the launch directory to `wake.mjs`, which knows who
+ * THE ORDER AS THE ENGINEER READS IT (#2405): the gate leaves the launch directory to `wake.ts`, which knows who
  * took the order, so the sentence #2237 pins is asserted on what `addressed` delivers to a standing session whose
  * `role-<you>` worktree exists. `work-gate-engineer-order-paths.test.ts` pins the branch where it does not.
  */
@@ -1817,7 +1818,7 @@ const gated = (n: number, ...extra: string[]) => ({ number: n,
 
 test("a fleet-gated row belongs to the pool of one now, and reaches it -- #1828, narrowed by #2506", () => {
   // #1828 made the pool two names (`orchestrator`, `worker-capture`); #2506 retired `worker-capture`, so it is
-  // `orchestrator` alone. The order is still ONE PER POOL NAME, not one order naming the pool -- `wake.mjs`
+  // `orchestrator` alone. The order is still ONE PER POOL NAME, not one order naming the pool -- `wake.ts`
   // routes an order to one session -- and the list shape is what a second name would ride on.
   const orders = decide({ prs: [], readyRows: [], promotableRows: [gated(914), gated(1296)] });
   const forRow914 = orders.filter((o: { cause: string, subject: string }) =>
@@ -1999,7 +2000,7 @@ test("a row carrying answer:<session> is not promotable (#1899): it is already r
  * WHAT THE REGRESSION WOULD DO: `statusCheckRollup` UNIONS superseded runs, so a check that failed at
  * 10:00 and succeeded at 11:00 appears TWICE. Read raw, the old FAILURE makes a green pull request look
  * red and the gate wakes its session to "fix the cause on that branch" -- exactly the wasted prompt
- * #1769 exists to stop, arriving through the fix for it. `merge-queue.mjs` had this defect until #634.
+ * #1769 exists to stop, arriving through the fix for it. `merge-queue.ts` had this defect until #634.
  *
  * The verdict never reached the PR: #1769 merged while the review was running, and `reviewer` correctly
  * refused to comment on a closed pull request. It was relayed by the chairman instead.
@@ -2220,7 +2221,7 @@ test("a REFUSED open-rows read reaches the switch as null, and the switch says i
  * would not match, which is the mistake this row was filed to prevent.
  */
 test("main hands the switch the UN-COALESCED read, not the `?? []` one", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   // EVERY `deadMansSwitch({...})` IN THE FILE, then the one that names `openRows` -- the declaration
   // spells the same parameter and would otherwise match first and report nothing.
   const calls = [...source.matchAll(/deadMansSwitch\(\{[^}]*\}\)/g)].map(([text]) => text);
@@ -2795,7 +2796,7 @@ test("an explained wait WITH a horizon goes quiet, and comes back once", () => {
 /**
  * A SESSION GETS ONE ORDER PER TICK, SO EVERY ORDER MUST NAME THE REST OF ITS QUEUE.
  *
- * `wake.mjs`'s `deliver` marks a session `working` the moment it is prompted, so a second order in the
+ * `wake.ts`'s `deliver` marks a session `working` the moment it is prompted, so a second order in the
  * same tick is refused -- correct, since two prompts cannot be typed into one live terminal. Before
  * 2026-09-20 that cost nothing: this cause emitted ONE order per owner naming up to eight rows, and a
  * session got its whole queue in one prompt.
@@ -3137,7 +3138,7 @@ test("#2027: a future `Not-before:` takes the row out -- and today's date puts i
 
 test("#2027: a live `Fleet-hold-until:` takes the row out -- and a lapsed one puts it back", () => {
   // THE FOURTH CONDITION, and the only one this population has. It was declared in
-  // `packages/control/src/fleet-playbook.mjs` and therefore unreadable by `waiting-condition.mjs`, which
+  // `packages/control/src/fleet-playbook.mjs` and therefore unreadable by `waiting-condition.ts`, which
   // is #2005's defect one field over -- the same reason the fleet batch could not honour its own order.
   const live = gatedRow(1768, { body: "Fleet-hold-until: 2026-09-23T18:00:00Z" });
   assert.deepEqual(fleetBatchRows([live], CLOCK), [],
@@ -3257,7 +3258,7 @@ test("#2027: an UNCLAIMED row's cleared blocker is not this cause -- `ready-row-
     "a claim with no `session:` label names nobody to wake, and waking a session called \"\" is an order "
     + "with nowhere to go");
   // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER, and this shape is real rather than contrived:
-  // `ready-label-audit.mjs` names it as #171's -- a correct decline whose restore silently did not
+  // `ready-label-audit.ts` names it as #171's -- a correct decline whose restore silently did not
   // happen. Telling that session to "pick it back up" would tell it to resume a row it no longer holds.
   // Caught by a mutation: with the `in-progress` test deleted, every other case here still passed.
   const stranded = { number: 1908, ...blockedByClosed,
@@ -3381,7 +3382,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
   assert.equal(GH_READS.unconditional.length, 13, "#2161 adds no unconditional read (8 since #2202, 9 since #2075, 10 since #2641, 11 since #2936, 12 since #4001, 13 since #4126)");
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
     "the helper is pure: no seam, no subprocess, so no binary for a budget to be charged against");
@@ -3666,7 +3667,7 @@ test("#2139: a row hidden by a NOT_PICKABLE label is REPORTED with the label nam
     + "assertion above is not matching text every order has");
 });
 
-test("#2139: the cause is in the CAUSES contract wake.mjs routes on, and is START and JUDGMENT", () => {
+test("#2139: the cause is in the CAUSES contract wake.ts routes on, and is START and JUDGMENT", () => {
   assert.ok(CAUSES.includes("unclaimed-blocker-cleared"),
     "a cause the gate computes and does not publish reaches nobody, which is this row's entire subject -- "
     + "and worker-profile refuses an unlisted cause at run time");
@@ -3731,7 +3732,7 @@ test("#2286: the schedule -- each window is one ask, the ladder is 0/6h/24h and 
 test("#2286: the window is EXACTLY the wake ledger's judgment TTL -- that equality is the whole mechanism", () => {
   assert.equal(PROMOTION_ASK_WINDOW_MS, JUDGMENT_TTL_MS,
     "shorter would still ask once per window; longer lets the TTL re-ask INSIDE a window, which is the "
-    + "treadmill. `wake.mjs` imports the gate, so the gate cannot import this number: a test holds both.");
+    + "treadmill. `wake.ts` imports the gate, so the gate cannot import this number: a test holds both.");
 });
 
 test("#2286: a FRESH clearing is asked at once, then again at each horizon -- and not between", () => {
@@ -3894,7 +3895,7 @@ test("#2110: a constraint the row ALREADY CARRIED at claim time is not news -- t
 });
 
 test("#2110: a comment that QUOTES the marker is not a constraint -- mention versus use", () => {
-  // The trap `acceptance-commands.mjs`'s header names, and the one a plain `includes` walks into: the
+  // The trap `acceptance-commands.ts`'s header names, and the one a plain `includes` walks into: the
   // comment announcing this very cause on the row would have fired it.
   const quoting = { id: "IC_meta",
     body: "I am adding a cause that fires on a `## CONSTRAINT` heading -- see #2110 for the shape." };
@@ -3959,7 +3960,7 @@ test("#2110: an UNCLAIMED row is outside this cause entirely -- there is nobody 
   assert.deepEqual(claimedRowAmendedOrders([{ number: 2099, labels: [{ name: "in-progress" }] }], constrained), [],
     "a claim with no `session:` label names nobody, and waking a session called \"\" is an order with "
     + "nowhere to go");
-  // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER -- `ready-label-audit.mjs` names this as #171's
+  // A `session:` LABEL WITHOUT THE CLAIM IS NOT A HOLDER -- `ready-label-audit.ts` names this as #171's
   // shape, a correct decline whose restore silently did not happen. Caught by a mutation: with the
   // `in-progress` test deleted, every other case in this block still passed.
   assert.deepEqual(claimedRowAmendedOrders(
@@ -3996,7 +3997,7 @@ test("#2182: it is a JUDGMENT cause -- its answer is durable, so an unchanged ro
 
 test("#2182: the UNCHANGED marker set goes quiet past the action clock, and a CHANGED one does not", () => {
   // THE BEHAVIOUR, NOT THE MEMBERSHIP. Naming the cause in a frozen array is satisfied by editing the
-  // array; what the row asks for is that `wake.mjs`'s reader actually suppresses the re-offer, so this
+  // array; what the row asks for is that `wake.ts`'s reader actually suppresses the re-offer, so this
   // drives the SHIPPED `readLedger` over a ledger holding the SHIPPED key.
   const row = heldRow(2099, "worker-capture");
   const unchanged = claimedRowAmendedOrders([row], withComments(2099, [CLAIM_RECORD, CONSTRAINT]));
@@ -4096,7 +4097,7 @@ test("#2110: the claimed-row read is ONE call, filtered server-side, and refuses
 });
 
 test("#2110: main pays for it only when something is actually claimed", () => {
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)),
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)),
     "utf8");
   // The `decide` jsdoc spells the same call shape when it says where `claimedComments` comes from, so
   // prose is excluded by its backtick rather than by counting matches -- `cannotAskReport`'s own pin one
@@ -4275,7 +4276,7 @@ test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", (
 });
 
 test("#2003: the pool reading has ONE definition, and the gate pays for it only when refusing", () => {
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
 
   // THE COST IS ON THE REFUSAL PATH OR IT IS NOT FREE. `cannotAskReport` is the only caller of
   // `poolDiagnosis`, and its own only call site must sit inside the both-lanes-refused branch -- otherwise
@@ -4299,9 +4300,9 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
   // fingerprint: whoever writes it again has written the second copy this move exists to prevent.
   const src = fileURLToPath(new URL("../", import.meta.url));
   const definers = readdirSync(src)
-    .filter((f: string) => f.endsWith(".mjs"))
+    .filter((f: string) => f.endsWith(".ts"))
     .filter((f: string) => readFileSync(join(src, f), "utf8").includes("X-Ratelimit-Remaining"));
-  assert.deepEqual(definers, ["api-pool.mjs"],
+  assert.deepEqual(definers, ["api-pool.ts"],
     `only the leaf module may know how to read a pool; found ${definers.join(", ")}`);
 });
 
@@ -4383,7 +4384,7 @@ test("#2005: the OFFER path and the PROMOTION path now answer from one reader, s
 
   // THE LOCAL FILTER IS GONE, and this is the assertion that keeps it gone: a second spelling of the
   // prefix inside `readPromotableRows` is how the two paths drifted, so the source must not hold one.
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)), "utf8");
   const body = /export function readPromotableRows\([\s\S]*?\n\}/.exec(gate)?.[0] ?? "";
   assert.ok(body.length > 0, "readPromotableRows must still be found, or this guard reads nothing");
   assert.ok(!/withAnswerLabel|ANSWER_PREFIX/.test(body),
@@ -4662,7 +4663,7 @@ test("#2031: a branch whose trailing number is a COINCIDENCE is named as one, no
 const DRIFT_STALE = { unit: "a11ign-board-report.service", problem: "STALE",
   detail: "the installed copy differs from the one in the repository." };
 const DRIFT_MISSING = { unit: "a11ign-work-tick.service", problem: "PROGRAM MISSING",
-  missingProgram: "/home/agent/repos/a11y-witness/packages/agent-org/src/work-tick.mjs",
+  missingProgram: "/home/agent/repos/a11y-witness/packages/agent-org/src/work-tick.ts",
   detail: "the program it starts is not there." };
 
 test("#2174 POSITIVE CONTROL: a host with drift produces an order that NAMES the unit and its problem", () => {
@@ -4682,7 +4683,7 @@ test("#2174 POSITIVE CONTROL: a host with drift produces an order that NAMES the
 test("#2174: a CLEAN host produces no order", () => {
   assert.deepEqual(hostDriftOrders([]), [],
     "an empty finding list is a host that is correct, and waking somebody to say so is the burn "
-    + "`work-gate.mjs` exists to remove");
+    + "`work-gate.ts` exists to remove");
 });
 
 /**
@@ -4722,7 +4723,7 @@ test("#2174: the causeKey is keyed on the DRIFT SET -- stable while it persists,
 test("#2174: it is an ACTION cause -- in CAUSES, NOT in JUDGMENT_CAUSES, and routed by worker-profile", () => {
   assert.ok(CAUSES.includes("host-units-stale"),
     "it must be in CAUSES or worker-profile refuses it at run time");
-  // AN ACTION CAUSE KEEPS `wake.mjs`'s TWENTY-MINUTE EXPIRY. It names a thing to DO -- read these
+  // AN ACTION CAUSE KEEPS `wake.ts`'s TWENTY-MINUTE EXPIRY. It names a thing to DO -- read these
   // findings, then run the remedy -- and a wake that does not stick leaves the host stale with nobody
   // told. That expiry exists because #1433 and #1435 sat Ready overnight behind a spent causeKey.
   assert.ok(!JUDGMENT_CAUSES.includes("host-units-stale"),
@@ -4749,25 +4750,25 @@ test("#2174: decide() routes it, and only when it is handed drift", () => {
  *
  * The row offered three routes -- import `hostUnitDrift`, split it into a leaf module, or spawn
  * `host:check`. A direct import LOOKS free and measures free on the axis constraint 1 names: every one
- * of `host-units.mjs`'s imports is already in this gate's closure, so it adds one file to 21, and the
+ * of `host-units.ts`'s imports is already in this gate's closure, so it adds one file to 21, and the
  * gate loads in 39.3ms against 39.4ms without it.
  *
- * IT IS NOT FREE ON THE AXIS THE ROW DID NOT NAME. `host-units.mjs` calls `git log --all`, so importing
- * it puts a `history` capability requirement into `work-gate.mjs` -- which `row-claim/runner-rule.mjs`
+ * IT IS NOT FREE ON THE AXIS THE ROW DID NOT NAME. `host-units.ts` calls `git log --all`, so importing
+ * it puts a `history` capability requirement into `work-gate.ts` -- which `row-claim/runner-rule.mjs`
  * reaches, and most of the packaging suite imports THAT. Measured both ways: **4 test files derive a
  * `history` requirement, and 28 do with the import.** So the gate spawns instead, and these two
  * assertions are the standing version of that measurement -- if somebody "simplifies" the spawn into an
  * import, the second one fails and says what it costs.
  */
-test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, not a preference", () => {
+test("#2174: the gate does NOT import host-units.ts -- the spawn is the fence, not a preference", () => {
   const SRC = fileURLToPath(new URL("../", import.meta.url));
-  assert.ok(!importClosure(join(SRC, "work-gate.mjs")).has(join(SRC, "host-units.mjs")),
+  assert.ok(!importClosure(join(SRC, "work-gate.ts")).has(join(SRC, "host-units.ts")),
     "importing it drags `git log --all` into the gate's capability closure and taxes 24 unrelated test "
-    + "files with `History: full`; the gate runs `host-units.mjs --json` as a child process instead");
+    + "files with `History: full`; the gate runs `host-units.ts --json` as a child process instead");
   // THE CONTROL: the walker really can see this edge when it exists, so the assertion above is a fact
   // about the gate rather than about a walker that finds nothing.
-  assert.ok(importClosure(join(SRC, "host-units.mjs")).has(join(SRC, "acceptance-commands.mjs")),
-    "the same walker DOES find host-units.mjs's own edges");
+  assert.ok(importClosure(join(SRC, "host-units.ts")).has(join(SRC, "acceptance-commands.ts")),
+    "the same walker DOES find host-units.ts's own edges");
 });
 
 /**
@@ -4776,16 +4777,16 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
  * it is declared below with its reason, so two changes that each add one are each judged against their own base, and a file that leaves passes.
  */
 const DECLARED_HISTORY_POPULATION: Declaration[] = [
-  { name: "home-checkout-refusal.test.ts", reason: "#3039: imports `host-units.mjs` for `hostUnitDrift` and `hostUnitsInstall`, the same edge `host-units.test.ts` has" },
-  { name: "host-install-agent-org-launcher.test.ts", reason: "#3532: imports `host-units.mjs` for the owned list, the installer and `hostUnitDrift`, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
-  { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.mjs` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
-  { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.mjs` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
-  { name: "host-units.test.ts", reason: "tests `host-units.mjs`, which calls `git log --all`: the edge every other entry here shares" },
-  { name: "persistent-seat-running.test.ts", reason: "#3539: imports `host-units.mjs` for `persistentSeatDrift` and the report, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
-  { name: "reviewer-door-install.test.ts", reason: "#3316: imports `host-units.mjs` for `hostUnitDrift` and the door install, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
-  { name: "shadow-window-arm.test.ts", reason: "#2867: imports `host-units.mjs` for the rendered shadow-window unit texts and the installer, the same edge; declares `History: full`" },
+  { name: "home-checkout-refusal.test.ts", reason: "#3039: imports `host-units.ts` for `hostUnitDrift` and `hostUnitsInstall`, the same edge `host-units.test.ts` has" },
+  { name: "host-install-agent-org-launcher.test.ts", reason: "#3532: imports `host-units.ts` for the owned list, the installer and `hostUnitDrift`, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
+  { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.ts` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
+  { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.ts` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
+  { name: "host-units.test.ts", reason: "tests `host-units.ts`, which calls `git log --all`: the edge every other entry here shares" },
+  { name: "persistent-seat-running.test.ts", reason: "#3539: imports `host-units.ts` for `persistentSeatDrift` and the report, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
+  { name: "reviewer-door-install.test.ts", reason: "#3316: imports `host-units.ts` for `hostUnitDrift` and the door install, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
+  { name: "shadow-window-arm.test.ts", reason: "#2867: imports `host-units.ts` for the rendered shadow-window unit texts and the installer, the same edge; declares `History: full`" },
   { name: "work-gate.test.ts", reason: "this very file: it spawns the gate and reads commit history" },
-  { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.mjs` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },
+  { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.ts` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },
 ];
 
 /**
@@ -4873,20 +4874,20 @@ test("#3549: the memoised scan flags a file that joins the history population, a
  * #2174 CONSTRAINT 1, THE HALF THAT IS NOT NEGOTIABLE: the gate must still load in a tree with no
  * `node_modules`, and the row asked for that DEMONSTRATED rather than claimed.
  *
- * `a11ign-work-tick.service` runs `work-tick.mjs` before any `npm ci` or build, so a bare specifier
+ * `a11ign-work-tick.service` runs `work-tick.ts` before any `npm ci` or build, so a bare specifier
  * anywhere in this closure is an `ERR_MODULE_NOT_FOUND` that takes the whole tick down -- and #535
  * records what that costs when the throw is swallowed. Importing from THIS checkout proves nothing:
  * node resolves a bare specifier by walking up from the importing file, and every worktree here has a
  * `node_modules` to find. So the closure is copied into a throwaway tree with none in its ancestor
  * chain, mirroring `pre-commit-hook.test.ts`'s own technique for the identical bind.
  */
-test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge included", () => {
-  const entry = toolFile("src/work-gate.mjs");
+test("#2174: work-gate.ts loads in a tree with NO node_modules, host-units edge included", () => {
+  const entry = toolFile("src/work-gate.ts");
   const closure = importClosure(entry);
   // THE CONTROL IS THE GATE ITSELF, not the host-units edge -- there is deliberately no such edge (see
   // the capability test above). What must hold is that the closure copied here is really the gate's:
   // an empty or truncated one would make the import below pass by having nothing to resolve.
-  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
+  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.ts")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(tmpDir("a11y-work-gate-no-modules-"));
   // THE COPY LIST BEYOND THE STATIC CLOSURE IS GENERATED, never hand-listed (#3232): the project's `.agent-org/` and the tool's `host/` go in WHOLE,
@@ -4898,7 +4899,7 @@ test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge
   assert.ok(existsSync(join(root, "packages/agent-org/host/work-tick.service.in")) && existsSync(join(root, ".agent-org/project.json")),
     "the control: both directories really came across whole");
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e",
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
     + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
   { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
@@ -5632,11 +5633,11 @@ test("#2202: readClosedAnswerRows refuses rather than reporting nobody owes anyt
 });
 
 test("#2202: main feeds the closed-row read into `answerOwed` beside the open one, through the helper that SAYS a refusal", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(closedRows\) \}\)/,
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
   assert.match(source, /closedRows: readClosedAnswerRows\(read\),/, "the closed-row read is still made, as one of the follow-ups asked together (#3566)");
-  assert.match(source, /function closedAnswerRows\(rows\) \{[^]*?NOTE: could not read the closed rows/,
+  assert.match(source, /function closedAnswerRows\(rows[^)]*\)[^{]* \{[^]*?NOTE: could not read the closed rows/,
     "a refused read is a line on stderr, never a silent empty list");
 });
 
@@ -5711,8 +5712,8 @@ test("#2609: `endedSessionLabels` reads a teardown's record, and a label that ST
 });
 
 test("#2609: `closedAnswerRows` runs the ended-session filter on what `readClosedAnswerRows` returned", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
-  assert.match(source, /function closedAnswerRows\(rows\) \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
+  assert.match(source, /function closedAnswerRows\(rows[^)]*\)[^{]* \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
 });
 
 // --- #3093: ownerOfPr ordered a pull request to the session its LABEL names even when that session had ENDED ---
@@ -5766,7 +5767,7 @@ test("#3093: a caller that names no source is not answered by this host -- withP
 });
 
 test("#3093: `main` hands withPrOwners the LIVE herdr and ledger readers", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /withPrOwners\([^\n]*stampLookup\(\), \{ agents: liveWorkspaceLabels, ended: endedSessionLabels \}\)/);
 });
 
@@ -6165,7 +6166,7 @@ test("#2781 done-when 2: every other order is headed with the stale sha and the 
 });
 
 test("#2781 the tick READS the primary and WIRES it: main() reads it once, feeds decide, and banners the decided orders", () => {
-  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../work-gate.mjs"), "utf8");
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../work-gate.ts"), "utf8");
   assert.match(source, /primaryDrift = readPrimaryDriftNow\(\)/);
   // #2849: the argument object is NAMED so the shadow tap can record it, and `decide` is reached through `decideAndTap`.
   assert.match(source, /const decideArgs = \{ primaryDrift,/);

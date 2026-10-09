@@ -1,9 +1,9 @@
 // no-token: gh -- reaches `fileOverlapReason` through `row-claim/file-overlap-rule.mjs`, whose own `lookup*` readers spawn `gh`; nothing here calls one (#2542)
 /**
- * #2542: THE B4 POSITIVE CONTROL OF THE `work-gate.mjs` SPLIT.
+ * #2542: THE B4 POSITIVE CONTROL OF THE `work-gate.ts` SPLIT.
  *
  * The split exists because B4 (`row-claim/file-overlap-rule.mjs`) compares a row's Region against the files of open
- * pull requests, so two org fixes that both name `work-gate.mjs` serialise even when they edit different orders.
+ * pull requests, so two org fixes that both name `work-gate.ts` serialise even when they edit different orders.
  * Moving the pull-request orders into `work-gate/pr-orders.mjs` only helps if a Region NAMING that module is still
  * a Region B4 reads. This is the control: two Regions that both name the module DO collide, so a fix to one of its
  * orders waits behind another fix to one of its orders, and behind nothing else.
@@ -16,12 +16,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileOverlapReason } from "../row-claim/file-overlap-rule.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { declaredRegionFiles } from "../region-paths.ts";
 
 const MODULE = "packages/agent-org/src/work-gate/pr-orders.mjs";
-const SHIM = "packages/agent-org/src/work-gate.mjs";
+const SHIM = "packages/agent-org/src/work-gate.ts";
 
-/** A row body whose fenced Region names the given files, in the shape `row-file.mjs` files them. */
+/** A row body whose fenced Region names the given files, in the shape `row-file.ts` files them. */
 const rowBody = (...files: string[]) => `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n`;
 
 /** An open PR whose file list is COMPLETE (#1419 compares the count to the list). */
@@ -47,15 +47,15 @@ test("#2542 DONE-WHEN 2: two Regions that both name work-gate/pr-orders.mjs COLL
 });
 
 test("#2542: the control is not a function that refuses everything -- a Region NOT naming the module goes through", () => {
-  const unrelated = pr(2601, regionOf("packages/agent-org/src/wake.mjs"));
+  const unrelated = pr(2601, regionOf("packages/agent-org/src/wake.ts"));
   assert.equal(fileOverlapReason(regionOf(MODULE), [unrelated]).reason, null,
     "POSITIVE CONTROL for the collision above: the same call with the file changed is quiet");
-  assert.equal(fileOverlapReason(regionOf("packages/agent-org/src/wake.mjs"), [pr(2602, regionOf(MODULE))]).reason, null,
+  assert.equal(fileOverlapReason(regionOf("packages/agent-org/src/wake.ts"), [pr(2602, regionOf(MODULE))]).reason, null,
     "and it is symmetric: a Region on the other file is not held back by a PR on the module");
 });
 
 test("#2542: a Region naming the SHIM still collides with a PR on the shim, and not with one on the module", () => {
-  // This row leaves `work-gate.mjs` as the entry point, so an edit to `CAUSES` or `decide` still meets another there
+  // This row leaves `work-gate.ts` as the entry point, so an edit to `CAUSES` or `decide` still meets another there
   // (the KNOWN LIMIT of the row). What it delivers is the second assertion below: an order in the module and a fix
   // in the file that stays are different files to B4. It is NOT the two-family-modules negative of Done-when 2.
   assert.ok(fileOverlapReason(regionOf(SHIM), [pr(2603, regionOf(SHIM))]).reason,
@@ -65,7 +65,7 @@ test("#2542: a Region naming the SHIM still collides with a PR on the shim, and 
 });
 
 // ---- #2898: THE NEGATIVE HALF #2542 DEFERRED, now that the shim has more than one family module beside it.
-// Measured on #2898 (the pairs of pull requests that waited on B4 for `work-gate.mjs`): after #2621, 27 of 55 pairs touched disjoint
+// Measured on #2898 (the pairs of pull requests that waited on B4 for `work-gate.ts`): after #2621, 27 of 55 pairs touched disjoint
 // definitions, and six rows waited behind ONE pull request that edited only the row-call-count orders. A Region naming the family
 // module its fix lives in is what lets a fix to another family go past it.
 

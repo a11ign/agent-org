@@ -1,6 +1,6 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (a11ign/a11ign#3910)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (a11ign/a11ign#3910)
 /**
- * `src/dora.mjs`, a11ign/a11ign#3910: A REPOSITORY THAT RELEASES OFTEN MUST NOT READ ITS LEAD TIME `unknown` BECAUSE IT RELEASES OFTEN.
+ * `src/dora.ts`, a11ign/a11ign#3910: A REPOSITORY THAT RELEASES OFTEN MUST NOT READ ITS LEAD TIME `unknown` BECAUSE IT RELEASES OFTEN.
  *
  * The retro of 2026-10-07 read `a11ign/agent-org: Lead time for changes: unknown -- ancestry of #304 could not be read` on the day deployment frequency (184) was the
  * best it had been. Each release a change could first ship in cost its own `compare` of ~4 s, 317 releasable changes asked about nearly all 184 releases, and the
@@ -20,7 +20,7 @@
  */
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readRepository } from "./dora.mjs";
+import { readRepository } from "./dora.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;

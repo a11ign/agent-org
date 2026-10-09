@@ -1,0 +1,822 @@
+#!/usr/bin/env node
+// @ts-check
+// command: close the issues a merged PR declared, because a bot merge does not close them itself
+// CLOSE THE ROWS A MERGED PR DECLARED, BECAUSE GITHUB DOES NOT DO IT FOR A BOT MERGE -- #298, unit 1d.
+//
+// ## The measurement
+//
+// `Closes #N` in a PR body is the tracker's whole closing mechanism under the pipeline. GitHub honours it
+// AS THE ACTOR THAT MERGED, and under auto-arm that actor is `github-actions[bot]`. Measured 2026-09-07,
+// after `issues: write` was added to `auto-arm.yml` at 11:04:36Z:
+//
+//   target  state   merged by              PR    armed
+//   #310    OPEN    github-actions[bot]    #320  10:27Z  (pre-fix)
+//   #321    OPEN    github-actions[bot]    #346  11:40Z  (36 MINUTES POST-FIX)
+//   #326    CLOSED  DanBeckDev             #334
+//   #331    CLOSED  DanBeckDev             #335
+//
+// **Three of three bot merges failed to close; two of two human merges closed**, with the permission
+// present in the file. So `issues: write` was not the lever, and the pipeline must close rows itself.
+//
+// THE MECHANISM IS A HYPOTHESIS AND IS DELIBERATELY NOT RELIED ON. It may be that a merge performed under
+// `GITHUB_TOKEN` cannot close a referenced issue at all, the way GitHub already stops `GITHUB_TOKEN`
+// events cascading into new workflow runs. Nobody here has read documentation saying so, and this
+// repository's record is full of mechanisms that were reasoned, sounded right, and were wrong. This fix
+// works whether or not that explanation is true, which is why it was preferred over arguing the cause.
+//
+// ## Why it cannot close a row whose work did not land
+//
+// `close-merged-rows.mjs` -- which is in the tree and which NOTHING INVOKES -- deliberately refuses rather
+// than closes, and its reason is right: *"closing needs the sha and a sentence, which is the dispatcher's
+// to write, and a tool that closed rows automatically would eventually close one whose work did not
+// actually land."* That reasoning assumed a human dispatcher merged. Under the pipeline nobody merges, so
+// the premise is gone -- but the RISK it names is real and is answered here rather than dropped:
+//
+//   - It runs on `pull_request: types: [closed]`, gated on `merged == true` and `base.ref == 'main'`, so
+//     a closed-unmerged PR closes nothing.
+//   - It closes only the issues GITHUB ITSELF resolved as that PR's `closingIssuesReferences` -- not a
+//     regex over the body. That is the exact set GitHub would have closed, so this restores the intended
+//     behaviour rather than inventing a broader one. A `#123` mentioned in prose is not a closing
+//     reference and is not touched.
+//   - Every closure comments the PR number and the MERGE SHA first, so the sentence the header asks for
+//     is on the row, and `git` can be asked what actually landed.
+//
+// ## Reporting
+//
+// Five outcomes and they must never collapse (the fifth, #2822, is `closed FROM THE BODY'S DECLARATION`, below).
+// `NONE DECLARED` is not a failure -- most PRs close nothing
+// -- but it must be distinguishable from `declared and closed`, or a job that resolved no references
+// would report success having done nothing, which is this repository's most-recorded defect. An issue
+// somebody already closed by hand is reported as `ALREADY CLOSED` rather than silently skipped.
+//
+// ## #776/#791: "ALREADY CLOSED" IS NOT ONLY "SOMEBODY CLOSED IT BY HAND, UNRELATED TO THIS PR"
+//
+// GitHub applies a PR body's `Closes #N` NATIVELY -- at merge, before any workflow even starts -- whenever
+// the merging actor is a HUMAN. This file's own opening measurement (#298) is precisely the mirror case:
+// three of three BOT merges left their rows open, which is why this script exists at all. It never
+// followed that the opposite is also true -- a human merge closes the row before this script's own
+// `gh issue close` call ever runs, so by the time `closingIssuesReferences` is read, the row already
+// reads `state: CLOSED` and lands in `already`, not `close`.
+//
+// Measured 2026-09-09: #677, #577 and #752, closed one second after their PRs (#769/#766/#783, all merged
+// by a human account) merged -- ALL after #776 (this file's own #754 fix) was already on `main`. Each
+// row's `closed` timeline event carried `commit_id: null` and the human merger as `actor` -- GitHub's own
+// signature for a closing-KEYWORD resolution, distinct from this script's `gh issue close` (which shows
+// `github-actions[bot]` and a comment). None of the three had its claim labels stripped, because
+// `stripClaimLabels` was called only inside the `close` loop.
+//
+// So `already`'s rows are stripped too now, exactly like `close`'s -- a row's claim is exactly as stale
+// whether GitHub closed it natively one second before this script asked, or this script closed it itself.
+//
+// ## #2822: WHEN GITHUB RESOLVED NOTHING, THE BODY'S OWN DECLARATION IS THE PLAN
+//
+// From 2026-09-30T09:12Z GitHub stopped resolving `closingIssuesReferences` for every new PR, and
+// `closes-mismatch-check.ts` was made to PASS that repo-wide case with a warning (the chairman's ruling) on
+// the promise that THIS job closes the declared rows anyway. A guard that passes while this job still read
+// only GitHub's answer would merge every PR and close no row -- the #298 failure again. So: when
+// `closingIssuesReferences` is EMPTY and the body has line-start `Closes #N` lines, those are the plan
+// (`declaredRowsFromBody`), each closure says it was closed FROM THE DECLARATION because GitHub resolved
+// none, and it is reported as its own outcome. It never fires when GitHub resolved ANY row (a partial
+// resolution is GitHub's answer, not an outage), and `Closes: none` and prose mentions close nothing.
+//
+// Exit codes are the contract:
+//   0  every declared row is closed -- by this run or already
+//   1  one or more could not be closed. NAMED, never counted.
+//   2  a lookup failed. INCONCLUSIVE, never "fine".
+//   3  every row closed, but one or more Statuses did not move for a cause OTHER than an unreadable Project
+//      (#1299). A run whose every refusal is `project-unreadable` exits 0 with a DEGRADED line: see `closeRowsExit`.
+//
+//   node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
+import { execFileSync } from "node:child_process";
+import { settleClosedStatus, unsettledVerdict } from "./settle-closed-status.ts";
+// The token-carrying half, imported HERE (an entry point) and injected, so the pure module stays pure.
+import { moveProjectStatus } from "./row-claim.ts";
+import { scopedStatus } from "./board-snapshot.ts";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+// RELATIVE, never `@a11y-witness/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
+// nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
+// not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.mjs` imports only
+// `node:path`, `node:fs` and `node:url`.
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+// #804: A LEAF IMPORT, safe under the identical no-`pnpm install`/no-build constraint the rest of this header
+// names -- `claim-labels.ts` imports nothing at all, so it cannot be part of a cycle. This replaced two
+// rounds of "duplicate the constant locally instead" (#754 for CLAIM_LABEL/STARTED_LABEL, #782 for
+// READY_LABEL): each was individually defensible against the immediate risk (row-claim.ts's heavy import
+// graph; a cycle back through ready-label-audit.ts) but the accumulation was itself the fact-stated-twice
+// shape this repo names as its own most expensive recurring defect -- three copies of four literals is
+// worse than the cycle either duplicate was solving. See claim-labels.ts's own header for the full story.
+import { CLAIM_LABEL } from "./claim-labels.ts";
+import { labelsToStrip, stripClaimLabelsVia } from "./claim-label-strip.ts";
+import { REPO } from "./project-identity.ts";
+// #2202: `waiting-condition.ts` imports NOTHING, so it is import-safe under this header's no-`pnpm install`/no-build
+// constraint for the same reason `claim-labels.ts` is: it cannot be part of a cycle.
+import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
+// #2036/#1053: THE LEAK GUARD, IN THE SPAWN HELPER. This file now sends a `--body` -- the orphaned-row
+// report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
+// module through its import closure. Guarded in `gh` rather than at the one call site, the way
+// `row-claim.ts`, `carry-branch.ts` and `stranded-branches.ts` do it, so every call added tomorrow is
+// covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.mjs`
+// imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
+// carries above.
+import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+
+export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
+
+/**
+ * THE EXIT BOTH CLOSE-ROWS PATHS TAKE, PURE (#1299). A row that could not be closed outranks a closed row whose
+ * Status did not move, and BOTH are named, never counted. `STATUS_NOT_MOVED` is its own code because "closed,
+ * but the board still shows it live" is a different fact from "not closed", with a different repair.
+ *
+ * ONE DECISION FOR BOTH PATHS, and the dispatch path's `main()` calls it: `worker-capture`'s review of #1357
+ * showed the dispatch path's exit 3 lived only in `main()`, where reverting it to `DONE` left the suite green.
+ *
+ * A BRIDGE UNTIL THE PROJECT IS READABLE (#546): CI's token cannot read the user-owned Project, so every move
+ * in CI is refused with the same `NOT_FOUND`, and trunk.yml read FAILURE on every merge while the code was
+ * green (run 34769927592, `02ae7420`). When EVERY refusal is `project-unreadable`, the run exits `DONE` with a
+ * DEGRADED line naming the rows; ANY other refusal still exits `STATUS_NOT_MOVED`. The cause is classified
+ * where the refusal is made (`refusalCause`), never matched in log text here.
+ *
+ * @param {{ failed: number[], unsettled: import("./settle-closed-status.ts").Refusal[] }} outcome
+ * @param {string} prefix the log prefix -- `CLOSE-ROWS` for the immediate path, `SWEEP` for the backstop
+ * @returns {{ code: number, lines: string[] }}
+ */
+export function closeRowsExit({ failed, unsettled }: { failed: number[]; unsettled: import("./settle-closed-status.ts").Refusal[]; }, prefix: string): { code: number; lines: string[]; } {
+  const lines = [];
+  if (failed.length) lines.push(`${prefix}: could not close ${failed.length}: ${failed.join(" ")}`);
+  const { degraded, other } = unsettledVerdict(unsettled);
+  const named = (refusals: { row: number; }[]) => refusals.map((r) => `#${r.row}`).join(" ");
+  if (degraded) {
+    lines.push(`${prefix}: DEGRADED -- closed, but Status NOT moved for ${unsettled.length}: ${named(unsettled)} `
+      + "-- every refusal was project-unreadable (the token cannot read the Project, #546)");
+  } else if (unsettled.length) {
+    lines.push(`${prefix}: closed, but Status NOT moved for ${unsettled.length}: ${named(unsettled)} `
+      + `-- the board still shows them at a live Status (not project-unreadable: ${named(other)})`);
+  }
+  if (failed.length) return { code: EXIT.COULD_NOT_CLOSE, lines };
+  if (other.length) return { code: EXIT.STATUS_NOT_MOVED, lines };
+  return { code: EXIT.DONE, lines };
+}
+
+/**
+ * WHAT TO DO WITH EACH ROW THE MERGED PR DECLARED -- the whole decision, as one pure function.
+ *
+ * Separated from the API calls so the four outcomes can be driven directly. A job whose reporting is
+ * only exercised through a live merge is one whose reporting is never exercised.
+ *
+ * #776/#791: `already`'s labels travel too, for the identical reason `close`'s do -- see this file's own
+ * header ("GitHub can close a row NATIVELY, before this script ever runs") for why a row here still needs
+ * its claim stripped.
+ *
+ * #1877: `skip` IS THE FOURTH BUCKET, next to `close`/`already`/`none`. `state === "OPEN"` alone cannot
+ * tell a row nobody has looked at since the merge from one a session read and reopened for a reason
+ * written on the row -- measured on #1865: `orchestrator` reopened it at 01:12:43Z with that reasoning,
+ * and the sweep re-closed it at 01:32:26Z citing only the same merged-PR fact the reopen had already
+ * answered. `reopenedAt` (the issue's own last `ReopenedEvent`, off the timeline GitHub itself keeps)
+ * compared against `prMergedAt` answers, mechanically, "was this reopen AFTER the PR that would otherwise
+ * close it" -- the read `close-rows-sweep re-closes a row reopened for a documented reason` (#1877) says
+ * `closurePlan` never took. A row with no `ReopenedEvent`, or one that predates the merge (the ordinary
+ * never-closed-yet row this function has always handled), is unaffected and still closes exactly as before.
+ *
+ * #2202: `owed` IS NOT A BUCKET. It cuts ACROSS `close` and `already` and names, for every row that leaves the
+ * open population carrying `answer:<session>`, the row AND the session that owes the answer. The close
+ * cannot be prevented (`Closes #N` often closes the row natively before this script runs) and must not
+ * be, so the one thing this can do is stop the close being SILENT: `readOpenRows` is `--state open`, so a
+ * closed row stops waking the session that owes it, and nothing said the wake had stopped. Measured
+ * 2026-09-22 on #1936, #1970 and #2034 (`docs/operational-lessons.md`). A `skip` row is not in it: it is
+ * OPEN again, so the gate still reads it. An ordinary row is not in it either -- `owed` empty is the
+ * normal reading, and `close-rows-on-merge.test.ts` pairs it with a row that IS owed.
+ *
+ * @param {{ number: number, state: string, labels?: string[], reopenedAt?: string | null }[]} issues  as GitHub resolved them
+ * @param {{ prMergedAt?: string | null }} [ctx] the PR's own merge time, to weigh a reopen against
+ * @returns {{ close: { number: number, labels: string[] }[], already: { number: number, labels: string[] }[],
+ *   skip: { number: number, labels: string[] }[], none: boolean,
+ *   owed: { number: number, session: string }[] }}
+ */
+export function closurePlan(issues: { number: number; state: string; labels?: string[]; reopenedAt?: string | null; }[], { prMergedAt = null }: { prMergedAt?: string | null; } = {}): {
+    close: { number: number; labels: string[]; }[]; already: { number: number; labels: string[]; }[];
+    skip: { number: number; labels: string[]; }[]; none: boolean;
+    owed: { number: number; session: string; }[];
+} {
+  const reopenedAfterMerge = (i: { reopenedAt?: string | null; }) => prMergedAt != null
+    && i.reopenedAt != null && Date.parse(i.reopenedAt) > Date.parse(prMergedAt);
+  const open = issues.filter((i) => i.state === "OPEN");
+  const skip = open.filter(reopenedAfterMerge).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
+  const close = open.filter((i) => !reopenedAfterMerge(i)).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
+  const already = issues.filter((i) => i.state !== "OPEN")
+    .map((i) => ({ number: i.number, labels: i.labels ?? [] }));
+  const owed = [...close, ...already]
+    .flatMap((row) => answersOwedBy(row).map((session) => ({ number: row.number, session })));
+  return { close, already, skip, none: issues.length === 0, owed };
+}
+
+/**
+ * #2822: THE ROWS A MERGED PR'S BODY DECLARES, for the one case where GitHub resolved none. LINE-ANCHORED and
+ * deliberately STRICTER than `extractClosesDeclaration`, which this file cannot import (`acceptance-commands.ts`
+ * pulls `region-paths.ts` and more behind it, and this job runs with `actions/checkout` and nothing else):
+ * that parser reads `closes #494` mid-sentence, and a closer acting on a prose mention would close a row the
+ * author only talked about (#549). Here a row is declared only by a LINE that starts with `Closes` (or `Closes:`)
+ * and then `#N`, `#N, #M` or `#N and #M`. Text after the list is ignored, as the real parser ignores it, EXCEPT
+ * a tail the real parser calls MALFORMED (`Closes #7, a11ign#8`): such a line closes nothing here, because a
+ * half-read list closes fewer rows than the author named, silently. A repository-qualified reference
+ * (`Closes owner/repo#7`) is not a row of THIS repository and is never closed from here.
+ * `close-rows-on-merge.test.ts` pins this against `extractClosesDeclaration` on the same fixtures, so the two
+ * cannot drift.
+ * @param {string | null | undefined} body
+ * @returns {number[]} distinct, in the order written
+ */
+export function declaredRowsFromBody(body: string | null | undefined): number[] {
+  const numbers = (body ?? "").split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*closes:?\s*(#\d+(?:\s*(?:,|and)\s*#\d+)*)(.*)$/i.exec(line);
+    if (!match || /^\s*(?:,|and)\s*[A-Za-z0-9_./-]*#/i.test(match[2])) return [];
+    return [...match[1].matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+  });
+  return [...new Set(numbers)];
+}
+
+// #3883: `labelsToStrip` and the strip itself live in `claim-label-strip.ts`, a leaf the work gate can import; re-exported so every caller here is unchanged.
+export { labelsToStrip };
+
+/**
+ * #2036: THE ROW A MERGED PR WAS BUILT FOR, READ OFF ITS BRANCH NAME. `agent/worktree-prune-unit-2000`
+ * names row #2000; `agent/rstest-spike` names none. A trailing `-<digits>` is this repo's own branch
+ * convention (`row-claim.ts` writes it), and the number is a HINT, never a closing reference -- the
+ * caller confirms the row is real, open and claimed before it says anything.
+ * @param {string | null | undefined} headRefName
+ * @returns {number | null}
+ */
+export function rowNumberFromBranch(headRefName: string | null | undefined): number | null {
+  const match = /-(\d+)$/.exec((headRefName ?? "").trim());
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * #2036: A MERGED PR THAT CLOSED NO ROW, WHOSE BRANCH NAMES ONE THAT IS STILL OPEN AND STILL CLAIMED.
+ *
+ * ## Why this exists at all
+ *
+ * Every component behaves as designed and the row stays open. The declaration is well-formed, so `gate`
+ * passes it; GitHub resolves no issue, so `closes-mismatch-check.ts` -- which compares DECLARED against
+ * RESOLVED -- sees the two sides AGREE and reads that as healthy; and `applyClosurePlan` correctly closes
+ * nothing. Measured 2026-09-22 on #2011 (branch `agent/worktree-prune-unit-2000`), which merged at
+ * 22:43:48Z carrying #2000's own body text as its `Closes: none` reason. #2000 sat `in-progress` with its
+ * work on `main` until a session came back and closed it by hand fifteen minutes later. NOTHING WOULD
+ * HAVE CLOSED IT: no cause fires for a row whose PR has already merged.
+ *
+ * ## Why a REPORT and not a close, stated before anyone asks
+ *
+ * `Closes: none` on a row-numbered branch is LEGITIMATE AND COMMON -- a row that takes several PRs
+ * declares it on every PR but the last. Scanned over the last 120 merged PRs whose branch ends in a row
+ * number: 18 did not close that row, all declaring `Closes: none`, and most of them correctly. So a check
+ * that REFUSED this shape would refuse the normal case, which is the failure mode this repo has measured
+ * repeatedly. `close-merged-rows.mjs`'s own ruling holds -- "closing needs the sha and a sentence" -- and
+ * this says the one thing nothing currently says: this PR was built for you and it has merged.
+ *
+ * PURE, so the negative half is testable without a live `gh`: THE NEGATIVE HALF IS THE HALF THAT MATTERS.
+ *
+ * @param {{ row: { number: number, state: string, labels: string[] } | null, prNumber: string,
+ *   sha: string, branch: string, declaration: string }} found
+ * @returns {{ number: number, comment: string } | null} what to post, or `null` to stay silent
+ */
+export function orphanedRowReport({ row, prNumber, sha, branch, declaration }: {
+        row: { number: number; state: string; labels: string[]; } | null; prNumber: string;
+        sha: string; branch: string; declaration: string;
+    }): { number: number; comment: string; } | null {
+  // A row the lookup could not read is NOT a row that needs a report -- "could not ask" and "asked and
+  // got nothing" are different states, and this path may only ever be silent about the second.
+  if (row === null) return null;
+  if (row.state !== "OPEN") return null;
+  // Open but UNCLAIMED is a row nobody is holding: the PR was built for it by somebody who has since let
+  // it go, or the number is a coincidence. Reporting there would speak into an empty room.
+  if (!row.labels.includes(CLAIM_LABEL)) return null;
+  return { number: row.number, comment: `**PR ${prName(prNumber)} was built for this row and has merged, but it `
+    + `closed no row -- so this row is still open and still \`${CLAIM_LABEL}\`.**\n\n`
+    + `- PR: ${prName(prNumber)}, merged as \`${sha}\`\n`
+    + `- Branch: \`${branch}\`, which names this row\n`
+    + `- Its declaration: ${declaration}\n\n`
+    + "`Closes: none` is legitimate and common -- a row that takes several PRs declares it on every PR "
+    + "but the last -- so this is a REPORT, not a refusal and not a close. But nothing else will say it: "
+    + "the declaration is well-formed so `gate` passes it, GitHub resolves no issue so the "
+    + "declared-vs-resolved check sees both sides agree, and no cause fires for a row whose PR has "
+    + "already merged (#2036, measured on #2000/#2011).\n\n"
+    + `**If the work has landed, close this row with the sha and a sentence** -- \`git show ${sha}\` is `
+    + "what merged. **If it stays open, say why here**, so the next reader does not have to work it out." };
+}
+
+/**
+ * #2036: THE `Closes:` LINE, FOR QUOTING BACK -- and deliberately NOT `extractClosesDeclaration`.
+ *
+ * This decides NOTHING. What this PR closed is already GitHub's own answer (`closingIssuesReferences`,
+ * read above); this only puts the author's own sentence in front of the person who has to act, so they
+ * can see at a glance whether the reason still holds. `closes-mismatch-check.ts`'s `findClosingPhrase`
+ * draws exactly this line for exactly this reason -- "used only to LOCATE the phrase in the body for a
+ * refusal message, never to decide the verdict" -- and a parser that decides nothing is not a second copy
+ * of one that does.
+ *
+ * The real parser is also a heavier import than this path should carry: `acceptance-commands.ts` pulls
+ * `region-paths.ts`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
+ * `actions/checkout` and nothing else (see this file's own header on why that matters).
+ *
+ * @param {string} body @returns {string} the declaration as written, or a stated absence -- never a guess
+ */
+function declarationLine(body: string): string {
+  const line = (body ?? "").split(/\r?\n/).map((l) => l.trim()).find((l) => /^closes:/i.test(l));
+  return line ? `\`${line}\`` : "_(no `Closes:` line found in the PR body)_";
+}
+
+/**
+ * #2036: the report's one lookup and its one comment, wired. Split from `main` for the same reason
+ * `applyClosurePlan` is -- so the WIRING is unit-testable without a live `gh` -- and the effects are
+ * injected for the same reason: a defaulted effect is a live GitHub call that a test reaches through the
+ * one it omitted (#1400).
+ *
+ * IT NEVER FAILS THE RUN. The rows this job actually closes are the point; a report that could not be
+ * posted must not turn a clean merge into a red job, so every outcome here is a log line and a return.
+ * @param {{ branch: string | null, prNumber: string, sha: string, declaration: string }} pr
+ * @param {{ lookupRow: (n: number) => { number: number, state: string, labels: string[] } | null,
+ *   comment: (n: number, text: string) => void }} effects
+ * @returns {number | null} the row reported on, or `null` when nothing was said
+ */
+export function reportOrphanedRow({ branch, prNumber, sha, declaration }: { branch: string | null; prNumber: string; sha: string; declaration: string; }, { lookupRow, comment }: {
+        lookupRow: (n: number) => { number: number; state: string; labels: string[]; } | null;
+        comment: (n: number, text: string) => void;
+    }): number | null {
+  const rowNumber = rowNumberFromBranch(branch);
+  if (rowNumber === null) return null;
+  const report = orphanedRowReport({ row: lookupRow(rowNumber), prNumber, sha,
+    branch: (branch as string), declaration });
+  if (report === null) {
+    console.log(`CLOSE-ROWS: branch \`${branch}\` names #${rowNumber}, which is not an open claimed row `
+      + "-- nothing to report (#2036).");
+    return null;
+  }
+  comment(report.number, report.comment);
+  return report.number;
+}
+
+/** @param {string[]} args */
+const gh = (args: string[]) => {
+  assertNoLeakInArgv("gh", args); // #1053: guarded in the SPAWN HELPER, not per call site
+  return execFileSync("gh", args, { encoding: "utf8" }).trim();
+};
+
+/**
+ * #1443: was #1360's saving (no Status move for a row already Done) worth anything, MEASURED, on a real
+ * closeRows run? Neither this file nor `close-rows-sweep.ts` printed a rate-limit reading at all, so
+ * the before/after cost of one sweep could not be read from CI -- the exact evidence the reviewer's
+ * `not-convinced` on #1429 named as missing.
+ *
+ * PURE PARSE, THEN A THIN CALLER -- `rateLimitHeaders` takes a `gh api ... --include` dump (headers and
+ * body, blank-line separated) and returns the two header VALUES, so it is tested against a fixture
+ * string with no `gh` process involved.
+ *
+ * NEVER `gh api rate_limit` -- that REST endpoint's own JSON body is a separate, cached figure that has
+ * already been measured lying (#1275: "always 5000/5000"). These headers are different: they come back
+ * on EVERY GitHub API response, generated by the edge that served THIS request, so reading them off a
+ * real GraphQL call is truthful in a way the dedicated rate-limit endpoint is not.
+ * @param {string} httpDump
+ * @returns {{ used: string | null, reset: string | null }}
+ */
+export function rateLimitHeaders(httpDump: string): { used: string | null; reset: string | null; } {
+  const headerBlock = httpDump.split(/\r?\n\r?\n/)[0] ?? "";
+  return {
+    used: /^x-ratelimit-used:\s*(\S+)/im.exec(headerBlock)?.[1] ?? null,
+    reset: /^x-ratelimit-reset:\s*(\S+)/im.exec(headerBlock)?.[1] ?? null,
+  };
+}
+
+/**
+ * The one line this row's done-when asks the job log to print, once before and once after the sweep.
+ * `null` (no header found) is stated as its own reading, never silently omitted -- a job log missing this
+ * line entirely and a job log that asked and got nothing back are different facts.
+ * @param {string} label
+ * @param {string} httpDump
+ * @returns {string}
+ */
+export function rateLimitLine(label: string, httpDump: string): string {
+  const { used, reset } = rateLimitHeaders(httpDump);
+  if (used === null) {
+    return `RATE-LIMIT ${label}: COULD NOT READ -- no X-Ratelimit-Used header in the response.`;
+  }
+  return `RATE-LIMIT ${label}: X-Ratelimit-Used=${used} X-Ratelimit-Reset=${reset ?? "?"}`;
+}
+
+/**
+ * A MINIMAL real GraphQL call, made only to read the headers a real call carries. `rateLimit { cost }` is
+ * the field GitHub's own docs name for exactly this, at effectively no cost against the real budget.
+ * Never throws -- a rate-limit reading that fails to print must not take the sweep down with it.
+ * @param {string} label
+ * @param {(args: string[]) => string} [gh_]
+ */
+export function logRateLimit(label: string, gh_: (args: string[]) => string = gh) {
+  try {
+    console.log(rateLimitLine(label, gh_(["api", "graphql", "-f",
+      "query=query{rateLimit{limit cost remaining resetAt}}", "--include"])));
+  } catch (cause) {
+    console.error(`RATE-LIMIT ${label}: could not read -- ${cause instanceof Error ? cause.message : cause}`);
+  }
+}
+
+/**
+ * #2202: THE PARAGRAPH A CLOSING COMMENT ADDS WHEN THE ROW STILL OWES AN ANSWER, or nothing. It says the label
+ * was KEPT and why, because a reader of a closed row wearing a live `answer:` label would otherwise take it
+ * for the debris `audit` exists to clear -- and clear it, which is the defect this note exists to end.
+ * @param {string[]} owedBy @returns {string}
+ */
+export function owedNote(owedBy: string[]): string {
+  if (owedBy.length === 0) return "";
+  const labels = owedBy.map((session) => `\`${ANSWER_PREFIX}${session}\``).join(", ");
+  return `\n\n**This row closed with an answer still owed: ${labels} was left ON, deliberately.** Closing `
+    + "does not answer the question, and the gate keeps waking the named session for a closed row that still "
+    + `wears the label. **Answer on this row, then remove ${labels}** -- that is the only thing that stops it `
+    + "(#2202).";
+}
+
+// #2995: a PR of ANOTHER repository arrives named `owner/repo#N`, and the row it closes is then named in the full form too (a bare `#N` reads as the row's own repository's).
+const prName = (prNumber: string) => (prNumber.includes("#") ? prNumber : `#${prNumber}`);
+const rowName = (n: number, prNumber: string) => (prNumber.includes("#") ? `${REPO}#${n}` : `#${n}`);
+
+/**
+ * #2822: THE SENTENCE A CLOSING COMMENT OPENS WITH. A closure made from the body's declaration says so, and
+ * says why, because a reader of the row would otherwise take GitHub's silence for a closure GitHub made.
+ * @param {number} n @param {string} prNumber @param {string} sha @param {"github" | "body"} basis
+ * @returns {string}
+ */
+function openingSentence(n: number, prNumber: string, sha: string, basis: "github" | "body"): string {
+  if (basis === "body") {
+    return `Closed by the pipeline FROM THE PR BODY'S DECLARATION: PR ${prName(prNumber)} merged as \`${sha}\` and `
+      + `declared \`Closes ${rowName(n, prNumber)}\`, but GitHub resolved NO closing reference for it (a repo-wide condition from `
+      + `2026-09-30, #2822), so this closure is that declaration read directly from the body rather than GitHub's `
+      + "answer.\n\n";
+  }
+  return `Closed by the pipeline: PR ${prName(prNumber)} merged as \`${sha}\` and declared \`Closes ${rowName(n, prNumber)}\`.\n\n`
+    + `GitHub does not apply a closing reference when the merge is performed by `
+    + `\`github-actions[bot]\` -- measured on #310, #321 and #344 (see #298), where three of three bot `
+    + `merges left their rows open while two of two human merges closed theirs. This comment and this `
+    + `closure are that step, performed explicitly.\n\n`;
+}
+
+/**
+ * The whole closing comment, PURE so a test reads the words a row will carry. The `github` basis is the comment
+ * this job has always posted, byte for byte.
+ * @param {number} n
+ * @param {{ prNumber: string, sha: string, owedBy?: string[], basis?: "github" | "body" }} ctx
+ * @returns {string}
+ */
+export function closingComment(n: number, { prNumber, sha, owedBy = [], basis = "github" }: { prNumber: string; sha: string; owedBy?: string[]; basis?: "github" | "body"; }): string {
+  return `${openingSentence(n, prNumber, sha, basis)}If the work did not land, reopen and say so on `
+    + `the row: \`git show ${sha}\` is what actually merged.${owedNote(owedBy)}`;
+}
+
+/**
+ * Closes one row with the standard sentence. Returns whether it succeeded -- never throws, so the caller
+ * can decide what to do next (and, for #754, whether the label strip below should even be attempted).
+ * #2202: `owedBy` names the sessions still owing an answer on this row, and the closing comment says so IN THE
+ * SAME ACT as the close -- the row's own record that the question survived it and who still owes it.
+ * @param {number} n
+ * @param {{ prNumber: string, sha: string, repo: string, owedBy?: string[], basis?: "github" | "body" }} ctx
+ * @returns {boolean}
+ */
+function closeOneRow(n: number, { prNumber, sha, repo, owedBy = [], basis = "github" }: { prNumber: string; sha: string; repo: string; owedBy?: string[]; basis?: "github" | "body"; }): boolean {
+  const sentence = closingComment(n, { prNumber, sha, owedBy, basis });
+  try {
+    gh(["issue", "close", String(n), "--repo", repo, "--comment", sentence, "--reason", "completed"]);
+    console.log(`CLOSE-ROWS: #${n} CLOSED${basis === "body" ? " FROM THE BODY'S DECLARATION" : ""} (PR ${prName(prNumber)}, merge ${sha}).`);
+    return true;
+  } catch (cause) {
+    console.log(`CLOSE-ROWS: #${n} COULD NOT CLOSE -- ${cause instanceof Error ? cause.message : cause}`);
+    return false;
+  }
+}
+
+/**
+ * #754: strips the row's claim labels IN THE SAME ACT as the close, right after it succeeds -- not a
+ * second pass, which is a second thing to remember and the whole reason `audit`'s DEBRIS finding kept
+ * coming back. A label-removal failure must NEVER prevent or roll back the close (the close is the point;
+ * a row that closed with a stale label is strictly better than one left open because a label edit failed),
+ * so this never throws -- it only reports. EXPORTED so `close-rows-sweep.ts`'s backstop path can call
+ * the identical decision rather than re-deriving it -- that file's own header names the rule this follows:
+ * "a second copy of that decision is the exact 'fact stated twice' shape this repo keeps paying for."
+ * @param {number} n @param {string[]} labels @param {string} repo
+ * @param {string} [logPrefix] the immediate path logs `CLOSE-ROWS:`, the sweep logs `SWEEP:` -- callers
+ *   must stay distinguishable in the log, the same reason close-rows-sweep.ts's own header gives for
+ *   never reusing `CLOSE-ROWS:` itself: which path did the work is a fact about the pipeline's health.
+ */
+export function stripClaimLabels(n: number, labels: string[], repo: string, logPrefix: string = "CLOSE-ROWS") {
+  stripClaimLabelsVia(n, labels, repo, { gh, say: (line) => console.log(line), logPrefix });
+}
+
+export type ClosureEffects = { closeOne: typeof closeOneRow, strip: typeof stripClaimLabels, settle: (n: number) => import("./settle-closed-status.ts").SettleOutcome };
+
+/** The effects `applyClosurePlan` performs, each of which reaches GitHub when live. */
+const CLOSURE_EFFECTS = (["closeOne", "strip", "settle"] as const);
+
+/**
+ * #1360: THE LIVE SETTLE DEPENDENCIES, DEFINED ONCE. The per-merge path (`liveClosureEffects` below) and the sweep
+ * (`close-rows-sweep.ts`'s `closeOnePr`) both settle with these. Measured before this existed: each built its own
+ * inline, and dropping `currentStatus` from the sweep's copy left close-rows-sweep, trunk-sweep and close-rows-on-merge
+ * at 49 / 0 -- a caller could lose the whole saving silently. `close-rows-on-merge.test.ts` holds both uses.
+ */
+export const LIVE_SETTLE_DEPS = Object.freeze({ moveStatus: moveProjectStatus, currentStatus: scopedStatus });
+
+/**
+ * THE LIVE EFFECTS, NAMED IN ONE PLACE (#1400). `main()` passes these; a test passes its own. `closeOneRow` is
+ * `gh issue close`, `stripClaimLabels` is `gh issue edit`, and `settle` moves a Project 2 Status.
+ * @returns {ClosureEffects}
+ */
+export function liveClosureEffects(): ClosureEffects {
+  return {
+    closeOne: closeOneRow, strip: stripClaimLabels,
+    settle: (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS),
+  };
+}
+
+/**
+ * #2036: THE LIVE EFFECTS OF THE ORPHANED-ROW REPORT, named here for the reason `liveClosureEffects`
+ * gives. `lookupRow` reads `null` for a row that could not be read AT ALL -- a number the branch happened
+ * to end in that is no issue here, a lookup that failed -- which `orphanedRowReport` then stays silent
+ * about, because "could not ask" is never "nothing to say".
+ * @param {string} repo
+ * @returns {{ lookupRow: (n: number) => { number: number, state: string, labels: string[] } | null,
+ *   comment: (n: number, text: string) => void }}
+ */
+export function liveOrphanEffects(repo: string): {
+    lookupRow: (n: number) => { number: number; state: string; labels: string[]; } | null;
+    comment: (n: number, text: string) => void;
+} {
+  return {
+    lookupRow: (n) => {
+      try {
+        const row = JSON.parse(gh(["issue", "view", String(n), "--repo", repo, "--json", "number,state,labels"]));
+        return { number: row.number, state: row.state, labels: (row.labels ?? []).map((l: { name: string; }) => l.name) };
+      } catch (cause) {
+        console.log(`CLOSE-ROWS: could not read #${n} to report on it -- ${cause instanceof Error ? cause.message : cause}`);
+        return null;
+      }
+    },
+    comment: (n, text) => {
+      try {
+        gh(["issue", "comment", String(n), "--repo", repo, "--body", text]);
+        console.log(`CLOSE-ROWS: #${n} REPORTED -- its PR merged closing no row (#2036).`);
+      } catch (cause) {
+        console.log(`CLOSE-ROWS: #${n} could not be reported on -- ${cause instanceof Error ? cause.message : cause}`);
+      }
+    },
+  };
+}
+
+/**
+ * Applies a resolved `closurePlan`: strips every already-closed row's claim labels (#776/#791 -- GitHub
+ * can close a row NATIVELY, before this script ever runs, so `already` needs the identical strip `close`
+ * gets), then closes each still-open row and strips its labels too. Split out of `main` so the WIRING --
+ * which rows get closed, which get stripped, and that `already` is never silently skipped -- is
+ * unit-testable without a live `gh` call, the same reason `close-rows-sweep.ts`'s own `closeOnePr` is
+ * split out of ITS `main`. The effects are injected so a test can prove call order and arguments.
+ *
+ * #1400: THE THREE EFFECTS ARE REQUIRED, AND NONE HAS A LIVE DEFAULT. Each used to default to the real one, so a
+ * test that injected two reached the third: two tests in `close-rows-on-merge.test.ts` called the LIVE Project 2
+ * mover for #677 and #344 on every local run. Measured behind a `gh` shim: 2 board queries and 2 "could not move"
+ * lines, with the file still 28 / 0, because `settleClosedStatus` never throws -- so pass/fail could not show it.
+ * A missing effect is now refused by name before any effect runs, and `main()` passes `liveClosureEffects()`.
+ *
+ * #1877: `skip` is applied BEFORE the close loop and touches nothing -- no close, no strip, no Status
+ * move. A row reopened after this exact PR merged already has a session's own reasoning on it; this
+ * function's job is to leave that reasoning standing, not to weigh in under it.
+ *
+ * #2202: `owed` IS REPORTED, ROW BY ROW, BEFORE ANY STRIP -- the record of the question outlives the close because
+ * `labelsToStrip` never takes `answer:*`, and this says so on the row (`owedNote`, for a row this run closes)
+ * and in the job log (for every row, including one GitHub closed natively first).
+ *
+ * @param {{ close: {number:number, labels:string[]}[], already: {number:number, labels:string[]}[],
+ *   skip?: {number:number, labels:string[]}[], owed?: {number:number, session:string}[], unreadable?: number[] }} plan
+ * @param {{ prNumber: string, sha: string, repo: string, basis?: "github" | "body" }} ctx
+ * @param {ClosureEffects} effects
+ * @returns {{ failed: number[], unsettled: import("./settle-closed-status.ts").Refusal[], skipped: number[],
+ *   owed: { number: number, session: string }[] }}
+ *   rows that could not be closed, the refusal for each closed row whose Status did not move (#1299), and
+ *   rows left alone because they were reopened after this PR merged (#1877) -- all empty on a clean run --
+ *   and the rows that left the open population still owing an answer (#2202), empty on an ordinary one
+ */
+export function applyClosurePlan({ close, already, skip = [], owed = [], unreadable = [] }: {
+        close: { number: number; labels: string[]; }[]; already: { number: number; labels: string[]; }[];
+        skip?: { number: number; labels: string[]; }[]; owed?: { number: number; session: string; }[]; unreadable?: number[];
+    }, ctx: { prNumber: string; sha: string; repo: string; basis?: "github" | "body"; }, effects: ClosureEffects): {
+    failed: number[]; unsettled: import("./settle-closed-status.ts").Refusal[]; skipped: number[];
+    owed: { number: number; session: string; }[];
+} {
+  const missing = CLOSURE_EFFECTS.filter((name) => typeof effects?.[name] !== "function");
+  if (missing.length > 0) {
+    throw new Error(`applyClosurePlan: no ${missing.join(", ")} given -- every effect is required, because a `
+      + "defaulted one is a live GitHub call (#1400: tests reached the real Project 2 mover through the one they omitted).");
+  }
+  const { closeOne, strip, settle } = effects;
+  // #1299: the settle answer is READ. A bare `settle(n)` let a run that moved no Status exit DONE.
+  const unsettled: import("./settle-closed-status.ts").Refusal[] = [];
+  const record = (n: number) => { unsettled.push(...settle(n).refused); };
+  const owedBy = (n: number) => owed.filter((o) => o.number === n).map((o) => o.session);
+  const reportOwed = (n: number) => {
+    for (const session of owedBy(n)) {
+      console.log(`CLOSE-ROWS: #${n} IS CLOSED STILL OWING AN ANSWER from ${session} -- \`${ANSWER_PREFIX}${session}\` `
+        + "KEPT, and the gate keeps waking that session (#2202).");
+    }
+  };
+
+  // #776/#791: THE CLOSE is left alone -- re-closing an already-closed row is not this loop's job, and
+  // never was. The CLAIM is not: a row that reaches this script already CLOSED is not necessarily one
+  // somebody closed by hand days ago -- it may be THIS exact merge, one second earlier (GitHub's own
+  // native closing-keyword resolution), and its claim is exactly as stale as a freshly-closed row's.
+  for (const { number: n, labels } of already) {
+    console.log(`CLOSE-ROWS: #${n} ALREADY CLOSED -- left alone.`);
+    reportOwed(n);
+    strip(n, labels, ctx.repo);
+    record(n);
+  }
+
+  // #1877: reported, never silently dropped -- the same reason `already`/`none` are their own outcomes.
+  const skipped = skip.map(({ number: n }) => {
+    console.log(`CLOSE-ROWS: #${n} SKIPPED -- reopened after PR ${prName(ctx.prNumber)} merged; left alone (#1877).`);
+    return n;
+  });
+
+  // #2822: a declared row that could not be READ was never planned, and is a row that was not closed: named as such.
+  const failed: number[] = [...unreadable];
+  for (const { number: n, labels } of close) {
+    const closed = closeOne(n, { ...ctx, owedBy: owedBy(n) });
+    if (!closed) { failed.push(n); continue; }
+    reportOwed(n);
+    strip(n, labels, ctx.repo);
+    record(n);
+  }
+  return { failed, unsettled, skipped, owed: owed.filter((o) => !failed.includes(o.number)) };
+}
+
+/**
+ * #2822: READS ONE DECLARED ROW THE WAY THE MAIN LOOKUP READS A RESOLVED ONE -- state, labels and the last
+ * `ReopenedEvent` -- so a row reopened after the merge is still `skip`, whatever produced the plan. `null` for
+ * a number that is no issue here (a PR number, a typo) or a read that failed: "could not read" is never "closed".
+ * @param {number} n @param {string} repo
+ * @returns {{ number: number, state: string, labels: string[], reopenedAt: string | null } | null}
+ */
+export function liveLookupDeclaredRow(n: number, repo: string): { number: number; state: string; labels: string[]; reopenedAt: string | null; } | null {
+  const [owner, name] = repo.split("/");
+  const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number state `
+    + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
+    + `... on ReopenedEvent{createdAt}}}}}}`;
+  try {
+    const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
+    if (issue === null) return null;
+    return { number: issue.number, state: issue.state, labels: (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name),
+      reopenedAt: issue.timelineItems?.nodes?.[0]?.createdAt ?? null };
+  } catch (cause) {
+    console.log(`CLOSE-ROWS: could not read declared #${n} -- ${cause instanceof Error ? cause.message : cause}`);
+    return null;
+  }
+}
+
+/**
+ * #2822: WHICH PLAN A MERGED PR GETS, AND ON WHOSE WORD. GitHub's answer wins whenever it is non-empty -- so the
+ * fallback never fires beside a resolved row, and never double-closes one. Only when GitHub resolved NOTHING
+ * does the body's own `Closes` lines become the plan, tagged `basis: "body"` so the closure says so. A declared
+ * number that cannot be read is returned in `unreadable` and never planned: it is named, not skipped.
+ * @param {{ issues: { number: number, state: string, labels?: string[], reopenedAt?: string | null }[],
+ *   prMergedAt: string | null, prBody: string }} merged
+ * @param {(n: number) => { number: number, state: string, labels: string[], reopenedAt: string | null } | null} lookupRow
+ * @returns {{ plan: ReturnType<typeof closurePlan> & { unreadable?: number[] }, basis: "github" | "body",
+ *   declared: number[], unreadable: number[] }}
+ */
+export function planForMergedPr({ issues, prMergedAt, prBody }: {
+        issues: { number: number; state: string; labels?: string[]; reopenedAt?: string | null; }[];
+        prMergedAt: string | null; prBody: string;
+    }, lookupRow: (n: number) => { number: number; state: string; labels: string[]; reopenedAt: string | null; } | null): {
+    plan: ReturnType<typeof closurePlan> & { unreadable?: number[]; }; basis: "github" | "body";
+    declared: number[]; unreadable: number[];
+} {
+  const fromGitHub = closurePlan(issues, { prMergedAt });
+  const declared = fromGitHub.none ? declaredRowsFromBody(prBody) : [];
+  if (declared.length === 0) return { plan: fromGitHub, basis: "github", declared, unreadable: [] };
+  const rows = declared.map((n) => ({ n, row: lookupRow(n) }));
+  const readable = rows.flatMap(({ row }) => (row === null ? [] : [row]));
+  const unreadable = rows.filter(({ row }) => row === null).map(({ n }) => n);
+  return { plan: { ...closurePlan(readable, { prMergedAt }), unreadable }, basis: "body", declared, unreadable };
+}
+
+/**
+ * #2822: the FIFTH reported outcome, distinct from NONE DECLARED and from `declared and closed`: GitHub resolved
+ * nothing and the plan is the body's own declaration. A declared row that could not be read is named here too.
+ * Says nothing for a plan GitHub made.
+ * @param {string} number
+ * @param {{ basis: "github" | "body", declared: number[], unreadable: number[] }} planned
+ */
+function announceBodyPlan(number: string, { basis, declared, unreadable }: { basis: "github" | "body"; declared: number[]; unreadable: number[]; }) {
+  if (basis !== "body") return;
+  console.log(`CLOSE-ROWS: #${number} GitHub resolved NO closing reference, but the body declares `
+    + `#${declared.join(", #")} -- closing FROM THE BODY'S DECLARATION (#2822).`);
+  for (const n of unreadable) console.log(`CLOSE-ROWS: #${n} COULD NOT BE READ -- declared, not closed.`);
+}
+
+/**
+ * #1443: every exit AFTER "before sweep" has printed pairs with an "after sweep" reading first, so the
+ * job log always carries a before/after PAIR rather than a "before" with no matching "after" on whichever
+ * path this run happened to take.
+ * @param {number} code
+ * @returns {never}
+ */
+function exitAfterSweep(code: number): never {
+  logRateLimit("after sweep (dispatch)");
+  process.exit(code);
+}
+
+function main() {
+  refuseUnknownFlags([], {
+    entry: import.meta.url,
+    command: "node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
+  });
+
+  const repo = process.env.GITHUB_REPOSITORY;
+  const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
+  if (!repo || !number) {
+    console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
+      + "  node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  // #1443: bracketing the whole dispatch, not just the closing calls -- #1360's saving is a property of
+  // this row's TOTAL cost, and a reading taken only around part of it would miss whatever the excluded
+  // part spent.
+  logRateLimit("before sweep (dispatch)");
+
+  const [owner, name] = repo.split("/");
+  let issues, sha, prMergedAt, headRefName, prBody;
+  try {
+    // `labels(first:20){nodes{name}}` added for #754 -- the same lookup that already resolves WHICH rows
+    // to close also carries WHAT each one is still labelled, so stripping the claim needs no second
+    // round trip and reads the row's state at the same instant the close decision was made.
+    // #1877: `mergedAt` on the PR and each issue's last `ReopenedEvent` -- the one read that tells a row
+    // reopened after THIS merge apart from a row nobody has looked at yet, both off GitHub's own timeline.
+    // #2036: `headRefName` and `body` -- read ONLY on the path where nothing was closed, to name the row
+    // the branch was built for and quote the declaration that closed nothing. No extra round trip: this
+    // is the lookup that already runs on every merge.
+    const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
+      + `merged baseRefName mergedAt headRefName body mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state repository{nameWithOwner} `
+      + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
+      + `... on ReopenedEvent{createdAt}}}}}}}}`;
+    const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
+      "--jq", ".data.repository.pullRequest"]));
+    // Enforced HERE, not only in the workflow's `if:` -- `workflow_dispatch` (#394) takes an arbitrary
+    // PR number with no event to gate on, so a manual run against an unmerged PR, or one merged into a
+    // branch other than `main`, must refuse the same way the `pull_request` path's own `if:` already
+    // does. `close-merged-rows.mjs`'s own header names the risk this closes: "a tool that closed rows
+    // automatically would eventually close one whose work did not actually land."
+    if (pr.merged !== true) {
+      console.error(`CANNOT ASK: #${number} is not merged -- refusing to close rows for a PR whose work `
+        + "may not have landed.");
+      exitAfterSweep(EXIT.CANNOT_ASK);
+    }
+    if (pr.baseRefName !== "main") {
+      console.error(`CANNOT ASK: #${number} merged into \`${pr.baseRefName}\`, not \`main\` -- refusing.`);
+      exitAfterSweep(EXIT.CANNOT_ASK);
+    }
+    const nodes: {
+        number: number; state: string; repository?: { nameWithOwner: string; }; labels: { nodes: { name: string; }[]; };
+        timelineItems: { nodes: { createdAt: string; }[]; };
+    }[] = pr.closingIssuesReferences.nodes;
+    // #2995: only the tracker's rows are ours to close; a pull request of another repository names one in the full form.
+    issues = nodes.filter((i) => (i.repository?.nameWithOwner ?? repo) === REPO).map((i) => ({
+      number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
+      reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
+    }));
+    sha = pr.mergeCommit?.oid ?? "unknown";
+    prMergedAt = pr.mergedAt ?? null;
+    headRefName = pr.headRefName ?? null;
+    prBody = pr.body ?? "";
+  } catch (cause) {
+    console.error(`CANNOT ASK: resolving #${number}'s closing references failed -- `
+      + `${cause instanceof Error ? cause.message : cause}`);
+    exitAfterSweep(EXIT.CANNOT_ASK);
+  }
+
+  // #2995: from another repository a bare `Closes #N` is not a tracker row, so the body fallback is not asked.
+  const prRef = repo === REPO ? number : `${repo}#${number}`;
+  const { plan, basis, declared, unreadable } = planForMergedPr({ issues, prMergedAt, prBody: repo === REPO ? prBody : "" },
+    (n) => liveLookupDeclaredRow(n, REPO));
+
+  if (plan.none && declared.length === 0) {
+    // NOT a failure, and not silence either. Most PRs declare nothing.
+    console.log(`CLOSE-ROWS: #${number} declared NO closing references. Nothing to close.`);
+    // #2036: ...but if the BRANCH names a row that is still open and still claimed, say so on it. This is
+    // the one place that can: everything else in the pipeline reads this PR as healthy, correctly.
+    reportOrphanedRow({ branch: headRefName, prNumber: prRef, sha,
+      declaration: declarationLine(prBody) }, liveOrphanEffects(REPO));
+    exitAfterSweep(EXIT.DONE);
+  }
+  announceBodyPlan(number, { basis, declared, unreadable });
+
+  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: prRef, sha, repo: REPO, basis }, liveClosureEffects()),
+    "CLOSE-ROWS");
+  for (const line of lines) console.error(line);
+  exitAfterSweep(code);
+}
+
+// The entry guard `merge-guard.ts` uses: a bare `file://` + argv[1] comparison misreads a path with a
+// space in it and a symlinked checkout, and reports the module as imported when it was run.
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

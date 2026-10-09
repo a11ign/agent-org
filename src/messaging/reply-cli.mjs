@@ -165,12 +165,12 @@ function report(result, { out, err }) {
 
 /**
  * Where the tick writes its completion record, resolved the way `watch.mjs` does (`stateEntryPath("wake-ledger")`). IMPORTED WHEN ASKED, not at the top:
- * `host-config.mjs` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.mjs`), so a host that cannot answer
+ * `host-config.ts` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.mjs`), so a host that cannot answer
  * must cost `{{gate.*}}` and nothing else.
  * @param {{ home: string, env: Record<string, string | undefined> }} where @returns {Promise<string>}
  */
 async function hostWakeLedgerPath({ home, env }) {
-  const { stateEntryPath } = await import("../host-config.mjs");
+  const { stateEntryPath } = await import("../host-config.ts");
   return stateEntryPath("wake-ledger", { home, env });
 }
 

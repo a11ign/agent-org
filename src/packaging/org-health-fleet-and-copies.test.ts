@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FLEET_IDLE_HOURS, SIGNALS, fleetIdleReading, copyDriftReading, readDeclaredCopies, orgHealthReadings, orgHealthOrders, orgHealthTick,
-} from "../org-health.mjs";
+} from "../org-health.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");

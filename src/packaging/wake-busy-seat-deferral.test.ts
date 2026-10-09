@@ -7,6 +7,7 @@
  * and a busy-seat order under the limit yields neither. THE LIMIT IS WRITTEN OUT AS 15 MINUTES (it was 60 until #3448), never as `BUSY_SEAT_DEFERRAL_MS`: a test built
  * from the constant moves with it, so changing the limit would leave it green.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -14,10 +15,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitRefusals, refusalReport, deferralAges, BUSY_SEAT_DEFERRAL_MS } from "../wake.mjs";
+import { splitRefusals, refusalReport, deferralAges, BUSY_SEAT_DEFERRAL_MS } from "../wake.ts";
 
 const MINUTE = 60_000;
-const WAKE = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE = fileURLToPath(new URL("../wake.ts", import.meta.url));
 
 const BUSY = (key = "handoff/ceo/07ed9f53", seat = "ceo") => `${key}: "${seat}" is working`;
 const REFUSED_TO_START = "reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: herdr refused to start \"reviewer-agent-org-16\" (the workspace it opened was closed)";
@@ -110,7 +111,7 @@ function tick(dir: string, { handedRefused = [] as string[], gateRefused = [] as
   const code = `import { finishTick } from ${JSON.stringify(WAKE)};
     finishTick({ handed: { sent: [], refused: ${JSON.stringify(handedRefused)}, ids: [], busied: new Set() }, sent: [],
       gateRefused: ${JSON.stringify(gateRefused)}, stuck: [], outaged: [], ledgerPath: ${JSON.stringify(join(dir, "wake-ledger"))}, unavailable: () => null });`;
-  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", code], { encoding: "utf8" });
   return { status: ran.status, stderr: ran.stderr };
 }
 

@@ -7,7 +7,7 @@
  * workflow's expected run never happened. Two commits reached `main` outside their PR; `ci.yml` arrived
  * and `lint.yml` (retired the same day) went, and every one of those three guards stayed green.
  *
- * `merge-guard.mjs` (#161) already answers the run-half of this correctly, for one PR given its number.
+ * `merge-guard.ts` (#161) already answers the run-half of this correctly, for one PR given its number.
  * This generalises it into a check runnable for any commit that has already reached `main` — the shape
  * that actually failed silently — reusing `lookupRequiredContexts`/`lookupCheckRuns`/`checkReasons`
  * rather than re-deriving them, since a second copy of "how do I know a check actually ran" is exactly
@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commitLiveness, EXIT } from "../workflow-run-liveness.mjs";
+import { commitLiveness, EXIT } from "../workflow-run-liveness.ts";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const SHA = "a1b2c3d4e5f6789012345678901234567890abcd";

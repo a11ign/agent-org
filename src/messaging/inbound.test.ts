@@ -14,6 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { register } from "tsx/esm/api";
 
 import { createLedger, readLedgerLines } from "./ledger.mjs";
 import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
@@ -342,8 +343,9 @@ describe("no other module can produce the branded value (done-when 5)", () => {
   });
 
   test("nothing a module exports is the brand, the registry or the minted value; only inbound.mjs exports a way to mint one", async () => {
-    // BOTH COPIES FROM ONE KIND OF IMPORT: the scan below `import()`s each module natively, so `inbound.mjs` there is Node's copy and the static import above is rstest's, and
+    // BOTH COPIES FROM ONE KIND OF IMPORT: the scan below `import()`s each module natively, through tsx's loader registered here (these modules reach `.ts`), so `inbound.mjs` there is Node's copy and the static import above is rstest's, and
     // `value === createInbound` is false across the two. The minter, the checker and the brand all come from the copy the scan reads.
+    const unregister = register();
     const native = await import(pathToFileURL(join(here.pathname, "inbound.mjs")).href);
     const nativeAccepted = native.createInbound({ ledger: createLedger({ path: join(scratch, "native-brand.jsonl"), now: Date.now }), chairman: CHAIRMAN }).handle(update(130)).accepted;
     const brand = Object.getOwnPropertySymbols(nativeAccepted)[0];
@@ -358,6 +360,7 @@ describe("no other module can produce the branded value (done-when 5)", () => {
         if (typeof value === "function" && value === native.createInbound) (mintersByModule[name] ??= []).push(exportName);
       }
     }
+    unregister();
     assert.deepEqual(mintersByModule, { "inbound.mjs": ["createInbound"] });
     assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.mjs is a decision, and this list is where it is made");
   });

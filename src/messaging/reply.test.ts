@@ -146,7 +146,7 @@ describe("done-when 2: a reader that fails REFUSES the send and names the placeh
   test("EVERY failed placeholder is named, in one refusal, and the ones that read fine are not", async () => {
     const { reply } = harness({ pr: async () => { throw new Error("no"); }, ready: async () => { throw new Error("no"); } });
     const refusal = /** @type {any} */ (await reply.send("{{pr:1.state}} {{issue:2.state}} {{ready.count}}"));
-    assert.deepEqual(refusal.problems.map((/** @type {any} */ problem: any) => problem.placeholder), ["{{pr:1.state}}", "{{ready.count}}"]);
+    assert.deepEqual(refusal.problems.map((problem: any) => problem.placeholder), ["{{pr:1.state}}", "{{ready.count}}"]);
     assert.equal(refusal.sendable, "Could not check, so not stated: {{unchecked:pr:1.state}}, {{unchecked:ready.count}}.");
   });
 
@@ -545,7 +545,7 @@ describe("#3565: a refusal reads the row itself and names the fix with its value
     const refused = /** @type {any} */ (await reply.send("#3542 token 123456:fixture-token"));
     assert.equal(refused.outcome, "refused");
     assert.equal(refused.corrected, undefined);
-    assert.ok(refused.problems.some((/** @type {any} */ problem: any) => /"123456" is a number outside a placeholder/.test(problem.reason)));
+    assert.ok(refused.problems.some((problem: any) => /"123456" is a number outside a placeholder/.test(problem.reason)));
     assert.deepEqual(provider.sent, []);
   });
 

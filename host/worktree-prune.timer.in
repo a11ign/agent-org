@@ -4,7 +4,7 @@ Description=a11ign: run the worktree prune hourly
 # THE ACTIVATION CONTRACT, STATED HERE BECAUSE THIS FILE NAMED THE WRONG CAUSE FOR IT TWICE (#2011's
 # review, both rounds): `enable --now` RUNS ONE PRUNE AT INSTALL TIME, AND THE CALENDAR GOVERNS EVERY RUN
 # AFTER IT. `Requires=` in a timer's [Unit] is an ordinary start dependency, so the start job
-# `hostUnitsInstall` issues for this timer -- `enable --now` over every shipped `.timer`, host-units.mjs --
+# `hostUnitsInstall` issues for this timer -- `enable --now` over every shipped `.timer`, host-units.ts --
 # enqueues one for the service as well, whether or not the timer was already running. It is not a settling
 # delay expiring, and it is not `Persistent=` performing a catch-up.
 #

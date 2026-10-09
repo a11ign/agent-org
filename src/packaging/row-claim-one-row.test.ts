@@ -8,6 +8,7 @@
  * with the roster they mean and read no host. The CLI reads it (`instanceNow`), which is what the last two tests drive as
  * a PROCESS: an injected seam is exactly what a deleted call goes around.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
@@ -17,9 +18,9 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { oneRowReason } from "../row-claim/runner-rule.mjs";
-import { claimRow } from "../row-claim.mjs";
-import { sparePathsFrom } from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { claimRow } from "../row-claim.ts";
+import { sparePathsFrom } from "../wake.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 
 const ROW = 2407;
@@ -91,7 +92,7 @@ test("#2407 (3) POSITIVE CONTROLS through `claimRow`: a fresh spare claims, a st
 // In a COPY OF ITS OWN CLOSURE, as `wake-drain.test.ts` does and for its reason (#2394): the CLI refuses first of all
 // when it cannot ask whether its rule is current, and the acceptance job's clone has no `origin/main`. The copy is of
 // the WORKING TREE, so a mutation made there is the one under test.
-const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
+const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.ts", import.meta.url));
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 // `HELD_ROWS` is what `gh issue list --label session:<me>` answers: the rows the instance holds NOW.
 const GH_READY_ROW = `#!/bin/sh
@@ -153,7 +154,7 @@ function claimProcess(session: string, { registry = null, held = [] }: { registr
       writeFileSync(sparePathsFrom(join(dir, ".cache/a11ign/wake-ledger")).registry, `${JSON.stringify(registry)}\n`);
     }
     const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
-    return spawnSync(process.execPath, [entry, "claim", String(ROW), `--session=${session}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, entry, "claim", String(ROW), `--session=${session}`], {
       encoding: "utf8",
       env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2407 drives the CLI",
         HELD_ROWS: JSON.stringify(held.map((number) => ({ number }))) },
@@ -183,7 +184,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
   const dir = mkdtempSync(join(tmpdir(), "row-claim-one-row-"));
   const objects = join(dir, "checkout/.git/objects");
   mkdirSync(objects, { recursive: true });
-  const writer = spawn(process.execPath, ["-e", GIT_WRITER, objects], { stdio: "ignore" });
+  const writer = spawn(process.execPath, [...TSX_IMPORT, "-e", GIT_WRITER, objects], { stdio: "ignore" });
   try {
     for (const deadline = Date.now() + 5000; readdirSync(objects).length === 0; ) {
       assert.ok(Date.now() < deadline, "the writer never started, so this control would prove nothing");

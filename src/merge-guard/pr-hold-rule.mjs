@@ -18,7 +18,7 @@
 // will arm it, it is theirs.* Better than what it replaced, and this repo has already MEASURED that shape
 // and found it wanting: #197 is the identical experiment on rows, where a claim that existed only as a
 // sentence in a dispatch message produced **three double-dispatches (#156, #158, #159), each caught by a
-// worker's own caution and never by the tool.** `row-claim.mjs`'s header states the principle this
+// worker's own caution and never by the tool.** `row-claim.ts`'s header states the principle this
 // inherits: the Project Status field is a VIEW; the label, on the object and timestamped by GitHub's own
 // timeline, is the RECORD.
 //
@@ -32,7 +32,7 @@
 // was right about the direction and wrong about the vocabulary, because the two questions had been given
 // one word. They now have two.
 //
-// `holdersOf` from `pr-hold-state.mjs` is the ONE predicate: `pr-hold` writes what it reads, and
+// `holdersOf` from `pr-hold-state.ts` is the ONE predicate: `pr-hold` writes what it reads, and
 // `arm-pr`/`auto-arm-sweep` read the same. Two spellings of one fact is the shape half this repo's
 // defects share, and this file has now been on both sides of it.
 //
@@ -40,7 +40,7 @@
 // a row you do not hold cannot be taken from its owner, so confirming and passing a flag is the only
 // route. A PR hold CAN be handed over -- `pnpm run pr:release` then `pr:hold` -- so a flag here would be a
 // silent bypass standing in for an action that leaves a record. The escape hatch is taking the hold.
-import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
+import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
 
 /**
  * @param {{number: number}} pr

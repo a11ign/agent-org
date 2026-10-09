@@ -15,6 +15,7 @@
  * therefore seeds the variable with a scratch host before its dynamic imports when (and only when) the ambient one has none, and drives
  * the functions with explicit arguments.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -66,12 +67,12 @@ if (process.env[HOST_VARIABLE] === undefined) {
   writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "p", projects: [{ id: "p", checkout }] }));
   process.env[HOST_VARIABLE] = hostFile;
 }
-const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.mjs");
-const { hostUnitDrift, hostUnitsInstall, hostVariableAsRun, unitsWithoutHostVariable } = await import("../host-units.mjs");
-const { parseHostConfig } = await import("../host-config.mjs");
+const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.ts");
+const { hostUnitDrift, hostUnitsInstall, hostVariableAsRun, unitsWithoutHostVariable } = await import("../host-units.ts");
+const { parseHostConfig } = await import("../host-config.ts");
 
 test("the variable's name here is the one the tool reads", async () => {
-  const { HOST_ENV } = await import("../project-config.mjs");
+  const { HOST_ENV } = await import("../project-config.ts");
   assert.equal(HOST_ENV, HOST_VARIABLE);
 });
 
@@ -81,7 +82,7 @@ for (const [what, env] of [["unset", {}], ["empty", { [HOST_VARIABLE]: "" }]] as
     // The working directory is pinned to one in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root.
     assert.throws(() => resolveHomeCheckout({ env, beside, cwd: scratch() }), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
-      assert.equal(error.field, HOST_VARIABLE);
+      assert.equal((error as any).field, HOST_VARIABLE);
       assert.match(error.message, new RegExp(HOST_VARIABLE));
       assert.ok(error.message.includes(beside), `the guessed path is not named:\n${error.message}`);
       assert.match(error.message, /host:install/);
@@ -106,7 +107,7 @@ test("POSITIVE CONTROL: a set variable still answers the host file's primary che
 
 const TOOL = "/srv/acme/tool";
 const UNIT = "acme-tick.service";
-const withoutVariable = `[Service]\nWorkingDirectory=${TOOL}\nExecStart=/usr/bin/node src/work-tick.mjs\n`;
+const withoutVariable = `[Service]\nWorkingDirectory=${TOOL}\nExecStart=/usr/bin/node src/work-tick.ts\n`;
 const withVariable = withoutVariable.replace("[Service]\n", `[Service]\nEnvironment=${HOST_VARIABLE}=/srv/acme/repos/widgets/.agent-org/host.json\n`);
 
 const host = parseHostConfig(JSON.stringify({
@@ -197,7 +198,7 @@ test("the leak scan's patterns import in a tree that holds no project and no pro
   copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.mjs", import.meta.url)), join(dir, "generic-leak-patterns.mjs"));
   const env = { ...process.env };
   delete env[HOST_VARIABLE];
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.mjs"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
+  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.mjs"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
     { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout.trim(), "2");

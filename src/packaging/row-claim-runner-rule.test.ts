@@ -5,17 +5,17 @@
  */
 // no-token: LIVE_SESSIONS
 //
-// `laneReason`'s default `deps?.liveSessions ?? LIVE_SESSIONS` puts `arm-pr.mjs`'s `LIVE_SESSIONS` (and,
+// `laneReason`'s default `deps?.liveSessions ?? LIVE_SESSIONS` puts `arm-pr.ts`'s `LIVE_SESSIONS` (and,
 // through the same closure, its `gh`-calling helpers) in this file's import graph, but every case here
 // either passes its own `liveSessions`/`pool` fixture or drives `runnerReason`, which never reads it at
 // all. Nothing here calls `LIVE_SESSIONS` itself (#827: the whole-file over-charge this declaration
-// exists for -- `arm-pr.mjs` also defines functions that DO call `gh`, unrelated to this file's own
+// exists for -- `arm-pr.ts` also defines functions that DO call `gh`, unrelated to this file's own
 // assertions).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runnerReason, laneReason } from "../row-claim/runner-rule.mjs";
-import { decideClaim } from "../row-claim.mjs";
-import { ROUTED_TO } from "../work-gate.mjs";
+import { decideClaim } from "../row-claim.ts";
+import { ROUTED_TO } from "../work-gate.ts";
 
 test("no runner: label at all raises nothing -- the common case", () => {
   assert.equal(runnerReason(["backlog", "ready"], "worker-judge"), null);
@@ -72,13 +72,13 @@ test("MUTATION target: removing the runner clause from decideClaim must be exact
 
 /**
  * RULE: A `fleet-gated` ROW'S `lane:` LABEL IS SATISFIED BY ANY MEMBER OF ITS ROUTED POOL -- #1828,
- * ceo's ruling on #1817, NARROWED TO ONE NAME BY #2506. `row-file.mjs`'s `fleetOrLabAcceptance` force-adds
+ * ceo's ruling on #1817, NARROWED TO ONE NAME BY #2506. `row-file.ts`'s `fleetOrLabAcceptance` force-adds
  * `lane:orchestrator` to any row whose Acceptance reaches the fleet or the lab. The pool was two names
  * (`orchestrator`, `worker-capture`) and `worker-capture` is retired, so the shipped pool is `orchestrator`
  * alone and a generic engineer is refused: fleet-gated throughput is `orchestrator`'s own turn rate until
  * `orchestrator` shows a `lab:job` dispatch from an engineer cannot collide with another capture, and the
  * exception then attaches to a ROW, not to a name. This reads `ROUTED_TO["fleet-gated"]` directly (from
- * `work-gate.mjs`), never a second copy of the pool, so the two cannot drift.
+ * `work-gate.ts`), never a second copy of the pool, so the two cannot drift.
  *
  * THE POOL-EXEMPTION BRANCH (`pool.includes(owner) && pool.includes(mySession)`) NEEDS TWO MEMBERS TO FIRE, and
  * the shipped pool has one. Its positive control is the `pool` seam on `laneReason`'s `deps`: the cases tagged

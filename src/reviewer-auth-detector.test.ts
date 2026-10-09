@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/work-gate.mjs`, #2401 ruling 2: THE DETECTOR that ships with per-PR reviewers.
+ * `packages/agent-org/src/work-gate.ts`, #2401 ruling 2: THE DETECTOR that ships with per-PR reviewers.
  *
  * The chairman's ruling was that the token-refresh reading does NOT gate the row -- the credential is valid to
  * 2026-10-03T18:47Z, forcing a refresh could log out live reviewers -- so a failure is DETECTED and RECOVERED
@@ -14,6 +14,7 @@
  * needs a live failure; `docs/known-gaps.md` says so. (b) `last_refresh` needs no codex at all and is measured
  * from the credential file's real shape.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -25,12 +26,12 @@ import {
   CAUSES, JUDGMENT_CAUSES, START_CAUSES, CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REGISTRY_FILE,
   REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures,
   reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict,
-} from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+} from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 
 const T0 = Date.UTC(2026, 8, 24, 12, 0, 0);
 const MIN = 60_000;
-const GATE_ENTRY = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const noPane = () => null;
 /** One ledger line, as the tests read it back. */
@@ -86,7 +87,7 @@ test("#2401 (a): codex's auth-failure text is matched verbatim as codex spells i
     "Your authentication session could not be refreshed automatically");
   assert.equal(authFailureShownIn("Failed to refresh token: 401"), "Failed to refresh token");
   // THE POSITIVE CONTROL for every `null` in this file: a pane mid-review reads healthy, and so does no pane at all.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
+  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
   assert.equal(authFailureShownIn(null), null);
   assert.equal(authFailureShownIn(""), null);
 });
@@ -106,7 +107,7 @@ test("#2555 (a): codex's logged-out startup screen is recognised by its welcome 
   assert.equal(authFailureShownIn("Sign in with ChatGPT"), null);
   assert.equal(authFailureShownIn("Welcome to Codex, OpenAI's command-line coding agent"), null);
   // Positive control for those nulls: the same healthy pane as above, and an invented phrase, are absent.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
+  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
   assert.ok(!LOGGED_OUT_STARTUP.includes("Nothing in codex says this, invented"), "and the fixture can fail: an invented phrase is absent");
 });
 
@@ -311,7 +312,7 @@ test("#2401 THE GATE: `main` emits the incident to `ceo` beside the reviewer's o
     mkdirSync(join(home, ".codex"), { recursive: true });
     writeFileSync(join(home, ".cache/a11ign", REVIEWER_REGISTRY_FILE), JSON.stringify({ "reviewer-9001": { spawnedAt: T0 } }));
     writeFileSync(join(home, ".codex/auth.json"), authFile(new Date(T0 + MIN).toISOString()));
-    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8",
       env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
     assert.ok(orders.some((o) => o.session === "reviewer-9001" && o.cause === "draft-awaiting-verdict"),

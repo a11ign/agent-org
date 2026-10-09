@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the fleet reading, the lab-job read, the waits and the log.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the fleet reading, the lab-job read, the waits and the log.
 /**
  * THE PRIMARY MILESTONE HAS A CLOCK OF ITS OWN (#4231, the chairman's rule of 2026-10-08, root cause 3). The outcome clock (#3486) runs on open PRs and CLAIMED rows
  * only, so a milestone whose rows are all unclaimed, parked or date-held had no clock at all: v3 sat with open rows and nothing claimed or in a pull request for
@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow } from "../work-gate.mjs";
-import * as health from "../org-health.mjs";
+import { orgHealthNow } from "../work-gate.ts";
+import * as health from "../org-health.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");

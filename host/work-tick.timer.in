@@ -5,7 +5,7 @@ Requires=@@prefix@@work-tick.service
 [Timer]
 # TWO MINUTES IS CHOSEN FROM THE RATE LIMIT, NOT BY FEEL. `work-gate` costs two `gh` calls; at this
 # interval that is 1,440 calls a day against a 5,000/hour limit, so the tick can run all day and never
-# be the thing that runs out. `work-gate.mjs`'s own header states the same property: "at two calls it
+# be the thing that runs out. `work-gate.ts`'s own header states the same property: "at two calls it
 # can run every two minutes all day inside the rate limit, which is the property the whole design rests
 # on."
 #

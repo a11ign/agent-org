@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 // The declaration's parser lives apart, so the selector can read declarations without installing this.
 import { inScope, parseWalkScope } from "./walk-scope-declaration.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 export { inScope, parseWalkScope };
 

@@ -1,5 +1,5 @@
 /**
- * `packages/agent-org/src/prune-worktrees.mjs` removes a stale worktree only when it is BOTH merged into `origin/main`
+ * `packages/agent-org/src/prune-worktrees.ts` removes a stale worktree only when it is BOTH merged into `origin/main`
  * and has a clean working tree, names everything else as DIRTY without touching it, and never touches the
  * PRIMARY checkout. See that file's own header for the incident (36 worktrees, 4.4 GB, a rule maintained
  * by hand).
@@ -17,6 +17,7 @@
  * ever shipped.
  */
 // no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` hand it a stub `gh`; proven by running this file with `gh` shimmed to exit 4.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -29,12 +30,12 @@ import {
   cleanliness, ignoredByAuthority,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
-} from "../prune-worktrees.mjs";
-import { stampWorktree } from "../worktree-owner.mjs";
+} from "../prune-worktrees.ts";
+import { stampWorktree } from "../worktree-owner.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
-} from "../worktree-removal.mjs";
+} from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
@@ -47,7 +48,7 @@ const pruneWorktrees = (root: string, deps: NonNullable<Parameters<typeof pruneW
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.
-const PRUNE_CLI = new URL("../prune-worktrees.mjs", import.meta.url).pathname;
+const PRUNE_CLI = new URL("../prune-worktrees.ts", import.meta.url).pathname;
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -490,14 +491,14 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
  * dropped -- passes every test above and removes three sessions' worktrees on the next unattended run.
  *
  * THESE THREE REPLACE AN ACCEPTANCE COMMAND THAT COULD NOT EXIST. #669 first stated the refusal as
- * `node packages/agent-org/src/prune-worktrees.mjs --dry-run  # must be REFUSED` in its acceptance block, and the
+ * `node packages/agent-org/src/prune-worktrees.ts --dry-run  # must be REFUSED` in its acceptance block, and the
  * acceptance runner ran it, got the exit 2 the refusal is FOR, and failed the job -- because an
  * acceptance command's verdict IS its exit code, so a command whose correct answer is nonzero cannot be
  * one. A negative case belongs where the expected exit code can be written down.
  */
 const runCli = (repoRoot: string, ...args: string[]) => {
   try {
-    const stdout = execFileSync(process.execPath, [PRUNE_CLI, repoRoot, ...args],
+    const stdout = execFileSync(process.execPath, [...TSX_IMPORT, PRUNE_CLI, repoRoot, ...args],
       { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return { status: 0, stdout, stderr: "" };
   } catch (err) {
@@ -919,7 +920,7 @@ test("#2020: `origin/main..HEAD` reads 0 on BOTH trees -- the count cannot tell 
 });
 
 test("#2020: an UNSTAMPED tree of the same shape is still removed -- the named gap, pinned rather than discovered", () => {
-  // `worktree-owner.mjs` refuses to invent a stamp for a tree whose owner nobody recorded, and inventing
+  // `worktree-owner.ts` refuses to invent a stamp for a tree whose owner nobody recorded, and inventing
   // one here would name whoever ran the prune. Measured on the host 2026-09-22: 6 of 97 merged linked
   // worktrees are unstamped, one of them a live session's role tree. The remedy is `worktree:stamp`, and
   // this test exists so the exposure is a decision on the record rather than a surprise.
@@ -1257,7 +1258,7 @@ test("#2782 DONE-WHEN 1: a removal writes `removing` BEFORE the delete and `remo
     assert.deepEqual(seenBeforeDelete.filter((e) => e === "removing").length > 0, true, "the line exists when the delete begins, so a crash mid-delete is still a line");
     assert.equal(mine[0].owner, "worker-capture", "the owner file is read at the moment of removal, while it still exists");
     assert.equal(mine[0].branch, "agent/delivered-1948");
-    assert.equal(mine[0].caller, "prune-worktrees.mjs");
+    assert.equal(mine[0].caller, "prune-worktrees.ts");
     assert.match(mine[0].reason, /merged, clean, inactive and not held/);
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(log, { force: true }); }
 });
@@ -1284,7 +1285,7 @@ test("#2782: the DRY RUN reads the same claim and writes no removal line", () =>
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-// --- #2782: THE SHARED PREDICATES (`worktree-removal.mjs`), which all three removers ask. Pinned here rather than in a file of their
+// --- #2782: THE SHARED PREDICATES (`worktree-removal.ts`), which all three removers ask. Pinned here rather than in a file of their
 // own: a new test file importing `agent-org/src` moves `agent-org-extraction.test.ts`'s decision-4 count, which is #2623's to amend. THE
 // HALF THAT MATTERS IS THE NEGATIVE ONE -- a claim that refuses everything is `stop pruning` wearing a better name, so each refusal
 // sits beside a case that must NOT refuse. ---
@@ -1376,14 +1377,14 @@ test("recordRemoval appends one JSON line naming the tree, the asker, the reason
     mkdirSync(tree);
     writeFileSync(join(tree, ".a11y-owner"), "worker-2623\n");
     const env = { [REMOVAL_LOG_ENV]: join(dir, "logs", "worktree-removals") };
-    recordRemoval({ path: tree, caller: "prune-worktrees.mjs", reason: "merged", event: "removing", branch: "agent/x-2623" }, { env });
-    recordRemoval({ path: tree, caller: "prune-worktrees.mjs", reason: "merged", event: "removed" }, { env });
+    recordRemoval({ path: tree, caller: "prune-worktrees.ts", reason: "merged", event: "removing", branch: "agent/x-2623" }, { env });
+    recordRemoval({ path: tree, caller: "prune-worktrees.ts", reason: "merged", event: "removed" }, { env });
     const lines = readFileSync(removalLogPath(env), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.equal(lines.length, 2, "appended, never overwritten");
     assert.deepEqual(lines.map((l) => l.event), ["removing", "removed"]);
     assert.equal(lines[0].owner, "worker-2623");
     assert.equal(lines[0].path, tree);
-    assert.equal(lines[0].caller, "prune-worktrees.mjs");
+    assert.equal(lines[0].caller, "prune-worktrees.ts");
     assert.match(lines[0].at, /^\d{4}-\d{2}-\d{2}T/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

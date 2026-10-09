@@ -10,6 +10,7 @@
  *
  * Every refusal has the same fixture with ONE thing changed as its control, so the test names what flipped the outcome.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, chmodSync } from "node:fs";
@@ -18,9 +19,9 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { escalateStuck, escalatedKeys, deliveryCounts, ledgerKeyOf, ESCALATED, RESET, MAX_DELIVERIES }
-  from "../wake.mjs";
+  from "../wake.ts";
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE = 60_000;
 const DELIVERY_GAP = 20 * MINUTE;
@@ -48,7 +49,7 @@ function tick(dir: string, orders: string[], { ghFails = false } = {}) {
   writeFileSync(join(dir, "herdr"), `#!/bin/sh\nprintf '%s' '{"result":{"workspaces":[]}}'\n`);
   writeFileSync(join(dir, "gh"), `#!/bin/sh\necho "$*" >> '${ghLog}'\n${ghFails ? "echo refused >&2\nexit 1\n" : ""}`);
   for (const name of ["herdr", "gh"]) chmodSync(join(dir, name), STUB_MODE);
-  const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], {
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], {
     input: `${orders.join("\n")}\n`, encoding: "utf8",
     env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
   const labels = readFileSync(ghLog, "utf8").split("\n").filter((l) => l.includes("--add-label"));

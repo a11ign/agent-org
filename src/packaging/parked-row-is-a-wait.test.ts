@@ -1,6 +1,6 @@
 // no-token: gh -- every reader here is pure; the facts are written out and no call is made.
 /**
- * `src/wait-condition.mjs`, `src/unpark-satisfied.mjs` and signal 9 of `src/org-health.mjs`, #4230: A PARKED ROW IS A WAIT THE STALL SIGNALS READ.
+ * `src/wait-condition.ts`, `src/unpark-satisfied.ts` and signal 9 of `src/org-health.ts`, #4230: A PARKED ROW IS A WAIT THE STALL SIGNALS READ.
  *
  * THE INCIDENT, REPLAYED (the chairman's root cause 3, 2026-10-08): #4090 was `parked` on a free-text wait. `waitFieldsOf` did not list `parked`, so the stale-wait signal
  * (8) and the wait-without-reason signal (9) never looked at it, `unpark-satisfied` left it "untouched, a different defect", and `org-health` repaired its LABELS (`backlog`
@@ -14,9 +14,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PARKED_LABEL, WAIT_FIELDS, bareWaits, staleWaits, waitFieldsOf, waitItemOf } from "../wait-condition.mjs";
-import { readSatisfaction } from "../unpark-satisfied.mjs";
-import { SIGNALS, orgHealthOrders, waitWithoutReasonReading } from "../org-health.mjs";
+import { PARKED_LABEL, WAIT_FIELDS, bareWaits, staleWaits, waitFieldsOf, waitItemOf } from "../wait-condition.ts";
+import { readSatisfaction } from "../unpark-satisfied.ts";
+import { SIGNALS, orgHealthOrders, waitWithoutReasonReading } from "../org-health.ts";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;

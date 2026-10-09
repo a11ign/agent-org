@@ -43,9 +43,9 @@ execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
 const { NO_CODE_LEFT_LABEL, claimedRegionOverlapReason, claimedRegionsOf, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.mjs");
-const { declaredRegionFiles } = await import("./region-paths.mjs");
-const { reportB4, sessionEligibilityReason } = await import("./row-claim.mjs");
-const { partitionUnclaimed } = await import("./work-gate.mjs");
+const { declaredRegionFiles } = await import("./region-paths.ts");
+const { reportB4, sessionEligibilityReason } = await import("./row-claim.ts");
+const { partitionUnclaimed } = await import("./work-gate.ts");
 
 const TRACKER = "a11ign/a11ign";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };

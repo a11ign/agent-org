@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { claimWithWorktree, claimLineFor, worktreeTargetReason } from "../row-claim.mjs";
+import { claimWithWorktree, claimLineFor, worktreeTargetReason } from "../row-claim.ts";
 
 const ROW = 9;
 const CELLS = {

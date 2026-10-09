@@ -1,4 +1,4 @@
-// no-token: gh -- imports wake.mjs only to call `addressed`, a pure string builder; nothing here reaches `gh`, `herdr` or `git`
+// no-token: gh -- imports wake.ts only to call `addressed`, a pure string builder; nothing here reaches `gh`, `herdr` or `git`
 /**
  * #2590: A REVIEWER IS NOT BRIEFED TO STOP ON A REFUSED ROW CLAIM, BECAUSE A REVIEWER CLAIMS NO ROW.
  *
@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressed } from "./wake.mjs";
+import { addressed } from "./wake.ts";
 
 const CLAIM_SENTENCE = /cannot claim the row/;
 const reviewerOrder = { session: "reviewer-2584", cause: "draft-awaiting-verdict", prompt: "x" };

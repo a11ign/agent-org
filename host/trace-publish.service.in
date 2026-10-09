@@ -33,6 +33,6 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 TimeoutStartSec=7200
 
 # `/usr/bin/node <repository-relative path>`, the shape shadow-window.service explains: the tree copy IS the program, not copied anywhere.
-ExecStart=/usr/bin/node packages/agent-org/src/trace/publish.mjs
+ExecStart=/usr/bin/node --import tsx packages/agent-org/src/trace/publish.mjs
 
 # NO [Install] SECTION, and its absence is load-bearing: `WantedBy=default.target` would run this oneshot at every boot. The timer is the only thing that may start it.

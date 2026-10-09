@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub or an injected seam, and `git` is a fake: nothing imported reaches a real one
 /**
- * `packages/agent-org/src/wake.mjs` and `prompt-session.mjs`, #2771: A REVIEWER INSTANCE ALREADY AWAITING ITS VERDICT
+ * `packages/agent-org/src/wake.ts` and `prompt-session.ts`, #2771: A REVIEWER INSTANCE ALREADY AWAITING ITS VERDICT
  * IS RE-POINTED ON EVERY PUSH, NOT ONLY WHEN IT IS SPAWNED.
  *
  * `reviewerTarget` prepares a checkout for an order the tick generates, and that order's cause key names the head it was
@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.mjs";
-import { promptOrQueue, STANCE, EXIT } from "./prompt-session.mjs";
+import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.ts";
+import { promptOrQueue, STANCE, EXIT } from "./prompt-session.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const REVIEW_ROOT = "/reviews-root";

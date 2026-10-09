@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // The acceptance parser charges a command the whole import closure of what it imports, and this file
-// imports `row-file.mjs`, which spawns `gh`. True of the IMPORT and false of the CALL: every dependency
+// imports `row-file.ts`, which spawns `gh`. True of the IMPORT and false of the CALL: every dependency
 // here is injected -- `spawnGh`, `run`, `milestones`, the board and label readers -- and no test lets a
 // real spawn happen.
 //
@@ -9,39 +9,40 @@
 // fake `gh` first on PATH that exits 97 and shouts to stderr -- 66 pass, 0 fail, and the fake never
 // printed.
 /**
- * #735: the FILING-side twin of #707's claim-side gate -- `packages/agent-org/src/row-file.mjs` refuses to run
+ * #735: the FILING-side twin of #707's claim-side gate -- `packages/agent-org/src/row-file.ts` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
  * SAME rule `row-claim` already enforces at claim time (`missingTemplateFields`, imported unchanged from
  * `row-claim/template-fields-rule.mjs`), asked one step earlier so the cost lands on whoever holds the
  * context rather than whoever claims the row later.
  *
- * #771: it also REQUIRES `--session=<name>` (the same flag `row-claim.mjs` uses) and writes
- * `Filed-by: <session>` into the body that actually reaches `gh` -- see `row-claim.mjs`'s `filedByLine`
+ * #771: it also REQUIRES `--session=<name>` (the same flag `row-claim.ts` uses) and writes
+ * `Filed-by: <session>` into the body that actually reaches `gh` -- see `row-claim.ts`'s `filedByLine`
  * for the read side.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { bareKeyedRegionReason, regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
-  from "../row-file.mjs";
-import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
-import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
-import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
+  from "../row-file.ts";
+import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.ts";
+import { startability, subjectAndRegionFacts } from "../row-reachability.ts";
+import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.ts";
 import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
-  promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.mjs";
+  promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.ts";
 import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarning, regionClosureWarning }
-  from "../row-file.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
-import { filedByLine } from "../row-claim.mjs";
-import { REPO } from "../project-identity.mjs";
+  from "../row-file.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
+import { filedByLine } from "../row-claim.ts";
+import { REPO } from "../project-identity.ts";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 
-const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../row-file.ts", import.meta.url));
 /**
  * #1352: row-file refuses when launched outside a linked worktree, and CI runs these tests in a plain clone. The REAL CLI
  * tests below launch it with the printed override, so each still reaches the check it was written to test.
@@ -82,7 +83,7 @@ const CLOSURE_PROJECT: Record<string, string> = {
     `export function ${CORPUS_RESOLVER}() { return "runs"; }\nexport function realCorpusRoot() { return ${CORPUS_RESOLVER}(); }\n`,
   "packages/lab/src/training/capture-real-pages.mjs": `import { realCorpusRoot } from "../dataset-paths.mjs";\nexport const OUT = realCorpusRoot();\n`,
   "packages/lab/src/training/capture-fleet-guard.test.ts": "export {};\n",
-  "packages/agent-org/src/claim-labels.mjs": "export {};\n",
+  "packages/agent-org/src/claim-labels.ts": "export {};\n",
   "packages/agent-org/src/packaging/row-file.test.ts": "export {};\n",
 };
 
@@ -222,7 +223,7 @@ test("sessionFromArgv reads --session=<name>", () => {
 });
 
 test("sessionFromArgv is null when absent -- there is no space-separated --session <name> form, matching "
-  + "row-claim.mjs's own convention exactly", () => {
+  + "row-claim.ts's own convention exactly", () => {
   assert.equal(sessionFromArgv(["--title", "x"]), null);
   assert.equal(sessionFromArgv(["--session", "worker-contracts"]), null);
 });
@@ -282,7 +283,7 @@ test("#883 ACCEPTANCE: a Region touching TWO lanes names BOTH, never picks one s
 });
 
 test("laneLabelsFor: a Region touching NO lane's paths gets lane:any -- a real answer, not a fallback", () => {
-  const labels = laneLabelsFor(["packages/agent-org/src/row-file.mjs"], { lanes: [PIPELINE_LANE] });
+  const labels = laneLabelsFor(["packages/agent-org/src/row-file.ts"], { lanes: [PIPELINE_LANE] });
   assert.deepEqual(labels, ["lane:any"]);
 });
 
@@ -410,7 +411,7 @@ test("MUTATION: fetchIssueBoardStatus throws, never returns null as if unboarded
   assert.throws(() => fetchIssueBoardStatus(900, { run }), /could not read #900's Project membership/);
 });
 
-// --- #771 ACCEPTANCE: filedByLine (row-claim.mjs) reads exactly what row-file.mjs writes, and only that ---
+// --- #771 ACCEPTANCE: filedByLine (row-claim.ts) reads exactly what row-file.ts writes, and only that ---
 
 test("#771 ACCEPTANCE: filedByLine reads the exact line appendFiledBy writes", () => {
   const augmented = appendFiledBy("## Region\nfoo", "worker-contracts");
@@ -703,7 +704,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK di
 test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
+      [...TSX_IMPORT, CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
@@ -716,7 +717,7 @@ test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", (
 test("REAL CLI: --session= itself is a KNOWN flag to the guard, never refused as unrecognised", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
+      [...TSX_IMPORT, CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1, `expected the section-check refusal, got: ${e.stderr}`);
@@ -730,7 +731,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
   + "refused by the SECTION check instead, proving the guard did not swallow it as unknown", () => {
   assert.throws(
     () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
+      [...TSX_IMPORT, CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE, "-l", "backlog"],
       { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
@@ -744,7 +745,7 @@ test("REAL CLI: a genuinely known gh flag (e.g. -l/--label) is NOT refused by th
 
 test("REAL CLI: no --session= at all refuses with its own message, distinct from the section refusal", () => {
   assert.throws(
-    () => execFileSync("node", [CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8", env: CLI_ENV }),
+    () => execFileSync("node", [...TSX_IMPORT, CLI, "--title", "x", "--body", COMPLETE_BODY], { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
       assert.equal(e.status, 1);
@@ -895,18 +896,18 @@ test("#1117: a Region that names no path and does NOT say so is still REFUSED", 
 });
 
 test("#1117: a Region that names files is untouched", () => {
-  assert.equal(regionRefusalReason(rowWith("```\nscripts/row-file.mjs\n```")), null);
+  assert.equal(regionRefusalReason(rowWith("```\nscripts/row-file.ts\n```")), null);
 });
 
 test("#1117: the declaration's vocabulary is #989's, so the clock and the filer name ONE category", () => {
   // #989's in-build rule reads `declaresPaths: false` as "its deliverable is not a commit" — a settings
   // change, a ruling, a measurement posted on the row. Two tools reading one tracker must not describe
   // that category in two spellings; keyed on the sentence rather than on a keyword nobody would guess.
-  const source = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
   const claimSide = readFileSync(
     new URL("./row-claim-own-pr-health-rule.test.ts", import.meta.url), "utf8");
   const PHRASE = "its deliverable is not a commit";
-  assert.ok(source.includes(PHRASE), `row-file.mjs must use #989's own words: ${PHRASE}`);
+  assert.ok(source.includes(PHRASE), `row-file.ts must use #989's own words: ${PHRASE}`);
   assert.ok(claimSide.includes(PHRASE),
     "and the claim side must still use them -- if this fails the two have drifted, which is the defect "
     + "rather than this test being wrong");
@@ -989,7 +990,7 @@ test("#1130: neither is still REFUSED, and a row declaring no release is untouch
 // #1962: THE HALF #1130 LEFT OPEN, WHICH THEN FILED ITS OWN FINDING.
 //
 // #1130's own test asserted that `--milestone "Out of release"` alone was "left alone", reasoning that
-// `ready-label-audit.mjs`'s tracker-level check would catch that side. It did catch it -- as RELEASE
+// `ready-label-audit.ts`'s tracker-level check would catch that side. It did catch it -- as RELEASE
 // DRIFT, minted by `row-file` itself. Measured 2026-09-22: `row-file --milestone "Out of release"` filed
 // #1960 with no `out-of-release` label, and the audit reads the LABEL, so the next run would have counted
 // that row out of the board's own out-of-release figure. The mirror case, #1740, came from the same run.
@@ -1003,7 +1004,7 @@ test("#1962 ACCEPTANCE: the MILESTONE alone gets the label, in every spelling gh
     const filed = outOfReleaseArgv([...argv, "--title", "x"]);
     assert.deepEqual(filed.slice(-2), ["--label", OUT_OF_RELEASE],
       `${argv.join(" ")}: a row declaring itself out of release by milestone must carry the label that `
-      + "says the same thing, or `ready-label-audit.mjs`, which reads the LABEL, reports it as drift");
+      + "says the same thing, or `ready-label-audit.ts`, which reads the LABEL, reports it as drift");
     assert.deepEqual(filed.slice(0, argv.length), argv, "and nothing the filer wrote moves");
   }
 });
@@ -1022,7 +1023,7 @@ test("#1962: a row that already says BOTH is untouched -- the fix adds the missi
 
 /**
  * #1158: THE WARNING REACHES THE AUTHOR. Lives here rather than in `region-paths.test.ts` because this
- * file already imports `row-file.mjs` and already carries its closure -- #1116's remedy is placement, and
+ * file already imports `row-file.ts` and already carries its closure -- #1116's remedy is placement, and
  * pulling a `gh`-spawning module into the parser's own test to assert one line is how a test file loses
  * the job that runs it.
  */
@@ -1935,7 +1936,7 @@ test("#1488: the check CALLS the parser and keeps no copy of its rule -- it refu
 // --- #2099: AN UNDECLARED `gh` ACCEPTANCE IS REFUSED AT FILING. The `acceptance` job is given no
 // credential at all -- it alone executes commands taken from an untrusted PR body -- so a `gh` line run
 // there dies on the missing credential, and nothing said so until `pr-open`, after a builder had claimed
-// the row and built the change. The rule itself lives in `acceptance-commands.mjs` beside the classifier
+// the row and built the change. The rule itself lives in `acceptance-commands.ts` beside the classifier
 // whose verdict it moves earlier, and is pinned in full there; these two pin that `fileRefusalReason`
 // ACTUALLY CALLS IT, which is the half a unit test of the rule cannot see. ---
 
@@ -1967,7 +1968,7 @@ test("#2099 CONTROL: the SAME row carrying the declaration files clean -- the ru
 //
 // REWORKED after the reviewer's blocker on `3de784b0`: the first version put `--add-label ready` and
 // `--remove-label backlog` in ONE `gh issue edit` and called that atomic, and the tests only COUNTED the
-// invocation. `row-claim.mjs`'s #749 comment already carried #677's reproduction of that same command
+// invocation. `row-claim.ts`'s #749 comment already carried #677's reproduction of that same command
 // half-applying, so the count proved nothing about the state a reader can observe. The label write is now
 // one `PUT .../issues/<n>/labels`, which sets the whole list, and the tests below INJECT the failure:
 // a write that throws, and a write that appends instead of replacing.
@@ -2207,7 +2208,7 @@ test("#2111: a Status move that fails writes NO label at all, and says so -- the
 test("#2111: a CLOSED row and an already-CLAIMED row are refused, each for its own reason", () => {
   assert.equal(promoteRow(["--promote=2111"], fakeRow({ state: "CLOSED" }).deps), 1);
   // Promoting a claimed row would mint `ready` + `in-progress`, which `ready-label-audit`'s hand-claim
-  // check reports as a claim made OUTSIDE row-claim.mjs -- so the promote act would point the audit at
+  // check reports as a claim made OUTSIDE row-claim.ts -- so the promote act would point the audit at
   // the mechanism. `CLAIM_LABEL` is read from the module the claim path itself writes.
   const claimed = fakeRow({ labels: [CLAIM_LABEL, "session:worker-capture", "started"] });
   assert.equal(promoteRow(["--promote=2111"], claimed.deps), 1);
@@ -2248,7 +2249,7 @@ const FENCED_TEST = "```\nnpx tsx --test packages/lab/src/training/capture-fleet
 /** #2018's own entry script: reads `runs/` through `realCorpusRoot -> dataset-paths.mjs`. */
 const CORPUS_ENTRY = "packages/lab/src/training/capture-real-pages.mjs";
 /** A leaf module: it imports nothing that needs a capability the acceptance job lacks. */
-const CORPUS_FREE = "packages/agent-org/src/claim-labels.mjs";
+const CORPUS_FREE = "packages/agent-org/src/claim-labels.ts";
 
 testInProject("#2035 warning 1: a Region naming a corpus-reading ENTRY SCRIPT warns, in the wording pr-open uses", CLOSURE_PROJECT, () => {
   const warned = String(regionClosureWarning(acceptanceBody(CORPUS_ENTRY, FENCED_TEST)));

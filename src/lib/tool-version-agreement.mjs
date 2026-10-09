@@ -432,7 +432,7 @@ function ciFact(checkout, tool, memo) {
  * same {@link agreementReport}.
  */
 async function main() {
-  const { homeHostConfig, stateEntryPath } = await import("../host-config.mjs");
+  const { homeHostConfig, stateEntryPath } = await import("../host-config.ts");
   const host = homeHostConfig();
   if (host.tool === undefined) {
     // a host that declares no tool has no tool checkout to compare: not asked, which `--json` says so the tick does not read it as a clear

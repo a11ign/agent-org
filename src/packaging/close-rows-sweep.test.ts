@@ -2,17 +2,18 @@
  * #394: A BACKSTOP FOR THE CLOSE-ROWS PATH (close-rows.yml until #909, now the project's trunk.yml closeRows job), WHICH FIRED FOR SOME MERGES AND NOT OTHERS FOR AN UNEXPLAINED
  * REASON. `mergedPrsInWindow` is driven with an injected `gh` so the query shape is proven without a live
  * repo; `main()`'s CLI behaviour (unknown flags, missing GITHUB_REPOSITORY) is driven for real, the same
- * way `queue-stalled.test.ts` and `auto-arm-sweep.mjs`'s siblings are. `closurePlan` itself (imported from
- * close-rows-for-merged-pr.mjs, never re-derived) already has its own tests -- this file does not repeat
+ * way `queue-stalled.test.ts` and `auto-arm-sweep.ts`'s siblings are. `closurePlan` itself (imported from
+ * close-rows-for-merged-pr.ts, never re-derived) already has its own tests -- this file does not repeat
  * them, only proves the sweep wires to the real thing rather than a copy.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.mjs";
-import { closurePlan } from "../close-rows-for-merged-pr.mjs";
-import { refusalCause } from "../settle-closed-status.mjs";
+import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.ts";
+import { closurePlan } from "../close-rows-for-merged-pr.ts";
+import { refusalCause } from "../settle-closed-status.ts";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -25,7 +26,7 @@ const refuseOnly = (row: number, message: string) => (n: number) =>
   (n === row ? { settled: false, refused: [refusal(n, message)] } : { settled: true, refused: [] });
 
 // The script is the TOOL's own, `src` up one.
-const SCRIPT = fileURLToPath(new URL("../close-rows-sweep.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../close-rows-sweep.ts", import.meta.url));
 
 // --- mergedPrsInWindow: the query, driven with an injected gh ---
 
@@ -65,7 +66,7 @@ test("mergedPrsInWindow: parses gh's JSON output into the number list", () => {
 
 // --- closurePlan is REUSED, not re-derived -- proven by import identity, not by re-testing its logic ---
 
-test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.mjs uses, not a copy", () => {
+test("close-rows-sweep imports the SAME closurePlan close-rows-for-merged-pr.ts uses, not a copy", () => {
   // If this were a re-derived copy, editing one file's decision would silently leave the other's
   // unchanged -- the exact "fact stated twice" shape #394's own header names. Proven by behavioural
   // identity on a case closurePlan's own tests already cover: a mix of OPEN and already-closed issues.
@@ -87,10 +88,10 @@ test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closur
 
 // --- the CLI, guarded like every other argv-reading script here ---
 
-test("close-rows-sweep.mjs refuses an unknown flag rather than silently ignoring it", () => {
+test("close-rows-sweep.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -100,12 +101,12 @@ test("close-rows-sweep.mjs refuses an unknown flag rather than silently ignoring
   assert.ok(threw, "an unknown flag must exit non-zero, not silently run the default window");
 });
 
-test("close-rows-sweep.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed repo", () => {
+test("close-rows-sweep.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed repo", () => {
   let threw = false;
   try {
     const env = { ...process.env };
     delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };

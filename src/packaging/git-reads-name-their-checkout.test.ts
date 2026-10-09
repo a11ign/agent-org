@@ -1,7 +1,7 @@
 // no-token: gh -- every `gatherChanges` and `assertBaseIsLive` call below passes a fake `gh`, so nothing here reaches the real one.
 /**
  * #3363: A `git` READ THAT NAMES NO CHECKOUT ASKS WHICHEVER REPOSITORY THE PROCESS HAPPENS TO BE IN. The tick's `WorkingDirectory` is the
- * TOOL's checkout (`a11ign/agent-org`) since the cut-over, and `hand-fix-ledger.mjs` ran `git log origin/main` there while `gh` asked about
+ * TOOL's checkout (`a11ign/agent-org`) since the cut-over, and `hand-fix-ledger.ts` ran `git log origin/main` there while `gh` asked about
  * the PROJECT: two repositories, one count. `assertBaseIsLive` (#3096) compared the two heads, they never matched, and the retrospective of
  * 2026-10-04 printed `HAND FIXES ... UNKNOWN` blaming "a stale checkout" when the checkout was current and was the wrong repository.
  *
@@ -23,8 +23,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { stripComments } from "../lib/source-text.ts";
-import { assertBaseIsLive, gatherChanges } from "../hand-fix-ledger.mjs";
-import { REPO } from "../project-identity.mjs";
+import { assertBaseIsLive, gatherChanges } from "../hand-fix-ledger.ts";
+import { REPO } from "../project-identity.ts";
 import { toolSources, type ToolFile } from "./tool-source.ts";
 
 // --- the parser -------------------------------------------------------------------------------------------------------------------
@@ -100,30 +100,30 @@ interface Reason { file: string; call: string; kind: Kind; reason: string }
  * closure of the tick was computed by regular expression and its string-reference edges checked by hand, not by a full parse.
  */
 const UNNAMED_CALLS: Reason[] = [
-  { file: "src/acceptance-commands.mjs", call: '"ls-files"', kind: "session", reason: "reached only by `unresolvedAcceptancePaths`, whose one caller is `row-file`, which an author runs in their own worktree" },
-  { file: "src/branch-inventory-report.mjs", call: '"git"', kind: "session", reason: "the `branches:inventory` CLI, run by an operator standing in the project tree; no unit or workflow runs it" },
-  { file: "src/control-plane-hygiene.mjs", call: '"git"', kind: "session", reason: "the `hygiene:report` CLI derives `this checkout` from where the operator runs it; no importer" },
-  { file: "src/host-units.mjs", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
+  { file: "src/acceptance-commands.ts", call: '"ls-files"', kind: "session", reason: "reached only by `unresolvedAcceptancePaths`, whose one caller is `row-file`, which an author runs in their own worktree" },
+  { file: "src/branch-inventory-report.ts", call: '"git"', kind: "session", reason: "the `branches:inventory` CLI, run by an operator standing in the project tree; no unit or workflow runs it" },
+  { file: "src/control-plane-hygiene.ts", call: '"git"', kind: "session", reason: "the `hygiene:report` CLI derives `this checkout` from where the operator runs it; no importer" },
+  { file: "src/host-units.ts", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
   { file: "src/lib/isolation-gate.mjs", call: '"git"', kind: "param", reason: "`run(command, args, dir, env)` takes the package directory under test as its `dir`" },
   { file: "src/lib/tree-wide-guard.mjs", call: '"git"', kind: "session", reason: "a test-time library: the checkout whose suite is running is the one it means; only tests import it" },
-  { file: "src/mark-primary-checkout.mjs", call: '"git"', kind: "session", reason: "`primary:mark` marks THIS checkout by design: the directory the operator runs it in" },
+  { file: "src/mark-primary-checkout.ts", call: '"git"', kind: "session", reason: "`primary:mark` marks THIS checkout by design: the directory the operator runs it in" },
   { file: "src/merge-guard/lookups.mjs", call: '"ls-remote"', kind: "session", reason: "`lookupBranchTip` is called only by the merge-guard CLI, which CI and the pre-push hook run in the project checkout" },
-  { file: "src/merge-guard/reconciliation.mjs", call: '"--git-common-dir"', kind: "param", reason: "the checkout is the spawner's `cwd`: CI, the pre-push hook, or the `row-claim` child whose `cwd` the tick sets (`wake.mjs` `launch.dir`)" },
-  { file: "src/pr-open.mjs", call: '"git"', kind: "session", reason: "`pr:open`/`pr:edit` read the diff of the branch tree the author stands in; no importer" },
-  { file: "src/queue-stalled.mjs", call: '"git"', kind: "session", reason: "a CLI CI runs in the project checkout (`auto-arm.yml`), and a helper injected into `queue-table`" },
-  { file: "src/queue-table.mjs", call: '"git"', kind: "session", reason: "the `queue:table` CLI for the orchestrator and `product-manager`, run from their project tree; no unit runs it" },
-  { file: "src/ready-label-audit.mjs", call: '"git"', kind: "session", reason: "`ready:audit`, run nightly by CI in the project checkout; `row-claim` imports only its label constants" },
-  { file: "src/reconstitution-drill.mjs", call: '"clone"', kind: "param", reason: "clones an explicit URL into an explicit temp directory and reads no cwd repository" },
-  { file: "src/reconstitution-drill.mjs", call: '"remote", "get-url"', kind: "session", reason: "`--clone` with no `--repo-url` DELIBERATELY means this checkout (its documented default); no importer, no unit" },
-  { file: "src/region-paths.mjs", call: '"ls-files", "--"', kind: "session", reason: "`trackedFilesUnder` is the default of `directoryReservations`, whose only caller is `row-file`, run in the author's worktree" },
-  { file: "src/rescue-hunk.mjs", call: '"git", args', kind: "session", reason: "the `rescue:hunk` CLI reads and writes the tree it is run in; no importer" },
-  { file: "src/rescue-hunk.mjs", call: '"merge-file"', kind: "param", reason: "`merge-file` works on absolute temp-directory paths and reads no repository" },
-  { file: "src/row-claim.mjs", call: '"git"', kind: "param", reason: "the default `run` sets no `cwd` because the SPAWNER does: `wake.mjs` passes `cwd: launch.dir` (a project worktree) and an author runs it from theirs; the tick never imports it" },
-  { file: "src/row-reachability.mjs", call: '"git"', kind: "session", reason: "spawned only by `row-claim check` (author-run) and inherits that `cwd`; `wake` runs `claim` and `decline`, never `check`" },
-  { file: "src/stash-whose.mjs", call: '"git"', kind: "session", reason: "the `stash:whose` CLI reads the stash of the repository the operator stands in; no importer" },
-  { file: "src/stranded-branches.mjs", call: '"git"', kind: "session", reason: "the `branches:stranded` CLI, run by an operator in the project tree; no importer" },
-  { file: "src/trunk-revert-guard.mjs", call: '"git"', kind: "session", reason: "a CLI `trunk.yml` runs on the project checkout; no importer" },
-  { file: "src/verify-stamp.mjs", call: '"git"', kind: "param", reason: "its only caller prepends `-C <checkout>` (`verifyCheckoutOf`, `HOME_CHECKOUT`) to every argv" },
+  { file: "src/merge-guard/reconciliation.mjs", call: '"--git-common-dir"', kind: "param", reason: "the checkout is the spawner's `cwd`: CI, the pre-push hook, or the `row-claim` child whose `cwd` the tick sets (`wake.ts` `launch.dir`)" },
+  { file: "src/pr-open.ts", call: '"git"', kind: "session", reason: "`pr:open`/`pr:edit` read the diff of the branch tree the author stands in; no importer" },
+  { file: "src/queue-stalled.ts", call: '"git"', kind: "session", reason: "a CLI CI runs in the project checkout (`auto-arm.yml`), and a helper injected into `queue-table`" },
+  { file: "src/queue-table.ts", call: '"git"', kind: "session", reason: "the `queue:table` CLI for the orchestrator and `product-manager`, run from their project tree; no unit runs it" },
+  { file: "src/ready-label-audit.ts", call: '"git"', kind: "session", reason: "`ready:audit`, run nightly by CI in the project checkout; `row-claim` imports only its label constants" },
+  { file: "src/reconstitution-drill.ts", call: '"clone"', kind: "param", reason: "clones an explicit URL into an explicit temp directory and reads no cwd repository" },
+  { file: "src/reconstitution-drill.ts", call: '"remote", "get-url"', kind: "session", reason: "`--clone` with no `--repo-url` DELIBERATELY means this checkout (its documented default); no importer, no unit" },
+  { file: "src/region-paths.ts", call: '"ls-files", "--"', kind: "session", reason: "`trackedFilesUnder` is the default of `directoryReservations`, whose only caller is `row-file`, run in the author's worktree" },
+  { file: "src/rescue-hunk.ts", call: '"git", args', kind: "session", reason: "the `rescue:hunk` CLI reads and writes the tree it is run in; no importer" },
+  { file: "src/rescue-hunk.ts", call: '"merge-file"', kind: "param", reason: "`merge-file` works on absolute temp-directory paths and reads no repository" },
+  { file: "src/row-claim.ts", call: '"git"', kind: "param", reason: "the default `run` sets no `cwd` because the SPAWNER does: `wake.ts` passes `cwd: launch.dir` (a project worktree) and an author runs it from theirs; the tick never imports it" },
+  { file: "src/row-reachability.ts", call: '"git"', kind: "session", reason: "spawned only by `row-claim check` (author-run) and inherits that `cwd`; `wake` runs `claim` and `decline`, never `check`" },
+  { file: "src/stash-whose.ts", call: '"git"', kind: "session", reason: "the `stash:whose` CLI reads the stash of the repository the operator stands in; no importer" },
+  { file: "src/stranded-branches.ts", call: '"git"', kind: "session", reason: "the `branches:stranded` CLI, run by an operator in the project tree; no importer" },
+  { file: "src/trunk-revert-guard.ts", call: '"git"', kind: "session", reason: "a CLI `trunk.yml` runs on the project checkout; no importer" },
+  { file: "src/verify-stamp.ts", call: '"git"', kind: "param", reason: "its only caller prepends `-C <checkout>` (`verifyCheckoutOf`, `HOME_CHECKOUT`) to every argv" },
 ];
 
 const sources = toolSources();
@@ -163,7 +163,7 @@ const defaultGit = (args) =>
 `;
 
 test("#3363 (4) CONTROL: the parser finds the pre-#3363 \`defaultGit\` and reports it as naming no checkout", () => {
-  const found = gitCallSites({ path: "src/hand-fix-ledger.mjs", text: OLD_DEFAULT_GIT });
+  const found = gitCallSites({ path: "src/hand-fix-ledger.ts", text: OLD_DEFAULT_GIT });
   assert.equal(found.length, 1);
   assert.equal(namesItsCheckout(found[0]), false);
 });
@@ -178,14 +178,14 @@ test("#3363 (4) CONTROL: a call wrapped over several lines is one call, and its 
 });
 
 test("#3363 (2) the module this row fixes is IN the population and its call names the checkout (the marker notices the remedy)", () => {
-  const own = sites.filter((s) => s.file === "src/hand-fix-ledger.mjs");
-  assert.ok(own.length >= 1, "the parser sees hand-fix-ledger.mjs");
+  const own = sites.filter((s) => s.file === "src/hand-fix-ledger.ts");
+  assert.ok(own.length >= 1, "the parser sees hand-fix-ledger.ts");
   assert.deepEqual(own.filter((s) => !namesItsCheckout(s)), []);
 });
 
 test("#3366 (2) the `ls-files` of `trackedTopLevelDirs` is IN the population and names its checkout (the marker notices the remedy)", () => {
-  const own = sites.filter((s) => s.file === "src/region-paths.mjs" && s.call.includes('["ls-files"]'));
-  assert.equal(own.length, 1, "the parser sees the whole-tree `ls-files` in region-paths.mjs, and only that one");
+  const own = sites.filter((s) => s.file === "src/region-paths.ts" && s.call.includes('["ls-files"]'));
+  assert.equal(own.length, 1, "the parser sees the whole-tree `ls-files` in region-paths.ts, and only that one");
   assert.equal(namesItsCheckout(own[0]), true);
 });
 

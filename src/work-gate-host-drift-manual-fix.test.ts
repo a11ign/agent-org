@@ -1,7 +1,7 @@
 // no-token: gh -- pure: `hostDriftOrders` over in-memory findings; nothing reaches `gh`, `git`, `herdr` or the network
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hostDriftOrders } from "./work-gate.mjs";
+import { hostDriftOrders } from "./work-gate.ts";
 
 /**
  * #3703: A HOST DRIFT SET WHOSE FINDINGS ARE ALL `manualFix` IS NOT OFFERED TO `orchestrator`. The order's only remedy is `host:install`, which
@@ -12,7 +12,7 @@ import { hostDriftOrders } from "./work-gate.mjs";
  *
  * WHERE "THE DETECTOR IS NOT WEAKENED" IS PINNED, because it cannot be here: `host:check` still reports every `manualFix` finding, and
  * `host-units.test.ts` (`#3643`, `humanLoginOnHost` and `hostUnitDrift` asserting `manualFix: true` on the real finding) holds that. This
- * file may not import `host-units.mjs`: the acceptance job has no git history and that module reaches it (`addedOnSomeRef`). So the two
+ * file may not import `host-units.ts`: the acceptance job has no git history and that module reaches it (`addedOnSomeRef`). So the two
  * `manualFix` fixtures below COPY the detector's shape; if it ever drops the field, `host-units.test.ts` is where it goes red.
  */
 const STALE = { unit: "a11ign-board-report.service", problem: "STALE", detail: "the installed copy differs from the one in the repository." };

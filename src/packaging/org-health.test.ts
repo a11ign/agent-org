@@ -1,6 +1,6 @@
 // no-token: gh -- pure: the four readings are functions of values handed in, `readLastMergedAt` is given a fake `run`, and the one process test below puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
- * `packages/agent-org/src/org-health.mjs` and its wiring in `work-gate.mjs`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
+ * `packages/agent-org/src/org-health.mjs` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
  * WHEN NOTHING LANDS OR A RED PR AGES.
  *
  * THE THRESHOLDS ARE WRITTEN OUT AS 3 HOURS, 120 MINUTES, 75 TICKS AND 60 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS: a test built from the constant moves
@@ -12,6 +12,7 @@
  * its own account has commented on. Both are OFFERED, through the same entry every "is NOT offered" below goes through. Every clear and every unknown is only worth
  * anything because these two trip.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, cpSync } from "node:fs";
@@ -24,7 +25,7 @@ import { sandboxGitEnv } from "../lib/git-env.mjs";
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
 //
 // The gate decides who owns a PR from the project's roster (`session:worker-7` is an owner only if the roster has that address) and reads its git and its
-// declaration, and `work-gate.mjs` run as a process does the same from its working directory. With no `$AGENT_ORG_HOST` the layout answers a11ign's live
+// declaration, and `work-gate.ts` run as a process does the same from its working directory. With no `$AGENT_ORG_HOST` the layout answers a11ign's live
 // checkout, so a11ign editing its roster or its tree changed this file's verdict (agent-org #77 and #79). The host file is set FIRST and the tool imported AFTER
 // it, dynamically; the project is `fixtures/org-health/project`, copied to a temp directory that is made a git repository with no commit, and it is the
 // working directory of this process and of the gates it spawns, which inherit both.
@@ -42,12 +43,12 @@ process.chdir(PROJECT);
 
 const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
   primaryReading, primaryStandingSince, readLastMergedAt, readLatestMerge, orgHealthReadings,
-  orgHealthOrders, orgHealthTick } = await import("../org-health.mjs");
+  orgHealthOrders, orgHealthTick } = await import("../org-health.ts");
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts } =
-  await import("../work-gate.mjs");
-const { profileFor } = await import("../worker-profile.mjs");
+  await import("../work-gate.ts");
+const { profileFor } = await import("../worker-profile.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
@@ -56,7 +57,7 @@ const NOW = Date.parse("2026-10-01T12:00:00Z");
 const WORK = { greenPrs: 1, claimableRows: 0 };
 const NO_WORK = { greenPrs: 0, claimableRows: 0 };
 const CURRENT = { behind: 0, ahead: 0, dirty: [] as string[] };
-const STALE = { behind: 4, ahead: 0, dirty: ["packages/agent-org/src/work-gate.mjs"] };
+const STALE = { behind: 4, ahead: 0, dirty: ["packages/agent-org/src/work-gate.ts"] };
 
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string };
 
@@ -382,7 +383,7 @@ test("redPrFacts consumes the orders `pr-checks-failing` gave: a PR whose red th
   assert.deepEqual(redPrFacts(prs, []), [], "no pr-checks-failing order, no listing: the exclusions are the order's, not a second copy here");
 });
 
-// --- #2956: red is decided ONCE (`red-pr.mjs`'s `isBrokenRed`), so a hold's red is never offered to ceo ----------------------------------------
+// --- #2956: red is decided ONCE (`red-pr.ts`'s `isBrokenRed`), so a hold's red is never offered to ceo ----------------------------------------
 
 const rollupCheck = (name: string, conclusion: string, completedAt: string) => ({ name, status: "COMPLETED", conclusion, startedAt: completedAt, completedAt });
 const HOLD_RED = [rollupCheck("deliberateRefusals", "FAILURE", "2026-10-01T18:27:00Z"), rollupCheck("gate", "FAILURE", "2026-10-01T18:30:00Z")];
@@ -423,15 +424,15 @@ test("#2956: org-health does NOT offer a held PR whose only red is the hold's; i
 
 const AGENT_ORG_SRC = fileURLToPath(new URL("../", import.meta.url));
 /** The decider, which defines red and so cannot be asked to import itself -- excluded in CODE, with the reason beside it. */
-const SELF = "red-pr.mjs";
+const SELF = "red-pr.ts";
 /**
  * Modules that read the rollup and decide something that is NOT "how many PRs are red, or for how long", each with the reason. SHRINK-ONLY:
  * the ceiling is today's length, a stale entry fails below, and a module that starts counting red PRs belongs on `isBrokenRed`, not here.
  */
 const EXEMPT: Record<string, string> = {
-  "merge-queue.mjs": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
-  "queue-stalled.mjs": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
-  "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.mjs's in org-retro.test.ts",
+  "merge-queue.ts": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
+  "queue-stalled.ts": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
+  "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
 };
 const EXEMPT_CEILING = 3;
 
@@ -439,25 +440,25 @@ const EXEMPT_CEILING = 3;
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");
 /** What makes a module a reader of red: the rollup itself, a red conclusion spelt out, or the decider's own vocabulary. */
 const READS_RED = /\bstatusCheckRollup\b|["'](?:FAILURE|TIMED_OUT|STARTUP_FAILURE)["']|\b(?:redChecks|brokenChecks|isBrokenRed)\b/;
-/** `brokenChecks` IS the decider (`isBrokenRed` is its `.length > 0`), so importing either is asking `red-pr.mjs` rather than re-deciding. */
-const IMPORTS_DECIDER = /import\s*\{[^}]*\b(?:isBrokenRed|brokenChecks)\b[^}]*\}\s*from\s*["'][^"']*red-pr\.mjs["']/;
+/** `brokenChecks` IS the decider (`isBrokenRed` is its `.length > 0`), so importing either is asking `red-pr.ts` rather than re-deciding. */
+const IMPORTS_DECIDER = /import\s*\{[^}]*\b(?:isBrokenRed|brokenChecks)\b[^}]*\}\s*from\s*["'][^"']*red-pr\.ts["']/;
 
 /** `null` when the module is not a reader of red or is on the decider; otherwise WHY it is an offender. */
 function redOffence(file: string, source: string): string | null {
   const code = codeOf(source);
   if (!READS_RED.test(code) || IMPORTS_DECIDER.test(code) || file in EXEMPT) return null;
-  return `${file} reads red state and neither imports isBrokenRed from red-pr.mjs nor is exempt with a reason`;
+  return `${file} reads red state and neither imports isBrokenRed from red-pr.ts nor is exempt with a reason`;
 }
 
 function agentOrgModules(): { file: string; source: string }[] {
-  const listed = readdirSync(AGENT_ORG_SRC, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".mjs") && !f.includes("node_modules"));
-  return listed.filter((f) => !/\.test\.mjs$/.test(f) && f !== SELF).map((file) => ({ file, source: readFileSync(join(AGENT_ORG_SRC, file), "utf8") }));
+  const listed = readdirSync(AGENT_ORG_SRC, { recursive: true, encoding: "utf8" }).filter((f) => /\.(mjs|ts)$/.test(f) && !f.includes("node_modules"));
+  return listed.filter((f) => !/\.test\.(mjs|ts)$/.test(f) && f !== SELF).map((file) => ({ file, source: readFileSync(join(AGENT_ORG_SRC, file), "utf8") }));
 }
 
 test("#2956 ONE DECIDER: every agent-org module that reads red PR state imports `isBrokenRed` or is exempt WITH A REASON; the exemptions only shrink", () => {
   const modules = agentOrgModules();
   const readers = modules.filter((m) => READS_RED.test(codeOf(m.source))).map((m) => m.file);
-  for (const control of ["org-retro.mjs", "org-health.mjs"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
+  for (const control of ["org-retro.ts", "org-health.ts"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
   assert.deepEqual(modules.flatMap((m) => redOffence(m.file, m.source) ?? []), []);
   assert.deepEqual(Object.keys(EXEMPT).filter((f) => !readers.includes(f)), [], "a stale exemption: that module no longer reads red state, so remove the entry");
   assert.ok(Object.values(EXEMPT).every((why) => why.length > 20), "every exemption names its reason");
@@ -469,7 +470,7 @@ test("#2956 ONE DECIDER, both directions: a fixture module with its own FAILURE 
   assert.match(redOffence("fixture-own-set.mjs", own) ?? "", /fixture-own-set\.mjs reads red state/);
   const comment = `// statusCheckRollup is read by org-health, "FAILURE" is its conclusion\nexport const x = 1;\n`;
   assert.equal(redOffence("fixture-comment-only.mjs", comment), null, "a comment that NAMES the rollup does not enlist the file");
-  const decided = `import { isBrokenRed } from "./red-pr.mjs";\nexport const count = (prs) => prs.filter(isBrokenRed).length; // statusCheckRollup\n`;
+  const decided = `import { isBrokenRed } from "./red-pr.ts";\nexport const count = (prs) => prs.filter(isBrokenRed).length; // statusCheckRollup\n`;
   assert.equal(redOffence("fixture-decided.mjs", decided), null, "the remedy, applied, stops the complaint");
 });
 
@@ -483,7 +484,7 @@ function gateAsAProcess() {
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    return spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    return spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

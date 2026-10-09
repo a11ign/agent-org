@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseLedger, topCallers } from "../gh-ledger.mjs";
+import { parseLedger, topCallers } from "../gh-ledger.ts";
 import { emptyState } from "./ingest-state.mjs";
 import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyed, summarize } from "./gh-calls.mjs";
 import { appendToStore, openStore } from "./store.mjs";
@@ -20,7 +20,7 @@ const at = (iso: string): number => Date.parse(iso);
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
 const SHELL = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL";
-const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs --json";
+const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.ts --json";
 /** The transcripts' ids: a Claude Code session's `CLAUDE_CODE_SESSION_ID` is the file name of its transcript. */
 const T9001 = "0b5e7f10-9001-4a00-8000-000000000001";
 const T9002 = "0b5e7f10-9002-4a00-8000-000000000002";
@@ -87,13 +87,13 @@ test("KEYED: a second at which TWO sessions were running a tool keys each call t
 test("KEYED: a call with no id is `script`, never keyed by time, even in a session's shell and even when one session's window covers its second; an 8-field line of before the change reads as it did", () => {
   const all = withTurns();
   const unit = find(all, "2026-10-04T10:00:30Z", "graphql?");
-  assert.deepEqual([unit.row, unit.session, unit.unkeyed, unit.script, unit.sessionId], [null, "gh-ledger", "script", "work-gate.mjs", undefined],
+  assert.deepEqual([unit.row, unit.session, unit.unkeyed, unit.script, unit.sessionId], [null, "gh-ledger", "script", "work-gate.ts", undefined],
     "the window of worker-9001 covers this second, and the unit is still no session's");
   const old = find(all, "2026-10-04T10:25:00Z");
   assert.deepEqual([old.row, old.unkeyed, old.script, "sessionId" in old], [null, "script", "(a session's shell)", false], "an 8-field line has no id, so it is not keyed: a shell is named for what it is, not for its snapshot file");
   assert.equal(find(all, "2026-10-04T10:00:30Z", "graphql").script, "(a session's shell)");
-  const preloaded = callsOfLedgerText(`${line({ time: "2026-10-04T10:00:00Z", caller: "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs" })}\n`).calls[0];
-  assert.equal(preloaded.script, "work-tick.mjs", "the `--import=` form of the preload is stripped too");
+  const preloaded = callsOfLedgerText(`${line({ time: "2026-10-04T10:00:00Z", caller: "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts" })}\n`).calls[0];
+  assert.equal(preloaded.script, "work-tick.ts", "the `--import=` form of the preload is stripped too");
 });
 
 test("KEYED: the turn that ISSUED a call is not its next turn: the call is keyed to the first turn that ended in a LATER second, in the same wake and so on the same row", () => {
@@ -188,13 +188,13 @@ test("INGEST: a call the time rule left `ambiguous` (a record of before #3589) i
   assert.equal(run(NOW, [ledgers.workers]).rekeyed, 0);
 });
 
-test("POINTS: a call's points are the cost its response carried, else one for a GraphQL call, and they agree with gh-ledger.mjs's own reading of the same lines", () => {
+test("POINTS: a call's points are the cost its response carried, else one for a GraphQL call, and they agree with gh-ledger.ts's own reading of the same lines", () => {
   const text = [line({ time: "2026-10-04T10:00:00Z", cost: 3 }), line({ time: "2026-10-04T10:00:01Z", resource: "graphql?" }), line({ time: "2026-10-04T10:00:02Z", resource: "core" }),
     line({ time: "2026-10-04T10:00:03Z", resource: "other", cost: 0 })].join("\n");
   const sum = summarize(calls(text));
   assert.deepEqual([sum.calls, sum.graphql, sum.core, sum.other, sum.points, sum.read, sum.floorCalls, sum.inferredPool], [4, 2, 1, 1, 4, 3, 1, 1]);
   const theirs = topCallers(parseLedger(text), { limit: 100 }).reduce((total, row) => total + row.points, 0);
-  assert.equal(sum.points, theirs, "the floor rule is gh-ledger.mjs's, and a drift between the two readings of one line is this failing");
+  assert.equal(sum.points, theirs, "the floor rule is gh-ledger.ts's, and a drift between the two readings of one line is this failing");
 });
 
 test("REPORT: the row's calls and GraphQL points, the floor marked, the calls of no row listed apart by caller, and from when the store holds calls", () => {
@@ -204,7 +204,7 @@ test("REPORT: the row's calls and GraphQL points, the floor marked, the calls of
   assert.match(text, /keyed to this row \(by the session id on the line; a LOWER BOUND.*2 calls: 2 on the GraphQL pool = 4 points \(3 read from responses, 1 calls FLOOR/);
   assert.match(text, /KEYED TO NO ROW, listed apart \(3 of the store's 6 are keyed\): 3 calls/);
   assert.match(text, /because: 2 carry no session id.*; 1 name a session the store holds no later turn of yet/);
-  assert.match(text, /\d+ pts +\d+ calls +a11ign-ai-workers work-gate\.mjs/, "the unit that burns the pool is named by its script");
+  assert.match(text, /\d+ pts +\d+ calls +a11ign-ai-workers work-gate\.ts/, "the unit that burns the pool is named by its script");
   assert.match(text, /a11ign-ai-leads +held from 2026-10-04T10:20Z/, "the earliest call per account");
   assert.match(text, /a11ign-ai-workers +held from 2026-10-04T10:00Z/);
   assert.match(text, /a call older than that is GONE/);

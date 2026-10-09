@@ -64,10 +64,10 @@ function fixtureGithub(initial = openRow()) {
   return {
     calls, failOnce, rows,
     writes: () => calls.filter((call) => call.op !== "readRow").map((call) => call.op),
-    async readRow(/** @type {any} */ ref: any) { calls.push({ op: "readRow" }); return structuredClone(rowOf(ref)); },
-    async comment(/** @type {any} */ ref: any, /** @type {string} */ body: string) { attempt("comment"); /** @type {{op: string, arg?: string}} */ (calls.at(-1)).arg = body; rowOf(ref).comments.push({ body, createdAt: "2026-10-02T10:00:00Z" }); },
-    async removeLabel(/** @type {any} */ ref: any, /** @type {string} */ label: string) { attempt("remove-label"); rowOf(ref).labels = rowOf(ref).labels.filter((/** @type {string} */ l: string) => l !== label); },
-    async addLabel(/** @type {any} */ ref: any, /** @type {string} */ label: string) { attempt("set-answer"); rowOf(ref).labels.push(label); },
+    async readRow(ref: any) { calls.push({ op: "readRow" }); return structuredClone(rowOf(ref)); },
+    async comment(ref: any, /** @type {string} */ body: string) { attempt("comment"); /** @type {{op: string, arg?: string}} */ (calls.at(-1)).arg = body; rowOf(ref).comments.push({ body, createdAt: "2026-10-02T10:00:00Z" }); },
+    async removeLabel(ref: any, /** @type {string} */ label: string) { attempt("remove-label"); rowOf(ref).labels = rowOf(ref).labels.filter((/** @type {string} */ l: string) => l !== label); },
+    async addLabel(ref: any, /** @type {string} */ label: string) { attempt("set-answer"); rowOf(ref).labels.push(label); },
   };
 }
 
@@ -429,7 +429,7 @@ describe("explain and stuck queue ONE order for the liaison and nobody else (don
     assert.equal(failed?.failedStep, "stuck");
     assert.match(failed?.error, /NOT PROMPTED, AND NOT QUEUED/, "the queue's words are kept in the ledger");
     refusing.outcome = { queued: true, say: "ok", handoff: "h2" };
-    Object.assign(refusing, { liaison: async (/** @type {any} */ order: any) => { refusing.calls.push(order); return { queued: true, say: "ok", handoff: "h2" }; } });
+    Object.assign(refusing, { liaison: async (order: any) => { refusing.calls.push(order); return { queued: true, say: "ok", handoff: "h2" }; } });
     assert.equal(/** @type {any} */ (await g.hear(press(2, { data: actionData("stuck") }))).reason, "asked");
   });
 

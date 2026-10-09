@@ -9,16 +9,17 @@
  * THE POSITIVE CONTROL FOR EVERY "NOTHING NAMED / NO WRITE" ASSERTION IS THE ABSENT CASE, which names the seat and writes. The control against
  * over-reading is the non-persistent role absent from the same listing, which is named by nothing and started by nothing.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { absentSeats } from "../herdr-agents.mjs";
-import { persistentRoles, roleBriefPath } from "../project-roles.mjs";
-import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.mjs";
-import { persistentSeatDrift, persistentSeatNotes, driftReport } from "../host-units.mjs";
+import { absentSeats } from "../herdr-agents.ts";
+import { persistentRoles, roleBriefPath } from "../project-roles.ts";
+import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.ts";
+import { persistentSeatDrift, persistentSeatNotes, driftReport } from "../host-units.ts";
 import { RECIPIENT } from "../messaging/converse.mjs";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
@@ -156,8 +157,8 @@ function seatHost(labels: string[], broken = false) {
   return { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
 }
 function hostCheck(env: ReturnType<typeof seatHost>, ...flags: string[]) {
-  const done = spawnSync(process.execPath, [join(TOOL_ROOT, "src/host-units.mjs"), ...flags], { encoding: "utf8", env });
-  assert.notEqual(done.stdout, "", `host-units.mjs ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
+  const done = spawnSync(process.execPath, [...TSX_IMPORT, join(TOOL_ROOT, "src/host-units.ts"), ...flags], { encoding: "utf8", env });
+  assert.notEqual(done.stdout, "", `host-units.ts ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
   return done;
 }
 

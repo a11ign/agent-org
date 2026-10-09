@@ -167,14 +167,14 @@ test("updates are acknowledged by offset as they are read, and the batch with /p
 test("the token is in no thrown or printed string when getUpdates fails (its URL carries it), and a 409 says another poller is running", async () => {
   const cause = new Error(`connect failed: https://api.telegram.org/bot${TOKEN}/getUpdates`);
   const down = harness({ batches: [new TypeError(`fetch failed for https://api.telegram.org/bot${TOKEN}/getUpdates`, { cause })] });
-  const error = await down.run().then(() => assert.fail("expected a rejection"), (/** @type {any} */ caught: any) => caught);
+  const error = await down.run().then(() => assert.fail("expected a rejection"), (caught: any) => caught);
   assert.deepEqual([error.message, String(error.stack), ...down.printed].filter((text) => text.includes(TOKEN) || text.includes("AAFk3x9Q")), []);
   assert.match(error.message, /connect failed/, "the scrub dropped the whole message, so 'no token' proves nothing");
   assert.equal(error.cause, undefined);
 
   const conflict = harness({ token: TOKEN });
   const refusing = /** @type {typeof fetch} */ (/** @type {unknown} */ (async () => ({ ok: false, status: 409, json: async () => ({ ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request" }) })));
-  const clash = await runPairing({ token: createSecret(TOKEN), chairmanFile: conflict.chairmanFile, fetch: refusing, print: () => {}, code: CODE }).then(() => assert.fail("expected a rejection"), (/** @type {any} */ caught: any) => caught);
+  const clash = await runPairing({ token: createSecret(TOKEN), chairmanFile: conflict.chairmanFile, fetch: refusing, print: () => {}, code: CODE }).then(() => assert.fail("expected a rejection"), (caught: any) => caught);
   assert.match(clash.message, /409/);
   assert.match(clash.message, /another process is polling/);
 });

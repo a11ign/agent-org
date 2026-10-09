@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const ROLE_DOC = join(HOME_CHECKOUT, ".agent-org/roles/reviewer.md");
 const KNOWN_GAPS = join(HOME_CHECKOUT, "docs/known-gaps.md");

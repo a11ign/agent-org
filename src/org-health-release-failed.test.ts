@@ -1,6 +1,6 @@
 // no-token: pure -- the reading is a function of values handed in, and `readReleaseRuns` is given a fake `run`; nothing here calls `gh`, ssh or the fleet.
 /**
- * `src/org-health.mjs`, #4001: A FAILED `release.yml` RUN ON `main` IS RAISED WITHIN A TICK, NAMING THE JOB, instead of being found by a person going to look (a11ign/a11ign, 2026-10-07: it
+ * `src/org-health.ts`, #4001: A FAILED `release.yml` RUN ON `main` IS RAISED WITHIN A TICK, NAMING THE JOB, instead of being found by a person going to look (a11ign/a11ign, 2026-10-07: it
  * failed in `guards` at 14:15Z, was found at 15:23Z, and the second failure at 15:23Z was read the same way).
  *
  * THE FIXTURE IS THAT DAY'S RUN LIST, in the shape `readReleaseRuns` projects it: two `workflow_dispatch` failures, the `status` runs between them that were skipped (the 14:26Z-14:59Z rows,
@@ -26,10 +26,10 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, releaseFailedReading, readReleaseRuns, newestReleaseVerdict, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.mjs");
+const { SIGNALS, releaseFailedReading, readReleaseRuns, newestReleaseVerdict, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.ts");
 
 const { orgHealthNow } = await import("./work-gate/org-health.mjs");
-const { GH_READS } = await import("./work-gate.mjs");
+const { GH_READS } = await import("./work-gate.ts");
 
 const SIGNAL = "release-run-failed";
 const REPO = "a11ign/a11ign";
@@ -196,6 +196,6 @@ test("orgHealthNow offers the order from the reader it is given, and nothing whe
 
 test("the gate's call site passes the real reader and the read is counted, so the signal is not dead for want of a fact (#2980's lesson)", () => {
   assert.ok(GH_READS.unconditional.some((r: string) => r.includes("readReleaseRuns") && r.includes("release.yml/runs")), "the read is counted where reads are counted");
-  const gate = readFileSync(fileURLToPath(new URL("./work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("./work-gate.ts", import.meta.url)), "utf8");
   assert.match(gate, /readReleaseRuns: \(\) => readReleaseRuns\(defaultRun, repoNow\(\)\)/);
 });

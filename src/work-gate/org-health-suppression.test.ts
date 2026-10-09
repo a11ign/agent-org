@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "node:test";
-import { SIGNALS } from "../org-health.mjs";
+import { SIGNALS } from "../org-health.ts";
 import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS, classAndKeyOf, quietOrgHealth, suppressionPaths } from "./org-health-suppression.mjs";
 
 const T0 = Date.parse("2026-10-09T00:00:00Z");
@@ -169,12 +169,12 @@ const OBSERVED_CLASSES = ["overdue", "runner-behind-newest-release", "order-defe
   "wait-without-reason", "release-run-failed", "board-disagrees-with-reality", "red-pr-unattended", "fleet-idle-while-work-waits", "no-merge-while-work-exists", "team-access-drifted", "copies-drifted",
   "fleet-auto-off-refusing", "github-incident"];
 
-/** @param {string} dir @returns {string[]} every non-test `.mjs` under `dir` */
+/** @param {string} dir @returns {string[]} every non-test `.mjs` or `.ts` under `dir` */
 function sourcesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return name === "node_modules" || name === "fixtures" ? [] : sourcesUnder(path);
-    return name.endsWith(".mjs") && !name.includes(".test.") ? [path] : [];
+    return /\.(mjs|ts)$/.test(name) && !name.includes(".test.") ? [path] : [];
   });
 }
 

@@ -3,8 +3,8 @@
 // Every claim below runs the real writer against a real temporary directory, and the controls are in this file:
 // the marker-absent case is only worth anything beside the marker-present one that writes a file, and the pruner is
 // shown removing exactly one of 31. THE ROUND TRIP OF `args` THROUGH `decide` IS IN `shadow-reads-round-trip.test.ts`: it calls
-// `decide`, which reaches `work-gate.mjs` and so charges the token-less acceptance job a `token` it would refuse (#827, #2610), and
-// this file is the row's Acceptance, so it imports only `shadow-reads.mjs`. #2858 (the Map, Set and Date encoding) follows the same split: what is
+// `decide`, which reaches `work-gate.ts` and so charges the token-less acceptance job a `token` it would refuse (#827, #2610), and
+// this file is the row's Acceptance, so it imports only `shadow-reads.ts`. #2858 (the Map, Set and Date encoding) follows the same split: what is
 // written and read back is HERE, and `decide`'s answer over the revived arguments is in `shadow-reads-round-trip.test.ts`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +12,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KEEP_TICKS, SHADOW_READS_DIR, SHADOW_WINDOW_MARKER, encodeShadowValue, parseShadowRecord, pruneShadowReads, reviveShadowValue, tapShadowReads }
-  from "../shadow-reads.mjs";
+  from "../shadow-reads.ts";
 
 const FIRST_TICK = 1_790_000_000_000;
 const TWO_MINUTES = 120_000;

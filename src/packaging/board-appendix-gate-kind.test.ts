@@ -28,14 +28,14 @@
  * Adopted from `dispatcher`'s uncommitted work in the row's worktree (`ceo`'s ruling: a worktree travels
  * with its row), read line by line, and committed under `worker-judge`.
  *
- * Imports the PURE `board-gates.mjs`, never `board-data.mjs`, which spawns `gh`: that keeps this file
+ * Imports the PURE `board-gates.ts`, never `board-data.ts`, which spawns `gh`: that keeps this file
  * runnable by CI's acceptance job. The one test that needs the tracked record is
  * `board-appendix-gate-record.test.ts`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { latestVerdictGate } from "../board-gates.mjs";
+import { latestVerdictGate } from "../board-gates.ts";
 
 /** The row's own demonstrated population, reproduced verbatim (dates/commands as given on #429). */
 const CONFORMANCE_MAIN = {

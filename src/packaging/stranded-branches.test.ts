@@ -1,13 +1,14 @@
 // no-token: defaultRun
 //
 // #1409: every `gh` the CLI calls reaches a stub this file writes first on PATH, and every in-process test injects
-// `run`. `stranded-branches.mjs`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
+// `run`. `stranded-branches.ts`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
 /**
- * `packages/agent-org/src/stranded-branches.mjs` finds a pushed branch that has NEVER had a PR of any state and still
+ * `packages/agent-org/src/stranded-branches.ts` finds a pushed branch that has NEVER had a PR of any state and still
  * carries commits `origin/main` lacks -- see that file's own header for the incident
  * (`agent/ssh-key-defaults`, a finished security fix, pushed and invisible for eleven hours) and why the
  * obvious `git rev-list --count` check is defeated by squash merges on the wider population.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, execFileSync as rawExecFileSync, spawnSync } from "node:child_process";
@@ -18,9 +19,9 @@ import { delimiter, join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
   PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision,
-  EXIT, main as strandedMain } from "../stranded-branches.mjs";
+  EXIT, main as strandedMain } from "../stranded-branches.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -349,7 +350,7 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
 
 // --- The real CLI, end to end, with NO road to GitHub (#1409) ---
 //
-// It ran `node packages/agent-org/src/stranded-branches.mjs` in this checkout and accepted ANY of its three exit codes, so its PR
+// It ran `node packages/agent-org/src/stranded-branches.ts` in this checkout and accepted ANY of its three exit codes, so its PR
 // listing paged the live pulls API on every local run (worker-capture's census on #1275) -- and with no token it
 // still passed, on exit 2. Now the CLI runs inside the fixture repo above, so its `git` reads that repo's own
 // refs, and every `gh` it calls reaches a stub first on PATH that logs its argv. Each documented exit code is
@@ -359,7 +360,7 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
 // its refusals are driven through an injected `run` above; the live read is the audit itself,
 // `npm run branches:stranded`, which no local test runs.
 
-const SCRIPT = fileURLToPath(new URL("../stranded-branches.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../stranded-branches.ts", import.meta.url));
 const PAGE_ONE = `api repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}&sort=created&direction=asc&page=1 `
   + "--jq [.[] | {ref: .head.ref}]";
 
@@ -371,7 +372,7 @@ function runCliWithStubGh(cwd: string, answer: { json: string } | { fail: string
   writeFileSync(join(stubDir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${reply}\n`);
   chmodSync(join(stubDir, "gh"), 0o755);
   try {
-    const result = spawnSync(process.execPath, [SCRIPT], { cwd, encoding: "utf8",
+    const result = spawnSync(process.execPath, [...TSX_IMPORT, SCRIPT], { cwd, encoding: "utf8",
       env: { ...process.env, PATH: `${stubDir}${delimiter}${process.env.PATH ?? ""}` } });
     const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls };

@@ -1,5 +1,5 @@
 // no-token: gh
-// This file imports board-summary-check.mjs and board-document.mjs, whose closures spawn `gh`; every test here drives a
+// This file imports board-summary-check.ts and board-document.ts, whose closures spawn `gh`; every test here drives a
 // pure function or injects the instant and stubs the exit, and nothing here calls or spawns it.
 /**
  * #1345: A SUMMARY'S AGE IS THE MINUTES THAT PASSED, NOT ITS DISTANCE FROM NOW WITHIN ONE DAY.
@@ -7,15 +7,15 @@
  * `statedWritingTime` compared "HH:MM" with "HH:MM", so a summary written at 23:50 and rendered at 00:30 read as
  * 1,400 minutes stale and `requireSummaryIsFresh` refused it. It fails CLOSED -- nothing wrong is published --
  * but the number in the refusal is false, and the only renders in that hour are the post-midnight republish
- * #1302 fixed the date for. No test imported `board-summary-check.mjs` before this file (#1345's Region note).
+ * #1302 fixed the date for. No test imported `board-summary-check.ts` before this file (#1345's Region note).
  *
  * THE INSTANTS ARE UTC AND THE ASSERTIONS ARE LONDON'S. September is BST (UTC+1), December is GMT, so each case
  * says which London wall clock its instant is.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statedWritingTime } from "../board-summary-check.mjs";
-import { requireSummaryIsFresh } from "../board-document.mjs";
+import { statedWritingTime } from "../board-summary-check.ts";
+import { requireSummaryIsFresh } from "../board-document.ts";
 
 test("#1345 ACCEPTANCE: written at 23:50 on 13 September and read at 00:30 London on the 14th is 40 minutes old", () => {
   // 2026-09-13T23:30Z is 00:30 BST on 14 September.

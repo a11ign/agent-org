@@ -1,4 +1,4 @@
-// no-token: GH_READS -- #3045. Importing anything from `work-gate.mjs` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
+// no-token: GH_READS -- #3045. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
 // run: every read is handed the injected `fakeGh`. Measured 2026-10-02 with `gh` off `PATH` and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset.
 /**
  * #3045: A VERDICT STAYS VALID WHILE THE PULL REQUEST'S OWN PATCH IS UNCHANGED.
@@ -18,9 +18,9 @@ import { mkdtempSync, appendFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decide, withPatchIds, GH_READS } from "../work-gate.mjs";
-import { patchIdOfDiff } from "../review-verdict.mjs";
-import { readLedger, undelivered, endedRuns, ledgerLine, RESET, WAKE_TTL_MS } from "../wake.mjs";
+import { decide, withPatchIds, GH_READS } from "../work-gate.ts";
+import { patchIdOfDiff } from "../review-verdict.ts";
+import { readLedger, undelivered, endedRuns, ledgerLine, RESET, WAKE_TTL_MS } from "../wake.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
@@ -96,7 +96,7 @@ test("#3045 (1) `MERGE_FROM_MAIN` and `isMergeFromMain` are DELETED, not kept as
   const ban = /\bisMergeFromMain\b|\bMERGE_FROM_MAIN\b|\breviewChainOf\b/;
   // The positive control for the emptiness below: the pattern matches the very names the row deletes.
   assert.ok(ban.test("const MERGE_FROM_MAIN = /x/; function isMergeFromMain(c) {} reviewChainOf(pr)"));
-  const files = [join(dir, "work-gate.mjs"), join(dir, "work-gate", "pr-orders.mjs"), join(dir, "review-verdict.mjs")];
+  const files = [join(dir, "work-gate.ts"), join(dir, "work-gate", "pr-orders.mjs"), join(dir, "review-verdict.ts")];
   assert.equal(files.length, 3);
   for (const file of files) assert.ok(!ban.test(readFileSync(file, "utf8").replace(/^\s*(\/\/|\*|\/\*\*).*$/gm, "")), `${file} still names the headline test`);
 });

@@ -2,7 +2,7 @@
  * A CHECK ABOUT AN ABSENCE MUST BE SHOWN TO FIRE, because the state it watches for is indistinguishable
  * from the state where everything is fine: nothing happening.
  *
- * `board-schedule-liveness.mjs` answers "have the board editions stopped arriving" — the gap
+ * `board-schedule-liveness.ts` answers "have the board editions stopped arriving" — the gap
  * `docs/backlog.md` records as *"every refusal is reported by the job itself, so a job that does not exist
  * reports nothing"*. Its whole value is in the one case nobody can arrange on demand, so the verdict is a
  * PURE function over `(last edition day, now, does a summary exist for day X)` and these drive it with
@@ -26,7 +26,7 @@
 // #827. Every test here is driven with FIXTURES or an INJECTED `run` -- `livenessVerdict`,
 // `missedTodaysWindow`, `daysSince`, `scheduleNeverFired`, `watchdogSilenceLine` all take their inputs as
 // arguments, and `hoursSincePreviousRun` takes the runner as its first parameter, which these tests
-// supply as a closure over a fixture string. The closure walk reaches `board-data.mjs`'s `gh` through
+// supply as a closure over a fixture string. The closure walk reaches `board-data.ts`'s `gh` through
 // `EXIT -> REPO`, a constant, rather than through anything these tests execute.
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
@@ -36,7 +36,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
-  from "../board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.ts";
 
 const NOW = new Date("2026-09-20T09:00:00Z");
 
@@ -113,14 +113,14 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
 // #590: THE HEADER CLAIMED TWO WORKFLOWS AND THE CODE GUARDED ONE.
 //
 // `board-liveness.yml`'s header has always said it watches both `board-report.yml` and
-// `board-summary-check.yml`. `board-schedule-liveness.mjs` guarded only the first, through a single
+// `board-summary-check.yml`. `board-schedule-liveness.ts` guarded only the first, through a single
 // constant -- in the one place whose entire job is noticing silence. On 2026-09-08 the summary check
 // stopped running for nineteen hours, nothing said so, and the first anyone knew was the next morning,
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
-import { missedTodaysWindow } from "../board-schedule-liveness.mjs";
+import { missedTodaysWindow } from "../board-schedule-liveness.ts";
 import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
-  from "../board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.ts";
 
 // #929: THIS GUARD READS ONLY `.agent-org`, so a diff that cannot reach it need not run this file.
 // (#3233: it read `docs` and `.github/workflows` too, to pin trunk.yml's triggers; those pins are the project's now.)

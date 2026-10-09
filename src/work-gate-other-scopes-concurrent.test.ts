@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homeProjectDeclaration } from "./project-config.mjs";
-import { BATCH_MAX_CALLS, readElsewherePrs, readOtherScopes, readScopeTrunkRed, readWithFirstWaveTogether, runBatch, scopesOf } from "./work-gate.mjs";
+import { homeProjectDeclaration } from "./project-config.ts";
+import { BATCH_MAX_CALLS, readElsewherePrs, readOtherScopes, readScopeTrunkRed, readWithFirstWaveTogether, runBatch, scopesOf } from "./work-gate.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };

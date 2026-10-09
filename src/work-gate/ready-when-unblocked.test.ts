@@ -6,7 +6,7 @@
 // the tick uses, so "offered as before" is the real cause and not a restatement of it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.mjs";
+import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.ts";
 import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.mjs";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
@@ -34,7 +34,7 @@ function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }: { rows:
       calls.push(`read ${n}`);
       if (fail.includes("read")) throw new Error(`HTTP 502 on read #${n}`);
       const row = rows.find((r) => r.number === n);
-      return { labels: live[n]?.labels ?? row.labels.map((/** @type {any} */ l: any) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body, blockedBy: live[n]?.blockedBy ?? row.blockedBy };
+      return { labels: live[n]?.labels ?? row.labels.map((l: any) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body, blockedBy: live[n]?.blockedBy ?? row.blockedBy };
     },
     mergedClosers: (n) => { calls.push(`mergedClosers ${n}`); return merged[n] ? [merged[n]] : []; },
     promote: (n) => { calls.push(`promote ${n}`); return refuse[n] ? { ok: false, refusal: refuse[n] } : { ok: true }; },

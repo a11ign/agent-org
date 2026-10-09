@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractAcceptanceSection, extractRefutationSection } from "../acceptance-commands.mjs";
+import { extractAcceptanceSection, extractRefutationSection } from "../acceptance-commands.ts";
 
 /** Runs one fixture against both `Acceptance:` and `Refutation:`, since #438's rule is one shared parser. */
 const bothFields = [
@@ -33,11 +33,11 @@ for (const { name, extract } of bothFields) {
       `## ${name} — old read vs new, on the live queue`,
       "",
       "```",
-      "node packages/agent-org/src/merge-guard.mjs --armed-check=<a green-and-behind branch>",
+      "node packages/agent-org/src/merge-guard.ts --armed-check=<a green-and-behind branch>",
       "```",
     ].join("\n");
     assert.deepEqual(extract(body),
-      { kind: "commands", commands: ["node packages/agent-org/src/merge-guard.mjs --armed-check=<a green-and-behind branch>"] });
+      { kind: "commands", commands: ["node packages/agent-org/src/merge-guard.ts --armed-check=<a green-and-behind branch>"] });
   });
 
   test(`extractSection(${name}): THE MEASUREMENT -- a title-only heading with NOTHING below is MISSING, never the title`, () => {

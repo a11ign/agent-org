@@ -38,7 +38,7 @@
  *    census behind a logging `gh` shim covers those; the stranded-branches CLI tests are the shape (#1430).
  * 2. **A default destructured from a rest element**, as in `withBoardSnapshot`'s
  *    `const { run = defaultRun } = snapshotDeps` where `snapshotDeps` is `...snapshotDeps` of `deps`
- *    (`board-snapshot.mjs`). The body-default rule reads only a destructure of a parameter.
+ *    (`board-snapshot.ts`). The body-default rule reads only a destructure of a parameter.
  * 3. **A call through a renamed local** (`const f = imported; f()`), a dynamic `import()`, or a package-specifier
  *    import. Imports are resolved by relative path only.
  * 4. **An injected value that is itself live**, such as a test passing `{ run: defaultRun }` it imported.
@@ -315,7 +315,7 @@ export function liveSeamFindings({ scripts, tests }: { scripts: Source[]; tests:
 
 /** The real tree: every `.mjs` of the tool's own source, and every test file of the tool. */
 function realTree() {
-  return { scripts: toolSources().filter((f) => f.path.endsWith(".mjs")), tests: toolTests() };
+  return { scripts: toolSources().filter((f) => /\.(mjs|ts)$/.test(f.path)), tests: toolTests() };
 }
 
 // --- THE PLANTED FIXTURE: every shape the four enumeration passes found, and one that must NOT count ---------------
@@ -376,14 +376,14 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
   const { live, seams } = liveSeamFindings(realTree());
   const isLive = (file: string, fn: string) => live.some((s) => s.file === file && s.fn === fn);
   const expectedLive: Array<[string, string, string]> = [
-    ["src/stranded-branches.mjs", "sweepPullRequests", "a destructured run the function calls with gh"],
-    ["src/stranded-branches.mjs", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
-    ["src/row-claim.mjs", "fetchLabels", "a destructured run, #1406's seam"],
-    ["src/arm-pr.mjs", "gh", "a positional default"],
-    ["src/arm-pr.mjs", "armMerge", "a body default handed positionally to gh"],
-    ["src/ready-label-audit.mjs", "reportReleaseDrift", "a non-injectable alias"],
+    ["src/stranded-branches.ts", "sweepPullRequests", "a destructured run the function calls with gh"],
+    ["src/stranded-branches.ts", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
+    ["src/row-claim.ts", "fetchLabels", "a destructured run, #1406's seam"],
+    ["src/arm-pr.ts", "gh", "a positional default"],
+    ["src/arm-pr.ts", "armMerge", "a body default handed positionally to gh"],
+    ["src/ready-label-audit.ts", "reportReleaseDrift", "a non-injectable alias"],
   ];
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);
-  assert.ok(seams.some((s) => s.file === "src/prune-worktrees.mjs" && s.fn === "pruneWorktrees" && !s.live),
+  assert.ok(seams.some((s) => s.file === "src/prune-worktrees.ts" && s.fn === "pruneWorktrees" && !s.live),
     "and a seam that spawns only git is collected but not live");
 });

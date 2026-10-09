@@ -13,6 +13,7 @@
  *   escalation for a healthy session DOES go to gh ("... a healthy session's stuck cause"), and the tick DOES wake
  *   a healthy session and write its ledger line ("THE TICK ... a healthy").
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, appendFileSync } from "node:fs";
@@ -22,7 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
   poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS, SETTLE_TEST_CLOCK_ENV }
-  from "../wake.mjs";
+  from "../wake.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing. A per-row instance's order reads the instance's own transcripts to decide `/compact` (#2688), and the default root
@@ -318,7 +319,7 @@ test("a stuck cause addressed to the POOL is not asked about", () => {
 
 // --- THE TICK ITSELF, RUN AS A PROCESS ----------------------------------------------------------------------------
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 
 /** `herdr` on a PATH that holds nothing else: lists `worker-capture` idle, answers `agent get`, logs every prompt. */
@@ -340,7 +341,7 @@ function tick(transcript: string[], seed: Array<[number, string]> = []) {
     homeWith(dir, transcript);
     const ledger = join(dir, "wake-ledger");
     if (seed.length > 0) writeFileSync(ledger, seed.map(([t, k]) => `${t}\t${k}\n`).join(""));
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: `${JSON.stringify(orderTo("worker-capture"))}\n`, encoding: "utf8",
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
       env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST, [SETTLE_TEST_CLOCK_ENV]: "0" } });

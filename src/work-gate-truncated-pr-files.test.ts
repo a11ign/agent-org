@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3365)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3365)
 /**
  * #3365: THE GATE PAGES THE FILES OF A PULL REQUEST `gh pr list` TRUNCATED, INSTEAD OF DROPPING IT.
  *
@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readPrs, comparablePrFiles, partitionUnclaimed, withPagedFiles } from "./work-gate.mjs";
+import { readPrs, comparablePrFiles, partitionUnclaimed, withPagedFiles } from "./work-gate.ts";
 
 /** Under a top-level directory both this repository and a11ign's track, or `declaredRegionFiles` reads the Region as declaring nothing (#3073). */
 const REGION_FILE = "docs/messaging.md";

@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BATCH_OUTER_GRACE_MS, GH_READ_TIMEOUT_MS, readWithFirstWaveTogether, runBatch } from "./work-gate.mjs";
+import { BATCH_OUTER_GRACE_MS, GH_READ_TIMEOUT_MS, readWithFirstWaveTogether, runBatch } from "./work-gate.ts";
 
 const CALL_MS = 500;
 const STALL_SECONDS = 30;

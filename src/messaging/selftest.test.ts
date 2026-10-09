@@ -3,9 +3,10 @@
 // THE CHAIRMAN'S PATH, CHECKED END TO END BY THE ORGANISATION (a11ign/a11ign#3540, done-whens 1 to 4).
 //
 // Which parts are REAL and which are FAKE, said once: `createInbound`, `createConverse`, `createLedger` and `measure` are the real modules. The QUEUE is a fake port that writes the same entry shape and
-// prints the same kind of refusal as `prompt-session.mjs` (the real port cannot be driven to "the inbox is full" without filling a real inbox), the ROSTER is a list, and the PROVIDER is the self-test's own recorder.
+// prints the same kind of refusal as `prompt-session.ts` (the real port cannot be driven to "the inbox is full" without filling a real inbox), the ROSTER is a list, and the PROVIDER is the self-test's own recorder.
 // The live reading, with the real queue and herdr's real roster, is done-when 5 and is on the row.
 
+import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -267,10 +268,10 @@ describe("done-when 4: the trigger is a pure function", () => {
     assert.equal(selftestDue({ ...base, current: "v0.49.1", changedFiles: ["src/messaging/converse.mjs"] }).run, false);
   });
   test("tag moved with a messaging change: run", () => {
-    for (const file of ["src/messaging/converse.mjs", "src/prompt-session.mjs", "src/wake.mjs", "src/herdr-agents.mjs", "src/project-roles.mjs"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
+    for (const file of ["src/messaging/converse.mjs", "src/prompt-session.ts", "src/wake.ts", "src/herdr-agents.ts", "src/project-roles.ts"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
   });
   test("tag moved with none, or with only a messaging TEST: no run", () => {
-    assert.equal(selftestDue({ ...base, changedFiles: ["src/work-gate.mjs", "README.md"] }).run, false);
+    assert.equal(selftestDue({ ...base, changedFiles: ["src/work-gate.ts", "README.md"] }).run, false);
     assert.equal(selftestDue({ ...base, changedFiles: ["src/messaging/converse.test.ts", "src/messaging/fake-provider.ts"] }).run, true, "fake-provider.ts is a .ts under messaging/ and is a shipped path");
     assert.equal(selftestDue({ ...base, changedFiles: ["src/messaging/converse.test.ts"] }).run, false);
   });
@@ -291,8 +292,8 @@ describe("done-when 4: the trigger is a pure function", () => {
   });
   test("the path list: positive control for the matcher, and what it deliberately leaves out", () => {
     assert.ok(touchesMessaging(["src/messaging/listen.mjs"]));
-    assert.ok(!touchesMessaging(["src/work-gate.mjs", "docs/messaging.md", "src/messaging/listen.test.ts"]));
-    assert.ok(!touchesMessaging(["src/messaging", "src/wake.mjs.bak", "lib/src/wake.mjs", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
+    assert.ok(!touchesMessaging(["src/work-gate.ts", "docs/messaging.md", "src/messaging/listen.test.ts"]));
+    assert.ok(!touchesMessaging(["src/messaging", "src/wake.ts.bak", "lib/src/wake.ts", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
   });
 });
 
@@ -384,16 +385,16 @@ describe("the command", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-// THE TICK STEP in `wake.mjs`: it is the one place a report can reach `ceo`'s queue, because `src/messaging/` may not name the queue.
-// `wake.mjs` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
-// and the "wake.mjs loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
-const wake = await import("../wake.mjs").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
-const skipUnlessLoaded = "reason" in wake ? `wake.mjs cannot load here: ${wake.reason}` : false;
+// THE TICK STEP in `wake.ts`: it is the one place a report can reach `ceo`'s queue, because `src/messaging/` may not name the queue.
+// `wake.ts` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
+// and the "wake.ts loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
+const wake = await import("../wake.ts").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
+const skipUnlessLoaded = "reason" in wake ? `wake.ts cannot load here: ${wake.reason}` : false;
 
 describe("the tick step queues a report for ceo and for nobody else", () => {
   const spawned = (/** @type {Record<string, any>} */ answer: Record<string, any>, status = 0) => /** @type {any} */ (() => ({ status, stdout: `noise\n${JSON.stringify(answer)}\n`, stderr: "" }));
 
-  test("wake.mjs loaded whenever the host declaration it needs exists (the skips below are for a bare checkout only)", () => {
+  test("wake.ts loaded whenever the host declaration it needs exists (the skips below are for a bare checkout only)", () => {
     const declared = process.env.AGENT_ORG_HOST !== undefined && existsSync(process.env.AGENT_ORG_HOST);
     assert.ok(skipUnlessLoaded === false || !declared, String(skipUnlessLoaded));
   });
@@ -411,7 +412,7 @@ describe("the tick step queues a report for ceo and for nobody else", () => {
 
   test("no report, no entry; a child that failed or printed nothing readable is a line and no entry", { skip: skipUnlessLoaded }, () => {
     const queueFile = join(scratch, "tick-step-quiet");
-    const step = (/** @type {any} */ spawn: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn, ask: () => ({ spawn: true, line: null }), queueFile, now: START });
+    const step = (spawn: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn, ask: () => ({ spawn: true, line: null }), queueFile, now: START });
     assert.deepEqual(step(spawned({ lines: ["not run"], report: null })), ["not run"]);
     assert.match(step(spawned({}, 2))[0], /^MESSAGING SELFTEST NOT RUN: exit 2/);
     assert.match(step(() => ({ status: 0, stdout: "not json", stderr: "" }))[0], /^MESSAGING SELFTEST NOT RUN/);
@@ -452,8 +453,8 @@ describe("a quiet tick starts no process and asks no model", () => {
     assert.equal(worthAChild({ state, current: "v1.0.1", now: h.now() }).spawn, true, "the next release asks again");
   });
 
-  test("the step in wake.mjs starts no process when the question says there is nothing to do, and says so when it cannot ask", { skip: skipUnlessLoaded }, () => {
-    const step = (/** @type {any} */ ask: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn: noSpawn, ask });
+  test("the step in wake.ts starts no process when the question says there is nothing to do, and says so when it cannot ask", { skip: skipUnlessLoaded }, () => {
+    const step = (ask: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn: noSpawn, ask });
     assert.deepEqual(step(() => ({ spawn: false, line: null })), []);
     assert.deepEqual(step(() => ({ spawn: false, line: "messaging selftest still RED at seat for v1.0.0; retrying after 60 s" })), ["messaging selftest still RED at seat for v1.0.0; retrying after 60 s"]);
     assert.match(step(() => { throw new Error("git is gone"); })[0], /^MESSAGING SELFTEST NOT RUN: it could not be asked/);
@@ -461,8 +462,8 @@ describe("a quiet tick starts no process and asks no model", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-// THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.mjs`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
-// `realQueue()`: the one call that does `import("../wake.mjs")`, and `wake.mjs` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
+// THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.ts`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
+// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.ts` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
 // its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
 // `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
 const ENTRY = fileURLToPath(new URL("./selftest.mjs", import.meta.url));
@@ -476,7 +477,7 @@ describe("the entry run as a process, which is how the tick starts it", () => {
     mkdirSync(dirname(state), { recursive: true });
     const pending = { version: "v0.0.1", handoff: "handoff/liaison/00000000", taker: "liaison", queuedAt: START, updateId: 1, degraded: false };
     writeFileSync(state, `${JSON.stringify({ lastPassed: null, decidedFor: null, lastAttemptAt: null, lastRed: null, lastReported: null, pending })}\n`);
-    return spawnSync(process.execPath, [ENTRY, "--tick"], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 60_000 });
+    return spawnSync(process.execPath, [...TSX_IMPORT, ENTRY, "--tick"], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 60_000 });
   }
 
   test("--tick settles a waiting run through the real queue port: it does not exit 13, and its last stdout line is JSON", { skip: skipUnlessLoaded }, () => {
@@ -489,7 +490,7 @@ describe("the entry run as a process, which is how the tick starts it", () => {
   });
 
   test("the entry still SETS the exit code now that it does not await: a flag it refuses exits 2", () => {
-    const child = spawnSync(process.execPath, [ENTRY, "--send-to-chat"], { env: { ...process.env, HOME: join(scratch, `entry-home-${nextDir++}`) }, encoding: "utf8", timeout: 60_000 });
+    const child = spawnSync(process.execPath, [...TSX_IMPORT, ENTRY, "--send-to-chat"], { env: { ...process.env, HOME: join(scratch, `entry-home-${nextDir++}`) }, encoding: "utf8", timeout: 60_000 });
     assert.equal(child.status, 2, child.stderr);
     assert.match(child.stderr, /^messaging:selftest: /);
   });

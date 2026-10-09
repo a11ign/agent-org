@@ -11,12 +11,14 @@
  * `Environment=` lines BACK, and starts that `ExecStart` as a child process from that directory with exactly that environment. The mutant is the
  * pre-fix tool: a copy of the tool whose root is `process.cwd()` again, which must exit 2 and name the declaration it looked for under the tool directory.
  *
- * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.mjs`, which would charge it with a `history` requirement it has no use for.
+ * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.ts`, which would charge it with a `history` requirement it has no use for.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
+import { toolNodeModules } from "./tool-node-modules.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -76,7 +78,7 @@ const { localImports } = await import("../lib/local-import-closure.mjs");
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * Run in a CHILD, not imported: `host-units.mjs` calls `git log --all`, so a test that imports it derives a `history` requirement (#2174, `work-gate.test.ts`'s
+ * Run in a CHILD, not imported: `host-units.ts` calls `git log --all`, so a test that imports it derives a `history` requirement (#2174, `work-gate.test.ts`'s
  * ratchet) and its pull request owes `History: full` (#497). This file never reaches git: it needs only `toolForm`'s rendering, which is the real one run here.
  * The child resolves the tool's modules at import, so `AGENT_ORG_HOST` is the scratch host's.
  */
@@ -94,11 +96,11 @@ process.stdout.write(toolForm(name + ".service.in", renderTemplate(template, val
 
 /** @returns the shipped template `name` as a unit of THIS host, in tool form for `tool` (the real `toolForm`, not a copy of its lines) */
 function renderedToolForm(name: string, host: Scratch, tool: string): string {
-  const modules = ["host-units.mjs", "host-config.mjs"].map((file) => pathToFileURL(join(SRC, file)).href);
+  const modules = ["host-units.ts", "host-config.ts"].map((file) => pathToFileURL(join(SRC, file)).href);
   // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
   const script = join(dirname(host.project), "render.mjs");
   writeFileSync(script, RENDER);
-  const run = spawnSync(process.execPath, [script, ...modules, name, host.hostFile, host.project, tool],
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, script, ...modules, name, host.hostFile, host.project, tool],
     { env: { AGENT_ORG_HOST: host.hostFile }, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   assert.equal(run.status, 0, `rendering ${name} in tool form failed: ${run.stderr}`);
   return run.stdout;
@@ -139,7 +141,7 @@ const UNITS = [
   { name: "chairman-watch", entry: "src/messaging/watch.mjs", stdout: /^$/ },
 ];
 
-/** The tool's own files this entry imports, so a copy of the tool can run it (the files, not `node_modules`: nothing here imports a package). */
+/** The tool's own files this entry imports, so a copy of the tool can run it (the files; `preFixTool` adds `node_modules` for the loader). */
 function closureOf(entry: string): Set<string> {
   const files = new Set<string>();
   const visit = (file: string): void => {
@@ -159,6 +161,9 @@ function preFixTool(entry: string): string {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(file, target);
   }
+  // The unit's `--import tsx` resolves from its WorkingDirectory, so the copy is given what a checkout of the tool has: its `package.json` and `node_modules`.
+  writeFileSync(join(tool, "package.json"), '{"type":"module"}');
+  symlinkSync(toolNodeModules(), join(tool, "node_modules"));
   const copied = join(tool, entry);
   const fixed = readFileSync(copied, "utf8");
   const mutated = fixed.replace("root: HOME_CHECKOUT,", "root: process.cwd(),");

@@ -7,7 +7,7 @@
 # the flag. This script is the one narrow way a review is posted, which is exactly why the attribution
 # belongs here: it is the only point in the whole path where the reviewing session's identity is known
 # at all. GitHub loses it one line later -- every reviewer instance shares the `a11ign-bot` account,
-# so `user.login` on the posted review says nothing (see review-attribution.mjs for the measurement).
+# so `user.login` on the posted review says nothing (see review-attribution.ts for the measurement).
 #
 # THIS FILE IS THE SOURCE; the host copy at the reviewer's `bin/` is an install of it. It lived only on
 # the host until #2127, which is how a change to the posting path could not be reviewed or tested.
@@ -21,7 +21,7 @@
 # `Mutation:`, findings -- and no comment follows it. The door used to post only the first line as the review and
 # the brief had the reviewer post the file again as a comment, so the chairman saw two reviews for one head
 # (#3020: review 14:05:49Z, 63 characters; comment 14:06:28Z, 505). The gate reads a verdict from a review body as
-# well as a comment (`verdictBearers` in review-verdict.mjs), which is what made the second write unnecessary.
+# well as a comment (`verdictBearers` in review-verdict.ts), which is what made the second write unnecessary.
 #
 # Usage: pr-review-verdict <pr-number> <convinced|not-convinced> <verdict-comment-file>
 # Exit:  0  the review posted (attribution is best-effort and never changes this)
@@ -51,7 +51,7 @@ set -euo pipefail
 REPO="${GH_REPO:-a11ign/a11ign}"
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
   echo "pr-review-verdict: GH_REPO must be owner/name, got '$REPO'" >&2; exit 2; }
-# ONE SPELLING WITH `attributionContext` IN review-attribution.mjs. A shell writer and a JS reader cannot
+# ONE SPELLING WITH `attributionContext` IN review-attribution.ts. A shell writer and a JS reader cannot
 # share a constant, so `review-attribution.test.ts` reads this line and compares the two.
 ATTRIBUTION_CONTEXT_PREFIX=review/
 
@@ -67,7 +67,7 @@ body="$(<"$file")"
 # THE OPENER IS STILL THE FIRST LINE, and it is the only part validated: the clock and the authors' timers parse it.
 opener="$(head -n 1 "$file")"
 [[ "$opener" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
-# THE COMMIT THE VERDICT IS ABOUT (#3640). The sha after `at`, in backticks, is the spelling `HEAD_AFTER_AT` in review-verdict.mjs reads, so the
+# THE COMMIT THE VERDICT IS ABOUT (#3640). The sha after `at`, in backticks, is the spelling `HEAD_AFTER_AT` in review-verdict.ts reads, so the
 # door and the gate agree on which commit a verdict names. A verdict that names none cannot be shown to be about the head it will attach to,
 # and the gate would never count it, so it is refused here rather than posted unchecked.
 NAMED_SHA_PATTERN='(^|[^[:alnum:]_])(at|of)[[:space:]]+`([0-9a-fA-F]{7,40})`'
@@ -87,7 +87,7 @@ fi
 # no `A11Y_REVIEWER_SESSION` (`herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume`
 # began a second later). The one place every path converges is this door, so the name is closed here. DERIVED FROM THE
 # CHECKOUT, NEVER FROM THE PR NUMBER ALONE: any session can be handed a pull request number, but only the instance for
-# pull request n runs in `<root>/reviews/reviewer-<n>` (`reviewCheckoutPath` in wake.mjs). Prints the name, or nothing.
+# pull request n runs in `<root>/reviews/reviewer-<n>` (`reviewCheckoutPath` in wake.ts). Prints the name, or nothing.
 derive_session() {
   local dir; dir="$(pwd -P)"
   while [[ "$dir" != / && -n "$dir" ]]; do
@@ -184,7 +184,7 @@ failing_checks_at() {
 # what the pull request adds and removes: #3154 was refused for `ts / run` failing on a defect in `main`, `main` was fixed, Dependabot rebased, the
 # patch was byte-for-byte the same and this door refused the follow-up for 18 minutes, until a human dismissed the review. The fact that tells that
 # case from #3033 (a merge of `main`, nothing failing) is in check runs the door can already read, never in the review's prose: LIFTED when the review
-# is a CHANGES_REQUESTED, a check run concluded `failure` at its commit, and none does at the head. `refusalLifted` in review-verdict.mjs is the same
+# is a CHANGES_REQUESTED, a check run concluded `failure` at its commit, and none does at the head. `refusalLifted` in review-verdict.ts is the same
 # rule for the gate, and `door-refuses-second-review.test.ts` runs one table through both so they cannot drift. One read per commit compared, and none
 # unless an equal-patch refusal is found; a read that fails is COULD-NOT-TELL, never green.
 LIFTED=" "
@@ -205,7 +205,7 @@ refusal_lifted() {
   return 1
 }
 
-# Whether two spellings of a commit are one commit: a full sha and its abbreviation, either way round, as `headMatches` in review-verdict.mjs.
+# Whether two spellings of a commit are one commit: a full sha and its abbreviation, either way round, as `headMatches` in review-verdict.ts.
 same_commit() {
   local a="${1,,}" b="${2,,}"
   # AN EMPTY SPELLING IS A PREFIX OF EVERYTHING, so it must never be read as a match: absence of a commit is not equality with one.

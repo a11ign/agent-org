@@ -2,7 +2,7 @@
  * #2873 (child 5d-2 of #69): THE TOOL TAKES ITS PROJECT FROM `host.json`, NOT FROM THREE DIRECTORIES ABOVE ITSELF.
  *
  * `HOME_CHECKOUT` was `packages/agent-org/src` up three, which holds only while the tool runs inside the product checkout. In the
- * standalone repository `src/` is at the root, up three is the home directory, and importing `project-vocabulary.mjs` died with
+ * standalone repository `src/` is at the root, up three is the home directory, and importing `project-vocabulary.ts` died with
  * `ProjectDeclarationRefusal: .../.agent-org/project.json ... ENOENT` (#2846's real run). With `$AGENT_ORG_HOST` set it is now the
  * `checkout` of the host file's `primary` project (ADR 0040, decision 3).
  *
@@ -15,6 +15,7 @@
  * nobody wrote -- the failure is reachable, not described), and a host file whose primary IS a11ign's checkout gives a11ign's labels from that tree (the green path is not a
  * fixture agreeing with itself).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -22,8 +23,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.mjs";
-import { HOST_CONFIG_ENV } from "../host-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.ts";
+import { HOST_CONFIG_ENV } from "../host-config.ts";
 
 // The PROJECT's checkout (its declaration is what the labels are read from), and the TOOL's own `src`, which are two trees (the tool is not
 // inside the project here), so neither is found by counting directories up from this file.
@@ -34,7 +35,7 @@ const UP_THREE = 3;
 
 /** What a child prints: the labels it resolved, which is the whole of "whose project did it read". */
 const PRINT_LABELS = `
-  const v = await import(process.argv[1] + "/project-vocabulary.mjs");
+  const v = await import(process.argv[1] + "/project-vocabulary.ts");
   console.log(JSON.stringify({ backlog: v.BACKLOG_LABEL, lane: v.LANE_PREFIX, session: v.SESSION_PREFIX, acceptance: v.ACCEPTANCE_FIELD }));
 `;
 
@@ -57,6 +58,7 @@ test.after(() => {
 function standaloneTree(): string {
   const src = join(scratch(), "tool", "src");
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return src;
 }
 
@@ -80,13 +82,13 @@ function fixtureProject(): string {
   return checkout;
 }
 
-/** Import `<src>/project-vocabulary.mjs` in a child with `$AGENT_ORG_HOST` as given (`undefined` removes it, whatever this process holds). */
+/** Import `<src>/project-vocabulary.ts` in a child with `$AGENT_ORG_HOST` as given (`undefined` removes it, whatever this process holds). */
 /** `cwd` is a scratch directory in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root. */
 function readIn(src: string, host: string | undefined): Reading {
   const env = { ...process.env };
   delete env[HOST_ENV];
   if (host !== undefined) env[HOST_ENV] = host;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", PRINT_LABELS, src], { env, cwd: scratch(), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", PRINT_LABELS, src], { env, cwd: scratch(), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 }
 
@@ -157,6 +159,7 @@ function productTree(): string {
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
   mkdirSync(join(root, ".agent-org"), { recursive: true });
   cpSync(join(REPO, ".agent-org/project.json"), join(root, ".agent-org/project.json"));
+  writeFileSync(join(root, "packages/agent-org/package.json"), '{"type":"module"}'); // the package's own: without it tsx loads the `.ts` files as CommonJS
   return src;
 }
 

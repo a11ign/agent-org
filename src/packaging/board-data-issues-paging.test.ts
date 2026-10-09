@@ -1,9 +1,9 @@
 // no-token: REPO
-// This file imports board-data.mjs, whose closure reads REPO and can spawn `gh`. Every test here hands `issues()` a
+// This file imports board-data.ts, whose closure reads REPO and can spawn `gh`. Every test here hands `issues()` a
 // recorded `run`; nothing here calls or spawns `gh` (#2435).
 /**
  * #2435: `issues()` pages to exhaustion. It refused a listing of exactly its 1000-row limit, and the tracker passed
- * 1000, so `npm run board:report`, `board-document.mjs` and `collect()` all failed together. Raising the number only
+ * 1000, so `npm run board:report`, `board-document.ts` and `collect()` all failed together. Raising the number only
  * moves the cliff; the read now walks the cursor and proves completeness against the tracker's own `totalCount`.
  *
  * POSITIVE CONTROL for every refusal below: `pagedRun` over the intact fixture is the one that must return all
@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { issues } from "../board-data.mjs";
+import { issues } from "../board-data.ts";
 
 const PAGE = 100;
 const OLD_LIMIT = 1000; // the `--limit` the read used to refuse at

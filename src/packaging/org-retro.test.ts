@@ -1,6 +1,6 @@
-// no-token: gh -- `org-retro.mjs` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam; nothing imported reaches the real one
+// no-token: gh -- `org-retro.ts` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/org-retro.mjs` and its wiring in `work-gate.mjs`, #2938: THE DAILY RETROSPECTIVE. Once per UTC date the gate hands `ceo`
+ * `packages/agent-org/src/org-retro.ts` and its wiring in `work-gate.ts`, #2938: THE DAILY RETROSPECTIVE. Once per UTC date the gate hands `ceo`
  * the last 24 hours' numbers, already computed, and `ceo` is ordered to find the CLASS behind each number that worsened.
  *
  * EVERY NUMBER BELOW IS CHECKED BY HAND AGAINST A FIXTURE WINDOW, written out as a literal. A test built from the module's own constants moves
@@ -10,6 +10,7 @@
  * counted from `a11ign-work-tick.service`'s journal in #2845). It must report a stall AND a non-zero idle-minute figure; every "not offered / not counted"
  * below is only worth anything because that window IS read as a stall through the same entry.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -18,12 +19,12 @@ import { join } from "node:path";
 import { buildReport, renderReport, retrospectiveDue, retrospectiveOrder, retrospectiveKey, retrospectiveTick, ledgerEntries, ledgerStats,
   idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
   utcDate, NUMBERS, READINGS_FILE, compareReadings, previousReading, parseReadings, readReadings, recordReading, undeclaredDirections,
-  verdictFor } from "../org-retro.mjs";
-import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.mjs";
-import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.mjs";
-import { PROFILES } from "../worker-profile.mjs";
-import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+  verdictFor } from "../org-retro.ts";
+import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.ts";
+import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.ts";
+import { PROFILES } from "../worker-profile.ts";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const HOUR_MS = 3_600_000;
@@ -139,11 +140,11 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
 
 test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
-  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.mjs is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
+  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
   const next = ci.slice(from + 1).search(/\n {2}[\w-]+:\n/);
-  assert.match(ci.slice(from, from + 1 + next), /merge-guard\.mjs --ci-gate/, "the job that runs the hold refusal is deliberateRefusals");
+  assert.match(ci.slice(from, from + 1 + next), /merge-guard\.(mjs|ts) --ci-gate/, "the job that runs the hold refusal is deliberateRefusals");
 });
 
 test("redPrStats counts the broken and LISTS the held, with who holds it; the report prints both lines", () => {
@@ -173,7 +174,7 @@ test("the hand-fix line is the ledger's own: one human-authored change prints 1,
 
 const AGENT_ORG_SRC = new URL("../", import.meta.url);
 /** The scan's own subject: it reads files and is not the writer it looks for. Excluded in CODE, here, and not by an entry in a list it also matches. */
-const SELF = "org-retro.mjs";
+const SELF = "org-retro.ts";
 const WRITE_CALL = /\b(writeFileSync|appendFileSync|renameSync)\(/;
 
 /** Comments removed, so a name that survives only in a header ("until the sibling row lands") is not a reader and not a writer. */
@@ -186,7 +187,7 @@ function stateFilesRead(source: string): string[] {
 
 function sourceFiles(dir: URL): { name: string; text: string }[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
-    .filter((e) => e.isFile() && e.name.endsWith(".mjs") && e.name !== SELF)
+    .filter((e) => e.isFile() && /\.(mjs|ts)$/.test(e.name) && !e.name.includes(".test.") && e.name !== SELF)
     .map((e) => ({ name: e.name, text: readFileSync(join(e.parentPath, e.name), "utf8") }));
 }
 
@@ -195,12 +196,12 @@ function readButNeverWritten(names: string[], writers: { text: string }[]): stri
   return names.filter((name) => !writers.some((w) => code(w.text).includes(name) && WRITE_CALL.test(code(w.text))));
 }
 
-test("every file org-retro.mjs reads from the state directory is written by some module in agent-org (#2954)", () => {
+test("every file org-retro.ts reads from the state directory is written by some module in agent-org (#2954)", () => {
   const source = readFileSync(new URL(SELF, AGENT_ORG_SRC), "utf8");
   const writers = sourceFiles(AGENT_ORG_SRC);
   const read = stateFilesRead(source);
   assert.ok(read.includes("wake-ledger"), "POSITIVE CONTROL: the scan finds the wake ledger, so the population is not empty");
-  assert.deepEqual(readButNeverWritten(["wake-ledger"], writers), [], "POSITIVE CONTROL: and the writer search finds wake.mjs writing it");
+  assert.deepEqual(readButNeverWritten(["wake-ledger"], writers), [], "POSITIVE CONTROL: and the writer search finds wake.ts writing it");
   assert.deepEqual(readButNeverWritten(read, writers), [], `read from the state directory and never written: ${readButNeverWritten(read, writers).join(", ")}`);
 });
 
@@ -350,7 +351,7 @@ test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file
   assert.ok(own!.includes(CLASS_FIX_INSTRUCTION), "the class-fix instruction, verbatim, in the section");
   assert.match(own!, /#928/);
   assert.match(own!, /nothing tripped/);
-  assert.match(own!, /org-retro\.mjs/);
+  assert.match(own!, /org-retro\.(mjs|ts)/);
   // The extraction must NOT be satisfiable by a copy elsewhere: another section holding the phrase must not make this one pass.
   const elsewhere = CEO_ROLE.replace(own!, "");
   assert.equal(section(elsewhere, "The daily retrospective"), null, "removing the section removes the heading it is found by");
@@ -508,7 +509,7 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
   // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
   // The child finds the project the way this file does: through the host file, which a stripped environment would otherwise lose.
   const host = process.env[HOST_ENV] === undefined ? {} : { [HOST_ENV]: process.env[HOST_ENV] };
-  const out = execFileSync(process.execPath, [new URL("../org-retro.mjs", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
+  const out = execFileSync(process.execPath, [...TSX_IMPORT, new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
     { encoding: "utf8", env: { HOME: home, PATH: "", ...host } });
   assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
   assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");

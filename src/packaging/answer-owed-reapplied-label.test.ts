@@ -8,14 +8,14 @@
  * a delivered key for `JUDGMENT_TTL_MS`.
  *
  * THE REPLAY USES THE REAL PIECES, NOT A COPY OF THEIR RULE: the order comes from `answerOrders`, the window from
- * `readLedger` handed `JUDGMENT_CAUSES` exactly as `wake.mjs`'s `main` hands it, and the declaration from
- * `cause-declaration.mjs`. A test that passed its own judgment set would pass whatever the declaration said.
+ * `readLedger` handed `JUDGMENT_CAUSES` exactly as `wake.ts`'s `main` hands it, and the declaration from
+ * `cause-declaration.ts`. A test that passed its own judgment set would pass whatever the declaration said.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answerOrders } from "../work-gate.mjs";
-import { JUDGMENT_CAUSES } from "../cause-declaration.mjs";
-import { readLedger, undelivered, ledgerLine, WAKE_TTL_MS, JUDGMENT_TTL_MS } from "../wake.mjs";
+import { answerOrders } from "../work-gate.ts";
+import { JUDGMENT_CAUSES } from "../cause-declaration.ts";
+import { readLedger, undelivered, ledgerLine, WAKE_TTL_MS, JUDGMENT_TTL_MS } from "../wake.ts";
 
 const MINUTE = 60_000;
 const DELIVERED = 1_000_000_000_000; // the 05:35:42 delivery of the ledger above

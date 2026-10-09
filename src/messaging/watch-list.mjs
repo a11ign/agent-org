@@ -193,7 +193,7 @@ function guardedRunner(file, assertRead) {
 /**
  * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs` names them for the watcher: the two files `fleet-watch` writes under the project's `runs/`,
  * and the tick's completion record beside the wake ledger. WITHOUT THEM those placeholders refuse ("this host named no fleet-watch state files"), which is the right
- * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.mjs` is imported WHEN ASKED, as `reply-cli.mjs` does:
+ * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.ts` is imported WHEN ASKED, as `reply-cli.mjs` does:
  * it resolves the host at import, and a host that cannot name the record must cost `{{gate.*}}` and nothing else.
  *
  * @param {{ root: string, err: (line: string) => void }} where
@@ -202,7 +202,7 @@ function guardedRunner(file, assertRead) {
 export async function hostFiles({ root, err }) {
   const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
   try {
-    const { stateEntryPath } = await import("../host-config.mjs");
+    const { stateEntryPath } = await import("../host-config.ts");
     return { fleet, gateRecordPath: completionPath(stateEntryPath("wake-ledger")) };
   } catch (error) {
     err(`this host could not name the work-tick completion record, so {{gate.*}} will refuse: ${describeError(error)}`);

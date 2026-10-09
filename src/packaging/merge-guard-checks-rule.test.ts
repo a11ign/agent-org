@@ -3,6 +3,7 @@
  * `packages/agent-org/src/row-claim/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -227,7 +228,7 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
  *
  * NOTHING THIS MODULE OWNS IS LOST. The `STILL RUNNING:` prefix is still asserted above against this
  * module's own output, which is the property `checks-rule.mjs` is responsible for. The other two consumers
- * (`merge-guard.mjs`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
+ * (`merge-guard.ts`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
  * assumed -- so after #989 no caller parses these sentences and there is no cross-module contract left to
  * pin from here.
  */
@@ -368,7 +369,7 @@ test("#1101: this file's reported test count equals what it declares", () => {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
+    [...TSX_IMPORT, join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
   assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}${run.stderr.slice(0, 300)}`);

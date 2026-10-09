@@ -11,6 +11,7 @@
  *     is silent, any other refusal is ONE line per tick that names the repository, the path and the status. (4) pins that a 404 of a read
  *     that is not of a sha still reaches stderr, so the capture is not a way of silencing every `gh`.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -18,9 +19,9 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inRepo, readCommitShas, readFailingChecks, withPatchIds } from "./work-gate.mjs";
+import { inRepo, readCommitShas, readFailingChecks, withPatchIds } from "./work-gate.ts";
 
-const GATE = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
+const GATE = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
 const HEAD = "a".repeat(40);
 const STALE = "c8fe8f58";
 const ALSO_STALE = "b".repeat(8);
@@ -74,7 +75,7 @@ test("(1) the REAL `defaultRun`: a refused compare of a stale head prints nothin
         readCommitShas(4, defaultRun);
         try { defaultRun(["api", "repos/o/r/labels/nope"]); } catch { /* the caller of a read that is not of a sha handles it */ }
       });`;
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script],
+    const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script],
       { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GH_REPO: "o/r" } });
     assert.equal(child.status, 0, child.stderr);
     assert.equal(child.stdout.trim(), JSON.stringify([HEAD]), "the pull request is enriched at its head alone");

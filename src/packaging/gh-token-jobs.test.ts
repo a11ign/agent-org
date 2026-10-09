@@ -10,10 +10,10 @@
 // in another, with nothing comparing them.
 //
 // THE OBVIOUS TEST WOULD HAVE FOUND NOTHING. Neither board test contains the string `gh` as a command:
-// `board-style.test.ts` imported `packages/agent-org/src/board-data.mjs`, and it was `collect()` down there that shelled
+// `board-style.test.ts` imported `packages/agent-org/src/board-data.ts`, and it was `collect()` down there that shelled
 // out. So this walks each job's test glob AND every local import beneath it, to any depth, and asks
 // whether a `gh` spawn is reachable at all.
-// #621: `localImports` moved to `packages/guards/src/local-import-closure.mjs`, SHARED with `acceptance-commands.mjs`
+// #621: `localImports` moved to `packages/guards/src/local-import-closure.mjs`, SHARED with `acceptance-commands.ts`
 // -- which derives a test's requirements (token/corpus/history) from the identical closure walk. Two
 // independently-drifting copies of "what does this file import, one hop, locally" is this repo's own
 // most-recorded shape; see that module's header for why `pre-install-import-graph.test.ts` keeps its own.
@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.mjs";
-import { SPAWNS_GH } from "../acceptance-commands.mjs";
+import { SPAWNS_GH } from "../acceptance-commands.ts";
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {
@@ -149,7 +149,7 @@ test("a job whose tests can reach a `gh` spawn is an offender until it declares 
 });
 
 test("#1449: the walker reaches a gh spawn made through `execFile`, and not an `execFile` of another command", () => {
-  // The spawns this guard reads are the token charge's (acceptance-commands.mjs): a job whose tests spawn gh through a
+  // The spawns this guard reads are the token charge's (acceptance-commands.ts): a job whose tests spawn gh through a
   // spelling only one of the two recognised would be missed by the other.
   const dir = mkdtempSync(join(tmpdir(), "gh-token-jobs-"));
   try {
@@ -168,8 +168,8 @@ test("#1449: this guard reads the token charge's ONE spawn regex -- it imports S
   const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
   // Two spellings of the same module: `agent-org/src/...` where the tool sat in the monorepo, `../...` since this file lives beside it.
-  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"(?:[^"]*agent-org\/src\/|\.\.\/)acceptance-commands\.mjs"/,
-    "SPAWNS_GH must come from acceptance-commands.mjs, the regex the token charge itself uses");
+  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"(?:[^"]*agent-org\/src\/|\.\.\/)acceptance-commands\.ts"/,
+    "SPAWNS_GH must come from acceptance-commands.ts, the regex the token charge itself uses");
   assert.doesNotMatch(code, /\b(?:const|let|var)\s+SPAWNS_GH\b/,
     "a local SPAWNS_GH is a second copy of the charge's list -- the drift #1449 was filed about");
 });

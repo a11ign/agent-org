@@ -1,25 +1,25 @@
 // @ts-check
 // module: the claim-stall tick -- what the gate says to a session whose claim has stopped moving (#2898)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2898, the fifth split of #928's lever 2a): `claimStallTick`, the
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the fifth split of #928's lever 2a): `claimStallTick`, the
 // claim evaluation it runs, the declared-wait reading that excuses a quiet claim, and the helpers only they use.
 // Measured on #2898: a row waited behind three pull requests in a day for edits to exactly these definitions.
 //
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
 // stayed behind also uses (`readPrs`, `readClaimedRowComments`, `readMergedPrs`, `gitRun`) is IMPORTED from
-// `work-gate.mjs`, the cycle that module documents, safe while nothing here reads an imported binding at load time.
+// `work-gate.ts`, the cycle that module documents, safe while nothing here reads an imported binding at load time.
 // `withChecksPending` STAYED: it reads the PR rollup, and `org-health.test.ts`'s #2956 guard enlists any file that does.
-// `work-gate.mjs` re-exports every name this file exports that it exported before.
+// `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers, withChecksPending, readMergedPrs,
-  readElsewherePrs } from "../work-gate.mjs";
-import { familyNumber } from "../arm-pr.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
+  readElsewherePrs } from "../work-gate.ts";
+import { familyNumber } from "../arm-pr.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
 import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_STATE_FILE, nextStallState,
-  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders } from "../claim-stall.mjs";
-import { readAgents } from "../herdr-agents.mjs";
-import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
-import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
+  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders } from "../claim-stall.ts";
+import { readAgents } from "../herdr-agents.ts";
+import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
+import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 import { readFileSync } from "node:fs";
 
 /**
@@ -39,7 +39,7 @@ function declaredWait(row, holder) {
 }
 
 /**
- * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.mjs` counts as a field (#2999): ONE decider for "this
+ * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.ts` counts as a field (#2999): ONE decider for "this
  * row has a wait field", so the idle reading and the clock reading cannot disagree about a row. `blocked` (the label) is not a kind: it names
  * no referent. `fleet-hold` is a `Fleet-hold-until:` line, whose second meaning -- a claim on the workers -- nothing else reads.
  * @param {any} row @param {string} holder @returns {{ kind: string, phrase: string } | null}
@@ -63,7 +63,7 @@ function declaredWaitOf(row, holder) {
  * @typedef {(facts: ClaimFactsOfTick | null) => void} OnClaimFacts `null` is a tick that evaluated NO claim (a refused read), never "no claims"
  */
 
-/** @param {import("../claim-stall.mjs").ClaimFacts} facts @returns {ClaimMoves} */
+/** @param {import("../claim-stall.ts").ClaimFacts} facts @returns {ClaimMoves} */
 function movesOf(facts) {
   return { claimedAt: facts.claimedAt, comment: facts.comment, commit: facts.commit, push: facts.push,
     // #3569: the fields `idleClaimantReading` reads a holder's wait from (a review, a check, an approval, a hold), already on `ownPrs` -- no new read.
@@ -74,7 +74,7 @@ function movesOf(facts) {
 
 /**
  * THE WHOLE OF `claim-stalled` FOR ONE TICK: read every claimed row, decide, keep the nudge memory, and return the orders
- * (a nudge to a holder; a RELEASE that `wake.mjs` performs).
+ * (a nudge to a holder; a RELEASE that `wake.ts` performs).
  *
  * A READ THAT WAS REFUSED EVALUATES NOTHING. `claimedComments === null` means the row comments -- one of the four signals --
  * were not read, and a row read without them looks stalled when it may have been commented on a minute ago. `mergedPrs`
@@ -96,11 +96,11 @@ function movesOf(facts) {
  * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
  *
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null,
- *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, io?: import("../claim-stall.mjs").HostReads, repo?: string, now?: number, restartAt?: number | null,
+ *   elsewhere?: import("../claim-stall.ts").ElsewherePrs, io?: import("../claim-stall.ts").HostReads, repo?: string, now?: number, restartAt?: number | null,
  *   agents?: {label: string, status: string}[] | null,
  *   stateDir?: string, log?: (line: string) => void, ledger?: () => string,
  *   read?: typeof readStallState, write?: typeof writeStallState, onFacts?: OnClaimFacts }} args
- * @returns {import("../claim-stall.mjs").StallOrder[]}
+ * @returns {import("../claim-stall.ts").StallOrder[]}
  */
 export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: statMtime }, repo = REPO_CHECKOUT, now = Date.now(),
   stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState, write = writeStallState, ...inputs }) {
@@ -116,8 +116,8 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  * @param {{ rows: any[], claimedComments: any[] | null, openPrs: any[], mergedPrs: any[] | null, restartAt?: number | null,
- *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, agents?: {label: string, status: string}[] | null,
- *   ledger?: () => string, io: import("../claim-stall.mjs").HostReads, repo: string, now: number, stateDir: string,
+ *   elsewhere?: import("../claim-stall.ts").ElsewherePrs, agents?: {label: string, status: string}[] | null,
+ *   ledger?: () => string, io: import("../claim-stall.ts").HostReads, repo: string, now: number, stateDir: string,
  *   log: (line: string) => void, read: typeof readStallState, write: typeof writeStallState, onFacts?: OnClaimFacts }} args
  */
 function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write, onFacts }) {
@@ -177,14 +177,14 @@ function rowsPerSession(held) {
 }
 
 /**
- * @returns {{ readings: { facts: import("../claim-stall.mjs").ClaimFacts, reading: import("../claim-stall.mjs").Reading }[], skipped: Map<number, string> }}
+ * @returns {{ readings: { facts: import("../claim-stall.ts").ClaimFacts, reading: import("../claim-stall.ts").Reading }[], skipped: Map<number, string> }}
  * @param {{ held: any[], byRow: Map<number, any[]>, openPrs: any[], mergedPrs: any[] | null,
- *   elsewhere?: import("../claim-stall.mjs").ElsewherePrs, io: import("../claim-stall.mjs").HostReads, repo: string, now: number, restart: number | null,
+ *   elsewhere?: import("../claim-stall.ts").ElsewherePrs, io: import("../claim-stall.ts").HostReads, repo: string, now: number, restart: number | null,
  *   agents: {label: string, status: string}[] | null,
- *   before: import("../claim-stall.mjs").StallState, log: (line: string) => void, ledger: () => string }} ctx
+ *   before: import("../claim-stall.ts").StallState, log: (line: string) => void, ledger: () => string }} ctx
  */
 function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }) {
-  /** @type {{ facts: import("../claim-stall.mjs").ClaimFacts, reading: import("../claim-stall.mjs").Reading }[]} */
+  /** @type {{ facts: import("../claim-stall.ts").ClaimFacts, reading: import("../claim-stall.ts").Reading }[]} */
   const readings = [];
   /** @type {Map<number, string>} the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451) */
   const skipped = new Map();
@@ -221,7 +221,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
 /**
  * What the memory says about ONE claim's holder, as the reading's context: the nudge it was sent (with its delivery, read from the wake ledger),
  * the tick its session was first found gone, and the tick it was first found idle (#2999). A memory written for ANOTHER session is nobody's.
- * @param {{ entry: import("../claim-stall.mjs").StallState[string] | undefined, session: string, row: number, ledger: () => string }} args
+ * @param {{ entry: import("../claim-stall.ts").StallState[string] | undefined, session: string, row: number, ledger: () => string }} args
  */
 function rememberedFor({ entry, session, row, ledger }) {
   const remembered = entry?.session === session ? entry : undefined;
@@ -230,7 +230,7 @@ function rememberedFor({ entry, session, row, ledger }) {
   return { nudge, goneSince: remembered?.goneSince ?? null, idleSince: remembered?.idleSince ?? null };
 }
 
-/** @param {import("../claim-stall.mjs").StallOrder[] | undefined} orders */
+/** @param {import("../claim-stall.ts").StallOrder[] | undefined} orders */
 export const stallOrdersOrNone = (orders) => orders ?? [];
 
 /** The wake ledger's text, `""` when it cannot be read. @param {string} path */
@@ -268,9 +268,9 @@ export function claimStallsNow(rows, claimedComments, prs, { tick = claimStallTi
  * follow-ups wave (`closedClaimsWhenWorkerListed`), with herdr's listing it was decided from, so this makes NO call: `null` is "not asked" (herdr listed no
  * per-row instance) and yields nothing, and `{ rows: null }` is said as unread by `closedClaimOrders`, never read as "no closed claim".
  * The per-row instance is `worker-<n>`, the roster's own family (`familyNumber`): a standing seat is released and never interrupted by this cause.
- * @param {{ rows: import("../claim-stall.mjs").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null} closed
+ * @param {{ rows: import("../claim-stall.ts").ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null } | null} closed
  * @param {{ repo?: string, isInstance?: (session: string) => boolean, log?: (line: string) => void, trackerRepo?: string }} [deps]
- * @returns {import("../claim-stall.mjs").StallOrder[]}
+ * @returns {import("../claim-stall.ts").StallOrder[]}
  */
 export function closedClaimsNow(closed, { repo = REPO_CHECKOUT, isInstance = (session) => familyNumber(session) !== null,
   log = (line) => process.stderr.write(line), trackerRepo } = {}) {

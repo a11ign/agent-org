@@ -1,4 +1,4 @@
-// no-token: gh -- imports `wake.mjs`, whose default readers spawn `gh`; `linkKeyedDependencies` runs against real temp directories and spawns nothing but the shim under test
+// no-token: gh -- imports `wake.ts`, whose default readers spawn `gh`; `linkKeyedDependencies` runs against real temp directories and spawns nothing but the shim under test
 /**
  * #3728: A KEYED REVIEW TREE THAT LINKS THE CLONE'S `.bin` BUT NOT ITS `.pnpm` HANDS A REVIEWER SHIMS THAT POINT AT NOTHING.
  *
@@ -7,7 +7,7 @@
  * of a pnpm repository (screenreader-fleet#2, #3715) could not run `pnpm exec tsx` and posted an escalation instead of a verdict.
  *
  * The fixture is a clone with a pnpm-shaped `.bin` shim and `.pnpm` store, and a tree that declares the package the clone has. POSITIVE CONTROL: the
- * same fixture on `wake.mjs` before the `.pnpm` link fails the shim case (shown RED at the branch point, `git stash`-free: see the row's comment).
+ * same fixture on `wake.ts` before the `.pnpm` link fails the shim case (shown RED at the branch point, `git stash`-free: see the row's comment).
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const SCRATCH = mkdtempSync(join(tmpdir(), "keyed-tree-pnpm-store-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 
-// `wake.mjs` reads the project it serves from `$AGENT_ORG_HOST` AT IMPORT, so the recorded project `keyed-repo-review.test.ts` runs against is set FIRST
+// `wake.ts` reads the project it serves from `$AGENT_ORG_HOST` AT IMPORT, so the recorded project `keyed-repo-review.test.ts` runs against is set FIRST
 // and the tool imported AFTER it (#3233); nothing here reads a11ign's checkout.
 const PROJECT = join(SCRATCH, "project");
 cpSync(fileURLToPath(new URL("./fixtures/keyed-repo-review/project", import.meta.url)), PROJECT, { recursive: true });
@@ -30,7 +30,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { linkKeyedDependencies } = await import("../wake.mjs");
+const { linkKeyedDependencies } = await import("../wake.ts");
 
 /** pnpm's POSIX shim shape: `basedir` from `$0` as written, so a symlinked `.bin` resolves relative to the symlink's own directory. */
 const SHIM = `#!/bin/sh

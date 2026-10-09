@@ -1,20 +1,20 @@
 // @ts-check
 // module: the row-call-count orders -- the gate asks a claimed row's session to split when its calls pass the threshold (#2898)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2898, the fourth split of #928's lever 2a): the live call-count signal
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the fourth split of #928's lever 2a): the live call-count signal
 // (#2691), the assessed-calls marker a session leaves after judging, the order text, and the helpers only they use.
 // Measured on #2898: six rows waited behind ONE pull request (#2819), and it edited nothing but these definitions.
 //
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
-// stayed behind also uses is IMPORTED from `work-gate.mjs`, the cycle that module documents, safe while nothing here
-// reads an imported binding at load time. `work-gate.mjs` re-exports every name this file exports that it exported before.
-import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.mjs";
-import { claimRecordOf } from "../claim-stall.mjs";
-import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.mjs";
-import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
-import { subjectMention } from "../review-attribution.mjs";
-import { transcriptFiles, claudeTurns } from "../token-audit.mjs";
+// stayed behind also uses is IMPORTED from `work-gate.ts`, the cycle that module documents, safe while nothing here
+// reads an imported binding at load time. `work-gate.ts` re-exports every name this file exports that it exported before.
+import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.ts";
+import { claimRecordOf } from "../claim-stall.ts";
+import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
+import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";
+import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.ts";
+import { subjectMention } from "../review-attribution.ts";
+import { transcriptFiles, claudeTurns } from "../token-audit.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -154,7 +154,7 @@ function callsAfterWait(anchor, { count, threshold, waitClearedAt }) {
  * reports the count and stops there. A row at or under the threshold is left out entirely -- this names
  * split CANDIDATES, not every claimed row.
  *
- * @param {any[]} openRows @param {import("../token-audit.mjs").Turn[]} turns every live turn, any session
+ * @param {any[]} openRows @param {import("../token-audit.ts").Turn[]} turns every live turn, any session
  * @param {any[] | null} [claimedComments] the comments on every claimed row (`readClaimedRowComments`'s
  *   own shape, `{ number, comments }[]`), read once by the caller and reused rather than re-fetched here
  * @param {{ threshold?: number, now?: number, waitClearedAt?: (row: any) => number | null }} [options]
@@ -261,7 +261,7 @@ export function rowCallCountOrders(signals = []) {
 export const LIVE_TRANSCRIPT_HORIZON_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Every turn across every live `claude` transcript under `root` -- the SAME read `token-audit.mjs`'s own
+ * Every turn across every live `claude` transcript under `root` -- the SAME read `token-audit.ts`'s own
  * CLI and `split-baseline.mjs` make, reused rather than duplicated. `[]` for a missing root or an
  * unreadable file: a session whose transcript cannot be read contributes no call to any row's count, which
  * under-reports rather than guesses -- `claudeTurns`'s own rule (a partial line is skipped, not fatal)

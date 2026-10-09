@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, DEAD_OWNER_FALLBACK } from "./work-gate/pr-orders.mjs";
-import { routeWithFallback, deliver } from "./wake.mjs";
+import { routeWithFallback, deliver } from "./wake.ts";
 
 type Agent = { label: string, status: string };
 type Order = { session: string, fallback?: string, fallbackOnlyIfAbsent?: boolean, fallbackPrompt?: string, causeKey: string, prompt: string, cause: string };

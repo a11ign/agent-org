@@ -22,11 +22,11 @@
 // ONE WRITE PATH, ORDERED SO A FAILURE IS RECOVERABLE: the comment first (a label with no brief sends no alert), then the label, then the body edit. A comment already posted (a tick that
 // died after it) is not posted twice: it is found by `MARKER` and only the label and the edit are redone.
 //
-// A LEAF OF THE GATE: it imports no binding from `work-gate.mjs`, so the `gh` runner and the fact reader arrive as arguments.
-import { parseWaits, conditionHolds, isItemWait, waitItemOf } from "../wait-condition.mjs";
+// A LEAF OF THE GATE: it imports no binding from `work-gate.ts`, so the `gh` runner and the fact reader arrive as arguments.
+import { parseWaits, conditionHolds, isItemWait, waitItemOf } from "../wait-condition.ts";
 import { requestEvent, NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
 import { readReleaseFacts, registryDistTags, remoteTagExists } from "./held-on-satisfied-orders.mjs";
-import { subjectMention } from "../review-attribution.mjs";
+import { subjectMention } from "../review-attribution.ts";
 
 /** Which comment is the gate's own brief: found by this line, so a retried tick never posts a second one. */
 export const MARKER = "<!-- chairman-ask-on-clear -->";
@@ -40,7 +40,7 @@ const ASK_HEADER =/^[ \t]*#{0,6}[ \t]*Then-ask-chairman:[ \t]*(.*?)[ \t]*$/;
 const DECLARED_LINE = /^[ \t]*Declared:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$/m;
 
 /**
- * @typedef {{ item: import("../wait-condition.mjs").WaitItem, lines: string[], declaredOn: string | null, waits: import("../wait-condition.mjs").Wait[], problem: string | null }} Ask
+ * @typedef {{ item: import("../wait-condition.ts").WaitItem, lines: string[], declaredOn: string | null, waits: import("../wait-condition.ts").Wait[], problem: string | null }} Ask
  * A row's declared ask. `lines` are the brief's lines as written; `problem` is why it would never raise a usable alert, or `null`.
  */
 
@@ -90,7 +90,7 @@ function briefProblem(lines) {
   return requestEvent({ repo: "declared", row: { number: 0, title: "", url: "", comments: [comment] }, now: 0 }).problem;
 }
 
-/** @param {import("../wait-condition.mjs").Wait[]} waits @returns {string | null} why no condition here can ever come true, or `null` */
+/** @param {import("../wait-condition.ts").Wait[]} waits @returns {string | null} why no condition here can ever come true, or `null` */
 function conditionProblem(waits) {
   if (waits.length === 0) return "it declares no `Waiting-for:` line, so nothing says WHEN to ask";
   const unreadable = waits.filter((wait) => wait.state === "manual" || wait.state === "unreadable");
@@ -99,7 +99,7 @@ function conditionProblem(waits) {
 
 /**
  * THE ASK A ROW DECLARES, or `null` when it declares none.
- * @param {import("../wait-condition.mjs").WaitItem} item @returns {Ask | null}
+ * @param {import("../wait-condition.ts").WaitItem} item @returns {Ask | null}
  */
 export function askOf(item) {
   const roles = scan(item.body);
@@ -130,7 +130,7 @@ export function chairmanAskRefusal(body) {
 
 /**
  * WHAT THE TICK READ for one wait, in words, for the brief's `Condition true at` line.
- * @param {import("../wait-condition.mjs").Wait} wait @param {import("../wait-condition.mjs").WaitFacts} facts @returns {string}
+ * @param {import("../wait-condition.ts").Wait} wait @param {import("../wait-condition.ts").WaitFacts} facts @returns {string}
  */
 function readingOf(wait, facts) {
   if (isItemWait(wait)) return `${wait.text} (${facts.items[wait.key]?.state ?? "read"})`;
@@ -143,7 +143,7 @@ function readingOf(wait, facts) {
 
 /**
  * THE COMMENT THE TICK POSTS: the declared brief, then what the gate adds (when the condition was true and what it read) and what it did NOT check.
- * @param {Ask} ask @param {import("../wait-condition.mjs").WaitFacts} facts @param {number} now @returns {string}
+ * @param {Ask} ask @param {import("../wait-condition.ts").WaitFacts} facts @param {number} now @returns {string}
  */
 export function postedBrief(ask, facts, now) {
   return [briefOf(ask.lines), "",
@@ -155,7 +155,7 @@ export function postedBrief(ask, facts, now) {
 
 /**
  * THE ROWS TO CONSIDER: an open row of the first repository that declares an ask, does not already carry the label, and whose block is sound. A malformed one is `broken`, reported by name.
- * @param {import("../wait-condition.mjs").WaitItem[]} items @returns {{ sound: Ask[], broken: Ask[] }}
+ * @param {import("../wait-condition.ts").WaitItem[]} items @returns {{ sound: Ask[], broken: Ask[] }}
  */
 export function declaredAsks(items) {
   const asks = items.filter((item) => item.kind === "row" && item.repoKey === undefined && !item.labels.includes(NEEDS_CHAIRMAN)).flatMap((item) => askOf(item) ?? []);
@@ -164,7 +164,7 @@ export function declaredAsks(items) {
 
 /**
  * THE ASKS WHOSE EVERY CONDITION IS TRUE. One that is false, or unknown (a read that failed, a reference nobody read), waits.
- * @param {Ask[]} asks @param {import("../wait-condition.mjs").WaitFacts} facts @returns {Ask[]}
+ * @param {Ask[]} asks @param {import("../wait-condition.ts").WaitFacts} facts @returns {Ask[]}
  */
 export function dueAsks(asks, facts) {
   return asks.filter((ask) => ask.waits.every((wait) => conditionHolds(wait, facts) === true));
@@ -186,7 +186,7 @@ function briefAlreadyPosted({ run }, number) {
 
 /**
  * RAISE ONE ASK, in the order that survives a failure: comment, label, body edit. Returns whether the label went on, which is what `ceo` is told.
- * @param {Ask} ask @param {import("../wait-condition.mjs").WaitFacts} facts @param {number} now @param {Writer} io @returns {boolean}
+ * @param {Ask} ask @param {import("../wait-condition.ts").WaitFacts} facts @param {number} now @param {Writer} io @returns {boolean}
  */
 export function raiseAsk(ask, facts, now, io) {
   const { run, log = (line) => process.stderr.write(`${line}\n`) } = io;
@@ -238,7 +238,7 @@ function brokenOrder(ask) {
 }
 
 /**
- * @typedef {{ run: (args: string[]) => string, repo: () => string, readItemFacts: (input: { items: import("../wait-condition.mjs").WaitItem[], open: any[], run: (args: string[]) => string }) => import("../wait-condition.mjs").WaitFacts,
+ * @typedef {{ run: (args: string[]) => string, repo: () => string, readItemFacts: (input: { items: import("../wait-condition.ts").WaitItem[], open: any[], run: (args: string[]) => string }) => import("../wait-condition.ts").WaitFacts,
  *            limit: number, readers?: import("./held-on-satisfied-orders.mjs").ReleaseReaders, log?: (line: string) => void }} AskIo
  * `readItemFacts` is `readWaitFacts` (it lives in `org-health.mjs`, which is a cycle with the gate); `repo` names the remote a `tagged` wait reads; `limit` caps raises and orders per tick.
  */

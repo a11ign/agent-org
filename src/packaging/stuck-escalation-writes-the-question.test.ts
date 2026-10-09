@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, escalationMemory, sessionStateOf, MAX_DELIVERIES, REASK_AFTER_MS } from "../wake.mjs";
+import { escalateStuck, escalationMemory, sessionStateOf, MAX_DELIVERIES, REASK_AFTER_MS } from "../wake.ts";
 
 const KEY = "worker-3289/answer-owed/row-3289";
 const STUCK = [`${KEY}: delivered 6 times and the cause is still true`];

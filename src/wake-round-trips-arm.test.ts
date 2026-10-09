@@ -10,8 +10,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed, deliver, claimOrdersIn } from "./wake.mjs";
-import { armOf, tripsArmOf, ARM, TRIPS_ARM, CALM_FINISH_PARAGRAPH, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.mjs";
+import { addressed, deliver, claimOrdersIn } from "./wake.ts";
+import { armOf, tripsArmOf, ARM, TRIPS_ARM, CALM_FINISH_PARAGRAPH, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 
 const AT = 1_791_000_000_000;
 const NO_TRANSCRIPTS = join(tmpdir(), "a11y-4182-no-transcripts");

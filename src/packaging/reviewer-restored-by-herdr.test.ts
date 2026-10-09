@@ -17,9 +17,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { endFinishedReviewers, restoredReviewers, tearDownReviewers, reviewerPathsFrom, promptOnScreen, readPromptPanes, panePromptOrdersNow, PROMPT_SCREENS } from "../wake.mjs";
-import { panePromptReading, PANE_PROMPT_MINUTES, SIGNALS } from "../org-health.mjs";
-import { REPO } from "../project-identity.mjs";
+import { endFinishedReviewers, restoredReviewers, tearDownReviewers, reviewerPathsFrom, promptOnScreen, readPromptPanes, panePromptOrdersNow, PROMPT_SCREENS } from "../wake.ts";
+import { panePromptReading, PANE_PROMPT_MINUTES, SIGNALS } from "../org-health.ts";
+import { REPO } from "../project-identity.ts";
 
 const T0 = 1_791_000_000_000;
 const STUB_MODE = 0o755;

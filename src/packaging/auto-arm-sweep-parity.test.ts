@@ -1,4 +1,4 @@
-// no-token: gh -- `sweepDecision` is pure. `auto-arm-sweep.mjs`'s `gh` helper is in the import closure because it is
+// no-token: gh -- `sweepDecision` is pure. `auto-arm-sweep.ts`'s `gh` helper is in the import closure because it is
 // in the module, and nothing here calls it: no `main()`, no spawn, no `gh` on any path.
 //
 // #2195, in its OWN file rather than beside the #827 tests in `auto-arm-sweep.test.ts`: that file declares the same
@@ -7,8 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { sweepDecision } from "../auto-arm-sweep.mjs";
-import { PARITY, parityOwner } from "../review-attribution.mjs";
+import { sweepDecision } from "../auto-arm-sweep.ts";
+import { PARITY, parityOwner } from "../review-attribution.ts";
 
 const pr = (over: Partial<{ labels: string[]; checkRunCount: number }> = {}) =>
   ({ labels: [], checkRunCount: 9, ...over });

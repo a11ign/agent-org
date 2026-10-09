@@ -74,18 +74,18 @@ test("the ratchet RUNS: the baseline sits at the repository root and the tree it
   const result = checkMjsRatchet({ from: JUDGED });
   assert.ok(result.count > 0, "the check counted no file at all");
   assert.ok(result.baselineCount > 0, "the committed baseline lists no file at all");
-  assert.ok(scriptFilesIn(root).some((path) => path === "src/work-gate.mjs"), "the listing no longer finds a source file that is known to be there");
+  assert.ok(scriptFilesIn(root).some((path) => path === "src/lib/git-env.mjs"), "the listing no longer finds a source file that is known to be there");
 });
 
 test("a baseline with one name removed FAILS and names the file", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
   const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const removed = "work-gate.mjs";
+  const removed = "git-env.mjs";
   const index = baseline.files.indexOf(removed);
   assert.notEqual(index, -1, `${removed} is not in the committed baseline, so this control proves nothing`);
   const result = judgeScratch({ files, baseline: { ...baseline, files: baseline.files.filter((_, at) => at !== index) } });
   assert.equal(result.ok, false);
-  assert.match(result.message, /work-gate\.mjs/);
+  assert.match(result.message, /git-env\.mjs/);
 });
 
 test("the same tree against an EMPTIED baseline fails and names every file", () => {
@@ -97,7 +97,7 @@ test("the same tree against an EMPTIED baseline fails and names every file", () 
 
 test("a tree that holds FEWER files than the baseline passes and says the baseline can be lowered", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const result = judgeScratch({ files: files.filter((path) => basename(path) !== "work-gate.mjs"), baseline: baselineAt(findBaselineRoot(JUDGED)) });
+  const result = judgeScratch({ files: files.filter((path) => basename(path) !== "git-env.mjs"), baseline: baselineAt(findBaselineRoot(JUDGED)) });
   assert.equal(result.ok, true, result.message);
   assert.match(result.message, /lower/i);
   assert.ok(result.count < result.baselineCount, "the check did not see a tree smaller than its baseline");
@@ -106,9 +106,9 @@ test("a tree that holds FEWER files than the baseline passes and says the baseli
 test("an exception with no `why` FAILS", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
   const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.mjs", why: "a tool that reads only this name" }] } });
+  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "a tool that reads only this name" }] } });
   assert.doesNotMatch(withWhy.message, /has no `why`/, "an exception with a reason is not refused for lacking one");
-  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.mjs", why: "" }] } });
+  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "" }] } });
   assert.equal(withoutWhy.ok, false);
   assert.match(withoutWhy.message, /has no `why`/);
 });

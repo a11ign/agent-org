@@ -15,8 +15,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { regionPathsFromBody, trackedTopLevelDirs } from "../region-paths.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { regionPathsFromBody, trackedTopLevelDirs } from "../region-paths.ts";
 
 /** Commit `files` (paths with a directory) into `box`. */
 function seed(box: GitSandbox, files: string[]): void {

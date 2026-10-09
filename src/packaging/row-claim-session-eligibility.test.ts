@@ -8,11 +8,11 @@
  * edge) -- independent of who (if anyone) already holds the row being claimed. All three fail OPEN on a
  * lookup failure, the opposite of `decideClaim`'s own "unclaimed must be earned" rule: this protects a
  * session's ability to claim ANYTHING when the network is down, the identical reasoning
- * `merge-guard.mjs`'s `racesAnArmedMerge` states for the same choice made the same way.
+ * `merge-guard.ts`'s `racesAnArmedMerge` states for the same choice made the same way.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.mjs";
+import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.ts";
 
 /**
  * ONE `run` MOCK ROUTING BY SUBCOMMAND SHAPE, since `sessionEligibilityReason` makes several distinct
@@ -117,8 +117,8 @@ test("#476's own acceptance shape: the same session with that PR MERGED is allow
 
 test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", () => {
   const run = routedRun({
-    issueViewBody: "Region: `packages/agent-org/src/merge-guard.mjs`.",
-    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]),
+    issueViewBody: "Region: `packages/agent-org/src/merge-guard.ts`.",
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]),
   });
   const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason);
@@ -127,8 +127,8 @@ test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to 
 
 test("#462's own POSITIVE CONTROL: remove the overlap, end to end, and it goes quiet", () => {
   const run = routedRun({
-    issueViewBody: "Region: `packages/agent-org/src/row-claim.mjs`.",
-    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]),
+    issueViewBody: "Region: `packages/agent-org/src/row-claim.ts`.",
+    prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]),
   });
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
 });
@@ -411,14 +411,14 @@ test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than 
   assert.match(reason, /#472 is IN BUILD/);
   assert.match(reason, /--blocked-by=#731 did not apply/);
   assert.match(reason, /no PR of this session's own to attach a measurement comment to/);
-  assert.match(reason, /`row-claim\.mjs decline <n> --session=<name>`/,
+  assert.match(reason, /`row-claim\.ts decline <n> --session=<name>`/,
     "product-manager's ruling on #1012: naming the missing PR alone is a refusal nobody can follow, because "
     + "an in-build row has no PR and none is coming. It must name the door that exists.");
 });
 
 test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap), not B2, must not apply "
   + "-- the override is specific to the claimant's own PR being unhealthy", () => {
-  const body = "## Region\n\n`packages/agent-org/src/merge-guard.mjs`.\n\n## Acceptance\n\nSomething checkable.\n\n"
+  const body = "## Region\n\n`packages/agent-org/src/merge-guard.ts`.\n\n## Acceptance\n\nSomething checkable.\n\n"
     + "## Open-check\n\nSomething runnable.\n";
   const run = (cmd: string, args: string[]): string => {
     // `issue view` is asked for two different `--json` shapes here (labels, then `body` for both #707's
@@ -430,7 +430,7 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
       return JSON.stringify({ number: 700, title: "A row", labels: [] });
     }
     if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.mjs" }] }]);
+      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]);
     }
     return "[]";
   };
@@ -600,7 +600,7 @@ test("#2126: a FAILED review-health read refuses nothing, the way every lookup h
 
 // --- #2769: `--adopt` TELLS B4 WHICH BRANCH IT IS RE-STAMPING, so the row's own `Closes: none` split PR is not a competitor ---
 
-const SPLIT_REGION_FILE = "packages/agent-org/src/row-claim.mjs";
+const SPLIT_REGION_FILE = "packages/agent-org/src/row-claim.ts";
 const SPLIT_BRANCH = "agent/reachable-region-2760";
 /** #2766's real shape: an open PR on the row's Region file that declares `Closes: none`, from the branch being adopted. */
 const splitPrList = JSON.stringify([{ number: 2766, changedFiles: 1, files: [{ path: SPLIT_REGION_FILE }],

@@ -1,8 +1,8 @@
 // no-token: gh -- every `gh` here is a fake first on PATH that keeps its state in a JSON file, and no test lets the real one run.
 /**
- * `pr-hold.mjs` AND THE GATE'S HOLD-LIFT FOR A PULL REQUEST OF ANY REPOSITORY THE PROJECT DECLARES, #3479.
+ * `pr-hold.ts` AND THE GATE'S HOLD-LIFT FOR A PULL REQUEST OF ANY REPOSITORY THE PROJECT DECLARES, #3479.
  *
- * THE INCIDENT (2026-10-04): `a11ign/agent-org` #149 and #150 had to wait for #148, and the remedy that clears itself, a hold, did not exist for them. `pr-hold.mjs`
+ * THE INCIDENT (2026-10-04): `a11ign/agent-org` #149 and #150 had to wait for #148, and the remedy that clears itself, a hold, did not exist for them. `pr-hold.ts`
  * built every `gh` call from the first repository, so `pr:hold 149` held `a11ign/a11ign#149`; `ceo` created `hold:ceo` in `agent-org` and wrote the marker comment
  * by hand, and the gate, which refused any keyed pull request, would have ordered `ceo` to remove it again once #148 merged.
  *
@@ -11,6 +11,7 @@
  * would pass for a command that writes nothing anywhere. The CLI half runs against a fixture project so its declared keys are exact; the lift half reads the
  * host's declaration like its sibling `gate-lifts-resolved-holds.test.ts`, and asserts first that it declares `agent-org`.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,14 +19,14 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.mjs";
-import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.mjs";
+import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.ts";
+import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
 import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.mjs";
 
 const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";
 const KEYED = "a11ign/agent-org";
-const CLI = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const PR = "149";
 
 // --- the CLI, against a fake `gh` that keeps one pull request PER REPOSITORY under the same number ---------------------------------
@@ -33,7 +34,7 @@ const PR = "149";
 type FakePr = { labels: string[]; comments: string[]; armed: boolean };
 type FakeState = { repos: Record<string, { prs: Record<string, FakePr> }>; calls: string[][] };
 
-/** Answers `pr-hold.mjs`'s calls for the repository `--repo` names, or the first's when a call carries none (a real `gh` would use the working directory's). */
+/** Answers `pr-hold.ts`'s calls for the repository `--repo` names, or the first's when a call carries none (a real `gh` would use the working directory's). */
 const FAKE_GH = `#!/usr/bin/env node
 const fs = require("node:fs");
 const file = process.env.FAKE_GH_STATE;
@@ -78,7 +79,7 @@ const heldPr = (): FakePr => ({ labels: ["hold:ceo", "rearm-on-release"], commen
 const BOTH_HELD = (): FakeState["repos"] => ({ [FIRST]: { prs: { [PR]: heldPr() } }, [KEYED]: { prs: { [PR]: heldPr() } } });
 const BOTH_FREE = (): FakeState["repos"] => ({ [FIRST]: { prs: { [PR]: { labels: [], comments: [], armed: true } } }, [KEYED]: { prs: { [PR]: { labels: [], comments: [], armed: true } } } });
 
-/** Runs `pr-hold.mjs` with the fake first on PATH, and returns what it said and what the fake's repositories hold afterwards. */
+/** Runs `pr-hold.ts` with the fake first on PATH, and returns what it said and what the fake's repositories hold afterwards. */
 function hold(repos: FakeState["repos"], ...argv: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "pr-hold-3479-"));
   try {
@@ -86,7 +87,7 @@ function hold(repos: FakeState["repos"], ...argv: string[]) {
     writeFileSync(state, JSON.stringify({ repos, calls: [] }));
     writeFileSync(join(dir, "gh"), FAKE_GH);
     chmodSync(join(dir, "gh"), EXECUTABLE);
-    const result = spawnSync(process.execPath, [CLI, ...argv], { encoding: "utf8",
+    const result = spawnSync(process.execPath, [...TSX_IMPORT, CLI, ...argv], { encoding: "utf8",
       env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir, FAKE_GH_STATE: state, AGENT_ORG_HOST: fixtureProject(dir) } });
     const after = JSON.parse(readFileSync(state, "utf8")) as FakeState;
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, repos: after.repos, calls: after.calls.map((c) => c.join(" ")) };

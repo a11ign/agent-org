@@ -1,12 +1,12 @@
 [Unit]
-# THE WORKTREE LIFECYCLE'S CLOCK -- #2000. `prune-worktrees.mjs` has existed since 2026-09-09, carries 45k
+# THE WORKTREE LIFECYCLE'S CLOCK -- #2000. `prune-worktrees.ts` has existed since 2026-09-09, carries 45k
 # of measured refusals, and NOTHING EVER RAN IT. Measured on this host 2026-09-22: 143 worktrees, 133
 # carrying a trailing row number, 124 of those belonging to CLOSED rows, `~/repos` at 16G, oldest leaked
 # tree 9 days old. The tool's own header already records what the prose rule cost -- `dispatcher` pruned 28
 # trees by hand and 36 were back the next day -- and this is that rule's missing half.
 #
 # THE THIRD INSTANCE OF ONE SHAPE IN A DAY, after the fleet scheduler (#1858) and the corpus release
-# nightly: the mechanism was built, tested and shipped, and never wired to a caller. `host-units.mjs`
+# nightly: the mechanism was built, tested and shipped, and never wired to a caller. `host-units.ts`
 # reports shipped-but-uninstalled units precisely because shipping the file is not the wiring.
 Description=a11ign: remove fully-merged, clean, inactive worktrees (worktrees:prune --apply)
 After=herdr.service
@@ -36,9 +36,9 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 
 # THIS UNIT DECLARES AN ACCOUNT SINCE #2782, AND THE REASON IS ONE READ PER REMOVAL, NOT A CHANGE OF PURPOSE.
 #
-# It used to carry no `Environment=GH_CONFIG_DIR=` line, deliberately: `prune-worktrees.mjs` reached no `gh` spawn, its whole
+# It used to carry no `Environment=GH_CONFIG_DIR=` line, deliberately: `prune-worktrees.ts` reached no `gh` spawn, its whole
 # predicate was `git merge-base --is-ancestor` against `origin/main`, and `ceo`'s 2026-09-22 ruling on #1950 refused a
-# `work-gate.mjs` cause for this chore BECAUSE it cost no API budget and needed no judgment. `wt-2623` was then deleted
+# `work-gate.ts` cause for this chore BECAUSE it cost no API budget and needed no judgment. `wt-2623` was then deleted
 # under its live claim twice, and #2020's `.a11y-owner` check could not have stopped it: the stamp is a COPY of the claim and
 # a claim's re-creation loses it. The row's `session:` label is the fact, so the prune now reads it (#2782, done-when 3) --
 # `gh issue view <row>` for a tree every other check has already passed for removal, and for no other.

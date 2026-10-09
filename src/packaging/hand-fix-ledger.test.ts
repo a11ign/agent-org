@@ -15,8 +15,8 @@ import assert from "node:assert/strict";
 import {
   ORG_LOGINS, AUTOMATION_LOGINS, buildLedger, classifyLogin, declarationsIn, declarationRefusal, gatherChanges,
   judgeChange, ledgerLine, readLedger, trendOf, HAND_FIX_FORMAT,
-} from "../hand-fix-ledger.mjs";
-import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.mjs";
+} from "../hand-fix-ledger.ts";
+import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.ts";
 
 const EM = "—";
 const NOW = new Date("2026-10-01T22:00:00Z");
@@ -90,7 +90,7 @@ test("#2939 a PR is counted ONCE however many commits it carries: three human co
 });
 
 test("#2939 a `Hand-fix:` line is counted ONCE even when the author field counts it too, and says it was both", () => {
-  const body = `## What\n\nHand-fix: the gate should have filed the stale row ${EM} work-gate.mjs's stale-row question\n`;
+  const body = `## What\n\nHand-fix: the gate should have filed the stale row ${EM} work-gate.ts's stale-row question\n`;
   const both = buildLedger([change({ number: 50, author: "DanBeckDev", actors: ["DanBeckDev"], body })]);
   assert.equal(both.count, 1);
   assert.equal(both.both, 1);
@@ -99,7 +99,7 @@ test("#2939 a `Hand-fix:` line is counted ONCE even when the author field counts
   assert.equal(declaredOnly.count, 1, "an org account's PR is counted by its declaration, which the author field cannot see");
   assert.equal(declaredOnly.declared, 1);
   assert.deepEqual(declaredOnly.entries[0].declared, [
-    { did: "the gate should have filed the stale row", gate: "work-gate.mjs's stale-row question" }]);
+    { did: "the gate should have filed the stale row", gate: "work-gate.ts's stale-row question" }]);
 });
 
 // --- the format -----------------------------------------------------------------------------------------------------
@@ -141,7 +141,7 @@ test("#2939 pr-open ACCEPTS a well-formed Hand-fix line, and a body with none is
   assert.equal(declarationRefusal("Closes #1\n"), null);
   assert.equal(declarationRefusal(`Closes #1\nHand-fix: a ${EM} b\n`), null);
   const sent: string[][] = [];
-  const body = `## Acceptance\n\nnode -e "process.exit(0)"\n\nCloses #2939\nHand-fix: the gate should have filed it ${EM} work-gate.mjs\n`;
+  const body = `## Acceptance\n\nnode -e "process.exit(0)"\n\nCloses #2939\nHand-fix: the gate should have filed it ${EM} work-gate.ts\n`;
   const code = prOpen(["create", "--draft", "--body", body], {
     run: (a: string[]) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
     runAcceptance: () => 0, runMutation: () => 0, owner: () => null, out: () => {}, err: () => {},

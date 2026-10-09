@@ -17,14 +17,16 @@
  *
  * THE PROBE COMMAND IS `worktrees:prune`, NOT `row-file --help` (the row's wording): `row-file` refuses without `--session=`, and every program
  * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.mjs`: "an ignored flag runs the default and reports success"), so no command
- * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.mjs`, so it exits 0 exactly when the project resolved.
+ * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.ts`, so it exits 0 exactly when the project resolved.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
@@ -114,16 +116,24 @@ function pnpm(cwd: string, ...args: string[]) {
   return spawnSync("pnpm", [...args], { cwd, encoding: "utf8", env: cleanEnv(), timeout: PNPM_TIMEOUT_MS });
 }
 
+/**
+ * The `tsx` THIS run loads, which the installed tool is handed in place of a registry copy. The tool depends on `tsx` (`bin.mjs` loads it), and `pnpm add --offline`
+ * resolves it from a metadata cache a CI runner does not have; a `link:` override needs no registry and still gives `bin.mjs` a real loader to resolve beside itself.
+ */
+function runningTsx(): string {
+  return dirname(createRequire(import.meta.url).resolve("tsx/package.json"));
+}
+
 /** An empty project, with or without its own `typescript`, that has `agent-org` installed from the tagged repository. */
 function installedProject({ withTypescript }: { withTypescript: boolean }) {
   const project = projectRepository();
-  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true }));
+  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true, pnpm: { overrides: { tsx: `link:${runningTsx()}` } } }));
   const typescript = withTypescript ? [`typescript@file:${fixtureTypescript()}`] : [];
   const added = pnpm(project, "add", "--offline", "-D", ...typescript, `agent-org@git+file://${taggedTool()}#semver:^0.1.0`);
   return { project, added };
 }
 
-/** `project-config.mjs` resolves its checkout when it is IMPORTED, so a tree with no project cannot import it: seed a host for the import alone.
+/** `project-config.ts` resolves its checkout when it is IMPORTED, so a tree with no project cannot import it: seed a host for the import alone.
  * It is done BEFORE any test is registered: a top-level `await` after a `test(` lets the first tests finish, and `test.after` delete the seeded host, mid-import. */
 if (process.env[HOST_VARIABLE] === undefined || process.env[HOST_VARIABLE] === "") {
   const seeded = projectRepository();
@@ -131,14 +141,14 @@ if (process.env[HOST_VARIABLE] === undefined || process.env[HOST_VARIABLE] === "
   writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "p", projects: [{ id: "p", checkout: seeded }] }));
   process.env[HOST_VARIABLE] = hostFile;
 }
-const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.mjs");
+const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.ts");
 
 const installed = installedProject({ withTypescript: true });
 const toolDir = (project: string) => join(project, "node_modules", "agent-org");
 const binOf = (project: string) => join(toolDir(project), "src", "bin.mjs");
 
 function runInstalled(cwd: string, ...args: string[]) {
-  return spawnSync(process.execPath, [binOf(installed.project), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
+  return spawnSync(process.execPath, [...TSX_IMPORT, binOf(installed.project), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
 }
 
 test("(a) the tool installs through `pnpm add -D` as a git dependency pinned by `#semver:`", () => {
@@ -161,7 +171,7 @@ test("(a) a subdirectory of the project is the same project: the repository, not
 
 test("(a) `typescript` resolves to the PROJECT's, through the installed tool, with no NODE_PATH", () => {
   const url = pathToFileURL(join(toolDir(installed.project), "src", "lib", "resolve-typescript.mjs")).href;
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
     { cwd: installed.project, encoding: "utf8", env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), FIXTURE_TYPESCRIPT);
@@ -247,7 +257,7 @@ for (const row of STANDALONE_REFUSED) {
   test(`layout table, ${HOST_VARIABLE} unset: the tool's own checkout run in ${row.where} still REFUSES naming the variable (#3039)`, () => {
     assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: standaloneTool, beside: upThree(standaloneTool), cwd: row.cwd() }), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
-      assert.equal(error.field, HOST_VARIABLE);
+      assert.equal((error as any).field, HOST_VARIABLE);
       assert.ok(error.message.includes(PROJECT_FILE), error.message);
       return true;
     });
@@ -263,7 +273,7 @@ test("layout table, installed, run where no declaration is: REFUSES naming the f
   const bare = bareRepository();
   assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: installedTool, beside: upThree(installedTool), cwd: bare }), (error: unknown) => {
     assert.ok(error instanceof ProjectDeclarationRefusal);
-    assert.equal(error.field, PROJECT_FILE);
+    assert.equal((error as any).field, PROJECT_FILE);
     assert.ok(error.message.includes(bare) && error.message.includes(PROJECT_FILE), error.message);
     return true;
   });

@@ -10,7 +10,7 @@
 // sequence, the other wants every flag — but they are now two readings of ONE list. Adding a call to
 // `updatePrimary` fails both until this constant moves, and moving this constant satisfies both at once.
 //
-// NOT DERIVED FROM `update-primary.mjs`. A list read out of the source it describes asserts that the code
+// NOT DERIVED FROM `update-primary.ts`. A list read out of the source it describes asserts that the code
 // equals itself, which is the tautology a pinned-argv test exists to avoid. This is a WRITTEN expectation
 // that a human has to change deliberately, and the deliberateness is the point.
 

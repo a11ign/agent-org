@@ -24,12 +24,12 @@
 // ONE API MESSAGE IS WRITTEN ONCE PER CONTENT BLOCK (measured: 23 assistant records were 8 message ids in one live transcript). A reader that sums every record
 // double counts, so a turn is built per `message.id` from its LAST record, whose `output_tokens` is the final figure.
 //
-// IT READS `wakes-per-row.mjs`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
+// IT READS `wakes-per-row.ts`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
 // transcript is walked here once more for the records this store needs; the wake record it yields is `isWake`'s, the same test.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { sessionOf } from "../token-audit.mjs";
-import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.mjs";
+import { sessionOf } from "../token-audit.ts";
+import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.ts";
 
 export const DEFINITIONS = [
   "EVENT: one record in the store, `kind` turn | wake | compaction | gh_call | deferral, or one of GitHub's (`GITHUB_KINDS`). A record is never edited; running the ingest twice adds nothing, because every record has a stable `id`.",
@@ -199,9 +199,9 @@ export function subjectOfSession(session, rowRepo) {
 }
 
 /**
- * One event per ended deferral of the gate's log (`deferral-log.mjs`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
+ * One event per ended deferral of the gate's log (`deferral-log.ts`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
  * again) is the one event. `at` is the END, which is when the store learned of it; the start is `startedAt`.
- * @param {import("../deferral-log.mjs").EndedDeferral[]} spans @param {string} rowRepo
+ * @param {import("../deferral-log.ts").EndedDeferral[]} spans @param {string} rowRepo
  * @returns {TraceEvent[]}
  */
 export function eventsOfDeferrals(spans, rowRepo) {
@@ -311,7 +311,7 @@ const transcriptId = (file) => (file.split("/").pop() ?? file).replace(/\.jsonl$
  * `consumed` is how many bytes of `text` are turned into events (the rest is a half-written line or a message that may still be gaining blocks), so a caller that
  * resumes at `consumed` sees every event exactly as one read of the whole file would have given it. `now` defaults to "nothing is young": a caller that reads
  * a finished file in one piece holds nothing back.
- * @param {{ text: string, file: string, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, carry?: Carry | null, now?: number }} input
+ * @param {{ text: string, file: string, ledger: import("../wakes-per-row.ts").LedgerEntry[], rowRepo: string, carry?: Carry | null, now?: number }} input
  * @returns {{ session: string, events: TraceEvent[], unreadable: number, carry: Carry, consumed: number, held: number, settleAt: number | null, namedLate: boolean }}
  */
 export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, now = Number.POSITIVE_INFINITY }) {

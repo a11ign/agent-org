@@ -1,6 +1,6 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3591)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3591)
 /**
- * `src/dora.mjs`, a11ign/a11ign#3591: A RELEASE WITH NO `gitHead` AND NO TAG TAKES ITS COMMIT FROM ITS PROVENANCE ATTESTATION, AND A NAME RESERVATION IS NOT A RELEASE.
+ * `src/dora.ts`, a11ign/a11ign#3591: A RELEASE WITH NO `gitHead` AND NO TAG TAKES ITS COMMIT FROM ITS PROVENANCE ATTESTATION, AND A NAME RESERVATION IS NOT A RELEASE.
  *
  * The retro of 2026-10-05 read `unknown -- ancestry of #13 could not be read` every day for three repositories: a package published through CI provenance
  * has no `gitHead` in its registry document and its repository has no tag, so its release had no commit and a recent release that cannot be placed is
@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commitFromAttestations, isNameReservation, measureRepository, npmReleasesFrom } from "./dora.mjs";
-import { homeProjectDeclaration } from "./project-config.mjs";
+import { commitFromAttestations, isNameReservation, measureRepository, npmReleasesFrom } from "./dora.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;

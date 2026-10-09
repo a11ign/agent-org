@@ -1,9 +1,9 @@
 // no-token: clearContext -- every herdr call is the injected `run`; nothing here reaches gh or a real session
 // THE CLEAR THAT THE DOCUMENTED PATH SKIPPED.
 //
-// `wake.mjs` clears a session before every order the gate delivers -- 690k -> 37k input tokens on a real
+// `wake.ts` clears a session before every order the gate delivers -- 690k -> 37k input tokens on a real
 // session. But `agent-practices.md` told the AUTHOR of a draft to prompt the parity reviewer with a raw
-// `herdr --session org agent prompt`, which never passes through `wake.mjs` and therefore never clears.
+// `herdr --session org agent prompt`, which never passes through `wake.ts` and therefore never clears.
 //
 // MEASURED 2026-09-19 on a real `reviewer` transcript: six reviews in one unbroken session -- #1765,
 // #1767, #1769, #1771, #1775, #1777 -- of which only #1765 arrived through the gate. 2.29M cached input
@@ -16,8 +16,8 @@ import { join } from "node:path";
 import { promptable, clearThenPrompt as settlingClearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
   deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT, senderName, resolveSender, attributed,
   deliveredText }
-  from "../prompt-session.mjs";
-import { readHandoffs, handoffOrder, addressed } from "../wake.mjs";
+  from "../prompt-session.ts";
+import { readHandoffs, handoffOrder, addressed } from "../wake.ts";
 
 import { readLoadedRules } from "./rules-files.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
@@ -132,7 +132,7 @@ test("the exit codes distinguish a LOST order from a QUEUED one", () => {
 // been told about, while the author believed they had told someone.
 //
 // So these do not assert a message. They assert that the FILE THE NEXT TICK READS has the order in it:
-// a `prompt-session.mjs` that goes back to printing `NOT PROMPTED` and exiting fails every one.
+// a `prompt-session.ts` that goes back to printing `NOT PROMPTED` and exiting fails every one.
 
 test("A REFUSED PROMPT IS WRITTEN TO THE QUEUE, and the file is the one wake reads", () => {
   inTempDir((dir) => {
@@ -416,7 +416,7 @@ test("the flag the rules file tells an author to type is the flag this command a
   // same shape as a refusal quoting a rule nobody wrote, which is why the row asks for both halves.
   assert.equal(NEEDS_DECISION_FLAG, "--needs-decision");
   const source = readFileSync(
-    new URL("../prompt-session.mjs", import.meta.url), "utf8");
+    new URL("../prompt-session.ts", import.meta.url), "utf8");
   assert.match(source,
     /refuseUnknownFlags\(\["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG\]/,
     "the flag is declared to the unknown-flag guard, or typing it is refused before it is read");
@@ -475,10 +475,10 @@ test("THE TEXT IS `addressed`'s OWN OUTPUT -- the one function, compared, not a 
 test("there is ONE copy of the autonomy footer in the agent-org sources (with its positive control)", () => {
   const sentence = "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING";
   const dir = new URL("../", import.meta.url);
-  const holders = readdirSync(dir).filter((f) => f.endsWith(".mjs"))
+  const holders = readdirSync(dir).filter((f) => /\.(mjs|ts)$/.test(f))
     .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(sentence));
-  assert.deepEqual(holders, ["wake.mjs"],
-    "the control: wake.mjs holds it, so an empty result would mean the scan is blind, not that it is unique");
+  assert.deepEqual(holders, ["wake.ts"],
+    "the control: wake.ts holds it, so an empty result would mean the scan is blind, not that it is unique");
 });
 
 test("BOTH DIRECTIONS: a caller the roster does not list is named unknown, never another session, and is delivered", () => {

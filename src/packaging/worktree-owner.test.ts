@@ -9,6 +9,7 @@
  * would test the string handling while leaving the thing that failed — a real tree with no owner
  * recorded — untouched.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -17,8 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../worktree-owner.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { stampWorktree, worktreeOwner, whoseWorktree, OWNER_FILE } from "../worktree-owner.ts";
 
 // The PROJECT's checkout: the stamp file is ignored by the project's `.gitignore` (the "reads CLEAN" test below depends on it), and the worktrees are
 // the project's.
@@ -87,7 +88,7 @@ test("#1128: an empty stamp file is UNSTAMPED, not an owner named the empty stri
 
 /** The CLI, run the way a session runs it -- argv and env, never the exported functions. */
 function cli(args: string[], env: Record<string, string | undefined>) {
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL("../worktree-owner.mjs", import.meta.url)), ...args],
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, fileURLToPath(new URL("../worktree-owner.ts", import.meta.url)), ...args],
     { encoding: "utf8", env: { ...process.env, ...sandboxGitEnv(), ...env } });
   return { status: result.status, out: result.stdout, err: result.stderr };
 }
@@ -131,7 +132,7 @@ test("#1128: `--stamp` with no A11Y_SESSION REFUSES and writes nothing", () => {
 });
 
 test("#1128: a stamped worktree still reads CLEAN to `git status --porcelain`", () => {
-  // NOT COSMETIC. `prune-worktrees.mjs`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
+  // NOT COSMETIC. `prune-worktrees.ts`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
   // counts untracked files -- so an unignored stamp would make every stamped tree read dirty and no tree
   // would ever be reported safe to delete again. The remedy is the `.gitignore` entry, and this drives it
   // rather than trusting that the entry is spelled right.

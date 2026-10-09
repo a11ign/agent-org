@@ -11,6 +11,7 @@
  *
  * A clear costs five seconds (`CLEAR_SETTLE_MS`), so the control tests hold the file's runtime.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, utimesSync } from "node:fs";
@@ -19,8 +20,8 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, isPerRowInstance, clearBeforeOrder, ledgerLine, ledgerKeyOf, readLedger,
-  NO_CLEAR_NOTE, compactContext, instanceCacheRead, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
-import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.mjs";
+  NO_CLEAR_NOTE, compactContext, instanceCacheRead, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -58,7 +59,7 @@ function transcriptRootFor(label: string, cacheRead: number): string {
   return dir;
 }
 
-const PROMPT_SESSION = fileURLToPath(new URL("../prompt-session.mjs", import.meta.url));
+const PROMPT_SESSION = fileURLToPath(new URL("../prompt-session.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const STANDING = ["ceo", "product-manager", "orchestrator", "worker-tooling"];
 const INSTANCES = ["worker-4", "worker-11", "reviewer-2456"];
@@ -176,7 +177,7 @@ function cli(label: string) {
     const git = join(dir, "git");
     writeFileSync(git, "#!/bin/sh\nexit 1\n");
     chmodSync(git, STUB_MODE);
-    const res = spawnSync(process.execPath, [PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
+    const res = spawnSync(process.execPath, [...TSX_IMPORT, PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it: without it the
       // child dies on a ProjectDeclarationRefusal before it reaches herdr, and this test asserts on herdr's calls.
       encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST },

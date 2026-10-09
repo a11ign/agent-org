@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/disk-headroom.mjs` and its wiring in `work-gate.mjs`, #2163: THE GATE WATCHES FREE BYTES
+ * `packages/agent-org/src/disk-headroom.ts` and its wiring in `work-gate.ts`, #2163: THE GATE WATCHES FREE BYTES
  * AND FREE INODES ON `/` AND `/tmp`.
  *
  * THE OUTAGE, 2026-09-25: `/tmp` ran out of INODES (1,048,576 of 1,048,576) at 73% of its bytes, and every session
@@ -13,6 +13,7 @@
  * (a) and (b) are what stop (c) being a detector that never fires; (c) and (d) are what stop (a) and (b) being one
  * that always does.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -20,15 +21,15 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { diskHeadroom, lowResources, readFilesystems, MIN_FREE_FRACTION, WATCHED_MOUNTS } from "./disk-headroom.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, diskHeadroomOrders, diskHeadroomTick } from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+import { diskHeadroom, lowResources, readFilesystems, MIN_FREE_FRACTION, WATCHED_MOUNTS } from "./disk-headroom.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, diskHeadroomOrders, diskHeadroomTick } from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 
 const BLOCK = 4096;
 const TOTAL = 1000;
-const GATE_ENTRY = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
-import { SETTLE_TEST_CLOCK_ENV } from "./wake.mjs";
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
+import { SETTLE_TEST_CLOCK_ENV } from "./wake.ts";
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const READ_ONLY = 0o444;
 
@@ -128,7 +129,7 @@ test("#2163: the order goes to `ceo`, is keyed on WHICH resource of WHICH filesy
   assert.equal(order.causeKey, "ceo/disk-headroom-low/root+tmp:inodes");
   assert.match(order.prompt, /FREE INODES: 0 of 1,000 \(0\.0%\)/);
   assert.match(order.prompt, /df -i \/ \/tmp/, "the inode reading is named -- `df -h` alone cannot see this outage");
-  assert.match(order.prompt, /prune-tmp\.mjs/);
+  assert.match(order.prompt, /prune-tmp\.ts/);
   assert.deepEqual(diskHeadroomOrders([]), [], "nothing low, no order");
 });
 
@@ -203,7 +204,7 @@ function gateProcess({ ghWorks }: { ghWorks: boolean }) {
       : "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeFileSync(join(dir, "preload.cjs"), PRELOAD);
-    const ran = spawnSync(process.execPath, ["--require", join(dir, "preload.cjs"), GATE_ENTRY], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, "--require", join(dir, "preload.cjs"), GATE_ENTRY], { encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as { cause: string });
     return { ran, orders };
@@ -228,9 +229,9 @@ test("#2163: when GitHub cannot be read the gate still says DISK LOW -- a CANNOT
 
 // --- WHAT `wake` DOES WHEN ITS OWN WRITES THROW (#2163 done-when 4) -----------------------------------------------
 //
-// MEASURED 2026-09-25 with the real `wake.mjs` and a `herdr` stub. A full disk breaks the writes `wake` makes, and
+// MEASURED 2026-09-25 with the real `wake.ts` and a `herdr` stub. A full disk breaks the writes `wake` makes, and
 // the two it makes around a delivery fail differently. These are CHARACTERISATION, not a specification: they pin
-// what the tick does TODAY so the claim in `work-gate.mjs` is checked rather than remembered, and whoever makes
+// what the tick does TODAY so the claim in `work-gate.ts` is checked rather than remembered, and whoever makes
 // `wake`'s writes non-fatal is expected to update them (the gap is named on #2163). Both need a writable-file check
 // that a superuser passes, so they are skipped under root WITH the reason, and the writable case below is the control.
 
@@ -251,7 +252,7 @@ function wakeProcess(lock: "none" | "wake-emitted" | "wake-ledger") {
       chmodSync(join(dir, lock), READ_ONLY);
     }
     writeFileSync(herdrLog, "");
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], { encoding: "utf8",
       input: `${JSON.stringify(ORDER)}\n`, env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     const prompts = readFileSync(herdrLog, "utf8").split("\n").filter((l) => l.includes("agent prompt ceo") && !l.includes("/clear"));
     return { ran, prompts: prompts.length };
