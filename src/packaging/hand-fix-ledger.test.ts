@@ -125,7 +125,7 @@ test("#2939 pr-open REFUSES a malformed Hand-fix line, naming the format, and se
     const body = "## Acceptance\n\nnode -e \"process.exit(0)\"\n\nCloses #2939\nHand-fix: the gate did not file it - hyphen\n";
     const code = prOpen([mode, ...(mode === "create" ? ["--draft"] : ["7"]), "--body", body], {
       run: (a: string[]) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
-      runAcceptance: () => { acceptance += 1; return 0; }, owner: () => null,
+      runAcceptance: () => { acceptance += 1; return 0; }, owner: () => "ceo",
       out: (l: string) => { out.push(l); }, err: (l: string) => { err.push(l); },
     });
     const said = err.join("");
@@ -144,7 +144,7 @@ test("#2939 pr-open ACCEPTS a well-formed Hand-fix line, and a body with none is
   const body = `## Acceptance\n\nnode -e "process.exit(0)"\n\nCloses #2939\nHand-fix: the gate should have filed it ${EM} work-gate.ts\n`;
   const code = prOpen(["create", "--draft", "--body", body], {
     run: (a: string[]) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
-    runAcceptance: () => 0, runMutation: () => 0, owner: () => null, out: () => {}, err: () => {},
+    runAcceptance: () => 0, runMutation: () => 0, owner: () => "ceo", out: () => {}, err: () => {},
   });
   assert.equal(code, 0);
   assert.ok(sent.some((a) => a[0] === "pr" && a[1] === "create"), "the PR was created");

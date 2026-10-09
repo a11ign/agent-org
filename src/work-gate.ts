@@ -141,7 +141,8 @@ import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, r
 import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.mjs";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { withPrOwners } from "./work-gate/pr-owners.mjs";
+import { withPrOwners, withScopedPrOwners, resolverDefectsOf, resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "./work-gate/pr-owners.mjs";
+import type { ResolverDefect } from "./work-gate/pr-owners.mjs";
 // #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.mjs";
@@ -155,7 +156,7 @@ import { familyNumber } from "./arm-pr.ts";
 export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.mjs";
 export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
   rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.mjs";
-export { withClosingRowOwners, withNamedOwners, withPrOwners, withEndedLabels } from "./work-gate/pr-owners.mjs";
+export { withClosingRowOwners, withNamedOwners, withPrOwners, withScopedPrOwners, withEndedLabels, resolverDefectOf, resolverDefectsOf } from "./work-gate/pr-owners.mjs";
 export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, stalledPrFacts,
   MAX_WAIT_READS, refFactOf, readWaitRef, readWaitFacts, readRefFacts, waitTickFacts, staleWaitOrders,
   rulingOrdersNow, orgHealthNow } from "./work-gate/org-health.mjs";
@@ -7186,9 +7187,10 @@ function repositoryNote(scope: Scope) {
  * @param {ReturnType<typeof readLanes> & { siblingPrs?: any[] }} [read] the lanes, when the caller has already asked. #3095: `siblingPrs` are the
  *   open pull requests of the OTHER declared code repositories (already read, so the comparison costs no call), which B4 compares a row with too
  * @param {{ code: typeof codeReadings, tracker: typeof trackerReadings }} [readings] the per-tick reads beyond the lanes; a test hands stubs, so no `gh` is spawned
- * @returns {{ orders: any[], blocked: any[], refused: string[] }}
+ * #4386: `home` is the PRIMARY tracker's open rows and repository, which a scope with NO tracker of its own (agent-org's) takes its pull requests' owners from.
+ * @returns {{ orders: any[], blocked: any[], refused: string[], defects: ResolverDefect[] }} `defects`: the pull requests the ladder could not own though they name a live claimant
  */
-export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: typeof trackerReadings; } = { code: codeReadings, tracker: trackerReadings }): { orders: any[]; blocked: any[]; refused: string[]; } {
+export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: typeof trackerReadings; } = { code: codeReadings, tracker: trackerReadings }): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; } {
   const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
   const refused = [
     ...(prs === null ? [`the pull-request list of ${scope.code?.repo}`] : []),
@@ -7203,13 +7205,105 @@ export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof 
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
   const mark = (list: any[] | null) => tagged(list, scope.key, read.trackerRepo) ?? [];
-  const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
+  const owned = ownedPrsOf(scope, code.prs, { own: allOpen, home: read.home });
+  const orders = decide({ prs: owned.prs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
     epics: mark(tracker.epics), answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: mark(tracker.closedRows) }),
     openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings, trunkRed: code.trunkRed,
     key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
-    blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused };
+    blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused, defects: owned.defects };
+}
+
+/** The rows a scope without a tracker finds its pull requests' owners in: the primary tracker's, with the repository they live in and where the session labels' ending is read. */
+export type HomeRows = { rows: any[]; repo: string; io?: Parameters<typeof withScopedPrOwners>[2]["io"]; };
+
+/**
+ * #4386: THE OWNER OF EACH PULL REQUEST OF A NON-PRIMARY SCOPE, by the ladder the primary's use -- the scope's own label, the row it names
+ * (GitHub's resolution or a `Closes`/`Row:` line written `<owner/repo>#<n>`), then the row its branch number names. Before this `codeReadings`
+ * never ran it, so every agent-org pull request ended at `ceo` ("NOBODY COULD BE NAMED") however plainly its branch named a live worker.
+ *
+ * THE ROWS ARE THE SCOPE'S OWN TRACKER'S when it declares one, else the primary's (`home`). With neither, the pull requests are returned as they were:
+ * nothing is invented from rows nobody read. `defects` are the pull requests that still ended at `ceo` while naming a live claimant.
+ */
+function ownedPrsOf(scope: Scope, prs: any[], { own, home }: { own: any[]; home?: HomeRows }): { prs: any[]; defects: ResolverDefect[] } {
+  const rows = scope.tracker === null ? home : { rows: own, repo: scope.tracker.repo, io: home?.io };
+  if (rows === undefined) return { prs, defects: [] };
+  const owned = withScopedPrOwners(prs, rows.rows, { rowsRepo: rows.repo, io: rows.io });
+  return { prs: owned, defects: resolverDefectsOf(owned, rows.rows, rows.repo) };
+}
+
+/** The primary tracker's open rows, handed to the scopes that have none of their own; `undefined` when the declaration names no primary tracker. */
+function homeRowsOf(rows: any[]): HomeRows | undefined {
+  const repo = homeProjectDeclaration().tracker.find((entry) => entry.key === "")?.repo;
+  return repo === undefined ? undefined : { rows, repo, io: { agents: liveWorkspaceLabels, ended: endedSessionLabels } };
+}
+
+/** Where the pull requests already reported as resolver defects are remembered between ticks: each tick is a fresh process. */
+const RESOLVER_DEFECTS_STATE = "resolver-defects.json";
+
+/**
+ * #4386: FILE EACH RESOLVER DEFECT, ONCE PER PULL REQUEST, ON ONE ROW. A pull request that reaches `ceo`'s rung while naming a live claimant is the
+ * resolver failing, and the order to `ceo` reads as routing, so without this the class ends as a hand route every time (agent-org#436, #437).
+ * The CLASS has one open row (`resolver-defect`): the first defect files it, later ones comment on it. A pull request is remembered only after its
+ * write LANDED, so a refused `gh` is retried next tick, and one that landed is never written twice. Returns how many were written.
+ * @param {ResolverDefect[]} defects
+ */
+export function fileResolverDefects(defects: ResolverDefect[], { run = defaultRun, statePath = stateEntryPath(RESOLVER_DEFECTS_STATE), log = (line) => process.stderr.write(line) }: { run?: (args: string[]) => string; statePath?: string; log?: (line: string) => void; } = {}): number {
+  if (defects.length === 0) return 0;
+  const filed = readFiledDefects(statePath, log);
+  let written = 0;
+  for (const defect of defects) {
+    const key = resolverDefectKey(defect);
+    if (key in filed || !writeResolverDefect(defect, { run, log })) continue;
+    filed[key] = new Date().toISOString();
+    written++;
+  }
+  if (written > 0) writeFiledDefects(statePath, filed, log);
+  return written;
+}
+
+/** How many reported pull requests are remembered: far more than are ever open at once, so a closed one is forgotten long after it could come back. */
+const RESOLVER_DEFECTS_KEPT = 500;
+
+function readFiledDefects(path: string, log: (line: string) => void): Record<string, string> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    log(`resolver-defect: ${path} is unreadable (${(error as Error).message}); every defect still open is filed again (#4386)\n`);
+    return {};
+  }
+}
+
+function writeFiledDefects(path: string, filed: Record<string, string>, log: (line: string) => void) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const scratch = `${path}.${process.pid}.tmp`;
+    writeFileSync(scratch, JSON.stringify(Object.fromEntries(Object.entries(filed).slice(-RESOLVER_DEFECTS_KEPT))));
+    renameSync(scratch, path);
+  } catch (error) {
+    log(`resolver-defect: could not remember what was filed in ${path} (${(error as Error).message}); the next tick files it again (#4386)\n`);
+  }
+}
+
+/** One defect onto the class row: a comment on the open one, or a new row when there is none. `false` when `gh` refused, and says so. */
+function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args: string[]) => string; log: (line: string) => void; }): boolean {
+  const { title, comment } = resolverDefectText(defect);
+  try {
+    const open = JSON.parse(run(["issue", "list", "--label", RESOLVER_DEFECT_LABEL, "--state", "open", "--limit", "1", "--json", "number"]));
+    if (Array.isArray(open) && open.length > 0) {
+      run(["issue", "comment", String(open[0].number), "--body", comment]);
+    } else {
+      run(["label", "create", RESOLVER_DEFECT_LABEL, "--force", "--description", "A pull request the gate could not own although it names a live claimant"]);
+      run(["issue", "create", "--title", title, "--label", RESOLVER_DEFECT_LABEL, "--body", comment]);
+    }
+    return true;
+  } catch (error) {
+    log(`resolver-defect: could not file ${resolverDefectKey(defect)} (${String((error as Error).message).split("\n")[0]}); the next tick retries (#4386)\n`);
+    return false;
+  }
 }
 
 /**
@@ -7288,11 +7382,12 @@ export function pullRequestsOfOthers(others: { scope: Scope; read: ReturnType<ty
  * Every NON-PRIMARY scope, ticked from lanes already read. Each is told the pull requests of every OTHER declared code repository -- the
  * primary's (`primaryPrs`) and its peers' -- for B4 (#3095).
  * @param {boolean} drain @param {{ scope: Scope, read: ReturnType<typeof readLanes> }[]} others @param {any[]} primaryPrs
+ * @param {HomeRows} [home] #4386: the primary tracker's rows, which a scope without a tracker names its pull requests' owners from
  */
-function otherScopeTicks(drain: boolean, others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], primaryPrs: any[]) {
+function otherScopeTicks(drain: boolean, others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], primaryPrs: any[], home?: HomeRows) {
   // (#3566, slice 2) Each repository's `main` is asked ONCE here, together, and handed to its tick: seven `ci.yml` reads were 3.5 s of waiting in a row.
   const trunkReds = readWithFirstWaveTogether((through) => others.map(({ scope }) => readScopeTrunkRed(scope, through)));
-  return others.map(({ scope, read }, at) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)] },
+  return others.map(({ scope, read }, at) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)], home },
     { code: (openPrs, ticked) => codeReadings(openPrs, ticked, trunkReds[at]), tracker: trackerReadings }));
 }
 
@@ -7852,7 +7947,8 @@ function main() {
     // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
     offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay(), ...engineerShareReads(allOpen) }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
-  const others = otherScopeTicks(drain, otherScopes, openPrs); // #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
+  const others = otherScopeTicks(drain, otherScopes, openPrs, homeRowsOf(allOpen)); // #4386: `homeRowsOf` -- so an agent-org pull request is owned by the worker its branch names. #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
+  fileResolverDefects([...resolverDefectsOf(decideArgs.prs, allOpen), ...others.flatMap((tick) => tick.defects)]); // #4386: a fallback order for a PR that named a live claimant files its own defect, once per PR
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const incident = holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required });
   const { delivered: orders, performed: performedOnPrs } = performActions(markOutageReads(incident.orders, outageNow));
