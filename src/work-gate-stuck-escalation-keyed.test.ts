@@ -24,7 +24,7 @@ const UNKNOWN_MERGE = `worker-3075/trunk-red/trunk-agent-org-${SHA}/${SHA}`;
 const PRIMARY = `worker-3075/trunk-red/pr-56/${SHA}`;
 const ISSUE_URL = "https://github.com/a11ign/a11ign/issues/3101\n";
 
-const declared = (key: string) => (key === "agent-org" ? "a11ign/agent-org" : null);
+const declared = (key: string): string | null => (key === "agent-org" ? "a11ign/agent-org" : null);
 
 /** One escalation, with every `gh` call it made recorded; `open` is what `issue list` answers (the open `answer:ceo` rows). */
 function escalate(keys: string[], { open = [] as { number: number, title: string }[], repoOf = declared } = {}) {
@@ -148,4 +148,35 @@ test("CONTROLS for the epic reading: row-<n> still reads as <n>, and a day-numbe
   assert.equal(stuckRowOf("product-manager/epic-unfiled/epics/16"), null, "the retired day-number form names no row");
   assert.equal(stuckRowOf("product-manager/epic-finished/16"), null);
   assert.equal(stuckRowOf("ceo/chairman-blocked/0"), null);
+});
+
+/** #4360: the row is worded for WHAT IS STUCK; a red pull request is not filed as "`main` is red". */
+const RED_PR = "worker-4305/pr-checks-failing/pr-lab#39/fe4dce88";
+const lab = (key: string): string | null => (key === "lab" ? "a11ign/lab" : null);
+
+test("a stuck red PULL REQUEST is filed as a pull request, not as `main` being red", () => {
+  const { calls } = escalate([RED_PR], { repoOf: lab });
+  const title = flag(creates(calls)[0], "--title");
+  const body = flag(creates(calls)[0], "--body");
+  assert.equal(title, "Stuck pr-checks-failing: lab#39 -- a pull request of a11ign/lab is red and nothing has fixed it");
+  assert.doesNotMatch(title, /`main` of/);
+  assert.match(body, /whether it is waiting on something.*not whether trunk is red/s);
+  assert.doesNotMatch(body, /Fix `main`/);
+});
+
+test("CONTROL: a stuck trunk-red cause keeps its title and body", () => {
+  const { calls } = escalate([MERGED]);
+  assert.equal(flag(creates(calls)[0], "--title"), "Stuck trunk-red: agent-org#56 -- `main` of a11ign/agent-org is red and nothing has fixed it");
+  assert.match(flag(creates(calls)[0], "--body"), /^A `trunk-red` order for `a11ign\/agent-org` was offered .*Fix `main` of a11ign\/agent-org, or say why it should stay red\./s);
+});
+
+test("any other cause kind is worded by its own name, never as a trunk, and keeps its own title for the dedupe", () => {
+  const key = "worker-9/some-new-cause/pr-lab#7/0123abcd";
+  const { calls } = escalate([key], { repoOf: lab });
+  const title = flag(creates(calls)[0], "--title");
+  assert.match(title, /^Stuck some-new-cause: lab#7 -- /);
+  assert.doesNotMatch(title + flag(creates(calls)[0], "--body"), /`main`|trunk/);
+  assert.notEqual(title, flag(creates(escalate([`worker-9/trunk-red/pr-lab#7/0123abcd`], { repoOf: lab }).calls)[0], "--title"));
+  const again = escalate([key], { repoOf: lab, open: [{ number: 3101, title }] });
+  assert.equal(creates(again.calls).length, 0, "the dedupe by title still finds it");
 });
