@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+agent-org now declares a public interface, so a project reaches it by a NAME and not by a path under `src/` (a11ign/a11ign#4407). `package.json` gains an `exports` map -- `./acceptance-commands`, `./board-data`, `./board-document`, `./leak-patterns`, `./merge-guard-lookups`, `./newest-check-run`, `./pr-open`, `./project-config`, `./tree-wide-guard`, `./package.json` -- and `src/public-interface.test.ts` pins the list, the names each one must export (the ones a11ign's callers use) and the `bin` subcommands a project runs (`acceptance-commands`, `owned-path-signoff`, `board:document`, `worktree:whose`, `worktree:stamp`). A source file may be renamed or moved freely so long as the `exports` target follows it; removing a declared subpath or a declared name fails the test. Targets are `.ts` or `.mjs`, so a consumer imports them under `node --import tsx` exactly as `bin.mjs` runs its programs. Adding `exports` closes `agent-org/src/...` deep imports through the package name; paths read off the filesystem are unaffected. Minor, because while the version is `0.x` a minor is the level a pinned project reads.
