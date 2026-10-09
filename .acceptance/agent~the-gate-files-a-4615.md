@@ -6,13 +6,12 @@ The work gate's class row is filed in the home tracker (a11ign/a11ign) and a ref
 
 Acceptance:
 ```bash
-AGENT_ORG_HOST=$PWD/.agent-org/host.json /home/agent/.local/bin/node -e "import('/home/agent/repos/agent-org/src/class-repeat.ts').then((m)=>{const a=m.classRowArgv({id:'x',entry:{id:'x',name:'x',guard:null,guardNote:'n'},rows:[],events:['e']});process.exit(a.includes('--tracker=')?0:1)})"
-AGENT_ORG_HOST=$PWD/.agent-org/host.json /home/agent/.local/bin/node --test /home/agent/repos/agent-org/src/class-repeat-files-row.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/class-repeat-files-row.test.ts
 ```
 
 Closes: a11ign/a11ign#4615
 
-Verified (measured, in the agent-org worktree `agent-org-wt-4615` with `AGENT_ORG_HOST=/home/agent/repos/wt-4615/.agent-org/host.json`; the paths above name the primary clone, which has this code only after the merge): the first command exits 0 (it exited 1 at 777c569); `class-repeat-files-row.test.ts` 15 pass, 0 fail (the two new tests failed before the change); with `src/class-repeat*.test.ts` and `src/org-health*.test.ts` 66 pass. `tsc --noEmit`: only the two `src/packaging/mjs-ratchet.test.ts` errors that `origin/main` already has.
+Verified (measured, in the agent-org worktree `agent-org-wt-4615` with `AGENT_ORG_HOST=/home/agent/repos/wt-4615/.agent-org/host.json`): the command above prints `VERDICT pass: 15 tests in 1 file`. The row's own Acceptance names the primary clone's paths, which hold this code only after the merge; run against this worktree, its first command exits 0 (it exited 1 at 777c569) and its second, `node --test class-repeat-files-row.test.ts`, passes 15 of 15 (the two new tests failed before the change); with `src/class-repeat*.test.ts` and `src/org-health*.test.ts` 66 pass. `tsc --noEmit`: only the two `src/packaging/mjs-ratchet.test.ts` errors that `origin/main` already has.
 
 Mutation: three single-line mutations, each file restored byte-identical (`cp` before, `diff` after): `--tracker=` dropped (the home-tracker test red, nothing else); the notice never recognised, i.e. `refusalOf` reads the first line again (the notice test red, nothing else); every line treated as the notice (the notice test and the existing "a refused filing keeps the order to ceo" test red).
 
