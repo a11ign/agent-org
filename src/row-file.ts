@@ -118,6 +118,8 @@ import { unsplitDoneWhenRefusal } from "./unsplit-done-when.ts"; // #4640
 import { loadLanes, inLane } from "./lane-ownership.ts";
 import { blastRadiusGate, ghBlastReads, type BlastVerdict } from "./blast-radius.ts"; // #4601
 import { sweepFilingAtFiling } from "./sweep-window.ts"; // #4603
+import { appendDistinctFrom, DISTINCT_FROM_FLAG, duplicateRowCheck } from "./duplicate-row.ts"; // #4634
+import { homeHostConfig, stateEntryPath } from "./host-config.ts";
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
 // enforces exactly this: a fresh local declaration of any of the four, anywhere in this directory, is a
@@ -824,7 +826,7 @@ export function withFiledBy(argv: string[], session: string, body: string): stri
     const arg = argv[i];
     if (arg === "--body" || arg === "--body-file" || arg === "--session") { i += 1; continue; }
     if (arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
-      || arg.startsWith(TRACKER_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
+      || arg.startsWith(TRACKER_FLAG) || arg.startsWith(DISTINCT_FROM_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
     kept.push(arg);
   }
   kept.push("--body", appendFiledBy(body, session));
@@ -1819,7 +1821,7 @@ export function createIssue(argv: string[], deps: {
   // #1322: the board and lane labels are this tool's to apply, after the Status move. A filer's copy of either is
   // dropped from the create call rather than landing at creation beside them -- a `ready` there is #867's refusal.
   const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(withKindLabel(argv), tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
-    (body as string)), tracker, declaration);
+    appendDistinctFrom((body as string), argv)), tracker, declaration);
 
   let url: string;
   try {
@@ -2621,8 +2623,33 @@ export function boardRow(argv: string[], deps: {
   return 0;
 }
 
-function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`, ALLOW_SAME_TITLE_FLAG],
+/**
+ * #4634: THE MEANING-LEVEL DUPLICATE CHECK, run before `createIssue` because it asks a provider over the network and `createIssue` is synchronous. It is a refusal only when the decision
+ * provider said `same change` or `same defect` above its floor; a host with no provider, no key or the use off gets `null` and `createIssue`'s exact-title rule, as before.
+ * @returns {Promise<number | null>} the exit code of a refusal, else null
+ */
+async function semanticDuplicateExit(argv: string[]): Promise<number | null> {
+  const title = titleFromArgv(argv);
+  const body = bodyFromArgv(argv);
+  if (title === null || body === null) return null; // `createIssue` refuses a missing body itself
+  const chosen = chooseTracker(argv, body, homeProjectDeclaration());
+  if ("refusal" in chosen) return null; // and the tracker, with the words for it
+  let host;
+  try {
+    host = homeHostConfig();
+  } catch {
+    return null; // a machine with no host declaration declares no provider, and the optional provider is simply absent
+  }
+  const projectDir = host.projects.find((project) => project.id === host.primary)?.checkout ?? process.cwd(); // `.agent-org/decisions.json` is the primary project's, not a worktree's
+  const check = await duplicateRowCheck({ argv, title, body, repo: chosen.tracker.repo, run: defaultRun, host, projectDir, ledgerPath: stateEntryPath("wake-ledger") });
+  for (const warning of check.warnings) process.stderr.write(`${warning}\n`);
+  if (check.refusal === null) return null;
+  process.stderr.write(`${check.refusal}\n`);
+  return 1;
+}
+
+async function main() {
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`, ALLOW_SAME_TITLE_FLAG, DISTINCT_FROM_FLAG],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
@@ -2636,7 +2663,13 @@ function main() {
   const argv = process.argv.slice(2);
   const present = (flag: string) => argv.some((a) => a.startsWith(flag));
   if (present(BOARD_FLAG)) process.exitCode = boardRow(argv);
-  else process.exitCode = present(PROMOTE_FLAG) ? promoteRow(argv) : createIssue(argv);
+  else if (present(PROMOTE_FLAG)) process.exitCode = promoteRow(argv);
+  else process.exitCode = (await semanticDuplicateExit(argv)) ?? createIssue(argv);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
+  main().catch((error) => {
+    process.stderr.write(`row-file: failed before anything was filed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
