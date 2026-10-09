@@ -180,3 +180,13 @@ test("a pull request with no files read at all, or none handed in, is not an acc
   assert.deepEqual(sharedFileOrders(null as unknown as Pr[], quiet), []);
   assert.deepEqual(said, []);
 });
+
+test("(#4624) a dependency bot's pull request overlapping an earlier one goes to ceo with the bot's reason, not 'its label or row names you'", () => {
+  const bot = prOf(149, PR_149, { session: null, headRefName: "dependabot/npm_and_yarn/axe-core-4.14.0", author: { login: "app/dependabot" } } as Partial<Pr>);
+  const [order, ...rest] = ordersOf([prOf(148, PR_148), bot]);
+  assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all");
+  assert.equal(order.session, "ceo");
+  assert.match(order.prompt, /A dependency bot opened it and no session works such a pull request/);
+  assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/);
+  assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/);
+});
