@@ -29,6 +29,8 @@
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { TSX_IMPORT } from "./tsx-import.ts";
+import { homeHostConfig } from "./host-config.ts";
+import { carriedKeys, digestDue, digestPathFrom, flushOrders, readDigest, ridingDigest, routeOrders, settleRidden } from "./triage-route.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
@@ -7874,7 +7876,7 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
   process.exit(EXIT.QUIET);
 }
 
-function main() {
+async function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node --import tsx packages/agent-org/src/wake.ts",
   });
@@ -7900,7 +7902,9 @@ function main() {
   const handoffs = readHandoffs(queuePath);
   // A HELD FYI IS NOT WORK (#3562): it waits for a real order, so a queue of nothing else is a quiet tick -- unless one has expired, which still needs dropping.
   const early = foldFyis(handoffs);
-  if (nothingToDeliver(gateOrders, [...early.deliver, ...early.expired])) {
+  // #4385: A HELD DIGEST ITEM A HOUR OLD IS WORK EVEN ON A QUIET TICK -- the gate's tick is what flushes it, and there is no other timer.
+  const digestFile = digestPathFrom(ledgerPath);
+  if (nothingToDeliver(gateOrders, [...early.deliver, ...early.expired]) && !digestDue(readDigest(digestFile), Date.now())) {
     // #3510: THE QUIET TICK IS WHERE A DEFERRAL THAT WENT AWAY ENDS (the order stopped being true, so the gate emits nothing), and `finishTick` is never reached from here: without this the span is
     // logged by whichever later tick has orders, with ITS clock, and `wake-deferred` keeps a key nobody defers, which would give a re-deferral months on the old start. Nothing is deferred when nothing is offered.
     deferralAges(`${dirname(ledgerPath)}/wake-deferred`, [], Date.now(), { ledgerPath });
@@ -7943,13 +7947,20 @@ function main() {
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
-  const { orders: todo, rides } = ridingGateOrders(
-    undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o)), fyis.held);
   mkdirSync(dirname(ledgerPath), { recursive: true });
+  const { todo, rides, digestRides } = await routedTodo({
+    candidates: undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o)),
+    // The orders this tick wrote itself say something is stuck; a digest is the wrong place to hear that.
+    own: new Set(withStalls.slice(orders.length).map((o) => o.causeKey)), heldFyis: fyis.held, digestFile,
+  });
   /** @param {string} key @param {string} [recipient] @param {boolean} [noClear] @param {number} [at] the instant `deliver` named in the order's header (#4068) */
   const record = (key: string, recipient?: string, noClear?: boolean, at: number = Date.now()) => {
     writeFileSync(ledgerPath, ledgerLine(at, key, recipient, noClear), { flag: "a" });
     retireRiddenFyis(rides.get(key), recipient, queuePath);
+    // A held order is delivered only when the order that carried it is, and only to the seat it was held for (a re-route carries nothing away).
+    if (recipient === undefined) {
+      settleRidden(key, digestRides.get(key), { digestPath: digestFile, ledgerAppend: (causeKey) => writeFileSync(ledgerPath, ledgerLine(at, causeKey), { flag: "a" }) });
+    }
   };
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
@@ -7972,4 +7983,27 @@ function main() {
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
+/**
+ * #4385: WHICH OF THE TICK'S ORDERS ARE DELIVERED, once the triage provider has been asked about a manager's. The held FYIs ride first and the held digest after, and a seat that
+ * held an hour of digest with no order reaching it gets one of its own. A host that declares no provider, or one that cannot be read, reaches the old behaviour: nothing is asked,
+ * nothing is held, and an order held under an earlier setting still rides or flushes.
+ */
+async function routedTodo({ candidates, own, heldFyis, digestFile }: {
+  candidates: { session: string; causeKey: string; prompt: string; resume?: boolean }[]; own: ReadonlySet<string>; heldFyis: Parameters<typeof ridingGateOrders>[1]; digestFile: string;
+}) {
+  let host: Parameters<typeof routeOrders>[1]["host"] = {};
+  try {
+    host = homeHostConfig();
+  } catch (err) {
+    process.stderr.write(`triage: the host declaration could not be read, so every order is delivered as before (${firstLine(err)})\n`);
+  }
+  const routed = await routeOrders(candidates, { host, digestPath: digestFile, exclude: own });
+  const { orders, rides } = ridingGateOrders(routed.deliver, heldFyis);
+  const now = Date.now();
+  const pending = readDigest(digestFile);
+  const riding = ridingDigest(orders, pending, now);
+  const flushed = flushOrders(pending, carriedKeys(riding.rides), now);
+  return { todo: [...riding.orders, ...flushed.orders], rides, digestRides: new Map([...riding.rides, ...flushed.rides]) };
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) await main();
