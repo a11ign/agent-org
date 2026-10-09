@@ -10,6 +10,7 @@
  *
  * NOT A RUNG: the body's prose. #134's body names the row in a sentence after `Closes: none`, and a sentence is not a field.
  */
+import type { FailureEvent } from "./failure-ledger.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
 /** The rungs, in the order they are tried; `ownsPr` returns the first that matched. */
@@ -56,4 +57,13 @@ export function ownsPr(claim: Claim, pr: OwnablePr): typeof RUNGS[number] | null
   // #3443 and #2913 beside it, and `session:ceo` on three dependabot pull requests suppressed #1756's idle nudge. The label names a session, not a row.
   if (claim.soleHolder === true && carriesSessionLabel(pr, claim.session)) return "session-label";
   return null;
+}
+
+/**
+ * `owner-unresolved` events (#4450): a pull request the owner ladder could name nobody for (its `ceo` rung). `sourceOf` is the ladder (`ownerOfPr`), handed in so this stays a leaf.
+ * THE REF IS THE PULL REQUEST (`<repo>#<n>`), so one that stays unowned is one event however many ticks see it.
+ * @param {any[]} prs @param {(pr: any) => { source: string }} sourceOf @param {string} homeRepo the repository of a pull request that carries no `repo`
+ */
+export function unresolvedOwnerEvents(prs: any[], sourceOf: (pr: any) => { source: string }, homeRepo: string): FailureEvent[] {
+  return prs.filter((pr) => sourceOf(pr).source === "ceo").map((pr) => ({ classKey: "owner-unresolved", ref: `${pr?.repo || homeRepo}#${pr?.number}` }));
 }
