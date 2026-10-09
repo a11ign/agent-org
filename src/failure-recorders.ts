@@ -10,10 +10,10 @@ import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 /**
  * THE EVENTS OF THIS TICK THAT NEVER BECOME A CLOSED ROW, appended to `failure-ledger` beside `wake-deferral-log` -- a red `main`, a pull request nobody could be named the owner of,
  * and (once a day) the hand fixes. A recorder reports a refusal and never throws, so the ledger can only ever be missing an event, never stop a tick.
- * @param {{ trunkRed: Parameters<typeof mainRedEvents>[0], prs: any[], stateDir: string, now: number, ownerOf: Parameters<typeof unresolvedOwnerEvents>[1], homeRepo: string }} seen
+ * @param {{ trunkRed: Parameters<typeof mainRedEvents>[0], keyedTrunkReds: Parameters<typeof mainRedEvents>[0][], prs: any[], stateDir: string, now: number, ownerOf: Parameters<typeof unresolvedOwnerEvents>[1], homeRepo: string }} seen
  */
-export function recordTickFailures({ trunkRed, prs, stateDir, now, ownerOf, homeRepo }: { trunkRed: Parameters<typeof mainRedEvents>[0]; prs: any[]; stateDir: string; now: number; ownerOf: Parameters<typeof unresolvedOwnerEvents>[1]; homeRepo: string; }): void {
+export function recordTickFailures({ trunkRed, keyedTrunkReds, prs, stateDir, now, ownerOf, homeRepo }: { trunkRed: Parameters<typeof mainRedEvents>[0]; keyedTrunkReds: Parameters<typeof mainRedEvents>[0][]; prs: any[]; stateDir: string; now: number; ownerOf: Parameters<typeof unresolvedOwnerEvents>[1]; homeRepo: string; }): void {
   const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
-  recordFailures({ logPath, events: [...mainRedEvents(trunkRed), ...unresolvedOwnerEvents(prs, ownerOf, homeRepo)], now });
+  recordFailures({ logPath, events: [...mainRedEvents(trunkRed), ...keyedTrunkReds.flatMap(mainRedEvents), ...unresolvedOwnerEvents(prs, ownerOf, homeRepo)], now });
   recordHandReroutes({ logPath, markerPath: `${logPath}-hand-read`, now });
 }
