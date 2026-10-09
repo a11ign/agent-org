@@ -10,7 +10,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,7 +112,6 @@ const DECLARATION = {
   tracker: [{ key: "", repo: "acme/widgets", board: { owner: "acme", number: 1 } }],
   code: [{ key: "", repo: "acme/widgets" }],
   units: { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] },
-  roles: { dir: ".agent-org/roles" },
   vocabulary: {
     labels: { backlog: "backlog", needsChairman: "needs:chairman", outOfRelease: "out-of-release", blocked: "blocked" },
     prefixes: { lane: "lane:", session: "session:", answer: "answer:" },
@@ -127,9 +126,8 @@ const DECLARATION = {
 /** Runs `script(checkout)` in a child whose host declares a primary project checked out at a fresh scratch directory. */
 function underHost(script: (checkout: string) => string): { status: number | null; out: string } {
   const checkout = mkdtempSync(join(scratch, "checkout-"));
-  mkdirSync(join(checkout, ".agent-org/roles"), { recursive: true });
+  mkdirSync(join(checkout, ".agent-org"));
   writeFileSync(join(checkout, ".agent-org/project.json"), JSON.stringify(DECLARATION));
-  writeFileSync(join(checkout, ".agent-org/roles/sessions.json"), JSON.stringify({ live: [], retired: [] }));
   const hostFile = join(scratch, `host-${basename(checkout)}.json`);
   writeFileSync(hostFile, JSON.stringify({
     schema: 1, home: "/home/agent", binDir: "/home/agent/.local/bin", primary: "proj",
@@ -150,15 +148,22 @@ test("the path is read from the host's declaration: a project checked out ELSEWH
   assert.equal(result.out.trim().split("\n").pop(), "[true,false]");
 });
 
-test("`pr-open`'s `checkBody` agrees: refused before the command runs, naming the same remedy", () => {
-  const result = underHost((checkout) => `import { checkBody } from "./pr-open.mjs";
+// `pr-open`'s `checkBody` is `leakRefusalReason` then `runCiBodyReports` over `CI_BODY_REPORTS`, so the report list is driven here directly:
+// importing `pr-open.mjs` would make this file require a token (it reaches `gh`), and CI's acceptance job, which runs this very file, has none.
+test("the `acceptance` entry of CI_BODY_REPORTS -- what `pr-open`'s `checkBody` runs -- refuses before the command runs, naming the same remedy", () => {
+  const result = underHost((checkout) => `import { runCiBodyReports } from "./acceptance-commands.mjs";
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nCloses: none -- test\\n";
-    const verdict = checkBody(body, { run: () => { ran++; return 0; } });
+    const verdict = runCiBodyReports({ body, run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
     console.log(JSON.stringify({ ok: verdict.ok, ran, line: verdict.lines.join(" ") }));`);
   assert.equal(result.status, 0, result.out);
   const verdict = JSON.parse(result.out.trim().split("\n").pop() ?? "{}");
   assert.equal(verdict.ok, false);
   assert.equal(verdict.ran, 0, "the command was run for real before being refused");
   assert.match(verdict.line, /Drop the `cd` and run the command from the repository root/);
+});
+
+test("`pr-open`'s `checkBody` is that same list, not a second one", () => {
+  const source = readFileSync(join(HERE, "pr-open.mjs"), "utf8");
+  assert.match(source, /return runCiBodyReports\(\{ body, run, diff, rowLabels \}\);/);
 });
