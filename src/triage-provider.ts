@@ -10,12 +10,13 @@
 // THE KEY is read by `readKey(path)` at call time, once per process, and lives only in the closure that builds the request header. It is never printed, logged or
 // returned; a key that cannot be read is recorded as the reason `triage-unavailable` and nothing else (not the error's text, which names the path).
 import { readFileSync } from "node:fs";
-import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.ts";
+import { decide, type Question } from "./decision-provider.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
 export const TRIAGE_UNAVAILABLE = "triage-unavailable";
 const QUESTION = "q";
+const NO_PROVIDER = "no triage provider is declared";
 const TIMEOUT_MS = 10_000;
 /** The sampler prints this for an order whose ledger line is gone (`triage-sample.ts`); it is no cause, like an absent one. */
 const NO_CAUSE = "(no cause)";
@@ -33,7 +34,7 @@ export type Label = "wake" | "digest" | "drop";
 export type TriageOrder = { cause?: string; causeKey?: string; session?: string; cost?: string };
 export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string };
 /** What is true of THIS process; a test passes a fresh one. */
-export type TriageState = { key?: string; keyFailed: boolean };
+export type TriageState = { key?: string; keyFailed: boolean; switchesWarned?: boolean };
 export type TriageDeps = {
   host: { triage?: Readonly<{ provider: string; keyPath?: string; minConfidence?: number }> };
   fetch?: typeof fetch;
@@ -42,10 +43,17 @@ export type TriageDeps = {
   state?: TriageState;
   timeoutMs?: number;
 };
-type Asked = { answer: unknown } | { failed: string };
+/** One question in the provider's own vocabulary (#4628): `choice` among `criteria`, or a `score` from 1 to 5. */
+export type ProviderQuestion = { type: "choice"; instructions: string; criteria: Readonly<Record<string, string>> } | { type: "score"; instructions: string };
+/** What goes to the provider: a trimmed structured `state` and the atomic questions asked of it. */
+export type ProviderRequest = { state: Readonly<Record<string, unknown>>; questions: Readonly<Record<string, ProviderQuestion>> };
+/** The provider's raw `answers` by question name, or why none came back. Never thrown. */
+export type ProviderReply = { answers: Record<string, unknown> } | { failed: string };
 
 export const freshState = (): TriageState => ({ keyFailed: false });
-const processState = freshState();
+/** What is true of THIS process when a caller passes no state: the key is read once per process, whoever asks. */
+export const processState = freshState();
+export const printDiagnostic = (line: string): void => console.error(line);
 
 const readKeyFile = (path: string): string => readFileSync(path, "utf8").trim();
 
@@ -72,38 +80,46 @@ function keyFor(keyPath: string, { readKey, diagnostic, state }: Required<Pick<T
 
 const hasCause = (order: TriageOrder): boolean => typeof order.cause === "string" && order.cause !== "" && order.cause !== NO_CAUSE;
 
-function requestBody(order: TriageOrder) {
-  const { cause, causeKey, session, cost } = order;
-  return {
-    state: { cause, causeKey, session, cost },
-    model: JEV_MODEL,
-    questions: { [QUESTION]: { type: "choice", instructions: INSTRUCTIONS, criteria: CRITERIA } },
-  };
+function requestBody({ state, questions }: ProviderRequest) {
+  return { state, model: JEV_MODEL, questions };
 }
 
 /**
  * One `POST`, or a reason it failed. Never throws: a timeout, a refusal and a body that is not JSON all come back as `{ failed }`.
  */
-async function ask(order: TriageOrder, key: string, fetchFn: typeof fetch, timeoutMs: number): Promise<Asked> {
+async function ask(request: ProviderRequest, key: string, fetchFn: typeof fetch, timeoutMs: number): Promise<ProviderReply> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<Asked>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve({ failed: "the API timed out" }); }, timeoutMs); });
-  const call = (async (): Promise<Asked> => {
+  const timedOut = new Promise<ProviderReply>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve({ failed: "the API timed out" }); }, timeoutMs); });
+  const call = (async (): Promise<ProviderReply> => {
     const response = await fetchFn(JEV_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody(order)),
+      body: JSON.stringify(requestBody(request)),
       signal: controller.signal,
     });
     if (!response.ok) return { failed: `the API answered HTTP ${response.status}` };
     const body = (await response.json()) as { answers?: Record<string, unknown> } | null;
-    return { answer: body?.answers?.[QUESTION] };
-  })().catch((): Asked => ({ failed: "the API call failed" }));
+    return { answers: body?.answers ?? {} };
+  })().catch((): ProviderReply => ({ failed: "the API call failed" }));
   try {
     return await Promise.race([call, timedOut]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * THE ONE JEV CLIENT (#4628): the key, the request and the timeout for every use of the provider, `triageOrder` and `decide` alike. Never throws. A host that declares no
+ * `jev` provider, or whose key cannot be read, gets `{ failed }` without a request leaving the process.
+ */
+export async function askProvider(request: ProviderRequest, deps: TriageDeps): Promise<ProviderReply> {
+  const { host, fetch: fetchFn = fetch, readKey = readKeyFile, diagnostic = printDiagnostic, state = processState, timeoutMs = TIMEOUT_MS } = deps;
+  const { provider, keyPath } = host.triage ?? { provider: "none" };
+  if (provider !== "jev" || keyPath === undefined) return { failed: NO_PROVIDER };
+  const key = keyFor(keyPath, { readKey, diagnostic, state });
+  if (key === undefined) return { failed: TRIAGE_UNAVAILABLE };
+  return ask(request, key, fetchFn, timeoutMs);
 }
 
 function readAnswer(answer: unknown): { label: Label; confidence: number } | undefined {
@@ -117,16 +133,16 @@ function readAnswer(answer: unknown): { label: Label; confidence: number } | und
  * Where should this order go, according to the host's declared triage provider?
  */
 export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise<Triage> {
-  const { host, fetch: fetchFn = fetch, readKey = readKeyFile, diagnostic = (line: string) => console.error(line), state = processState, timeoutMs = TIMEOUT_MS } = deps;
-  const { provider, keyPath, minConfidence = DEFAULT_TRIAGE_MIN_CONFIDENCE } = host.triage ?? { provider: "none" };
-  if (provider !== "jev" || keyPath === undefined) return wake("none", "no triage provider is declared");
+  const { provider, keyPath } = deps.host.triage ?? { provider: "none" };
+  if (provider !== "jev" || keyPath === undefined) return wake("none", NO_PROVIDER);
   if (!hasCause(order)) return wake("none", "the order has no cause, and an order that cannot be read is never routed");
-  const key = keyFor(keyPath, { readKey, diagnostic, state });
-  if (key === undefined) return wake("none", TRIAGE_UNAVAILABLE);
-  const result = await ask(order, key, fetchFn, timeoutMs);
-  if ("failed" in result) return wake("none", result.failed);
-  const read = readAnswer(result.answer);
-  if (read === undefined) return wake("none", "the API's answer was not a choice with a confidence");
-  if (read.confidence < minConfidence) return { route: "wake", via: "jev", confidence: read.confidence, reason: `${read.label} at ${read.confidence}, under the floor ${minConfidence}` };
-  return { route: read.label, via: "jev", confidence: read.confidence, reason: `jev answered ${read.label}` };
+  const { cause, causeKey, session, cost } = order;
+  const question: Question = { type: "choice", instructions: INSTRUCTIONS, criteria: CRITERIA, fallback: "wake" };
+  // `wake-triage` is switched on by the host's own `triage` declaration (#4384), which is already the opt-in: reading `.agent-org/decisions.json` as well would quietly turn off
+  // a triage somebody set up, so this caller hands `decide` the switch it has already read.
+  const decision = await decide("wake-triage", { cause, causeKey, session, cost }, { [QUESTION]: question }, { ...deps, switches: { "wake-triage": true } });
+  const answer = decision.answers[QUESTION];
+  if (decision.via === "none") return wake("none", decision.reason ?? NO_PROVIDER);
+  if (answer.fellBack) return { route: "wake", via: "jev", confidence: answer.confidence, reason: answer.reason ?? "" };
+  return { route: answer.value as Label, via: "jev", confidence: answer.confidence, reason: `jev answered ${answer.value}` };
 }
