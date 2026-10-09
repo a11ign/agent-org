@@ -191,7 +191,7 @@ test("(11) pr:open: a create with no nameable owner is REFUSED before anything i
     prHead: () => ({ ref: "x", oid: "x" }), runAcceptance: () => 0, runMutation: () => 0, owner: () => owner, rowLabels: () => [],
     labelExists: () => false, out: () => {}, err: (line) => { err.push(line); } });
   assert.equal(open(null), EXIT_NOTHING_SENT);
-  assert.deepEqual(sent, [], "nothing reached gh");
+  assert.equal(sent.length, 0, "nothing reached gh");
   assert.match(err.join(""), /pr-open: REFUSED -- no session could be named/);
   assert.equal(open("ceo"), 0);
   assert.deepEqual(sent.map((a) => a.slice(0, 2).join(" ")), ["pr create", "label create", "pr edit"], "the label is created in the repository the PR is opened in, then stamped");
