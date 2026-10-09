@@ -104,10 +104,10 @@ test("#4070 through deliver: a started calm worker is typed the paragraph last, 
     const calm = spawnFor(CALM_ROW, dir);
     assert.deepEqual(calm.got.refused, []);
     assert.ok(calm.typed?.endsWith(CALM_FINISH_PARAGRAPH), "THE POSITIVE CONTROL: the order WAS typed, and ends with the paragraph");
-    assert.deepEqual(calm.lines, [{ kind: "arm", at: AT, session: `worker-${CALM_ROW}`, row: CALM_ROW, arm: "calm", tripsArm: "control" }]);
+    assert.deepEqual(calm.lines, [{ kind: "arm", at: AT, session: `worker-${CALM_ROW}`, row: CALM_ROW, arm: "calm", tripsArm: "control", model: "sonnet" }]);
     const control = spawnFor(CONTROL_ROW, dir);
     assert.ok(control.typed && !control.typed.includes(FIRST_SENTENCE));
-    assert.deepEqual(control.lines.slice(1), [{ kind: "arm", at: AT, session: `worker-${CONTROL_ROW}`, row: CONTROL_ROW, arm: "control", tripsArm: "control" }]);
+    assert.deepEqual(control.lines.slice(1), [{ kind: "arm", at: AT, session: `worker-${CONTROL_ROW}`, row: CONTROL_ROW, arm: "control", tripsArm: "control", model: "sonnet" }]);
     assert.equal(control.lines.length, 2, "one line per spawn, and no other line");
     const other = scratch();
     try {
