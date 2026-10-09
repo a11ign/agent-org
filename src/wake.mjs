@@ -1278,11 +1278,49 @@ const defaultInstall = ({ cwd, args }) => {
 };
 
 /**
+ * THE DECLARED PACKAGES A FAILED INSTALL FAILED ONLY BECAUSE THE REGISTRY DOES NOT HOLD (#4321), or `null` when it failed for anything else.
+ * `a11ign/lab` declares `@a11ign/control`, which no registry publishes (its `ci.yml` lays the repository over a checkout of the core), so the
+ * install there can never succeed and its pull request's reviewer was `UNDELIVERED` for 30 ticks. pnpm prints the verdict on STDOUT (measured
+ * 2026-10-09: `ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/@a11ign%2Fcontrol: Not Found - 404`, stderr empty), so all of the error's text is read.
+ *
+ * NARROW ON PURPOSE: every `ERR_PNPM_*` code printed must be `ERR_PNPM_FETCH_404` and at least one DECLARED name must be the one it names. A
+ * network failure, a lockfile mismatch, a version the registry does not hold (`ERR_PNPM_NO_MATCHING_VERSION`) or a 404 for a name the tree does
+ * not declare is still a refusal, because the tree would not be reviewable for a reason `checks` cannot make up for.
+ * @param {unknown} err @param {string[]} declared @returns {string[] | null}
+ */
+function unpublishedDeclared(err, declared) {
+  const e = /** @type {any} */ (err);
+  const text = [e?.stdout, e?.stderr, e?.message].map((part) => (part === undefined || part === null ? "" : String(part))).join("\n");
+  const codes = text.match(/ERR_PNPM_[A-Z0-9_]+/g) ?? [];
+  if (codes.length === 0 || codes.some((code) => code !== "ERR_PNPM_FETCH_404")) return null;
+  // Either line pnpm prints for it: `<name> is not in the npm registry` or `GET <registry>/<name with / as %2F>: Not Found`.
+  const lower = text.toLowerCase();
+  const named = declared.filter((name) => lower.includes(`${name.toLowerCase()} is not in the npm registry`)
+    || lower.includes(`/${name.toLowerCase().replace("/", "%2f")}: not found`));
+  return named.length === 0 ? null : named;
+}
+
+/**
+ * THE TREE THAT STARTS WITHOUT PACKAGES NO REGISTRY HOLDS (#4321): link what the clone has (nothing is written to the clone, as everywhere here)
+ * and answer a `note` for the reviewer's order instead of a refusal. The reviewer's evidence for such a repository is its `checks` job, which
+ * lays the repository over the core, so "cannot install" is not "cannot review". A link that fails is still a refusal.
+ * @param {{fs: LinkFs, path: string, repoRoot: string, unpublished: string[]}} args @returns {string | {note: string}}
+ */
+function startWithoutThem({ fs, path, repoRoot, unpublished }) {
+  const linked = linkCloneEntries({ fs, path, modules: `${repoRoot}/node_modules` });
+  if (linked !== null) return linked;
+  return { note: `Dependencies were NOT installed in this checkout: ${namedList(unpublished)} ${unpublished.length === 1 ? "is" : "are"} declared by the `
+    + "repository's `package.json` and not published to any registry, so `pnpm install` cannot succeed here and what is in `node_modules` is partial. "
+    + "Do not run the Acceptance command here and do not try to install: judge the Acceptance from the repository's `checks` run on the pull "
+    + "request's head (`gh pr checks`), and SAY SO in the verdict." };
+}
+
+/**
  * SUPPLY WHAT THE CLONE LACKS FROM THE TREE: install the tree's own declared packages into the TREE's `node_modules` and report `null`, or a
  * refusal naming the first line of why it could not, with the hand remedy ({@link supplyCommand}). The tree is private to one review and is
  * removed with it (`git worktree remove --force`), so nothing a reviewer shares is written and the clone is left as it was. Not a silent
  * link of a partial tree: after the install every declared package must be at `<tree>/node_modules/<name>`.
- * @param {{fs: LinkFs, path: string, repoRoot: string, declared: string[], missing: string[], install: TreeInstall}} args @returns {string | null}
+ * @param {{fs: LinkFs, path: string, repoRoot: string, declared: string[], missing: string[], install: TreeInstall}} args @returns {LinkResult}
  */
 function installIntoTree({ fs, path, repoRoot, declared, missing, install }) {
   const lacks = `${repoRoot}/node_modules lacks ${namedList(missing)}, which ${path}/package.json declares; supply `
@@ -1290,6 +1328,8 @@ function installIntoTree({ fs, path, repoRoot, declared, missing, install }) {
   try {
     install({ cwd: path, args: installArgs(fs, path) });
   } catch (err) {
+    const unpublished = unpublishedDeclared(err, declared);
+    if (unpublished !== null) return startWithoutThem({ fs, path, repoRoot, unpublished });
     return `\`pnpm install\` in ${path} failed (${herdrReason(err)}); ${lacks}`;
   }
   const absent = declared.filter((name) => !fs.existsSync(`${path}/node_modules/${name}`));
@@ -1309,7 +1349,7 @@ const PNPM_STORE = ".pnpm";
  * such change cost a reviewer until a person repaired it). The tree's manifest and not the clone's, because the tree is the pull request's head:
  * a pull request that adds a dependency is the one a clone from before it cannot review. A repository that declares nothing needs no `node_modules`.
  * THE CLONE IS NEVER WRITTEN: the objection to the tick fetching from a registry was to a clone every reviewer shares, and the tree is not one.
- * @param {{path: string, repoRoot: string, fs?: LinkFs, install?: TreeInstall}} args @returns {string | null}
+ * @param {{path: string, repoRoot: string, fs?: LinkFs, install?: TreeInstall}} args @returns {LinkResult}
  */
 export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, install = defaultInstall }) {
   const modules = `${repoRoot}/node_modules`;
@@ -1318,6 +1358,11 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, insta
   const names = Object.keys(declared.packages);
   const missing = names.filter((name) => !fs.existsSync(`${modules}/${name}`));
   if (missing.length > 0) return installIntoTree({ fs, path, repoRoot, declared: names, missing, install });
+  return linkCloneEntries({ fs, path, modules });
+}
+
+/** Link every entry of the clone's `node_modules` into the tree's, but for its dotfiles ({@link PNPM_STORE} and `.bin` excepted); `null` when it has none. @param {{fs: LinkFs, path: string, modules: string}} args @returns {string | null} */
+function linkCloneEntries({ fs, path, modules }) {
   if (!fs.existsSync(modules)) return null;
   try {
     fs.mkdirSync(`${path}/node_modules`, { recursive: true });
@@ -1330,11 +1375,17 @@ export function linkKeyedDependencies({ path, repoRoot, fs = REAL_LINK_FS, insta
   }
 }
 
+/**
+ * What a dependency step answers: `null` (linked), a refusal string, or `{ note }` (#4321) -- the tree STARTS, and the note is put in the reviewer's order
+ * because what is in its `node_modules` is partial (a declared package no registry holds).
+ * @typedef {string | null | {note: string}} LinkResult
+ */
+
 /** The install {@link linkKeyedDependencies} makes, as a seam so a test can count it, fail it or fake what it writes. @typedef {(run: {cwd: string, args: string[]}) => void} TreeInstall */
 
 /**
  * @typedef {{git?: (cmd: string, args: string[], opts?: object) => string, exists?: (path: string) => boolean,
- *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => string | null,
+ *   root?: string, repoRoot?: string, link?: (args: {path: string, repoRoot: string}) => LinkResult,
  *   record?: typeof recordRemoval}} CheckoutDeps `record` is #2827's removal log, a seam so a test can read the line or refuse it
  */
 
@@ -1600,7 +1651,7 @@ export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }) {
  * no declared clone is a refusal, never the primary's tree. An explicit `repoRoot` wins, as it always did, so a test names its own.
  *
  * @param {{pr: number, session: string} & CheckoutDeps} args
- * @returns {{path: string, head: string} | {refusal: string}}
+ * @returns {{path: string, head: string, note?: string} | {refusal: string}}
  */
 export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync, root = REVIEW_CHECKOUT_ROOT,
   repoRoot: given, link }) {
@@ -1618,8 +1669,8 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
     const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
     if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
     const unlinked = linkDependencies({ path, repoRoot });
-    if (unlinked !== null) return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
-    return { path, head };
+    if (typeof unlinked === "string") return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
+    return unlinked === null ? { path, head } : { path, head, note: unlinked.note };
   } catch (err) {
     return { refusal: `no review checkout for PR #${pr} at ${path} (${firstLine(err)})` };
   }
@@ -1675,16 +1726,16 @@ export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, 
 /**
  * The order's text, with the sentence that says where the reviewer's tree is and what it cannot do to it. The path
  * named here is one {@link prepareReviewCheckout} has just verified exists, so it is the only path an order names.
- * @param {{prompt: string, session: string}} order @param {{path: string, head: string}} checkout @param {number} pr
+ * @param {{prompt: string, session: string}} order @param {{path: string, head: string, note?: string}} checkout @param {number} pr
  */
 export function withReviewCheckout(order, checkout, pr) {
   return { ...order, prompt: `${order.prompt}\n\nYour checkout of #${pr} is \`${checkout.path}\`, detached at the pull `
     + `request's current head \`${checkout.head.slice(0, 8)}\`. It was prepared for you and is re-pointed on every push. Your `
     + "sandbox cannot write `.git`, so `git checkout`, `git fetch` and `git worktree` are refused there: review from "
     + "this path and do not make another checkout.\n\n"
-    + "Its dependencies are already linked in (`node_modules`, linked for you: do not install or link your own), so the pull "
-    + "request's Acceptance runs there as written, after `pnpm run build` when it needs `dist`. Your npm cache is "
-    + `\`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
+    + (checkout.note ?? "Its dependencies are already linked in (`node_modules`, linked for you: do not install or link your own), so the pull "
+    + "request's Acceptance runs there as written, after `pnpm run build` when it needs `dist`.")
+    + ` Your npm cache is \`${checkout.path}/node_modules/.cache/npm\`, the one place npm can write: set \`npm_config_cache\` to it if your pane does not.\n\n`
     + `SIGN AS \`${order.session}\`: your pane may not hold \`A11Y_REVIEWER_SESSION\` (one started outside the tick does not), so `
     + `post the verdict as \`${doorEnvironment(order.session)} ${REVIEWER_DOOR} <n> <convinced|not-convinced> <file>\` `
     + "and the verdict line's `by` names you." + doorRepositoryNote(order.session) };
