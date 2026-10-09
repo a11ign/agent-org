@@ -2,10 +2,10 @@
 
 Acceptance:
 ```bash
-cd /home/agent/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/blast-radius.test.ts
+npx rstest run --config scripts/rstest/rstest.config.* src/blast-radius.test.ts
 ```
 
-Run here as the same command with the checkout set to this worktree (`cd /home/agent/repos/agent-org-wt-4601`), the config glob resolved to `scripts/rstest/rstest.config.ts`, and `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json`, which the run needs. Printed:
+The row's command is `cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/blast-radius.test.ts`. The primary checkout carries the new test only after the merge, so before it that command runs no file; the command above is the same one run in the PR's own tree (`pr-open` runs it in the working tree). `AGENT_ORG_HOST` is set to a11y-witness's `.agent-org/host.json`, which the run needs. Printed:
 ```
 VERDICT pass: 16 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
 ```
