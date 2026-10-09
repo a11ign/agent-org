@@ -30,7 +30,7 @@ import { roleBriefPath } from "../project-roles.ts";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.ts";
 import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, readLatestMerge, orgHealthTick,
-  primaryStandingSince, readTeamAccess, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders } from "../org-health.ts";
+  primaryStandingSince, readTeamAccess, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders, shelvedCircles } from "../org-health.ts";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.mjs";
 import { holdersOf, holdExcused } from "../pr-hold-state.ts";
 import { withoutHold } from "../red-pr.ts";
@@ -510,6 +510,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
   const waits = liftedWaits(readWaits({ prsRead: prsRead === null ? null : [...prsRead, ...keyedPrsRead], openRowsRead, now }), { now, release });
   const { holdStands, stale } = waitStanding(waits, now);
+  const shelved = prsRead === null || readyRead === null ? null : shelvingListOf(decideArgs); // ONCE: `partitionUnclaimed` reads each ready row's Region from the tree
   const milestoneClock = openRowsRead === undefined ? undefined : milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now, declaration: homeProjectDeclaration() });
   const facts = {
     now,
@@ -525,7 +526,8 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     waiting: fleetWaitingFacts(openRowsRead, readLabJobs()),
     waits,
     ...(openRowsRead !== undefined && { stateRows: openRowsRead }), // #3942: the rows this tick already read, so the signal costs no call
-    ...(openRowsRead !== undefined && { idle: idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) }), // #3943: the same rows, and the gate's own shelving list
+    ...(openRowsRead !== undefined && { idle: idleFact({ openRowsRead, prsRead, readyRead, shelved, now }) }), // #3943: the same rows, and the gate's own shelving list
+    ...(openRowsRead !== undefined && { shelvedCircle: shelvedCircleFact({ openRowsRead, prsRead, keyedPrsRead, shelved }) }), // #4401: the same rows, PRs and shelving list, and no call of its own
     ...(milestoneClock !== undefined && { milestoneClock }), // #4231: the same rows and PRs, and no call of its own
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
@@ -722,16 +724,33 @@ export function engineerSeats(openRows, path = roleBriefPath("sessions.json").ab
 }
 
 /**
- * #3943: THE IDLE READING over the rows and the gate's own offer, both already in hand. A tick whose pull-request or Ready read was refused cannot say which
- * rows the gate shelves, so it says UNREAD: every ready row would otherwise read as `READY_UNOFFERED`, a false defect.
- * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, readyRead: any[] | null, decideArgs: any, now: number }} input
+ * The gate's own B4 / branch shelving list, `number -> reason`: what `partitionUnclaimed` withholds from the ready rows this tick. Read once per tick and shared by the idle reading (#3943) and the circle reading (#4401).
+ * @param {{ readyRows: any[], prFiles: any[], rowBranches: any, openRows: any }} decideArgs
+ * @returns {Map<number, string>}
  */
-function idleFact({ openRowsRead, prsRead, readyRead, decideArgs, now }) {
+function shelvingListOf({ readyRows, prFiles, rowBranches, openRows }) {
+  return new Map(partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).blocked.map((b) => [b.number, b.reason]));
+}
+
+/**
+ * #3943: THE IDLE READING over the rows and the gate's own offer, both already in hand. A tick whose pull-request or Ready read was refused cannot say which
+ * rows the gate shelves, so it says UNREAD (`shelved` is `null`): every ready row would otherwise read as `READY_UNOFFERED`, a false defect.
+ * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, readyRead: any[] | null, shelved: Map<number, string> | null, now: number }} input
+ */
+function idleFact({ openRowsRead, prsRead, readyRead, shelved, now }) {
   if (openRowsRead === null) return idleWithOpenRowsReading({ now, engineers: null, openRows: null });
-  if (prsRead === null || readyRead === null) return { kind: /** @type {const} */ ("unread"), why: "the gate's own offer could not be read, so which ready rows it withholds is not known" };
-  const { prFiles, rowBranches, openRows, readyRows } = decideArgs;
-  const shelved = new Map(partitionUnclaimed(readyRows, prFiles, { rowBranches, openRows }).blocked.map((b) => [b.number, b.reason]));
+  if (prsRead === null || readyRead === null || shelved === null) return { kind: /** @type {const} */ ("unread"), why: "the gate's own offer could not be read, so which ready rows it withholds is not known" };
   return idleWithOpenRowsReading({ now, engineers: engineerSeats(openRowsRead), openRows: openRowsRead, shelved });
+}
+
+/**
+ * #4401: THE CIRCLE READING over the same shelving list, the open pull requests of every declared repository (`keyedPrsRead` is the others', tagged `repo`) and the open rows. `null` is a refused read of any of them: unknown, never clear.
+ * A keyed pull request carries no check rollup here, so it is read as red only if it is held or parked too.
+ * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, keyedPrsRead: any[], shelved: Map<number, string> | null }} input
+ */
+function shelvedCircleFact({ openRowsRead, prsRead, keyedPrsRead, shelved }) {
+  if (openRowsRead === null || prsRead === null || shelved === null) return null;
+  return shelvedCircles({ shelved, prs: [...prsRead, ...keyedPrsRead], rows: openRowsRead });
 }
 
 /**
