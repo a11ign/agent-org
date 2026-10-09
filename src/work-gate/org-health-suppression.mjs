@@ -54,6 +54,7 @@ export const ORG_HEALTH_CLASSES = Object.freeze({
   "release-run-failed": PAGE,
   "release-behind-main": PAGE,
   "api-pool-low": PAGE,
+  "node-cannot-strip": PAGE,
   "github-incident": PAGE,
   "pane-stopped-at-a-prompt": PAGE,
   "class-repeat": PAGE,
