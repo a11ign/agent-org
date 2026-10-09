@@ -22,6 +22,13 @@ name: release
 # `publish` skipped or not. Under `kind: tag` that job is skipped, so no token is minted (and `publish` sits in the `npm-publish` environment, restricted to `main`). The pair is pinned
 # by `release-triggers-itself.test.ts`: the grant is on the call only, and only beside `kind: tag`. Not run before merge: the first run on `main` is its reading.
 #
+# THE CONSUMER IS CHECKED BEFORE THE TAG (a11ign/a11ign#4407 b, #4412). v0.88.0 renamed `src/*.mjs` to `.ts` and was tagged, and every a11ign pull request's `acceptance / run` then threw
+# `ERR_MODULE_NOT_FOUND`: nothing between the merge and the tag asked whether the project that installs the tag still works against it. `consumer-check` is that question, and `release`
+# `needs` it, so a red check leaves the tag uncut and the merge unreleased. It runs two steps in this order: `src/public-interface.test.ts` (the declared `exports` and `bin` still deliver every
+# name a project is declared to use), then `src/release-consumer-check.test.ts` against a11ign/a11ign's CURRENT `main` (what the project imports through `agent-org/<subpath>` is a subset of
+# that declaration). `main` and not a pin, because the point is how the project calls the tool NOW; the price is that a project change can hold this repository's release, which is the
+# warning working. `src/release-consumer-check.test.ts` pins the job, its order, the `needs`, and that nothing (`if:`, `continue-on-error`) excuses it.
+#
 # A push that arrives while another run is waiting REPLACES the waiting run (GitHub keeps one). That is harmless: every run reads the unreleased changesets from its own tree.
 # A tag pushed with GITHUB_TOKEN starts no workflow, and `on` here names branches only.
 
@@ -33,7 +40,35 @@ permissions:
   contents: read
 
 jobs:
+  # `contents: read` alone: the check reads two public trees and writes nothing, and the tag is `release`'s to cut.
+  consumer-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.22.1
+      - name: The consumer -- a11ign/a11ign at main, read-only, into consumer/
+        uses: actions/checkout@v7
+        with:
+          repository: a11ign/a11ign
+          ref: main
+          path: consumer
+          persist-credentials: false
+      # By name, as ci.yml's `suite` does (no lockfile here): `tsx` runs the `.ts` programs, `typescript` reads each declared module's exports, `yaml` parses the workflow the second test pins.
+      - name: Install the dependencies the two tests import
+        run: npm install --no-save --no-package-lock "tsx@^4.22.4" "typescript@^6.0.3" "yaml@^2.9.0"
+      - name: The public-interface check -- every declared subpath and name is still delivered
+        run: node --import tsx --test src/public-interface.test.ts
+      - name: The consumer check -- what a11ign imports is a subset of the declared interface
+        env:
+          A11IGN_CHECKOUT: ${{ github.workspace }}/consumer
+        run: node --import tsx --test src/release-consumer-check.test.ts
+
   release:
+    needs: consumer-check
     permissions:
       # The tag and the Release are the only writes. No `pull-requests`, and no registry token anywhere.
       contents: write
