@@ -83,6 +83,8 @@ import { liveClassRepeatIo, readClassRepeat } from "./class-repeat.ts";
 import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "./release-behind-main.ts";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.ts";
+// #4602: rows shelved per holder and minutes; a leaf that holds the count and the record, called from the one place below.
+import { blockingImpactTick, resolverOf } from "./blocking-impact.ts";
 import { isBrokenRed } from "./red-pr.ts"; // #2997
 import { tapShadowReads } from "./shadow-reads.ts"; // #2849
 // #1969, AND THE PREDICATE IS IMPORTED RATHER THAN RE-DECIDED. `armedFromApi` knows THREE armed states --
@@ -7055,6 +7057,16 @@ function writeFiledDefects(path: string, filed: Record<string, string>, log: (li
   }
 }
 
+/**
+ * #4602: THE ONE PLACE THE GATE CALLS THE SHELVED-ROWS COUNT. A holder is resolved from the `session:` label on the row or pull request the reason names; the row write on a held row goes
+ * through `gh issue comment`, the wake through the order returned. Never throws (`blockingImpactTick` reports and returns nothing).
+ * @param {{ shelved: { number: number, reason: string }[], openRows: any[], prs: any[], stateDir: string }} tick
+ */
+function blockingImpactOrders({ shelved, openRows, prs, stateDir }: { shelved: { number: number; reason: string; }[]; openRows: any[]; prs: any[]; stateDir: string; }) {
+  const resolve = resolverOf({ rows: openRows, prs, sessionOf, closesOf: (pr) => comparablePrFiles([pr])[0]?.closes ?? [] });
+  return blockingImpactTick({ blocked: shelved, resolve, stateDir, now: Date.now(), comment: (row, body) => { defaultRun(["issue", "comment", String(row), "--body", body]); } });
+}
+
 /** One defect onto the class row: a comment on the open one, or a new row when there is none. `false` when `gh` refused, and says so. */
 function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args: string[]) => string; log: (line: string) => void; }): boolean {
   const { title, comment } = resolverDefectText(defect);
@@ -7683,6 +7695,9 @@ function main() {
   const { delivered: orders, performed: performedOnPrs } = performActions(markOutageReads(incident.orders, outageNow));
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
   orders.push(...incident.signal);
+  // #4602: THE SAME `blocked` THE TICK REPORTS AS WITHHELD (below), counted per holder and over time -- computed once, so the count and the report cannot disagree.
+  const shelvedHere = partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }).blocked;
+  orders.push(...blockingImpactOrders({ shelved: [...shelvedHere, ...others.flatMap((tick) => tick.blocked)], openRows: allOpen, prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], stateDir: REVIEWER_STATE_DIR }));
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow(), liveClassRepeatIo()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() }), ...chairmanAsksNow(openRowsRead)); // #2848, #2936, #2997, #4020: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
@@ -7696,8 +7711,7 @@ function main() {
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
   // (#2027) are the same fact -- work the gate can see and is deliberately not offering -- and a row that
   // leaves a set silently is the defect both filters exist to fix.
-  reportWithheld({ drain, blocked: [...partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }).blocked,
-    ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
+  reportWithheld({ drain, blocked: [...shelvedHere, ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] });
 
   const unread = unreadLanes({ prs, readyRows, others });
   if (unread.length > 0) exitPartial(unread, emitted.length);

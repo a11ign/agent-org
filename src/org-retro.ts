@@ -35,6 +35,8 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
 import { FAILURE_LEDGER_FILE, parseFailureLedger, type FailureEntry } from "./failure-ledger.ts";
 import { correctionsPerDay, correctionsLine } from "./found-by-chairman.ts";
+// THE TOP BLOCKER (#4602): the gate's per-tick record of rows shelved behind each holder, summed over the window by its own leaf.
+import { BLOCKING_FILE, parseRecord as parseBlockingRecord, topBlocker, type TopBlocker } from "./blocking-impact.ts";
 import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, doraNumbers, doraDeclarations } from "./dora.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 // THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
@@ -298,7 +300,8 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, mergedRepositories?: ReturnType<typeof readMerged> | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
  *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null,
- *   unwaited?: ReturnType<typeof unwaitedStockRows> | null, failureLedger?: string | null }} reads
+ *   unwaited?: ReturnType<typeof unwaitedStockRows> | null, failureLedger?: string | null, blockingRecord?: string | null }} reads
+ * `blockingRecord` absent or `null` is a record nobody read or that could not be parsed: the top-blocker line says `unknown`, never "nothing was shelved".
  * `failureLedger` absent or `null` is a ledger nobody read or that could not be read (a line that does not parse included): the corrections line says `unknown`, never `0`.
  * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
@@ -309,7 +312,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
 export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
-        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null;
+        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
@@ -328,6 +331,7 @@ export function buildReport(reads: {
     handFixes: reads.handFixes,
     corrections: correctionsPerDay(parsedFailureLedger(reads.failureLedger), new Date(now)),
     unwaited: reads.unwaited ?? null,
+    blocking: topBlockerOf(reads.blockingRecord, now),
     dora: reads.dora,
   };
   // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
@@ -584,6 +588,20 @@ function doraLines(report: ReturnType<typeof buildReport>["dora"]): string[] {
   return ["", ...renderDora(report)];
 }
 
+/** @returns `undefined` for a record nobody read or that does not parse (`unknown`), `null` for one that read and holds nothing shelved in the window */
+function topBlockerOf(text: string | null | undefined, now: number): TopBlocker | null | undefined {
+  if (text === null || text === undefined) return undefined;
+  try { return topBlocker(parseBlockingRecord(text), now); } catch { return undefined; }
+}
+
+/** @param {ReturnType<typeof buildReport>["blocking"]} blocking @returns {string[]} */
+function blockingLines(blocking: ReturnType<typeof buildReport>["blocking"]): string[] {
+  if (blocking === undefined) return [`- Top blocker: ${UNKNOWN} (${BLOCKING_FILE} could not be read, so "nothing was shelved" cannot be said)`];
+  if (blocking === null) return ["- Top blocker: none (nothing was shelved behind a claim in the window)"];
+  const row = blocking.row === null ? "" : ` holding #${blocking.row}`;
+  return [`- Top blocker: ${blocking.holder}${row}; shelved up to ${blocking.rows} rows for ${duration(blocking.minutes)} (${grouped(Math.round(blocking.rowMinutes))} row-minutes; measured from the gate's per-tick count)`];
+}
+
 /**
  * The report as the text `ceo` is handed and posts on #928.
  * @param {ReturnType<typeof buildReport>} report @returns {string}
@@ -592,7 +610,7 @@ export function renderReport(report: ReturnType<typeof buildReport>): string {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -806,6 +824,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
     failureLedger: readText(`${stateDir}/${FAILURE_LEDGER_FILE}`),
+    blockingRecord: readText(`${stateDir}/${BLOCKING_FILE}`),
     turns: readTurns(since),
     readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
