@@ -28,7 +28,7 @@
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
 import { homeHostConfig } from "./host-config.ts";
-import { carriedKeys, digestDue, digestPathFrom, flushOrders, readDigest, ridingDigest, routeOrders, settleRidden } from "./triage-route.ts";
+import { carriedKeys, digestDue, digestPathFrom, flushOrders, namesRedMain, readDigest, ridingDigest, routeOrders, settleRidden } from "./triage-route.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
@@ -7777,6 +7777,8 @@ async function main() {
     candidates: undelivered(withStalls, delivered).map((o) => (voided.has(o.causeKey) ? { ...o, resume: true } : o)),
     // The orders this tick wrote itself say something is stuck; a digest is the wrong place to hear that.
     own: new Set(withStalls.slice(orders.length).map((o) => o.causeKey)), heldFyis: fyis.held, digestFile,
+    // #4631: WHAT THE PROVIDER IS TOLD ABOUT AN ORDER BESIDE ITS CAUSE. Asked of every gate order and not of the candidates, so a red main whose order went out minutes ago still reads red.
+    facts: { mainRed: withStalls.some(namesRedMain), deliveries: readLedgerDeliveries(ledgerPath) },
   });
   /** @param [at] the instant `deliver` named in the order's header (#4068) */
   const record = (key: string, recipient?: string, noClear?: boolean, at: number = Date.now()) => {
@@ -7824,10 +7826,11 @@ function hostOrEmpty(): Parameters<typeof routeOrders>[1]["host"] {
  * held an hour of digest with no order reaching it gets one of its own. A host that declares no provider, or one that cannot be read, reaches the old behaviour: nothing is asked,
  * nothing is held, and an order held under an earlier setting still rides or flushes.
  */
-async function routedTodo({ candidates, own, heldFyis, digestFile }: {
+async function routedTodo({ candidates, own, heldFyis, digestFile, facts }: {
   candidates: { session: string; causeKey: string; prompt: string; resume?: boolean }[]; own: ReadonlySet<string>; heldFyis: Parameters<typeof ridingGateOrders>[1]; digestFile: string;
+  facts: Parameters<typeof routeOrders>[1]["facts"];
 }) {
-  const routed = await routeOrders(candidates, { host: hostOrEmpty(), digestPath: digestFile, exclude: own });
+  const routed = await routeOrders(candidates, { host: hostOrEmpty(), digestPath: digestFile, exclude: own, facts });
   const { orders, rides } = ridingGateOrders(routed.deliver, heldFyis);
   const now = Date.now();
   const pending = readDigest(digestFile);

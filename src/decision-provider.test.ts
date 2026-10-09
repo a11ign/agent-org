@@ -220,15 +220,18 @@ test("a log that cannot be written does not take the decision with it", async ()
   assert.equal(r.lines.filter((l) => /could not be written/.test(l)).length, 1);
 });
 
-test("triageOrder is the first caller: the request is byte for byte what #4384 sent, and a host's own `triage` declaration is its switch (no decisions.json needed)", async () => {
-  const r = rig({ triage: JEV, reply: { body: { answers: { q: { type: "choice", choice: "digest", probabilities: {}, confidence: 0.95 } } } } });
-  const order = { cause: "answer-owed", causeKey: "product-manager/answer-owed/row-1", session: "product-manager", cost: "$0.1000" };
+test("triageOrder is a caller: a host's own `triage` declaration is its switch (no decisions.json needed), and it asks five atomic questions over the order's facts and writes no log (#4631)", async () => {
+  const answer = (choice: string) => ({ type: "choice", choice, probabilities: {}, confidence: 0.95 });
+  const names = ["asks-this-seat", "repeat", "names-red-main", "names-chairman-direction", "informational-only"];
+  const body = { answers: Object.fromEntries(names.map((n) => [n, answer(n === "informational-only" ? "yes" : "no")])) };
+  const r = rig({ triage: JEV, reply: { body } });
+  const order = { cause: "answer-owed", causeKey: "product-manager/answer-owed/row-1", session: "product-manager" };
   const { logPath: _omitted, ...asTriageCaller } = r.deps;
   const t = await triageOrder(order, asTriageCaller);
-  assert.deepEqual(t, { route: "digest", via: "jev", confidence: 0.95, reason: "jev answered digest" });
+  assert.deepEqual([t.route, t.via, t.confidence], ["digest", "jev", 0.95]);
   const { questions, ...rest } = JSON.parse(r.net.calls[0].init.body);
-  assert.deepEqual(rest, { state: { cause: order.cause, causeKey: order.causeKey, session: order.session, cost: order.cost }, model: "jev-latest" });
-  assert.deepEqual(Object.keys(questions), ["q"]);
-  assert.deepEqual(Object.keys(questions.q), ["type", "instructions", "criteria"]);
+  assert.deepEqual(rest, { state: order, model: "jev-latest" });
+  assert.deepEqual(Object.keys(questions), names);
+  assert.deepEqual(Object.keys(questions["repeat"]), ["type", "instructions", "criteria"]);
   assert.deepEqual(r.log(), [], "triageOrder passes no logPath, so it writes nothing it did not write before");
 });

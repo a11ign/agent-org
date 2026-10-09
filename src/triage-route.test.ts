@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { parseHostConfig } from "./host-config.ts";
-import { DIGEST_FLUSH_MS, carriedKeys, digestDue, flushOrders, readDigest, ridingDigest, routeOrders, routable, settleRidden, type GateOrder, type RouteDeps } from "./triage-route.ts";
+import { DIGEST_FLUSH_MS, NEEDED_ACTION_PROXY, OUTCOME_WINDOW_MS, carriedKeys, digestDue, flushOrders, namesRedMain, readDigest, ridingDigest, routeOrders, routable, settleRidden, type GateOrder, type RouteDeps } from "./triage-route.ts";
 import { freshState, type Triage } from "./triage-provider.ts";
 
 const T0 = 1_000_000_000_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const HOST = JSON.stringify({
   schema: 1, home: "/h", binDir: "/h/bin", primary: "a", projects: [{ id: "a", checkout: "/h/a" }],
   gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] },
@@ -41,19 +42,173 @@ test("a digest answer holds the order, and a drop answer does the same: nothing 
   }
 });
 
+const QUESTION_NAMES = ["asks-this-seat", "repeat", "names-red-main", "names-chairman-direction", "informational-only"];
+/** The five answers, quiet unless `say` names one, all at `confidence`. */
+const answersFor = (say: Record<string, string>, confidence: number) => ({
+  answers: Object.fromEntries(QUESTION_NAMES.map((name) => [name, { type: "choice", choice: say[name] ?? "no", probabilities: {}, confidence }])),
+});
+/** The real provider over a fake `fetch`: every request body is kept, and `reply` decides the answer. */
+function realProvider(reply: () => unknown) {
+  const bodies: { state: Record<string, unknown>; questions: Record<string, unknown> }[] = [];
+  const fetchFn = (async (_url: string, init: { body: string }) => { bodies.push(JSON.parse(init.body)); return reply(); }) as unknown as typeof fetch;
+  const lines: string[] = [];
+  const triageDeps = { fetch: fetchFn, readKey: () => "k", state: freshState(), diagnostic: (line: string) => lines.push(line) };
+  return { triageDeps, bodies, lines };
+}
+const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+const INFORMATIONAL = { "informational-only": "yes" };
+
 test("the real provider's floor decides: 0.9 digests and 0.89 delivers, and a provider error delivers", async () => {
-  const answer = (confidence: number) => ({ answers: { q: { choice: "digest", confidence } } });
   const run = async (reply: () => unknown) => {
     const path = digestFile();
-    const fetchFn = (async () => reply()) as unknown as typeof fetch;
-    const out = await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: { fetch: fetchFn, readKey: () => "k", state: freshState(), diagnostic: () => {} } }));
+    const out = await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: realProvider(reply).triageDeps }));
     return { delivered: keys(out.deliver), held: readDigest(path).length };
   };
-  const body = (confidence: number) => ({ ok: true, status: 200, json: async () => answer(confidence) });
-  assert.deepEqual(await run(() => body(0.9)), { delivered: [], held: 1 });
-  assert.deepEqual(await run(() => body(0.89)), { delivered: ["product-manager/org-health/1"], held: 0 });
+  assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.9))), { delivered: [], held: 1 });
+  assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.89))), { delivered: ["product-manager/org-health/1"], held: 0 });
   assert.deepEqual(await run(() => { throw new Error("down"); }), { delivered: ["product-manager/org-health/1"], held: 0 });
   assert.deepEqual(await run(() => ({ ok: false, status: 503 })), { delivered: ["product-manager/org-health/1"], held: 0 });
+});
+
+test("the provider sees six structured facts per order and none of its text, and a fact the tick does not know is absent", async () => {
+  const path = digestFile();
+  const real = realProvider(() => ok(answersFor({}, 0.95)));
+  const known = [order(1), { ...order(2), prompt: "SECRET agent-written body" }];
+  const facts = { mainRed: false, deliveries: [{ at: T0 - 30 * MINUTE, key: known[0].causeKey, session: "product-manager" }] };
+  await routeOrders(known, deps(path, { triage: undefined, triageDeps: real.triageDeps, facts }));
+  const states = real.bodies.map((b) => b.state);
+  assert.deepEqual(states, [
+    { cause: "org-health", causeKey: "product-manager/org-health/1", session: "product-manager", lastDeliveredMinutesAgo: 30, mainRed: false, chairmanDirection: false },
+    { cause: "org-health", causeKey: "product-manager/org-health/2", session: "product-manager", lastDeliveredMinutesAgo: null, mainRed: false, chairmanDirection: false },
+  ]);
+  assert.equal(JSON.stringify(real.bodies).includes("SECRET"), false);
+  const blind = realProvider(() => ok(answersFor({}, 0.95)));
+  await routeOrders([order(3)], deps(digestFile(), { triage: undefined, triageDeps: blind.triageDeps }));
+  assert.deepEqual(blind.bodies[0].state, { cause: "org-health", causeKey: "product-manager/org-health/3", session: "product-manager", chairmanDirection: false });
+});
+
+test("only a delivery to the SAME seat of the SAME cause counts, and the newest one decides the age", async () => {
+  const real = realProvider(() => ok(answersFor({}, 0.95)));
+  const facts = { deliveries: [
+    { at: T0 - 50 * MINUTE, key: order(1).causeKey, session: "product-manager" },
+    { at: T0 - 10 * MINUTE, key: order(1).causeKey, session: "product-manager" },
+    { at: T0 - 2 * MINUTE, key: order(1).causeKey, session: "ceo" },
+    { at: T0 - 3 * MINUTE, key: order(2).causeKey, session: "product-manager" },
+  ] };
+  await routeOrders([order(1)], deps(digestFile(), { triage: undefined, triageDeps: real.triageDeps, facts }));
+  assert.equal(real.bodies[0].state.lastDeliveredMinutesAgo, 10);
+});
+
+test("each case the row names, composed in code over a fake provider, with its negative control", async () => {
+  const route = async (say: Record<string, string>, extra: Partial<RouteDeps> = {}, one: GateOrder = order(1)) => {
+    const real = realProvider(() => ok(answersFor(say, 0.95)));
+    const out = await routeOrders([one], deps(digestFile(), { triage: undefined, triageDeps: real.triageDeps, ...extra }));
+    return { route: out.deliver.length === 1 ? "wake" : "digest", asked: real.bodies.length };
+  };
+  const repeatedAt = (minutesAgo: number) => ({ facts: { deliveries: [{ at: T0 - minutesAgo * MINUTE, key: order(1).causeKey, session: "product-manager" }] } });
+  // a red main always wakes, and asks nobody
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }), { route: "wake", asked: 0 });
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: false } }), { route: "digest", asked: 1 }, "CONTROL: the same order with main green digests");
+  // a chairman direction always wakes, and asks nobody
+  assert.deepEqual(await route(INFORMATIONAL, {}, { ...order(1), startFresh: true }), { route: "wake", asked: 0 });
+  // a repeat inside the hour digests; outside it, or with no delivery on record, it does not
+  assert.deepEqual(await route({ repeat: "yes" }, repeatedAt(59)), { route: "digest", asked: 1 });
+  assert.deepEqual(await route({ repeat: "yes" }, repeatedAt(60)), { route: "wake", asked: 1 });
+  assert.deepEqual(await route({ repeat: "yes" }, { facts: { deliveries: [] } }), { route: "wake", asked: 1 });
+  // informational only digests; one that asks something of this seat, and an ordinary order, wake
+  assert.deepEqual(await route(INFORMATIONAL), { route: "digest", asked: 1 });
+  assert.deepEqual(await route({ ...INFORMATIONAL, "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
+  assert.deepEqual(await route({ "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
+  // the provider's own reading of a red main or a chairman direction wins over the rest
+  assert.deepEqual(await route({ ...INFORMATIONAL, "names-red-main": "yes" }), { route: "wake", asked: 1 });
+  assert.deepEqual(await route({ ...INFORMATIONAL, "names-chairman-direction": "yes" }), { route: "wake", asked: 1 });
+});
+
+test("with the use switched off, the key unreadable or no provider declared, every order is delivered, asks nobody and holds nothing", async () => {
+  const fixture = [order(1), order(2, "ceo"), order(3, "orchestrator")];
+  const cases: [string, Partial<RouteDeps>][] = [];
+  const real = realProvider(() => ok(answersFor(INFORMATIONAL, 0.99)));
+  cases.push(["use switched off", { triage: undefined, triageDeps: { ...real.triageDeps, switches: { "wake-triage": false } } }]);
+  const keyless = realProvider(() => ok(answersFor(INFORMATIONAL, 0.99)));
+  cases.push(["key missing", { triage: undefined, triageDeps: { ...keyless.triageDeps, readKey: () => { throw new Error("ENOENT /fake/key"); } } }]);
+  for (const [name, extra] of cases) {
+    const path = digestFile();
+    const out = await routeOrders(fixture, deps(path, extra));
+    assert.deepEqual([name, keys(out.deliver), out.held.length], [name, keys(fixture), 0]);
+  }
+  assert.equal(real.bodies.length + keyless.bodies.length, 0, "neither case reached the network");
+  const control = realProvider(() => ok(answersFor(INFORMATIONAL, 0.99)));
+  const on = await routeOrders(fixture, deps(digestFile(), { triage: undefined, triageDeps: control.triageDeps }));
+  assert.deepEqual([on.deliver.length, on.held.length, control.bodies.length], [0, 3, 3], "CONTROL: the same host with a readable key and the use on holds all three");
+});
+
+test("a red main is read off the order a red main produces, by cause or by key", () => {
+  assert.equal(namesRedMain({ causeKey: "engineers/trunk-red/pr-4/abcd1234" }), true);
+  assert.equal(namesRedMain({ causeKey: "x/y/z", cause: "trunk-red" }), true);
+  assert.equal(namesRedMain({ causeKey: "product-manager/org-health/1" }), false);
+  assert.equal(namesRedMain({ causeKey: "product-manager/trunk-red-noted/1" }), false, "a cause that merely starts the same is not it");
+});
+
+test("a digested order that comes back inside a day leaves ONE needed-action line that says it is a proxy", async () => {
+  const path = digestFile();
+  await routeOrders([order(1)], deps(path, { triage: fakeProvider("digest").triage }));
+  settleRidden("product-manager/answer-owed/9", [order(1).causeKey], { digestPath: path, ledgerAppend: () => {}, now: () => T0 + 10 * MINUTE });
+  const again = (afterMs: number) => routeOrders([order(1)], deps(path, { triage: fakeProvider("wake").triage, now: () => T0 + afterMs }));
+  const outcomes = () => readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => "outcome" in l).map((l) => l.outcome);
+  assert.deepEqual(outcomes(), [], "CONTROL: a delivered order nobody offered again has no outcome");
+  await again(3 * HOUR);
+  assert.deepEqual(outcomes(), [{ at: T0 + 3 * HOUR, causeKey: order(1).causeKey, session: "product-manager", deliveredAt: T0 + 10 * MINUTE, "needed-action": true, proxy: NEEDED_ACTION_PROXY }]);
+  assert.match(NEEDED_ACTION_PROXY, /PROXY/);
+  await again(4 * HOUR);
+  assert.equal(outcomes().length, 1, "offered a third time, still one line for that delivery");
+  assert.deepEqual(readDigest(path), [], "an outcome line is not a held order");
+});
+
+test("no outcome line for what did not need one: not delivered yet, delivered outright, another seat, or more than a day later", async () => {
+  const outcomesOf = (path: string) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter((l) => l.includes('"outcome"')).length : 0);
+  // held and never delivered: the gate emits it every tick, and that is not an outcome
+  const stillHeld = digestFile();
+  await routeOrders([order(1)], deps(stillHeld, { triage: fakeProvider("digest").triage }));
+  await routeOrders([order(1)], deps(stillHeld, { triage: fakeProvider("digest").triage, now: () => T0 + 3 * HOUR }));
+  assert.equal(outcomesOf(stillHeld), 0);
+  // delivered outright (a wake), then offered again: it was never held
+  const woken = digestFile();
+  await routeOrders([order(1)], deps(woken, { triage: fakeProvider("wake").triage }));
+  await routeOrders([order(1)], deps(woken, { triage: fakeProvider("wake").triage, now: () => T0 + 3 * HOUR }));
+  assert.equal(outcomesOf(woken), 0);
+  // held and delivered to one seat, offered to another with the same key
+  const otherSeat = digestFile();
+  await routeOrders([order(1)], deps(otherSeat, { triage: fakeProvider("digest").triage }));
+  settleRidden("c", [order(1).causeKey], { digestPath: otherSeat, ledgerAppend: () => {}, now: () => T0 + MINUTE });
+  await routeOrders([{ ...order(1), session: "ceo" }], deps(otherSeat, { triage: fakeProvider("wake").triage, now: () => T0 + 2 * HOUR }));
+  assert.equal(outcomesOf(otherSeat), 0);
+  // the day itself counts, a millisecond past it does not
+  for (const [past, lines] of [[0, 1], [1, 0]] as const) {
+    const path = digestFile();
+    await routeOrders([order(1)], deps(path, { triage: fakeProvider("digest").triage }));
+    settleRidden("c", [order(1).causeKey], { digestPath: path, ledgerAppend: () => {}, now: () => T0 + MINUTE });
+    await routeOrders([order(1)], deps(path, { triage: fakeProvider("wake").triage, now: () => T0 + MINUTE + OUTCOME_WINDOW_MS + past }));
+    assert.equal(outcomesOf(path), lines, `${past} ms past 24 hours`);
+  }
+});
+
+test("provider none writes no outcome line, even for an order held under an earlier setting and offered again", async () => {
+  const path = digestFile();
+  await routeOrders([order(1)], deps(path, { triage: fakeProvider("digest").triage }));
+  settleRidden("c", [order(1).causeKey], { digestPath: path, ledgerAppend: () => {}, now: () => T0 + MINUTE });
+  const before = readFileSync(path, "utf8");
+  const out = await routeOrders([order(1)], deps(path, { host: hostWith({ provider: "none" }), now: () => T0 + 3 * HOUR }));
+  assert.deepEqual(keys(out.deliver), [order(1).causeKey]);
+  assert.equal(readFileSync(path, "utf8"), before);
+});
+
+test("an asked line carries the five answers, so a held order says why it was held", async () => {
+  const path = digestFile();
+  const real = realProvider(() => ok(answersFor(INFORMATIONAL, 0.95)));
+  await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: real.triageDeps }));
+  const line = JSON.parse(readFileSync(path, "utf8").trim().split("\n")[0]);
+  assert.deepEqual(line.asked.answers, { "asks-this-seat": "no", repeat: "no", "names-red-main": "no", "names-chairman-direction": "no", "informational-only": "yes" });
+  assert.equal(line.asked.held, true);
 });
 
 test("a provider that throws delivers the order as before", async () => {
