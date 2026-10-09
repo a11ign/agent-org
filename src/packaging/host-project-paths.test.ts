@@ -270,7 +270,7 @@ const refusalOf = (change: (h: Record<string, unknown>) => void) => {
     parseHostConfig(JSON.stringify(copy), "fixture");
   } catch (error) {
     assert.ok(error instanceof HostConfigRefusal, String(error));
-    return error.field;
+    return (error as any).field;
   }
   return null;
 };

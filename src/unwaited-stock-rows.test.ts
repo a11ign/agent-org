@@ -8,7 +8,7 @@ import { buildReport, renderReport, NUMBERS, undeclaredDirections } from "./org-
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-08T18:00:00Z");
-const ago = (hours) => new Date(NOW - hours * HOUR).toISOString();
+const ago = (hours: any) => new Date(NOW - hours * HOUR).toISOString();
 
 /** #4122 as read at 17:00Z on 2026-10-08: `backlog`, `out-of-release`, `lane:ceo`, `found-by-chairman`, no `answer:*`, no open edge, no wait line. */
 const ROW_4122 = Object.freeze({
@@ -16,15 +16,15 @@ const ROW_4122 = Object.freeze({
   labels: ["backlog", "out-of-release", "lane:ceo", "found-by-chairman"].map((name) => ({ name })), blockedBy: { nodes: [] },
 });
 
-const labeled = (label, at) => ({ event: "labeled", created_at: at, label: { name: label } });
+const labeled = (label: any, at: any) => ({ event: "labeled", created_at: at, label: { name: label } });
 
 /** A reader over `rows`, with `timelines` keyed by row number; a row with no entry throws, so a timeline read nobody expected is loud. */
-function readerOf(rows, timelines) {
-  const timelineReads = [];
+function readerOf(rows: any, timelines: any) {
+  const timelineReads: any[] = [];
   return {
     timelineReads,
     listRows: () => rows,
-    timeline: (number) => {
+    timeline: (number: any) => {
       timelineReads.push(number);
       if (!(number in timelines)) throw new Error(`no timeline for #${number}`);
       const t = timelines[number];
@@ -35,10 +35,10 @@ function readerOf(rows, timelines) {
 }
 
 const TIMELINE_4122 = [{ event: "created", created_at: ago(30) }, labeled("backlog", ago(26)), labeled("lane:ceo", ago(26))];
-const reading = (rows, timelines = { 4122: TIMELINE_4122 }) => unwaitedStockRows({ reader: readerOf(rows, timelines), now: NOW });
-const numbersOf = (stock) => (stock.status === "read" ? stock.rows.map((r) => r.number) : stock);
-const withBody = (extra) => ({ ...ROW_4122, body: `${ROW_4122.body}\n${extra}\n` });
-const withLabel = (name) => ({ ...ROW_4122, labels: [...ROW_4122.labels, { name }] });
+const reading = (rows: any, timelines = { 4122: TIMELINE_4122 }) => unwaitedStockRows({ reader: readerOf(rows, timelines), now: NOW });
+const numbersOf = (stock: any) => (stock.status === "read" ? stock.rows.map((r: any) => r.number) : stock);
+const withBody = (extra: any) => ({ ...ROW_4122, body: `${ROW_4122.body}\n${extra}\n` });
+const withLabel = (name: any) => ({ ...ROW_4122, labels: [...ROW_4122.labels, { name }] });
 
 test("positive control: #4122's shape is NAMED and the number counts it, and the population is not empty", () => {
   const rows = [ROW_4122];
@@ -70,14 +70,14 @@ const SENTENCE = "Waiting-for: ceo's dispatched run ... ends";
 /** #4090 as the order read it: `parked`, labelled 34 hours before the reading, parked on a sentence outside the grammar and nothing else. */
 const ROW_4090 = Object.freeze({ ...ROW_4122, number: 4090, labels: [{ name: "parked" }], body: `## What it is\n\n${SENTENCE}\n` });
 const TIMELINE_4090 = { 4090: [labeled("parked", ago(34))] };
-const withSentence = (extra) => ({ ...ROW_4090, body: `${ROW_4090.body}\n${extra}\n` });
+const withSentence = (extra: any) => ({ ...ROW_4090, body: `${ROW_4090.body}\n${extra}\n` });
 
 test("#4237 positive control: a row parked on a SENTENCE is counted and named with `unreadable wait`, and the population is not empty", () => {
   const rows = [ROW_4090];
   assert.ok(rows.length > 0, "the fixture population is non-empty, so an empty answer cannot pass for 'no unwaited rows'");
-  const stock = reading(rows, TIMELINE_4090);
+  const stock = reading(rows, (TIMELINE_4090 as any));
   assert.deepEqual(numbersOf(stock), [4090]);
-  assert.equal(stock.rows[0].unreadableWait, true);
+  assert.equal((stock as any).rows[0].unreadableWait, true);
   assert.match(unwaitedLines(stock)[0], /: 1: #4090 \(parked since 2026-10-07T08:00Z, unreadable wait\)$/);
   assert.doesNotMatch(unwaitedLines(reading([ROW_4122]))[0], /unreadable wait/, "a row with no wait line at all is not blamed on a sentence");
 });
@@ -86,7 +86,7 @@ test("#4237: the same fixture with the sentence replaced by each READABLE form, 
   const readable = ["closed #4081", "merged a11ign/agent-org#401", "labelled ready #4081", "unlabelled hold:ceo #4081", "published agent-org@next", "tagged v0.85.8", "manual"];
   for (const form of readable) {
     const row = { ...ROW_4090, body: `Waiting-for: ${form}\n` };
-    assert.deepEqual(numbersOf(reading([row], TIMELINE_4090)), [], `Waiting-for: ${form} is a wait`);
+    assert.deepEqual(numbersOf(reading([row], (TIMELINE_4090 as any))), [], `Waiting-for: ${form} is a wait`);
   }
 });
 
@@ -97,27 +97,27 @@ test("#4237: the sentence KEPT beside a real wait is not counted, and beside a w
     "a FUTURE Not-before:": withSentence("Not-before: 2026-10-20"),
     "a readable Waiting-for: line": withSentence("Waiting-for: closed #4081"),
   };
-  for (const [name, row] of Object.entries(live)) assert.deepEqual(numbersOf(reading([row], TIMELINE_4090)), [], `${name} still moves the row`);
+  for (const [name, row] of Object.entries(live)) assert.deepEqual(numbersOf(reading([row], (TIMELINE_4090 as any))), [], `${name} still moves the row`);
   const ended = {
     "a CLOSED edge": { ...ROW_4090, blockedBy: { nodes: [{ number: 4081, state: "CLOSED" }] } },
     "a PAST Not-before:": withSentence("Not-before: 2026-10-01"),
   };
   for (const [name, row] of Object.entries(ended)) {
-    const stock = reading([row], TIMELINE_4090);
+    const stock = reading([row], (TIMELINE_4090 as any));
     assert.deepEqual(numbersOf(stock), [4090], `${name} has ended, so the sentence is all that is left`);
-    assert.equal(stock.rows[0].unreadableWait, true);
+    assert.equal((stock as any).rows[0].unreadableWait, true);
   }
 });
 
 test("#4237: a Waiting-for: sentence inside a code fence is not a line, so that fixture has none and is not named for one", () => {
-  const stock = reading([{ ...ROW_4090, body: `\`\`\`\n${SENTENCE}\n\`\`\`\n` }], TIMELINE_4090);
+  const stock = reading([{ ...ROW_4090, body: `\`\`\`\n${SENTENCE}\n\`\`\`\n` }], (TIMELINE_4090 as any));
   assert.deepEqual(numbersOf(stock), [4090]);
-  assert.equal(stock.rows[0].unreadableWait, false);
+  assert.equal((stock as any).rows[0].unreadableWait, false);
   assert.doesNotMatch(unwaitedLines(stock)[0], /unreadable wait/);
 });
 
 test("#4237: Waits-on-done-when: stays counted as a wait beside a sentence", () => {
-  assert.deepEqual(numbersOf(reading([withSentence("Waits-on-done-when: 3778.1")], TIMELINE_4090)), []);
+  assert.deepEqual(numbersOf(reading([withSentence("Waits-on-done-when: 3778.1")], (TIMELINE_4090 as any))), []);
 });
 
 test("a CLOSED edge and a PAST Not-before are waits that ended, so they count as none", () => {
@@ -133,7 +133,7 @@ test("a wait line quoted inside a code fence is an example, not a wait", () => {
 });
 
 test("labelled 23 hours before the reading is not counted, 25 hours before is", () => {
-  const at = (hours) => ({ 4122: [labeled("backlog", ago(hours))] });
+  const at = (hours: any) => ({ 4122: [labeled("backlog", ago(hours))] });
   assert.equal(UNWAITED_AFTER_MS, 24 * HOUR);
   assert.deepEqual(numbersOf(reading([ROW_4122], at(23))), []);
   assert.deepEqual(numbersOf(reading([ROW_4122], at(25))), [4122]);
@@ -212,8 +212,8 @@ test("NUMBERS carries the new id with a declared direction, and the retrospectiv
 });
 
 test("the real reader asks the tracker for the edges in the one list and projects the timeline, with no gh call here", () => {
-  const calls = [];
-  const run = (args) => {
+  const calls: any[] = [];
+  const run = (args: any) => {
     calls.push(args);
     return args[0] === "issue" ? JSON.stringify([ROW_4122])
       : `${JSON.stringify({ event: "labeled", created_at: ago(30), label: { name: "backlog" } })}\n\n`;

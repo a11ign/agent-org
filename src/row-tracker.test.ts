@@ -21,7 +21,7 @@ const DECLARATION = {
   ],
 };
 
-const keyOf = (entries, trackers = TWO) => rowTracker(entries, DECLARATION, trackers).tracker.key;
+const keyOf = (entries: any, trackers = TWO) => rowTracker(entries, DECLARATION, trackers).tracker.key;
 
 test("#4078: a Region with ONE entry under a product repository's releasable path files in the product tracker, even beside agent-org paths", () => {
   assert.equal(keyOf(["packages/cli/src/index.ts"]), "");

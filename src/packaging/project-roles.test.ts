@@ -46,7 +46,7 @@ test("a cause declared with a missing or unknown GROUP is REFUSED naming it", ()
   for (const badGroup of [undefined, null, "", "action-ish"] as Loose[]) {
     assert.throws(() => declareCause("x", badGroup, validProfile), (error: unknown) => {
       assert.ok(error instanceof CauseDeclarationRefusal, `expected a CauseDeclarationRefusal, got ${String(error)}`);
-      assert.equal(error.subject, "x");
+      assert.equal((error as any).subject, "x");
       assert.match(error.message, /group/);
       return true;
     });
@@ -57,7 +57,7 @@ test("a cause declared with a missing PROFILE is REFUSED naming it", () => {
   for (const badProfile of [undefined, null] as Loose[]) {
     assert.throws(() => declareCause("y", GROUPS.JUDGMENT, badProfile), (error: unknown) => {
       assert.ok(error instanceof CauseDeclarationRefusal);
-      assert.equal(error.subject, "y");
+      assert.equal((error as any).subject, "y");
       assert.match(error.message, /profile/);
       return true;
     });
@@ -85,7 +85,7 @@ test("declaredCauses combines lists and REFUSES a cause declared twice", () => {
   const collision = [declareCause("a", GROUPS.ACTION, { kind: "claude", model: "sonnet", effort: "high", why: "w" })];
   assert.throws(() => declaredCauses(FIXTURE, collision), (error: unknown) => {
     assert.ok(error instanceof CauseDeclarationRefusal);
-    assert.equal(error.subject, "a");
+    assert.equal((error as any).subject, "a");
     return true;
   });
 });
@@ -200,7 +200,7 @@ test("a MISSING declared directory is REFUSED, naming it -- never silently answe
     // No `.agent-org/roles/` directory is created: the declaration names a directory that is not there.
     assert.throws(() => roleBriefPath("engineer.md", root), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal, `expected a ProjectDeclarationRefusal, got ${String(error)}`);
-      assert.equal(error.field, "roles.dir");
+      assert.equal((error as any).field, "roles.dir");
       assert.match(error.message, /\.agent-org\/roles/);
       return true;
     });

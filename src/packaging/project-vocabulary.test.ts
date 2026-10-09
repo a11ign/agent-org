@@ -320,7 +320,7 @@ function refusalOf(parsed: unknown): ProjectDeclarationRefusal {
 /** @param field the field the refusal must name, and the message must repeat it */
 function assertRefusedFor(parsed: unknown, field: string): void {
   const refusal = refusalOf(parsed);
-  assert.equal(refusal.field, field, refusal.message);
+  assert.equal((refusal as any).field, field, refusal.message);
   assert.ok(refusal.message.includes(`\`${field}\``), `the message must name the field: ${refusal.message}`);
 }
 
@@ -370,7 +370,7 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
     mutated((d) => delete d.vocabulary.labels.blocked),
     mutated((d) => delete d.vocabulary.prefixes.answer),
     mutated((d) => delete d.vocabulary.fleetQuestion),
-  ].map((doc) => refusalOf(doc).field);
+  ].map((doc) => (refusalOf(doc) as any).field);
   assert.deepEqual(fields, ["vocabulary.labels.blocked", "vocabulary.prefixes.answer", "vocabulary.fleetQuestion"]);
   assert.equal(new Set(fields).size, fields.length);
 });

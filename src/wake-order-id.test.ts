@@ -24,23 +24,23 @@ const ROSTER = ["worker-capture", "worker-judge", SEAT];
 const BODY = "#2537 at `b778b0cb` has FAILING checks and is blocked.";
 /** An EMPTY transcript root, so a real org label this file reuses is never compacted by a coincidence of a live session's own transcript. */
 const NO_TRANSCRIPTS = join(tmpdir(), "a11y-4068-no-transcripts");
-const order = (session, extra = {}) => ({ session, cause: "pr-checks-failing", causeKey: `${session}/pr-checks-failing/pr-2537/b778b0cb`, prompt: BODY, ...extra });
+const order = (session: any, extra = {}) => ({ session, cause: "pr-checks-failing", causeKey: `${session}/pr-checks-failing/pr-2537/b778b0cb`, prompt: BODY, ...extra });
 
 /** A `run` that records every herdr call; `ordered(label)` is what was TYPED to `label` as the order, the `/clear` not being one. */
 function recorder() {
-  const calls = [];
-  const run = (args) => {
+  const calls: any[] = [];
+  const run = (args: any) => {
     calls.push(args);
     return "{}";
   };
-  const ordered = (label) => calls.filter((c) => c[2] === "agent" && c[3] === "prompt" && c[4] === label && c[5] !== "/clear").map((c) => c[5]);
+  const ordered = (label: any) => calls.filter((c) => c[2] === "agent" && c[3] === "prompt" && c[4] === label && c[5] !== "/clear").map((c) => c[5]);
   return { run, ordered };
 }
 
 /** One delivery through `deliver`, with the clock fixed and every ledger write collected rather than made. */
-function delivered(orderToSend, label, { now = () => AT } = {}) {
+function delivered(orderToSend: any, label: any, { now = () => AT } = {}) {
   const r = recorder();
-  const recorded = [];
+  const recorded: any[] = [];
   const got = deliver([orderToSend], [{ label, status: "idle" }], ROSTER,
     { run: r.run, now, sleep: () => {}, contextRoot: NO_TRANSCRIPTS, record: (key, recipient, noClear, at) => recorded.push({ key, noClear, at }) });
   assert.deepEqual(got.refused, [], `${label}: the order was delivered`);

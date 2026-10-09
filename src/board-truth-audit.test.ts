@@ -53,7 +53,7 @@ const BOARD = {
 };
 
 test("emptiness control: the seeded board is found on all eight questions, so the empty results below are readings", () => {
-  const audit = boardTruthAudit(facts({ ...BOARD, liveSessions: ["ceo"] }));
+  const audit = boardTruthAudit(facts(({ ...BOARD, liveSessions: ["ceo"] } as any)));
   assert.deepEqual([...new Set(audit.findings.map((f) => f.question))].sort(), Object.values(QUESTIONS).sort());
   assert.deepEqual(audit.unread, []);
 });
@@ -120,7 +120,7 @@ test("(5) a row with no state label and one with two are found; one with exactly
 });
 
 test("#4116: an open row whose closing PR merged 1 minute ago is NOT found and is counted `merging`; merged 10 minutes ago it IS found (the control), and an unreadable merge time never hides it", () => {
-  const at = (minutesAgo) => new Date(NOW - minutesAgo * MINUTE).toISOString();
+  const at = (minutesAgo: any) => new Date(NOW - minutesAgo * MINUTE).toISOString();
   const withPr = (pr: Record<string, any>) => boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", ...pr }] }));
   const young = withPr({ mergedAt: at(1) });
   assert.deepEqual(young.findings, []);
@@ -162,7 +162,7 @@ test("#4116: the table says `N merging, not judged` beside the count only when N
 });
 
 test("#4116: every merged-PR read asks for `mergedAt`, the first tracker's and the code repository's", () => {
-  const asked = [];
+  const asked: any[] = [];
   const run = (args: string[]) => { if (args[0] === "pr") asked.push(args); return "[]"; };
   const trackers = [{ key: "", repo: "a/b" }, { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" }];
   readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers });
@@ -171,7 +171,7 @@ test("#4116: every merged-PR read asks for `mergedAt`, the first tracker's and t
 });
 
 test("(5) #4048: a row with no state label created 13 s ago is NOT found and is counted as filing; the same row 10 minutes old IS found and is not", () => {
-  const at = (secondsAgo) => new Date(NOW - secondsAgo * 1000).toISOString();
+  const at = (secondsAgo: any) => new Date(NOW - secondsAgo * 1000).toISOString();
   const young = boardTruthAudit(facts({ openRows: [row(4047, ["meta"], { createdAt: at(13) })] }));
   assert.deepEqual(young.findings, []);
   assert.equal(young.filing, 1);
@@ -211,10 +211,10 @@ const adoptionTitle = (repo: string) => `Adopt the shared changeset-required che
 const ADOPTION_ROWS = [[4129, "agent-org"], [4130, "screenreader-worker"], [4132, "screenreader-fleet"], [4133, "documents"], [4134, "lab"], [4135, "control"]];
 
 test("sibling adoption rows naming different repositories are not near-duplicates (#4137)", () => {
-  const siblings = ADOPTION_ROWS.map(([number, repo]) => row(number, ["ready"], { title: adoptionTitle(repo) }));
+  const siblings = ADOPTION_ROWS.map(([number, repo]) => row((number as any), ["ready"], { title: adoptionTitle((repo as any)) }));
   assert.deepEqual(found({ openRows: siblings }, QUESTIONS.DUPLICATE), [], "the real titles of #4129-#4135 are six rows, not one");
   // POSITIVE CONTROL for the line above: with the repository name taken out of the titles the same six rows ARE read as one, so the empty result is a reading.
-  const unnamed = ADOPTION_ROWS.map(([number]) => row(number, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") }));
+  const unnamed = ADOPTION_ROWS.map(([number]) => row((number as any), ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") }));
   assert.deepEqual(found({ openRows: unnamed }, QUESTIONS.DUPLICATE), [4130, 4132, 4133, 4134, 4135]);
   // a title naming the same repository and one word more is still a real twin
   const twin = row(4136, ["ready"], { title: `${adoptionTitle("screenreader-worker")} again` });
@@ -239,7 +239,7 @@ test("a fact that could not be read is UNREAD and never counted as agreeing", ()
 });
 
 test("the table puts the count first, names the field and the reader, and an all-agreeing board prints `0 disagree`", () => {
-  const table = boardTruthTable(boardTruthAudit(facts({ ...BOARD, liveSessions: ["ceo"] })), DAY);
+  const table = boardTruthTable(boardTruthAudit(facts(({ ...BOARD, liveSessions: ["ceo"] } as any))), DAY);
   const lines = table.split("\n");
   assert.match(lines[0], /2026-10-08/);
   assert.match(lines[2], /^\*\*\d+ disagree\*\*$/);
@@ -274,7 +274,7 @@ test("org-health: the reading is in the tick only when asked for, and its order 
 });
 
 test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a partial herdr listing is UNREAD, and the open rows are read with the repo named", () => {
-  const calls = [];
+  const calls: any[] = [];
   const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "list" && args.includes("closed")) throw new Error("HTTP 502");
@@ -348,7 +348,7 @@ test("tick: the wait facts the gate built are PASSED, so wait-already-true is re
 });
 
 test("tick: the open rows are the tick's own (no second open-list read), and a claimed row is judged only when its comments came with the page", () => {
-  const calls = [];
+  const calls: any[] = [];
   const run = (args: string[]) => { calls.push(args); return "[]"; };
   boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
   assert.ok(calls.length > 0 && calls.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
@@ -366,7 +366,7 @@ test("tick: the open rows are the tick's own (no second open-list read), and a c
 });
 
 test("the poster: a table is posted once per edition day -- count first, `0 disagree` stated -- and a second tick, a restart or a second host posts nothing", () => {
-  const posted = [];
+  const posted: any[] = [];
   let onRecord = "";
   const run = (args: string[]) => {
     if (args[0] === "api") return onRecord;
@@ -388,28 +388,28 @@ test("the poster: a table is posted once per edition day -- count first, `0 disa
 });
 
 test("the poster asks the record by the day's own heading, and posts nothing it could not decide on", () => {
-  const asked = [];
+  const asked: any[] = [];
   const run = (args: string[]) => { asked.push(args); return ""; };
   postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run });
   assert.match(asked[0].join(" "), /repos\/a\/b\/issues\/928\/comments\?per_page=100&since=2026-10-07T00:00:00Z/);
   assert.match(asked[0].join(" "), /startswith\("### Board against reality, 2026-10-08"\)/);
-  const calls = [];
+  const calls: any[] = [];
   const quiet = (args: string[]) => { calls.push(args); return ""; };
   assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b", run: quiet }), "no-audit");
   assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b", run: quiet }), "unread", "a table carrying NOT READ would stand for the day");
   assert.deepEqual(calls, [], "neither asked nor posted");
-  const refusedAsk = (args: string[]) => { calls.push(args); throw new Error("HTTP 403"); };
+  const refusedAsk = (args: string[]) => { calls.push((args as any)); throw new Error("HTTP 403"); };
   assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run: refusedAsk }), /403/);
   assert.equal(calls.length, 1, "a record that could not be asked is not posted to: it might be there already");
 });
 
 test("the tick posts through boardTruthNow once, a failed post never stops the tick, and the gate really passes it", () => {
-  const posts = [];
+  const posts: any[] = [];
   const post = (input: any) => { posts.push(input.day); return "posted"; };
   const audit = boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: { items: {} }, now: Date.parse("2026-10-08T23:30:00Z") }, wire({ post }));
   assert.deepEqual(posts, ["2026-10-09"], "the day is London's: 23:30 UTC on 8 October is already the 9th in BST");
   assert.equal(audit.findings.length, 0);
-  const said = [];
+  const said: any[] = [];
   const failing = boardTruthNow({ openRowsRead: [tickRow(13, [])], waitFacts: null, now: NOW }, wire({ post: () => { throw new Error("HTTP 502\nbody"); }, log: (l: string) => said.push(l) }));
   assert.equal(failing.findings.length, 1, "the audit is returned all the same");
   assert.match(said.join(""), /not posted \(HTTP 502\); the next tick asks again/);
@@ -426,7 +426,7 @@ test("no test above reached a remote: the recording gh was never called", () => 
 // ---- the seventh question: a `parked` row with no condition the gate can read (a11ign/a11ign#4049, chairman rule 1, 2026-10-08) ----
 /** @param {number} number @param {string[]} labels @param {Record<string, any>} [more] a row read WITH its `blockedBy` edges, as the tick reads them */
 const edged = (number: number, labels: string[], more: Record<string, any> = {}) => row(number, labels, { blockedBy: { nodes: [] }, ...more });
-const bare = (over) => found({ openRows: [edged(3449, ["parked"], over)] }, QUESTIONS.PARKED_BARE);
+const bare = (over: any) => found({ openRows: [edged(3449, ["parked"], over)] }, QUESTIONS.PARKED_BARE);
 
 test("(1) a parked row with no condition of any kind is a finding owned by product-manager: the positive control for every emptiness below", () => {
   const audit = boardTruthAudit(facts({ openRows: [edged(3449, ["parked", "lane:any"], { body: "lifts once the aged-backlog order is settled" })] }));
@@ -471,7 +471,7 @@ test("(5) a parked row read without its blockedBy edges is UNREAD, never agreein
 });
 
 test("the standalone read asks for blockedBy, so the seventh question is read there too", () => {
-  const asked = [];
+  const asked: any[] = [];
   readBoardFacts("a/b", { run: (args) => { asked.push(args.join(" ")); return "[]"; }, agents: () => [] });
   assert.ok(asked.some((a) => /issue list --state open .*blockedBy/.test(a)));
 });
@@ -501,7 +501,7 @@ test("#4080 CONTROL: with ONE declared tracker the table is the one it always pr
     + "| #10 | closing-pr-merged | state (open) | merged PR #900 says `Closes #10` | product-manager |\n"
     + "| #12 | wait-already-true | `Waiting-for: closed #50` line | the condition is already true, so the row waits on nothing | product-manager |\n"
     + "| #13 | state-label | labels | carries none of ready, in-progress, backlog, parked, epic, blocked | product-manager |");
-  const asked = [];
+  const asked: any[] = [];
   readBoardFacts("a/home", { run: (args) => { asked.push(args[args.indexOf("--repo") + 1]); return "[]"; }, agents: () => [], trackers: [HOME_TRACKER] });
   assert.deepEqual([...new Set(asked)], ["a/home"]);
 });

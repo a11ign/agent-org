@@ -142,7 +142,7 @@ test("the reads ask GitHub for schedule runs and for comments since the slot, an
 test("the cron is read from the workflow file: exactly one plain `m h * * d`, else no slot", () => {
   assert.deepEqual(slotFromWorkflow('on:\n  schedule:\n    # note\n    - cron: "43 6 * * 1"\n'), MONDAY_SLOT);
   assert.deepEqual(slotFromWorkflow("  - cron: '0 7 * * 0'"), { minute: 0, hour: 7, weekday: 0 });
-  assert.equal(slotFromWorkflow("  - cron: '0 7 * * 7'").weekday, 0);
+  assert.equal((slotFromWorkflow("  - cron: '0 7 * * 7'").weekday as any), 0);
   for (const text of ["on:\n  workflow_dispatch:\n", '- cron: "17 6 * * *"', '- cron: "*/5 * * * 1"', '- cron: "43 6 * * 1"\n- cron: "13 7 * * 1"', '- cron: "61 6 * * 1"', '- cron: "43 6 * * 8"']) {
     assert.equal(slotFromWorkflow(text), null, text);
   }
@@ -192,7 +192,7 @@ test("the declaration names the workflow and the issue beside each tracker's rep
   ];
   for (const [declaration, why] of refused) {
     const result = declarationFrom(JSON.stringify(declaration));
-    assert.ok("refusal" in result && why.test(result.refusal), JSON.stringify(declaration));
+    assert.ok("refusal" in result && (why as any).test(result.refusal), JSON.stringify(declaration));
   }
   assert.ok("refusal" in declarationFrom("{not json"));
   assert.equal(readCiHealth({ refusal: "the project declaration (it does not declare units.ciHealthIssue)" }, AFTER_GRACE).verdict, VERDICT.CANNOT_TELL);

@@ -247,7 +247,7 @@ for (const row of STANDALONE_REFUSED) {
   test(`layout table, ${HOST_VARIABLE} unset: the tool's own checkout run in ${row.where} still REFUSES naming the variable (#3039)`, () => {
     assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: standaloneTool, beside: upThree(standaloneTool), cwd: row.cwd() }), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
-      assert.equal(error.field, HOST_VARIABLE);
+      assert.equal((error as any).field, HOST_VARIABLE);
       assert.ok(error.message.includes(PROJECT_FILE), error.message);
       return true;
     });
@@ -263,7 +263,7 @@ test("layout table, installed, run where no declaration is: REFUSES naming the f
   const bare = bareRepository();
   assert.throws(() => resolveHomeCheckout({ env: {}, toolDir: installedTool, beside: upThree(installedTool), cwd: bare }), (error: unknown) => {
     assert.ok(error instanceof ProjectDeclarationRefusal);
-    assert.equal(error.field, PROJECT_FILE);
+    assert.equal((error as any).field, PROJECT_FILE);
     assert.ok(error.message.includes(bare) && error.message.includes(PROJECT_FILE), error.message);
     return true;
   });

@@ -67,7 +67,7 @@ function refusalOf(text: string): ProjectDeclarationRefusal {
 /** @param {string} text @param {string} field the field the refusal must name, and the message must repeat it */
 function assertRefusedFor(text: string, field: string): void {
   const refusal = refusalOf(text);
-  assert.equal(refusal.field, field, refusal.message);
+  assert.equal((refusal as any).field, field, refusal.message);
   assert.ok(refusal.message.includes(`\`${field}\``), `the message must name the field: ${refusal.message}`);
 }
 
@@ -156,7 +156,7 @@ test("a missing declaration is REFUSED naming the file, never answered with a11i
       () => readProjectDeclaration(dir),
       (error: unknown) => {
         assert.ok(error instanceof ProjectDeclarationRefusal);
-        assert.equal(error.field, "(file)");
+        assert.equal((error as any).field, "(file)");
         assert.ok(error.message.includes(join(dir, PROJECT_DECLARATION_PATH)), error.message);
         assert.ok(!error.message.includes(A11IGN_LITERAL), error.message);
         return true;
@@ -234,7 +234,7 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
     mutated((d) => (d.code[0].repo = "no-slash")),
     mutated((d) => (d.tracker[0].board.number = 0)),
     mutated((d) => (d.code[0].key = "k-1")),
-  ].map((text) => refusalOf(text).field);
+  ].map((text) => (refusalOf(text) as any).field);
   assert.deepEqual(fields, ["schema", "code[0].repo", "tracker[0].board.number", "code[0].key"]);
   assert.equal(new Set(fields).size, fields.length);
 });

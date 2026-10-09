@@ -23,14 +23,14 @@ const EVENTS = ["push", "pull_request", "merge_group"];
 const RESULTS = ["success", "failure", "skipped", "cancelled"];
 
 /** The one condition form `ci.yml` uses on `changeset`; anything else throws, so an unreadable condition is never read as true. */
-function conditionHolds(condition, event) {
+function conditionHolds(condition: any, event: any) {
   const [, operator, literal] = /^github\.event_name (==|!=) '([a-z_]+)'$/.exec(String(condition).trim()) ?? [];
   if (!operator) throw new Error(`cannot evaluate the condition ${JSON.stringify(condition)}: only \`github.event_name ==|!= '<event>'\` is understood`);
   return operator === "==" ? event === literal : event !== literal;
 }
 
 /** Whether the `changeset` job runs on `event`. No `if:` is a job that always runs. */
-const changesetRuns = (event) => ci.jobs.changeset.if === undefined || conditionHolds(ci.jobs.changeset.if, event);
+const changesetRuns = (event: any) => ci.jobs.changeset.if === undefined || conditionHolds(ci.jobs.changeset.if, event);
 
 /** @param {string} text @param {Record<string, string>} values */
 function fill(text: string, values: Record<string, string>) {
@@ -41,11 +41,11 @@ function fill(text: string, values: Record<string, string>) {
 }
 
 /** Run `gate`'s script on `event` with the given results; `ok` is whether `gate` would be green. */
-function gate(event, results) {
-  const step = ci.jobs.gate.steps.find((candidate) => candidate.run);
+function gate(event: any, results: any) {
+  const step = ci.jobs.gate.steps.find((candidate: any) => candidate.run);
   const values = { "github.event_name": event };
   for (const [job, result] of Object.entries(results)) values[`needs.${job}.result`] = result;
-  const env = Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [key, fill(value, values)]));
+  const env = Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [key, fill((value as any), values)]));
   const ran = spawnSync("bash", ["-eo", "pipefail", "-c", fill(step.run, values)], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });
   return { ok: ran.status === 0, output: ran.stdout + ran.stderr };
 }

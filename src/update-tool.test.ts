@@ -18,7 +18,7 @@ import { liveToolVersion, toolVersionLine } from "./lib/tool-version.mjs";
 import { sandboxGitEnv, withGitSandbox } from "./lib/git-sandbox.ts";
 
 /** A primary checkout as `isPrimaryWorktree` reads one (a real `.git` directory), holding nothing else: git itself is the fake. */
-function withPrimaryDirectory(fn) {
+function withPrimaryDirectory(fn: any) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "update-tool-3443-")));
   try {
     mkdirSync(join(root, ".git"));
@@ -30,11 +30,11 @@ function withPrimaryDirectory(fn) {
 
 /** A git that records every call and answers the three reads `updateTool` makes: the status, the tag list and HEAD. */
 function fakeGit({ tags, dirty = "" }) {
-  const calls = [];
-  const run = (args) => {
+  const calls: any[] = [];
+  const run = (args: any) => {
     calls.push(args);
     if (args[0] === "status") return dirty;
-    if (args[0] === "tag") return tags.map((tag) => `${tag}\n`).join("");
+    if (args[0] === "tag") return tags.map((tag: any) => `${tag}\n`).join("");
     return args[0] === "rev-parse" ? "0123abc\n" : "";
   };
   return { run, calls, checkouts: () => calls.filter((call) => call[0] === "checkout") };
@@ -43,7 +43,7 @@ function fakeGit({ tags, dirty = "" }) {
 const MIXED_TAGS = ["v0.7.9", "v0.7.10", "v0.8.0-rc1", "latest", "v0.7.8"];
 
 test("#3443 (1): `latest` selects the newest release by NUMERIC order, ignoring a pre-release and a name that is no version", () => {
-  withPrimaryDirectory((root) => {
+  withPrimaryDirectory((root: any) => {
     const git = fakeGit({ tags: MIXED_TAGS });
     assert.equal(updateTool(root, git.run, "latest"), "agent-org v0.7.10 (0123abc)", "it prints and returns the version and the commit");
     assert.deepEqual(git.checkouts(), [["checkout", "--detach", "refs/tags/v0.7.10", "--quiet"]],
@@ -52,7 +52,7 @@ test("#3443 (1): `latest` selects the newest release by NUMERIC order, ignoring 
 });
 
 test("#3443 (1) control: with the pre-release alone, `latest` still refuses -- the list above is what kills the mutants", () => {
-  withPrimaryDirectory((root) => {
+  withPrimaryDirectory((root: any) => {
     const git = fakeGit({ tags: ["v0.8.0-rc1", "latest"] });
     assert.throws(() => updateTool(root, git.run, "latest"), /no release tag/);
     assert.deepEqual(git.checkouts(), []);
@@ -60,7 +60,7 @@ test("#3443 (1) control: with the pre-release alone, `latest` still refuses -- t
 });
 
 test("#3443 (2): a pin selects exactly that tag; an absent pin refuses BY NAME and moves nothing", () => {
-  withPrimaryDirectory((root) => {
+  withPrimaryDirectory((root: any) => {
     const pinned = fakeGit({ tags: MIXED_TAGS });
     assert.match(updateTool(root, pinned.run, "v0.7.8"), /^agent-org v0\.7\.8 \(/);
     assert.deepEqual(pinned.checkouts(), [["checkout", "--detach", "refs/tags/v0.7.8", "--quiet"]], "the pin is chosen although v0.7.10 is newer");
@@ -72,7 +72,7 @@ test("#3443 (2): a pin selects exactly that tag; an absent pin refuses BY NAME a
 });
 
 test("#3443 (3): the fetch NAMES TAGS, and a dirty tree is still refused with the file named before any fetch", () => {
-  withPrimaryDirectory((root) => {
+  withPrimaryDirectory((root: any) => {
     const git = fakeGit({ tags: ["v1.0.0"] });
     updateTool(root, git.run);
     const fetches = git.calls.filter((call) => call[0] === "fetch");
@@ -85,7 +85,7 @@ test("#3443 (3): the fetch NAMES TAGS, and a dirty tree is still refused with th
 });
 
 test("#3443 (4): NO TAGS refuses and issues no checkout of origin/main; the same run with one tag does check out", () => {
-  withPrimaryDirectory((root) => {
+  withPrimaryDirectory((root: any) => {
     const none = fakeGit({ tags: [] });
     assert.throws(() => updateTool(root, none.run), /does NOT fall back to origin\/main/);
     assert.deepEqual(none.checkouts(), [], "no checkout of any kind");
@@ -97,7 +97,7 @@ test("#3443 (4): NO TAGS refuses and issues no checkout of origin/main; the same
 });
 
 test("#3443: the live version is READ off the checkout -- the newest release pointing at HEAD, a line for none, and a line that never throws", () => {
-  const at = (answer) => (args) => (args[0] === "tag" ? answer : "9f8e7d6\n");
+  const at = (answer: any) => (args: any) => (args[0] === "tag" ? answer : "9f8e7d6\n");
   assert.equal(liveToolVersion(at("v0.7.9\nv0.7.10\nsnapshot\n")), "v0.7.10");
   assert.equal(liveToolVersion(at("snapshot\n")), null, "a tag that is no release names no version");
   assert.equal(toolVersionLine(at("v0.8.3\n")), "agent-org v0.8.3");
@@ -107,9 +107,9 @@ test("#3443: the live version is READ off the checkout -- the newest release poi
 
 test("#3443: a move restarts each long-running unit with `try-restart`; an uninstalled one is a line, and a failure is SAID and does not stop the rest", () => {
   const lines = { log: [], error: [] };
-  const out = { log: (line) => lines.log.push(line), error: (line) => lines.error.push(line) };
-  const asked = [];
-  const exec = (file, args) => {
+  const out = { log: (line: any) => lines.log.push((line as any)), error: (line: any) => lines.error.push((line as any)) };
+  const asked: any[] = [];
+  const exec = (file: any, args: any) => {
     asked.push([file, ...args]);
     if (args.at(-1) === "gone.service") throw Object.assign(new Error("Unit gone.service not found."), { status: 5 });
     if (args.at(-1) === "broken.service") throw Object.assign(new Error("Failed to connect to bus"), { status: 1 });
@@ -117,13 +117,13 @@ test("#3443: a move restarts each long-running unit with `try-restart`; an unins
   restartLongRunning(["listen.service", "gone.service", "broken.service", "after.service"], { exec, out });
   assert.deepEqual(asked.map((call) => call.slice(0, 3)), Array(4).fill(["systemctl", "--user", "try-restart"]), "every unit is asked, the failure not ending the walk");
   assert.deepEqual(asked.map((call) => call.at(-1)), ["listen.service", "gone.service", "broken.service", "after.service"]);
-  assert.deepEqual(lines.log.map((line) => line.split(" ")[0] + " " + line.split(" ")[1]), ["restarted listen.service", "gone.service is", "restarted after.service"]);
+  assert.deepEqual(lines.log.map((line) => (line as any).split(" ")[0] + " " + (line as any).split(" ")[1]), ["restarted listen.service", "gone.service is", "restarted after.service"]);
   assert.equal(lines.error.length, 1, "exactly the unit that failed is reported as a failure");
   assert.match(lines.error[0], /COULD NOT RESTART broken\.service.*PREVIOUS agent-org version/);
 });
 
 /** git in a directory with every `GIT_*` variable stripped. */
-const gitAt = (dir) => (args) => execFileSync("git", args, { cwd: dir, env: sandboxGitEnv(), encoding: "utf8" });
+const gitAt = (dir: any) => (args: any) => execFileSync("git", args, { cwd: dir, env: sandboxGitEnv(), encoding: "utf8" });
 
 test("#3443 (7): a release commit that is NOT an ancestor of the branch, tagged, is found by a clone that had no tags -- real git", () => {
   withGitSandbox((sandbox) => {
@@ -132,7 +132,7 @@ test("#3443 (7): a release commit that is NOT an ancestor of the branch, tagged,
       sandbox.run(["symbolic-ref", "HEAD", "refs/heads/main"]);
       sandbox.commit("merge one", ["--allow-empty"]);
       // What `release.yml` does: a commit on top of the merge, pushed as the TAG alone, reachable from no branch.
-      const release = (version) => {
+      const release = (version: any) => {
         sandbox.run(["checkout", "-q", "--detach", "main"]);
         sandbox.commit(`release ${version}`, ["--allow-empty"]);
         sandbox.run(["tag", version]);

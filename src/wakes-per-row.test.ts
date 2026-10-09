@@ -13,14 +13,14 @@ import {
 } from "./wakes-per-row.ts";
 import * as everyTracker from "./wakes-per-row.ts"; // the readers #4080 adds, by namespace so a run without them fails each test and not the file's import
 
-const at = (iso) => Date.parse(iso);
+const at = (iso: any) => Date.parse(iso);
 const WINDOW = { from: at("2026-10-04T00:00:00Z"), to: at("2026-10-04T13:00:00Z") };
 
 // ---- the record shapes, as the harness writes them -----------------------------------------------------------------------------------------------------
-const user = (timestamp, content, extra = {}) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content }, ...extra });
-const wakeText = (session, body) => `<pasted_content id="f277">\nYou are \`${session}\` -- ${body}\n</pasted_content>`;
+const user = (timestamp: any, content: any, extra = {}) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content }, ...extra });
+const wakeText = (session: any, body: any) => `<pasted_content id="f277">\nYou are \`${session}\` -- ${body}\n</pasted_content>`;
 const FIRST_ORDER = `\n\n${wakeText("worker-3390", "an org session in this repository.")}`;
-const toolResult = (timestamp) => user(timestamp, [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]);
+const toolResult = (timestamp: any) => user(timestamp, [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }]);
 
 const NON_WAKES = {
   "/compact": user("2026-10-04T11:07:30.000Z", "/compact"),
@@ -95,7 +95,7 @@ test("worker-3390: the two wakes that named a cause already false when typed are
 
 test("bytes per wake is the delivered text, measured per wake", () => {
   const transcript = parseTranscript(worker3390Transcript(), "w3390.jsonl");
-  const expected = transcript.wakes.reduce((sum, wake) => sum + wake.bytes, 0) / 3;
+  const expected = (transcript as any).wakes.reduce((sum: any, wake: any) => sum + wake.bytes, 0) / 3;
   assert.equal(run().bytesPerWake, expected);
   assert.ok(expected > 0);
 });
@@ -103,8 +103,8 @@ test("bytes per wake is the delivered text, measured per wake", () => {
 // ---- (2) what is not a wake, each as its own case ------------------------------------------------------------------------------------------------------
 for (const [name, line] of Object.entries(NON_WAKES)) {
   test(`${name} is not a wake`, () => {
-    assert.equal(parseTranscript(line, "x.jsonl").wakes.length, 0);
-    assert.equal(parseTranscript(`${line}\n${user("2026-10-04T12:00:00Z", wakeText("worker-1", "order"))}`, "x.jsonl").wakes.length, 1, "positive control: the real wake beside it is counted");
+    assert.equal((parseTranscript(line, "x.jsonl") as any).wakes.length, 0);
+    assert.equal((parseTranscript(`${line}\n${user("2026-10-04T12:00:00Z", wakeText("worker-1", "order"))}`, "x.jsonl") as any).wakes.length, 1, "positive control: the real wake beside it is counted");
   });
 }
 
@@ -187,7 +187,7 @@ test("a remainder wake outside the window is not counted in it", () => {
 });
 
 // ---- (4b) a transcript is named by its first order, whichever form the order opens on (#4083, after #4068) ----------------------------------------------
-const followUpHeader = (session, body = "a follow-up order.") => user("2026-10-04T10:37:49.502Z", `\n\n<pasted_content id="f278">\n[order:wake:${session}:1791110269175 session:${session} cause:blocker-cleared]\n\n${body}\n</pasted_content>`);
+const followUpHeader = (session: any, body = "a follow-up order.") => user("2026-10-04T10:37:49.502Z", `\n\n<pasted_content id="f278">\n[order:wake:${session}:1791110269175 session:${session} cause:blocker-cleared]\n\n${body}\n</pasted_content>`);
 const NAMELESS = user("2026-10-04T10:37:49.502Z", `\n\n<pasted_content id="f279">\nan order that names nobody.\n</pasted_content>`);
 
 test("#4083 a transcript whose only wake is a follow-up header is named, and so is one on the old phrase", () => {
@@ -221,14 +221,14 @@ test("an unreadable transcript is reported unreadable and its row UNMEASURED, ne
   assert.equal(reading.measuredRows, 0);
   assert.equal(reading.wakesPerRow.mean, null);
   assert.equal(reading.rows[0].measured, false);
-  assert.match(reading.unmeasured[0].reason, /worker-3390: a transcript is unreadable/);
+  assert.match((reading.unmeasured[0].reason as any), /worker-3390: a transcript is unreadable/);
   assert.equal(reading.unreadableTranscripts.length, 1);
   assert.match(renderReading(reading), /UNMEASURED row #3390/);
 });
 
 test("a claimant with no transcript at all is UNMEASURED, and a row nobody is recorded as holding is too", () => {
-  assert.match(run({ transcripts: [] }).unmeasured[0].reason, /no transcript found/);
-  assert.match(run({ instances: [] }).unmeasured[0].reason, /no claimant recorded/);
+  assert.match((run({ transcripts: [] }).unmeasured[0].reason as any), /no transcript found/);
+  assert.match((run({ instances: [] }).unmeasured[0].reason as any), /no claimant recorded/);
 });
 
 test("an UNMEASURED row stays out of the mean and median of the measured ones", () => {
@@ -307,14 +307,14 @@ test("parseArgs refuses a missing or inverted window", () => {
 });
 
 // ---- the merged pull requests are read from the pull-requests LIST, never the search API --------------------------------------------------------------------
-const listed = (number, mergedAt, updatedAt = mergedAt) => ({ number, created_at: "2026-10-01T00:00:00Z", merged_at: mergedAt, updated_at: updatedAt, body: null });
+const listed = (number: any, mergedAt: any, updatedAt = mergedAt) => ({ number, created_at: "2026-10-01T00:00:00Z", merged_at: mergedAt, updated_at: updatedAt, body: null });
 
 /** A fake `gh api` over a pull-requests list of `pulls` (newest update first), 100 to a page; it records every path it is asked for. */
-function pullsList(pulls) {
-  const paths = [];
-  const gh = (args) => {
+function pullsList(pulls: any) {
+  const paths: any[] = [];
+  const gh = (args: any) => {
     paths.push(args[args.indexOf("GET") + 1]);
-    const page = Number(args.find((arg) => arg.startsWith("page="))?.slice("page=".length) ?? 1);
+    const page = Number(args.find((arg: any) => arg.startsWith("page="))?.slice("page=".length) ?? 1);
     return pulls.slice((page - 1) * 100, page * 100);
   };
   return { gh, paths };
@@ -346,7 +346,7 @@ test("readMergedPulls lets any other failure through as it came, with no flag ad
 });
 
 /** The script run as a command, with `gh` replaced by a stub that runs `ghBody` and a `HOME` holding the empty sources it reads. */
-function runCommand(ghBody) {
+function runCommand(ghBody: any) {
   const home = mkdtempSync(join(tmpdir(), "wakes-per-row-"));
   try {
     mkdirSync(join(home, "bin"));
@@ -418,8 +418,8 @@ test("#4080: the same row number in both trackers stays TWO rows, and the table 
 });
 
 test("#4080: a claim record unreadable on the second tracker names that tracker, and the first tracker's claim time is still read", () => {
-  const asked = [];
-  const read = (row, repo) => { asked.push(`${repo}#${row}`); if (repo === "a11ign/agent-org") throw new Error("HTTP 410: Issues are disabled for this repo\nbody"); return 1234; };
+  const asked: any[] = [];
+  const read = (row: any, repo: any) => { asked.push(`${repo}#${row}`); if (repo === "a11ign/agent-org") throw new Error("HTTP 410: Issues are disabled for this repo\nbody"); return 1234; };
   const { claimedAt, unreadClaims } = everyTracker.readClaims([{ row: 3390 }, { row: 3390, key: "agent-org" }], TRACKERS, read);
   assert.deepEqual(asked, ["a11ign/a11ign#3390", "a11ign/agent-org#3390"], "each row is asked of ITS tracker's repository");
   assert.equal(claimedAt.get(3390), 1234);

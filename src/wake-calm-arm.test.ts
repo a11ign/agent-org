@@ -23,19 +23,19 @@ const CALM_ROW = 4046;
 const CONTROL_ROW = 4047;
 const FIRST_SENTENCE = "No one watches this session live.";
 
-const claimed = (row) => ({ row, branch: `agent/x-${row}`, worktree: `/home/agent/repos/wt-${row}` });
-const readyOrder = (row) => ({ session: "engineers", cause: "ready-row-unclaimed", causeKey: `engineers/ready-row-unclaimed/${row}`,
+const claimed = (row: any) => ({ row, branch: `agent/x-${row}`, worktree: `/home/agent/repos/wt-${row}` });
+const readyOrder = (row: any) => ({ session: "engineers", cause: "ready-row-unclaimed", causeKey: `engineers/ready-row-unclaimed/${row}`,
   title: "A title", prompt: `Ready row #${row} is unclaimed.` });
-const occurrences = (text, needle) => text.split(needle).length - 1;
+const occurrences = (text: any, needle: any) => text.split(needle).length - 1;
 
 /** A fresh directory for the claim-orders record, removed by the caller. */
 const scratch = () => mkdtempSync(join(tmpdir(), "wake-calm-arm-"));
 
 /** A herdr that records what is TYPED to each label (the `/clear` is not an order), answers a started pane as ready, and opens a workspace on request. */
 function herdr() {
-  const calls = [];
+  const calls: any[] = [];
   const prompted = new Set();
-  const run = (args) => {
+  const run = (args: any) => {
     calls.push(args);
     const verb = args.slice(2, 4).join(" ");
     if (verb === "agent prompt") prompted.add(args[4]);
@@ -47,22 +47,22 @@ function herdr() {
     }
     return "{}";
   };
-  const typed = (label) => calls.filter((c) => c.slice(2, 4).join(" ") === "agent prompt" && c[4] === label && c[5] !== "/clear").map((c) => c[5]);
+  const typed = (label: any) => calls.filter((c) => c.slice(2, 4).join(" ") === "agent prompt" && c[4] === label && c[5] !== "/clear").map((c) => c[5]);
   return { run, typed };
 }
 
 /** A claimer that always lands the row the order names, in the worktree a real claim would make. */
-const fakeClaimer = { claim: (order) => claimed(Number(order.causeKey.split("/").at(-1))), release: () => "" };
+const fakeClaimer = { claim: (order: any) => claimed(Number(order.causeKey.split("/").at(-1))), release: () => "" };
 
 /** One tick that STARTS the worker for `row`; returns what it was typed and the claim-orders path's lines. */
-function spawnFor(row, dir) {
+function spawnFor(row: any, dir: any) {
   const h = herdr();
   const got = deliver([readyOrder(row)], [], [], { run: h.run, claimer: fakeClaimer, claimOrders: claimOrdersIn(join(dir, "claim-orders")),
     now: () => AT, sleep: () => {}, contextRoot: NO_TRANSCRIPTS, record: () => {} });
   return { got, typed: h.typed(`worker-${row}`)[0], lines: recordLines(join(dir, "claim-orders")) };
 }
 
-const recordLines = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const recordLines = (path: any) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 // --- (1) the arm is the row number's parity, and nothing else -----------------------------------------------------------------------------
 
@@ -83,7 +83,7 @@ test("#4070 the calm paragraph ends a calm spawned preamble, appears once, and a
   assert.equal(occurrences(calm, FIRST_SENTENCE), 1);
   assert.equal(occurrences(control, FIRST_SENTENCE), 0, "NEGATIVE CONTROL: the control arm never carries it");
   assert.ok(!control.includes("keep going"), "nor any line of it");
-  const same = (text, row) => text.replaceAll(String(row), "<row>");
+  const same = (text: any, row: any) => text.replaceAll(String(row), "<row>");
   assert.equal(same(calm, CALM_ROW).slice(0, -`\n\n${CALM_FINISH_PARAGRAPH}`.length), same(control, CONTROL_ROW),
     "and the two preambles are byte-identical up to the paragraph");
   assert.doesNotMatch(CALM_FINISH_PARAGRAPH, /\b[A-Z]{4,}\b/, "the paragraph has no capitals-for-emphasis, as the report's does not");
@@ -92,7 +92,7 @@ test("#4070 the calm paragraph ends a calm spawned preamble, appears once, and a
 test("#4070 the paragraph reaches no standing seat's first order and no follow-up, in either arm", () => {
   const standing = addressed(readyOrder(CALM_ROW), "worker-capture", { engineers: ["worker-capture"] });
   assert.equal(occurrences(standing, FIRST_SENTENCE), 0, "a standing seat's first order is not a new per-row worker's");
-  const followUp = (row) => addressed({ ...readyOrder(row), cause: "pr-checks-failing" }, `worker-${row}`, { followUp: true, orderId: `wake:worker-${row}:${AT}` });
+  const followUp = (row: any) => addressed({ ...readyOrder(row), cause: "pr-checks-failing" }, `worker-${row}`, { followUp: true, orderId: `wake:worker-${row}:${AT}` });
   const [calm, control] = [followUp(CALM_ROW), followUp(CONTROL_ROW)];
   assert.equal(occurrences(calm, FIRST_SENTENCE), 0);
   assert.equal(calm.replaceAll(String(CALM_ROW), "<row>"), control.replaceAll(String(CONTROL_ROW), "<row>"), "neither arm's follow-up orders change");
@@ -126,11 +126,11 @@ test("#4070 through deliver: a started calm worker is typed the paragraph last, 
 
 const AGENTS = ["worker-4070", "worker-4071", "worker-capture", "orchestrator", "product-manager"].map((label) => ({ label, status: "idle" }));
 let sequence = 0;
-const gateOrder = (session, cause, extra = {}) => ({ session, cause, causeKey: `${session}/${cause}/pr-${++sequence}/h`, subject: `pr-${sequence}`,
+const gateOrder = (session: any, cause: any, extra = {}) => ({ session, cause, causeKey: `${session}/${cause}/pr-${++sequence}/h`, subject: `pr-${sequence}`,
   prompt: `${cause} for #${sequence} (text the worker would have been sent).`, ...extra });
 
 /** One tick over `path`'s record, as the tick reads it: a fresh `claimOrdersIn` each call. Returns who was typed what. */
-function tick(orders, path, extra = {}) {
+function tick(orders: any, path: any, extra = {}) {
   const h = herdr();
   const got = deliver(orders, AGENTS, ["worker-capture"], { run: h.run, claimOrders: claimOrdersIn(path), now: () => AT, sleep: () => {},
     contextRoot: NO_TRANSCRIPTS, record: () => {}, ...extra });
@@ -181,7 +181,7 @@ test("#4070 the count is per CLAIM, not per worker session or per cause", () => 
     const other = tick([gateOrder("worker-4071", "pr-checks-failing")], path);
     assert.equal(other.h.typed("worker-4071").length, 1, "another claim of the same kind starts at one although worker-4070 is capped");
     // a STANDING seat holds successive claims: three orders on three subjects are three claims; three on one subject are one
-    const seat = (subject) => tick([gateOrder("worker-capture", "claim-stalled", { subject })], path).h.typed("worker-capture").length;
+    const seat = (subject: any) => tick([gateOrder("worker-capture", "claim-stalled", { subject })], path).h.typed("worker-capture").length;
     assert.deepEqual(["row-1", "row-2", "row-3"].map(seat), [1, 1, 1], "three claims of one session: none is capped");
     assert.deepEqual(["row-9", "row-9", "row-9"].map(seat), [1, 1, 0], "three on one claim: the third is not typed to the seat");
     // not a repeat order to a live worker's claim: never counted
@@ -200,7 +200,7 @@ test("#4070 every continuation writes one line with claim, cause and number; a r
   try {
     const causes = ["pr-checks-failing", "claim-stalled"];
     causes.forEach((cause) => tick([gateOrder("worker-4070", cause)], path));
-    const refused = tick([gateOrder("worker-4070", "pr-review-blocked")], path, { unavailable: (label) => (label === CONTINUATION_ESCALATE_TO ? "out of allowance" : null) });
+    const refused = tick([gateOrder("worker-4070", "pr-review-blocked")], path, { unavailable: (label: any) => (label === CONTINUATION_ESCALATE_TO ? "out of allowance" : null) });
     assert.equal(refused.got.refused.length, 1);
     assert.equal(recordLines(path).length, 2, "the refused delivery wrote nothing");
     const retried = tick([gateOrder("worker-4070", "pr-review-blocked")], path);
@@ -223,7 +223,7 @@ test("#4070 an unreadable record line is skipped WITH a warning; a record that i
   try {
     assert.equal(claimOrdersIn(path).counts.size, 0, "absent is empty");
     writeFileSync(path, `${JSON.stringify({ kind: "continuation", claim: "row-1" })}\n{not json\n`);
-    const warned = [];
+    const warned: any[] = [];
     const read = claimOrdersIn(path, { warn: (l) => warned.push(l) });
     assert.equal(read.counts.get("row-1"), 1);
     assert.equal(warned.length, 1);

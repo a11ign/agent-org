@@ -19,16 +19,16 @@ const bodyWith = (...lines: string[]) => `## Acceptance\n\nnode -e "process.exit
 const LABELS = { "a11ign/a11ign#4107": ["defect", "ready"], "a11ign/a11ign#4108": ["ready"] };
 /** The reader `pr-open` is handed: `(number, repo)`. */
 const rowLabels = (number: number, repo: string) => {
-  const labels = LABELS[`${repo}#${number}`];
+  const labels = (LABELS[`${repo}#${number}`] as any);
   if (!labels) throw new Error(`HTTP 403 reading ${repo}#${number}`);
   return labels;
 };
 
 /** `pr-open create`, nothing sent anywhere; returns the exit code, what it said and whether it went to `gh`. */
-function openPr(body, deps = { rowLabels }) {
-  const sent = [];
-  const err = [];
-  const out = [];
+function openPr(body: any, deps = { rowLabels }) {
+  const sent: any[] = [];
+  const err: any[] = [];
+  const out: any[] = [];
   const code = prOpen(["create", "--draft", "--body", body], {
     run: (a) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
     runAcceptance: () => 0, runMutation: () => 0, owner: () => null, out: (l) => { out.push(l); }, err: (l) => { err.push(l); },
@@ -38,7 +38,7 @@ function openPr(body, deps = { rowLabels }) {
 }
 
 /** The CI parse over the same body: what the acceptance job prints, with the label reader CI is given. */
-const ciParse = (body, labelsOf = (row) => rowLabels(row.number, row.repo ?? "a11ign/a11ign")) =>
+const ciParse = (body: any, labelsOf = (row: any) => rowLabels(row.number, row.repo ?? "a11ign/a11ign")) =>
   runCiBodyReports({ body, run: () => 0, diff: { ok: true, files: [] }, rowLabels: labelsOf }, CI_BODY_REPORTS.filter((r) => r.name === "class"));
 
 test("the parser reads both shapes and keeps what it cannot read (positive control for every refusal below)", () => {
@@ -113,7 +113,7 @@ test("a refused label read is UNKNOWN with a message and never a pass; a half-an
 });
 
 test("no reader at all is printed as NOT CHECKED, and a well-formed line passes without a label read", () => {
-  const unwired = openPr(bodyWith(), {});
+  const unwired = openPr(bodyWith(), ({} as any));
   assert.equal(unwired.code, 0, "the test deps of every other pr-open caller wire no reader");
   assert.match(unwired.said, /CLASS: NOT CHECKED -- no reader of #4107's labels here/);
   let reads = 0;
@@ -159,10 +159,10 @@ const FILING_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Accept
 const FILED_URL = "https://github.com/a11ign/a11ign/issues/900";
 
 /** `createIssue` with every seam a fake, returning what reached `gh issue create` and what was made. */
-function fileWith(extra, { labelsOnRow = null } = {}) {
-  const created = [];
-  const ensured = [];
-  const said = [];
+function fileWith(extra: any, { labelsOnRow = null } = {}) {
+  const created: any[] = [];
+  const ensured: any[] = [];
+  const said: any[] = [];
   const write = process.stderr.write;
   const writeOut = process.stdout.write;
   process.stderr.write = (chunk) => { said.push(String(chunk)); return true; };

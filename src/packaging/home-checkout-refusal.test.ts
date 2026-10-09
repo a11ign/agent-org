@@ -81,7 +81,7 @@ for (const [what, env] of [["unset", {}], ["empty", { [HOST_VARIABLE]: "" }]] as
     // The working directory is pinned to one in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root.
     assert.throws(() => resolveHomeCheckout({ env, beside, cwd: scratch() }), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
-      assert.equal(error.field, HOST_VARIABLE);
+      assert.equal((error as any).field, HOST_VARIABLE);
       assert.match(error.message, new RegExp(HOST_VARIABLE));
       assert.ok(error.message.includes(beside), `the guessed path is not named:\n${error.message}`);
       assert.match(error.message, /host:install/);

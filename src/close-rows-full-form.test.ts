@@ -30,7 +30,7 @@ const { extractClosesDeclaration } = await import("./acceptance-commands.ts");
 
 const TRACKER = "a11ign/a11ign";
 const LAYER = "a11ign/agent-org";
-const declared = (body) => ({ kind: "closes", numbers: [...body.matchAll(/#(\d+)/g)].map((m) => Number(m[1])),
+const declared = (body: any) => ({ kind: "closes", numbers: [...body.matchAll(/#(\d+)/g)].map((m) => Number(m[1])),
   references: [...body.matchAll(/(?:([\w.-]+\/[\w.-]+))?#(\d+)/g)].map((m) => ({ repo: m[1] ?? null, number: Number(m[2]) })) });
 
 test("the project's tracker is the repository these cases are written against", () => {
@@ -47,60 +47,60 @@ test("done-when 1: the pull request template asks for the full form, and a fille
   assert.match(template, /^Closes a11ign\/a11ign#$/m);
   assert.doesNotMatch(template, /^Row:/m, "the old line named no closing keyword, so nothing was ever closed by it");
   const filled = template.replace(/^Closes a11ign\/a11ign#$/m, "Closes a11ign/a11ign#2995");
-  assert.deepEqual(extractClosesDeclaration(filled).references, [{ repo: TRACKER, number: 2995 }]);
+  assert.deepEqual((extractClosesDeclaration(filled) as any).references, [{ repo: TRACKER, number: 2995 }]);
 });
 
 const ROW = "## Region\n\n```\nsrc/x.mjs\n```\n";
 const regionDeps = { git: () => "", rowBody: () => ROW, rootFiles: new Set(), code: [{ key: "", repo: TRACKER }, { key: "agent-org", repo: LAYER }] };
 
 test("done-when 1: pr:open refuses the short form in a pull request of another repository, and says what to write", () => {
-  const result = checkRegion("Closes #7", ["--repo", LAYER], regionDeps);
+  const result = checkRegion("Closes #7", ["--repo", LAYER], (regionDeps as any));
   assert.match(result.refusal ?? "", /REFUSED/);
   assert.match(result.refusal ?? "", /names an issue of a11ign\/agent-org, not a row of a11ign\/a11ign/);
   assert.match(result.refusal ?? "", /Write `Closes a11ign\/a11ign#7`/);
 });
 
 test("done-when 1, POSITIVE CONTROL: the full form passes the same check, and the short form is still the tracker's own", () => {
-  assert.equal(checkRegion("Closes a11ign/a11ign#7", ["--repo", LAYER], regionDeps).refusal, null);
-  assert.equal(checkRegion("Closes #7", [], regionDeps).refusal, null, "no --repo: the tracker's own pull request, whose `#7` IS the row");
-  assert.equal(checkRegion("Closes #7", ["--repo", TRACKER], regionDeps).refusal, null);
+  assert.equal(checkRegion("Closes a11ign/a11ign#7", ["--repo", LAYER], (regionDeps as any)).refusal, null);
+  assert.equal(checkRegion("Closes #7", [], (regionDeps as any)).refusal, null, "no --repo: the tracker's own pull request, whose `#7` IS the row");
+  assert.equal(checkRegion("Closes #7", ["--repo", TRACKER], (regionDeps as any)).refusal, null);
 });
 
 // ---- done-when 2: the guard compares repository AND number --------------------------------------------------------------------------
 
 const OK = { ok: true };
-const refused = (report) => { assert.equal(report.ok, false); return report.reasons.join("\n"); };
+const refused = (report: any) => { assert.equal(report.ok, false); return report.reasons.join("\n"); };
 
 test("done-when 2: a declared full form that GitHub resolved is OK", () => {
   const body = "Closes a11ign/a11ign#7";
-  assert.deepEqual(closesMismatchReport(declared(body), [{ repo: TRACKER, number: 7 }], body, LAYER), OK);
+  assert.deepEqual(closesMismatchReport((declared(body) as any), [{ repo: TRACKER, number: 7 }], body, LAYER), OK);
 });
 
 test("done-when 2: a declared full form GitHub did not resolve is refused and named", () => {
   const body = "Closes a11ign/a11ign#7";
-  const text = refused(closesMismatchReport(declared(body), [], body, LAYER));
+  const text = refused(closesMismatchReport((declared(body) as any), [], body, LAYER));
   assert.match(text, /you declared a11ign\/a11ign#7, but GitHub will NOT close it/);
 });
 
 test("done-when 2: a row GitHub resolved that the body did not declare is refused and named, with its repository", () => {
   const body = "Closes a11ign/a11ign#7\nCloses a11ign/a11ign#8";
-  const text = refused(closesMismatchReport(declared("Closes a11ign/a11ign#7"), [{ repo: TRACKER, number: 7 }, { repo: TRACKER, number: 8 }], body, LAYER));
+  const text = refused(closesMismatchReport((declared("Closes a11ign/a11ign#7") as any), [{ repo: TRACKER, number: 7 }, { repo: TRACKER, number: 8 }], body, LAYER));
   assert.match(text, /GitHub will close a11ign\/a11ign#8 anyway -- the phrase "Closes a11ign\/a11ign#8" on line 2/);
 });
 
 test("done-when 2: the SAME NUMBER in another repository is a different row -- it matches nothing", () => {
   const body = "Closes a11ign/a11ign#7";
-  const text = refused(closesMismatchReport(declared(body), [{ repo: LAYER, number: 7 }], body, LAYER));
+  const text = refused(closesMismatchReport((declared(body) as any), [{ repo: LAYER, number: 7 }], body, LAYER));
   assert.match(text, /will NOT close it/, "the declared row was not the one resolved");
   assert.match(text, /will close #7 anyway/, "and the one resolved is the layer's own #7, which was never declared");
 });
 
 test("done-when 2, POSITIVE CONTROL: the short form in a pull request of another repository is refused, even when GitHub resolved it", () => {
   const body = "Closes #7";
-  const text = refused(closesMismatchReport(declared(body), [{ repo: LAYER, number: 7 }], body, LAYER));
+  const text = refused(closesMismatchReport((declared(body) as any), [{ repo: LAYER, number: 7 }], body, LAYER));
   assert.match(text, /you wrote `Closes #7`, which names issue 7 of a11ign\/agent-org, not a row of a11ign\/a11ign/);
   assert.match(text, /write `Closes a11ign\/a11ign#7`/);
-  assert.deepEqual(closesMismatchReport(declared(body), [7], body), OK, "the control: the same body in a tracker pull request, as before");
+  assert.deepEqual(closesMismatchReport((declared(body) as any), [7], body), OK, "the control: the same body in a tracker pull request, as before");
 });
 
 // ---- done-when 3: the row closer settles a row GitHub closed natively -------------------------------------------------------------------
@@ -149,6 +149,6 @@ test("done-when 3: a row GitHub already closed natively is not closed again -- o
   assert.equal(issueCalls.some((args) => args[1] === "close"), false);
   const strip = issueCalls.find((args) => args[1] === "edit");
   assert.deepEqual([strip?.[2], strip?.[strip.indexOf("--repo") + 1]], ["2995", TRACKER]);
-  assert.deepEqual(strip?.filter((a, i) => strip[i - 1] === "--remove-label").sort(), ["in-progress", "session:worker-2995"]);
+  assert.deepEqual(strip?.filter((a: any, i: any) => strip[i - 1] === "--remove-label").sort(), ["in-progress", "session:worker-2995"]);
   assert.match(run.stdout + run.stderr, /DEGRADED|Status/, "and the Status move was ASKED for (the shim's board is unreadable, which the closer reports rather than hides)");
 });

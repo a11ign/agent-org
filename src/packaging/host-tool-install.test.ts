@@ -97,7 +97,7 @@ test("#2793: a malformed `tool` or `stateDir` is REFUSED NAMING THE FIELD", () =
   ];
   assert.ok(cases.length >= 10, "POSITIVE CONTROL: the table is not empty");
   for (const [what, extra, field] of cases) {
-    assert.equal(refusal(() => parse(acmeHost(extra))).field, field, `${what} must be refused, naming \`${field}\``);
+    assert.equal((refusal(() => parse(acmeHost(extra))) as any).field, field, `${what} must be refused, naming \`${field}\``);
   }
 });
 
@@ -117,9 +117,9 @@ test("#2793: a project's `beforeTick` is read, ABSENT is null, and a malformed o
     ["a newline", '{"beforeTick":"npm run x\\nrm y"}'],
   ];
   for (const [what, text] of bad) {
-    assert.equal(refusal(() => parseBeforeTick(text, "project.json")).field, "beforeTick", `${what} must be refused, naming \`beforeTick\``);
+    assert.equal((refusal(() => parseBeforeTick(text, "project.json")) as any).field, "beforeTick", `${what} must be refused, naming \`beforeTick\``);
   }
-  assert.equal(refusal(() => parseBeforeTick("{not json")).field, "(file)");
+  assert.equal((refusal(() => parseBeforeTick("{not json")) as any).field, "(file)");
 });
 
 // --- 2. the unit: today's text without `tool`, decision 3's three lines with it ------------------------------------------------------
@@ -202,9 +202,9 @@ test("#2793: a template edited out from under the tool form REFUSES, and never i
 test("#2793: a project whose declaration cannot be read, or holds a bad beforeTick, refuses the render", () => {
   withProjects((dirs) => {
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "npm run x | tee y" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick");
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick");
     rmSync(join(dirs.gadgets, ".agent-org/project.json"));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "(file)",
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "(file)",
       "an unreadable declaration is a refusal, not a skipped project whose checkout would go stale unseen");
   });
 });
@@ -215,9 +215,9 @@ test("#3464: a tool command in a beforeTick is for the host's PRIMARY project on
     assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} /usr/bin/node ${dirs.tool}/src/update-primary\\.mjs$`, "m"),
       "POSITIVE CONTROL: the primary (widgets) may declare one, and it renders");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org\tprimary:update" }));
-    assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "beforeTick",
+    assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick",
       "a TAB between the words is the same command, so the foreign project is refused for it too and not let through as 'the project's own'");
   });
 });
@@ -292,7 +292,7 @@ test("#2974: a repository that is not owner/name is refused naming the field, be
   withProjects((dirs) => {
     for (const bad of ["acme", "acme/widgets extra", "acme/widgets\nExecStartPre=/bin/false", "", 7]) {
       declareRepo(dirs.widgets, bad);
-      assert.equal(refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))).field, "code[0].repo", `${JSON.stringify(bad)} must be refused`);
+      assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "code[0].repo", `${JSON.stringify(bad)} must be refused`);
     }
   });
 });
@@ -335,8 +335,8 @@ test("#2793: a fixture host's `stateDir` moves every state path the readers deri
 });
 
 test("#2793: a host with no `stateDir` gets a REFUSAL from `stateFilePath`, never a11ign's directory", () => {
-  assert.equal(refusal(() => stateFilePath(parse(acmeHost()), "wake-ledger")).field, "stateDir");
-  assert.equal(refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
+  assert.equal((refusal(() => stateFilePath(parse(acmeHost()), "wake-ledger")) as any).field, "stateDir");
+  assert.equal((refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")) as any).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
 });
 
 // --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.mjs`'s, #3443) ---------------------------------

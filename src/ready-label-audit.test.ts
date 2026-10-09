@@ -36,7 +36,7 @@ process.stdout.write(args[0] === "issue" ? JSON.stringify(rows) : rows.map((r) =
 `;
 
 /** @param {Record<string, { open: { number: number, title: string, labels: string[] }[], fail?: boolean }>} fixture */
-function withFakeGh(fixture: Record<string, { open: { number: number; title: string; labels: string[]; }[]; fail?: boolean; }>, body) {
+function withFakeGh(fixture: Record<string, { open: { number: number; title: string; labels: string[]; }[]; fail?: boolean; }>, body: any) {
   const dir = mkdtempSync(join(scratch, "bin-"));
   const gh = join(dir, "gh");
   writeFileSync(gh, FAKE_GH);

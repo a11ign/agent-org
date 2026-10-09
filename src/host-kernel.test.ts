@@ -59,7 +59,7 @@ function host(over: {
   };
 }
 const sudoCalls = (calls: string[][]) => calls.filter((argv) => argv[0] === "sudo");
-const timerCalls = (calls: string[][], verb) => calls.filter((argv) => argv[2] === verb && argv[3] === TICK_TIMER);
+const timerCalls = (calls: string[][], verb: any) => calls.filter((argv) => argv[2] === verb && argv[3] === TICK_TIMER);
 
 describe("the note: version order, and what a refused read is", () => {
   test("running 7.0.0-34 over installed 7.0.0-38 gives the note, named as the row words it", () => {
@@ -123,7 +123,7 @@ describe("the note: version order, and what a refused read is", () => {
 describe("the drained reboot: defer when busy, reboot once when idle", () => {
   test("an idle host with the note true stops the timer, calls the reboot EXACTLY ONCE, and does not start the timer again", async () => {
     const h = host();
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "rebooted");
     assert.deepEqual(sudoCalls(h.calls), [[...REBOOT_ARGV]]);
     assert.equal(timerCalls(h.calls, "stop").length, 1);
@@ -136,7 +136,7 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
 
   test("a seat mid-turn defers: the timer is started again, the deferral is said, and no reboot is called", async () => {
     const h = host({ agents: [{ label: "ceo", status: "idle" }, { label: "worker-9", status: "working" }] });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "deferred");
     assert.deepEqual(result.held, ["seat worker-9 is mid-turn"]);
     assert.equal(sudoCalls(h.calls).length, 0);
@@ -149,7 +149,7 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
 
   test("a running host job defers the same way", async () => {
     const h = host({ jobs: "a11ign-tmp-prune.service loaded activating start start a11ign: remove old test fixtures\n" });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "deferred");
     assert.deepEqual(result.held, ["host job a11ign-tmp-prune.service is running"]);
     assert.equal(sudoCalls(h.calls).length, 0);
@@ -159,14 +159,14 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
   test("the scheduled reboot's OWN service, which shows as `activating` while it runs, does not hold its own reboot (#4053); another job still does", async () => {
     const own = `${REBOOT_SERVICE} loaded activating start start a11ign: reboot onto a newer installed kernel\n`;
     const h = host({ jobs: own });
-    assert.equal((await drainedReboot(h.deps)).outcome, "rebooted");
+    assert.equal((await drainedReboot((h.deps as any))).outcome, "rebooted");
     const other = host({ jobs: `${own}a11ign-tmp-prune.service loaded activating start start x\n` });
-    assert.deepEqual((await drainedReboot(other.deps)).held, ["host job a11ign-tmp-prune.service is running"]);
+    assert.deepEqual((await drainedReboot((other.deps as any))).held, ["host job a11ign-tmp-prune.service is running"]);
   });
 
   test("a herdr that cannot be asked HOLDS the reboot: unknown is not idle", async () => {
     const h = host({ agents: null });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "deferred");
     assert.match(String(result.held?.[0]), /^NOT READ: herdr/);
     assert.equal(sudoCalls(h.calls).length, 0);
@@ -175,7 +175,7 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
   test("a busy seat that goes idle inside the bound lets the reboot through (the wait waits)", async () => {
     let polls = 0;
     const h = host({ agents: () => [{ label: "worker-9", status: ++polls < 3 ? "working" : "idle" }] });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "rebooted");
     assert.equal(h.clock.t - NOW, 2 * DRAIN_POLL_MS);
     assert.equal(sudoCalls(h.calls).length, 1);
@@ -183,22 +183,22 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
 
   test("the seat that runs the reboot is ignored when it names itself, and only then", async () => {
     const working = [{ label: "worker-4046", status: "working" }];
-    assert.equal((await drainedReboot(host({ agents: working, ignoreSeats: ["worker-4046"] }).deps)).outcome, "rebooted");
-    assert.equal((await drainedReboot(host({ agents: working }).deps)).outcome, "deferred");
+    assert.equal((await drainedReboot((host({ agents: working, ignoreSeats: ["worker-4046"] }).deps as any))).outcome, "rebooted");
+    assert.equal((await drainedReboot((host({ agents: working }).deps as any))).outcome, "deferred");
   });
 
   test("no note, no reboot, no timer touched; an unreadable kernel is `not-read` and reboots nothing", async () => {
     const h = host({ running: "7.0.0-38-generic" });
-    assert.equal((await drainedReboot(h.deps)).outcome, "not-needed");
+    assert.equal((await drainedReboot((h.deps as any))).outcome, "not-needed");
     assert.equal(h.calls.length, 0);
     const blind = host({ boot: [] });
-    assert.equal((await drainedReboot(blind.deps)).outcome, "not-read");
+    assert.equal((await drainedReboot((blind.deps as any))).outcome, "not-read");
     assert.equal(blind.calls.length, 0);
   });
 
   test("a timer that will not stop means nothing was drained: no reboot, and it says so", async () => {
     const h = host({ failStop: true });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "timer-not-stopped");
     assert.equal(sudoCalls(h.calls).length, 0);
   });
@@ -206,7 +206,7 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
   test("a reboot command that fails puts the record back and starts the timer again", async () => {
     const before = { at: NOW - 3 * 24 * HOUR, from: "7.0.0-30-generic", to: "7.0.0-34-generic", readBackAt: NOW - 2 * 24 * HOUR };
     const h = host({ failReboot: true, record: before });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "reboot-failed");
     assert.deepEqual(h.stored.record, before);
     assert.equal(timerCalls(h.calls, "start").length, 1);
@@ -218,7 +218,7 @@ describe("the ONE privileged command", () => {
     const all = [];
     for (const over of [{}, { jobs: "a11ign-x.service loaded activating start" }, { agents: [{ label: "a", status: "working" }] }, { failReboot: true }]) {
       const h = host(over);
-      await drainedReboot(h.deps);
+      await drainedReboot((h.deps as any));
       all.push(...h.calls);
     }
     assert.ok(sudoCalls(all).length >= 2, "the control: the recorded flows DID reach the privileged command");
@@ -250,7 +250,7 @@ describe("it cannot loop: a second reboot inside 24 hours is refused and the fin
 
   test("a reboot 2 h ago, the note still true: REFUSED, with the finding, and nothing is stopped or run", async () => {
     const h = host({ record: last(2) });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "refused-loop");
     assert.equal(result.finding?.problem, "REBOOTED INSIDE 24 H, NEWER KERNEL STILL NOT RUNNING");
     assert.match(String(result.finding?.detail), /the boot loader chose the old kernel again/);
@@ -260,7 +260,7 @@ describe("it cannot loop: a second reboot inside 24 hours is refused and the fin
 
   test("the twin: the same record 25 h old does not refuse, and the host reboots", async () => {
     const h = host({ record: last(25) });
-    assert.equal((await drainedReboot(h.deps)).outcome, "rebooted");
+    assert.equal((await drainedReboot((h.deps as any))).outcome, "rebooted");
     assert.equal(sudoCalls(h.calls).length, 1);
   });
 
@@ -276,7 +276,7 @@ describe("it cannot loop: a second reboot inside 24 hours is refused and the fin
 
   test("a record that cannot be read refuses the reboot (absence is not proof) and host:check raises it", async () => {
     const h = host({ unreadableRecord: true });
-    const result = await drainedReboot(h.deps);
+    const result = await drainedReboot((h.deps as any));
     assert.equal(result.outcome, "not-read");
     assert.equal(h.calls.length, 0);
     const [finding] = kernelFindings({ uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, store: () => ({ read: () => { throw new Error("not JSON"); }, write: () => {} }) });

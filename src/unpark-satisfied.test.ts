@@ -163,7 +163,7 @@ test("(7) GitHub failing on a read is an error naming the row, not a silent skip
     assert.match(result.errors[0].message, new RegExp(`HTTP 502 on ${call} #30`));
     assert.deepEqual(w.labels[30], ["parked"], "the row whose read failed is still parked, and will be asked again");
     assert.deepEqual(result.unparked.map((u) => u.number), [31], "one row's failure does not stop the next");
-    const lines = [];
+    const lines: any[] = [];
     reportUnpark(result, (line) => lines.push(line));
     assert.ok(lines.some((l) => /COULD NOT unpark #30: HTTP 502/.test(l)), "and it is said where the tick's log is");
   }

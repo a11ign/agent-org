@@ -329,7 +329,7 @@ test("the declaration: `dora` is read, an absent field is an empty list, and eac
   assert.deepEqual(parseProjectDeclaration(JSON.stringify({ ...base, dora: [entry, { ...entry, repo: "acme/tool", release: { kind: "tag" } }] }), "fixture").dora,
     [entry, { repo: "acme/tool", release: { kind: "tag" }, releasablePaths: ["src/"] }]);
   const refusedFor = (dora: unknown, field: string) => {
-    assert.throws(() => parseProjectDeclaration(JSON.stringify({ ...base, dora }), "fixture"), (error: Any) => error instanceof ProjectDeclarationRefusal && error.field === field, field);
+    assert.throws(() => parseProjectDeclaration(JSON.stringify({ ...base, dora }), "fixture"), (error: Any) => error instanceof ProjectDeclarationRefusal && (error as any).field === field, field);
   };
   refusedFor("acme/widgets", "dora");
   refusedFor([{ ...entry, repo: "widgets" }], "dora[0].repo");

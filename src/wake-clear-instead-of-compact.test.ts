@@ -22,10 +22,10 @@ const scratch = mkdtempSync(join(tmpdir(), "wake-clear-instead-4072-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 let counter = 0;
-const fresh = (prefix) => { const dir = join(scratch, `${prefix}-${counter++}`); mkdirSync(dir, { recursive: true }); return dir; };
+const fresh = (prefix: any) => { const dir = join(scratch, `${prefix}-${counter++}`); mkdirSync(dir, { recursive: true }); return dir; };
 
 /** A transcript root whose newest turn for `LEAD` read `cacheRead` tokens (the shape `instanceCacheRead` reads). */
-function transcriptRoot(cacheRead) {
+function transcriptRoot(cacheRead: any) {
   const dir = fresh("t");
   writeFileSync(join(dir, "t.jsonl"), `${[
     JSON.stringify({ type: "user", message: { role: "user", content: `You are \`${LEAD}\`, an org session in this repository.` } }),
@@ -36,22 +36,22 @@ function transcriptRoot(cacheRead) {
 }
 
 /** A state directory holding `bytes` bytes for `LEAD`, or no file at all when `bytes` is null. */
-function stateDirWith(bytes) {
+function stateDirWith(bytes: any) {
   const dir = fresh("state");
   if (bytes !== null) writeFileSync(join(dir, `${LEAD}.md`), "x".repeat(bytes));
   return dir;
 }
 
 /** The real clock factory, at {@link NOW}, whose record says the previous order landed `agoMs` earlier. */
-function clockWith(agoMs, stateDir) {
+function clockWith(agoMs: any, stateDir: any) {
   const base = orderClockIn(fresh("clock"), () => NOW, stateDir);
   return { ...base, lastOrderAt: () => NOW - agoMs };
 }
 
 /** `prepareContext` against a recording herdr; `commands` is what was typed to the window before the order. */
 function decide({ agoMs, tokens, stateBytes }) {
-  const calls = [];
-  const run = (args) => { calls.push(args); return "{}"; };
+  const calls: any[] = [];
+  const run = (args: any) => { calls.push(args); return "{}"; };
   const result = prepareContext(run, LEAD, { sleep: () => {}, contextRoot: transcriptRoot(tokens), sessions: ROSTER,
     clock: clockWith(agoMs, stateDirWith(stateBytes)) });
   const commands = calls.filter((c) => c[3] === "prompt").map((c) => String(c[5]));
@@ -100,8 +100,8 @@ test("the size cap: a file AT the cap is used, one byte over is refused with its
   const over = decide({ agoMs: 10 * MINUTE, tokens: OVER, stateBytes: STATE_FILE_MAX_BYTES + 1 });
   assert.equal(over.action, CONTEXT_ACTION.COMPACTED);
   assert.deepEqual(over.commands, ["/compact"]);
-  assert.match(over.stateRefusal, new RegExp(`is ${STATE_FILE_MAX_BYTES + 1} bytes, over the ${STATE_FILE_MAX_BYTES}-byte cap`));
-  assert.match(over.stateRefusal, /not truncated/);
+  assert.match((over.stateRefusal as any), new RegExp(`is ${STATE_FILE_MAX_BYTES + 1} bytes, over the ${STATE_FILE_MAX_BYTES}-byte cap`));
+  assert.match((over.stateRefusal as any), /not truncated/);
 });
 
 test("an oversized file is not truncated: its bytes on disk are the same after the verdict", () => {
@@ -116,7 +116,7 @@ test("an oversized file is not truncated: its bytes on disk are the same after t
 test("an EMPTY state file is not a state to rehydrate from: compacted, and it says why", () => {
   const got = decide({ agoMs: 10 * MINUTE, tokens: OVER, stateBytes: 0 });
   assert.equal(got.action, CONTEXT_ACTION.COMPACTED);
-  assert.match(got.stateRefusal, /is empty/);
+  assert.match((got.stateRefusal as any), /is empty/);
 });
 
 test("a clock that names no state directory (a caller with no record) compacts, and its file in another directory is not read", () => {
@@ -139,12 +139,12 @@ test("a DIRECTORY at the state file's path is not a state: compacted, and it say
   const dir = fresh("state");
   mkdirSync(join(dir, `${LEAD}.md`));
   const clock = clockWith(10 * MINUTE, dir);
-  const calls = [];
+  const calls: any[] = [];
   const got = prepareContext((args) => { calls.push(args); return "{}"; }, LEAD,
     { sleep: () => {}, contextRoot: transcriptRoot(OVER), sessions: ROSTER, clock });
   assert.equal(got.action, CONTEXT_ACTION.COMPACTED);
   assert.deepEqual(calls.filter((c) => c[3] === "prompt").map((c) => String(c[5])), ["/compact"]);
-  assert.match(got.stateRefusal, /is not a regular file/);
+  assert.match((got.stateRefusal as any), /is not a regular file/);
 });
 
 test("a file that cannot be opened is not a state either (skipped when the process can read anything, as root)", { skip: process.getuid?.() === 0 ? "running as root: mode 000 does not stop the read" : false }, () => {
@@ -152,5 +152,5 @@ test("a file that cannot be opened is not a state either (skipped when the proce
   chmodSync(join(dir, `${LEAD}.md`), 0o000);
   const verdict = stateFileVerdict(LEAD, orderClockIn(fresh("clock"), () => NOW, dir));
   assert.equal(verdict.usable, false);
-  assert.match(verdict.refusal, /could not be read/);
+  assert.match((verdict.refusal as any), /could not be read/);
 });

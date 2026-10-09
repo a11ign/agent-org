@@ -211,9 +211,9 @@ test("the tick: an omitted fact is silent, a tripped one is one order to ceo, an
   const base = { now: NOW, lastMergedAt: NOW - MINUTE, work: null, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null, copies: [] };
   const io = { log: (l: string) => lines.push(l), readCopies: () => [], readAutoOff: () => undefined };
   assert.equal(orgHealthReadings(base).some((r) => r.signal === SIGNALS.CLASS_REPEAT), false, "a caller that does not ask gets no class-repeat reading");
-  const orders = orgHealthTick({ ...base, classRepeat: factOf(TWO_IN_X) }, io).filter((o) => o.subject === SIGNALS.CLASS_REPEAT);
+  const orders = orgHealthTick({ ...base, classRepeat: factOf(TWO_IN_X) }, (io as any)).filter((o) => o.subject === SIGNALS.CLASS_REPEAT);
   assert.deepEqual(orders.map((o) => [o.session, o.cause, o.causeKey]), [["ceo", "org-health", "ceo/org-health/class-repeat/x@11"]]);
-  orgHealthTick({ ...base, classRepeat: { unreadable: "the labels are refused" } }, io);
+  orgHealthTick({ ...base, classRepeat: { unreadable: "the labels are refused" } }, (io as any));
   assert.ok(lines.some((l) => l.includes("class-repeat UNKNOWN") && l.includes("not read as clear")));
 });
 

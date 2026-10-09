@@ -2748,7 +2748,7 @@ const refusedField = (extra: Record<string, unknown>): string | undefined => {
     hostWith(extra);
   } catch (err) {
     assert.ok(err instanceof HostConfigRefusal, `a refusal, not a crash: ${String(err)}`);
-    return err.field;
+    return (err as any).field;
   }
   return undefined;
 };
