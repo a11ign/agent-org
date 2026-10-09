@@ -7,11 +7,11 @@ The copy headers of `src/lib/product-home.mjs` and `src/lib/fixture-symbols.ts` 
 
 Acceptance:
 ```bash
-bash -c '! git -C ~/repos/agent-org show origin/main:src/lib/product-home.mjs | grep -q "COPIED FROM .scripts/product-home.mjs."'
-bash -c '! git -C ~/repos/agent-org show origin/main:src/lib/fixture-symbols.ts | grep -q "COPIED FROM .scripts/fixture-symbols.mjs."'
+bash -c '! grep -q "COPIED FROM .scripts/product-home.mjs." src/lib/product-home.mjs && grep -q "COPIED FROM .scripts/product-home.ts. at" src/lib/product-home.mjs'
+bash -c '! grep -q "COPIED FROM .scripts/fixture-symbols.mjs." src/lib/fixture-symbols.ts && grep -q "COPIED FROM .scripts/fixture-symbols.ts. at" src/lib/fixture-symbols.ts'
 ```
 
-Note: both commands read `origin/main` of agent-org, so they exit 0 only after this merges; before, they exit 1 as the row's Open-check says.
+Note: the row's own Acceptance reads `origin/main` of agent-org (`git -C ~/repos/agent-org show origin/main:...`), so it exits 1 until this merges and CI cannot run it on the branch. The two commands above are the same check on the branch's own files (plus the positive: the `.ts` name is present); the row's form is run as written after the merge and quoted on the row.
 
 Closes: none -- a11ign/a11ign#4515 also asks for a release tag after the merge, which the lab's CI resolves; posted on the row once cut.
 
