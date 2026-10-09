@@ -39,7 +39,8 @@ const WRITABLE = ["contents"];
 const READABLE = ["contents", "checks"];
 
 const clone = (w: Workflow): Workflow => structuredClone(w);
-const callJob = (w: Workflow): Job => Object.values(w.jobs)[0] as Job;
+/** The job that calls the shared workflow and tags: `consumer-check` (a11ign/a11ign#4412) precedes it in the file and holds `contents: read` alone. */
+const callJob = (w: Workflow): Job => Object.values(w.jobs).find((j) => j.uses !== undefined) ?? (Object.values(w.jobs)[0] as Job);
 
 /** `on:` must be a mapping holding `push` limited to branch `main`, and nothing else. Fails closed on `on: push` and `on: [push]`. */
 function triggerProblems(w: Workflow): string[] {
@@ -71,7 +72,7 @@ function permissionProblems(w: Workflow): string[] {
       if (level === "write" && key !== "id-token") written.add(key);
     }
   }
-  const call = Object.values(w.jobs)[0];
+  const call = callJob(w);
   if (typeof call?.permissions !== "object" || call.permissions["id-token"] !== "write") problems.push("the call does not hold id-token: write, so the called workflow's publish job fails the whole call at load");
   for (const needed of WRITABLE) if (!written.has(needed)) problems.push(`no job holds ${needed}: write`);
   if (JSON.stringify(w.permissions) !== '{"contents":"read"}') problems.push(`workflow permissions are ${JSON.stringify(w.permissions)}, not contents: read alone`);
@@ -119,7 +120,7 @@ test("the real release.yml has no trigger, permission, concurrency or reach prob
 
 test("positive control: the properties are about something (one push trigger, one call job that writes contents, and a concurrency block to read)", () => {
   assert.equal(Object.keys(REAL.on as object).length, 1);
-  assert.equal(Object.keys(REAL.jobs).length, 1);
+  assert.equal(Object.keys(REAL.jobs).length, 2, "the consumer-check job and the call");
   assert.equal((callJob(REAL).permissions as Record<string, string>)["contents"], "write");
   assert.equal(callJob(REAL).concurrency?.group, "release");
   assert.equal((callJob(REAL).permissions as Record<string, string>)["id-token"], "write");

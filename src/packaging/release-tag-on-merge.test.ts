@@ -43,22 +43,25 @@ const PACKAGE = JSON.parse(read("package.json")) as { packageManager?: string; s
 const SHARED = /^a11ign\/toolchain\/\.github\/workflows\/release-per-merge\.yml@[0-9a-f]{40}$/;
 
 const clone = (w: Workflow): Workflow => structuredClone(w);
-const callJob = (w: Workflow): Job => Object.values(w.jobs)[0] as Job;
+const callJob = (w: Workflow): Job => Object.values(w.jobs).find((j) => j.uses !== undefined) ?? (Object.values(w.jobs)[0] as Job);
 const inputsOf = (w: Workflow): Record<string, unknown> => callJob(w).with ?? {};
 
 /** The `@changesets/cli` version package.json's `changeset` script runs, which the shared workflow's `pnpm dlx` must run too so the changelog is written by the same tool. */
 const scriptChangesets = (): string | undefined => /@changesets\/cli@(\d+\.\d+\.\d+)/.exec(PACKAGE.scripts["changeset"] ?? "")?.[1];
 
-/** One job named `release` that is a call, pinned by full sha, with no steps beside it, no `needs` and no secrets passed to it. */
+/**
+ * Beside `consumer-check` (a11ign/a11ign#4412; its own pin is `release-consumer-check.test.ts`), one job named `release` that is a call, pinned by full sha, with no steps of its own, a `needs`
+ * of that one job and nothing else, and no secrets passed to it.
+ */
 function callProblems(w: Workflow): string[] {
   const names = Object.keys(w.jobs);
   const job = callJob(w);
-  if (names.join() !== "release") return [`jobs are [${names}], not exactly one named release`];
+  if (names.join() !== "consumer-check,release") return [`jobs are [${names}], not exactly consumer-check and the call named release`];
   const problems: string[] = [];
   if (!SHARED.test(job.uses ?? "")) problems.push(`uses is '${job.uses}', not the shared per-merge workflow pinned by a full sha`);
   if (job.steps !== undefined) problems.push("the call job has steps of its own: a called job runs none, so they would not run, and a reader would think they did");
   if (job.secrets !== undefined) problems.push("the call passes `secrets:`, and a tag release needs none");
-  if (job.needs !== undefined) problems.push("the call waits on a job of its own, and the gate is the called workflow's to wait for");
+  if (JSON.stringify(job.needs) !== '"consumer-check"') problems.push("the call waits on a job other than consumer-check, and the gate is the called workflow's to wait for");
   return problems;
 }
 
@@ -120,6 +123,7 @@ test("positive control: each copy with ONE thing broken is refused by the proper
     ["call", "a job of another name", (w) => { w.jobs = { publish: callJob(w) }; }],
     ["call", "inherited secrets", (w) => { callJob(w).secrets = "inherit"; }],
     ["call", "a needs of its own", (w) => { callJob(w).needs = ["lint"]; }],
+    ["call", "no needs, so the consumer check no longer precedes the tag", (w) => { delete callJob(w).needs; }],
     ["inputs", "kind npm", (w) => { inputsOf(w)["kind"] = "npm"; }],
     ["inputs", "another gate check, one that ci.yml has", (w) => { inputsOf(w)["gate-check"] = "typecheck"; }],
     ["inputs", "another node", (w) => { inputsOf(w)["node-version"] = "22"; }],
