@@ -20,7 +20,7 @@ import { newestPerName } from "../newest-check-run.ts";
 import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.ts";
 import { NO_VERDICT } from "../merge-guard/checks-rule.ts";
 import { armabilityOf } from "../pr-hold-state.ts";
-import { isHeldRed } from "../red-pr.ts";
+import { isHeldRed, isWaitingRed } from "../red-pr.ts";
 import { sharedFileOrders } from "./shared-file-orders.ts";
 import { REPO } from "../project-identity.ts";
 import { VERIFY_STATE } from "../verify-stamp.ts";
@@ -657,6 +657,18 @@ function redOnlyFromAHold(pr: any) {
   return isHeldRed(pr);
 }
 
+/**
+ * PURE. A RED PULL REQUEST WHOSE ROW WAITS ON AN OPEN NATIVE `blockedBy` EDGE, AT THE HEAD THE WAIT WAS RECORDED AT, IS AN ANSWERED ORDER (#4606).
+ * A hold was the only wait the gate read as an answer, so a worker that carried its wait as DATA the way `waiting-conditions.md` prescribes
+ * (`--add-blocked-by`) was treated as one that ignored its order: lab#49 at `a5b63eaf` was ordered 6 times against a cap of 3, escalated to
+ * `orchestrator`, and `STUCK ... delivered 6 times and the cause is still true` repeated for 63 minutes. Same shape as {@link redOnlyFromAHold},
+ * so the same ending: a push (new head) or a closed edge and the order is emitted again, and `endedRuns` writes `RESET` for the key that stopped.
+ * NOT "any open edge hides a red": a new head is new work, which is the whole of the guard. `isWaitingRed` is the decider; the stamp is `pr-waits.ts`'s.
+ */
+function redWhileWaiting(pr: any) {
+  return isWaitingRed(pr);
+}
+
 const MS_PER_MINUTE = 60_000;
 
 /**
@@ -780,7 +792,7 @@ function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: 
   const head8 = head.slice(0, 8);
   // `ownerOfPr` IS TOTAL (#2941): an unlabelled red PR is still a stalled PR, and its last answer is a session that can act.
   const { session } = ownerOfPr(pr);
-  if (redOnlyFromAHold(pr)) return null;
+  if (redOnlyFromAHold(pr) || redWhileWaiting(pr)) return null;
   const conflicting = conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING;
   return {
     session,

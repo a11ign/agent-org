@@ -81,6 +81,20 @@ export function isHeldRed(pr: { labels?: any[]; statusCheckRollup?: any[]; }) {
   return redChecks(pr).length > 0 && !isBrokenRed(pr);
 }
 
+/**
+ * PURE. Is this pull request's row WAITING on an open native `blockedBy` edge, at the head the wait was recorded at? `withWaitingEdges`
+ * (`work-gate/pr-waits.ts`) stamps `waitingOn: { edges, head }` on a PR whose owning row has an open edge; this is the other half of
+ * `isHeldRed`'s shape, a wait carried as DATA (`.claude/rules/waiting-conditions.md`) read as an answer the way a `hold:*` label is (#4606).
+ *
+ * THE EXEMPTION ENDS WITH EITHER KEY: the edge closes (`edges` is empty or the stamp is absent) or the head moves (a push is new work, and a
+ * real defect on it must still reach its owner). A stamp with no head, or a PR with no head, excuses nothing: absent is not equal.
+ * @param {{ headRefOid?: string, waitingOn?: { edges?: number[], head?: string } }} pr
+ */
+export function isWaitingRed(pr: { headRefOid?: string; waitingOn?: { edges?: number[]; head?: string; }; }): boolean {
+  const { edges, head } = pr.waitingOn ?? {};
+  return Array.isArray(edges) && edges.length > 0 && typeof head === "string" && head !== "" && head === pr.headRefOid;
+}
+
 /** @param {{ labels?: any[] }} pr @returns {string[]} the `hold:<session>` labels, whole */
 export function holdsOn(pr: { labels?: any[]; }): string[] {
   return holdersOf(labelNames(pr));

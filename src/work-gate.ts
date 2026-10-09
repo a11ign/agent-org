@@ -141,6 +141,7 @@ import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, r
 import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.ts";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.ts`, which imports the shared session reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
+import { withWaitingEdges } from "./work-gate/pr-waits.ts";
 import { withPrOwners, withScopedPrOwners, resolverDefectsOf, resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "./work-gate/pr-owners.ts";
 import type { ResolverDefect } from "./work-gate/pr-owners.ts";
 // #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.ts`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.ts` above describes);
@@ -6990,7 +6991,7 @@ export type HomeRows = { rows: any[]; repo: string; io?: Parameters<typeof withS
 function ownedPrsOf(scope: Scope, prs: any[], { own, home }: { own: any[]; home?: HomeRows }): { prs: any[]; defects: ResolverDefect[] } {
   const rows = scope.tracker === null ? home : { rows: own, repo: scope.tracker.repo, io: home?.io };
   if (rows === undefined) return { prs, defects: [] };
-  const owned = withScopedPrOwners(prs, rows.rows, { rowsRepo: rows.repo, io: rows.io });
+  const owned = withWaitingEdges(withScopedPrOwners(prs, rows.rows, { rowsRepo: rows.repo, io: rows.io }), rows.rows, { rowsRepo: rows.repo, dir: REVIEWER_STATE_DIR }); // #4606: a wait on an open edge, at the head it began at
   return { prs: owned, defects: resolverDefectsOf(owned, rows.rows, rows.repo) };
 }
 
@@ -7648,7 +7649,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenNeeded(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
-  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withWaitingEdges(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), allOpen, { dir: REVIEWER_STATE_DIR }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicRowsOf(allOpen),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),
