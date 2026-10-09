@@ -110,6 +110,8 @@ import { DEFECT_LABEL } from "./defect-class-line.ts"; // #4123
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "./region-paths.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { rowTracker, trackerNamed } from "./row-tracker.ts"; // #4078
+import { adopterFacingDeclared, adopterRowKind } from "./work-gate/org-health.mjs"; // #4378
+import { PRIMARY_MILESTONE_LINE } from "./org-health.ts"; // #4378
 import { parseWaits, umbrellaEdge } from "./wait-condition.ts";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.mjs"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.ts";
@@ -943,6 +945,8 @@ export function withKindLabel(argv: string[]): string[] {
 }
 
 export type Tracker = import("./project-config.ts").Tracker;
+/** #4378: the declaration `primaryMilestoneRefusal` reads: the trackers (which one has milestones) and the `code` and `dora` lists `adopterRowKind` judges a Region by */
+type AdopterDeclaration = Parameters<typeof adopterRowKind>[1] & { tracker: Tracker[]; };
 
 /**
  * #4078: THE PROJECT'S OWN TRACKER -- the first declared, which is also what `REPO`, `PROJECT_OWNER` and `PROJECT_NUMBER` name. Promotion
@@ -1619,6 +1623,45 @@ const usesMilestones = (tracker: Tracker, { tracker: trackers }: { tracker: Trac
 const releaseArgvFor = (argv: string[], tracker: Tracker, declaration: { tracker: Tracker[]; }): string[] => (usesMilestones(tracker, declaration) ? outOfReleaseArgv(argv) : argv);
 
 /**
+ * #4378: THE TITLES OF THE TRACKER'S OPEN MILESTONES WHOSE DESCRIPTION CARRIES THE `Primary: yes` LINE -- the milestone is data `ceo` sets (#4231), never a title this file knows. `null` when the list
+ * could not be read, which is "could not say" and not "none".
+ * @param {{ run?: typeof defaultRun, repo?: string }} [deps] @returns {string[] | null}
+ */
+export function primaryMilestoneTitles({ run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): string[] | null {
+  try {
+    const listed: { title?: string; description?: string | null; }[] = JSON.parse(run("gh", ["api", `repos/${repo}/milestones`]));
+    return listed.filter((milestone) => PRIMARY_MILESTONE_LINE.test(String(milestone.description ?? ""))).map((milestone) => String(milestone.title ?? ""));
+  } catch {
+    return null; // CANNOT_ASK: `primaryMilestoneRefusal` says so and files, rather than refusing on a read it could not make
+  }
+}
+
+/**
+ * #4378: AN ORG ROW IS NOT FILED INTO THE PRIMARY MILESTONE. The milestone's open-row count was read as progress, and org rows filed into it hid a product stall (the chairman, 2026-10-09). The row is judged by
+ * `adopterRowKind`, #3820's `rowKind` over the repositories not declared `adopterFacing: false`; the refusal names the Region entry that made it org and the two ways out. A Region that cannot be read is org by
+ * `rowKind`'s own word and is refused saying so. (An `epic` never reaches this: it takes its state label after filing, and the clock does not judge one.) DORMANT until the declaration names `adopterFacing` once, and for a tracker with no
+ * milestones of its own. A milestone list that cannot be read files the row with a warning: the clock (`milestoneClockFact`) does not count an org row either way.
+ * @param {string[]} argv @param {string} body @param {Tracker} tracker @param {AdopterDeclaration} declaration
+ * @param {{ primaryMilestones: typeof primaryMilestoneTitles, run: typeof defaultRun }} deps @returns {string | null}
+ */
+export function primaryMilestoneRefusal(argv: string[], body: string, tracker: Tracker, declaration: AdopterDeclaration, { primaryMilestones, run }: { primaryMilestones: typeof primaryMilestoneTitles; run: typeof defaultRun; }): string | null {
+  const milestone = milestoneFromArgv(argv);
+  if (milestone === null || !usesMilestones(tracker, declaration) || !adopterFacingDeclared(declaration)) return null;
+  const primaries = primaryMilestones({ run, repo: tracker.repo });
+  if (primaries === null) {
+    process.stderr.write(`row-file: warning: could not read ${tracker.repo}'s milestones, so whether "${milestone}" is the primary one was not checked.\n`);
+    return null;
+  }
+  if (!primaries.some((title) => sameLabel(title, milestone))) return null;
+  const { kind, because } = adopterRowKind(declaredRegionFiles(body), declaration);
+  if (kind === "adopter") return null;
+  return `row-file: REFUSING to file an org row into the primary milestone "${milestone}" -- nothing was sent to GitHub.\n`
+    + `  The milestone holds adopter-facing rows only (#4378), and this row is not one: ${because}.\n`
+    + `  Either: --milestone "${OUT_OF_RELEASE_MILESTONE}" --label ${OUT_OF_RELEASE} -- the row is org work and is outside the release\n`
+    + "  Or:     the tracker the row belongs in (`--tracker=<key>`), if it is not this project's work at all";
+}
+
+/**
  * The refusal for a filing that declares no release: the milestone one, naming the home tracker's milestones, or for any other tracker
  * the label-only one, which reads nothing.
  * @param {Tracker} tracker @param {{ tracker: Tracker[] }} declaration @param {{ run: typeof defaultRun, milestones: typeof openMilestones }} deps @returns {string}
@@ -1682,10 +1725,10 @@ export function createIssue(argv: string[], deps: {
   // board-add call, the Status move, and the read-back -- without spawning a real `gh`, reaching GitHub,
   // or reading a real `docs/lane-ownership.json`.
   const { spawnGh, run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels, loadLanesConfig,
-    milestones, declaration } = {
+    milestones, primaryMilestones, declaration } = {
     spawnGh: spawnGhIssueCreate, run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus,
     fetchLabels: fetchIssueLabels, moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn,
-    loadLanesConfig: loadLanes, milestones: openMilestones, declaration: homeProjectDeclaration(), ...deps,
+    loadLanesConfig: loadLanes, milestones: openMilestones, primaryMilestones: primaryMilestoneTitles, declaration: homeProjectDeclaration(), ...deps,
   };
   const session = sessionFromArgv(argv);
   const unknownKind = kindRefusal(argv);
@@ -1736,8 +1779,11 @@ export function createIssue(argv: string[], deps: {
   }
   const laneLabels = laneResult.laneLabels;
   // #1011: BEFORE `gh issue create`, so a refusal leaves nothing behind. See `milestoneRefusal`.
-  if (!declaresRelease(argv)) {
-    process.stderr.write(`${undeclaredReleaseRefusal(tracker, declaration, { run, milestones })}\n`);
+  const releaseRefusal = !declaresRelease(argv)
+    ? undeclaredReleaseRefusal(tracker, declaration, { run, milestones })
+    : primaryMilestoneRefusal(argv, (body as string), tracker, declaration, { primaryMilestones, run }); // #4378
+  if (releaseRefusal) {
+    process.stderr.write(`${releaseRefusal}\n`);
     return 1;
   }
   const duplicate = duplicateTitleRefusal(argv, tracker, run); // #4294: before the create call, so a refusal leaves nothing behind
