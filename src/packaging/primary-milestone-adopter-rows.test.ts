@@ -12,8 +12,10 @@
 // POSITIVE CONTROLS, NAMED: `packages/cli/` (a), #4356 (b), a different milestone, out of the release, and the same six rows with NO `adopterFacing` key anywhere.
 // Each file case asserts the number of creates (the refusals ZERO), so a refusal is read against a tool that does file.
 //
-// A FINDING THE ROW DID NOT KNOW (case "F"): the live declaration lists no `docs/` and no `scripts/` as releasable, so #4356 reads ORG against it. The
-// rule is DORMANT until a `dora` entry names `adopterFacing`, which is why this change cannot raise a false alarm on its own.
+// A FINDING THE ROW DID NOT KNOW (case "F"): the live declaration lists no `docs/` path as releasable, so #4356 reads ORG against it. The rule is
+// DORMANT until a `dora` entry names `adopterFacing`, which is why this change cannot raise a false alarm on its own. `ceo` ruled (#4378, 2026-10-09)
+// that #4356 COUNTS, and how: by declaring the ONE path an outside adopter reads (its findings doc) releasable for `a11ign/a11ign`, NOT by widening the
+// lab's `releasablePaths` (that would make every lab script "product" in #3820's share). `NO_KEY` below carries that path, the lab keeps `src/` only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFiledBy, createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file.ts";
@@ -38,8 +40,10 @@ const DORA_AS_LIVE = [
 const TRACKERS = [{ key: "", repo: "a11ign/a11ign", board: { owner: "a11ign", number: 2 } }];
 const declare = (dora: object[]) => ({ tracker: TRACKERS, code: CODE, dora }) as never;
 
-/** No key anywhere: the declaration as it stands today, with the lab's calibration scripts added so #4356 has a releasable path to lie under (see "F"). */
-const NO_KEY = declare(DORA_AS_LIVE.map((entry) => (entry.repo === "a11ign/lab" ? { ...entry, releasablePaths: ["src/", "scripts/"] } : entry)));
+/** The path an outside adopter reads, which is what lets #4356 count (see "F"). The lab's `releasablePaths` stay `["src/"]`: `ceo` forbade widening them. */
+const FINDINGS_DOC = "docs/unfamiliar-ui-findings.md";
+/** No key anywhere: the declaration as it stands today, plus the findings doc as releasable for `a11ign/a11ign` (#4396's declaration). */
+const NO_KEY = declare(DORA_AS_LIVE.map((entry) => (entry.repo === "a11ign/a11ign" ? { ...entry, releasablePaths: [...entry.releasablePaths, FINDINGS_DOC] } : entry)));
 /** The follow-on's declaration, less the lab: `toolchain` and `control` are the org's own tooling. */
 const TOOLING_FALSE = declare((NO_KEY as { dora: { repo: string }[] }).dora.map((entry) => (["a11ign/toolchain", "a11ign/control"].includes(entry.repo) ? { ...entry, adopterFacing: false } : entry)));
 /** ...and the lab declared not adopter-facing too (Done-when 4's call). */
@@ -222,14 +226,17 @@ test("(dormant) with no adopterFacing key anywhere, or no declaration at all, ev
   assert.notEqual(JSON.stringify(read(EIGHT, TOOLING_FALSE)), before, "the filter really does change the fact once a key is declared");
 });
 
-test("(F, a finding) against the declaration AS IT STANDS (docs/ and scripts/ releasable nowhere) #4356 reads ORG; the lab declared false does the same", () => {
-  const AS_LIVE = declare(DORA_AS_LIVE.map((entry) => (entry.repo === "a11ign/toolchain" ? { ...entry, adopterFacing: false } : entry)));
-  const kind = adopterRowKind(declaredRegionFiles(bodyOf(REGION[4356]), { rootFiles: ROOT_FILES }), AS_LIVE);
-  assert.equal(kind.kind, "org");
-  assert.match(String(kind.because), /`docs\/unfamiliar-ui-findings\.md` lies under no releasable path of an adopter-facing repository/);
-  const withLabFalse = filing(intoPrimary(REGION[4356]), LAB_FALSE);
-  assert.equal(withLabFalse.code, 1, "declaring the lab not adopter-facing refuses the outcome-3 measurement row too");
-  assert.match(withLabFalse.stderr, /lab:scripts\/cantell-by-page-shape\.mjs` is in a11ign\/lab|lies under no releasable path|adopterFacing: false/);
+test("(F, ceo's ruling) #4356 counts because the findings doc is releasable, NOT because the lab is widened; declared as it stands today it reads ORG", () => {
+  const entries = declaredRegionFiles(bodyOf(REGION[4356]), { rootFiles: ROOT_FILES });
+  const asLive = declare(DORA_AS_LIVE.map((entry) => (entry.repo === "a11ign/toolchain" ? { ...entry, adopterFacing: false } : entry)));
+  const before = adopterRowKind(entries, asLive);
+  assert.equal(before.kind, "org", "without the findings doc declared, nothing covers #4356");
+  assert.match(String(before.because), /`docs\/unfamiliar-ui-findings\.md` lies under no releasable path of an adopter-facing repository/);
+  assert.deepEqual(DORA_AS_LIVE.find((entry) => entry.repo === "a11ign/lab")?.releasablePaths, ["src/"], "the lab is NOT widened in any fixture here");
+  assert.equal(adopterRowKind(entries, LAB_FALSE).kind, "adopter", "the findings doc counts it with the lab, control and toolchain all declared false");
+  assert.equal(filing(intoPrimary(REGION[4356]), LAB_FALSE).code, 0, "...and row-file accepts it");
+  assert.equal(read([openRow(4356, REGION[4356], ["ready"])], LAB_FALSE)?.rows.length, 1, "...and the clock counts it");
+  for (const number of ORG_ROWS) assert.equal(adopterRowKind(declaredRegionFiles(bodyOf(REGION[number]), { rootFiles: ROOT_FILES }), LAB_FALSE).kind, "org", `#${number} stays org`);
 });
 
 // --- the declaration ------------------------------------------------------------------------------------------------------------------------------
