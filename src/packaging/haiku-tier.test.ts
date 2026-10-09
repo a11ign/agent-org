@@ -1,5 +1,5 @@
 /**
- * `packages/agent-org/src/worker-profile.ts`'s Haiku tier and `trace/haiku-tier-report.mjs` (a11ign/a11ign#4382, the chairman's spend trial).
+ * `packages/agent-org/src/worker-profile.ts`'s Haiku tier and `trace/haiku-tier-report.ts` (a11ign/a11ign#4382, the chairman's spend trial).
  *
  * EVERY CLAIM HERE HAS A POSITIVE AND A NEGATIVE CONTROL: a `tier:haiku` row that gets the profile beside the same row that does not, a switch that
  * is on beside the three ways it is off, and a stop rule that trips on a fixture built to trip EXACTLY ONE condition beside the baseline that trips none.
@@ -13,7 +13,7 @@ import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARG
   HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
 import { spawnInvocation, spawnClaimer } from "../wake.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.mjs";
-import { measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.mjs";
+import { measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "haiku-tier-"));
 after(() => { rmSync(SCRATCH, { recursive: true, force: true }); });

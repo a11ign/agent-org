@@ -1,7 +1,6 @@
-// @ts-check
 // a11ign/a11ign#4382: THE HAIKU TIER'S REPORT -- the four measures the chairman named, per tier, and the stop rule written on that row BEFORE the first Haiku worker started.
 //
-// `node src/trace/haiku-tier-report.mjs [--store <events.ndjson>]` reads the closed rows and their pull requests from `gh` (one `issue list`) and the turns, compactions and
+// `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the closed rows and their pull requests from `gh` (one `issue list`) and the turns, compactions and
 // reviews from the trace store, and prints for `tier:haiku` rows and for the other rows closed in the same window: first-pass merge, review rejections per pull request,
 // compactions, and cost per closed row (turns per row beside them, which is NOT a stop condition). `ceo` reads it once, at 8 closed Haiku rows or 72 hours after the first
 // Haiku worker starts, and applies (a)-(e) below.
@@ -17,6 +16,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import type { TraceEvent } from "./store.mjs";
 import { eventsForRow, readStore, repriceEvents } from "./store.mjs";
 import { defaultStore } from "./otel-receiver.mjs";
 import { HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
@@ -32,45 +32,36 @@ export const MIN_SAVING_FRACTION = 0.4;
 const MS_PER_HOUR = 3_600_000;
 const PERCENT = 100;
 
-/**
- * @typedef {{ number: number, haiku: boolean, closedAt: number, pr: { repo: string, number: number } | null }} ClosedRow
- * @typedef {{ number: number, haiku: boolean, merged: boolean, rejections: number, compactions: number, oversize: number, turns: number, costUsd: number, unpriced: number }} RowMeasures
- * @typedef {import("./store.mjs").TraceEvent} TraceEvent
- */
+export type ClosedRow = { number: number; haiku: boolean; closedAt: number; pr: { repo: string; number: number } | null };
+export type RowMeasures = { number: number; haiku: boolean; merged: boolean; rejections: number; compactions: number; oversize: number; turns: number; costUsd: number; unpriced: number };
 
-/** @param {number[]} values @returns {number | null} */
-export function median(values) {
+export function median(values: number[]): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-/** The reviews and merge of one pull request, from the store's `github` events (their ids carry the repository, so another repository's pull request of the same number is not read). @param {TraceEvent[]} events @param {{ repo: string, number: number }} pr */
-function pullEvents(events, pr) {
+/** The reviews and merge of one pull request, from the store's `github` events (their ids carry the repository, so another repository's pull request of the same number is not read). */
+function pullEvents(events: TraceEvent[], pr: { repo: string; number: number }): TraceEvent[] {
   const prefix = `gh:${pr.repo}#${pr.number}:`;
   return events.filter((event) => event.source === "github" && event.id.startsWith(prefix));
 }
 
-/** The most compactions any ONE session of the row took. @param {TraceEvent[]} rowEvents */
-function mostCompactions(rowEvents) {
-  /** @type {Map<string, number>} */
-  const perSession = new Map();
+/** The most compactions any ONE session of the row took. */
+function mostCompactions(rowEvents: TraceEvent[]): number {
+  const perSession = new Map<string, number>();
   for (const event of rowEvents.filter((e) => e.kind === "compaction")) perSession.set(event.session, (perSession.get(event.session) ?? 0) + 1);
   return Math.max(0, ...perSession.values());
 }
 
-/** @param {TraceEvent[]} turns */
-function spend(turns) {
+function spend(turns: TraceEvent[]): { costUsd: number; unpriced: number } {
   const priced = turns.filter((turn) => typeof turn.costUsd === "number");
-  return { costUsd: priced.reduce((sum, turn) => sum + /** @type {number} */ (turn.costUsd), 0), unpriced: turns.length - priced.length };
+  return { costUsd: priced.reduce((sum, turn) => sum + (turn.costUsd as number), 0), unpriced: turns.length - priced.length };
 }
 
-/**
- * One closed row's figures. `events` must already be repriced.
- * @param {ClosedRow} row @param {TraceEvent[]} events @returns {RowMeasures}
- */
-export function measuresOf(row, events) {
+/** One closed row's figures. `events` must already be repriced. */
+export function measuresOf(row: ClosedRow, events: TraceEvent[]): RowMeasures {
   const about = eventsForRow(events, { rows: [row.number], prs: [] });
   const turns = about.filter((event) => event.kind === "turn");
   const pull = row.pr === null ? [] : pullEvents(events, row.pr);
@@ -80,8 +71,7 @@ export function measuresOf(row, events) {
     compactions: mostCompactions(about), oversize, turns: turns.length, ...spend(turns) };
 }
 
-/** @param {RowMeasures[]} rows */
-export function summarise(rows) {
+export function summarise(rows: RowMeasures[]) {
   const merged = rows.filter((row) => row.merged);
   const priced = rows.filter((row) => row.turns > 0);
   return { n: rows.length, nMerged: merged.length,
@@ -92,72 +82,66 @@ export function summarise(rows) {
     medianTurns: median(rows.map((row) => row.turns)) };
 }
 
-/** @typedef {ReturnType<typeof summarise>} Summary */
-/** @typedef {{ id: string, tripped: boolean | null, line: string }} Verdict */
+type Summary = ReturnType<typeof summarise>;
+export type Verdict = { id: string; tripped: boolean | null; line: string };
 
-/** @param {number} n @param {number} rate */
-const rateText = (n, rate) => (n < MIN_RATE_ROWS ? `n=${n}, not a rate` : `${(rate * PERCENT).toFixed(0)}% (n=${n})`);
+const rateText = (n: number, rate: number): string => (n < MIN_RATE_ROWS ? `n=${n}, not a rate` : `${(rate * PERCENT).toFixed(0)}% (n=${n})`);
 
-/** (a): the Haiku rate more than FIRST_PASS_GAP_POINTS below the others'. Decides only when BOTH are rates. @param {Summary} haiku @param {Summary} other @returns {Verdict} */
-function firstPassVerdict(haiku, other) {
+/** (a): the Haiku rate more than FIRST_PASS_GAP_POINTS below the others'. Decides only when BOTH are rates. */
+function firstPassVerdict(haiku: Summary, other: Summary): Verdict {
   const shown = `Haiku ${rateText(haiku.nMerged, haiku.firstPassRate ?? 0)}, others ${rateText(other.nMerged, other.firstPassRate ?? 0)}`;
   if (haiku.nMerged < MIN_RATE_ROWS || other.nMerged < MIN_RATE_ROWS) return { id: "a", tripped: null, line: `(a) first-pass merge: ${shown} -- not readable` };
   const gap = ((other.firstPassRate ?? 0) - (haiku.firstPassRate ?? 0)) * PERCENT;
   return { id: "a", tripped: gap > FIRST_PASS_GAP_POINTS, line: `(a) first-pass merge: ${shown}; gap ${gap.toFixed(0)} points (stop above ${FIRST_PASS_GAP_POINTS})` };
 }
 
-/** (b): rejections per pull request more than REJECTIONS_GAP_PER_PR above the others' mean. @param {Summary} haiku @param {Summary} other @returns {Verdict} */
-function rejectionsVerdict(haiku, other) {
+/** (b): rejections per pull request more than REJECTIONS_GAP_PER_PR above the others' mean. */
+function rejectionsVerdict(haiku: Summary, other: Summary): Verdict {
   const shown = `Haiku ${haiku.meanRejections?.toFixed(2) ?? "none"} per PR (n=${haiku.nMerged}), others ${other.meanRejections?.toFixed(2) ?? "none"} (n=${other.nMerged})`;
   if (haiku.meanRejections === null || other.meanRejections === null) return { id: "b", tripped: null, line: `(b) review rejections: ${shown} -- not readable` };
   const gap = haiku.meanRejections - other.meanRejections;
   return { id: "b", tripped: gap > REJECTIONS_GAP_PER_PR, line: `(b) review rejections: ${shown}; gap ${gap.toFixed(2)} (stop above ${REJECTIONS_GAP_PER_PR})` };
 }
 
-/** (c): any Haiku worker compacting more than MAX_COMPACTIONS times, or any recorded turn above the prompt ceiling. @param {Summary} haiku @returns {Verdict} */
-function thrashVerdict(haiku) {
+/** (c): any Haiku worker compacting more than MAX_COMPACTIONS times, or any recorded turn above the prompt ceiling. */
+function thrashVerdict(haiku: Summary): Verdict {
   const tripped = haiku.mostCompactions > MAX_COMPACTIONS || haiku.oversize > 0;
   return { id: "c", tripped, line: `(c) thrash or refusal: most compactions by one Haiku worker ${haiku.mostCompactions} (stop above ${MAX_COMPACTIONS}); `
     + `Haiku turns recorded above the prompt ceiling ${haiku.oversize} (stop above 0; a refused turn leaves no record, so this is a floor) (n=${haiku.n})` };
 }
 
-/** (d): cost per closed row not at least MIN_SAVING_FRACTION below the others' median. @param {Summary} haiku @param {Summary} other @returns {Verdict} */
-function savingVerdict(haiku, other) {
-  const floor = (/** @type {Summary} */ s) => (s.floors > 0 ? ` (${s.floors} a floor: an unpriced turn)` : "");
+/** (d): cost per closed row not at least MIN_SAVING_FRACTION below the others' median. */
+function savingVerdict(haiku: Summary, other: Summary): Verdict {
+  const floor = (s: Summary): string => (s.floors > 0 ? ` (${s.floors} a floor: an unpriced turn)` : "");
   const shown = `Haiku median $${haiku.medianCostUsd?.toFixed(2) ?? "none"} (n=${haiku.nCost})${floor(haiku)}, others $${other.medianCostUsd?.toFixed(2) ?? "none"} (n=${other.nCost})${floor(other)}`;
   if (haiku.medianCostUsd === null || other.medianCostUsd === null) return { id: "d", tripped: null, line: `(d) cost per closed row: ${shown} -- not readable` };
   const saving = 1 - haiku.medianCostUsd / other.medianCostUsd;
   return { id: "d", tripped: saving < MIN_SAVING_FRACTION, line: `(d) cost per closed row: ${shown}; saving ${(saving * PERCENT).toFixed(0)}% (stop below ${MIN_SAVING_FRACTION * PERCENT}%)` };
 }
 
-/** (e): fewer than MIN_ROWS_IN_WINDOW Haiku rows closed in the 72 hours; unreadable until the window has run. @param {{ closedInWindow: number, started: number | null, now: number }} window @returns {Verdict} */
-function tooFewVerdict({ closedInWindow, started, now }) {
+/** (e): fewer than MIN_ROWS_IN_WINDOW Haiku rows closed in the 72 hours; unreadable until the window has run. */
+function tooFewVerdict({ closedInWindow, started, now }: { closedInWindow: number; started: number | null; now: number }): Verdict {
   if (started === null) return { id: "e", tripped: null, line: "(e) too few to read: no Haiku worker has started, so the clock is not running" };
   const open = now < started + WINDOW_HOURS * MS_PER_HOUR;
   const shown = `${closedInWindow} Haiku rows closed since the first worker started ${new Date(started).toISOString()} (stop below ${MIN_ROWS_IN_WINDOW} after ${WINDOW_HOURS} hours)`;
   return { id: "e", tripped: open ? null : closedInWindow < MIN_ROWS_IN_WINDOW, line: `(e) too few to read: ${shown}${open ? " -- the window is still open" : ""}` };
 }
 
-/**
- * The stop rule applied: one verdict per condition, `tripped: null` where the figures cannot decide it yet.
- * @param {{ haiku: RowMeasures[], other: RowMeasures[], closedInWindow: number, started: number | null, now: number }} input
- * @returns {Verdict[]}
- */
-export function stopRule({ haiku, other, closedInWindow, started, now }) {
+/** The stop rule applied: one verdict per condition, `tripped: null` where the figures cannot decide it yet. */
+export function stopRule({ haiku, other, closedInWindow, started, now }: { haiku: RowMeasures[]; other: RowMeasures[]; closedInWindow: number; started: number | null; now: number }): Verdict[] {
   const h = summarise(haiku);
   const o = summarise(other);
   return [firstPassVerdict(h, o), rejectionsVerdict(h, o), thrashVerdict(h), savingVerdict(h, o), tooFewVerdict({ closedInWindow, started, now })];
 }
 
-/** The earliest time a `tier:haiku` row's Haiku worker took a turn: the clock the 72 hours runs from. @param {ClosedRow[]} haikuRows @param {TraceEvent[]} events @returns {number | null} */
-export function firstHaikuStart(haikuRows, events) {
+/** The earliest time a `tier:haiku` row's Haiku worker took a turn: the clock the 72 hours runs from. */
+export function firstHaikuStart(haikuRows: ClosedRow[], events: TraceEvent[]): number | null {
   const numbers = new Set(haikuRows.map((row) => row.number));
   const starts = events.filter((e) => e.kind === "turn" && e.row !== null && numbers.has(e.row) && e.model?.startsWith(HAIKU_MODEL_ID)).map((e) => e.at);
   return starts.length === 0 ? null : Math.min(...starts);
 }
 
-/** @param {Summary} s */
-function groupLines(s) {
+function groupLines(s: Summary): string[] {
   return [`  n=${s.n} closed (${s.nMerged} with a merged pull request)`,
     `  first-pass merge: ${s.firstPassRate === null ? "none merged" : rateText(s.nMerged, s.firstPassRate)}`,
     `  review rejections per PR: ${s.meanRejections === null ? "none merged" : `${s.meanRejections.toFixed(2)} (n=${s.nMerged})`}`,
@@ -166,12 +150,8 @@ function groupLines(s) {
     `  turns per row, median (not a stop condition): ${s.medianTurns ?? "no rows"} (n=${s.n})`];
 }
 
-/**
- * The whole report as lines. `closed` is every closed row in the window, `events` the store (repriced here).
- * @param {{ closed: ClosedRow[], events: TraceEvent[], now: number }} input
- * @returns {string[]}
- */
-export function reportLines({ closed, events, now }) {
+/** The whole report as lines. `closed` is every closed row in the window, `events` the store (repriced here). */
+export function reportLines({ closed, events, now }: { closed: ClosedRow[]; events: TraceEvent[]; now: number }): string[] {
   const priced = repriceEvents(events);
   const started = firstHaikuStart(closed.filter((row) => row.haiku), priced);
   const inWindow = closed.filter((row) => started !== null && row.closedAt >= started && row.closedAt <= now);
@@ -179,26 +159,27 @@ export function reportLines({ closed, events, now }) {
   const haiku = measured.filter((row) => row.haiku);
   const other = measured.filter((row) => !row.haiku);
   const verdicts = stopRule({ haiku, other, closedInWindow: haiku.length, started, now });
-  const verdictText = (/** @type {Verdict} */ v) => `${v.tripped === null ? "UNREADABLE" : v.tripped ? "STOP" : "ok"}  ${v.line}`;
+  const verdictText = (v: Verdict): string => `${v.tripped === null ? "UNREADABLE" : v.tripped ? "STOP" : "ok"}  ${v.line}`;
   return [`${HAIKU_TIER_LABEL} trial report (a11ign/a11ign#4382), window from ${started === null ? "no Haiku worker yet" : new Date(started).toISOString()} to ${new Date(now).toISOString()}`,
     `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku)), "other rows closed in the same window:", ...groupLines(summarise(other)),
     "stop rule (STOP: set enabled to false in src/haiku-tier.json; UNREADABLE decides nothing):", ...verdicts.map(verdictText)];
 }
 
-/** @param {any} issue @returns {ClosedRow} */
-function closedRowOf(issue) {
+type GhIssue = { number: number; labels?: { name: string }[]; closedAt: string; closedByPullRequestsReferences?: { number: number; repository?: { nameWithOwner?: string; name?: string } }[] };
+
+function closedRowOf(issue: GhIssue): ClosedRow {
   const closer = (issue.closedByPullRequestsReferences ?? [])[0];
-  return { number: issue.number, haiku: (issue.labels ?? []).some((/** @type {{ name: string }} */ l) => l.name === HAIKU_TIER_LABEL),
-    closedAt: Date.parse(issue.closedAt), pr: closer ? { repo: closer.repository?.nameWithOwner ?? closer.repository?.name, number: closer.number } : null };
+  return { number: issue.number, haiku: (issue.labels ?? []).some((l) => l.name === HAIKU_TIER_LABEL),
+    closedAt: Date.parse(issue.closedAt), pr: closer ? { repo: (closer.repository?.nameWithOwner ?? closer.repository?.name) as string, number: closer.number } : null };
 }
 
-/** The closed rows with their labels and closing pull request: ONE `gh issue list`, newest first. @returns {ClosedRow[]} */
-function readClosedRows() {
+/** The closed rows with their labels and closing pull request: ONE `gh issue list`, newest first. */
+function readClosedRows(): ClosedRow[] {
   const out = execFileSync("gh", ["issue", "list", "--repo", REPO, "--state", "closed", "--limit", "300", "--json", "number,labels,closedAt,closedByPullRequestsReferences"], { encoding: "utf8" });
-  return JSON.parse(out).map(closedRowOf);
+  return (JSON.parse(out) as GhIssue[]).map(closedRowOf);
 }
 
-function main() {
+function main(): void {
   const flag = process.argv.indexOf("--store");
   const storePath = flag >= 0 ? process.argv[flag + 1] : defaultStore();
   process.stdout.write(`${reportLines({ closed: readClosedRows(), events: readStore(storePath), now: Date.now() }).join("\n")}\n`);
