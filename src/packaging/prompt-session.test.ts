@@ -475,7 +475,7 @@ test("THE TEXT IS `addressed`'s OWN OUTPUT -- the one function, compared, not a 
 test("there is ONE copy of the autonomy footer in the agent-org sources (with its positive control)", () => {
   const sentence = "ENDING YOUR TURN WITH A QUESTION IS THE SAME AS STOPPING";
   const dir = new URL("../", import.meta.url);
-  const holders = readdirSync(dir).filter((f) => f.endsWith(".mjs"))
+  const holders = readdirSync(dir).filter((f) => /\.(mjs|ts)$/.test(f))
     .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(sentence));
   assert.deepEqual(holders, ["wake.ts"],
     "the control: wake.ts holds it, so an empty result would mean the scan is blind, not that it is unique");

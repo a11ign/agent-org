@@ -10,7 +10,7 @@
 // whole of a rollback), and a fix goes forward in the next tag. `release.yml` tags the merge that carries a changeset about nine minutes after it lands (measured
 // from the tag history, #3443), so a shipped-code merge is live then; a merge with NO changeset is never tagged and never live, which is the point.
 //
-//   node src/update-tool.ts
+//   node --import tsx src/update-tool.ts
 //
 // A RELEASE TAG IS NOT AN ANCESTOR OF `main`: the release workflow commits the version bump on top of the merge and pushes that commit as the tag alone, so it is
 // reachable from no branch, and a plain `git fetch origin` does not bring it down. The fetch here NAMES TAGS (`--tags`), and the checkout is of the tag.
@@ -139,7 +139,7 @@ export function restartLongRunning(units: string[], { exec = execFileSync, out =
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: takes no flags -- a root argument is exactly what this command must not accept.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node src/update-tool.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx src/update-tool.ts" });
   const root = gitIn(HERE)(["rev-parse", "--show-toplevel"]).trim();
   const run = gitIn(root);
   const before = run(["rev-parse", "HEAD"]).trim();

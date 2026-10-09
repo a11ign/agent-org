@@ -22,7 +22,7 @@
 // A verification that shares a failure mode with the action verifies nothing -- the same rule as checking
 // `/health` over HTTP rather than through the deploy channel that just failed.
 //
-//   node packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]
+//   node --import tsx packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]
 //
 // Exit codes are the contract:
 //   0  READY      -- based on main, every required context present and concluded, tested against this main
@@ -411,7 +411,7 @@ function readAllowClaimedClose(): string | null {
 
 function main() {
   refuseUnknownFlags(["--reconcile", "--session", "--allow-claimed-close", "--ci-gate", "--armed-check"],
-    { entry: import.meta.url, command: "node packages/agent-org/src/merge-guard.ts" });
+    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/merge-guard.ts" });
 
   if (flagValue(process.argv, "armed-check") !== undefined) {
     armedCheckCommand((flagValue(process.argv, "armed-check") as string));
@@ -420,10 +420,10 @@ function main() {
 
   const number = process.argv.slice(2).find((arg) => /^\d+$/.test(arg));
   if (!number) {
-    console.error("Usage: node packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]\n"
-      + "       node packages/agent-org/src/merge-guard.ts --reconcile <pr-number>\n"
-      + "       node packages/agent-org/src/merge-guard.ts --ci-gate <pr-number>\n"
-      + "       node packages/agent-org/src/merge-guard.ts --armed-check=<branch>\n"
+    console.error("Usage: node --import tsx packages/agent-org/src/merge-guard.ts <pr-number> [--session=<name>] [--allow-claimed-close=<name>]\n"
+      + "       node --import tsx packages/agent-org/src/merge-guard.ts --reconcile <pr-number>\n"
+      + "       node --import tsx packages/agent-org/src/merge-guard.ts --ci-gate <pr-number>\n"
+      + "       node --import tsx packages/agent-org/src/merge-guard.ts --armed-check=<branch>\n"
       + "Answers whether that PR has actually been tested, by reading its check RUNS rather than\n"
       + "`mergeStateStatus` -- which reports CLEAN for a PR that has never run a check. `--reconcile`\n"
       + "compares the last recorded verdict against the PR's real, terminal outcome (#188). `--ci-gate` is\n"

@@ -169,12 +169,12 @@ const OBSERVED_CLASSES = ["overdue", "runner-behind-newest-release", "order-defe
   "wait-without-reason", "release-run-failed", "board-disagrees-with-reality", "red-pr-unattended", "fleet-idle-while-work-waits", "no-merge-while-work-exists", "team-access-drifted", "copies-drifted",
   "fleet-auto-off-refusing", "github-incident"];
 
-/** @param {string} dir @returns {string[]} every non-test `.mjs` under `dir` */
+/** @param {string} dir @returns {string[]} every non-test `.mjs` or `.ts` under `dir` */
 function sourcesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return name === "node_modules" || name === "fixtures" ? [] : sourcesUnder(path);
-    return name.endsWith(".mjs") && !name.includes(".test.") ? [path] : [];
+    return /\.(mjs|ts)$/.test(name) && !name.includes(".test.") ? [path] : [];
   });
 }
 

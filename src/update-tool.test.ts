@@ -80,7 +80,7 @@ test("#3443 (3): the fetch NAMES TAGS, and a dirty tree is still refused with th
     assert.equal(fetches.length, 1);
     assert.ok(fetches[0].includes("--tags"), `a plain fetch never brings a release tag down (its commit is on no branch); this one was ${fetches[0].join(" ")}`);
     const dirty = fakeGit({ tags: ["v1.0.0"], dirty: " M src/work-tick.ts\n" });
-    assert.throws(() => updateTool(root, dirty.run), /uncommitted changes[\s\S]*src\/work-tick\.mjs/);
+    assert.throws(() => updateTool(root, dirty.run), /uncommitted changes[\s\S]*src\/work-tick\.ts/);
     assert.deepEqual(dirty.calls.filter((call) => call[0] === "fetch" || call[0] === "checkout"), [], "refused before it fetched or moved");
   });
 });

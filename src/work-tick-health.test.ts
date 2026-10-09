@@ -159,6 +159,7 @@ test("#3567: delivery hands `wake` one JSON line per order, and a `wake` that re
 function tickIn(dir: string, gate = "process.exit(0);") {
   const src = join(dir, "src");
   mkdirSync(src);
+  writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
   const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
   for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
   writeFileSync(join(src, "work-tick.ts"), readFileSync(join(SRC, "work-tick.ts"), "utf8"));
@@ -174,7 +175,7 @@ function tickIn(dir: string, gate = "process.exit(0);") {
     delete base.INVOCATION_ID;
     return base;
   };
-  const args = [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
+  const args = [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
   return {
     marker: tickMarkerPath(ledger),
     run: (extra?: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { encoding: "utf8", cwd: dir, env: env(extra) }),
@@ -204,8 +205,9 @@ test("#3567, through the tick: a tick over the limit wakes ceo once, before it e
 }));
 
 test("#3567, through the tick: a tick SIGKILLed mid-run leaves its marker, and the NEXT tick reports it ONCE and the one after reports nothing", () => inDir((dir) => {
-  const tick = tickIn(dir, `setTimeout(() => process.exit(0), 3000);`);
-  const killed = tick.runUntilKilled(1200);
+  // The kill lands after the tsx loader has compiled the tick and written its marker: under a loaded suite that took over 1.2 s.
+  const tick = tickIn(dir, `setTimeout(() => process.exit(0), 8000);`);
+  const killed = tick.runUntilKilled(4000);
   assert.equal(killed.signal, "SIGKILL");
   assert.equal(existsSync(tick.marker), true, "a killed tick cannot clear its marker, and that is the whole signal");
   assert.deepEqual(tick.delivered(), [], "and it told nobody, which is why the next one must");

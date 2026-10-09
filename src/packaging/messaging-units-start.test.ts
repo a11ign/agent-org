@@ -17,7 +17,7 @@ import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -140,7 +140,7 @@ const UNITS = [
   { name: "chairman-watch", entry: "src/messaging/watch.mjs", stdout: /^$/ },
 ];
 
-/** The tool's own files this entry imports, so a copy of the tool can run it (the files, not `node_modules`: nothing here imports a package). */
+/** The tool's own files this entry imports, so a copy of the tool can run it (the files; `preFixTool` adds `node_modules` for the loader). */
 function closureOf(entry: string): Set<string> {
   const files = new Set<string>();
   const visit = (file: string): void => {
@@ -160,6 +160,9 @@ function preFixTool(entry: string): string {
     mkdirSync(dirname(target), { recursive: true });
     copyFileSync(file, target);
   }
+  // The unit's `--import tsx` resolves from its WorkingDirectory, so the copy is given what a checkout of the tool has: its `package.json` and `node_modules`.
+  writeFileSync(join(tool, "package.json"), '{"type":"module"}');
+  symlinkSync(join(TOOL_ROOT, "node_modules"), join(tool, "node_modules"));
   const copied = join(tool, entry);
   const fixed = readFileSync(copied, "utf8");
   const mutated = fixed.replace("root: HOME_CHECKOUT,", "root: process.cwd(),");

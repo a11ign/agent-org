@@ -172,7 +172,7 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
   // definition. Until #1442 only the London half could be globbed, because board-report.ts:290 titled the edition with a
   // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
-  const boardScripts = readdirSync(TOOL_SRC).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.ts");
+  const boardScripts = readdirSync(TOOL_SRC).filter((f) => /^board-.*\.ts$/.test(f) && f !== "board-discussion.ts");
   assert.ok(["board-schedule-liveness.ts", "board-summary-check.ts", "board-report.ts"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {

@@ -474,7 +474,7 @@ export function refreshSnapshotOrSay({ declaration = homeProjectDeclaration, con
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/work-tick.ts",
+    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-tick.ts",
   });
   const passthrough = process.argv.slice(2);
   const ledgerPath = ledgerPathFrom(passthrough);

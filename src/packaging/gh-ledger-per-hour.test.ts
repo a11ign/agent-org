@@ -152,7 +152,7 @@ test("#4148: api-pool-low names its spender, and says UNREADABLE rather than not
   const named = poolLowReading({ pools, spenderOf: (account) => spenderPhrase("/ledger", account, NOW, () => [
     line("2026-10-08T15:01:00Z"), line("2026-10-08T15:02:00Z"), line("2026-10-08T15:03:00Z", { command: "issue list", caller: "/usr/bin/node /x/src/work-tick.ts" })].join("\n")) });
   assert.equal(named.status, "tripped");
-  assert.match(named.detail, /Spender: a11ign-ai-workers's last hour \(3 floor points\): top caller work-gate\.mjs \[pr list\], 2 points \(67%\)/);
+  assert.match(named.detail, /Spender: a11ign-ai-workers's last hour \(3 floor points\): top caller work-gate\.ts \[pr list\], 2 points \(67%\)/);
   assert.match(named.detail, /20% of their limit/, "the 20%-per-account, real-header reading stays as built");
   const unread = poolLowReading({ pools, spenderOf: () => null });
   assert.match(unread.detail, /Spender: .*UNREADABLE/);

@@ -177,7 +177,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url,
-    command: "node packages/agent-org/src/fleet-gated-nightly.ts" });
+    command: "node --import tsx packages/agent-org/src/fleet-gated-nightly.ts" });
 
   const result = performFiring();
   if (result.kind === "cannot-ask") {

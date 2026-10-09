@@ -1231,7 +1231,7 @@ test("#2724 unmetCommandClosureRequirements: `npm run board:settle` is now inspe
   const unmet = unmetCommandClosureRequirements("npm run board:settle", NO_TOKEN);
   assert.equal(unmet.length, 1, JSON.stringify(unmet));
   assert.equal(unmet[0].requirement, "token");
-  assert.match(unmet[0].message, /settle-closed-rows\.mjs requires token, at settle-closed-rows\.mjs:\d+/);
+  assert.match(unmet[0].message, /settle-closed-rows\.ts requires token, at settle-closed-rows\.ts:\d+/);
 });
 
 test("#2724 ACCEPTANCE: classifyCommand REFUSES `npm run board:settle` for `token`, exactly as a bare "
@@ -1242,7 +1242,7 @@ test("#2724 ACCEPTANCE: classifyCommand REFUSES `npm run board:settle` for `toke
   assert.equal(result.verdict, "refused");
   const reason = (/** @type {{reason:string}} */ (result)).reason;
   assert.match(reason, /`token`/);
-  assert.match(reason, /settle-closed-rows\.mjs requires token, at settle-closed-rows\.mjs:\d+/);
+  assert.match(reason, /settle-closed-rows\.ts requires token, at settle-closed-rows\.ts:\d+/);
 });
 
 test("#2724 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "
@@ -1256,7 +1256,7 @@ test("#2724: a chain naming the operational script anywhere is still refused (#2
   + "extended to a plain npm script name)", () => {
   const result = classifyCommand("npm run lint && npm run board:settle", { capabilities: NO_TOKEN });
   assert.equal(result.verdict, "refused");
-  assert.match((/** @type {{reason:string}} */ (result)).reason, /settle-closed-rows\.mjs/);
+  assert.match((/** @type {{reason:string}} */ (result)).reason, /settle-closed-rows\.ts/);
 });
 
 // #2724: `singleNodeInvocation` decides which `npm run <script>` bodies resolve to a single file at all --
@@ -1354,7 +1354,7 @@ test("#3063 ACCEPTANCE: `npm run board:settle` is REFUSED for `token` when the s
   assert.equal(direct.verdict, "refused", "control: the direct form must refuse, or the bin case proves nothing");
   const viaBin = classifyAgainstScript(COMMAND_BODY);
   assert.equal(viaBin.verdict, "refused");
-  assert.match((/** @type {{reason:string}} */ (viaBin)).reason, /settle-closed-rows\.mjs requires token/);
+  assert.match((/** @type {{reason:string}} */ (viaBin)).reason, /settle-closed-rows\.ts requires token/);
 });
 
 test("#3063 a bin script whose command the table does not name stays RUNNABLE, and one whose program spawns "
@@ -1377,7 +1377,7 @@ test("#621 ACCEPTANCE: classifyCommand REFUSES board-document-chrome-resolver.te
   const reason = (/** @type {{reason:string}} */ (result)).reason;
   assert.match(reason, /`token`/);
   assert.match(reason,
-    new RegExp(`board-document-chrome-resolver\\.test\\.ts requires token via resolveChromeBinary → board-document\\.mjs:${boardDocumentSpawnLine()}\\b`));
+    new RegExp(`board-document-chrome-resolver\\.test\\.ts requires token via resolveChromeBinary → board-document\\.ts:${boardDocumentSpawnLine()}\\b`));
 });
 
 test("#621 MUTATION TARGET: the identical command RUNS once the job's capabilities carry a token -- "

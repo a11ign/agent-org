@@ -411,7 +411,7 @@ test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than 
   assert.match(reason, /#472 is IN BUILD/);
   assert.match(reason, /--blocked-by=#731 did not apply/);
   assert.match(reason, /no PR of this session's own to attach a measurement comment to/);
-  assert.match(reason, /`row-claim\.mjs decline <n> --session=<name>`/,
+  assert.match(reason, /`row-claim\.ts decline <n> --session=<name>`/,
     "product-manager's ruling on #1012: naming the missing PR alone is a refusal nobody can follow, because "
     + "an in-build row has no PR and none is coming. It must name the door that exists.");
 });

@@ -335,7 +335,7 @@ test("#3849: the service runs niced and at the idle IO class, with the fixtures-
   const service = directives(shipped("tmp-prune.service.in"));
   assert.match(service, /^Nice=19$/m, "nice -n 19");
   assert.match(service, /^IOSchedulingClass=idle$/m, "ionice -c3 is the idle class");
-  assert.match(service, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/prune-tmp\.mjs --apply --fixtures-only$/m);
+  assert.match(service, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m);
   const timer = directives(shipped("tmp-prune.timer.in"));
   assert.match(timer, /^OnUnitInactiveSec=1min$/m);
   const timeout = Number(/^TimeoutStartSec=(\d+)$/m.exec(service)?.[1]);
@@ -345,11 +345,11 @@ test("#3849: the service runs niced and at the idle IO class, with the fixtures-
 test("#3849: installed as the tool, the janitor runs prune-tmp.ts from the tool, niced, and told where the host's declaration is", () => {
   const rendered = shipped("tmp-prune.service.in")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/prune-tmp\.mjs --apply --fixtures-only$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("tmp-prune.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/prune-tmp\.mjs --apply --fixtures-only$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/prune-tmp\.ts --apply --fixtures-only$/m);
   assert.match(installed, /^Nice=19$/m);
 });
 

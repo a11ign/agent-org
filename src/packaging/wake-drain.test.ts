@@ -290,7 +290,7 @@ test("#2324 (5): a Region that overlaps an open PR's files starts NO spawn, and 
   const { h, got } = SPAWNING(spawnClaimability({ run: gh.run }));
 
   assert.deepEqual(h.said("workspace create"), []);
-  assert.match(got.refused[0], /no spawn: #2131 would be refused at the claim by the file-overlap check \(B4\): overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
+  assert.match(got.refused[0], /no spawn: #2131 would be refused at the claim by the file-overlap check \(B4\): overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
 });
 
 test("#2324 (5) POSITIVE CONTROL: the same row against a PR touching OTHER files spawns", () => {
@@ -383,7 +383,7 @@ test("#3566 (9b): the wake's open-pull-request reads of every declared repositor
   // that waited for another to FINISH before it began is a give-up (15 s) later, which no tie can hide.
   assert.ok(Math.max(...starts) <= Math.min(...ends), `every read started before any finished (starts ${starts}, ends ${ends})`);
   // The first repository's read finishes LAST, so a merge in the order the reads finish would name #2301; the repositories' own order names #2300.
-  assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
+  assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
 });
 
 test("#3566 (9b): one refused repository still leaves the read INCONCLUSIVE with its own line, and the row is offered a spawn", () => {

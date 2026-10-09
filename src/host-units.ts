@@ -394,7 +394,7 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
 /**
  * THE UNIT AS IT IS INSTALLED WHEN `host.json` NAMES A `tool`: the template's rendering with decision 3's lines changed. Every service
  * runs from the tool's checkout and is told where the host's declaration is, because the tool resolves its project from that and
- * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node src/work-gate.ts` from the checkout, with no `AGENT_ORG_HOST`, died on
+ * REFUSES without it, and which repository `gh` asks about (`GH_REPO`), because its working directory is no longer the project's (measured 2026-10-02: `node --import tsx src/work-gate.ts` from the checkout, with no `AGENT_ORG_HOST`, died on
  * `<home>/.agent-org/project.json`). A template this does not know is returned as it rendered: a timer names no path of its own.
  * @param {string} shipped the template's name @param {string} rendered @param {{ tool: string, checkout: string, beforeTicks: BeforeTick[], repo?: string | null }} where
  */
@@ -677,7 +677,7 @@ function scriptOfNode(args: string[]): string | undefined {
  * EXTRACTED RATHER THAN RETYPED, and that is the point: a second copy of this resolution would be a
  * second answer to "what does this unit run", and `regionRefusalReason`'s own header already records
  * what a hand-written second reader cost when it disagreed with the shared one in BOTH directions.
- * A unit run from the TOOL'S checkout (`toolForm`, #2974) starts `node src/work-tick.ts`, which is relative to the tool and not to the
+ * A unit run from the TOOL'S checkout (`toolForm`, #2974) starts `node --import tsx src/work-tick.ts`, which is relative to the tool and not to the
  * project, so a `cwd` adds that base as a SECOND candidate; the caller's `exists` keeps the real one.
  * @param {string} command
  * @param {{ repoRoot?: string, scripts?: Record<string, string>, cwd?: string }} [deps]

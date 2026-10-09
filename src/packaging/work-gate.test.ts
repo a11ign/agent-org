@@ -4300,7 +4300,7 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
   // fingerprint: whoever writes it again has written the second copy this move exists to prevent.
   const src = fileURLToPath(new URL("../", import.meta.url));
   const definers = readdirSync(src)
-    .filter((f: string) => f.endsWith(".mjs"))
+    .filter((f: string) => f.endsWith(".ts"))
     .filter((f: string) => readFileSync(join(src, f), "utf8").includes("X-Ratelimit-Remaining"));
   assert.deepEqual(definers, ["api-pool.ts"],
     `only the leaf module may know how to read a pool; found ${definers.join(", ")}`);
@@ -5637,7 +5637,7 @@ test("#2202: main feeds the closed-row read into `answerOwed` beside the open on
   assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(closedRows\) \}\)/,
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
   assert.match(source, /closedRows: readClosedAnswerRows\(read\),/, "the closed-row read is still made, as one of the follow-ups asked together (#3566)");
-  assert.match(source, /function closedAnswerRows\(rows\) \{[^]*?NOTE: could not read the closed rows/,
+  assert.match(source, /function closedAnswerRows\(rows[^)]*\)[^{]* \{[^]*?NOTE: could not read the closed rows/,
     "a refused read is a line on stderr, never a silent empty list");
 });
 
@@ -5713,7 +5713,7 @@ test("#2609: `endedSessionLabels` reads a teardown's record, and a label that ST
 
 test("#2609: `closedAnswerRows` runs the ended-session filter on what `readClosedAnswerRows` returned", () => {
   const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
-  assert.match(source, /function closedAnswerRows\(rows\) \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
+  assert.match(source, /function closedAnswerRows\(rows[^)]*\)[^{]* \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
 });
 
 // --- #3093: ownerOfPr ordered a pull request to the session its LABEL names even when that session had ENDED ---

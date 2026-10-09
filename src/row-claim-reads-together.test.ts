@@ -207,7 +207,7 @@ test("THE IMPORT: the batch helper's module is already in the claim's closure, l
 
 test("THE WIRING: the claim reads its pre-write checks through the gate's seam and reads the labels outside it", () => {
   const source = readFileSync(resolve(here, "row-claim.ts"), "utf8");
-  assert.match(source, /import \{[^}]*readWithFirstWaveTogether[^}]*\} from "\.\/work-gate\.mjs"/);
+  assert.match(source, /import \{[^}]*readWithFirstWaveTogether[^}]*\} from "\.\/work-gate\.ts"/);
   assert.match(source, /batch = run === defaultRun \? runBatch : undefined/);
   const writer = source.slice(source.indexOf("\nfunction writeRowLabels("), source.indexOf("\nfunction completeClaim("));
   assert.match(writer, /readWithFirstWaveTogether\(/);

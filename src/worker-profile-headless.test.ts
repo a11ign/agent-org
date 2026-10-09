@@ -101,7 +101,7 @@ function callersTurningItOn(files: { name: string; text: string }[]) {
 
 test("the flag is OFF by default: no module in src/ calls agentArgs with headless", () => {
   const dir = fileURLToPath(new URL(".", import.meta.url));
-  const files = readdirSync(dir).filter((n) => n.endsWith(".mjs"))
+  const files = readdirSync(dir).filter((n) => /\.(mjs|ts)$/.test(n) && !n.includes(".test."))
     .map((name) => ({ name, text: readFileSync(new URL(name, import.meta.url), "utf8") }));
   assert.ok(files.length > 50, "positive control: the scan read the src/ modules");
   assert.deepEqual(callersTurningItOn(files), []);

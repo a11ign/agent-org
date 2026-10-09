@@ -228,7 +228,7 @@ export function mismatchVerdict(report: { ok: false; reasons: string[]; }, under
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/closes-mismatch-check.ts" });
   const prNumber = Number(process.argv[2]);
   if (!prNumber) {
     console.error("usage: closes-mismatch-check.ts <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");

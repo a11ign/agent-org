@@ -58,6 +58,7 @@ test.after(() => {
 function standaloneTree(): string {
   const src = join(scratch(), "tool", "src");
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return src;
 }
 
@@ -158,6 +159,7 @@ function productTree(): string {
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
   mkdirSync(join(root, ".agent-org"), { recursive: true });
   cpSync(join(REPO, ".agent-org/project.json"), join(root, ".agent-org/project.json"));
+  writeFileSync(join(root, "packages/agent-org/package.json"), '{"type":"module"}'); // the package's own: without it tsx loads the `.ts` files as CommonJS
   return src;
 }
 

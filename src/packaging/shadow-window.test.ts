@@ -9,6 +9,7 @@
  * recorded as a difference naming the dropped cause key, the identical candidate records an EMPTY difference over a
  * non-empty order list, and the symlink-to-live case is refused.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -249,7 +250,7 @@ test("a non-empty directory the runner did not make is never emptied", () => {
 test("the command line records a tick, says QUIET when there is none, and exits 2 on a refusal", () => {
   withRig((r) => {
     writeTick(r.live, T1, ["a"]);
-    const argv = (copy: string) => [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${copy}`, `--record=${r.record}`, `--candidate=${r.candidate("identical")}`];
+    const argv = (copy: string) => [...TSX_IMPORT, RUNNER, `--live-dir=${r.live}`, `--copy-dir=${copy}`, `--record=${r.record}`, `--candidate=${r.candidate("identical")}`];
     const first = spawnSync(process.execPath, argv(r.copy), { encoding: "utf8" });
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /^RECORDED tick \d+ .*: 0 difference\(s\)/);

@@ -38,7 +38,7 @@ function programs(dir = SRC): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return entry.name === "node_modules" ? [] : programs(path);
-    return entry.name.endsWith(".mjs") && !entry.name.includes(".test.") ? [relative(SRC, path).split(sep).join("/")] : [];
+    return /\.(mjs|ts)$/.test(entry.name) && !entry.name.includes(".test.") ? [relative(SRC, path).split(sep).join("/")] : [];
   });
 }
 

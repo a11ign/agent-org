@@ -488,7 +488,7 @@ function sweepCommand(argv: string[], { run, err }: { run: typeof defaultRun; er
  */
 export function main(argv: string[] = process.argv.slice(2), { run = defaultRun, out = writeOut, err = writeErr }: { run?: typeof defaultRun; out?: (line: string) => void; err?: (line: string) => void; } = {}): number {
   refuseUnknownFlags(["--dry-run", "--close", "--max-age-hours="],
-    { entry: import.meta.url, argv, command: "node packages/agent-org/src/stranded-branches.ts" });
+    { entry: import.meta.url, argv, command: "node --import tsx packages/agent-org/src/stranded-branches.ts" });
   if (argv.includes("--dry-run") || argv.includes("--close")) return sweepCommand(argv, { run, err });
   let pushed: string[];
   let prs: { refs: Set<string>; calls: number; prs: number; };

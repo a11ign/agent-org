@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claimRecordComment } from "./row-claim.ts";
 import { performRelease } from "./wake.ts";
+import { afterTsx } from "./tsx-import.ts";
 import {
   claimFactsFrom, readClaim, claimStalledOrders, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey,
 } from "./claim-stall.ts";
@@ -90,8 +91,9 @@ function releaseHost(world: World, { spare = true } = {}) {
     trace.push(args.includes("close") ? "close" : args.join(" "));
     return "";
   };
-  const exec = (_cmd: string, args: string[], opts: { cwd: string }) => {
-    if (/row-claim\.mjs$/.test(args[0] ?? "") && args[1] === "decline") {
+  const exec = (_cmd: string, rawArgs: string[], opts: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
+    if (/row-claim\.ts$/.test(args[0] ?? "") && args[1] === "decline") {
       trace.push("decline");
       execs.push({ args, cwd: opts.cwd });
       return { status: 0, output: "DECLINED -- #3390 is unclaimed again and labelled `answer:product-manager` (NOT returned to `ready`)\n" };

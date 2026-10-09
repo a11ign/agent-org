@@ -344,11 +344,11 @@ test("(#4202) no tree to run from is a refusal the row is routed with, never a t
 
 test("(#4202) PIN: every script the gate starts that carries a launch guard is run with a working directory of its own -- the list, from the source", () => {
   const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
-  const spawned = (f: string) => [...read(f).matchAll(/new URL\("\.\/([a-z-]+\.mjs)", import\.meta\.url\)/g)].map((m) => m[1]);
+  const spawned = (f: string) => [...read(f).matchAll(/new URL\("\.\/([a-z-]+\.ts)", import\.meta\.url\)/g)].map((m) => m[1]);
   const children = [...new Set(["./work-gate.ts", "./unpark-satisfied.ts"].flatMap(spawned))].sort();
   const guarded = children.filter((c) => /\blaunchGate\(/.test(read(`./${c}`)));
   // The positive control: the scan finds the children (update-primary, host-units, row-file) and finds row-file guarded.
   assert.deepEqual(children, ["host-units.ts", "row-file.ts", "update-primary.ts"]);
   assert.deepEqual(guarded, ["row-file.ts"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
-  assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
+  assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[\.\.\.TSX_IMPORT, ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
 });

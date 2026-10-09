@@ -877,7 +877,7 @@ test("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and n
   });
   assert.equal(f.unit, "a11ign-spends.service");
   assert.equal(f.problem, "NO IDENTITY DECLARED");
-  assert.match(f.detail, /work-tick\.mjs/, "it names the entry point, not just the unit");
+  assert.match(f.detail, /work-tick\.ts/, "it names the entry point, not just the unit");
   assert.match(f.detail, /Environment=GH_CONFIG_DIR=/,
     "and the line to add -- a refusal nobody can follow is a refusal nobody acts on");
   assert.deepEqual(identityDrift({
@@ -1182,7 +1182,7 @@ test("#2782: the prune's API spend is ONE claim read per removable tree, declare
   // to reach `gh`, answers null -- so the walk can tell the two apart.
   assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.ts")), null,
     "control: the import walk answers null for a closure that is clean, so the answer below is a reading");
-  assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.mjs$/,
+  assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.ts$/,
     "the spend is in the ONE file every remover asks, so it is a single, nameable read rather than a scatter of `gh` calls");
   const spending = unitsSpendingGh().find((u) => u.unit === "a11ign-worktree-prune.service");
   assert.ok(spending, "the unit is charged for an identity, so it cannot quietly spend the person's pool");
@@ -1566,7 +1566,7 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
   assert.match(report, /NOT fixed by the remedy below either/,
     "a reader who runs host:install on this and sees no change must have been told why beforehand");
   assert.match(report, /re-installing an already-correct unit will not create it/);
-  assert.match(report, /\/repo\/src\/work-tick\.mjs/, "and it names the file that is missing");
+  assert.match(report, /\/repo\/src\/work-tick\.ts/, "and it names the file that is missing");
 });
 
 /**
@@ -2784,7 +2784,7 @@ test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` 
     assert.ok(hasLine(plain, pnpmLine), `POSITIVE CONTROL: today's form runs ${pnpmLine}`);
 
     const installed = shippedUnitText(unit, { host: toolHost3443() }) ?? "";
-    assert.ok(hasLine(installed, `ExecStart=/usr/bin/node ${script}`), `${unit} runs the tool's script: ${execCommands(installed).join(" | ")}`);
+    assert.ok(hasLine(installed, `ExecStart=/usr/bin/node --import tsx ${script}`), `${unit} runs the tool's script: ${execCommands(installed).join(" | ")}`);
     assert.ok(hasLine(installed, `WorkingDirectory=${TOOL_3443}`), `${unit} runs from the tool checkout`);
     assert.ok(hasLine(installed, `Environment=AGENT_ORG_HOST=${checkout}/.agent-org/host.json`), `${unit} says where the host's declaration is`);
     assert.doesNotMatch(installed, /^ExecStart=.*pnpm/m, `${unit} no longer runs the project's pinned copy through pnpm`);
@@ -2809,23 +2809,23 @@ test("#3443 + #3464: THE PROPERTY -- every shipped service in tool form runs age
     for (const command of execCommands(installed).map(IN_PROJECT_CHECKOUT)) {
       assert.doesNotMatch(command, /\bpnpm\b|\bnpm\b|packages\/agent-org/, `${unit} runs ${command}, which is not the tool checkout's code`);
       const [program, ...args] = command.split(/\s+/);
-      const script = args.find((arg) => !arg.startsWith("-"));
+      const script = args.find((arg, at) => !arg.startsWith("-") && args[at - 1] !== "--import");
       assert.ok(program === "/usr/bin/node" || program === "/usr/bin/bash", `${unit}: ${command} is run by an interpreter this walk knows`);
       assert.ok(script !== undefined && existsSync(script.startsWith("/") ? script.replace(TOOL_3443, TOOL_ROOT) : join(TOOL_ROOT, script)),
         `${unit}: ${command} names a script of the tool that exists there`);
     }
   }
   const workTick = shippedUnitText(renderedName("work-tick.service.in", units.prefix), { host: toolHost3443() }) ?? "";
-  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`),
+  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`),
     "POSITIVE CONTROL: the project's beforeTick is rendered, and it is the tool's own update-primary");
 });
 
 test("#3464: a `beforeTick` naming a tool command runs it from the tool, one that does not is the project's own, and an unknown or foreign one REFUSES", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`]);
-  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts --drift`], "arguments follow");
-  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/host-units.ts --install`], "the table's own fixed arguments come first, as in bin.mjs");
+  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`]);
+  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts --drift`], "arguments follow");
+  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/host-units.ts --install`], "the table's own fixed arguments come first, as in bin.mjs");
   assert.deepEqual(pre("npm run widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm run widgets:update`], "a command of the project's own is run as written");
   assert.throws(() => pre("agent-org no:such-command"), HostConfigRefusal, "an unknown tool command refuses");
   assert.throws(() => pre("agent-org"), HostConfigRefusal, "and so does a bare `agent-org`");
@@ -2834,7 +2834,7 @@ test("#3464: a `beforeTick` naming a tool command runs it from the tool, one tha
 test("#3464: a tool command is the same command however its words are separated -- a tab or a run of spaces is accepted by parseBeforeTick, so it must not fall back to the project's pinned copy", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`];
+  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node --import ${TOOL_3443}/node_modules/tsx/dist/loader.mjs ${TOOL_3443}/src/update-primary.ts`];
   for (const spelling of ["agent-org\tprimary:update", "agent-org  primary:update", "agent-org \t primary:update"]) {
     const declared = JSON.stringify({ schema: 1, beforeTick: spelling });
     assert.equal(parseBeforeTick(declared), spelling, `POSITIVE CONTROL: parseBeforeTick ACCEPTS ${JSON.stringify(spelling)}, so the rendering below is what decides`);
@@ -2858,11 +2858,11 @@ test("#3627: installed as the tool, the weekly report's service runs the script 
 test("#3515: installed as the tool, the trace pages' service runs publish.mjs from the tool and is told where the host's declaration is", () => {
   const rendered = readFileSync(join(SHIPPED_DIR, "trace-publish.service.in"), "utf8")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/publish\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("trace-publish.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/publish\.mjs$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/trace\/publish\.mjs$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
 });
 
@@ -2883,10 +2883,10 @@ test("#4071: the OTel receiver's unit is listed where this guard looks -- classi
 
   const rendered = readFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), "utf8")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  assert.match(rendered, /^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
   const installed = toolForm("otel-receiver.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
   assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/node src\/trace\/otel-receiver\.mjs$/m);
+  assert.match(installed, /^ExecStart=\/usr\/bin\/node --import tsx src\/trace\/otel-receiver\.mjs$/m);
   assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit");
 });
 

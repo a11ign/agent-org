@@ -86,7 +86,7 @@
 //   3  every row closed, but one or more Statuses did not move for a cause OTHER than an unreadable Project
 //      (#1299). A run whose every refusal is `project-unreadable` exits 0 with a DEGRADED line: see `closeRowsExit`.
 //
-//   node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
+//   node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
 import { execFileSync } from "node:child_process";
 import { settleClosedStatus, unsettledVerdict } from "./settle-closed-status.ts";
 // The token-carrying half, imported HERE (an entry point) and injected, so the pure module stays pure.
@@ -729,14 +729,14 @@ function exitAfterSweep(code: number): never {
 function main() {
   refuseUnknownFlags([], {
     entry: import.meta.url,
-    command: "node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
+    command: "node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
   });
 
   const repo = process.env.GITHUB_REPOSITORY;
   const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
   if (!repo || !number) {
     console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
-      + "  node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
+      + "  node --import tsx packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
     process.exit(EXIT.CANNOT_ASK);
   }
 

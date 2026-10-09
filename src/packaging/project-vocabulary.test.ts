@@ -115,7 +115,7 @@ function walkForVocabularyHits(dir: string, exclude: Set<string>): Record<string
       const path = join(at, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(path);
-      } else if (entry.name.endsWith(".mjs") && !/\.test\./.test(entry.name) && !exclude.has(entry.name)) {
+      } else if (/\.(mjs|ts)$/.test(entry.name) && !/\.test\./.test(entry.name) && !exclude.has(entry.name)) {
         const hits = vocabularyHitsIn(readFileSync(path, "utf8"));
         if (hits.length > 0) found[path] = hits;
       }

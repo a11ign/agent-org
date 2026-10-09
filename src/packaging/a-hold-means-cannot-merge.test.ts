@@ -106,8 +106,8 @@ test("ONE PREDICATE, TWO CALLERS -- the hole opened because `is this PR held` wa
   // Both readers agree by construction, because there is only one of them.
   assert.equal(sweepDecision({ labels: ["hold:x"], checkRunCount: 9 }).arm,
     armabilityOf({ labels: ["hold:x"] }).arm);
-  assert.match(readTool("auto-arm-sweep.ts"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.match(readTool("arm-pr.ts"), /from "\.\/pr-hold-state\.mjs"/);
+  assert.match(readTool("auto-arm-sweep.ts"), /from "\.\/pr-hold-state\.ts"/);
+  assert.match(readTool("arm-pr.ts"), /from "\.\/pr-hold-state\.ts"/);
   assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(readTool("auto-arm-sweep.ts")),
     false, "the sweep must not carry its own copy of the predicate any more");
 });

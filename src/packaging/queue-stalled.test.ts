@@ -574,7 +574,7 @@ test("#3019 done-when 1, the ORDER: it goes to the PR's owner, names the failed 
   assert.equal(order?.cause, "pr-checks-failing");
   assert.equal(order?.session, "worker-16", "the PR's owner (`ownerOfPr`), never product-manager");
   assert.match(order?.prompt ?? "", /run 37011501222/);
-  assert.match(order?.prompt ?? "", /#2174: work-gate\.mjs loads in a tree with NO node_modules/);
+  assert.match(order?.prompt ?? "", /#2174: work-gate\.ts loads in a tree with NO node_modules/);
   assert.match(order?.prompt ?? "", /RE-ARMING IT WITHOUT A PUSH WILL FAIL THE SAME WAY/);
 });
 

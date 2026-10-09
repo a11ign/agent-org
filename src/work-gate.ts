@@ -4988,7 +4988,7 @@ function offerOrder(unclaimed: any[]) {
 function claimSentence(row: { number: number; repoKey?: string; repo?: string; }) {
   if (row.repoKey === undefined || row.repoKey === "") {
     return "Claim it with "
-      + `\`node packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> `
+      + `\`node --import tsx packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> `
       + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.`;
   }
   return `It is row ${row.number} of \`${row.repo}\` (key \`${row.repoKey}\`), and \`row-claim.ts claim ${row.number}\` would claim the PRIMARY's row ${row.number}, `
@@ -5172,7 +5172,7 @@ function replacementSentence(row: { number: number; repoKey?: string; repo?: str
   return `ITS BRANCH IS FINISHED WORK WHOSE PULL REQUEST WAS CLOSED UNMERGED, and a replacement has to be opened from your own workspace: origin holds ${named}. `
     + `DO NOT delete or rename it, and read on the row why the pull request was closed before you build.\n`
     + `A plain claim is refused for as long as the branch is on \`origin\` (#2014), so take the previous holder's worktree in place, from your own linked worktree: `
-    + `\`node packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> --branch=${branches[0].branch} `
+    + `\`node --import tsx packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> --branch=${branches[0].branch} `
     + "--worktree=<its path, from `git worktree list`> --adopt=<the session in its `.a11y-owner`>`, then open the pull request with `agent-org pr:open`."
     + (row.repoKey === undefined || row.repoKey === "" ? "" : `\n${claimSentence(row)}`);
 }
@@ -7781,7 +7781,7 @@ export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
   // that cannot reach GitHub delivers nothing, so on that path the stderr line is the only thing that says the

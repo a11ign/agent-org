@@ -39,7 +39,7 @@ const T0 = Date.parse("2026-10-02T12:00:00Z");
 const TIMER = "a11ign-shadow-window.timer";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 /** The digest of the work-tick unit the host runs today, restated from `host-tool-install.test.ts` so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8"; // #2974: the pnpm line; the plain rendering, see `plainHost`
+const TODAYS_WORK_TICK_SHA = "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3"; // #2974: the pnpm line; the plain rendering, see `plainHost`
 /** a11ign's host with no `tool`, so the digest above is of the template whether or not the cut has set the key. */
 const plainHost = (() => {
   const plain: Record<string, unknown> = { ...homeHostConfig() };
@@ -125,7 +125,7 @@ test("the rendered service carries memory and CPU caps, the swap cap that makes 
   assert.match(service, /^Environment=NODE_COMPILE_CACHE=%h\/\.cache\/node-compile-cache$/m);
   const exec = /^ExecStart=(.*)$/m.exec(service)?.[1] ?? "";
   assert.match(exec, /--window-timer=a11ign-shadow-window\.timer\b/, "the runner is told which timer to disable");
-  assert.match(exec, /--candidate=\S+\/repos\/agent-org\/src\/work-gate\.mjs\b/, "the candidate is the #2866 clone's gate");
+  assert.match(exec, /--candidate=\S+\/repos\/agent-org\/src\/work-gate\.ts\b/, "the candidate is the #2866 clone's gate");
   const scratch = [/--copy-dir=(\S+)/, /--record=(\S+)/].map((flag) => flag.exec(exec)?.[1] ?? "");
   for (const path of scratch) {
     assert.match(path, /\.local\/state\/a11ign-shadow-window\//, `${path} is in the scratch area the runner owns`);
@@ -492,7 +492,7 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     writeFileSync(shared, `${original}\n// drifted\n`);
     const refused = armCli();
     assert.equal(refused.status, 2);
-    assert.match(refused.stderr, /does not correspond[^]*host-config\.mjs/, "the file that differs is named");
+    assert.match(refused.stderr, /does not correspond[^]*host-config\.ts/, "the file that differs is named");
     assert.equal(readWindowMarker(r.live), null);
     writeFileSync(shared, original);
     const armed = armCli();

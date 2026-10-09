@@ -144,7 +144,7 @@ test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
   const next = ci.slice(from + 1).search(/\n {2}[\w-]+:\n/);
-  assert.match(ci.slice(from, from + 1 + next), /merge-guard\.mjs --ci-gate/, "the job that runs the hold refusal is deliberateRefusals");
+  assert.match(ci.slice(from, from + 1 + next), /merge-guard\.(mjs|ts) --ci-gate/, "the job that runs the hold refusal is deliberateRefusals");
 });
 
 test("redPrStats counts the broken and LISTS the held, with who holds it; the report prints both lines", () => {
@@ -187,7 +187,7 @@ function stateFilesRead(source: string): string[] {
 
 function sourceFiles(dir: URL): { name: string; text: string }[] {
   return readdirSync(dir, { withFileTypes: true, recursive: true })
-    .filter((e) => e.isFile() && e.name.endsWith(".mjs") && e.name !== SELF)
+    .filter((e) => e.isFile() && /\.(mjs|ts)$/.test(e.name) && !e.name.includes(".test.") && e.name !== SELF)
     .map((e) => ({ name: e.name, text: readFileSync(join(e.parentPath, e.name), "utf8") }));
 }
 
@@ -351,7 +351,7 @@ test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file
   assert.ok(own!.includes(CLASS_FIX_INSTRUCTION), "the class-fix instruction, verbatim, in the section");
   assert.match(own!, /#928/);
   assert.match(own!, /nothing tripped/);
-  assert.match(own!, /org-retro\.mjs/);
+  assert.match(own!, /org-retro\.(mjs|ts)/);
   // The extraction must NOT be satisfiable by a copy elsewhere: another section holding the phrase must not make this one pass.
   const elsewhere = CEO_ROLE.replace(own!, "");
   assert.equal(section(elsewhere, "The daily retrospective"), null, "removing the section removes the heading it is found by");

@@ -38,6 +38,7 @@ function runTick({ gate, wake = "process.exit(0);", tickPrefix = "", recordIsADi
   try {
     const src = join(dir, "src");
     mkdirSync(src);
+    writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
     const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
     writeFileSync(join(src, "work-tick.ts"), tickPrefix + readFileSync(join(SRC, "work-tick.ts"), "utf8"));

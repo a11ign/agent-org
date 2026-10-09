@@ -469,7 +469,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
 });
 
 describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads the project declaration", () => {
-  const FORBIDDEN = /(?:^|\/)(?:host-config|project-config)\.mjs$/;
+  const FORBIDDEN = /(?:^|\/)(?:host-config|project-config)\.ts$/;
 
   /** @param {string} file @param {Set<string>} seen @returns {string[]} every module reachable from `file` through relative imports that is forbidden */
   function forbiddenReachableFrom(file: string, seen: Set<string> = new Set()): string[] {

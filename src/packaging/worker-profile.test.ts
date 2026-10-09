@@ -29,7 +29,7 @@ const PRACTICES = readLoadedRules();
 // now in the new module and passes by absence, which is why the control below names a cause that lives ONLY there.
 const GATE = ["work-gate.ts", "work-gate/pr-orders.mjs", "work-gate/lab-job-orders.mjs", "trunk-red.ts", "claim-stall.ts",
   "repeating-lines.ts", // #2848: the repeating-line order is built beside the journal reading, not in the gate
-  "org-health.mjs", // #2936: the org-health order beside its four readings
+  "org-health.ts", // #2936: the org-health order beside its four readings
   "org-retro.ts", // #2938: and the daily retrospective's beside the numbers it carries
   "work-gate/row-call-count-orders.mjs", // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
   "work-tick-health.ts"] // #3567: and `tick-overran`'s, which the TICK builds about itself and no gate ever sees

@@ -284,7 +284,7 @@ export function table(rows: Map<string, { turns: number; fresh: number; cacheRea
 
 function main() {
   refuseUnknownFlags(["--claude-root", "--codex-root", "--since"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/token-audit.ts",
+    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/token-audit.ts",
   });
   const home = process.env.HOME ?? "";
   const claudeRoot = flagValue(process.argv, "claude-root") ?? join(home, ".claude", "projects");

@@ -390,8 +390,8 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   test("the service's ExecStart is exactly `--reboot` -- one ExecStart, the module, and no other flag", () => {
     const starts = text(SERVICE).split("\n").filter((line) => /^ExecStart=/.test(line));
     assert.equal(starts.length, 1);
-    assert.equal(starts[0], "ExecStart=/usr/bin/node src/host-kernel.ts --reboot", "the tool form");
-    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.ts --reboot", "the plain form");
+    assert.equal(starts[0], "ExecStart=/usr/bin/node --import tsx src/host-kernel.ts --reboot", "the tool form");
+    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node --import tsx packages/agent-org/src/host-kernel.ts --reboot", "the plain form");
     assert.doesNotMatch(text(SERVICE), /^ExecStart.*--(self|row|read-back)/m);
     assert.match(text(SERVICE), /^Type=oneshot$/m);
     assert.doesNotMatch(text(SERVICE), /^\[Install\]/m, "a boot must not start a reboot");

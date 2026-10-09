@@ -51,7 +51,7 @@ export const SELFTEST_STATE_FILE = "selftest-state.json";
  * 12 release intervals v0.46.1 to v0.49.2, it changed in 3 and the narrower four paths in 2 (the 3 share one), so it costs one extra seat turn in about twelve releases.
  * A PATTERN AND NOT A LIST OF FILE NAMES, because `converse.test.mjs` scans this directory for any non-comment line that names the queue's modules, and this is data about a diff, not a path to a worker.
  */
-export const MESSAGING_PATH = /^src\/(messaging\/|(prompt-session|wake|herdr-agents|project-roles)\.mjs$)/;
+export const MESSAGING_PATH = /^src\/(messaging\/|(prompt-session|wake|herdr-agents|project-roles)\.ts$)/;
 const TEST_FILE = /\.test\.(mjs|ts)$/;
 
 /** Ids no real chairman has to share: the self-test pairs with nobody, it only has to match ITSELF. */

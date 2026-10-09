@@ -9,7 +9,7 @@
  * test that handed the router a literal list would pass with the mark deleted from the file. Every refusal has the
  * same fixture with ONE thing changed as its control, so what flipped the outcome is named by the test.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
+import { TSX_IMPORT, afterTsx } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -223,7 +223,8 @@ test("#2407: settling an absent instance writes ONE failed line carrying its row
 
 test("#2407: the spawner settles the role BEFORE its claim runs, and a claimer with no settle claims as before", () => {
   const events: string[] = [];
-  const exec = (command: string, args: string[]) => {
+  const exec = (command: string, rawArgs: string[]) => {
+    const args = afterTsx(rawArgs);
     events.push(`${command} ${args.filter((a) => !a.startsWith("--")).slice(0, 2).join(" ")}`);
     return { status: 0, output: args[1] === "claim" ? "STARTED -- #2407\n" : "" };
   };

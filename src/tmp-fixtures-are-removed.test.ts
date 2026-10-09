@@ -25,6 +25,7 @@
  * and that directory must be EMPTY afterwards. The row asks for `/tmp` listed before and after; a directory of its own is the same reading without
  * another session's suite writing into the count. Its positive control runs a script that leaks one and expects the reading to say so.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -252,7 +253,7 @@ test("LIVE POSITIVE CONTROL: a script that makes a directory and never removes i
 
 test("LIVE: running the files this row fixed leaves no entry in the temp directory they were given", { timeout: 600_000 }, () => {
   for (const file of FIXED_FILES) assert.ok(relative(TOOL_ROOT, join(TOOL_ROOT, file)) === file, file);
-  const { left, status, output } = runUnderOwnTmp(["--import", "tsx", "--test", ...FIXED_FILES]);
+  const { left, status, output } = runUnderOwnTmp([...TSX_IMPORT, "--test", ...FIXED_FILES]);
   assert.equal(status, 0, `the fixed files did not pass under node --test, so what they left is not a reading:\n${output.slice(-2000)}`);
   assert.deepEqual(left, []);
 });

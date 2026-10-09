@@ -71,7 +71,7 @@
 //   1  REFUSE -- one or more deleted paths are unexplained by the branch's own history. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 //
-//   node packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>
+//   node --import tsx packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -133,11 +133,11 @@ export function branchTouchedPaths(p1: string, p2: string, paths: string[], git_
 }
 
 function main() {
-  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-revert-guard.ts" });
+  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/trunk-revert-guard.ts" });
 
   const merge = flagValue(process.argv, "merge");
   if (!merge) {
-    console.error("CANNOT ASK: need --merge=<sha>.\n  node packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>");
+    console.error("CANNOT ASK: need --merge=<sha>.\n  node --import tsx packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>");
     process.exit(EXIT.CANNOT_ASK);
   }
 

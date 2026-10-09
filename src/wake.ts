@@ -6385,7 +6385,7 @@ function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, str
     ...(claimed.adopted ? ["--keep-worktree"] : [])], { cwd: claimed.launchDir, env });
   if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
   return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
-    + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.ts `
+    + `"${role}" with no process, which nothing reads as a fault -- run \`node --import tsx packages/agent-org/src/row-claim.ts `
     + `decline ${claimed.row} --session=${role}\` from a linked worktree`;
 }
 
@@ -7817,7 +7817,7 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/wake.ts",
+    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/wake.ts",
   });
   const ledgerPath = ledgerPathFrom(process.argv);
   if (process.argv.includes("--cycles")) printCycles(ledgerPath);

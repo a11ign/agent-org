@@ -41,6 +41,7 @@ function runTick({ gate, wake = "process.exit(0);", costIsADirectory = false, ti
   try {
     const src = join(dir, "src");
     mkdirSync(src);
+    writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
     const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
     writeFileSync(join(src, "work-tick.ts"), readFileSync(join(SRC, "work-tick.ts"), "utf8"));
@@ -120,7 +121,7 @@ test("#3566: wakes are counted from what wake reports, and wake is a phase", () 
 
 test("#3566: a command the GATE starts is counted by command, with its wall -- the tick's own CPU alone under-reads it", () => {
   const gate = `import { execFileSync } from "node:child_process";\n`
-    + `for (let i = 0; i < 2; i += 1) execFileSync(process.execPath, [...TSX_IMPORT, "-e", "setTimeout(() => {}, 150)"]);\n`
+    + `for (let i = 0; i < 2; i += 1) execFileSync(process.execPath, ["-e", "setTimeout(() => {}, 150)"]);\n`
     + `process.exit(0);\n`;
   const { lines } = runTick({ gate });
   const [line] = lines;
@@ -159,7 +160,7 @@ test("#3566: children's CPU is read from /proc/self/stat past a command name wit
   const stat = `4242 (a (b) c) ${fields.slice(2).join(" ")}\n`;
   assert.equal(childrenCpuMs(() => stat), 2000);
   const before = childrenCpuMs();
-  spawnSync(process.execPath, [...TSX_IMPORT, "-e", burnCpu(300)]);
+  spawnSync(process.execPath, ["-e", burnCpu(300)]);
   assert.ok(childrenCpuMs() - before >= 150, `a 300 ms busy child moved children CPU by ${childrenCpuMs() - before} ms`);
 });
 
@@ -167,7 +168,7 @@ test("#3566: the census names a command by its basename, cuts an argument to its
   assert.deepEqual(describeSpawn("/home/agent/.local/bin/gh", ["pr", "list"]), { cmd: "gh", line: "gh pr list", sub: "pr list" });
   assert.equal(describeSpawn("git status --short", undefined).line, "git status --short", "an execSync string is split, not taken as one name");
   const long = describeSpawn("node", [...TSX_IMPORT, `/very/long/${"d/".repeat(40)}work-gate.ts`]);
-  assert.match(long.line, /work-gate\.mjs$/);
+  assert.match(long.line, /work-gate\.ts$/);
   const records = [
     { cmd: "gh", line: "gh a", ms: 5 }, { cmd: "gh", line: "gh b", ms: 900 }, { cmd: "git", line: "git c", ms: 70 },
     { cmd: "herdr", line: "herdr d", ms: 300 }, { cmd: "gh", line: "gh e", ms: 20 }, { cmd: "gh", line: "gh f", ms: 600 }, { cmd: "gh", line: "gh async", ms: null },
@@ -185,8 +186,8 @@ test("#3566: the census records each synchronous spawn's CPU, so a busy child an
     writeFileSync(driver, [
       `import { spawnSync } from "node:child_process";`,
       // Burn 400 ms of CPU, not of wall: a descheduled child on a loaded runner gets less CPU than wall (260 of 400, run 37800171274).
-      `spawnSync(process.execPath, [...TSX_IMPORT, "-e", ${JSON.stringify(burnCpu(400))}]);`,
-      `spawnSync(process.execPath, [...TSX_IMPORT, "-e", "setTimeout(() => {}, 400);"]);`,
+      `spawnSync(process.execPath, ["-e", ${JSON.stringify(burnCpu(400))}]);`,
+      `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 400);"]);`,
     ].join("\n"));
     const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
       { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });

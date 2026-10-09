@@ -493,7 +493,7 @@ function armReport({ t0, tEnd, hardStop, candidate, tool, files }: ReturnType<ty
 
 async function main() {
   const known = ["--live-dir=", "--copy-dir=", "--record=", "--candidate=", "--candidate-child", "--module=", "--window-timer=", "--arm"];
-  refuseUnknownFlags(known, { entry: import.meta.url, command: "node packages/agent-org/src/shadow-window.ts" });
+  refuseUnknownFlags(known, { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/shadow-window.ts" });
   const argv = process.argv.slice(2);
   if (argv.includes("--candidate-child")) return runAsCandidateChild(String(flagValue(argv, "module")));
   const copyDir = flagValue(argv, "copy-dir"), recordPath = flagValue(argv, "record"), candidate = flagValue(argv, "candidate");

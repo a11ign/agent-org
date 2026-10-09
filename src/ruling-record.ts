@@ -143,6 +143,6 @@ export function main(argv: string[] = process.argv.slice(2), { stateDir = stateE
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   refuseUnknownFlags(["--session=", "--session", "--on=", "--on", "--check=", "--check", "--grace=", "--grace", "--at=", "--at"],
-    { entry: import.meta.url, command: "node src/ruling-record.ts" });
+    { entry: import.meta.url, command: "node --import tsx src/ruling-record.ts" });
   process.exitCode = main();
 }

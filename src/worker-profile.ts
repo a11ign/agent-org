@@ -338,7 +338,7 @@ function headlessClaudeArgs(profile: { kind: string; model: string; effort: stri
 
 function main() {
   refuseUnknownFlags(["--cause", "--model", "--effort"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/worker-profile.ts",
+    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/worker-profile.ts",
   });
   const cause = flagValue(process.argv, "cause");
   if (!cause) {

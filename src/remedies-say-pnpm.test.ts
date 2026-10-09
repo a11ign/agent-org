@@ -98,10 +98,10 @@ test("the real source tree names no npm command outside the pinned exemptions, a
 });
 
 test("at least 50 printed remedies are found in the real tree, so a tree whose strings were lost is not an empty pass", () => {
-  const remedies = toolFiles().filter((path) => path.endsWith(".mjs"))
+  const remedies = toolFiles().filter((path) => /\.(mjs|ts)$/.test(path))
     .flatMap((path) => [...stripComments(read(path)).matchAll(/\bpnpm run [\w:-]+/g)].map((match) => `${path}: ${match[0]}`));
   assert.ok(remedies.length >= 50, `${remedies.length} printed \`pnpm run <script>\` commands found in code (comments stripped); the tree prints well over 50`);
-  assert.ok(remedies.some((remedy) => /work-gate\.mjs: pnpm run host:install/.test(remedy)), "and the sample includes the remedy the gate prints");
+  assert.ok(remedies.some((remedy) => /work-gate\.ts: pnpm run host:install/.test(remedy)), "and the sample includes the remedy the gate prints");
 });
 
 // --- host:check names a pnpm that is missing or does not match `packageManager` --------------------------------------------------------

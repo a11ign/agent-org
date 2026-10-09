@@ -105,14 +105,14 @@ const TODAYS_TEXT = {
   // #2781 MOVED THIS ONE, deliberately: the unit gained a comment saying the `-` on `primary:update` is covered by the gate reading the primary.
   // #2974 MOVED THIS ONE, deliberately: the cut-over moved its `primary:update` line from `/usr/bin/npm` to the pnpm shim and its header comment off the monorepo path (`units-run-pnpm.test.ts`).
   // #3038 MOVED THIS ONE, deliberately: `ExecStart` runs under the crash-exit preload and the header says why `SuccessExitStatus` lists 1.
-  "a11ign-work-tick.service": "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8",
-  "a11ign-work-tick.timer": "c47470e624dc884515212badc11c82890fa864b7181175a2ab3570fe182e72ec",
+  "a11ign-work-tick.service": "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3",
+  "a11ign-work-tick.timer": "7daa5c14c8c1db69424b7f5dfac22c8168858f2fd9f8eaaa95530a07b3e0b931",
   // #2782 MOVED THIS ONE, deliberately: the prune unit now declares `GH_CONFIG_DIR` (it reads a row's claim before removing a tree). The
   // installed copy reads STALE until `host:install` runs, which is a host action and not this row's.
   // #2892 MOVED IT AGAIN, deliberately: `ExecStart` runs `%h/.local/bin/pnpm` instead of `/usr/bin/npm`. Same staleness, same remedy.
   // #3850 MOVED IT AGAIN, deliberately: the unit runs under `Nice=19` and `IOSchedulingClass=idle`. Same staleness, same remedy.
-  "a11ign-worktree-prune.service": "e52248f5bd5ff80136bc703b38b5cc411f82bd8d2532dd3c3bc1701ab8adfcd9",
-  "a11ign-worktree-prune.timer": "ecae95090a7608f86b01df84f5b79eeeb76beec48a28310b90c7c7e1d2b766eb",
+  "a11ign-worktree-prune.service": "d7547daa8e26f8e16979769f20abdbd22e1626d0e50030d2d4aee63326d5a879",
+  "a11ign-worktree-prune.timer": "82d72dd99d18eddb5285245bc4f5b9b750b1e88536be7759cdc524d9b1cbe467",
   "a11ign-board-report.service": "3e7791d9f24ae9aa3519898259f1ea68c1f8b4cd721f97b62916c9f81835b0c1",
   "a11ign-board-report.timer": "6edd74ab8a7d4117197dddd448e30a2ab63ab9972799dd90f5f500c067f033f1",
 };
@@ -121,7 +121,7 @@ const TODAYS_TEXT = {
 // a11ign/a11ign#3589 MOVED IT AGAIN, deliberately: each ledger line gains a ninth field, the session id (`CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`). Same staleness, same remedy.
 // #3642 MOVED IT AGAIN, deliberately: a call with no workspace id and no GH_CONFIG_DIR refuses instead of acting as the human account. Same staleness, same remedy.
 // a11ign/a11ign#4148 MOVED IT AGAIN, deliberately: the wrapper answers an identical repeated READ from a cache (20 s, 30 at most), serves the tick's own processes from the generation `tick-snapshot.ts` keeps, and counts what the ledger trim drops into `<ledger>.hourly`. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "346938accf5a9bd217e1bf8f8ec108f35f64bf66b1848f1c2f7f94b7bed75c4c";
+const TODAYS_GH_WRAPPER = "1012e23160c048adfb1f6f9bbe2649db7d0e1cb864d2fdd8941d8c9c8991aec2";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

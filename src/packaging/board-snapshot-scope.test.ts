@@ -103,7 +103,7 @@ test("#1275: this file imports NOTHING from board-snapshot.ts -- the import that
   const specifiers = [...source.matchAll(/^(?:import\s[^;]*?|\}\s*)from\s+"([^"]+)";/gm)].map((match) => match[1]);
   assert.ok(specifiers.includes("../board-snapshot-scope.ts"),
     "CONTROL: the reader finds this file's real imports, so an empty list cannot pass for a clean one");
-  assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.mjs$/.test(specifier)), []);
+  assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.ts$/.test(specifier)), []);
 });
 
 test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same walk still charges board-snapshot.ts for its gh call", () => {

@@ -1141,8 +1141,10 @@ function codeOutsideArmedState(source: string): string {
   assert.ok(start >= 0, "armedState is in the script");
   const end = uncommented.indexOf("\n}\n", start);
   assert.ok(end > start, "armedState's body ends");
+  // A TYPE ANNOTATION names the fields without reading them: `queueEntries`' return type is a shape, not a derivation.
   return (uncommented.slice(0, start) + uncommented.slice(end))
-    .replace(/export const QUEUE_QUERY =[\s\S]*?;\n/, "");
+    .replace(/export const QUEUE_QUERY =[\s\S]*?;\n/, "")
+    .replace(/(export function queueEntries\([^\n]*\)): Map<[^\n]*> \| null \{/, "$1 {");
 }
 
 const queueTableSource = () => readFileSync(new URL("../queue-table.ts", import.meta.url), "utf8");

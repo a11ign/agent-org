@@ -81,7 +81,7 @@ test("#2417 done-when 1: a path outside the Region is REFUSED, naming the path, 
   assert.deepEqual(r.sent, [], "nothing was sent to GitHub");
   assert.equal(r.acceptance, 0, "refused BEFORE the Acceptance ran, as #1344's head refusal is");
   assert.match(r.err, /docs\/operational-lessons\.md/, "the path is named");
-  assert.doesNotMatch(r.err, /^ {2}packages\/agent-org\/src\/pr-open\.mjs$/m, "an in-Region path is not listed as an offender");
+  assert.doesNotMatch(r.err, /^ {2}packages\/agent-org\/src\/pr-open\.ts$/m, "an in-Region path is not listed as an offender");
   assert.ok(r.err.includes(IN_REGION.join(", ")), "the Region it was read against is printed");
   assert.ok(r.err.includes(`Outside-Region: <path> ${EM} <reason>`), "the escape's exact spelling is printed");
   for (const { entry, reason } of REGION_EXEMPT) {
@@ -219,7 +219,7 @@ test("#2417 done-when 5: the Region is read through `region-paths.ts`, so its fo
   const r = drive(create(prBody("Closes #9")), { rows: { 9: row },
     changed: ["scripts/git-hooks/pre-push", "packages/control/ansible/roles/x/tasks/main.yml"] });
   assert.equal(r.code, 0, r.err);
-  assert.match(PR_OPEN_SOURCE, /import \{[^}]*declaredRegionFiles[^}]*\} from "\.\/region-paths\.mjs"/);
+  assert.match(PR_OPEN_SOURCE, /import \{[^}]*declaredRegionFiles[^}]*\} from "\.\/region-paths\.ts"/);
   assert.doesNotMatch(PR_OPEN_SOURCE, /PATH_IN_PROSE|pathInProse\(|extractRegionSection/, "no second reading of a row's paths");
 });
 
@@ -289,8 +289,8 @@ test("#3083 done-when 1: a PR opened in agent-org whose diff is exactly the path
 test("#3083 done-when 1: a path the row does NOT name is still refused, and it is the only one", () => {
   const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: [...AGENT_ORG_ROW_PATHS, "src/wake.ts"] });
   assert.equal(r.code, EXIT_NOTHING_SENT);
-  assert.match(r.err, /^ {2}src\/wake\.mjs$/m);
-  assert.doesNotMatch(r.err, /^ {2}src\/pr-open\.mjs$/m, "a path the row names is not listed as an offender");
+  assert.match(r.err, /^ {2}src\/wake\.ts$/m);
+  assert.doesNotMatch(r.err, /^ {2}src\/pr-open\.ts$/m, "a path the row names is not listed as an offender");
   assert.match(r.err, /1 path\(s\) changed outside/);
 });
 

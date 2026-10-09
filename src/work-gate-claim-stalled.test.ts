@@ -9,7 +9,7 @@
  * yields no order only because the row with the SAME clock and NO commit yields one; and a second reading with a move after the nudge
  * releases nothing only because the same second reading with none releases. Nothing here is asserted against an empty population.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
+import { TSX_IMPORT, afterTsx } from "./tsx-import.ts";
 import { test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -1107,7 +1107,7 @@ test("#2470 (10) `decline --answer=<session>` releases to that session's `answer
 type ReleaseRequest = Parameters<typeof performRelease>[0];
 type ReleaseDeps = Parameters<typeof performRelease>[1];
 const STALL: ReleaseRequest = { row: 2407, session: "worker-7", why: "stalled", branch: BRANCH, worktree: WT, idleMinutes: 250, nudgedAt: ago(130) };
-const ROW_CLAIM_MJS = /row-claim\.mjs$/;
+const ROW_CLAIM_MJS = /row-claim\.ts$/;
 
 /** A release host: every seam a release reaches, recording. `herdr` lists worker-7 and can refuse a close; `row-claim decline` can fail. */
 function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: string; status: string }[]; closeFails?: boolean;
@@ -1127,7 +1127,8 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
     if (o.closeFails && args.includes("close")) throw new Error("herdr: refused");
     return "";
   };
-  const exec = (cmd: string, args: string[], opts: { cwd: string }) => {
+  const exec = (cmd: string, rawArgs: string[], opts: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
     execs.push({ cmd, args, cwd: opts.cwd });
     if (ROW_CLAIM_MJS.test(args[0] ?? "") && args[1] === "decline") {
       const status = o.declineStatus ?? 0;
@@ -1311,7 +1312,8 @@ function spawnHost(o: { kept?: typeof KEPT | null; claimStatus?: number; treeGon
   const execs: { args: string[]; cwd: string }[] = [];
   const fs = new Set<string>(o.kept && !o.treeGone ? [o.kept.worktree] : []);
   const forgotten: number[] = [];
-  const exec = (cmd: string, args: string[], { cwd }: { cwd: string }) => {
+  const exec = (cmd: string, rawArgs: string[], { cwd }: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
     execs.push({ args: cmd === "git" ? ["git", ...args] : args, cwd });
     if (cmd === "git" && args[0] === "worktree") fs.add(args[3]);
     if (cmd === "node" && args[1] === "claim") {

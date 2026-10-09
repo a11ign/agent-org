@@ -2240,22 +2240,22 @@ function recordCheckSafely(entry: Parameters<typeof recordCheck>[1]) {
 
 function usage() {
   return "Usage:\n"
-    + "  node packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
-    + "  node packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
-    + "  node packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
-    + "  node packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
+    + "  node --import tsx packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
+    + "  node --import tsx packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
+    + "  node --import tsx packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
+    + "  node --import tsx packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
     + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #2748: omitting --adopt still does this when the target is your OWN --session's already-stamped tree and your predecessor instance is independently confirmed gone, never merely quiet; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
     + "-- #987: in a claim COMMENT, so a path of ANY length works, where a label capped it at 41 characters, "
     + "so a future escalation can tell portable from held, and decline can remove the worktree safely; "
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
     + "PR, and only while #N is open)\n"
-    + "  node packages/agent-org/src/row-claim.ts decline <issue-number> --session=<name> [--keep-worktree] "
+    + "  node --import tsx packages/agent-org/src/row-claim.ts decline <issue-number> --session=<name> [--keep-worktree] "
     + "[--predecessor-gone] [--answer=<session>]    (give it back; #665: also "
     + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
     + "#2748: --predecessor-gone additionally attests --session's holder is confirmed gone (never implied by --keep-worktree "
     + "alone), so an ordinary same-session reclaim can later adopt the tree it left; "
     + `--answer= releases to that session's \`${ANSWER_PREFIX}\` label instead of \`${READY_LABEL}\`)\n`
-    + "  node packages/agent-org/src/row-claim.ts conflict <issue-number> --found=<text>     (#226: reality differed)\n";
+    + "  node --import tsx packages/agent-org/src/row-claim.ts conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
 
 /**
@@ -2844,7 +2844,7 @@ async function main() {
   // the bare status-read shape below, and a guard listing only `--session` would refuse the command's
   // own documented invocation. A flag guard that has not been merged forward is a guard that breaks the
   // thing it protects.
-  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.ts" });
+  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/row-claim.ts" });
   // #1352: FIRST OF ALL, where it was launched. From the primary checkout or a plain clone this refuses before any read,
   // exit 2 -- the "could not determine at all" outcome every consumer already classifies, as the stale-rule guard does.
   if (launchGate("row-claim")) {

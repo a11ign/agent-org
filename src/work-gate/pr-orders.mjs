@@ -464,7 +464,7 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
       + "`SCOPE` line saying whether the refusal is about that one PR or repository-wide, and names the "
       + "minute the pool returns.\n"
       + "REPOSITORY-WIDE: nothing will arm anything until that minute. Arm these by hand with "
-      + "`node packages/agent-org/src/arm-pr.ts --pr=<n> --repo=" + scope.repo + "` under an identity whose "
+      + "`node --import tsx packages/agent-org/src/arm-pr.ts --pr=<n> --repo=" + scope.repo + "` under an identity whose "
       + "pool is alive -- the workflow's own documented exception for a PR auto-arm never armed -- and "
       + "say on #1969 that it recurred, with the window.\n"
       + "ONE PR ONLY: it is likelier that PR never got an arming event (opened while conflicting, or "

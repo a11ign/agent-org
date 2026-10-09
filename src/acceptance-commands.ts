@@ -2171,7 +2171,7 @@ const PACKAGE_SCRIPT_RUN = /(?:^|&&|\|\||;)\s*p?npm\s+run\s+([\w:-]+)(?![:\w-])/
 /**
  * #2724: the ONE file `scriptBody` runs, when it is nothing but a bare `node <file>` invocation -- optional
  * leading env assignments (the same shape `firstRealToken` already strips), optional trailing flags, but no
- * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.ts`)
+ * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node --import tsx packages/agent-org/src/settle-closed-rows.ts`)
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
  *
@@ -3835,7 +3835,7 @@ export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] =
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/acceptance-commands.ts" });
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.

@@ -441,7 +441,7 @@ const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").repla
 /** What makes a module a reader of red: the rollup itself, a red conclusion spelt out, or the decider's own vocabulary. */
 const READS_RED = /\bstatusCheckRollup\b|["'](?:FAILURE|TIMED_OUT|STARTUP_FAILURE)["']|\b(?:redChecks|brokenChecks|isBrokenRed)\b/;
 /** `brokenChecks` IS the decider (`isBrokenRed` is its `.length > 0`), so importing either is asking `red-pr.ts` rather than re-deciding. */
-const IMPORTS_DECIDER = /import\s*\{[^}]*\b(?:isBrokenRed|brokenChecks)\b[^}]*\}\s*from\s*["'][^"']*red-pr\.mjs["']/;
+const IMPORTS_DECIDER = /import\s*\{[^}]*\b(?:isBrokenRed|brokenChecks)\b[^}]*\}\s*from\s*["'][^"']*red-pr\.ts["']/;
 
 /** `null` when the module is not a reader of red or is on the decider; otherwise WHY it is an offender. */
 function redOffence(file: string, source: string): string | null {
@@ -451,14 +451,14 @@ function redOffence(file: string, source: string): string | null {
 }
 
 function agentOrgModules(): { file: string; source: string }[] {
-  const listed = readdirSync(AGENT_ORG_SRC, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".mjs") && !f.includes("node_modules"));
-  return listed.filter((f) => !/\.test\.mjs$/.test(f) && f !== SELF).map((file) => ({ file, source: readFileSync(join(AGENT_ORG_SRC, file), "utf8") }));
+  const listed = readdirSync(AGENT_ORG_SRC, { recursive: true, encoding: "utf8" }).filter((f) => /\.(mjs|ts)$/.test(f) && !f.includes("node_modules"));
+  return listed.filter((f) => !/\.test\.(mjs|ts)$/.test(f) && f !== SELF).map((file) => ({ file, source: readFileSync(join(AGENT_ORG_SRC, file), "utf8") }));
 }
 
 test("#2956 ONE DECIDER: every agent-org module that reads red PR state imports `isBrokenRed` or is exempt WITH A REASON; the exemptions only shrink", () => {
   const modules = agentOrgModules();
   const readers = modules.filter((m) => READS_RED.test(codeOf(m.source))).map((m) => m.file);
-  for (const control of ["org-retro.ts", "org-health.mjs"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
+  for (const control of ["org-retro.ts", "org-health.ts"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
   assert.deepEqual(modules.flatMap((m) => redOffence(m.file, m.source) ?? []), []);
   assert.deepEqual(Object.keys(EXEMPT).filter((f) => !readers.includes(f)), [], "a stale exemption: that module no longer reads red state, so remove the entry");
   assert.ok(Object.values(EXEMPT).every((why) => why.length > 20), "every exemption names its reason");

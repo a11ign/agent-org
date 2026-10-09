@@ -225,7 +225,7 @@ test("#3466: the report ranks callers by points, floors an unread graphql call a
     ["work-gate.ts", 3, 0, 3, 1], ["board-snapshot.ts", 2, 2, 2, 0], ["poll.mjs", 0, 0, 1, 0]]);
   assert.deepEqual(topCallers(entries, { resource: "graphql" }).map((r) => r.caller), ["other.mjs", "work-gate.ts", "board-snapshot.ts"],
     "`graphql?` is the graphql pool for the report; core is not");
-  assert.match(renderReport(entries, { account: "leads" }), /3 pts \(\s*0 read\)\s+3 calls\s+1 failed\s+work-gate\.mjs/);
+  assert.match(renderReport(entries, { account: "leads" }), /3 pts \(\s*0 read\)\s+3 calls\s+1 failed\s+work-gate\.ts/);
   assert.equal(renderReport([]), "gh ledger: no calls recorded\n", "an empty ledger says so rather than printing an empty table");
 });
 

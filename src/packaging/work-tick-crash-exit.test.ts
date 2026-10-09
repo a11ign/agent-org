@@ -83,11 +83,11 @@ test("#3038 layer 1: the crash code is in NEITHER form's SuccessExitStatus, and 
 test("#3038 layers 1 and 3: the tick and the update step both run under the preload, in both forms, and the update's `-` stays", () => {
   const { shipped, tool } = renderedUnits();
   assert.deepEqual(directive(shipped, "ExecStart"),
-    ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.ts"]);
-  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts"]);
+    ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts"]);
+  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts"]);
   assert.deepEqual(directive(tool, "ExecStartPre")[0], `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
     "the `-` stays: a failed update is still not a reason to stop the org");
-  assert.match(TOOL_UPDATE_EXEC, /--import=\.\/src\/lib\/crash-exit\.mjs src\/update-tool\.mjs$/);
+  assert.match(TOOL_UPDATE_EXEC, /--import=\.\/src\/lib\/crash-exit\.mjs --import tsx src\/update-tool\.ts$/);
   assert.match(shipped, /^# `1` HERE IS THE CONTRACT'S ATTENTION AND NOT node's CRASH/m, "the template's header says which `1` this is");
 });
 
@@ -108,6 +108,7 @@ function tickWith({ gate, wake }: { gate: string; wake: string }) {
   try {
     const src = join(dir, "src");
     mkdirSync(src);
+    writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
     const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
     copyFileSync(join(SRC, "work-tick.ts"), join(src, "work-tick.ts"));

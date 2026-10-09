@@ -15,6 +15,7 @@
  *
  * HAND-RUN: the pair needs a clone of a11ign on the host (`HOST_CLONE`), which CI's `gate` job here has none of, so the file skips there and says why.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -153,6 +154,16 @@ function cloneAt(ref: string): string {
 
 const isTest = (path: string): boolean => /\.test\.(ts|mjs)$/.test(path);
 
+/**
+ * Leaves a project of the pair imports by their `.mjs` name. `FIRST_REF`'s `.agent-org/plugins/causes.mjs` imports `cause-shape.mjs`; a11ign/a11ign#4272
+ * renamed the leaf to `.ts`, so the laid-out copy keeps the old name as a re-export, and the pair still reads what a11ign held at each commit.
+ */
+const RENAMED_LEAVES: readonly string[] = ["cause-shape"];
+
+function keepOldLeafNames(tool: string): void {
+  for (const leaf of RENAMED_LEAVES) writeFileSync(join(tool, "src", `${leaf}.mjs`), `export * from "./${leaf}.ts";\n`);
+}
+
 /** The tool at `packages/agent-org` and the project's own helper modules beside the tests, as `ci.yml`'s `gate` job lays them out. */
 function layOutTool(project: string): void {
   const tool = join(project, "packages/agent-org");
@@ -161,6 +172,7 @@ function layOutTool(project: string): void {
   for (const entry of ["host", ".github", "CHANGELOG.md", "package.json", "LICENSE", "README.md"]) cpSync(join(TOOL_ROOT, entry), join(tool, entry), { recursive: true });
   const siblings = join(project, "packages/lab/src/packaging");
   if (existsSync(siblings)) cpSync(siblings, join(tool, "src/packaging"), { recursive: true, force: false, filter: (path) => !isTest(path) });
+  keepOldLeafNames(tool);
   linkDependencies(project);
   execFileSync("git", ["add", "--force", "--intent-to-add", "packages/agent-org"], { cwd: project, env: sandboxGitEnv(), stdio: "ignore" });
 }
@@ -176,7 +188,7 @@ async function verdictsOf(project: string, basename: string): Promise<Map<string
   const file = join("packages/agent-org/src/packaging", `${basename}.test.ts`);
   // NODE_TEST_CONTEXT is how a `node --test` child learns it is nested and writes a binary stream instead of the TAP asked for.
   const { AGENT_ORG_HOST: _host, NODE_TEST_CONTEXT: _nested, ...env } = process.env;
-  const child = await run("node", ["--import", "tsx", "--test", "--test-reporter=tap", file], { cwd: project, env, maxBuffer: 1 << 28 }).catch((failed: { stdout?: string }) => failed);
+  const child = await run("node", [...TSX_IMPORT, "--test", "--test-reporter=tap", file], { cwd: project, env, maxBuffer: 1 << 28 }).catch((failed: { stdout?: string }) => failed);
   return parseTap(basename, String((child as { stdout?: string }).stdout ?? ""));
 }
 

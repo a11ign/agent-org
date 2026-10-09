@@ -11,6 +11,7 @@
  * fixture with ONE thing changed, and each asserts the row is UNCLAIMED again against the fake board -- which the
  * success case shows is not simply always true.
  */
+import { afterTsx } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -67,7 +68,8 @@ function fakeHost(over: { claimExit?: number; claimOutput?: string; existing?: s
     fs.delete(ROW_DIR);
     return { status: 0, output: `DECLINED -- #${ROW} is unclaimed again\n` };
   };
-  const exec = (command: string, args: string[], { cwd, env }: { cwd: string; env: Record<string, string> }) => {
+  const exec = (command: string, rawArgs: string[], { cwd, env }: { cwd: string; env: Record<string, string> }) => {
+    const args = afterTsx(rawArgs);
     calls.push({ command, args, cwd, env });
     if (command === "git") {
       events.push(`git ${args.join(" ")}`);
@@ -285,7 +287,7 @@ test("#2405 an order whose row cannot be read opens no pane", () => {
 
 test("#2405 slugOf: a few words of the title, and `row` for a title with none", () => {
   assert.equal(slugOf("A spawned engineer starts in the primary checkout"), "a-spawned-engineer-starts");
-  assert.equal(slugOf("Fix `wake.ts`: it's (broken)!"), "fix-wake-mjs-it");
+  assert.equal(slugOf("Fix `wake.ts`: it's (broken)!"), "fix-wake-ts-it");
   assert.equal(slugOf("!!!"), "row");
   assert.equal(slugOf(undefined), "row");
   assert.ok(slugOf("x".repeat(200)).length <= 40);

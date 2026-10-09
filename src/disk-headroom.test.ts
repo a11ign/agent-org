@@ -129,7 +129,7 @@ test("#2163: the order goes to `ceo`, is keyed on WHICH resource of WHICH filesy
   assert.equal(order.causeKey, "ceo/disk-headroom-low/root+tmp:inodes");
   assert.match(order.prompt, /FREE INODES: 0 of 1,000 \(0\.0%\)/);
   assert.match(order.prompt, /df -i \/ \/tmp/, "the inode reading is named -- `df -h` alone cannot see this outage");
-  assert.match(order.prompt, /prune-tmp\.mjs/);
+  assert.match(order.prompt, /prune-tmp\.ts/);
   assert.deepEqual(diskHeadroomOrders([]), [], "nothing low, no order");
 });
 

@@ -2,8 +2,8 @@
 // @ts-check
 // DID THE CI-HEALTH COMMENT ARRIVE? -- a11ign/a11ign#3659, the standing duty of #3212's done-when 4.
 //
-//   node src/ci-health-liveness.ts                     read the latest Monday slot; exit 0 only for PRESENT
-//   node src/ci-health-liveness.ts --repo=<owner/name> --workflow=ci-health.yml --issue=928
+//   node --import tsx src/ci-health-liveness.ts                     read the latest Monday slot; exit 0 only for PRESENT
+//   node --import tsx src/ci-health-liveness.ts --repo=<owner/name> --workflow=ci-health.yml --issue=928
 //                                                       name the three facts when the project does not declare them yet
 //
 // ## The gap
@@ -313,7 +313,7 @@ function declaredByFlags(): { declared: Declared[]; } | { refusal: string; } {
 }
 
 function main() {
-  refuseUnknownFlags(["--repo=", "--workflow=", "--issue="], { entry: import.meta.url, command: "node src/ci-health-liveness.ts" });
+  refuseUnknownFlags(["--repo=", "--workflow=", "--issue="], { entry: import.meta.url, command: "node --import tsx src/ci-health-liveness.ts" });
   const readings = readCiHealthAll(declaredByFlags(), new Date());
   const several = readings.length > 1;
   for (const { repo, reading } of readings) {

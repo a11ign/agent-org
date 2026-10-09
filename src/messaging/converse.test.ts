@@ -570,7 +570,7 @@ describe("the queue file, when the listener names none", () => {
 
 const MESSAGING = fileURLToPath(new URL(".", import.meta.url));
 /** What reaches an order to a session: the queue's writers and the two modules that own them. `herdr ... agent prompt` is the direct path. */
-const QUEUE_CALLERS = /\b(queueOrLose|queueHandoff|promptOrQueue|clearThenPrompt)\b|prompt-session\.mjs|\/wake\.mjs|["']agent["']\s*,\s*["']prompt["']/;
+const QUEUE_CALLERS = /\b(queueOrLose|queueHandoff|promptOrQueue|clearThenPrompt)\b|prompt-session\.ts|\/wake\.ts|["']agent["']\s*,\s*["']prompt["']/;
 
 /** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.mjs` under `dir`, as paths relative to `base` (`dir` itself unless a caller walks a subdirectory) */
 function sourceFiles(dir: string, base: string = dir): string[] {

@@ -54,13 +54,13 @@ function upThreeSpellings(source: string): boolean {
 }
 
 /**
- * Non-test `.mjs` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
+ * Non-test `.mjs` and `.ts` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
  * keeps the product's spelling of the root unless its header names an edit: `changed-packages.mjs` did, and from `src/lib` that is
  * `packages/`, not the checkout (#2884). None of the other `lib/` files spells it, so no `lib/` file needs an exemption.
  */
 const nonTestModules = (): string[] =>
   [".", "lib"].flatMap((dir) => readdirSync(join(SRC, dir))
-    .filter((name) => name.endsWith(".mjs") && !/\.test\./.test(name))
+    .filter((name) => /\.(mjs|ts)$/.test(name) && !/\.test\./.test(name))
     .map((name) => join(dir, name)));
 
 test("POSITIVE CONTROL: the scan flags a fixture string of each of the three shapes", () => {
@@ -134,6 +134,7 @@ function standaloneTree(): { src: string; aboveTool: string } {
   const aboveTool = scratch();
   const src = join(aboveTool, "tool", "src");
   cpSync(SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return { src, aboveTool };
 }
 

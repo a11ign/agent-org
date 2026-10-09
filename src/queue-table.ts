@@ -5,7 +5,7 @@
 /**
  * THE HOURLY TABLE, AS A COMMAND RATHER THAN A HABIT -- ceo's ruling, 2026-09-08.
  *
- *   node packages/agent-org/src/queue-table.ts [--json]
+ *   node --import tsx packages/agent-org/src/queue-table.ts [--json]
  *
  * ## Why this exists at all
  *
@@ -1124,7 +1124,7 @@ export function collect(now = new Date()) {
 }
 
 function main() {
-  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node packages/agent-org/src/queue-table.ts" });
+  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/queue-table.ts" });
   const data = collect();
   if (flagValue(process.argv, "json") !== undefined || process.argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify({

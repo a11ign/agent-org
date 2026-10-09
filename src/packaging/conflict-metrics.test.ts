@@ -210,7 +210,7 @@ test("wiring: conflictMetrics is the live entry and hands in gh; the composition
     assert.ok(start >= 0, `${name} is exported from board-data.ts`);
     return source.slice(start, source.indexOf("\n}\n", start)).replace(/\/\/.*$/gm, "");
   };
-  assert.match(body("conflictMetrics"), /^export function conflictMetrics\(since\) \{\s*return composeConflictMetrics\(since, \{ run: gh \}\);\s*$/);
+  assert.match(body("conflictMetrics"), /^export function conflictMetrics\(since: string\) \{\s*return composeConflictMetrics\(since, \{ run: gh \}\);\s*$/);
   assert.doesNotMatch(body("composeConflictMetrics"), /\bgh\(|execFileSync/);
 });
 

@@ -47,6 +47,8 @@ function copyInto(target: string, source: string): void {
  */
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
   for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
+  // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under tsx.
+  writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of PROJECT_FILES) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
   const hostSource = process.env[HOST_ENV] ?? join(HOME_CHECKOUT, ".agent-org/host.json");
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };

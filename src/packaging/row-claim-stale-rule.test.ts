@@ -333,7 +333,7 @@ test("#3188: POSITIVE CONTROL -- an installed pin BEHIND main on a rule file is 
     assert.match(reason, /INSTALLED COPY OF THE RULE/);
     assert.match(reason, new RegExp(SHA.slice(0, 12)));
     assert.match(reason, /src\/row-claim\/own-pr-health-rule\.mjs/, "naming what moved");
-    assert.doesNotMatch(reason, /dora\.mjs/, "and only the rule files, not everything main changed");
+    assert.doesNotMatch(reason, /dora\.ts/, "and only the rule files, not everything main changed");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

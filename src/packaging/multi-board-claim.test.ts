@@ -91,7 +91,7 @@ test("#2617: the first repository's pull requests keep their number as their who
   const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.ts"),
     prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.ts"])] } });
   const reason = eligibility(fake, BOTH);
-  assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.mjs\./);
+  assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.ts\./);
 });
 
 // --- 2. a repository prefix is that key's path; a bare path is the first's -------------------------------------------------

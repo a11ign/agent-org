@@ -204,7 +204,7 @@ test("REPORT: the row's calls and GraphQL points, the floor marked, the calls of
   assert.match(text, /keyed to this row \(by the session id on the line; a LOWER BOUND.*2 calls: 2 on the GraphQL pool = 4 points \(3 read from responses, 1 calls FLOOR/);
   assert.match(text, /KEYED TO NO ROW, listed apart \(3 of the store's 6 are keyed\): 3 calls/);
   assert.match(text, /because: 2 carry no session id.*; 1 name a session the store holds no later turn of yet/);
-  assert.match(text, /\d+ pts +\d+ calls +a11ign-ai-workers work-gate\.mjs/, "the unit that burns the pool is named by its script");
+  assert.match(text, /\d+ pts +\d+ calls +a11ign-ai-workers work-gate\.ts/, "the unit that burns the pool is named by its script");
   assert.match(text, /a11ign-ai-leads +held from 2026-10-04T10:20Z/, "the earliest call per account");
   assert.match(text, /a11ign-ai-workers +held from 2026-10-04T10:00Z/);
   assert.match(text, /a call older than that is GONE/);

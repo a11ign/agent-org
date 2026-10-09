@@ -239,7 +239,7 @@ export function noteCarryOnPr(branch: string, carrier: string, reason: string, {
 
 function usage() {
   return "Usage:\n"
-    + "  node packages/agent-org/src/carry-branch.ts <branch> --carrier=<session> --reason=<text> [--repo-root=<dir>]\n";
+    + "  node --import tsx packages/agent-org/src/carry-branch.ts <branch> --carrier=<session> --reason=<text> [--repo-root=<dir>]\n";
 }
 
 /** @param {string} text */
@@ -303,7 +303,7 @@ export function carryMain(argv: string[], { run = defaultRun, stamp = stampWorkt
 
 function main() {
   refuseUnknownFlags(["--carrier=", "--reason=", "--repo-root="],
-    { entry: import.meta.url, command: "node packages/agent-org/src/carry-branch.ts" });
+    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/carry-branch.ts" });
   process.exitCode = carryMain(process.argv.slice(2));
 }
 

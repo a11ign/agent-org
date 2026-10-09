@@ -58,7 +58,7 @@ test("#462's own acceptance shape: a CONSTRUCTED overlap refuses, naming the oth
   );
   assert.ok(reason);
   assert.match(reason as string, /#406/);
-  assert.match(reason as string, /packages\/agent-org\/src\/merge-guard\.mjs/);
+  assert.match(reason as string, /packages\/agent-org\/src\/merge-guard\.ts/);
 });
 
 test("#462's own POSITIVE CONTROL: remove the overlap and it goes quiet", () => {

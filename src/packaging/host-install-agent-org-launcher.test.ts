@@ -17,11 +17,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
 const { hostIdentityDrift, hostIdentityInstall, hostUnitDrift, ownedIdentityFiles, shippedScriptText } = await import("../host-units.ts");
@@ -145,7 +146,7 @@ const program = process.argv[1] ?? "";
 if (!program.endsWith("bin.mjs")) {
   const config = pathToFileURL(program.slice(0, program.lastIndexOf("/src/") + "/src/".length) + "project-config.ts").href;
   let line;
-  try { line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
+  try { await import(${JSON.stringify(TSX_IMPORT[1])}); line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
   appendFileSync(process.env.PROBE_OUT, line + "\\n");
   process.exit(0);
 }
@@ -179,6 +180,9 @@ function projectWithLinkedWorktree() {
   const installed = join(linked, "node_modules/agent-org");
   cpSync(join(TOOL_ROOT, "src"), join(installed, "src"), { recursive: true });
   cpSync(join(TOOL_ROOT, "package.json"), join(installed, "package.json"));
+  // `bin.mjs` resolves `tsx` beside itself, so a copy of the tool needs the `node_modules` an install would have given it.
+  symlinkSync(join(TOOL_ROOT, "node_modules"), join(installed, "node_modules"));
+  symlinkSync(join(TOOL_ROOT, "node_modules"), join(standalone, "node_modules"));
   return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.mjs") };
 }
 

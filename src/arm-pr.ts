@@ -1069,7 +1069,7 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
 }
 
 function main() {
-  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.ts" });
+  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/arm-pr.ts" });
   process.exitCode = runArmPr({ argv: process.argv, env: process.env });
 }
 

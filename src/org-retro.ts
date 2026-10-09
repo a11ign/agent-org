@@ -627,7 +627,7 @@ export function retrospectiveOrder(date: string, reportText: string) {
     subject: "org",
     discriminator: date,
     prompt: `THE DAILY RETROSPECTIVE for ${date} (UTC). Optimising the org is your scheduled duty, not a thing the chairman has to ask for. `
-      + "The numbers below were computed by `node packages/agent-org/src/org-retro.ts` from the GitHub, journal and ledger reads the gate "
+      + "The numbers below were computed by `node --import tsx packages/agent-org/src/org-retro.ts` from the GitHub, journal and ledger reads the gate "
       + "already makes; no model read a log, so do not re-derive them.\n\n"
       + `${reportText}\n${CLASS_FIX_INSTRUCTION} The verdict beside each number is against the previous reading; \`no baseline\` and \`unknown\` are not good days.\n`
       + `Post the reading and every row you filed on ${RETRO_DESTINATION}. If nothing tripped, post "nothing tripped" WITH the numbers: a day with nothing to file is never silence. `
@@ -875,7 +875,7 @@ function keepReading(record: typeof recordReading, reading: Parameters<typeof re
 }
 
 function main() {
-  refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "node packages/agent-org/src/org-retro.ts" });
+  refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/org-retro.ts" });
   const stateDir = stateEntryPath("");
   const nowFlag = flagValue(process.argv, "now");
   const now = nowFlag === undefined ? Date.now() : Date.parse(nowFlag);

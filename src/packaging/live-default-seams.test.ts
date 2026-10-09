@@ -315,7 +315,7 @@ export function liveSeamFindings({ scripts, tests }: { scripts: Source[]; tests:
 
 /** The real tree: every `.mjs` of the tool's own source, and every test file of the tool. */
 function realTree() {
-  return { scripts: toolSources().filter((f) => f.path.endsWith(".mjs")), tests: toolTests() };
+  return { scripts: toolSources().filter((f) => /\.(mjs|ts)$/.test(f.path)), tests: toolTests() };
 }
 
 // --- THE PLANTED FIXTURE: every shape the four enumeration passes found, and one that must NOT count ---------------
