@@ -4,15 +4,17 @@
 // POSITIVE CONTROLS: "the same ref twice is not a repeat" has a twin over the same log with the ref changed, so a reader that never reports a repeat turns the twin red and one that
 // always does turns the negative control red. The mutations, both directions, are pasted in the pull request.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseFailureClasses } from "./class-repeat.ts";
 import { FAILURE_KINDS, FAILURE_LEDGER_FILE, mainRedEvents, parseFailureLedger, recordFailure, recordFailures, repeatsIn } from "./failure-ledger.ts";
+import { recordTickFailures } from "./failure-recorders.ts";
 import { handRerouteEvents, recordHandReroutes, type Change } from "./hand-fix-ledger.ts";
 import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
+import { readLanes, scopesOf, scopeTick } from "./work-gate.ts";
 
 const NOW = Date.parse("2026-10-09T10:00:00Z");
 const HOUR = 3_600_000;
@@ -146,4 +148,66 @@ test("the six event kinds are seeded, and the index that carries them still pars
   }
   for (const c of index!.filter((entry) => FAILURE_KINDS.includes(entry.id))) assert.ok(c.name !== "" && c.guard === null && (c.guardNote ?? "") !== "", `${c.id}: a name, guard null and a guardNote`);
   assert.ok(index!.some((c) => c.id === "unreleased-merge"), "the existing row-defect entries are left as they are");
+});
+
+// #4475: a keyed repository's red `main` is recorded beside the primary's. Each test has its negative control in the same body (the twin the comment names).
+const redRun = (repo: string, runId: number, keyed = true) => ({ runId, url: `https://github.com/${repo}/actions/runs/${runId}`, sha: "a1b2c3d4e5f6789012345678901234567890abcd", failedJobs: [] as string[], failingTests: null, recheck: "unknown" as const, parentFailingTests: null, originPr: null, ...(keyed ? { repo, repoKey: repo.split("/")[1] } : {}) });
+function ledgerAfter(dir: string, seen: { trunkRed?: any; keyedTrunkReds?: any[]; now?: number }): string[] {
+  const stateDir = join(dir, "state");
+  // The hand-fix recorder reads `gh`; the marker makes it think it ran a moment ago, so it makes no read here.
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, `${FAILURE_LEDGER_FILE}-hand-read`), String(NOW));
+  recordTickFailures({ trunkRed: seen.trunkRed ?? null, keyedTrunkReds: seen.keyedTrunkReds ?? [], prs: [], stateDir, now: seen.now ?? NOW, ownerOf: () => ({ source: "label" }), homeRepo: "a11ign/a11ign" });
+  const path = join(stateDir, FAILURE_LEDGER_FILE);
+  return existsSync(path) ? parseFailureLedger(readFileSync(path, "utf8")).map((e) => `${e.classKey} ${e.ref}`) : [];
+}
+
+test("a keyed scope's red main appends one main-red line whose ref names that repository", () => {
+  inScratch((dir) => {
+    assert.deepEqual(ledgerAfter(dir, { keyedTrunkReds: [redRun("a11ign/agent-org", 77)] }), ["main-red https://github.com/a11ign/agent-org/actions/runs/77"]);
+  });
+  inScratch((dir) => assert.deepEqual(ledgerAfter(dir, { keyedTrunkReds: [] }), [], "twin: no keyed scope, no line"));
+});
+
+test("two repositories' reds with the same run number are two refs, and the same red read on two ticks is one line", () => {
+  inScratch((dir) => {
+    const reds = [redRun("a11ign/agent-org", 5), redRun("a11ign/lab", 5)];
+    assert.equal(ledgerAfter(dir, { keyedTrunkReds: reds }).length, 2, "same run id, two repositories");
+    assert.equal(ledgerAfter(dir, { keyedTrunkReds: reds, now: NOW + HOUR }).length, 2, "the second tick appends nothing");
+    assert.equal(ledgerAfter(dir, { keyedTrunkReds: [redRun("a11ign/agent-org", 6)], now: NOW + 2 * HOUR }).length, 3, "twin: a later red run IS a new line");
+  });
+});
+
+test("a green or unreadable main (null) and a scope with no code repository (undefined) append nothing", () => {
+  inScratch((dir) => assert.deepEqual(ledgerAfter(dir, { keyedTrunkReds: [null, undefined, null] }), []));
+  inScratch((dir) => assert.equal(ledgerAfter(dir, { keyedTrunkReds: [null, undefined, redRun("a11ign/lab", 1)] }).length, 1, "twin: the red one among them is recorded"));
+});
+
+test("the primary's recorded line is unchanged by the keyed readings beside it", () => {
+  inScratch((dir) => {
+    const primary = redRun("a11ign/a11ign", 9, false);
+    assert.deepEqual(ledgerAfter(dir, { trunkRed: primary }), ["main-red https://github.com/a11ign/a11ign/actions/runs/9"]);
+  });
+  inScratch((dir) => {
+    const lines = ledgerAfter(dir, { trunkRed: redRun("a11ign/a11ign", 9, false), keyedTrunkReds: [redRun("a11ign/agent-org", 9)] });
+    assert.deepEqual(lines, ["main-red https://github.com/a11ign/a11ign/actions/runs/9", "main-red https://github.com/a11ign/agent-org/actions/runs/9"], "twin: the keyed line is added after it, the primary's is the same");
+  });
+});
+
+test("a keyed red with no url is still named by its repository", () => {
+  assert.deepEqual(mainRedEvents({ runId: 3, repo: "a11ign/lab" }), [{ classKey: "main-red", ref: "a11ign/lab/runs/3" }]);
+  assert.deepEqual(mainRedEvents({ runId: 3 }), [{ classKey: "main-red", ref: "primary/runs/3" }], "twin: the primary's fallback is unchanged");
+});
+
+test("a scope's tick hands back the main reading it was given, which is what the gate records (the wiring of #4475)", () => {
+  const declaration = { tracker: [{ key: "", repo: "a11ign/a11ign" }], code: [{ key: "", repo: "a11ign/a11ign" }, { key: "lab", repo: "a11ign/lab" }] };
+  const scope = scopesOf([declaration]).find((s) => s.key === "lab")!;
+  assert.ok(scope.code, "POSITIVE CONTROL: the scope has a code repository, so the population is not empty");
+  const noTracker = { claimedComments: [], epics: [], closedRows: [], closings: null };
+  const tick = (trunkRed: unknown) => scopeTick(scope, false, readLanes(scope, () => "[]"),
+    { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null, trunkRed }), tracker: () => noTracker } as any);
+  const red = redRun("a11ign/lab", 12);
+  assert.equal(tick(red).trunkRed, red);
+  assert.equal(tick(null).trunkRed, null, "twin: a green main is handed back as null, not dropped");
+  assert.equal(tick(undefined).trunkRed, undefined);
 });
