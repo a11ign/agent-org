@@ -49,6 +49,8 @@ const { FAILURE_LEDGER_FILE } = await import("./failure-ledger.ts");
 
 const MIN = 60_000;
 const TRACKER = "a11ign/a11ign";
+// The name the injected `run` mock is keyed on: no process is spawned, so this is not a `gh` spawn and the `no-token` header holds.
+const INJECTED_GH = "gh";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };
 const SWEEP = 4389;
 const ASKER = 5000;
@@ -158,7 +160,7 @@ test("(1) `check` predicts the claim: the same refusal through `reportB4`, and i
     reportB4(ASKER, { write: (t: string) => out.push(t), mine: () => ["agent-org:src/b.ts"], others: () => [], claimed: () => [], repo: TRACKER, ...(sweeps === undefined ? {} : { sweeps }) });
     return out.join("");
   };
-  const read = () => readSweepWindows({ run: (args) => run("gh", args), repo: TRACKER, repos: [AGENT_ORG] });
+  const read = () => readSweepWindows({ run: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
   assert.match(say(read), /B4 REFUSES THIS CLAIM: overlaps the Region of #4389, a declared SWEEP/);
   assert.deepEqual(written, [], "check is read-only");
   assert.match(say(() => null), /B4 REFUSES THIS CLAIM: .*INCONCLUSIVE/, "an unread sweep list is said, never silence");
