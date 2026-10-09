@@ -256,7 +256,9 @@ test("#2417: `--base` names the ref the diff is read against", () => {
   const seen: string[][] = [];
   checkRegion(prBody("Closes #2417"), ["--base", "release"], { git: (a) => { seen.push(a); return ""; },
     rowBody: () => ROW[2417], rootFiles: NO_ROOT_FILES });
-  assert.ok(seen[0].includes("origin/release...HEAD"), seen[0].join(" "));
+  // the diff is the call asserted, not the first git call: a bare `Closes #N` reads `origin` before it (#4469)
+  const diff = seen.find((a) => a[0] === "diff") ?? [];
+  assert.ok(diff.includes("origin/release...HEAD"), seen.map((a) => a.join(" ")).join(" | "));
 });
 
 test("#2417: a body whose `Closes` is missing is left to checkBody's own refusal, and this check says nothing", () => {
