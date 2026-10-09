@@ -162,5 +162,5 @@ export function unsplitDoneWhenRefusal(body: string, options: { now?: Date; decl
     + "or another row's outcome), so the row would be claimed and then held idle on it (READY MEANS FINISHABLE; worker-3870 sat on #3870, #4438 and #4441 were held 10.5 h):\n"
     + `${lines.join("\n")}\n`
     + "File each as its OWN row with that Done-when and the data above, and take the item out of THIS row's Done-when (or put the wait on THIS row as data: a `Not-before:`, a "
-    + "`Waiting-for:`, a `Waits-on-done-when:`, a `--blocked-by` edge, an `answer:<session>` label). A row that only CITES a row, a seat or a date is not refused. Nothing was filed.";
+    + `\`Waiting-for:\`, a \`Waits-on-done-when:\`, a \`--blocked-by\` edge, an \`${ANSWER_PREFIX}<session>\` label). A row that only CITES a row, a seat or a date is not refused. Nothing was filed.`;
 }
