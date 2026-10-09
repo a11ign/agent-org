@@ -375,6 +375,7 @@ function ownershipOf(pr: any, source: string, task: string) {
     return `NOBODY COULD BE NAMED as its owner (${nobodyBasis(pr, "no session label, no live session holding a row it closes or its branch names, and none stamped its worktree")}). You are the last answer: re-lane it to the session that should ${task} it (\`${SESSION_PREFIX}<name>\` on the PR), or close it if it was abandoned.`;
   }
   if (source === "label") return `It carries your session label, so the ${task} is yours.`;
+  if (source === "dependency-bot") return `A dependency bot opened it and no session works such a pull request, so the ${task} is yours to route: re-lane it (\`${SESSION_PREFIX}<name>\` on the PR), or close it.`;
   return `The ${task} is yours: ${notConvincedBasis(pr, source)}.`;
 }
 
@@ -679,6 +680,18 @@ const MS_PER_MINUTE = 60_000;
 export const UNOWNED_PR_SESSION = "ceo";
 
 /**
+ * THE LOGIN A DEPENDENCY BOT OPENS A PULL REQUEST AS (#4624). `gh pr list --json author` spells Dependabot `app/dependabot` (measured on
+ * a11ign/a11ign#4470), the REST API `dependabot[bot]`, and a GraphQL `Bot` node plain `dependabot`: all three are the same author. Renovate is
+ * named too, because ADR 0041 keeps it as the fallback and the day it is switched on must not reopen this class.
+ */
+export const DEPENDENCY_BOT_LOGIN = /^(?:app\/)?(?:dependabot|renovate)(?:\[bot\])?$/i;
+
+/** Whether a bot that updates dependencies opened `pr`. No session works such a pull request, so no claim, label or branch can name one. */
+export function isDependencyBotPr(pr: any): boolean {
+  return DEPENDENCY_BOT_LOGIN.test(String(pr?.author?.login ?? ""));
+}
+
+/**
  * WHERE A RED PULL REQUEST GOES WHEN ITS OWNER'S SESSION NO LONGER EXISTS (#3078). `ownerOfPr`'s `label` rung never outranks, so a
  * label naming a released session kept addressing the order to a workspace that was not there: `route` refused it on every tick
  * (30 ticks, 63 minutes, three PRs) and the PR it blocked held other rows out of the pool. `product-manager`, because the way out
@@ -700,16 +713,21 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  *   3. `branch-row`   the live session holding the row its branch suffix `agent/<slug>-<n>` names (#2928).
  *   4. `branch-name`  a live session the head ref itself names: `agent/<session>` or a `worker-<n>` token.
  *   5. `stamp`        the live session that stamped the worktree the branch is checked out in (`.a11y-owner`).
- *   6. `ceo`          nobody could be named. Never `product-manager`.
+ *   6. `dependency-bot` a pull request a dependency bot opened (#4624). NO session claims, labels or stamps one, so rungs 1-5 are blind to it
+ *                     by construction and it used to fall to rung 7 as "nobody could be named": #4470, #4471 and #4472, an hour after #4386
+ *                     closed the same class for agent-org's own pull requests. Its owner is `ceo` (the seat that rules on a dependency bump
+ *                     and holds the publish order), and the ladder SAYS so, which is what keeps it out of `owner-unresolved`.
+ *   7. `ceo`          nobody could be named. Never `product-manager`.
  * "Live" in rungs 2-5 is the same test #2912 made: the session still HOLDS A CLAIM on an open row. `isLiveSession`
  * is not asked, so a live session holding NO claim is answered by `ceo`, which can act.
  */
-export function ownerOfPr(pr: any): { session: string; source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "ceo"; } {
+export function ownerOfPr(pr: any): { session: string; source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "dependency-bot" | "ceo"; } {
   const label = sessionOf(pr);
   if (label && !pr?.labelEnded) return { session: label, source: "label" };
   if (pr?.rowOwner) return { session: pr.rowOwner.session, source: pr.rowOwner.source === "branch" ? "branch-row" : "closing-row" };
   if (pr?.branchOwner) return { session: pr.branchOwner.session, source: "branch-name" };
   if (pr?.stampOwner) return { session: pr.stampOwner.session, source: "stamp" };
+  if (isDependencyBotPr(pr)) return { session: UNOWNED_PR_SESSION, source: "dependency-bot" };
   return { session: UNOWNED_PR_SESSION, source: "ceo" };
 }
 
@@ -734,6 +752,7 @@ function ownershipSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowM
     "branch-row": `It carries no session label and closes no row you hold, but its branch ${branch} was claimed for row #${pr?.rowOwner?.row}, which is held by you, so it is yours to fix.`,
     "branch-name": `It carries no session label and closes no row you hold, but its branch ${branch} names you, so it is yours to fix.`,
     stamp: `It carries no session label and closes no row you hold, but the worktree its branch ${branch} is checked out in was stamped by you, so it is yours to fix.`,
+    "dependency-bot": "A dependency bot opened it and no session works such a pull request, so it is yours to route: re-lane it to a session that should fix it, or close it.",
     ceo: unownedSentence(pr, { blocking, nowMs }),
   };
   return sentences[source];
@@ -934,6 +953,7 @@ function notConvincedBasis(pr: any, source: string) {
   if (source === "closing-row") return `the row it closes (#${pr?.rowOwner?.row}) is held by you`;
   if (source === "branch-row") return `its branch \`${pr.headRefName}\` was claimed for row #${pr?.rowOwner?.row}, which is held by you`;
   if (source === "branch-name") return `its branch \`${pr.headRefName}\` names you`;
+  if (source === "dependency-bot") return "a dependency bot opened it and no session works such a pull request";
   return `the worktree its branch \`${pr.headRefName}\` is checked out in was stamped by you`;
 }
 
