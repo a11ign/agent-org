@@ -910,7 +910,7 @@ const TEAM_PAGE_SIZE = 100;
 
 export type TeamRepository = { repo: string, level: string };
 /** `reached` is `null` for a read that could not run, and `why` then says what GitHub answered */
-export type TeamAccess = { team: string, layer: string, declared: string[], reached: TeamRepository[] | null, why: string };
+export type TeamAccess = { team: string, layer: string, exceptions?: Record<string, string>, declared: string[], reached: TeamRepository[] | null, why: string };
 export type TeamAccessFact = { teams: TeamAccess[] } | { unreadable: string };
 
 /**
@@ -944,13 +944,14 @@ export function teamAccessReading({ access }: { access: TeamAccessFact; }): Read
 }
 
 /** @param {TeamAccess} access @returns {{ key: string, text: string }[]} one entry per repository, `team:repo` keyed so a second repository is a new trip */
-function teamDifferences({ team, layer, declared, reached }: TeamAccess): { key: string; text: string; }[] {
+function teamDifferences({ team, layer, exceptions = {}, declared, reached }: TeamAccess): { key: string; text: string; }[] {
   if (reached === null || reached.length === 0) return [];
   const held = new Map(reached.map(({ repo, level }) => [repo, level]));
   const found = new Map();
   for (const repo of declared) {
     const level = held.get(repo) ?? "none";
-    if (level !== layer) found.set(repo, `${repo}: the ${team} team holds ${level}, declared ${layer}`);
+    const expected = exceptions[repo] ?? layer;
+    if (level !== expected) found.set(repo, `${repo}: the ${team} team holds ${level}, declared ${expected}`);
   }
   for (const [repo, level] of held) {
     if (level === "admin" && !found.has(repo)) found.set(repo, `${repo}: the ${team} team holds admin${declared.includes(repo) ? "" : " and is not declared"}`);
@@ -974,10 +975,12 @@ export function parseTeamListing(text: string): TeamRepository[] | null {
  * (a path relative to the project root, which may not climb out of it): `agent-org` names no project's file. The file's own shape is the contract: `teams`
  * maps a team's slug to `{ layer }`, and `repositories` is keyed by the `owner/name` of each declared repository, whose common owner is the org. A
  * malformed key is a named reason and never a silent off, so a project that mistyped it is told on the next tick rather than believing it is watched.
+ * A team may carry `exceptions`, `{ "<owner>/<name>": "<level>" }`: the level it is DELIBERATELY kept at on that one repository instead of `layer`
+ * (a11ign/a11ign#4467: `bots` stays off `a11ign/.github`, which would otherwise be a permanent trip). See `teamExceptionsOf` for what is refused.
  * @param {string} root @param {(path: string) => string} read
- * @returns {{ declaration: undefined } | { unreadable: string } | { org: string, declared: string[], teams: { team: string, layer: string }[] }}
+ * @returns {{ declaration: undefined } | { unreadable: string } | { org: string, declared: string[], teams: { team: string, layer: string, exceptions: Record<string, string> }[] }}
  */
-function readTeamDeclaration(root: string, read: (path: string) => string): { declaration: undefined; } | { unreadable: string; } | { org: string; declared: string[]; teams: { team: string; layer: string; }[]; } {
+function readTeamDeclaration(root: string, read: (path: string) => string): { declaration: undefined; } | { unreadable: string; } | { org: string; declared: string[]; teams: { team: string; layer: string; exceptions: Record<string, string>; }[]; } {
   const project = `${root}/.agent-org/project.json`;
   try {
     const key = JSON.parse(read(project)).teamAccess;
@@ -996,11 +999,32 @@ function teamDeclarationOf(file: any, where: string): ReturnType<typeof readTeam
   const declared = Object.keys(file?.repositories ?? {}).filter((k) => !k.startsWith("_"));
   const orgs = new Set(declared.map((repo) => repo.split("/")[0]));
   const teams = Object.entries(file?.teams ?? {}).filter(([k]) => !k.startsWith("_"))
-    .map(([team, level]) => ({ team, layer: (level as any)?.layer }));
+    .map(([team, level]) => ({ team, layer: (level as any)?.layer, exceptions: (level as any)?.exceptions }));
   if (orgs.size !== 1 || teams.some((t) => typeof t.layer !== "string")) {
     return { unreadable: `${where}: it must declare \`repositories\` of one org and each \`teams.<slug>.layer\` as a string (CANNOT_TELL)` };
   }
-  return { org: [...orgs][0], declared, teams };
+  const refused = teams.map((t) => teamExceptionsOf(t, declared)).find((r) => typeof r === "string");
+  if (refused !== undefined) return { unreadable: `${where}: ${refused} (CANNOT_TELL)` };
+  return { org: [...orgs][0], declared, teams: teams.map((t) => ({ ...t, exceptions: t.exceptions ?? {} })) };
+}
+
+/** The levels an exception may name: `admin` is a trip anywhere (`teamDifferences`), so declaring it as the expected level would bless the thing the signal exists to catch. */
+const EXCEPTION_LEVELS = Object.freeze(["none", ...TEAM_LEVELS.filter((level) => level !== "admin")]);
+
+/**
+ * @param {{ team: string, exceptions?: any }} t @param {string[]} declared
+ * @returns {string | undefined} why the team's `exceptions` cannot be believed, or `undefined` when it is absent or sound. An exception naming a repository the declaration
+ * does not list is refused rather than ignored: it would expect nothing of anything, and a mistyped name must be told on the next tick, not believed to be watching.
+ */
+function teamExceptionsOf({ team, exceptions }: { team: string; exceptions?: any; }, declared: string[]): string | undefined {
+  if (exceptions === undefined) return undefined;
+  if (exceptions === null || typeof exceptions !== "object" || Array.isArray(exceptions)) return `teams.${team}.exceptions must map an owner/name to a level`;
+  const entries = Object.entries(exceptions).filter(([repo]) => !repo.startsWith("_"));
+  const strange = entries.find(([repo]) => !declared.includes(repo));
+  if (strange) return `teams.${team}.exceptions names ${strange[0]}, which \`repositories\` does not list`;
+  const level = entries.find(([, l]) => typeof l !== "string" || !EXCEPTION_LEVELS.includes(l));
+  if (level) return `teams.${team}.exceptions.${level[0]} must be one of ${EXCEPTION_LEVELS.join(", ")} (admin is a trip anywhere and is not an exception)`;
+  return undefined;
 }
 
 /**
@@ -1014,7 +1038,7 @@ export function readTeamAccess(run: (args: string[]) => string, { root = HOME_CH
   const found = readTeamDeclaration(root, read);
   if ("declaration" in found) return undefined;
   if ("unreadable" in found) return found;
-  return { teams: found.teams.map(({ team, layer }) => ({ team, layer, declared: found.declared, ...readTeamRepositories(run, found.org, team) })) };
+  return { teams: found.teams.map(({ team, layer, exceptions }) => ({ team, layer, exceptions, declared: found.declared, ...readTeamRepositories(run, found.org, team) })) };
 }
 
 /** @param {(args: string[]) => string} run @param {string} org @param {string} team @returns {{ reached: TeamRepository[] | null, why: string }} */

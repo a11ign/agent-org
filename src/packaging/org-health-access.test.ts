@@ -29,8 +29,8 @@ const { orgHealthNow } = await import("../work-gate/org-health.mjs");
 const DECLARED = ["a11ign/a11ign", "a11ign/agent-org", "a11ign/screenreader-worker"];
 const listing = (rows: Record<string, string>) => Object.entries(rows).map(([repo, level]) => ({ repo, level }));
 const clean = listing({ "a11ign/a11ign": "push", "a11ign/agent-org": "push", "a11ign/screenreader-worker": "push" });
-const access = (reached: unknown, why = "") => ({ teams: [{ team: "bots", layer: "push", declared: DECLARED, reached, why }] }) as never;
-const read = (reached: unknown, why?: string) => teamAccessReading({ access: access(reached, why) });
+const access = (reached: unknown, why = "", exceptions?: Record<string, string>) => ({ teams: [{ team: "bots", layer: "push", exceptions, declared: DECLARED, reached, why }] }) as never;
+const read = (reached: unknown, why?: string, exceptions?: Record<string, string>) => teamAccessReading({ access: access(reached, why, exceptions) });
 
 test("#3634: an admin team level on a repository the team reaches trips and names it (the positive control)", () => {
   const stranger = read([...clean, ...listing({ "a11ign/auth-capture-check": "admin" })]);
@@ -79,6 +79,69 @@ test("#3634: the listing parser reads the highest true level and refuses a parti
     [{ repo: "a/x", level: "admin" }, { repo: "a/y", level: "push" }, { repo: "a/z", level: "pull" }, { repo: "a/n", level: "none" }]);
   assert.equal(parseTeamListing("a/x\ttrue\ttrue"), null);
   assert.deepEqual(parseTeamListing(""), []);
+});
+
+// #4467: a team deliberately kept below the layer on one repository. `a11ign/.github` is the real case: `bots` stays off it, the declaration lists it, and the exception says so.
+const WITH_DOTGITHUB = ["a11ign/.github", ...DECLARED];
+const KEPT_OFF = { "a11ign/.github": "none" };
+const readKeptOff = (reached: unknown, exceptions: Record<string, string> | null = KEPT_OFF) => teamAccessReading({
+  access: { teams: [{ team: "bots", layer: "push", exceptions: exceptions ?? undefined, declared: WITH_DOTGITHUB, reached, why: "" }] } as never });
+
+test("#4467: an exception of none is clear when the team holds none there, and tripped when it holds push", () => {
+  assert.deepEqual(readKeptOff(clean), { signal: SIGNALS.TEAM_ACCESS, status: "clear", detail: "" });
+  const reaches = readKeptOff([...clean, ...listing({ "a11ign/.github": "push" })]);
+  assert.equal(reaches.status, "tripped");
+  assert.match(reaches.detail, /a11ign\/\.github: the bots team holds push, declared none/);
+  assert.equal(reaches.discriminator, "team-access-drifted@bots:a11ign/.github");
+});
+
+test("#4467: without the exception the same listing still trips (the control: the exception is what makes the first case clear)", () => {
+  const without = readKeptOff(clean, null);
+  assert.equal(without.status, "tripped");
+  assert.match(without.detail, /a11ign\/\.github: the bots team holds none, declared push/);
+  assert.equal(readKeptOff(clean, {}).status, "tripped");
+});
+
+test("#4467: an exception does not loosen the other repositories, nor admin on the excepted one", () => {
+  const lowerElsewhere = readKeptOff(clean.map((r) => (r.repo === "a11ign/agent-org" ? { ...r, level: "pull" } : r)));
+  assert.match(lowerElsewhere.detail, /a11ign\/agent-org: the bots team holds pull, declared push/);
+  const admin = readKeptOff([...clean, ...listing({ "a11ign/.github": "admin" })]);
+  assert.equal(admin.status, "tripped");
+  assert.match(admin.detail, /a11ign\/\.github: the bots team holds admin, declared none/);
+  const atException = readKeptOff([...clean, ...listing({ "a11ign/.github": "pull" })], { "a11ign/.github": "pull" });
+  assert.equal(atException.status, "clear");
+});
+
+const EXCEPTION_FILES = (exceptions: unknown): Record<string, string> => ({ ...FILES, "/p/docs/access.json": JSON.stringify({ teams: { bots: { layer: "push", exceptions } },
+  repositories: { "a11ign/a11ign": {}, "a11ign/agent-org": {}, "a11ign/.github": {} } }) });
+
+test("#4467: the reader carries a declared exception to the comparison", () => {
+  // `tsv` above writes `maintain` as true on every row, so these two are written out: admin, maintain, push, triage, pull
+  const run = () => "a11ign/a11ign\tfalse\tfalse\ttrue\ttrue\ttrue\na11ign/agent-org\tfalse\tfalse\ttrue\ttrue\ttrue";
+  const fact = readTeamAccess(run, { root: "/p", read: fakeRead(EXCEPTION_FILES({ _why: "least privilege", "a11ign/.github": "none" })) });
+  assert.equal(teamAccessReading({ access: fact as never }).status, "clear");
+  const absent = readTeamAccess(run, { root: "/p", read: fakeRead(EXCEPTION_FILES(undefined)) });
+  assert.equal(teamAccessReading({ access: absent as never }).status, "tripped", "a declaration with no exceptions behaves as before");
+});
+
+test("#4467: an exception naming an undeclared repository, admin, an unknown level or a non-map is unknown, never believed", () => {
+  const nope = () => { throw new Error("must not ask"); };
+  const refusals: [unknown, RegExp][] = [
+    [{ "a11ign/elsewhere": "none" }, /names a11ign\/elsewhere, which `repositories` does not list/],
+    [{ "a11ign/.github": "admin" }, /exceptions\.a11ign\/\.github must be one of none, maintain, push, triage, pull/],
+    [{ "a11ign/.github": "write" }, /must be one of/],
+    [{ "a11ign/.github": 0 }, /must be one of/],
+    [["a11ign/.github"], /must map an owner\/name to a level/],
+    ["none", /must map an owner\/name to a level/],
+    [null, /must map an owner\/name to a level/],
+  ];
+  for (const [exceptions, why] of refusals) {
+    const fact = readTeamAccess(nope, { root: "/p", read: fakeRead(EXCEPTION_FILES(exceptions)) });
+    assert.ok(fact && "unreadable" in fact, JSON.stringify(exceptions));
+    assert.match(fact.unreadable, why);
+    assert.match(fact.unreadable, /CANNOT_TELL/);
+    assert.equal(teamAccessReading({ access: fact }).status, "unknown");
+  }
 });
 
 const FILES: Record<string, string> = {
