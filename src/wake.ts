@@ -883,7 +883,7 @@ function closedNote(run: (args: string[]) => string, workspace: string): string 
  * reason must leave nothing behind; the memory first because it is one file read where the claim's precheck reaches
  * `gh`. A refusal here is offered again next tick. An absent seam is no refusal (a caller with no claim, a test).
  */
-function whyNoSpawn(order: { causeKey: string; }, { memory, claimable }: { memory?: () => string | null; claimable?: (order: { causeKey: string; }) => string | null; }): string | null {
+function whyNoSpawn(order: { causeKey: string; startFresh?: boolean; }, { memory, claimable }: { memory?: () => string | null; claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; }): string | null {
   return memory?.() ?? claimable?.(order) ?? null;
 }
 
@@ -917,7 +917,7 @@ function whyNoSpawn(order: { causeKey: string; }, { memory, claimable }: { memor
 function spawnWorker(order: { session: string; causeKey: string; cause?: string; title?: string; replaces?: { branch: string; }[]; }, agents: { label: string; status: string; }[], roster: string[], { run = defaultRun, env = spawnEnvironment(), drained = [],
   claimable, claimer, memory }: {
         run?: (args: string[]) => string; env?: Record<string, string>; drained?: readonly string[];
-        claimable?: (order: { causeKey: string; }) => string | null; claimer?: SpawnClaimer;
+        claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer;
         memory?: () => string | null;
     } = {}): {
     label: string; workspace: string; profile: { kind: string; model: string; effort: string; };
@@ -3884,6 +3884,22 @@ const CAPACITY_REFUSAL = new RegExp(String.raw`^(\S+): (${GONE_AUTHOR_PREFIX}no 
   + String.raw`(?:, and this tick has already started \d+ \(MAX_SPAWNS_PER_TICK is \d+\))?)$`);
 
 /**
+ * #4524: THE PHRASE THAT MAKES A B4 OVERLAP A WAIT. {@link spawnClaimability} writes it into the reason of a chairman row whose overlapping pull request is
+ * in the merge queue, and {@link MERGE_QUEUE_WAIT_REFUSAL} reads it back, so the producer and the classifier share one string and cannot drift apart.
+ */
+export const MERGE_QUEUE_WAIT_PHRASE = "which is in the merge queue";
+
+/**
+ * HOW LONG A ROW MAY WAIT FOR A PULL REQUEST IN THE MERGE QUEUE BEFORE IT IS "NOWHERE TO GO" AFTER ALL: AN HOUR. One wait was measured, not a
+ * distribution: agent-org#545 was enqueued 20:39:43Z and merged 20:44:45Z on 2026-10-09, five minutes (read off the row's comments, #4524). An hour is
+ * twelve times that, so a PR that is still queued after it is stuck and is a fault like any other, not a wait.
+ */
+export const MERGE_QUEUE_WAIT_LIMIT_MS = 60 * 60 * 1000;
+
+/** `<causeKey>: <whatever routed it>; no spawn: #N waits for <PR>, which is in the merge queue: ...`, as {@link spawnClaimability} words it. No `;` inside the capture. */
+const MERGE_QUEUE_WAIT_REFUSAL = new RegExp(String.raw`^(\S+): .*; no spawn: (#\d+ waits for [^;]*${MERGE_QUEUE_WAIT_PHRASE}[^;]*)$`);
+
+/**
  * Which of a tick's refusals are a seat WAITING ITS TURN and which are an order that has no way to arrive (#3029).
  *
  * ONE SUMMARY LINE FOR BOTH IS WHAT KEPT `N order(s) had nowhere to go` IN THE JOURNAL FOR 30 TICKS: `ceo` was `working` on a 24-minute turn
@@ -3902,8 +3918,10 @@ export function splitRefusals(refused: string[]): { busy: { key: string; reason:
   for (const line of refused) {
     const seat = BUSY_SEAT_REFUSAL.exec(line);
     const capacity = CAPACITY_REFUSAL.exec(line);
+    const queued = MERGE_QUEUE_WAIT_REFUSAL.exec(line);
     if (seat) busy.push({ key: seat[1], reason: seat[2], line, limitMs: BUSY_SEAT_DEFERRAL_MS, limitFor: "a seat mid-turn" });
     else if (capacity) busy.push({ key: capacity[1], reason: capacity[2], line, limitMs: CAPACITY_WAIT_LIMIT_MS, limitFor: "a free engineer seat" });
+    else if (queued) busy.push({ key: queued[1], reason: queued[2], line, limitMs: MERGE_QUEUE_WAIT_LIMIT_MS, limitFor: "a pull request in the merge queue" });
     else faults.push(line);
   }
   return { busy, faults };
@@ -4897,7 +4915,7 @@ function targetFor(order: {
         run: (args: string[]) => string; spawned: number; ineligibleReason?: (label: string) => string | null;
         relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>;
         env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
-        claimable?: (order: { causeKey: string; }) => string | null; claimer?: SpawnClaimer; hostLoad?: () => HostLoad;
+        claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer; hostLoad?: () => HostLoad;
     } & ReviewerDeps): {
     label: string; profile?: { kind: string; model: string; effort: string; }; claimed?: ClaimedRow;
     workspace?: string; reviewer?: true; order?: { prompt: string; };
@@ -5301,7 +5319,7 @@ export function deliver(orders: { session: string; causeKey: string; prompt: str
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
           counts?: Map<string, number>; ineligibleReason?: (label: string) => string | null;
           env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
-          claimable?: (order: { causeKey: string; }) => string | null; claimer?: SpawnClaimer;
+          claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer;
           memory?: () => string | null; hostLoad?: () => HostLoad; launch?: LaunchFacts; unavailable?: (label: string) => string | null;
           sleep?: (ms: number) => void; contextRoot?: string; clock?: OrderClock;
           relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>; now?: () => number;
@@ -5899,27 +5917,115 @@ export function rowOfOrder(order: { causeKey: string; }): number | null {
  * spawning when GitHub is down is bypassed and then never consulted. It is SAID. The open-PR list is read once
  * per tick and only when a row has a Region to compare -- it is the expensive read.
  *
+ * A CHAIRMAN ROW'S REFUSAL IS WRITTEN ON THE ROW (#4524, `startFresh`): the journal line above is the only place anyone is told, and
+ * on 2026-10-09 four ticks of `UNDELIVERED ... #4629 would be refused at the claim by the file-overlap check (B4)` were read by the
+ * chairman as the pass serving plain orders first. It is written ONCE per cause ({@link sayOnChairmanRow}), through `post`, which is
+ * leak-guarded and is the one write here. When the pull request in the way is IN THE MERGE QUEUE ({@link inMergeQueue}) the claim
+ * would refuse today and clear by itself, so the answer is a WAIT that names the PR ({@link MERGE_QUEUE_WAIT_PHRASE}), not a refusal.
+ * B4 is not bypassed either way: a wait and a refusal both leave the row unstarted.
  *
  * @returns why the claim would refuse, or `null`
  */
-export function spawnClaimability({ run = defaultGh,
-  warn = (line) => { process.stderr.write(`${line}\n`); } }: { run?: (args: string[]) => string; warn?: (line: string) => void; } = {}): (order: { causeKey: string; }) => string | null {
+export function spawnClaimability({ run = defaultGh, post = guardedGh, repos,
+  warn = (line) => { process.stderr.write(`${line}\n`); } }: { run?: (args: string[]) => string; post?: (args: string[]) => string; warn?: (line: string) => void;
+    repos?: readonly { key: string; repo: string; }[]; } = {}): (order: { causeKey: string; startFresh?: boolean; }) => string | null {
   let openPrs: ReturnType<typeof lookupOpenPrFiles> | undefined;
+  const readOpenPrs = () => {
+    openPrs ??= (readWithFirstWaveTogether((r) => lookupOpenPrFiles({ run: r, log: warn, repos }), run, run === defaultGh ? runBatch : undefined) as ReturnType<typeof lookupOpenPrFiles>);
+    return openPrs;
+  };
   return (order) => {
     const row = rowOfOrder(order);
     if (row === null) return `cannot tell which row "${order.causeKey}" is about, so cannot ask the claim's checks`;
-    const blocked = blockedByEdgeReason(lookupBlockedByEdge(row, { run }));
-    if (blocked) return `#${row} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`;
-    const mine = lookupMyRegionFiles(row, { run });
-    if (mine === null || mine.length === 0) return null;
-    openPrs ??= (readWithFirstWaveTogether((r) => lookupOpenPrFiles({ run: r, log: warn }), run, run === defaultGh ? runBatch : undefined) as ReturnType<typeof lookupOpenPrFiles>);
-    if (openPrs === null) {
-      warn(`wake: could not read the open pull requests -- offering #${row} a spawn anyway (B4 fails open).`);
-      return null;
-    }
-    const { reason } = fileOverlapReason(mine, openPrs, { rowNumber: row });
-    return reason ? `#${row} would be refused at the claim by the file-overlap check (B4): ${reason}` : null;
+    const chairman = order.startFresh === true;
+    const hold = claimHold(row, { run, warn, readOpenPrs, chairman, repos });
+    if (hold === null) return null;
+    if (chairman) sayOnChairmanRow(row, hold, { run, post, warn });
+    return hold.reason;
   };
+}
+
+/** Why the claim would not take a row now: the line the journal prints, and `key`, which names the CAUSE so a row is told of it once. */
+type ClaimHold = { reason: string; key: string; waits: boolean; };
+
+/**
+ * The claim's own checks for a row, in the claim's order: #1886's `blockedBy` edge, then B4. `null` when neither would refuse, or could not ask
+ * (both fail open, as the claim does). `chairman` is asked for the one read a plain row does not pay: whether the PR in B4's way is in the merge queue.
+ */
+function claimHold(row: number, { run, warn, readOpenPrs, chairman, repos }: { run: (args: string[]) => string; warn: (line: string) => void; readOpenPrs: () => ReturnType<typeof lookupOpenPrFiles>; chairman: boolean; repos?: readonly { key: string; repo: string; }[]; }): ClaimHold | null {
+  const blocked = blockedByEdgeReason(lookupBlockedByEdge(row, { run }));
+  if (blocked) {
+    return { reason: `#${row} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`, waits: false,
+      key: `blockedBy:${createHash("sha256").update(blocked).digest("hex").slice(0, 8)}` };
+  }
+  const mine = lookupMyRegionFiles(row, { run });
+  if (mine === null || mine.length === 0) return null;
+  const openPrs = readOpenPrs();
+  if (openPrs === null) {
+    warn(`wake: could not read the open pull requests -- offering #${row} a spawn anyway (B4 fails open).`);
+    return null;
+  }
+  const overlap = firstOverlap(mine, openPrs, row);
+  if (overlap === null) return null;
+  const named = prLabel(overlap.pr);
+  if (chairman && inMergeQueue(overlap.pr, { run, warn, repos })) {
+    return { key: `queue:${named}`, waits: true,
+      reason: `#${row} waits for ${named}, ${MERGE_QUEUE_WAIT_PHRASE}: B4 (no two open pull requests touch the same file) clears when it merges, and the next tick starts a fresh engineer for it` };
+  }
+  return { reason: `#${row} would be refused at the claim by the file-overlap check (B4): ${overlap.reason}`, key: `B4:${named}`, waits: false };
+}
+
+/**
+ * The first open pull request B4 would refuse a row for, and why. The rule is asked ONE pull request at a time: every exclusion in it (own PR,
+ * held and waiting, not comparable) is per pull request, so the first refusal of a one-element list is the first refusal of the whole one, and the
+ * pull request is known -- which is what a wait needs and the rule's own text does not give back as data.
+ */
+function firstOverlap(mine: string[], openPrs: NonNullable<ReturnType<typeof lookupOpenPrFiles>>, row: number) {
+  for (const pr of openPrs) {
+    const { reason } = fileOverlapReason(mine, [pr], { rowNumber: row });
+    if (reason) return { pr, reason };
+  }
+  return null;
+}
+
+/** `#N`, or `#N in owner/repo` for a pull request of a repository other than the first: the rule's own `prName`. */
+function prLabel(pr: { number: number; }): string {
+  const { repo } = pr as { repo?: string; };
+  return repo === undefined ? `#${pr.number}` : `#${pr.number} in ${repo}`;
+}
+
+/**
+ * Is this pull request in the merge queue? `gh pr view --json` has no such field, so it is the GraphQL `mergeQueueEntry`, one read for one pull
+ * request. A read that fails says so and answers "no": a refusal is the answer that never hides a row, a wait is the one that excuses it.
+ */
+function inMergeQueue(pr: { number: number; }, { run, warn, repos }: { run: (args: string[]) => string; warn: (line: string) => void; repos?: readonly { key: string; repo: string; }[]; }): boolean {
+  const { repo } = pr as { repo?: string; };
+  const slug = repo ?? (repos ?? homeProjectDeclaration().code).find((r) => r.key === "")?.repo ?? REPO;
+  const [owner, name] = slug.split("/");
+  const query = `{repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){pullRequest(number:${pr.number}){mergeQueueEntry{position}}}}`;
+  try {
+    return run(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.pullRequest.mergeQueueEntry != null"]).trim() === "true";
+  } catch (err) {
+    warn(`wake: could not read whether ${slug}#${pr.number} is in the merge queue (${firstLine(err)}) -- reporting the overlap as a refusal, not a wait.`);
+    return false;
+  }
+}
+
+/**
+ * Write a chairman row's claim hold on the row, UNLESS this cause is already there: the marker carries the row and the cause, so a refusal that
+ * stands for an hour is one comment, and a NEW cause (the wait ends and the PR is still open) is a second. The row is the state, so the read is the
+ * row's comments and nothing is kept in the ledger. A write that fails is SAID and retried by the next tick -- the journal line still stands.
+ */
+function sayOnChairmanRow(row: number, hold: ClaimHold, { run, post, warn }: { run: (args: string[]) => string; post: (args: string[]) => string; warn: (line: string) => void; }) {
+  const marker = `<!-- chairman-row-hold:${row}:${hold.key} -->`;
+  try {
+    if (rowComments(row, marker, run).some((c) => c.marked)) return;
+    const headline = hold.waits ? "**Waiting, not refused: this `priority:chairman` row is not started this tick, and will be.**"
+      : "**This `priority:chairman` row was NOT started this tick: the claim would refuse it.**";
+    post(["issue", "comment", String(row), "--body", `${marker}\n${headline} ${hold.reason}\n\nThe gate offers the row again every tick and starts a fresh engineer on the first tick the cause is gone. This is written once for this cause.\n`]);
+  } catch (err) {
+    warn(`wake: could not write #${row}'s claim ${hold.waits ? "wait" : "refusal"} on the row (${firstLine(err)}) -- the journal line stands and the next tick tries again.`);
+  }
 }
 
 // --- #2405: A SPAWNED ENGINEER STARTS IN ITS ROW'S WORKTREE, BECAUSE THE SPAWNER CLAIMED THE ROW FIRST ---
