@@ -9,7 +9,7 @@ Outside-Region: `.changeset/the-claim-brief-says-what-it-blocks.md` — the chan
 
 Acceptance:
 ```bash
-cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.ts src/blast-tail.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/blast-tail.test.ts
 ```
 
 Closes: a11ign/a11ign#4605
