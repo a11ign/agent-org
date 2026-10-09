@@ -69,6 +69,7 @@ export const ORG_HEALTH_CLASSES = Object.freeze({
   "held-on-satisfied-order": DIGEST,
   "umbrella-edge-order": DIGEST,
   "idle-with-open-rows": DIGEST,
+  "row-shelved-against-the-pr-that-waits-on-it": DIGEST,
   "row-without-exactly-one-state": DIGEST,
   "wait-without-reason": DIGEST,
   "board-disagrees-with-reality": DIGEST,

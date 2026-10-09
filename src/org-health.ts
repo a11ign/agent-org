@@ -66,7 +66,11 @@ import { ANSWER_PREFIX, BACKLOG_LABEL } from "./project-vocabulary.ts";
 // A LEAF too (it imports `newest-check-run.ts` and `pr-hold-state.ts`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
-import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.ts";
+import { MANUAL_WAIT_HOURS, PARKED_LABEL, STALE_WAIT_GRACE_MINUTES, isItemWait, namedDoneWhens, parseWaits, pastGrace } from "./wait-condition.ts";
+import { holdersOf } from "./pr-hold-state.ts";
+import { declaredClosedRows } from "./row-claim/file-overlap-rule.mjs";
+import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
 import { IDLE_REASONS, idleLine } from "./idle-with-open-rows.ts";
 import { repoVerdict } from "./release-behind-main.ts";
@@ -206,6 +210,7 @@ export const SIGNALS = Object.freeze({
   AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
   STATE_LABEL: "row-without-exactly-one-state",
   IDLE_WITH_OPEN_ROWS: "idle-with-open-rows",
+  SHELVED_CIRCLE: "row-shelved-against-the-pr-that-waits-on-it",
   RELEASE_FAILED: "release-run-failed",
   RELEASE_BEHIND_MAIN: "release-behind-main",
   BOARD_TRUTH: "board-disagrees-with-reality",
@@ -214,7 +219,7 @@ export const SIGNALS = Object.freeze({
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
-const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER }) as Readonly<Record<string, string>>);
+const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER, [SIGNALS.SHELVED_CIRCLE]: FIRST_READER }) as Readonly<Record<string, string>>);
 
 /**
  * `detail` is one line: for `unknown` it is WHY, for `tripped` the numbers. `firstTrippedAt` is epoch ms, or `null` when the signal's own source carries no time.
@@ -759,6 +764,80 @@ export function idleWithOpenRowsSignal({ idle }: { idle: import("./idle-with-ope
   return { signal: SIGNALS.IDLE_WITH_OPEN_ROWS, status: "tripped", firstTrippedAt: null,
     discriminator: `${SIGNALS.IDLE_WITH_OPEN_ROWS}@${kinds.join(",")}${defects.length > 0 ? `:${defects.join(",")}` : ""}`,
     detail: `no engineer holds a row, and ${idleLine(idle.findings, idle.dateHeld)}` };
+}
+
+/**
+ * A pull request as the circle reading needs it: the fields the gate's `prsRead` already carries (`repo` is on a PR of any repository but the first).
+ */
+export type CirclePr = { number: number, repo?: string, labels?: (string | { name?: string })[], body?: string, statusCheckRollup?: any[] };
+export type CircleRow = { number: number, body?: string, blockedBy?: { nodes?: { number?: number }[] } };
+export type ShelvedCircle = { row: number, pr: string, waits: string, declared: string };
+
+/** How a PR's `Closes` line reads for the row: why B4's own-PR exemption (`isOwnPrOf`) stayed off. */
+function whyNotOwnPr({ pr, row, trackerRepo }: { pr: CirclePr; row: number; trackerRepo: string; }): string {
+  const declaration = extractClosesDeclaration(pr.body);
+  if (declaration.kind === "none") return "it declares `Closes: none`, which closes nothing";
+  if (declaration.kind !== "closes") return `its \`Closes\` is ${declaration.kind}`;
+  const bare = closesReferences(declaration).some((ref) => ref.repo === null && ref.number === row);
+  if (bare && pr.repo !== undefined && pr.repo !== trackerRepo) {
+    return `its bare \`#${row}\` names ${pr.repo}'s own issue, not the tracker's row (write \`${trackerRepo}#${row}\`)`;
+  }
+  return `its \`Closes\` names other rows than #${row}`;
+}
+
+/** The route from the PR back to the row -- a `Waiting-for`, a closed row's `blockedBy` edge, or its `Waits-on-done-when` -- or `null` when none leads there. */
+function routeBack({ pr, closed, rows, row, trackerRepo }: { pr: CirclePr; closed: number[]; rows: CircleRow[]; row: number; trackerRepo: string; }): string | null {
+  const wait = parseWaits(pr.body).find((w) => isItemWait(w) && w.number === row && (w.repo ?? trackerRepo) === trackerRepo);
+  if (wait) return `\`Waiting-for: ${wait.text}\``;
+  for (const number of closed) {
+    const closing = rows.find((r) => r.number === number);
+    if ((closing?.blockedBy?.nodes ?? []).some((n) => Number(n.number) === row)) return `the row it closes, #${number}, is blockedBy #${row}`;
+    if (namedDoneWhens(String(closing?.body ?? "")).some((n) => n.row === row)) return `the row it closes, #${number}, \`Waits-on-done-when: ${row}.*\``;
+  }
+  return null;
+}
+
+const nameOf = (pr: CirclePr) => (pr.repo === undefined ? `#${pr.number}` : `#${pr.number} in ${pr.repo}`);
+const labelNames = (pr: CirclePr) => (pr.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
+
+/**
+ * #4401: A ROW SHELVED BY B4 AGAINST A PULL REQUEST THAT WAITS ON THAT ROW IS A CIRCLE, and nobody could claim either end of it. Measured 2026-10-09: #4372 was shelved on 71 ticks,
+ * `overlaps #39 in a11ign/lab`, while lab#39 was held (`hold:ceo`, `Waiting-for: closed #4372`) and declared `Closes: none`, which turned off `isHeldPrWaitingOn` (a PR that closes nothing waits on
+ * nothing) and `isOwnPrOf`. The first repair, a bare `Closes: #4305, #4372` in a LAYER repository's PR, did nothing either: a bare number there is that repository's issue.
+ *
+ * THE FINDING IS THE STRUCTURE, NOT A CLOCK: the row's reason names the PR (`overlaps ${name},` -- the words B4 writes), the PR is held, parked or red (an UNHELD, green PR on the same file is a
+ * real collision and is not named), and a route leads from the PR back to the row. That cannot clear itself, so no bound is waited for before it is said; the order is the tick's and holds two hours.
+ * It decides on what the gate already read (the shelved map, the PRs, the open rows) and makes no call.
+ *
+ * @param {{ shelved: ReadonlyMap<number, string>, prs: CirclePr[], rows: CircleRow[], trackerRepo?: string }} input
+ * @returns {ShelvedCircle[]}
+ */
+export function shelvedCircles({ shelved, prs, rows, trackerRepo = homeProjectDeclaration().tracker[0].repo }: { shelved: ReadonlyMap<number, string>; prs: CirclePr[]; rows: CircleRow[]; trackerRepo?: string; }): ShelvedCircle[] {
+  const circles: ShelvedCircle[] = [];
+  for (const pr of prs) {
+    const names = labelNames(pr);
+    if (holdersOf(names).length === 0 && !names.includes(PARKED_LABEL) && redSinceOf(pr) === null) continue;
+    const closed = declaredClosedRows(pr.body, { ...(pr.repo === undefined ? {} : { prRepo: pr.repo }), trackerRepo });
+    for (const [row, reason] of shelved) {
+      if (!reason.includes(`overlaps ${nameOf(pr)},`) || closed.includes(row)) continue;
+      const waits = routeBack({ pr, closed, rows, row, trackerRepo });
+      if (waits !== null) circles.push({ row, pr: nameOf(pr), waits, declared: whyNotOwnPr({ pr, row, trackerRepo }) });
+    }
+  }
+  return circles;
+}
+
+/**
+ * SIGNAL: A ROW SHELVED AGAINST THE PR THAT WAITS ON IT (#4401). `circles` is {@link shelvedCircles}' answer; `null` is a tick whose pull-request or Ready read was refused, which is unknown and NEVER clear.
+ * @param {{ circles: ShelvedCircle[] | null }} input
+ * @returns {Reading}
+ */
+export function shelvedCircleReading({ circles }: { circles: ShelvedCircle[] | null; }): Reading {
+  if (circles === null) return unknown(SIGNALS.SHELVED_CIRCLE, "the pull requests or the gate's own shelving list could not be read");
+  if (circles.length === 0) return clear(SIGNALS.SHELVED_CIRCLE);
+  const key = circles.map((c) => `${c.row}:${c.pr}`).sort().join(",");
+  return { signal: SIGNALS.SHELVED_CIRCLE, status: "tripped", firstTrippedAt: null, discriminator: `${SIGNALS.SHELVED_CIRCLE}@${key}`,
+    detail: circles.map((c) => `row #${c.row} is shelved by B4 against ${c.pr}, which waits on it (${c.waits}) and is not its own PR because ${c.declared}`).join("; ") };
 }
 
 /**
@@ -1341,8 +1420,8 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, nodeStrips?: NodeStripFact | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.ts").IdleRows, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
- *           classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null, milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null }} facts `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, nodeStrips?: NodeStripFact | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.ts").IdleRows, shelvedCircle?: ShelvedCircle[] | null, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
+ *           classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null, milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null }} facts `shelvedCircle` (#4401) is `shelvedCircles`' answer over the shelving list and pull requests the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
 export function orgHealthReadings(facts: {
@@ -1351,7 +1430,7 @@ export function orgHealthReadings(facts: {
         drift: { behind: number; ahead: number; dirty: string[]; } | null; primarySince: number | null;
         fleet?: FleetCaptures | null; waiting?: FleetWaiting | null; copies?: CopyPair[] | null; overdue?: { items: OverdueCandidate[] | null; unread?: string[]; };
         waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"]; bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"]; manual: number; } | null;
-        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; releaseRuns?: ReleaseRuns | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
+        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
     }): Reading[] {
   const readings = [noMergeReading(facts), redPrReading(facts), refusedRowReading(facts),
@@ -1371,6 +1450,7 @@ export function orgHealthReadings(facts: {
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows, now: facts.now }));
   if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
+  if (facts.shelvedCircle !== undefined) readings.push(shelvedCircleReading({ circles: facts.shelvedCircle }));
   if (facts.releaseRuns !== undefined) readings.push(releaseFailedReading({ releaseRuns: facts.releaseRuns }));
   if (facts.releaseBehind !== undefined) readings.push(...releaseBehindReadings({ now: facts.now, behind: facts.releaseBehind }));
   if (facts.classRepeat !== undefined) readings.push(...classRepeatReadings({ now: facts.now, classRepeat: facts.classRepeat }));
@@ -1441,6 +1521,9 @@ const REMEDY = (Object.freeze({
     + "`NO_STATE_LABEL` and `TWO_STATE_LABELS` are `row-without-exactly-one-state`'s. **`READY_UNOFFERED` IS A DEFECT, NOT A STATE**: a `" + READY_LABEL + "` row the gate has no reason to withhold while no one works, "
     + "so the offer is wrong or is not being taken; read `work:tick`'s own output for it and FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn. Rows waiting on a `Not-before:` date are counted and not named. "
     + "It clears the tick an engineer holds a row.",
+  [SIGNALS.SHELVED_CIRCLE]: "A row B4 shelves against a pull request that WAITS ON THAT ROW is a circle: the row cannot be claimed while the PR is open on its file, and the PR cannot merge until the row closes. Each row and PR is named above, with the route from the PR "
+    + "back to the row and why the PR is not counted as the row's own work. `product-manager` reads it first and breaks the circle at ONE end: the PR declares `Closes:` for the row it is the vehicle of (in a LAYER repository's PR the row is written QUALIFIED, "
+    + "`<tracker owner/repo>#<n>`, because a bare number there is that repository's own issue and the gate drops it), or the row's Region is narrowed to files the PR does not touch. Do not lift the PR's hold to escape it: say on the row which end you broke.",
   [SIGNALS.RELEASE_FAILED]: "The newest `release.yml` run on `main` that concluded failed, and no later run has succeeded, so what merged since is NOT released and the tag the org follows is behind. "
     + "The job (and step) are named above: READ THE RUN'S LOG for that step before choosing. A cause that was TRANSIENT (a runner lost, a registry or network error) is retried from the SAME run: "
     + "`gh run rerun <run id> --failed -R <the repository in the URL above>`. A cause FIXED ON `main` since (the run is at an older sha) needs a NEW run, which a rerun of the old one does not give: "
