@@ -47,8 +47,23 @@ export function withClosingRowOwners(prs: any[], openRows: any[], rowsRepo?: str
     const closing = closingRowOwner(pr, held, rowsRepo);
     if (closing === "split") return pr;
     const owner = closing ?? branchRowOwner(pr, held);
-    return owner ? { ...pr, rowOwner: owner } : pr;
+    if (owner) return { ...pr, rowOwner: owner };
+    return pr.labelEnded && closingRowsClosed(pr, openRows, rowsRepo) ? { ...pr, closingRowsClosed: true } : pr;
   });
+}
+
+/**
+ * #4644: WHETHER EVERY ROW A PULL REQUEST NAMES IS CLOSED, which is what lets `ownerOfPr` call a dead owner's PR `owner-gone` instead of "nobody
+ * could be named". a11ign#4626 carried `session:worker-4624`, worker-4624 ended and its row was closed while the PR stayed open: rungs 2-5 need an
+ * OPEN claimed row, so all four failed and the PR fell to `ceo`. Closed is read as ABSENT FROM `openRows`, so TWO READINGS MUST NOT PASS FOR IT:
+ * no rows read at all (`openRows` empty because the read was refused, the case `withClosingRowOwners` already leaves as it was) and a PR that names
+ * no row (nothing to be closed). Only a PR that names a row, every one of which is missing from a non-empty read, is flagged.
+ */
+function closingRowsClosed(pr: any, openRows: any[], rowsRepo?: string) {
+  if (openRows.length === 0) return false;
+  const open = new Set(openRows.map((row) => Number(row.number)));
+  const named = rowsNamedBy(pr, rowsRepo);
+  return named.length > 0 && named.every(({ row }) => !open.has(row));
 }
 
 /**

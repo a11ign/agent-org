@@ -190,3 +190,13 @@ test("(#4624) a dependency bot's pull request overlapping an earlier one goes to
   assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/);
   assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/);
 });
+
+test("(#4644) a dead owner's pull request whose row is closed overlapping an earlier one goes to product-manager with the ended owner named", () => {
+  const gone = prOf(149, PR_149, { session: "worker-4624", labelEnded: true, closingRowsClosed: true } as Partial<Pr>);
+  const [order, ...rest] = ordersOf([prOf(148, PR_148), gone]);
+  assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all");
+  assert.equal(order.session, "product-manager");
+  assert.match(order.prompt, /label names `worker-4624`, which has ENDED, and the row it closed is closed/);
+  assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/);
+  assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/);
+});
