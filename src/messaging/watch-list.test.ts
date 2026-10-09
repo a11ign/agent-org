@@ -49,7 +49,7 @@ const runAsGithubSays = (state: string): { status: string; conclusion: string | 
  * @param {Record<string, string>} states
  */
 function world(states: Record<string, string>) {
-  const asked = /** @type {string[]} */ ([]);
+  const asked: string[] = /** @type {string[]} */ ([]);
   /** @param {string} thing @returns {string} */
   const read = (thing: string): string => {
     asked.push(thing);

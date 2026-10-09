@@ -40,6 +40,40 @@
     "src/trace/trace.test.ts",
     "src/trace/triage-sample.test.ts",
     "src/trace/wake-cache.test.ts",
-    "src/trace/waterfall.test.ts"
+    "src/trace/waterfall.test.ts",
+    // NEVER TYPECHECKED BEFORE, CONVERTED BY `js-to-ts` (a11ign/a11ign#4270): the same shape as the trace tests above, for `src/messaging/`. The 10 sources there are clean; these 31 tests were `.mjs` with no
+    // `// @ts-check`, and what is left after `inferFromUsage` is fixture shapes fitted to the first call (`never[]` where a later call pushes a string, a stub missing a field the next one has). Measured
+    // 2026-10-09 with `tsc --noEmit`: 451 errors in these 31 files. Fix a file, delete its line.
+    "src/messaging/answers.test.ts",
+    "src/messaging/ask-ceo.test.ts",
+    "src/messaging/classify.test.ts",
+    "src/messaging/converse.test.ts",
+    "src/messaging/core.test.ts",
+    "src/messaging/correct.test.ts",
+    "src/messaging/forme-button.test.ts",
+    "src/messaging/github-writer.test.ts",
+    "src/messaging/inbound.test.ts",
+    "src/messaging/listen.test.ts",
+    "src/messaging/measure.test.ts",
+    "src/messaging/placeholders.test.ts",
+    "src/messaging/providers/telegram/pair.test.ts",
+    "src/messaging/providers/telegram/poll.test.ts",
+    "src/messaging/providers/telegram/send.test.ts",
+    "src/messaging/record.test.ts",
+    "src/messaging/reply-cli.test.ts",
+    "src/messaging/reply.test.ts",
+    "src/messaging/secret.test.ts",
+    "src/messaging/selftest.test.ts",
+    "src/messaging/session-queue.test.ts",
+    "src/messaging/sources/incidents.test.ts",
+    "src/messaging/sources/milestones.test.ts",
+    "src/messaging/sources/readers.test.ts",
+    "src/messaging/sources/requests.test.ts",
+    "src/messaging/sources/stall.test.ts",
+    "src/messaging/sources/summary.test.ts",
+    "src/messaging/walk.test.ts",
+    "src/messaging/watch-buttons.test.ts",
+    "src/messaging/watch-list.test.ts",
+    "src/messaging/watch-provider.test.ts"
   ]
 }

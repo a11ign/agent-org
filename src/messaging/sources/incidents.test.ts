@@ -286,7 +286,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   };
 
   test("POSITIVE CONTROL: with every read working all four incidents come back, unresolved", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: string[] = /** @type {string[]} */ ([]);
     const seen = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: good });
     assert.deepEqual(seen.events.map((event) => event.key).sort(), ["incident:ci-permission", "incident:fleet-down", "incident:gate-crash", "incident:trunk-red"]);
     assert.ok(seen.events.every((event) => event.resolved === false));
@@ -295,7 +295,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
 
   for (const name of Object.keys(good)) {
     test(`${name} throwing: that kind has no event (not even a resolved one), one cannot-ask line, and the others still answer`, async () => {
-      const lines = /** @type {string[]} */ ([]);
+      const lines: string[] = /** @type {string[]} */ ([]);
       const readers = { ...good, [name]: () => { throw new Error("gh: HTTP 502"); } };
       const seen = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers });
       assert.equal(seen.events.length, 3);
@@ -346,7 +346,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   });
 
   test("(2) with an open row and an org comment, Being done quotes the comment with its age, asked once per kind by the event's own key", async () => {
-    const asked = /** @type {string[]} */ ([]);
+    const asked: string[] = /** @type {string[]} */ ([]);
     const { events } = await observeWith({ readFixRow: (/** @type {string} */ key: string) => { asked.push(key); return { number: 3500, comment: comment("re-running trunk on a fix") }; } });
     for (const event of events) assert.equal(lineOf(event, "Being done"), 'Being done: row #3500, a11ign-ai-workers 25m ago: "re-running trunk on a fix".');
     assert.deepEqual(asked.sort(), Object.keys(IMPACTS).sort());
@@ -372,7 +372,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   });
 
   test("(4) the cleared message carries how long it lasted, read from when the chairman was told, and asked for by key", async () => {
-    const asked = /** @type {string[]} */ ([]);
+    const asked: string[] = /** @type {string[]} */ ([]);
     const { events } = await observeIncidents({ now: () => NOW, log: () => {}, readers: { ...green, readEpisodeStart: (/** @type {string} */ key: string) => { asked.push(key); return NOW - 90 * MINUTE; } } });
     assert.ok(events.every((event) => event.resolved === true), "positive control: all four are resolved events");
     for (const event of events) assert.match(String(event.text), /\nLasted: at least 1h 30m \(counted from the message that told you\)\.$/);
@@ -392,7 +392,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   });
 
   test("(4) a duration nobody could read is `not known`, never a short one, and the cleared message is still sent", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: string[] = /** @type {string[]} */ ([]);
     for (const readers of [{}, { readEpisodeStart: () => null }, { readEpisodeStart: () => { throw new Error("ledger: EACCES"); } }]) {
       const { events } = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: { ...green, ...readers } });
       assert.equal(events.length, 4);
@@ -402,7 +402,7 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
   });
 
   test("(5) a row read that fails says `I could not read it`, and the incident is still sent through the core", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: string[] = /** @type {string[]} */ ([]);
     const { events, cannotAsk } = await observeIncidents({ now: () => NOW, log: (line) => lines.push(line), readers: { ...unresolved, readFixRow: () => { throw new Error("gh: HTTP 502"); } } });
     assert.equal(events.length, 4);
     for (const event of events) assert.equal(lineOf(event, "Being done"), "Being done: I could not read it.");

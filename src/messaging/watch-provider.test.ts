@@ -61,8 +61,8 @@ const github = /** @type {any} */ ({
 
 /** A Telegram that answers every `sendMessage`. `requests` is the URLs it received and `bodies` the payloads. */
 function fakeTelegram() {
-  const requests = /** @type {string[]} */ ([]);
-  const bodies = /** @type {Record<string, any>[]} */ ([]);
+  const requests: string[] = /** @type {string[]} */ ([]);
+  const bodies: any[] = /** @type {Record<string, any>[]} */ ([]);
   const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url: string, /** @type {{ body?: string }} */ init: { body?: string; }) => {
     requests.push(url);
     bodies.push(JSON.parse(init?.body ?? "{}"));

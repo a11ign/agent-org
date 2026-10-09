@@ -27,16 +27,15 @@ import { NEEDS_CHAIRMAN, requestEvent, requestKey } from "./sources/requests.mjs
 /** The closed set. Pinned by the test: a fourth is a change of what the liaison may do. */
 export const VERBS = Object.freeze(["withdraw", "reroute", "re-ask"]);
 /** Why a request is withdrawn, as the comment says it. */
-export const WITHDRAW_REASONS = Object.freeze(/** @type {Record<string, string>} */ ({ stale: "stale", "wrongly-labelled": "wrongly labelled", "already-done": "already done" }));
+export const WITHDRAW_REASONS = Object.freeze({ stale: "stale", "wrongly-labelled": "wrongly labelled", "already-done": "already done" } as Record<string, string>);
 /** The session `reroute` hands the row to. A constant and not an argument: the verb's whole meaning is that this one owns a wrong label, scope or done-when. */
 export const REROUTE_TO = "product-manager";
 
-/**
- * @typedef {import("./record.mjs").Outcome} Outcome
- * @typedef {import("./answers.mjs").RowRef} RowRef
- * @typedef {{ref: string, at: string, words: string, text: string, reason: string | undefined, row: RowRef}} Said  what a plan is built from
- * @typedef {{steps: (github: import("./answers.mjs").GithubWriter) => [string, () => Promise<void>][], extra: Record<string, unknown>}} Plan
- */
+type Outcome = import("./record.mjs").Outcome;
+type RowRef = import("./answers.mjs").RowRef;
+/** What a plan is built from. */
+type Said = { ref: string; at: string; words: string; text: string; reason: string | undefined; row: RowRef };
+type Plan = { steps: (github: import("./answers.mjs").GithubWriter) => [string, () => Promise<void>][]; extra: Record<string, unknown> };
 
 /** @param {string} verb @param {Said} said @param {string[]} lines @returns {string} an attribution, a sentence of what is being done, then his words quoted */
 function commentOf(verb: string, { ref, at, words }: Said, lines: string[]): string {
@@ -51,21 +50,21 @@ function reaskComment(body: string, { ref }: Said): string {
 /** The three plans. Each builds its writes from what was said, and knows nothing of the ledger or the row's labels. @type {Record<string, (said: Said, rerouteLabel: string) => Plan>} */
 const PLANS: Record<string, (said: Said, rerouteLabel: string) => Plan> = {
   withdraw: (said) => {
-    const why = WITHDRAW_REASONS[/** @type {string} */ (said.reason)];
+    const why = WITHDRAW_REASONS[said.reason as string];
     const body = commentOf("Withdrawn", said, [`\`${NEEDS_CHAIRMAN}\` is taken off because it is ${why}, as the chairman said:`]);
     return {
-      steps: (github) => [["comment", () => github.comment(said.row, body)], ["remove-label", () => github.removeLabel(said.row, NEEDS_CHAIRMAN)]],
+      steps: (github: { comment: (arg0: any,arg1: string) => any; removeLabel: (arg0: any,arg1: string) => any; }) => [["comment", () => github.comment(said.row, body)], ["remove-label", () => github.removeLabel(said.row, NEEDS_CHAIRMAN)]],
       extra: { reason: said.reason },
     };
   },
   reroute: (said, rerouteLabel) => {
     const body = commentOf("Rerouted", said, [`The chairman says something on this row is wrong. \`${rerouteLabel}\` is set so the ${REROUTE_TO} rules on it:`]);
     return {
-      steps: (github) => [["comment", () => github.comment(said.row, body)], ["set-answer", () => github.addLabel(said.row, rerouteLabel)]],
+      steps: (github: { comment: (arg0: any,arg1: string) => any; addLabel: (arg0: any,arg1: string) => any; }) => [["comment", () => github.comment(said.row, body)], ["set-answer", () => github.addLabel(said.row, rerouteLabel)]],
       extra: { to: REROUTE_TO },
     };
   },
-  "re-ask": (said) => ({ steps: (github) => [["comment", () => github.comment(said.row, reaskComment(said.text, said))]], extra: {} }),
+  "re-ask": (said) => ({ steps: (github: { comment: (arg0: any,arg1: string) => any; }) => [["comment", () => github.comment(said.row, reaskComment(said.text, said))]], extra: {} }),
 };
 
 /**
@@ -118,7 +117,7 @@ export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger:
 }
 
 /** What each verb is called once it is done, in the words of its comment's first line. */
-const VERB_DONE = Object.freeze(/** @type {Record<string, string>} */ ({ withdraw: "Withdrawn", reroute: "Rerouted", "re-ask": "Re-asked" }));
+const VERB_DONE = Object.freeze({ withdraw: "Withdrawn", reroute: "Rerouted", "re-ask": "Re-asked" } as Record<string, string>);
 
 /** @returns {Promise<string>} the label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.mjs` does `host-config.mjs`, so this file loads outside a configured host */
 async function vocabularyRerouteLabel(): Promise<string> {

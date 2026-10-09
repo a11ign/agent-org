@@ -42,7 +42,7 @@ function rows(count: number, more: Record<string, unknown> = {}): Record<string,
 function reader(overrides: Partial<Record<"issuesLabelled" | "mergedPullsSince" | "redPulls", (query: any) => Promise<any>>> = {}, nowMs = at("2026-10-02T07:00:00Z")) {
   const stale = new Date(nowMs - 30 * HOUR).toISOString();
   const fresh = new Date(nowMs - 2 * HOUR).toISOString();
-  const calls = /** @type {any[]} */ ([]);
+  const calls: { name: string; query: any; }[] = /** @type {any[]} */ ([]);
   const base = {
     issuesLabelled: async (/** @type {any} */ query: any) => {
       if (query.label === "needs:chairman") return rows(2);

@@ -23,6 +23,9 @@ const POLL_DEADLINE_MS = 1000;
 const BOOLEAN_CAPABILITIES = Object.freeze(["silent", "buttons", "replies", "conversation"]);
 
 export class ConformanceError extends Error {
+  failures: { check: string; message: string }[];
+  passed: string[];
+  skipped: { check: string; reason: string }[];
   /** @param {{check: string, message: string}[]} failures @param {string[]} passed @param {{check: string, reason: string}[]} skipped */
   constructor(failures: { check: string; message: string; }[], passed: string[], skipped: { check: string; reason: string; }[]) {
     super(`provider failed conformance: ${failures.map((failure) => `${failure.check} (${failure.message})`).join("; ")}`);

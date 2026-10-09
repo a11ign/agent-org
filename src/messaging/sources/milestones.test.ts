@@ -42,7 +42,7 @@ function declaration(contents: unknown): string {
  * @param {{ issues?: Record<number, Record<string, any>>, pulls?: Record<number, Record<string, any>>, releases?: Record<string, any>[] }} [world]
  */
 function readers({ issues = {}, pulls = {}, releases = [] }: { issues?: Record<number, Record<string, any>>; pulls?: Record<number, Record<string, any>>; releases?: Record<string, any>[]; } = {}) {
-  const asked = /** @type {string[]} */ ([]);
+  const asked: string[] = /** @type {string[]} */ ([]);
   return {
     asked,
     /** @param {{ repo: string, number: number }} query */

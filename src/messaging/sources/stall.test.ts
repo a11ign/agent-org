@@ -158,7 +158,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   const good = { readTicks: () => history(IDLE_FOR_THIRTY_MINUTES, { seats: seats("idle"), orders: rows(2) }), readLastMerge: () => NOW - 7 * HOUR };
 
   test("POSITIVE CONTROL: with both reads working both events come back", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: unknown = /** @type {string[]} */ ([]);
     const seen = await observeStalls({ now: () => NOW, log: (line) => lines.push(line), readers: good });
     assert.deepEqual(seen.events.map((event) => event.key).sort(), ["stall:all-idle", "stall:no-merge"]);
     assert.deepEqual(seen.cannotAsk, []);
@@ -166,7 +166,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   });
 
   test("an API error on the merge read: no merge event, a logged cannot-ask, and the other source still answers", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: string[] = /** @type {string[]} */ ([]);
     const readers = { ...good, readLastMerge: () => { throw new Error("gh: HTTP 502"); } };
     const seen = await observeStalls({ now: () => NOW, log: (line) => lines.push(line), readers });
     assert.deepEqual(seen.events.map((event) => event.key), ["stall:all-idle"]);
@@ -183,7 +183,7 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   });
 
   test("the logged reason has a token redacted, because a failed `gh` quotes its URL", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: string[] = /** @type {string[]} */ ([]);
     const secret = "bot123456:ABCdefGhIjKlMnOpQrStUvWxYz0123456789";
     await observeStalls({ now: () => NOW, log: (line) => lines.push(line), readers: { ...good, readLastMerge: () => { throw new Error(`fetch https://api.telegram.org/${secret}/x failed`); } } });
     assert.ok(!lines.join("\n").includes(secret));

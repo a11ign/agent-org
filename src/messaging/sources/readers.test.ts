@@ -37,7 +37,7 @@ const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`
 
 /** A GET-only GitHub: the first route whose pattern matches answers, an `Error` answer throws, and every path asked is kept. */
 function fakeGithub(/** @type {[RegExp, unknown][]} */ routes: [RegExp, unknown][]) {
-  const calls = /** @type {string[]} */ ([]);
+  const calls: string[] = /** @type {string[]} */ ([]);
   return {
     calls,
     async api(/** @type {string} */ path: string) {
@@ -81,7 +81,7 @@ function healthy(more: Partial<{ merged: string | null; trunk: unknown; seats: a
 
 /** @param {{ github: any, stateDir?: string, now?: () => number, seats?: any, unitText?: string | Error, fleetStatePath?: string, completedAt?: number | null }} input  `seats` may be a function, read at each sample; `completedAt` is the tick record's time, `null` for none */
 function readersFor({ github, stateDir = freshDirectory(), now = () => NOW, seats = seatsOf("idle"), unitText, fleetStatePath = join(stateDir, "fleet.json"), completedAt = NOW - MINUTE }: { github: any; stateDir?: string; now?: () => number; seats?: any; unitText?: string | Error; fleetStatePath?: string; completedAt?: number | null; }) {
-  const systemctlCalls = /** @type {string[][]} */ ([]);
+  const systemctlCalls: string[][] = /** @type {string[][]} */ ([]);
   const text = unitText ?? systemdShow({ ActiveState: "activating", StateChangeTimestamp: seconds(NOW - 1000), InactiveEnterTimestamp: seconds(NOW - 60_000) });
   const completionPath = join(stateDir, COMPLETION_FILE);
   if (completedAt !== null) writeCompletion(completionPath, { at: completedAt, exit: 0 });
@@ -217,7 +217,7 @@ describe("readGateUnit", () => {
     return path;
   };
   const ask = (/** @type {string | Error} */ text: string | Error, { unit = "example-work-tick.service", recordPath = recordIn(COMPLETED) } = {}) => {
-    const calls = /** @type {string[][]} */ ([]);
+    const calls: string[][] = /** @type {string[][]} */ ([]);
     const read = readGateUnit({ unit, recordPath, systemctl: async (argv) => { calls.push(argv); if (text instanceof Error) throw text; return text; } });
     return { read, calls };
   };
@@ -546,7 +546,7 @@ describe("the samples file", () => {
     const stateDir = freshDirectory();
     await takeSample({ github: healthy(), repo: REPO, stateDir, now: () => NOW, readSeats: () => seatsOf("idle") });
     writeFileSync(join(stateDir, "samples.jsonl"), `{ torn\n${readFileSync(join(stateDir, "samples.jsonl"), "utf8")}`);
-    const logged = /** @type {string[]} */ ([]);
+    const logged: string[] = /** @type {string[]} */ ([]);
     assert.equal(readTicks({ stateDir, log: (line) => logged.push(line) }).length, 1);
     assert.match(logged.join("\n"), /1 line\(s\) .* not JSON/);
   });
@@ -585,7 +585,7 @@ describe("the read-only gh allowlist covers `gh api`", () => {
   });
 
   test("the real reader's `api` builds `gh api <path>` and parses what it printed", async () => {
-    const commands = /** @type {string[][]} */ ([]);
+    const commands: unknown = /** @type {string[][]} */ ([]);
     const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return '{"workflow_runs": []}'; } });
     assert.deepEqual(await reader.api(READS[3]), { workflow_runs: [] });
     assert.deepEqual(commands, [["api", READS[3]]]);
@@ -611,7 +611,7 @@ describe("what one run costs and what `main` does with the readers", () => {
       writeFileSync(path, "{}\n");
       utimesSync(path, (NOW - ageMinutes * MINUTE) / 1000, (NOW - ageMinutes * MINUTE) / 1000);
       const { readers } = readersFor({ github: healthy(), fleetStatePath: path });
-      const logged = /** @type {string[]} */ ([]);
+      const logged: never[] = /** @type {string[]} */ ([]);
       const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
       await runWatch({ github: {}, provider: createFakeProvider(), ledger, now: () => NOW, repo: REPO, readers, summary: { at: "08:00", timezone: "Europe/London" }, sources: HOST_SOURCES, log: (line) => logged.push(line) });
       assert.equal(logged.filter((line) => /cannot-ask incident:fleet-down/.test(line)).length, expectedCannotAsk, `${ageMinutes} minutes old`);
@@ -620,7 +620,7 @@ describe("what one run costs and what `main` does with the readers", () => {
 
   test("runWatch without readers does not ask the host sources, and with them it does (and a missing reader is cannot-ask, not a crash)", async () => {
     const ask = async (/** @type {any} */ readers: any) => {
-      const logged = /** @type {string[]} */ ([]);
+      const logged: string[] = /** @type {string[]} */ ([]);
       const reads = { issuesLabelled: async () => [], issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [] };
       const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
       const result = await runWatch({ github: reads, provider: createFakeProvider(), ledger, now: () => NOW, repo: REPO, readers, summary: { at: "23:59", timezone: "UTC" }, log: (line) => logged.push(line) });
@@ -639,12 +639,12 @@ describe("what one run costs and what `main` does with the readers", () => {
     writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({
       tracker: [{ key: "", repo: REPO }], messaging: { provider: "telegram", tokenFile: "~/.config/agent-org/t", chairmanFile: "~/.config/agent-org/c" },
     }));
-    const err = /** @type {string[]} */ ([]);
+    const err: string[] = /** @type {string[]} */ ([]);
     const reads = { issuesLabelled: async () => [], issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [] };
     const code = await main({ root, home: freshDirectory(), env: { GH_CONFIG_DIR: "/x/gh" }, github: reads, now: () => NOW, providers: { telegram: () => createFakeProvider() }, out: () => {}, err: (line) => err.push(line) });
     assert.equal(code, 0);
     assert.deepEqual(err.filter((line) => /cannot-ask|work-tick unit/.test(line)), []);
-    const asked = /** @type {string[]} */ ([]);
+    const asked: string[] = /** @type {string[]} */ ([]);
     await main({ root, home: freshDirectory(), env: { GH_CONFIG_DIR: "/x/gh" }, github: reads, readers: {}, now: () => NOW, providers: { telegram: () => createFakeProvider() }, out: () => {}, err: (line) => asked.push(line) });
     assert.ok(asked.some((line) => /cannot-ask stall:no-merge/.test(line)), "POSITIVE CONTROL: with readers handed over the host sources ARE asked");
   });

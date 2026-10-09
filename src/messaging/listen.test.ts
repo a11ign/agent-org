@@ -270,7 +270,7 @@ describe("#3442: a credential reaches neither the queue, the answers path, the l
   async function run(/** @type {string[]} */ texts: string[]) {
     const { ledger, inbound, path } = core();
     const queue = recordingQueue();
-    const toAnswers = /** @type {Record<string, any>[]} */ ([]);
+    const toAnswers: Record<string,any>[] = /** @type {Record<string, any>[]} */ ([]);
     const controller = new AbortController();
     const wire = /** @type {{ sent: Record<string, any>[], deleted: Record<string, any>[] }} */ ({ sent: [], deleted: [] });
     const provider = {
@@ -353,7 +353,7 @@ describe("a message that can no longer be answered has its keyboard taken off (a
 
   test("the keyboard comes off BEFORE the reply goes, and the control: with nothing to clear no call is made", async () => {
     const { inbound } = core();
-    const order = /** @type {string[]} */ ([]);
+    const order: unknown = /** @type {string[]} */ ([]);
     const forward = createForwarder({
       answers: replying(String(REQUEST_MESSAGE)), converse: async () => {}, log: () => {},
       send: async ({ text }) => { order.push(`send ${text}`); }, clearKeyboard: async (ref) => { order.push(`clear ${ref}`); },
@@ -361,7 +361,7 @@ describe("a message that can no longer be answered has its keyboard taken off (a
     await forward(mint(inbound, pressUpdate(60)));
     assert.deepEqual(order, [`clear ${REQUEST_MESSAGE}`, "send That was already answered."]);
 
-    const quiet = /** @type {string[]} */ ([]);
+    const quiet: unknown = /** @type {string[]} */ ([]);
     const none = createForwarder({ answers: replying(null), converse: async () => {}, log: () => {}, send: async () => {}, clearKeyboard: async (ref) => { quiet.push(ref); } });
     await none(mint(inbound, pressUpdate(61)));
     assert.deepEqual(quiet, []);
@@ -369,8 +369,8 @@ describe("a message that can no longer be answered has its keyboard taken off (a
 
   test("a keyboard that cannot be taken off is logged, and the reply still goes", async () => {
     const { inbound } = core();
-    const logged = /** @type {string[]} */ ([]);
-    const sent = /** @type {string[]} */ ([]);
+    const logged: string[] = /** @type {string[]} */ ([]);
+    const sent: unknown = /** @type {string[]} */ ([]);
     const forward = createForwarder({
       answers: replying("501"), converse: async () => {}, log: (line) => logged.push(line),
       send: async ({ text }) => { sent.push(text); }, clearKeyboard: async () => { throw new Error("message to edit not found"); },
@@ -400,7 +400,7 @@ describe("(#3646) the walk-through's readers are handed the fleet-watch files an
   }
 
   test("{{fleet.workers-up}} is read from the project's runs/, and the gate is not 'named no record': its path is the host's", async () => {
-    const lines = /** @type {string[]} */ ([]);
+    const lines: unknown = /** @type {string[]} */ ([]);
     const readers = /** @type {NonNullable<Awaited<ReturnType<typeof verifyingReaders>>>} */ (await verifyingReaders({ root: projectWithFleet(), now: Date.now, err: (line) => lines.push(line) }));
     assert.deepEqual((await readers.fleet()).up, ["worker-a"]);
     // Whether the host's record exists is the machine's, so either answer passes; only "this host named none" is the defect.

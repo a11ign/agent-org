@@ -223,7 +223,7 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
     const whole = [...cut, ...filler(10), fresh];
 
     test("quotes the NEWEST brief, read from the full comments, not the older one in the cut list", async () => {
-      const asked = /** @type {any[]} */ ([]);
+      const asked: unknown = /** @type {any[]} */ ([]);
       const github = {
         issuesLabelled: async () => [row(2623, { comments: cut })],
         issueComments: async (/** @type {any} */ query: any) => { asked.push(query); return whole; },
@@ -504,7 +504,7 @@ const LONDON = { at: "08:00", timezone: "Europe/London" };
 
 /** A reader that throws on EVERY name outside the three reads: the proof that a run is read-only is that nothing else is reachable. */
 function readOnlyFixture(/** @type {Record<string, (query: any) => Promise<any>>} */ reads: Record<string, (query: any) => Promise<any>>) {
-  const touched = /** @type {string[]} */ ([]);
+  const touched: string[] = /** @type {string[]} */ ([]);
   const target = Object.fromEntries(Object.entries(reads).map(([name, read]) => [name, async (/** @type {any} */ query: any) => { touched.push(name); return read(query); }]));
   const github = new Proxy(target, {
     get(held, name) {
@@ -527,7 +527,7 @@ function watched({ github, startIso = "2026-10-02T09:00:00Z" }: { github: any; s
   let now = Date.parse(startIso);
   const path = join(scratch, `watch-${nextLedger += 1}.jsonl`);
   const provider = createFakeProvider();
-  const logged = /** @type {string[]} */ ([]);
+  const logged: string[] = /** @type {string[]} */ ([]);
   const pass = () => runWatch({ github, provider, ledger: createLedger({ path, now: () => now }), now: () => now, repo: REPO, summary: LONDON, log: (line) => logged.push(line) });
   return { provider, logged, path, pass, advance: (/** @type {number} */ ms: number) => { now += ms; } };
 }
@@ -550,7 +550,7 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
   });
 
   test("the real reader: every command it builds is a list and passes the read-only check", async () => {
-    const commands = /** @type {string[][]} */ ([]);
+    const commands: unknown[] = /** @type {string[][]} */ ([]);
     const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return "[]"; } });
     await reader.issuesLabelled({ repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
     await reader.issuesLabelled({ repo: REPO, label: "ready" });
@@ -637,7 +637,7 @@ describe("the red-PR read decides red through the one decider (#3014, #2956)", (
   });
 
   test("the red read ASKS for `labels`: without them no hold can be seen, and `gh` would not send them (#3014)", async () => {
-    const asked = /** @type {(readonly string[])[]} */ ([]);
+    const asked: (string|string[])[]|(readonly string[])[] = /** @type {(readonly string[])[]} */ ([]);
     const reader = createGhReader({ run: async (argv) => { asked.push(argv); return "[]"; } });
     await reader.redPulls({ repo: REPO });
     assert.match(asked[0][asked[0].indexOf("--json") + 1], /(^|,)labels(,|$)/);

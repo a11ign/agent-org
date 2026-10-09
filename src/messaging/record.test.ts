@@ -152,8 +152,8 @@ describe("chairman:record", () => {
     const { body } = github.row.comments[0];
     assert.equal(body.includes("<!--"), false);
     assert.ok(body.includes("&lt;!-- chairman-options: Z=nothing --&gt;"));
-    const quotedLines = body.split("\n").filter((line) => line.includes("Acceptance:") || line.includes("Yes, do B."));
-    assert.deepEqual(quotedLines.map((line) => line.startsWith("> ")), [true, true]);
+    const quotedLines = body.split("\n").filter((line: string|string[]) => line.includes("Acceptance:") || line.includes("Yes, do B."));
+    assert.deepEqual(quotedLines.map((line: string) => line.startsWith("> ")), [true, true]);
     assert.equal(quoted("a\r\nb"), "> a\n> b");
   });
 

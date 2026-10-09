@@ -307,7 +307,7 @@ describe("(7) how many rows are open is a placeholder, so the figure is read and
 
   test("a list longer than a page is counted to its end, and the read stops at the first short page", async () => {
     const full = Array.from({ length: 100 }, (_, index) => (index % 2 === 0 ? ROW(index + 1) : PULL(index + 1)));
-    const asked = /** @type {string[]} */ ([]);
+    const asked: string|any[]|undefined = /** @type {string[]} */ ([]);
     const { reply, provider } = readerOver([full, full, [ROW(201), ROW(202)]], asked);
     assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent");
     assert.match(provider.sent[0].text, /^102 rows are open\n/);
@@ -315,7 +315,7 @@ describe("(7) how many rows are open is a placeholder, so the figure is read and
   });
 
   test("the count is read ONCE however often the text uses it", async () => {
-    const asked = /** @type {string[]} */ ([]);
+    const asked: string|any[]|undefined = /** @type {string[]} */ ([]);
     const { reply } = readerOver([[ROW(1), ROW(2)]], asked);
     assert.equal((await reply.send("{{open.count}} and {{open.count}}")).outcome, "sent");
     assert.equal(asked.length, 1);

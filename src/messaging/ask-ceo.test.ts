@@ -140,7 +140,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", () =>
     }
     assert.deepEqual(seen, [], "none of them reached the runner");
     await run(GOOD);
-    assert.equal(/** @type {import("./ask-ceo.ts").Invocation[]} */ (seen)[0].args.filter((arg) => !arg.startsWith("-") && !["run", "prompt:session"].includes(arg)).join(), "ceo", "the one session named in the invocation is ceo");
+    assert.equal(/** @type {import("./ask-ceo.ts").Invocation[]} */ (seen)[0].args.filter((arg: string) => !arg.startsWith("-") && !["run", "prompt:session"].includes(arg)).join(), "ceo", "the one session named in the invocation is ceo");
   });
 
   hosted("4b. the source names ceo once, as the constant, and takes no target from argv", () => {
@@ -185,7 +185,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", () =>
 
   hosted("6. package.json carries chairman:ask-ceo, and the verb set of chairman:correct is unchanged", () => {
     const scripts = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).scripts;
-    assert.equal(scripts["chairman:ask-ceo"], "node src/messaging/ask-ceo.ts");
+    assert.equal(scripts["chairman:ask-ceo"], "node --import tsx src/messaging/ask-ceo.ts");
     assert.deepEqual(VERBS, ["withdraw", "reroute", "re-ask"]);
     assert.equal(VERBS.length, VERB_COUNT, "VERBS is still three: ask-ceo is a command of its own and not a fourth correction");
   });

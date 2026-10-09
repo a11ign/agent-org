@@ -314,7 +314,7 @@ describe("the real Telegram provider, built from the configured secret files, wi
   function fakeTelegram({ ok = true }: { ok?: boolean; } = {}): { fetch: typeof fetch; calls: { url: string; body: any; }[]; } {
     /** @type {{url: string, body: any}[]} */
     const calls: { url: string; body: any; }[] = [];
-    const fetchImpl = /** @type {typeof fetch} */ (async (url, init) => {
+    const fetchImpl = /** @type {typeof fetch} */ (async (url: any, init: { body: any; }) => {
       calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
       return new Response(JSON.stringify(ok ? { ok: true, result: { message_id: 555 } } : { ok: false, error_code: 400, description: "bad request" }), { status: ok ? 200 : 400 });
     });

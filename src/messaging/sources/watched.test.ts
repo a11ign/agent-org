@@ -45,7 +45,7 @@ function freshLedger(now: () => number, { holdsMessage = true }: { holdsMessage?
  * @param {Record<string, string>} states
  */
 function world(states: Record<string, string>) {
-  const asked = /** @type {string[]} */ ([]);
+  const asked: string[] = /** @type {string[]} */ ([]);
   /** @param {string} thing @returns {string} */
   const read = (thing: string): string => {
     asked.push(thing);
@@ -198,7 +198,7 @@ describe("a thing that cannot be read is cannot-ask: it stays watched and the ot
     await watches.add({ kind: "pr", id: "2", ref: MESSAGE });
     delete fixture.states["pr:1"];
     fixture.states["pr:2"] = "closed";
-    const logged = /** @type {string[]} */ ([]);
+    const logged: string[] = /** @type {string[]} */ ([]);
     const { events, cannotAsk } = await observeWatched({ lines: ledger.read(), readers: fixture.readers, now, repo: TRACKER, log: (line) => logged.push(line) });
     assert.deepEqual(events.map(({ key }) => key), ["watch:pr:2"], "the control: the readable one is told");
     assert.deepEqual(cannotAsk.map(({ source }) => source), ["watch:pr:1"]);

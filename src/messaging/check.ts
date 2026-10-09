@@ -16,7 +16,7 @@ import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { secretFileProblem } from "./secret.mjs";
 import { MilestonesRefusal, readMilestonesFile } from "./sources/milestones.mjs";
 
-/** @typedef {{ exitCode: number, lines: string[] }} Verdict */
+type Verdict = { exitCode: number; lines: string[] };
 
 /** @param {import("./config.mjs").MessagingOn} config @param {{ uid?: number, exists?: (path: string) => boolean }} deps @returns {{ failed: boolean, lines: string[] }} */
 function judgeFiles(config: import("./config.mjs").MessagingOn, { uid, exists = existsSync }: { uid?: number; exists?: (path: string) => boolean; }): { failed: boolean; lines: string[]; } {

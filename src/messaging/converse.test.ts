@@ -88,7 +88,7 @@ function entries(path: string): Record<string, any>[] {
 const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 const NOT_QUEUED_PREFIX = "NOT PROMPTED, AND NOT QUEUED: ";
 /** What either port TYPED into a seat (an idle one), in order: the real port's herdr is `recordingHerdr`, the fake's `promptOrQueue` writes here. `harness` empties it. */
-const delivered = /** @type {{ label: string, text: string }[]} */ ([]);
+const delivered: { label: any; text: any; }[] = /** @type {{ label: string, text: string }[]} */ ([]);
 const fakeQueue = {
   EXIT,
   NOT_QUEUED_PREFIX,
@@ -166,7 +166,7 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   const ledger = createLedger({ path: ledgerPath, now: () => (clock.at += 1000) });
   const inbound = createInbound({ ledger, chairman: CHAIRMAN });
   /** What happened, in order: `send` for each message to the chairman, `dispatch` for each call to `promptOrQueue`. The ack-before-write assertions read it. */
-  const events = /** @type {string[]} */ ([]);
+  const events: string[]|undefined = /** @type {string[]} */ ([]);
   const said = recordingQueue(queue, events);
   const tellChairman = send ?? ((/** @type {any} */ message: any) => provider.send(message));
   const converse = createConverse({ chairman: CHAIRMAN, queuePath, ledger, send: (message) => { events.push(`send: ${message.text}`); return tellChairman(message); }, agents: () => roster, now: () => clock.at, queue: said.port });

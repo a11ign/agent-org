@@ -213,7 +213,7 @@ describe("done-when 2: each stage's failure is named, and the absent seat is the
 
 describe("done-when 3: it never reaches the chat, and its line is not a message", () => {
   const tripwire = () => {
-    const calls = /** @type {string[]} */ ([]);
+    const calls: string[] = /** @type {string[]} */ ([]);
     const trap = async (/** @type {unknown} */ message: unknown) => { calls.push(JSON.stringify(message)); throw new Error("a real provider was sent to"); };
     return { calls, deps: { provider: { send: trap, id: "telegram" }, send: trap, fetch: trap, telegram: { send: trap } } };
   };
@@ -361,7 +361,7 @@ describe("the command", () => {
   test("prints the four stages, the ledger path and the line, and exits 0 / 3 / 1 for pass / degraded / red", async () => {
     const run = async (/** @type {Parameters<typeof harness>[0]} */ options: Parameters<typeof harness>[0]) => {
       const h = harness(options);
-      const out = /** @type {string[]} */ ([]);
+      const out: string[] = /** @type {string[]} */ ([]);
       const code = await main([], { home: h.home, now: h.now, sleep: h.sleep, queue: h.port.port, agents: () => (options?.roster ?? WORKING), out: (text) => out.push(text), err: (text) => out.push(text) });
       return { code, out };
     };

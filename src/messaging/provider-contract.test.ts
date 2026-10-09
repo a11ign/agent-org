@@ -15,7 +15,7 @@ async function failedChecks(provider: unknown): Promise<string[]> {
     await runProviderConformance(provider);
   } catch (error) {
     assert.ok(error instanceof ConformanceError, `expected a ConformanceError, got ${error}`);
-    return error.failures.map((failure) => failure.check);
+    return error.failures.map((failure: { check: any; }) => failure.check);
   }
   return [];
 }

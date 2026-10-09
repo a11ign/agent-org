@@ -64,7 +64,7 @@ function conversations(lines: Record<string, any>[]): { messageRef: string; rece
  * @param {Record<string, any>[]} lines @returns {{sent: number[], answered: number[], withdrawn: number[]}} the instants of each event, over every ask cycle in the ledger
  */
 function askCycles(lines: Record<string, any>[]): { sent: number[]; answered: number[]; withdrawn: number[]; } {
-  const events = { sent: /** @type {number[]} */ ([]), answered: /** @type {number[]} */ ([]), withdrawn: /** @type {number[]} */ ([]) };
+  const events = { sent: [] as number[], answered: [] as number[], withdrawn: [] as number[] };
   /** @type {Map<string, boolean>} request key -> whether its open ask has been answered */
   const open: Map<string, boolean> = new Map();
   for (const line of lines) {

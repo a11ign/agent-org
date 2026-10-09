@@ -41,7 +41,7 @@ const REAL_BODY = "\n### Patch Changes\n\n- 7105923: The isolation gate's copy s
 
 /** A GET-only GitHub for the source: each repository answers with its list, or throws when its answer is an `Error`. */
 function fakeApi(/** @type {Record<string, unknown>} */ answers: Record<string, unknown>) {
-  const calls = /** @type {string[]} */ ([]);
+  const calls: string[] = /** @type {string[]} */ ([]);
   return {
     calls,
     async api(/** @type {string} */ path: string) {
@@ -58,7 +58,7 @@ function watcher(/** @type {Record<string, unknown>} */ answers: Record<string, 
   let at = NOW;
   const provider = createFakeProvider();
   const github = fakeApi(answers);
-  const logged = /** @type {string[]} */ ([]);
+  const logged: string[] = /** @type {string[]} */ ([]);
   const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => at });
   return {
     provider, github, logged, ledger,

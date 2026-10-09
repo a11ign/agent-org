@@ -35,20 +35,20 @@ const PROMPT_EXIT = Object.freeze({ delivered: 0, refused: 1, queued: 2 });
 /** The kinds of wait whose condition is about a row and can be read: `manual` and `unreadable` say nothing that would end. */
 const READABLE_WAITS = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
 
-/**
- * @typedef {import("./record.mjs").Outcome} Outcome
- * @typedef {import("./answers.mjs").RowRef} RowRef
- * @typedef {{args: string[], input: string, cwd: string, env: Record<string, string | undefined>}} Invocation  one run of `pnpm run prompt:session`
- * @typedef {{status: number | null, stdout: string, stderr: string, error?: Error}} Ran
- * @typedef {(text: string) => {state: string}[]} ParseWaits  `wait-condition.mjs`'s `parseWaits`
- */
+type Outcome = import("./record.mjs").Outcome;
+type RowRef = import("./answers.mjs").RowRef;
+/** One run of `pnpm run prompt:session`. */
+type Invocation = { args: string[]; input: string; cwd: string; env: Record<string, string | undefined> };
+type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
+/** `wait-condition.mjs`'s `parseWaits`. */
+type ParseWaits = (text: string) => { state: string }[];
 
 /**
  * @param {string} text @param {ParseWaits} parseWaits
  * @returns {boolean} does the text carry a `Waiting-for:` line the gate reads as a condition on a row
  */
 export function namesWhatClearsIt(text: string, parseWaits: ParseWaits): boolean {
-  return parseWaits(text).some((wait) => READABLE_WAITS.includes(wait.state));
+  return parseWaits(text).some((wait: { state: string; }) => READABLE_WAITS.includes(wait.state));
 }
 
 /** @param {{ref: string, row: RowRef, text: string}} order @returns {string} the question, with the liaison named as its author and the row and message it is about in front */
