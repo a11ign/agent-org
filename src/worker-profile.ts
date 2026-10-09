@@ -26,7 +26,10 @@
 // number. A session quietly restarted on a bigger model is how the org got back to Opus-everywhere with
 // nobody able to say who decided it.
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
+import { realpathSync, readFileSync } from "node:fs";
+import { LANE_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
+import { extractRegionSection } from "./region-paths.ts";
+import { extractAcceptanceSection } from "./acceptance-commands.ts";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { PROFILES } from "./cause-declaration.ts";
 
@@ -86,6 +89,82 @@ export const MIN_WORKING_ROOM_TOKENS = 100_000;
  */
 export const AUTOCOMPACT_WINDOW_TOKENS =
   AUTO_COMPACT_TRIGGER_MARGIN_TOKENS + MEASURED_FRESH_WORKER_BASE_TOKENS + MIN_WORKING_ROOM_TOKENS;
+
+// --- THE HAIKU TIER, A TRIAL (a11ign/a11ign#4382, the chairman's spend direction of 2026-10-09, part 2) ---
+//
+// A row labelled `tier:haiku` gets a `claude-haiku-5-5` worker. THE ONE DESIGN FACT: Haiku 5.5 takes a prompt of at most
+// 100,000 tokens (`PRICES` in `trace/store.mjs`: a request above it costs `null`, and the model refuses it), while the Sonnet
+// window above is 200,000. `--autocompact` compacts about AUTO_COMPACT_TRIGGER_MARGIN_TOKENS below its window, so the Haiku
+// window is the ceiling less a little headroom, PLUS that margin: the trigger lands at 95,000, inside the ceiling. A fresh
+// worker's own base is MEASURED_FRESH_WORKER_BASE_TOKENS, which leaves about 30,000 of working room -- the shape of #2717's
+// thrash -- and is why the tier is for rows small enough to finish in it, and why more than 10 compactions of one Haiku worker
+// is a stop-rule hit on the row, not a number to tune.
+export const HAIKU_TIER_LABEL = "tier:haiku";
+export const HAIKU_MODEL_ID = "claude-haiku-5-5";
+export const HAIKU_PROMPT_CEILING_TOKENS = 100_000;
+export const HAIKU_TRIGGER_HEADROOM_TOKENS = 5_000;
+export const HAIKU_AUTOCOMPACT_WINDOW_TOKENS =
+  HAIKU_PROMPT_CEILING_TOKENS - HAIKU_TRIGGER_HEADROOM_TOKENS + AUTO_COMPACT_TRIGGER_MARGIN_TOKENS;
+
+/** The switch `ceo` flips (and nothing else does): `{ "enabled": true }`. */
+export const HAIKU_TIER_SWITCH_PATH = fileURLToPath(new URL("./haiku-tier.json", import.meta.url));
+
+/** Labels a tier label never overrides: a tier lowers cost, never what a row is allowed to touch. */
+const TIER_REFUSING_LABELS = Object.freeze([`${LANE_PREFIX}ceo`, NEEDS_CHAIRMAN_LABEL]);
+
+/** What `--effort` a Haiku worker is started with: the lowest the CLI accepts (assumed, not measured: `claude --effort low` is the floor of CLAUDE_EFFORTS). */
+const HAIKU_EFFORT = CLAUDE_EFFORTS[0];
+
+export type TierProfile = { kind: "claude"; model: string; effort: string; why: string; autocompactWindow: number };
+
+/**
+ * The switch, read. A MISSING OR MALFORMED FILE IS `enabled: false`, with the reason: the tier fails SAFE to the ordinary (Sonnet) profile,
+ * and the caller logs the reason so a deleted file is seen rather than silently turning a spend experiment off.
+ * @param {string} [path]
+ */
+export function readHaikuSwitch(path: string = HAIKU_TIER_SWITCH_PATH): { enabled: true } | { enabled: false; reason: string } {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return { enabled: false, reason: `${path} is missing or unreadable (${(err as Error).message.split("\n")[0]})` };
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed?.enabled === true) return { enabled: true };
+    if (parsed?.enabled === false) return { enabled: false, reason: "the switch is off (enabled: false)" };
+    return { enabled: false, reason: `${path} has no boolean "enabled"` };
+  } catch (err) {
+    return { enabled: false, reason: `${path} is not valid JSON (${(err as Error).message.split("\n")[0]})` };
+  }
+}
+
+/** Why a labelled row still gets the ordinary profile, or `null` when nothing refuses it. */
+function whyNotHaiku(row: { labels: readonly string[]; body: string }): string | null {
+  const refusing = TIER_REFUSING_LABELS.find((label) => row.labels.includes(label));
+  if (refusing !== undefined) return `the row carries ${refusing}`;
+  if ((extractRegionSection(row.body) ?? "").includes(".github/workflows/")) return "its Region names .github/workflows/";
+  if (extractAcceptanceSection(row.body).kind !== "commands") return "it has no Acceptance command";
+  return null;
+}
+
+/**
+ * The Haiku profile for a row, or `null` for the ordinary one. A row without the label returns `null` SILENTLY (the common case, byte-identical to before);
+ * every other `null` is said through `log` with its reason.
+ * @param {{ number: number, labels: readonly string[], body: string }} row
+ * @param {{ switchPath?: string, log?: (line: string) => void }} [deps]
+ */
+export function haikuTierProfile(row: { number: number; labels: readonly string[]; body: string }, { switchPath = HAIKU_TIER_SWITCH_PATH, log = () => {} }: { switchPath?: string; log?: (line: string) => void } = {}): TierProfile | null {
+  if (!row.labels.includes(HAIKU_TIER_LABEL)) return null;
+  const switched = readHaikuSwitch(switchPath);
+  const reason = switched.enabled ? whyNotHaiku(row) : switched.reason;
+  if (reason !== null) {
+    log(`worker-profile: #${row.number} is ${HAIKU_TIER_LABEL} but gets the ordinary profile: ${reason}`);
+    return null;
+  }
+  return { kind: "claude", model: HAIKU_MODEL_ID, effort: HAIKU_EFFORT, autocompactWindow: HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
+    why: `${HAIKU_TIER_LABEL} trial (a11ign/a11ign#4382): a mechanical row with a command Acceptance, in about 30,000 tokens of working room` };
+}
 
 // #2750 (chairman's 2026-09-28 token-cost reading, ceo's ruling): FIVE MORE TOOLS a per-row Claude
 // engineer never needs, disallowed the same way `AskUserQuestion` already is below. A bare tool name on
@@ -237,7 +316,7 @@ export function profileFor(cause: string, override: { model?: string; effort?: s
  * @param {{ headless?: HeadlessCaps }} [launch]
  * @returns {string[]}
  */
-export function agentArgs(profile: { kind: string; model: string; effort: string; }, launch: { headless?: HeadlessCaps; } = {}): string[] {
+export function agentArgs(profile: { kind: string; model: string; effort: string; autocompactWindow?: number; }, launch: { headless?: HeadlessCaps; } = {}): string[] {
   if (launch.headless) return headlessClaudeArgs(profile, launch.headless);
   if (profile.kind === "codex") {
     // NOT `--dangerously-bypass-approvals-and-sandbox`, which was the first spelling here and is wrong.
@@ -297,7 +376,7 @@ export function agentArgs(profile: { kind: string; model: string; effort: string
   // for a simplification pass). Layered on top of the host's own settings, per Claude Code's own
   // precedence, not a replacement for it.
   return ["--model", profile.model, "--effort", profile.effort, "--dangerously-skip-permissions",
-    "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(AUTOCOMPACT_WINDOW_TOKENS),
+    "--disallowedTools", PER_ROW_DISALLOWED_TOOLS.join(","), "--autocompact", String(profile.autocompactWindow ?? AUTOCOMPACT_WINDOW_TOKENS),
     "--settings", WORKER_SETTINGS_PATH];
 }
 
