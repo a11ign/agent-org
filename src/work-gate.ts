@@ -81,7 +81,7 @@ import { repeatingLinesTick } from "./repeating-lines.ts";
 // #2936: THE ORG-HEALTH QUESTION, in its own leaf for the same reason: relative imports only, so the gate keeps the property its own header states.
 import { redSinceOf, readToolAgreement, readReleaseRuns } from "./org-health.ts";
 import { readNodeStrips } from "./node-strips-types.ts";
-import { readClassRepeat } from "./class-repeat.ts";
+import { liveClassRepeatIo, readClassRepeat } from "./class-repeat.ts";
 import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "./release-behind-main.ts";
 // #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.ts";
@@ -7966,7 +7966,7 @@ function main() {
   const { delivered: orders, performed: performedOnPrs } = performActions(markOutageReads(incident.orders, outageNow));
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
   orders.push(...incident.signal);
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow(), liveClassRepeatIo()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() }), ...chairmanAsksNow(openRowsRead)); // #2848, #2936, #2997, #4020: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
