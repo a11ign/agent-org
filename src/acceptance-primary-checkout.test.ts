@@ -1,3 +1,9 @@
+// no-token: gh
+//
+// The `pr:open` tests at the end import `pr-open.mjs` in a child process, whose `defaultGh` spawns `gh` -- a path none of them take: `checkBody` is handed
+// the body and an injected `run`. Proved, not just declared: with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that logs and exits 97, the file
+// passes and the log is never written (see the PR body).
+
 /**
  * #4322: AN ACCEPTANCE THAT `cd`s INTO THE PROJECT'S OWN PRIMARY CHECKOUT WAS ACCEPTED AT FILING. CI has no such path (#4318's `acceptance`
  * job died three times on `cd: /home/agent/repos/a11y-witness: No such file or directory`) and on the host the line reads the PRIMARY
@@ -10,7 +16,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,6 +115,7 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 /** The smallest project declaration the tool's modules read at import: a project of nobody's, so nothing here is a11ign's. */
 const DECLARATION = {
   schema: 1,
+  roles: { dir: "roles" },
   tracker: [{ key: "", repo: "acme/widgets", board: { owner: "acme", number: 1 } }],
   code: [{ key: "", repo: "acme/widgets" }],
   units: { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] },
@@ -127,6 +134,8 @@ const DECLARATION = {
 function underHost(script: (checkout: string) => string): { status: number | null; out: string } {
   const checkout = mkdtempSync(join(scratch, "checkout-"));
   mkdirSync(join(checkout, ".agent-org"));
+  mkdirSync(join(checkout, "roles"));
+  writeFileSync(join(checkout, "roles/sessions.json"), JSON.stringify({ live: [{ name: "ceo" }], retired: [] }));
   writeFileSync(join(checkout, ".agent-org/project.json"), JSON.stringify(DECLARATION));
   const hostFile = join(scratch, `host-${basename(checkout)}.json`);
   writeFileSync(hostFile, JSON.stringify({
@@ -148,13 +157,14 @@ test("the path is read from the host's declaration: a project checked out ELSEWH
   assert.equal(result.out.trim().split("\n").pop(), "[true,false]");
 });
 
-// `pr-open`'s `checkBody` is `leakRefusalReason` then `runCiBodyReports` over `CI_BODY_REPORTS`, so the report list is driven here directly:
-// importing `pr-open.mjs` would make this file require a token (it reaches `gh`), and CI's acceptance job, which runs this very file, has none.
-test("the `acceptance` entry of CI_BODY_REPORTS -- what `pr-open`'s `checkBody` runs -- refuses before the command runs, naming the same remedy", () => {
-  const result = underHost((checkout) => `import { runCiBodyReports } from "./acceptance-commands.mjs";
+// `pr-open`'s own `checkBody` is called here, in a child, with an injected `run` -- the entry point `pr:open` and the gate use, not the list under it, so
+// a `checkBody` that stops reaching the `acceptance` report fails this test. The import is dynamic and in the child: `pr-open.mjs`'s `defaultGh` spawns
+// `gh`, a path nothing here takes (the `// no-token: gh` line at the top).
+test("`pr-open`'s `checkBody` refuses an Acceptance that cds into the primary checkout before the command runs, naming the same remedy", () => {
+  const result = underHost((checkout) => `import { checkBody } from "./pr-open.mjs";
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nCloses: none -- test\\n";
-    const verdict = runCiBodyReports({ body, run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
+    const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
     console.log(JSON.stringify({ ok: verdict.ok, ran, line: verdict.lines.join(" ") }));`);
   assert.equal(result.status, 0, result.out);
   const verdict = JSON.parse(result.out.trim().split("\n").pop() ?? "{}");
@@ -163,7 +173,12 @@ test("the `acceptance` entry of CI_BODY_REPORTS -- what `pr-open`'s `checkBody` 
   assert.match(verdict.line, /Drop the `cd` and run the command from the repository root/);
 });
 
-test("`pr-open`'s `checkBody` is that same list, not a second one", () => {
-  const source = readFileSync(join(HERE, "pr-open.mjs"), "utf8");
-  assert.match(source, /return runCiBodyReports\(\{ body, run, diff, rowLabels \}\);/);
+test("`pr-open`'s `checkBody` still lets a Hand-run-declared `cd` into the primary checkout through to the command", () => {
+  const result = underHost((checkout) => `import { checkBody } from "./pr-open.mjs";
+    let ran = 0;
+    const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nHand-run: the host reads the primary checkout\\n\\nCloses: none -- test\\n";
+    const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
+    console.log(JSON.stringify({ ran, line: verdict.lines.join(" ") }));`);
+  assert.equal(result.status, 0, result.out);
+  assert.equal(JSON.parse(result.out.trim().split("\n").pop() ?? "{}").line.includes("Drop the `cd`"), false);
 });
