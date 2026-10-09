@@ -25,7 +25,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
@@ -115,10 +116,18 @@ function pnpm(cwd: string, ...args: string[]) {
   return spawnSync("pnpm", [...args], { cwd, encoding: "utf8", env: cleanEnv(), timeout: PNPM_TIMEOUT_MS });
 }
 
+/**
+ * The `tsx` THIS run loads, which the installed tool is handed in place of a registry copy. The tool depends on `tsx` (`bin.mjs` loads it), and `pnpm add --offline`
+ * resolves it from a metadata cache a CI runner does not have; a `link:` override needs no registry and still gives `bin.mjs` a real loader to resolve beside itself.
+ */
+function runningTsx(): string {
+  return dirname(createRequire(import.meta.url).resolve("tsx/package.json"));
+}
+
 /** An empty project, with or without its own `typescript`, that has `agent-org` installed from the tagged repository. */
 function installedProject({ withTypescript }: { withTypescript: boolean }) {
   const project = projectRepository();
-  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true }));
+  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true, pnpm: { overrides: { tsx: `link:${runningTsx()}` } } }));
   const typescript = withTypescript ? [`typescript@file:${fixtureTypescript()}`] : [];
   const added = pnpm(project, "add", "--offline", "-D", ...typescript, `agent-org@git+file://${taggedTool()}#semver:^0.1.0`);
   return { project, added };

@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { TSX_IMPORT } from "../tsx-import.ts";
+import { toolNodeModules } from "./tool-node-modules.ts";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
 const { hostIdentityDrift, hostIdentityInstall, hostUnitDrift, ownedIdentityFiles, shippedScriptText } = await import("../host-units.ts");
@@ -181,8 +182,8 @@ function projectWithLinkedWorktree() {
   cpSync(join(TOOL_ROOT, "src"), join(installed, "src"), { recursive: true });
   cpSync(join(TOOL_ROOT, "package.json"), join(installed, "package.json"));
   // `bin.mjs` resolves `tsx` beside itself, so a copy of the tool needs the `node_modules` an install would have given it.
-  symlinkSync(join(TOOL_ROOT, "node_modules"), join(installed, "node_modules"));
-  symlinkSync(join(TOOL_ROOT, "node_modules"), join(standalone, "node_modules"));
+  symlinkSync(toolNodeModules(), join(installed, "node_modules"));
+  symlinkSync(toolNodeModules(), join(standalone, "node_modules"));
   return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.mjs") };
 }
 

@@ -14,6 +14,7 @@
  * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.ts`, which would charge it with a `history` requirement it has no use for.
  */
 import { TSX_IMPORT } from "../tsx-import.ts";
+import { toolNodeModules } from "./tool-node-modules.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -162,7 +163,7 @@ function preFixTool(entry: string): string {
   }
   // The unit's `--import tsx` resolves from its WorkingDirectory, so the copy is given what a checkout of the tool has: its `package.json` and `node_modules`.
   writeFileSync(join(tool, "package.json"), '{"type":"module"}');
-  symlinkSync(join(TOOL_ROOT, "node_modules"), join(tool, "node_modules"));
+  symlinkSync(toolNodeModules(), join(tool, "node_modules"));
   const copied = join(tool, entry);
   const fixed = readFileSync(copied, "utf8");
   const mutated = fixed.replace("root: HOME_CHECKOUT,", "root: process.cwd(),");
