@@ -41,8 +41,11 @@ export type LeakPattern = { name: string, pattern: string };
  * where a repository's releases are read: a published npm version (the registry's `time` map), or a `v*` tag with a GitHub Release
  */
 export type DoraRelease = { kind: "npm", package: string } | { kind: "tag" };
-/** one repository the daily DORA reading covers (`dora.ts`) */
-export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[] };
+/**
+ * one repository the daily DORA reading covers (`dora.ts`). `adopterFacing` (#4378) is `false` for a repository whose releasable change reaches no outside adopter (the org's own
+ * tooling): the PRIMARY milestone's rule reads it, and nothing else does. ABSENT means `true` and is not filled in, so a declaration that never names it reads exactly as before.
+ */
+export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[], adopterFacing?: boolean };
 export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number };
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
@@ -195,6 +198,17 @@ function readReleasablePaths(entry: Record<string, unknown>, at: string, source:
 }
 
 /**
+ * #4378: `adopterFacing` when the entry names it, which must be a boolean: a string `"false"` is refused rather than read as truthy, since the key exists to take a repository OUT of a count.
+ * @param {Record<string, unknown>} entry @param {string} at @param {string} source @returns {{ adopterFacing?: boolean }}
+ */
+function readAdopterFacing(entry: Record<string, unknown>, at: string, source: string): { adopterFacing?: boolean; } {
+  if (!Object.hasOwn(entry, "adopterFacing")) return {};
+  const value = entry.adopterFacing;
+  if (typeof value !== "boolean") throw new ProjectDeclarationRefusal(`${at}.adopterFacing`, `it must be true or false, not ${describe(value)}`, source);
+  return { adopterFacing: value };
+}
+
+/**
  * The repositories the daily DORA reading covers (`dora.ts`), and where each one's releases are read. `agent-org` names no project, so which
  * repositories and where is DECLARED here. An ABSENT field reads as an empty list, for the reason `leakPatterns` does: it adds a report and answers
  * no question about WHICH project this is. A PRESENT entry is held to the same rule as every other, and a repository declared twice is refused.
@@ -213,7 +227,7 @@ function readDora(declaration: Record<string, unknown>, source: string): DoraRep
     checkRepo(`${at}.repo`, repo, source);
     if (seen.has(repo)) throw new ProjectDeclarationRefusal(`${at}.repo`, `\`${repo}\` is declared twice in \`dora\``, source);
     seen.add(repo);
-    return { repo, release: readDoraRelease(entry, at, source), releasablePaths: readReleasablePaths(entry, at, source) };
+    return { repo, release: readDoraRelease(entry, at, source), releasablePaths: readReleasablePaths(entry, at, source), ...readAdopterFacing(entry, at, source) };
   });
 }
 

@@ -15,7 +15,9 @@
 // import and its one caller stay together. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { TSX_IMPORT } from "../tsx-import.ts";
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
-  shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers } from "../work-gate.ts";
+  shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers, rowKind, productRegionsOf } from "../work-gate.ts";
+import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../region-paths.ts";
+import { ORG_TRACKER_REPO } from "../row-tracker.ts";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";
 import { claimRecordOf } from "../claim-stall.ts";
 import { idleClaimantReading } from "../idle-claimant.ts";
@@ -508,7 +510,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
   // list: the hold then keeps its label-only excuse (the old behaviour) and the two wait readings say unknown.
   const waits = liftedWaits(readWaits({ prsRead: prsRead === null ? null : [...prsRead, ...keyedPrsRead], openRowsRead, now }), { now, release });
   const { holdStands, stale } = waitStanding(waits, now);
-  const milestoneClock = openRowsRead === undefined ? undefined : milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now });
+  const milestoneClock = openRowsRead === undefined ? undefined : milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead, now, declaration: homeProjectDeclaration() });
   const facts = {
     now,
     ...lastMerge(lastMergedAt()),
@@ -770,20 +772,74 @@ function clockRowState(row, now) {
 }
 
 /**
+ * #4378: WHETHER THE PROJECT HAS SAID WHICH OF ITS REPOSITORIES REACH AN ADOPTER. The primary-milestone rule below is dormant until a `dora` entry names `adopterFacing` (either value): a project that has
+ * declared nothing is read exactly as before, because without the key #3820's `rowKind` is the only fact and it calls a docs-only Region org, which would take a real row out of the count.
+ * @param {{ dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration @returns {boolean}
+ */
+export const adopterFacingDeclared = (declaration) => declaration.dora.some((entry) => entry.adopterFacing !== undefined);
+
+/**
+ * #4378: WHY A REGION ENTRY IS NOT ADOPTER-FACING, in the words a filer can act on: the entry, and either the `adopterFacing: false` repository it lies under, the tool itself, or the plain absence of
+ * a releasable path. The `adopterFacing: false` reading wins over the others because it is the one #3820's `rowKind` alone would have called product.
+ * @param {string} entry @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration @returns {string}
+ */
+function orgEntryReason(entry, declaration) {
+  const { key, path } = splitRegionEntry(entry);
+  const repo = declaration.code.find((code) => code.key === key)?.repo;
+  const dora = declaration.dora.find((candidate) => candidate.repo === repo);
+  if (dora?.adopterFacing === false && dora.releasablePaths.some((releasable) => regionCovers(releasable, path))) {
+    return `\`${entry}\` lies under a releasable path of ${repo}, which is declared \`adopterFacing: false\` in the project declaration`;
+  }
+  if (repo === ORG_TRACKER_REPO) return `\`${entry}\` is in ${repo}, the tool itself, which is released but is not what the project ships`;
+  return `\`${entry}\` lies under no releasable path of an adopter-facing repository`;
+}
+
+/**
+ * #4378: IS THIS ROW ADOPTER-FACING -- #3820's `rowKind` over only the `dora` repositories not declared `adopterFacing: false`, said back as `adopter` or `org` with the entry that made it org. `unreadable` is
+ * `rowKind`'s own word for a Region it found no entries in: such a row is `org` here and the CALLER decides what that means (`row-file` refuses it, the clock counts it unknown). The #3820 product share
+ * keeps calling `rowKind` with every `dora` repository and is NOT changed by this.
+ * @param {string[] | null} entries what `declaredRegionFiles` read @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration
+ * @returns {{ kind: "adopter" | "org", unreadable: boolean, because: string | null }}
+ */
+export function adopterRowKind(entries, declaration) {
+  const adopterDora = declaration.dora.filter((entry) => entry.adopterFacing !== false);
+  const { kind, unreadable } = rowKind(entries, productRegionsOf({ code: declaration.code, dora: adopterDora }));
+  if (kind === "product") return { kind: "adopter", unreadable, because: null };
+  if (unreadable) return { kind: "org", unreadable, because: "its Region names no path, so it cannot be read as adopter-facing" };
+  const reasons = (entries ?? []).map((entry) => orgEntryReason(entry, declaration));
+  return { kind: "org", unreadable, because: reasons.find((reason) => reason.includes("adopterFacing: false")) ?? reasons[0] };
+}
+
+/**
+ * #4378: ONE OPEN ROW OF THE PRIMARY MILESTONE AS THE CLOCK COUNTS IT -- `[]` for a row that reads as org (it neither holds the alarm quiet nor makes it fire), the row for an adopter-facing one, and for a row
+ * whose Region cannot be read a row with NO creation time, which is how `milestoneClockReading` already says unknown: it is never counted as product. An `epic` is the milestone's own container and carries no Region, so
+ * it is not classified. Dormant (`declaration` omitted, or no `adopterFacing` declared) it is the row as before.
+ * @param {any} row @param {number} now @param {Parameters<typeof adopterRowKind>[1] | undefined} declaration @returns {import("../org-health.ts").ClockRow[]}
+ */
+function countedClockRows(row, now, declaration) {
+  const counted = clockRowOf(row, now);
+  if (declaration === undefined || !adopterFacingDeclared(declaration) || counted.epic) return [counted];
+  const { kind, unreadable } = adopterRowKind(declaredRegionFiles(String(row.body ?? "")), declaration);
+  if (kind === "adopter") return [counted];
+  return unreadable ? [{ ...counted, createdAt: null, state: "Region unreadable, so not known to be adopter-facing" }] : [];
+}
+
+/**
  * #4231: THE PRIMARY MILESTONE'S CLOCK FACT, from the open rows and pull requests the tick already read. THE MILESTONE IS DATA: the one whose description carries the `Primary: yes` line, found through
  * the `milestone` field of the open-row read, so a milestone with no open row is not seen here and reads as "no open row belongs to a primary milestone". A refused open-row read is `null` (unknown),
  * a refused pull-request list is `prsClose: null`. A pull request counts for the rows it DECLARES it closes (`Closes #n`, the merge-blocking field, read by the one reader the claim uses), in the
  * repository whose rows they are: the keyed code repositories' pull requests count too, since a row of this tracker is built in `agent-org`.
  * It carries no `endedAt`: `orgHealthReadings` fills it from the last merge the tick read (`lastMergedAt`), which is ONE PROXY FOR TWO EVENTS and not the milestone's own: it is later than the
  * milestone's last claim or pull request ending whenever anything else merged since, so it errs SILENT, never loud. It stays out of this call so the tick's merge read keeps ONE caller (#4047).
- * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, keyedPrsRead?: any[], now: number }} input
+ * #4378: ONLY ADOPTER-FACING ROWS ARE COUNTED when `declaration` says which repositories are (`countedClockRows`); omitted, or declaring none, every open row of the milestone is counted as before.
+ * @param {{ openRowsRead: any[] | null, prsRead: any[] | null, keyedPrsRead?: any[], now: number, declaration?: Parameters<typeof adopterRowKind>[1] }} input
  * @returns {Omit<import("../org-health.ts").MilestoneClockFact, "endedAt"> | null}
  */
-export function milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead = [], now }) {
+export function milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead = [], now, declaration }) {
   if (openRowsRead === null) return null;
   const marked = new Map(openRowsRead.map((row) => row.milestone).filter((m) => m && PRIMARY_MILESTONE_LINE.test(String(m.description ?? ""))).map((m) => [Number(m.number), String(m.title ?? "")]));
   const primaries = [...marked].map(([number, title]) => ({ number, title }));
-  const rows = primaries.length === 1 ? openRowsRead.filter((row) => Number(row.milestone?.number) === primaries[0].number).map((row) => clockRowOf(row, now)) : [];
+  const rows = primaries.length === 1 ? openRowsRead.filter((row) => Number(row.milestone?.number) === primaries[0].number).flatMap((row) => countedClockRows(row, now, declaration)) : [];
   const closing = (/** @type {any} */ pr) => declaredClosedRows(pr.body, { prRepo: pr.repo ?? repoNow() });
   return { primaries, rows, prsClose: prsRead === null ? null : [...prsRead, ...keyedPrsRead].flatMap(closing) };
 }
