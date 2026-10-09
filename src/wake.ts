@@ -4486,20 +4486,51 @@ function escalationTargetOf(key: string, repoOf: (repoKey: string) => string | n
   return { ref, row: null, place: (run) => fileRepositoryRow({ ref, repo, key }, run) };
 }
 
+/** The cause kind a key carries: `<session>/<cause>/<subject>/...`, the segment `stuckSubjectOf` splits around. @param {string} key */
+const causeKindOf = (key: string) => key.split("/")[1] ?? "";
+
 /**
- * File the row `ceo` reads for a red in another repository, once: an OPEN `answer:ceo` issue already titled for `ref` is the
+ * The title and body of the row filed for a stuck cause in another repository, worded for WHAT IS STUCK (a11ign/a11ign#4360): only a
+ * `trunk-red` cause says `main` is red. A `pr-checks-failing` cause is a pull request that may be waiting on something, so the question
+ * it asks is that, not whether trunk is red (`ceo` spent a read proving a lab `main` green for a title that said otherwise); any other
+ * kind is worded by its own name. The title is the dedupe key, so each kind keeps its own.
+ * @param {{ ref: string, repo: string, key: string }} stuck @returns {{ title: string, body: string }}
+ */
+function stuckRowWording({ ref, repo, key }: { ref: string; repo: string; key: string; }): { title: string; body: string; } {
+  const kind = causeKindOf(key);
+  const offered = `A \`${kind}\` order for \`${repo}\` was offered ${MAX_DELIVERIES} times and is still true (\`${key}\`), so it is `
+    + "escalated here, the one place `ceo` reads for a repository whose pull requests are not in this tracker (#3086).\n\n";
+  const answer = `Removing \`${ESCALATION_LABEL}\` is the answer.\n`;
+  if (kind === "trunk-red") {
+    return {
+      title: `Stuck trunk-red: ${ref} -- \`main\` of ${repo} is red and nothing has fixed it`,
+      body: `${offered}Fix \`main\` of ${repo}, or say why it should stay red. ${answer}`,
+    };
+  }
+  if (kind === "pr-checks-failing") {
+    return {
+      title: `Stuck pr-checks-failing: ${ref} -- a pull request of ${repo} is red and nothing has fixed it`,
+      body: `${offered}The stuck thing is the pull request ${ref}, not \`main\` of ${repo}. The question is whether it is waiting on something `
+        + `(another row, a native chain, a review), not whether trunk is red: read the pull request before touching trunk. ${answer}`,
+    };
+  }
+  return {
+    title: `Stuck ${kind}: ${ref} -- a \`${kind}\` cause for ${repo} is stuck and nothing has answered it`,
+    body: `${offered}Say what the \`${kind}\` cause is waiting on, or clear it. ${answer}`,
+  };
+}
+
+/**
+ * File the row `ceo` reads for a stuck cause in another repository, once: an OPEN `answer:ceo` issue already titled for `ref` is the
  * row (the ledger could not be written, or another tick got there first), so a second is not filed.
- * @param {{ ref: string, repo: string, key: string }} red @param {(args: string[]) => string} run
+ * @param {{ ref: string, repo: string, key: string }} stuck @param {(args: string[]) => string} run
  * @returns {number | null} the row's number, or `null` when `gh` printed none
  */
 function fileRepositoryRow({ ref, repo, key }: { ref: string; repo: string; key: string; }, run: (args: string[]) => string): number | null {
-  const title = `Stuck trunk-red: ${ref} -- \`main\` of ${repo} is red and nothing has fixed it`;
+  const { title, body } = stuckRowWording({ ref, repo, key });
   const open = JSON.parse(run(["issue", "list", "--state", "open", "--label", ESCALATION_LABEL, "--limit", "100", "--json", "number,title"]));
   const existing = open.find((row: { title: string; }) => row.title === title);
   if (existing !== undefined) return existing.number;
-  const body = `A \`trunk-red\` order for \`${repo}\` was offered ${MAX_DELIVERIES} times and is still true (\`${key}\`), so it is `
-    + "escalated here, the one place `ceo` reads for a repository whose pull requests are not in this tracker (#3086).\n\n"
-    + `Fix \`main\` of ${repo}, or say why it should stay red. Removing \`${ESCALATION_LABEL}\` is the answer.\n`;
   const made = run(["issue", "create", "--title", title, "--body", body, "--label", ESCALATION_LABEL]);
   const number = /\/issues\/(\d+)\s*$/.exec(made);
   return number === null ? null : Number(number[1]);
