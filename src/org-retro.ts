@@ -33,6 +33,8 @@ import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLi
 import { claudeTurns, codexTurns, transcriptFiles } from "./token-audit.ts";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
+import { FAILURE_LEDGER_FILE, parseFailureLedger, type FailureEntry } from "./failure-ledger.ts";
+import { correctionsPerDay, correctionsLine } from "./found-by-chairman.ts";
 import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, doraNumbers, doraDeclarations } from "./dora.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 // THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
@@ -285,12 +287,19 @@ export function tokenStats(turns: { at: number; fresh: number; cacheRead: number
   return { turns: inWindow.length, total: inWindow.reduce((sum, t) => sum + t.fresh + t.cacheRead + t.cacheWrite + t.output + t.thinking, 0) };
 }
 
+/** @param {string | null | undefined} text @returns {FailureEntry[] | null} `null` when the ledger was not read or a line of it does not parse: a ledger read wrong is not a count */
+function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | null {
+  if (text === null || text === undefined) return null;
+  try { return parseFailureLedger(text); } catch { return null; }
+}
+
 /**
  * Every number, each `unknown` when its source was refused. `reads` holds the RAW reads (`null` for a refused one), so what is
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, mergedRepositories?: ReturnType<typeof readMerged> | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
  *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null,
- *   unwaited?: ReturnType<typeof unwaitedStockRows> | null }} reads
+ *   unwaited?: ReturnType<typeof unwaitedStockRows> | null, failureLedger?: string | null }} reads
+ * `failureLedger` absent or `null` is a ledger nobody read or that could not be read (a line that does not parse included): the corrections line says `unknown`, never `0`.
  * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
  * `merged` is the PRIMARY repository's list alone, the count's definition before #3593, and `mergedRepositories` is every declared one: absent is a project read
@@ -300,7 +309,7 @@ export function tokenStats(turns: { at: number; fresh: number; cacheRead: number
 export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
-        unwaited?: ReturnType<typeof unwaitedStockRows> | null;
+        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
@@ -317,6 +326,7 @@ export function buildReport(reads: {
     red: redPrStats(reads.openPrs, now),
     tokens: tokenStats(reads.turns, window),
     handFixes: reads.handFixes,
+    corrections: correctionsPerDay(parsedFailureLedger(reads.failureLedger), new Date(now)),
     unwaited: reads.unwaited ?? null,
     dora: reads.dora,
   };
@@ -557,13 +567,14 @@ function journalDerivedLines(report: ReturnType<typeof buildReport>): string[] {
 }
 
 /** @param {ReturnType<typeof buildReport>} report @returns {string[]} */
-function spendLines({ tokens, merged, handFixes }: ReturnType<typeof buildReport>): string[] {
+function spendLines({ tokens, merged, handFixes, corrections }: ReturnType<typeof buildReport>): string[] {
   // `ledgerLine` IS the line, wording and all: it says the window, the target, the trend and what was left out, and a refused read says UNKNOWN and "not zero".
   const handFix = handFixes === null ? `- HAND FIXES: ${UNKNOWN} (the hand-fix ledger could not be run)` : `- ${handFixLine(handFixes)}`;
-  if (tokens === null) return [`- Tokens per merged PR: ${UNKNOWN} (no transcript could be read)`, handFix];
+  const chairman = `- ${correctionsLine(corrections)}`;
+  if (tokens === null) return [`- Tokens per merged PR: ${UNKNOWN} (no transcript could be read)`, handFix, chairman];
   const perPr = merged === null ? UNKNOWN : merged.count === 0 ? "n/a, no PR merged" : grouped(Math.round(tokens.total / merged.count));
   return [`- Tokens per merged PR: ${perPr} (${grouped(tokens.total)} tokens over ${grouped(tokens.turns)} turns; the transcripts' own usage fields via token-audit.ts, cache reads included)`,
-    handFix];
+    handFix, chairman];
 }
 
 /** @param {ReturnType<typeof buildReport>["dora"]} report @returns {string[]} nothing when no DORA read was asked for; `unknown` when it was refused */
@@ -794,6 +805,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     openPrs: ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup"]),
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
+    failureLedger: readText(`${stateDir}/${FAILURE_LEDGER_FILE}`),
     turns: readTurns(since),
     readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0

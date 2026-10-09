@@ -15,6 +15,12 @@
 // so the document is not built and no `0` is printed. What can reach it is a labelled row whose opening cannot be read; that makes the count
 // `null` and the line says `unknown`, because only a read that succeeded may print `0`. The previous week says `no baseline` when it begins before
 // the label was first applied, because a zero from a week nobody was labelling is not a reading.
+//
+// CORRECTIONS PER UTC DAY (a11ign/a11ign#4453, epic #4437's headline metric) is the other population: the `chairman-correction` entries of the failure
+// ledger, and a correction usually has no row. The two are not merged. `unidentified-caller-order` is the PROXY for a chairman-session order (#4452) and is
+// NOT a correction: it is counted nowhere here. `chairman-correction` itself has no recorder yet, so a day printed `0` is a day with no such ENTRY, and the
+// line says which kind it counts.
+import type { FailureEntry } from "./failure-ledger.ts";
 import { verdictFor } from "./org-retro.ts";
 
 export const LABEL = "found-by-chairman";
@@ -83,4 +89,46 @@ export function foundByChairmanLine(report: ReturnType<typeof foundByChairman>):
   const rows = report.numbers.length === 0 ? "" : ` (${report.numbers.map((n) => `#${n}`).join(", ")})`;
   const was = report.verdict === "no baseline" ? "no baseline" : `${report.previousCount ?? "unknown"} (${report.verdict})`;
   return `week ${spanOf(report.week)}: ${shown} (target ${TARGET})${rows}; previous week ${spanOf(report.previousWeek)}: ${was}`;
+}
+
+/** What a day's count can be besides a number: the ledger could not be read, or the day is before the ledger's first line. */
+export type DayCount = number | "unknown" | "no baseline";
+export type Day = { day: string, count: DayCount };
+
+/** The ledger key this metric counts, and only this one. */
+export const CORRECTION_KIND = "chairman-correction";
+
+/**
+ * Corrections per UTC day for the seven whole days before `now`'s day, oldest first, and the day-over-day trend of the last two.
+ * ABSENCE IS NOT ZERO: `entries` is `null` when the ledger could not be read (every day `unknown`), and a day before the ledger's first line, of any kind, is
+ * `no baseline`. A ledger that was read and holds no line has no first line, so every day is `no baseline`.
+ * @param {FailureEntry[] | null} entries the parsed ledger, `null` when unreadable @param {Date} now
+ * @returns {{ days: Day[], verdict: string }}
+ */
+export function correctionsPerDay(entries: FailureEntry[] | null, now: Date): { days: Day[]; verdict: string; } {
+  const today = Date.parse(midnight(now));
+  const first = entries === null || entries.length === 0 ? Infinity : Math.min(...entries.map((entry) => entry.at));
+  const days = Array.from({ length: DAYS_PER_WEEK }, (_, i) => {
+    const since = today - (DAYS_PER_WEEK - i) * MS_PER_DAY;
+    return { day: new Date(since).toISOString().slice(0, DAY_LENGTH), since };
+  }).map(({ day, since }): Day => {
+    if (entries === null) return { day, count: "unknown" };
+    if (since + MS_PER_DAY <= first) return { day, count: "no baseline" };
+    return { day, count: entries.filter((entry) => entry.classKey === CORRECTION_KIND && entry.at >= since && entry.at < since + MS_PER_DAY).length };
+  });
+  return { days, verdict: dayOverDay(days) };
+}
+
+/** @param {Day[]} days @returns {string} the last day against the one before it, by `verdictFor`; a day that is not a number is `unknown` or `no baseline`, never a delta against 0 */
+function dayOverDay(days: Day[]): string {
+  const [before, last] = days.slice(-2).map((d) => d.count);
+  if (last === "unknown" || before === "unknown") return "unknown";
+  if (typeof last !== "number" || typeof before !== "number") return "no baseline";
+  return verdictFor({ better: "lower", previous: { status: "read", numbers: { [COUNT_ID]: before } }, id: COUNT_ID, current: last });
+}
+
+/** @param {ReturnType<typeof correctionsPerDay>} report @returns {string} one line: each day with its date, the target, the trend, and what is counted */
+export function correctionsLine({ days, verdict }: ReturnType<typeof correctionsPerDay>): string {
+  const perDay = days.map(({ day, count }) => `${day.slice(DAY_LENGTH - "MM-DD".length)} ${count}`).join(", ");
+  return `Chairman corrections per UTC day (target ${TARGET}): ${perDay}; last day against the one before: ${verdict} (counts \`${CORRECTION_KIND}\` ledger entries; \`unidentified-caller-order\` is not a correction)`;
 }
