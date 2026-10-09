@@ -4,7 +4,7 @@
 //
 // Kept as ONE list rather than distributed one pattern per rule module: "the guard refused for ancestry
 // and GitHub merged it" and "the guard refused for a missing check and GitHub merged it" are different
-// bugs, and `merge-guard.mjs`'s `#188` reconciliation log needs to tell them apart from a bare verdict.
+// bugs, and `merge-guard.ts`'s `#188` reconciliation log needs to tell them apart from a bare verdict.
 // Scattering these regexes across eight rule files would recreate exactly the fact-stated-twice shape
 // CLAUDE.md warns against -- a rule's message text and its classification pattern are the SAME fact, and
 // they belong next to each other only if nothing else needs to compare across rules. `reasonKind` does.

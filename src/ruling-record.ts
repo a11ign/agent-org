@@ -2,7 +2,7 @@
 // @ts-check
 // #2997: `ruling:record` AND THE TICK'S HALF THAT TOUCHES A FILE. A ruling that changes standing state is recorded WITH ITS CHECK, and the check is the completion:
 //   pnpm run ruling:record --session=ceo --on=<issue> --check="<predicate>" [--check="<predicate>" ...] [--grace=<minutes>] [--at=<ISO time>]
-// The predicate is from the closed vocabulary `ruling-check.mjs` states. A ruling with no check is REFUSED, and so is a predicate outside it. The record is
+// The predicate is from the closed vocabulary `ruling-check.ts` states. A ruling with no check is REFUSED, and so is a predicate outside it. The record is
 // `rulings.jsonl` in the host's state directory, beside `org-retro-readings.jsonl`: APPEND-ONLY, one line per fact -- the ruling, then (at most) an `offered` line when
 // the tick first posted on its issue, then (once) a `took-effect` line -- so nothing is ever rewritten and a half-written line costs one line.
 // The record is idempotent: the same ruling (same issue, recorder and time) is recorded once.

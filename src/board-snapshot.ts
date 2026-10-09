@@ -37,13 +37,13 @@
 // gitignored on purpose: a snapshot is a recovery artefact, not history: the tracker itself is the record.
 //
 // #1275: A MUTATION THAT NAMES THE ITEM IT TOUCHES SNAPSHOTS THAT ITEM, NOT THE BOARD. Every board mutation in
-// `scripts/` is one item's Status (`row-claim.mjs`'s `moveProjectStatus`); #399's accident was a FIELD rewrite
+// `scripts/` is one item's Status (`row-claim.ts`'s `moveProjectStatus`); #399's accident was a FIELD rewrite
 // that no script sends. A full sweep before each one-item edit cost 6 GraphQL pages at 555 items plus the
 // ready-issue list, and the account's GraphQL budget ran out twice on 2026-09-13. The full sweep stays for an
-// unscoped call, for this file's CLI and for `ready-label-audit.mjs` -- which is where #1219/#1228's census
+// unscoped call, for this file's CLI and for `ready-label-audit.ts` -- which is where #1219/#1228's census
 // still prints.
 //
-// The scoped half lives in `board-snapshot-scope.mjs`, pure of `gh`, so the row's acceptance can run in a job with no
+// The scoped half lives in `board-snapshot-scope.ts`, pure of `gh`, so the row's acceptance can run in a job with no
 // token. The one `gh` call it needs is made here, in `withBoardSnapshot`.
 import { execFileSync } from "node:child_process";
 // #1219: PURE, and deliberately in its own module -- see that file's header. Importing it here costs
@@ -159,7 +159,7 @@ function statusOptionNames(parsed: unknown): string[] | null {
 
 /**
  * One page of `gh api graphql`'s response, parsed into `BoardItem[]` plus pagination state. THROWS on any
- * shape it does not recognise -- same discipline as `ready-label-audit.mjs`'s `fetchIssues`: a snapshot
+ * shape it does not recognise -- same discipline as `ready-label-audit.ts`'s `fetchIssues`: a snapshot
  * that silently records fewer items than the board actually holds is worse than one that refuses outright,
  * because it looks complete.
  *
@@ -230,11 +230,11 @@ function parsePage(raw: string): {
 /**
  * Every OPEN issue carrying `ready` -- the independent population #747's floor checks the snapshot
  * against. Read with a PLAIN top-level `gh issue list`, deliberately never nested inside another
- * connection: the narrowing measured on `fieldValues` (and on `claim-provenance.mjs`'s own #683
+ * connection: the narrowing measured on `fieldValues` (and on `claim-provenance.ts`'s own #683
  * measurement of a nested `timelineItems`) only happens to a connection sharing a budget with sibling
  * rows in the SAME request, and a bare `issues(first: N)` at the top level is not that shape.
  *
- * Same truncation discipline as `ready-label-audit.mjs`'s `fetchIssues`: returning exactly `limit` rows
+ * Same truncation discipline as `ready-label-audit.ts`'s `fetchIssues`: returning exactly `limit` rows
  * is indistinguishable from a truncated result, so that is refused rather than reported as complete.
  *
  * @param {{ run?: typeof defaultRun, limit?: number }} [deps]
@@ -279,7 +279,7 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
 /**
  * THE FLOOR #747 ADDS. `fieldValues` carries no `totalCount` at all, so nothing inside a single
  * response can ever prove GitHub did not narrow it to fit a budget shared with the OTHER items in the
- * same page -- exactly the shape `claim-provenance.mjs` measured on #683's nested `timelineItems`
+ * same page -- exactly the shape `claim-provenance.ts` measured on #683's nested `timelineItems`
  * (nodes agreeing with totalCount while both were narrowed together). An independently-derived
  * population -- every open `ready` issue, read by a query that is not nested -- is the only thing that
  * can catch it: pure, so it is driven with real shapes rather than asserted against this file's text.
@@ -287,7 +287,7 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
  * `excludeIssueNumber`, ADDED AFTER A LIVE SELF-TRIP (#891, filed live 2026-09-09, ceo's diagnosis):
  * this floor exists to catch a `ready` row that has silently LOST its Status somewhere -- neglect. It is
  * not that when the row's own filer passed a real `gh issue create -l ready` flag straight through
- * (row-file's own `--ready` sentinel is a SEPARATE, later convention -- see row-file.mjs's own #844/#883
+ * (row-file's own `--ready` sentinel is a SEPARATE, later convention -- see row-file.ts's own #844/#883
  * comments -- and nothing stops a caller using gh's real flag instead), the issue already carried `ready`
  * by the time `gh project item-add` ran, so THIS call's own pre-write snapshot caught the very row it was
  * about to fix and refused, always, on itself -- the #872/#867 self-trip shape recurring through a second
@@ -315,7 +315,7 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
  * with no project item at all (the BOARD was wrong, and every board read had been blind to them for as
  * long as they had existed), while #2093 once boarded took about 25 minutes to appear in this query's own
  * pagination although `issue.projectItems` returned it immediately (the READ was short, in a third way
- * this message had never named). `settle-closed-status.mjs`'s `shortReadRefusal` header records the same
+ * this message had never named). `settle-closed-status.ts`'s `shortReadRefusal` header records the same
  * index lag from its own side, over closed rows, the same morning.
  *
  * @returns {{ absentFromItems: number[], boardedWithoutStatus: number[] }} `absentFromItems` is every
@@ -493,13 +493,13 @@ function refuseUnaccountedReadyRows(items: BoardItem[], readyNumbers: number[], 
  * nested inside `items(first: 100)` above, the one shape GitHub narrows to a shared budget without ever
  * reporting it (no `totalCount` on `fieldValues` to compare against `nodes.length`, unlike the items
  * connection itself). This is the check that makes a truncated read refuse rather than look complete;
- * every caller of this function -- `writeBoardSnapshot`, and `ready-label-audit.mjs`'s own
+ * every caller of this function -- `writeBoardSnapshot`, and `ready-label-audit.ts`'s own
  * board-membership check, which reads through this exact query -- inherits it for free.
  *
  * #2157: AND IT NOW SAYS WHICH OF THE THREE IT FOUND. The sentence above is true only of a row that came
  * back AS AN ITEM with no Status; a row absent from the pages entirely is either off the board (a board
  * defect) or not yet indexed (a short read of a different kind), and the refusal used to assert the
- * `fieldValues` narrowing over all three. `ready-label-audit.mjs`'s board-membership check prints this
+ * `fieldValues` narrowing over all three. `ready-label-audit.ts`'s board-membership check prints this
  * message verbatim after `COULD NOT AUDIT board membership:`, so the sentence IS the finding a reader
  * gets -- which is why it is built by a pure function with its own fixtures (`missingStatusRefusal`).
  *
@@ -695,7 +695,7 @@ export function withBoardSnapshot<T>(mutate: () => T, deps: {
   }
   if (route === "scoped") {
     const { run = defaultRun, writeFile, mkdir } = snapshotDeps;
-    // #1275: THE ONE `gh` CALL THE SCOPED HALF NEEDS, made here so `board-snapshot-scope.mjs` never names `gh` and
+    // #1275: THE ONE `gh` CALL THE SCOPED HALF NEEDS, made here so `board-snapshot-scope.ts` never names `gh` and
     // its test can run in a job with no token.
     return withScopedSnapshot(mutate, (issues as number[]), { request: (args) => run("gh", args), log, at,
       now, maxAgeMs: SNAPSHOT_MAX_AGE_MS, stillValid, writeFile, mkdir });
@@ -730,7 +730,7 @@ export function forgetProcessSnapshot() {
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164, and takes no flags at all -- this entry point only ever takes a snapshot, it never
   // mutates, so there is nothing for a flag to configure.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/board-snapshot.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/board-snapshot.ts" });
   try {
     const path = writeBoardSnapshot();
     process.stdout.write(`wrote ${path}\n`);

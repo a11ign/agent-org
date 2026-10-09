@@ -20,7 +20,7 @@
 //
 // **THE SENDER IS ONE NOBODY ELSE CAN DERIVE.** `resolveSender` builds every other sender from a herdr workspace id, so a session cannot
 // produce `CHAIRMAN_SENDER` by being a workspace; only this module passes it. (A workspace LABELLED with that exact text used to be
-// returned by `resolveSender`; a11ign/a11ign#3060 closed it in `prompt-session.mjs`, which now yields null for a label no session name looks like.)
+// returned by `resolveSender`; a11ign/a11ign#3060 closed it in `prompt-session.ts`, which now yields null for a label no session name looks like.)
 //
 // **THE ACKNOWLEDGEMENT IS THE LISTENER'S, AND IT COMES FIRST.** `ACKNOWLEDGEMENT` is sent BEFORE the queue is written, in the same words every time and with
 // no model in it, so the chairman hears "Got it" at the speed of a poll and not of the liaison's turn (#3416). What follows it is the liaison's own answer,
@@ -34,7 +34,7 @@
 // **WHAT THIS DOES NOT TAKE:** a button press as CONVERSATION (the answers path, #2908, owns it; `forward` still refuses one), and anything `isAccepted` does not vouch for. A value
 // that was not minted by `createInbound` for THIS chairman is not a chairman's message, whatever its fields say.
 //
-// THE QUEUE IS A PORT, LOADED ON FIRST USE. `prompt-session.mjs` and `wake.mjs` read the project's declaration at import and refuse to
+// THE QUEUE IS A PORT, LOADED ON FIRST USE. `prompt-session.ts` and `wake.ts` read the project's declaration at import and refuse to
 // load outside a project's layout, so a static import would make this leaf module (and its tests, run bare) unimportable here. The
 // default port is the real queue; a test passes one only to drive what the real one cannot be asked to do in a bare checkout, and the
 // test file says which of its cases ran against which.
@@ -71,7 +71,7 @@ const REFUSAL_LINE_LIMIT = 200;
 export async function realQueue() {
   const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake.ts")]);
   const { promptOrQueue, defaultRun, attributed, EXIT, STANCE, NOT_QUEUED_PREFIX } = session;
-  // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.mjs`, so the file's name is defined once, there.
+  // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.ts`, so the file's name is defined once, there.
   return { promptOrQueue, run: defaultRun, NOT_QUEUED_PREFIX, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, defaultQueuePath: () => wake.handoffQueuePath(wake.ledgerPathFrom([])) };
 }
 

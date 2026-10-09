@@ -1,17 +1,17 @@
 // @ts-check
-// HERDR'S OWN WORKSPACE LISTING, SHARED -- moved out of `wake.mjs` for #2747.
+// HERDR'S OWN WORKSPACE LISTING, SHARED -- moved out of `wake.ts` for #2747.
 //
 // `readAgents` and `listingIsComplete` (the reviewer teardown's own "is this listing the whole org" check, #2465)
-// used to live only in `wake.mjs`. #2747 needs the SAME read from `claim-stall.mjs`, which is a LEAF (`node:*`, the
-// git-env scrubber and `claim-labels.mjs` only, so `work-gate.mjs` -- which runs before any `pnpm install` -- and
-// `wake.mjs` can both import it without one importing the other). `wake.mjs` is not importable from a leaf: it
-// already imports `claim-stall.mjs` (line 76 there), and a leaf that imported its own importer would be a cycle.
+// used to live only in `wake.ts`. #2747 needs the SAME read from `claim-stall.ts`, which is a LEAF (`node:*`, the
+// git-env scrubber and `claim-labels.ts` only, so `work-gate.ts` -- which runs before any `pnpm install` -- and
+// `wake.ts` can both import it without one importing the other). `wake.ts` is not importable from a leaf: it
+// already imports `claim-stall.ts` (line 76 there), and a leaf that imported its own importer would be a cycle.
 // So this file is the shared home instead: `node:*` only, importable from both.
 //
 // NOT in `./lib/`: that directory is #2658's (ADR 0040) fixed set of byte-identical copies of files from OTHER
 // packages, pinned exactly by `agent-org-outward-edges.test.ts`'s "#2658: the seven copies ... no other file sits
 // in lib/" -- a directory listing it reads literally. This file is native to `agent-org` (code moved within the
-// package, not copied in from outside it), so it sits beside `claim-labels.mjs` and `project-vocabulary.mjs` instead.
+// package, not copied in from outside it), so it sits beside `claim-labels.ts` and `project-vocabulary.ts` instead.
 import { execFileSync } from "node:child_process";
 
 /** @param {string[]} args */
@@ -57,8 +57,8 @@ const STANDING_PANES = Object.freeze(["ceo", "orchestrator"]);
  * EVERY instance as absent -- the standing panes included. A listing missing `ceo` or `orchestrator` is missing
  * things that exist, so what else it lacks is unproven. WHAT IT DOES NOT PROVE: a listing that dropped only some
  * workspaces and happened to keep both panes -- which is why one complete listing finding a label absent is never
- * enough on its own (each caller times its own confirmation window; see `wake.mjs`'s reviewer teardown and
- * `claim-stall.mjs`'s `goneReading` for the two that do).
+ * enough on its own (each caller times its own confirmation window; see `wake.ts`'s reviewer teardown and
+ * `claim-stall.ts`'s `goneReading` for the two that do).
  * @param {{label: string}[]} agents
  */
 export function listingIsComplete(agents: { label: string; }[]) {

@@ -1,6 +1,6 @@
 // no-token: gh -- every `herdr` and `git` call here is an injected seam; the one real process is `node`, run to produce a genuine `execFileSync` failure
 /**
- * `packages/agent-org/src/wake.mjs`, #3032: A `herdr agent start` THAT HERDR REFUSES IS REFUSED WITH HERDR'S REASON.
+ * `packages/agent-org/src/wake.ts`, #3032: A `herdr agent start` THAT HERDR REFUSES IS REFUSED WITH HERDR'S REASON.
  *
  * Measured 2026-10-02: `reviewer-agent-org-18` was retried for an hour and the journal printed, 28 times, the
  * `herdr ... agent start` command line and "the workspace it opened was closed". That text is `firstLine(err)`, and

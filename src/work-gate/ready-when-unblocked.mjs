@@ -12,7 +12,7 @@
 // (4) `row-file --promote`, which re-runs the filing rule (`fileRefusalReason`) on the live body once more and owns the Status move, the label set and the read-back. A refusal at ANY step leaves
 // the row exactly as it was, so the caller's order to `product-manager` is today's, unchanged.
 //
-// A LEAF AT LOAD TIME, like `unpark-satisfied.mjs`: no import of `work-gate.mjs` (which imports this), so the clearings and the not-startable list are passed in.
+// A LEAF AT LOAD TIME, like `unpark-satisfied.ts`: no import of `work-gate.ts` (which imports this), so the clearings and the not-startable list are passed in.
 import { ANSWER_PREFIX, BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.ts";
 import { CLAIM_LABEL, READY_LABEL } from "../claim-labels.ts";
 import { REPO } from "../project-identity.ts";

@@ -27,9 +27,9 @@
 // "Confirmed false" and "could not determine" are different states and must never share a value
 // (`.agent-org/roles/engineer.md`).
 //
-// A LEAF, like `api-pool.mjs` and `host-config.mjs`: `work-gate.mjs` reaches this on its refusal path,
-// which runs before any `pnpm install` or build (`api-pool.mjs`'s header states the identical constraint for the
-// same reason), so this imports nothing but `node:fs`, `node:path`, and `host-config.mjs` -- itself a leaf.
+// A LEAF, like `api-pool.ts` and `host-config.ts`: `work-gate.ts` reaches this on its refusal path,
+// which runs before any `pnpm install` or build (`api-pool.ts`'s header states the identical constraint for the
+// same reason), so this imports nothing but `node:fs`, `node:path`, and `host-config.ts` -- itself a leaf.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homeHostConfig } from "./host-config.ts";
@@ -106,9 +106,9 @@ function loginForHost(text: string, host: string): string | null {
  * want a fixed answer (every test in `gh-identity-declared.test.ts`, and any caller that wants a specific
  * host) pass `host` and `env` explicitly.
  *
- * `homeHostConfig()`'s own contract is REFUSE, NEVER DEFAULT (`host-config.mjs`'s header) -- a host with
+ * `homeHostConfig()`'s own contract is REFUSE, NEVER DEFAULT (`host-config.ts`'s header) -- a host with
  * no declaration at all THROWS there. That refusal is swallowed here into UNKNOWN rather than left to
- * crash whichever refusal path called this: `work-gate.mjs` reaches this exactly when its OWN reads have
+ * crash whichever refusal path called this: `work-gate.ts` reaches this exactly when its OWN reads have
  * already failed, and a second, unrelated throw on that path would turn "the org could not be asked" into
  * an uncaught exception instead of a report.
  *
@@ -141,7 +141,7 @@ export function declaredGhAccount({ env = process.env, host, read = readFileSync
 
   // STEP 2: `HERDR_WORKSPACE_ID` routes through `host.json`'s leads list -- present in every org session,
   // absent from every systemd unit (#1974's own finding, which is why a unit needs its OWN declaration
-  // instead: `identityDrift` in `host-units.mjs` covers that population, not this one).
+  // instead: `identityDrift` in `host-units.ts` covers that population, not this one).
   const workspaceId = env.HERDR_WORKSPACE_ID;
   if (workspaceId) {
     const onLeads = resolvedHost.gh.leadsWorkspaces.some((workspace) => workspace.id === workspaceId);

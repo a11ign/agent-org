@@ -24,7 +24,7 @@
 // unlabelled row apart from one nobody had assigned -- `worker-config` held idle twice in one evening
 // rather than self-select from an unlabelled column (the row's own filing cites both). The part that is
 // the ruling rather than an implementation choice: the derivation reads `docs/lane-ownership.json`
-// through `loadLanes`/`inLane`, THE SAME FUNCTIONS `lane-ownership.mjs` owns (the merge guard that also read them was retired) --
+// through `loadLanes`/`inLane`, THE SAME FUNCTIONS `lane-ownership.ts` owns (the merge guard that also read them was retired) --
 // never a second, hand-typed spelling of the same rule that could drift from the guard that actually
 // refuses the branch. A Region touching two lanes gets BOTH labels, never one picked silently (see
 // `laneLabelsFor`); a Region touching none gets `lane:any`, a real answer, not a fallback. A missing or
@@ -49,7 +49,7 @@
 // record of the past, and removing it on close (#754) destroyed the second. A body line has the property
 // the label lacked: it is a record, so nothing later ever needs to remove it.
 //
-// `--session=<name>`, REQUIRED, the identical flag `row-claim.mjs` already uses for the same fact --
+// `--session=<name>`, REQUIRED, the identical flag `row-claim.ts` already uses for the same fact --
 // never a separately-named flag (`--filed-by=`) a caller could set to anything unrelated to who is
 // actually running this. One place a session states its identity, not two that could disagree.
 //
@@ -292,7 +292,7 @@ export function regionRefusalReason(body: string): string | null {
   // change files -- this row's own body says it twice -- and a declaration that can be made accidentally
   // somewhere else is the easy path past the check this refusal exists to close.
   //
-  // THROUGH THE SHARED `declaresNoCommit`, NOT A REGEX (#2177 moved the sentence to `region-paths.mjs`, so
+  // THROUGH THE SHARED `declaresNoCommit`, NOT A REGEX (#2177 moved the sentence to `region-paths.ts`, so
   // `row-reachability` reads the same one). My first version wrote its own, and worker-judge found it
   // disagrees with the shared extractor BOTH WAYS: the inline form (`Region: ...`) was invisible to mine,
   // so a row using it could not make the declaration at all; and a `###` sub-heading ENDS the section
@@ -435,7 +435,7 @@ export function openCheckTranscriptRefusal(body: string): string | null {
  * outcome #540 made fail the job -- and `row-file` had filed every one. Reproduced at `bb8a5168` on #1466's
  * real body: `duplicate`, and `fileRefusalReason` returned `null`.
  *
- * THE PARSER IS CALLED, NEVER COPIED: which lines count as a header is `acceptance-commands.mjs`'s rule,
+ * THE PARSER IS CALLED, NEVER COPIED: which lines count as a header is `acceptance-commands.ts`'s rule,
  * already fixed five times for forms authors keep writing, and a second copy here would drift from the one
  * CI runs. So this refuses exactly what that parser cannot read -- `duplicate` and `missing` -- and names
  * the one-header forms that pass, so following the refusal files.
@@ -478,7 +478,7 @@ const WALKABLE_SOURCE = /\.(?:mjs|cjs|js|ts|tsx)$/;
  * and the test is what does not exist yet, so a `token` charge on an entry script is the walk being unable to
  * see the escape. Measured 2026-09-24 over 70 open and 80 closed rows: with it the closure warning spoke on
  * 79 of 150 (53%), 69 of them charged to `token` by entry scripts that spawn `gh` -- every filing of
- * `work-gate.mjs` or `wake.mjs` -- which is the warning that fires on every filing. `corpus` and `history`
+ * `work-gate.ts` or `wake.ts` -- which is the warning that fires on every filing. `corpus` and `history`
  * have no such per-test exit that a Region walk misses, so they stay.
  */
 const TEST_DECLARABLE = "token";
@@ -531,7 +531,7 @@ export function regionClosureWarning(body: string, { exists = isReadable, walk =
   const unreadText = unread.length === 0 ? "" : `WARNING -- ${unread.length} Region source file(s) do not `
     + `exist in this checkout, so their import closure was NOT read and this is not a clean reading: `
     + `${unread.join(", ")}. If one is a new entry script the tests will import, check by hand what it `
-    + "reaches (`unmetClosureRequirements`, `acceptance-commands.mjs`) before the row is built.";
+    + "reaches (`unmetClosureRequirements`, `acceptance-commands.ts`) before the row is built.";
   return [chargeText, unreadText].filter((text) => text !== "").join(" ");
 }
 
@@ -660,7 +660,7 @@ export function filingWarnings(body: string, argv: string[]): string[] {
 /**
  * #4229: A `Waiting-for:` THE GATE CANNOT READ IS REFUSED WHERE IT IS WRITTEN. `parseWaits` keeps a line outside its grammar as `unreadable` and
  * no gate acts on one: #4090 was parked on "ceo's dispatched run ... ends", the condition was true 45 minutes later and the row sat about ten hours.
- * The reader is `wait-condition.mjs`'s own, so this cannot drift from what the gate reads, and a line inside a fence is not read (the reader skips it).
+ * The reader is `wait-condition.ts`'s own, so this cannot drift from what the gate reads, and a line inside a fence is not read (the reader skips it).
  * `manual` is a readable wait (signal 9 counts it). `null` means proceed.
  * @param {string} body
  * @returns {string | null}
@@ -719,9 +719,9 @@ export function fileRefusalReason(body: string | null): string | null {
   const wholeSuite = wholeSuiteAcceptanceReason(body, "row-file");
   if (wholeSuite) return wholeSuite;
   // #2099: THE FOURTH CAPABILITY, REFUSED WHERE THE OTHER "this job cannot run that" verdicts are. One
-  // line here and the whole rule in `acceptance-commands.mjs`, beside the classifier whose verdict it
+  // line here and the whole rule in `acceptance-commands.ts`, beside the classifier whose verdict it
   // moves earlier -- the same seam `acceptancePathsReason` and `labFetchPathReason` below already use,
-  // and the reason `row-file.mjs` is not this row's Region: it owns none of the logic, only the call.
+  // and the reason `row-file.ts` is not this row's Region: it owns none of the logic, only the call.
   const handRun = handRunAcceptanceReason(body, "row-file");
   if (handRun) return handRun;
   // #1943: SHAPE, THEN THE PATHS THE SHAPE NAMES. The checks above ask whether a command can be run at
@@ -784,7 +784,7 @@ function readBlocker(number: number, run: (cmd: string, args: string[]) => strin
 }
 
 /**
- * The `--session=<name>` value, or `null` when absent -- the same convention `row-claim.mjs` requires for
+ * The `--session=<name>` value, or `null` when absent -- the same convention `row-claim.ts` requires for
  * dispatch/claim/decline, reused rather than a second, independently-typed flag.
  * @param {string[]} argv
  * @returns {string | null}
@@ -835,7 +835,7 @@ const READY_FLAG = "--ready";
 const TRACKER_FLAG = "--tracker=";
 
 // #4123: THE THIRD FLAG THIS FILE OWNS. `--kind defect` (or `--kind=defect`) marks a row as a defect at filing: it adds the `defect` label, which
-// is what makes a pull request that closes the row owe a `Class:` line (`defect-class-line.mjs`). Stripped before `gh` sees it, as `--ready` is.
+// is what makes a pull request that closes the row owe a `Class:` line (`defect-class-line.ts`). Stripped before `gh` sees it, as `--ready` is.
 // ONE KIND TODAY, and any other value is refused before anything is filed: a typo must not file an unmarked row the check then never reads.
 const KIND_FLAG = "--kind";
 /** The labels a `--kind` value adds, by value. */
@@ -965,7 +965,7 @@ const sameTracker = (a: Tracker, b: Tracker): boolean => a.repo === b.repo && a.
  * @returns {{ label: "backlog" | "ready", status: "Backlog" | "Ready" }}
  *
  * The label that says a row is deliberately outside the release, rather than missing its milestone.
- * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.mjs`'s field, re-exported under
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.ts`'s field, re-exported under
  * this file's own established name so every existing importer keeps working unchanged.
  */
 export { OUT_OF_RELEASE };
@@ -1006,7 +1006,7 @@ export const saysOutOfRelease = (milestone: string | null, outOfReleaseMilestone
  * #1130 added the milestone to the label path and stopped, reasoning that "adding labels a caller did not
  * ask for is a wider change" and that the tracker-level assertion would catch the other side. It did catch
  * it -- as RELEASE DRIFT, minted by this tool. Measured 2026-09-22: `row-file --milestone "Out of release"`
- * filed #1960 with no `out-of-release` label, and `ready-label-audit.mjs` reads the LABEL, so that row was
+ * filed #1960 with no `out-of-release` label, and `ready-label-audit.ts` reads the LABEL, so that row was
  * about to be counted out of the board's own out-of-release figure by the next run. The mirror case (#1740)
  * came from the same audit. Both were repaired by hand, which is what a tool writing one of two fields
  * costs every time.
@@ -1171,8 +1171,8 @@ export function boardingFor(argv: string[]): { label: string; status: "Backlog" 
 const sameLabel = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
- * #2111: the OTHER board label. IMPORTED FROM `project-vocabulary.mjs` (#2619, child 3d of #69) rather
- * than declared locally: `READY_LABEL` still comes from `claim-labels.mjs`, the pinned leaf that owns it
+ * #2111: the OTHER board label. IMPORTED FROM `project-vocabulary.ts` (#2619, child 3d of #69) rather
+ * than declared locally: `READY_LABEL` still comes from `claim-labels.ts`, the pinned leaf that owns it
  * (`backlog` is not one of that file's four claim-lifecycle labels), and both now name the fact once.
  */
 
@@ -1432,7 +1432,7 @@ function projectItemsPage(issueNumber: number, cursor: string | null, run: typeo
 
 /**
  * #844: is issue `issueNumber` on Project `PROJECT_NUMBER`, and what Status does it carry? A single
- * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.mjs`'s whole
+ * targeted GraphQL read of the one issue this filing just created -- never `board-snapshot.ts`'s whole
  * `fetchBoardItems()` walk, which answers a different, much larger question (every item on the board) at
  * a cost this one-row check does not need to pay.
  *
@@ -1920,7 +1920,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   try {
     // #883: `lane:<owner>` is a PER-DERIVATION label -- `lane:dispatcher`, `lane:any`, whatever the
     // Region maps to -- and #749's own lesson applies identically here: `gh issue edit --add-label`
-    // refuses a label that does not already exist in the repository. `ensureLabels` (row-claim.mjs's own
+    // refuses a label that does not already exist in the repository. `ensureLabels` (row-claim.ts's own
     // `ensureLabelsExist`, reused rather than a second copy) creates it idempotently first.
     ensureLabels(allLabels, { run, repo });
     run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
@@ -1971,7 +1971,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
 // measured 2026-09-23 on #2050 and #2110, both in that state for roughly 25 minutes, both found by a
 // person rather than by a check.
 //
-// WHAT THAT COSTS IS NOT WHAT IT LOOKS LIKE. `backlog` is not in `work-gate.mjs`'s `NOT_PICKABLE`, so a
+// WHAT THAT COSTS IS NOT WHAT IT LOOKS LIKE. `backlog` is not in `work-gate.ts`'s `NOT_PICKABLE`, so a
 // doubly-labelled row is still offered and still claimable -- nobody is hidden. The cost is DOUBLE-COUNTED
 // STOCK: `readPromotableRows` reads `--label backlog` SERVER-SIDE and then filters only on `NOT_STARTABLE`
 // and `waitingOn`, neither of which excludes `ready`. A promoted row that keeps `backlog` is counted as
@@ -2057,7 +2057,7 @@ export function promoteRefusalReason(body: string | null, issueNumber: number): 
  *
  * The first version of this act packed the add and the remove into a single `gh issue edit` and claimed
  * that one INVOCATION made them one WRITE. **This repository already records that it does not.**
- * `row-claim.mjs`'s #749 comment carries #677's own live reproduction (13:23:15Z): the SAME command's
+ * `row-claim.ts`'s #749 comment carries #677's own live reproduction (13:23:15Z): the SAME command's
  * `--remove-label` applied while every `--add-label` in it did not. `gh` resolves label names and applies
  * the halves separately, so a half that fails leaves the other standing -- an invocation count is not an
  * atomicity proof, and a read-back can REPORT the wrong state but never stop it being observed. The
@@ -2166,11 +2166,11 @@ function promoteGate(issueNumber: number, { run, fetchLabels }: { run: typeof de
   if (before.labels.includes(CLAIM_LABEL)) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
       + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
-      + "reports as a HAND CLAIM: a claim made outside `row-claim.mjs`. That reading is strong evidence "
+      + "reports as a HAND CLAIM: a claim made outside `row-claim.ts`. That reading is strong evidence "
       + `rather than proof -- the claim path removes \`${READY_LABEL}\` in a SECOND call (#749), so a claim whose `
       + "removal did not land leaves the same pair -- but a promote act that MINTED the state deliberately "
       + "would point the audit at the mechanism for something this command did. Decline the claim first "
-      + "(`row-claim.mjs decline "
+      + "(`row-claim.ts decline "
       + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
   }
   let body: string;

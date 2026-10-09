@@ -6,8 +6,8 @@
 // process table) to a host the kernel was already choosing victims on. M1 (#2507) caps the process a test run starts;
 // this stops the org adding agents to a host that is already short.
 //
-// A LEAF, LIKE `claim-stall.mjs`: it imports only `node:fs`, so `wake.mjs` can take it and no test that imports
-// `wake.mjs` has to know it exists. It DECIDES; `wake.mjs` places the decision (`spawnWorker`, `reviewerTarget`).
+// A LEAF, LIKE `claim-stall.ts`: it imports only `node:fs`, so `wake.ts` can take it and no test that imports
+// `wake.ts` has to know it exists. It DECIDES; `wake.ts` places the decision (`spawnWorker`, `reviewerTarget`).
 //
 // THE HOLD IS A REFUSAL AND NOTHING ELSE. It is the same shape as the six `no spawn:` refusals already in the tick log,
 // it is never written to the ledger, and so the order is offered again on the next tick: nothing is dropped and nothing
@@ -89,7 +89,7 @@ export function readMemAvailable({ read = (p) => readFileSync(p, "utf8"), path =
 }
 
 /**
- * The gate `wake.mjs` asks before it starts a process: the refusal to quote, or `null` to go ahead. Each call READS
+ * The gate `wake.ts` asks before it starts a process: the refusal to quote, or `null` to go ahead. Each call READS
  * afresh -- a tick that starts two instances must not spend one reading twice.
  *
  * AN UNREADABLE READING IS NEITHER A HOLD NOR A SILENT PASS: it spawns as before and `warn`s, so "I could not look" and

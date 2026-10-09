@@ -144,7 +144,7 @@ test("(6) host:check and org-health print the same reading for the same facts --
   assert.equal(reading.discriminator, `${SIGNALS.TOOL_VERSION}@v0.22.0`);
   for (const runner of ["tool checkout /host/agent-org", "/home/agent/repos/wt-1127"]) assert.ok(reading.detail.includes(runner), `the tick names ${runner}`);
 
-  // host:check's finding is `agreementReport` of the SAME result. `host-units.mjs` is run in a CHILD (it calls `git log --all`, so importing it would derive a `history` requirement, #2174).
+  // host:check's finding is `agreementReport` of the SAME result. `host-units.ts` is run in a CHILD (it calls `git log --all`, so importing it would derive a `history` requirement, #2174).
   const script = join(SCRATCH, "findings.mjs");
   writeFileSync(script, `const { toolVersionFindings, toolVersionNotes } = await import(process.argv[2]);
 const reading = JSON.parse(process.argv[3]);

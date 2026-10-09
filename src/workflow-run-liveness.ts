@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // command: watchdog: did CI actually run before this commit reached main, checked automatically
-// DID CI ACTUALLY RUN BEFORE THIS COMMIT REACHED MAIN? -- #118, generalising `merge-guard.mjs`'s
+// DID CI ACTUALLY RUN BEFORE THIS COMMIT REACHED MAIN? -- #118, generalising `merge-guard.ts`'s
 // per-PR, on-demand check into an AUTOMATIC watchdog for every commit that lands.
 //
 // Three guards already prove CI is CONFIGURED -- `board-schedule.test.ts` (the crons exist),
@@ -10,7 +10,7 @@
 // outside their PR, `ci.yml` arrived and `lint.yml` (retired the same day) went, and the local gate was
 // green throughout every one of the three guards above.
 //
-// `merge-guard.mjs` (#161) already answers the run-half of this question, correctly, for one PR given
+// `merge-guard.ts` (#161) already answers the run-half of this question, correctly, for one PR given
 // its number -- it reads check RUNS for a head sha rather than `mergeStateStatus`, which reports CLEAN
 // for a PR nothing has ever tested (#148: base was another open PR's branch, so `ci.yml`'s
 // `pull_request: branches: [main]` trigger never fired at all, and the check-run list was empty against
@@ -19,14 +19,14 @@
 //
 // ## Why this runs on PUSH to main, never on a schedule
 //
-// `board-schedule-liveness.mjs` and `npm-token-liveness.mjs` are this repo's two existing instances of
+// `board-schedule-liveness.ts` and `npm-token-liveness.mjs` are this repo's two existing instances of
 // the same rule, stated once so a third copy does not restate it and drift: a watchdog that is itself
 // scheduled has the disease it is watching for, because GitHub disables a scheduled workflow after 60
 // days without repository activity, silently, with no run and no red mark. `push` cannot be disabled by
 // inactivity, because a push IS the activity -- and a push to `main` is exactly the moment a commit that
 // might have bypassed its PR's checks has just landed.
 //
-// ## Three outcomes, never two -- the same discipline `merge-guard.mjs` already established
+// ## Three outcomes, never two -- the same discipline `merge-guard.ts` already established
 //
 //   TESTED       -- a pull request produced this commit, and every required context ran and concluded
 //   NOT TESTED   -- no pull request is associated with this commit, OR its required checks never ran
@@ -93,7 +93,7 @@ export function commitLiveness({ sha, pulls, required, runs }: {
   }
   // REUSED, NOT RE-DERIVED: `checkReasons` already tells "no runs at all" from "a required context
   // missing" from "still running" from "failing" -- the exact taxonomy this row asks for, built for
-  // `merge-guard.mjs`'s on-demand case and unchanged here. `pr.headRefOid` is not read by `checkReasons`
+  // `merge-guard.ts`'s on-demand case and unchanged here. `pr.headRefOid` is not read by `checkReasons`
   // for anything but the sha it prints, so passing the MERGE COMMIT's own sha (not the PR head's) still
   // names the right commit in the message while `runs` itself was looked up correctly, by the PR's head.
   const reasons = checkReasons({ headRefOid: sha }, required, runs)
@@ -120,10 +120,10 @@ function facts(sha: string) {
 
 function main() {
   const KNOWN_FLAGS = ["--sha"];
-  refuseUnknownFlags(KNOWN_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/workflow-run-liveness.mjs" });
+  refuseUnknownFlags(KNOWN_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/workflow-run-liveness.ts" });
   const sha = flagValue(process.argv, "sha") ?? process.env.GITHUB_SHA;
   if (!sha) {
-    console.error("Usage: node packages/agent-org/src/workflow-run-liveness.mjs --sha=<commit>\n"
+    console.error("Usage: node packages/agent-org/src/workflow-run-liveness.ts --sha=<commit>\n"
       + "Answers whether the pull request that produced this commit was actually tested before it reached\n"
       + "main, by reading its check RUNS rather than `mergeStateStatus`. Defaults to $GITHUB_SHA.");
     process.exit(EXIT.CANNOT_TELL);

@@ -52,7 +52,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 # they read their role briefs and run their scripts out of this same checkout. A stale box does not
 # announce itself: it just keeps working from last week's rules.
 #
-# Cheap enough to run every tick because it is a NO-OP when main has not moved -- `update-primary.mjs`
+# Cheap enough to run every tick because it is a NO-OP when main has not moved -- `update-primary.ts`
 # returns early on `before === sha`, and only reinstalls when the lockfile actually changed. Measured on
 # this host: 2.07s when there is nothing to do.
 #
@@ -61,7 +61,7 @@ Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 #
 # BUT THE `-` MAKES A FAILED UPDATE INVISIBLE TO SYSTEMD, SO THE GATE IS THE ONLY REPORTER -- #2781. A dirty primary made
 # this step fail on every tick from 2026-09-28T12:01Z, 2,652 journal lines, and the gate gave orders from 22-hour-old code.
-# `work-gate.mjs` now reads the primary against `origin/main` AFTER this step (`update-primary.mjs --drift`), wakes `ceo`
+# `work-gate.ts` now reads the primary against `origin/main` AFTER this step (`update-primary.ts --drift`), wakes `ceo`
 # with the dirty paths (`primary-stale`) and heads every other order with the sha and the count. Drop that reader and this
 # `-` becomes the silence again: `update-primary.test.ts` pins that the two travel together.
 ExecStartPre=-%h/.local/bin/pnpm run primary:update
@@ -72,7 +72,7 @@ ExecStartPre=-%h/.local/bin/pnpm run primary:update
 #
 # `1` HERE IS THE CONTRACT'S ATTENTION AND NOT node's CRASH -- #3038. node exits 1 on any uncaught exception, so the
 # `--import` below moves a crash to 70, which is NOT listed and so ends the unit `failed` (63 crashed ticks were `Finished` on 2026-10-02).
-ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs
+ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts
 SuccessExitStatus=0 1 2
 
 # A rebuild after a lockfile change can outlast the interval; systemd will not start a second copy while

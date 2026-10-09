@@ -227,7 +227,7 @@ test("#1007: an OLDER cancelled run beside a newer conclusion is still #902's ca
  *
  * NOTHING THIS MODULE OWNS IS LOST. The `STILL RUNNING:` prefix is still asserted above against this
  * module's own output, which is the property `checks-rule.mjs` is responsible for. The other two consumers
- * (`merge-guard.mjs`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
+ * (`merge-guard.ts`, `armed-race-rule.mjs`) read `reasons.length` and never the prefixes -- checked, not
  * assumed -- so after #989 no caller parses these sentences and there is no cross-module contract left to
  * pin from here.
  */

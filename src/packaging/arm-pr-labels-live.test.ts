@@ -57,8 +57,8 @@ test("#1000: every `session:*` label that EXISTS is classified -- asked of GitHu
   const unclassified = unclassifiedLabels(labels);
   assert.deepEqual(unclassified, [],
     `these \`session:*\` labels exist and are neither live nor retired: ${unclassified.join(", ")}. A new `
-    + "session must be added to LIVE_SESSIONS in arm-pr.mjs, or arm-pr will refuse every row it claims.");
+    + "session must be added to LIVE_SESSIONS in arm-pr.ts, or arm-pr will refuse every row it claims.");
   const missing = [...classified].filter((l) => !labels.includes(l)).sort();
   assert.deepEqual(missing, [],
-    `these are classified in arm-pr.mjs and no longer exist as labels: ${missing.join(", ")}`);
+    `these are classified in arm-pr.ts and no longer exist as labels: ${missing.join(", ")}`);
 });

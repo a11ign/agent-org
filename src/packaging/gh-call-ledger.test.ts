@@ -25,7 +25,7 @@ const GRAPHQL_BODY = `{"data":{"viewer":{"login":"x"}},"rateLimit":{"remaining":
 
 /**
  * The wrapper's own text, its `@@name@@` placeholders filled with paths nothing here uses: every one is overridden by an environment variable
- * (`A11Y_GH_REAL`, `GH_CONFIG_DIR`) in every call below. It is NOT rendered through `host-units.mjs`, which needs the project's git history, and
+ * (`A11Y_GH_REAL`, `GH_CONFIG_DIR`) in every call below. It is NOT rendered through `host-units.ts`, which needs the project's git history, and
  * the acceptance job that runs this file has none.
  */
 const WRAPPER = (() => {
@@ -216,14 +216,14 @@ test("#3466: the report ranks callers by points, floors an unread graphql call a
   const line = (caller: string, command: string, resource: string, cost: string, status = 0, account = "leads") =>
     [NOW, account, resource, cost, status, command, "w6", `node /x/src/${caller} --json`].join("\t");
   const entries = parseLedger([
-    line("board-snapshot.mjs", "api graphql", "graphql", "1"), line("board-snapshot.mjs", "api graphql", "graphql", "1"),
-    line("work-gate.mjs", "pr list", "graphql?", "", 1), line("work-gate.mjs", "pr list", "graphql?", ""),
-    line("work-gate.mjs", "pr list", "graphql?", ""), line("poll.mjs", "api repos/a/b", "core", ""),
+    line("board-snapshot.ts", "api graphql", "graphql", "1"), line("board-snapshot.ts", "api graphql", "graphql", "1"),
+    line("work-gate.ts", "pr list", "graphql?", "", 1), line("work-gate.ts", "pr list", "graphql?", ""),
+    line("work-gate.ts", "pr list", "graphql?", ""), line("poll.mjs", "api repos/a/b", "core", ""),
     line("other.mjs", "api graphql", "graphql", "40", 0, "workers"), "half a line\twith too few fields", ""].join("\n"));
   assert.equal(entries.length, 7, "the half line is skipped, not guessed at");
   assert.deepEqual(topCallers(entries, { account: "leads" }).map((r) => [r.caller, r.points, r.measured, r.calls, r.failed]), [
-    ["work-gate.mjs", 3, 0, 3, 1], ["board-snapshot.mjs", 2, 2, 2, 0], ["poll.mjs", 0, 0, 1, 0]]);
-  assert.deepEqual(topCallers(entries, { resource: "graphql" }).map((r) => r.caller), ["other.mjs", "work-gate.mjs", "board-snapshot.mjs"],
+    ["work-gate.ts", 3, 0, 3, 1], ["board-snapshot.ts", 2, 2, 2, 0], ["poll.mjs", 0, 0, 1, 0]]);
+  assert.deepEqual(topCallers(entries, { resource: "graphql" }).map((r) => r.caller), ["other.mjs", "work-gate.ts", "board-snapshot.ts"],
     "`graphql?` is the graphql pool for the report; core is not");
   assert.match(renderReport(entries, { account: "leads" }), /3 pts \(\s*0 read\)\s+3 calls\s+1 failed\s+work-gate\.mjs/);
   assert.equal(renderReport([]), "gh ledger: no calls recorded\n", "an empty ledger says so rather than printing an empty table");
@@ -231,11 +231,11 @@ test("#3466: the report ranks callers by points, floors an unread graphql call a
 
 test("#3590: callerScript names the UNIT behind a preload, and a session's shell for what it is, on lines copied from the ledger", () => {
   const cases: Array<[string, string, string]> = [
-    ["--import file:// form", "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs", "work-gate.mjs"],
-    ["--import= form", "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", "work-tick.mjs"],
+    ["--import file:// form", "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.ts", "work-gate.ts"],
+    ["--import= form", "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", "work-tick.ts"],
     ["a shell snapshot", "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791159858645-879xil.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL", SESSION_SHELL],
     ["two preloads, the second named like a script", "/usr/bin/node --import x.mjs --import=y.mjs z.mjs", "z.mjs"],
-    ["no preload, the unchanged case", "node /x/src/work-gate.mjs --json", "work-gate.mjs"],
+    ["no preload, the unchanged case", "node /x/src/work-gate.ts --json", "work-gate.ts"],
     ["no script at all", "herdr agent prompt", "herdr"],
   ];
   assert.deepEqual(cases.map(([, caller]) => callerScript(caller)), cases.map(([, , want]) => want), cases.map(([name]) => name).join(" / "));

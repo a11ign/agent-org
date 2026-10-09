@@ -1,14 +1,14 @@
 // @ts-check
 // #2621 (child 3e of #69): THE SHAPE OF A CAUSE DECLARATION, `{cause, group, profile}`, split out of
-// `cause-declaration.mjs` for one reason -- a LEAF, import-free like `claim-labels.mjs`, because a project
+// `cause-declaration.ts` for one reason -- a LEAF, import-free like `claim-labels.ts`, because a project
 // plugin (`.agent-org/plugins/causes.mjs`) must build declarations with `declareCause` and `GROUPS`
-// WITHOUT importing `cause-declaration.mjs` itself. That file's own top-level await DYNAMICALLY IMPORTS
+// WITHOUT importing `cause-declaration.ts` itself. That file's own top-level await DYNAMICALLY IMPORTS
 // the plugin to read the project's causes, so a plugin that imported it back would be a cycle neither
-// side can finish: `cause-declaration.mjs` awaits the plugin's module evaluation, which awaits
-// `cause-declaration.mjs`'s. Node calls this an "unsettled top-level await" and hangs rather than erroring
+// side can finish: `cause-declaration.ts` awaits the plugin's module evaluation, which awaits
+// `cause-declaration.ts`'s. Node calls this an "unsettled top-level await" and hangs rather than erroring
 // (measured: a `timeout 5` run of exactly this shape here first).
 //
-// See `cause-declaration.mjs`'s own header for the fuller design: two independent axes decide the four
+// See `cause-declaration.ts`'s own header for the fuller design: two independent axes decide the four
 // exported lists (`CAUSES`, `JUDGMENT_CAUSES`, `START_CAUSES`, `PROFILES`), and `GROUPS`'s own docblock
 // there is where that reasoning lives.
 
@@ -43,9 +43,9 @@ export class CauseDeclarationRefusal extends Error {
 }
 
 /**
- * ONE cause: its name, which of the four groups it belongs to, and the profile `worker-profile.mjs`
+ * ONE cause: its name, which of the four groups it belongs to, and the profile `worker-profile.ts`
  * routes it with. IT REFUSES, IT NEVER DEFAULTS: a missing group or a missing profile is refused naming
- * the cause, the same discipline `project-config.mjs`'s reader holds itself to.
+ * the cause, the same discipline `project-config.ts`'s reader holds itself to.
  * @param {string} cause
  * @param {string} group one of `GROUPS`'s values
  * @param {CauseProfile} profile

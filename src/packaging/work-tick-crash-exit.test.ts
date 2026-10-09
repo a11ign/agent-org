@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.mjs` and `wake.mjs`
+// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts`
 // are stubs, with the PATH pointed at an empty directory, so no `herdr` is found and no order can reach a session.
 
 /**
@@ -82,7 +82,7 @@ test("#3038 layer 1: the crash code is in NEITHER form's SuccessExitStatus, and 
 test("#3038 layers 1 and 3: the tick and the update step both run under the preload, in both forms, and the update's `-` stays", () => {
   const { shipped, tool } = renderedUnits();
   assert.deepEqual(directive(shipped, "ExecStart"),
-    ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs"]);
+    ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.ts"]);
   assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts"]);
   assert.deepEqual(directive(tool, "ExecStartPre")[0], `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
     "the `-` stays: a failed update is still not a reason to stop the org");
@@ -92,33 +92,33 @@ test("#3038 layers 1 and 3: the tick and the update step both run under the prel
 
 test("#3038: a unit's script is still found behind node's own leading options, and `bash -c` is still read as nothing", () => {
   const found = programCandidates("/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", { repoRoot: "/r", scripts: {} });
-  assert.deepEqual(found, ["/r/src/work-tick.mjs"], "without this the unit leaves `unitsSpendingGh`'s population, silently");
+  assert.deepEqual(found, ["/r/src/work-tick.ts"], "without this the unit leaves `unitsSpendingGh`'s population, silently");
   assert.deepEqual(programCandidates("/usr/bin/bash -c 'echo hi'", { repoRoot: "/r", scripts: {} }), []);
-  assert.deepEqual(programCandidates("/usr/bin/node src/update-tool.ts", { repoRoot: "/r", scripts: {} }), ["/r/src/update-tool.mjs"]);
+  assert.deepEqual(programCandidates("/usr/bin/node src/update-tool.ts", { repoRoot: "/r", scripts: {} }), ["/r/src/update-tool.ts"]);
 });
 
 /**
- * A tool checkout of one file's worth: the real `work-tick.mjs` COPIED (it finds its children beside itself, so a symlink would find the real
- * ones), every other entry of `src/` linked, and `work-gate.mjs` and `wake.mjs` written as stubs. `wake.mjs` re-exports the real module so
- * `work-tick.mjs`'s imports resolve, and leaves a marker file when it RUNS as the child (not when the tick merely imports it).
+ * A tool checkout of one file's worth: the real `work-tick.ts` COPIED (it finds its children beside itself, so a symlink would find the real
+ * ones), every other entry of `src/` linked, and `work-gate.ts` and `wake.ts` written as stubs. `wake.ts` re-exports the real module so
+ * `work-tick.ts`'s imports resolve, and leaves a marker file when it RUNS as the child (not when the tick merely imports it).
  */
 function tickWith({ gate, wake }: { gate: string; wake: string }) {
   const dir = mkdtempSync(join(tmpdir(), "tick-crash-"));
   try {
     const src = join(dir, "src");
     mkdirSync(src);
-    const own = new Set(["work-tick.mjs", "work-gate.mjs", "wake.mjs"]);
+    const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-    copyFileSync(join(SRC, "work-tick.mjs"), join(src, "work-tick.mjs"));
-    writeFileSync(join(src, "work-gate.mjs"), gate);
+    copyFileSync(join(SRC, "work-tick.ts"), join(src, "work-tick.ts"));
+    writeFileSync(join(src, "work-gate.ts"), gate);
     const marker = join(dir, "wake-ran");
-    writeFileSync(join(src, "wake.mjs"),
-      `export * from ${JSON.stringify(join(SRC, "wake.mjs"))};\n`
+    writeFileSync(join(src, "wake.ts"),
+      `export * from ${JSON.stringify(join(SRC, "wake.ts"))};\n`
       + `import { writeFileSync } from "node:fs";\nimport { fileURLToPath } from "node:url";\n`
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  writeFileSync(${JSON.stringify(marker)}, "ran");\n  ${wake}\n}\n`);
     mkdirSync(join(dir, "empty"));
     // `--ledger=<path>` (the `=` form is the only one `flagValue` reads) puts the handoff queue beside it, so a real queued order cannot make a quiet tick deliver.
-    const ran = spawnSync(process.execPath, [join(src, "work-tick.mjs"), `--ledger=${join(dir, "ledger.jsonl")}`], {
+    const ran = spawnSync(process.execPath, [join(src, "work-tick.ts"), `--ledger=${join(dir, "ledger.jsonl")}`], {
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
 
     });

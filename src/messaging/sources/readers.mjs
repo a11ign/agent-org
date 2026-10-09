@@ -20,7 +20,7 @@
 // `readSeats`), and the files it keeps are under a directory the caller names, so a test gives it a temporary one.
 //
 // **THE GATE'S LAST COMPLETED TICK IS A RECORD THE TICK WRITES (#3040), NOT THE UNIT'S TIMESTAMP.** `InactiveEnterTimestamp` answers "did the unit run" and a tick
-// that died at import moves it as surely as a good one (2026-10-02: 63 crashed ticks). `work-tick.mjs` writes `lib/tick-completion.mjs`'s record only when
+// that died at import moves it as surely as a good one (2026-10-02: 63 crashed ticks). `work-tick.ts` writes `lib/tick-completion.mjs`'s record only when
 // it reaches the end of `main()`; `readGateUnit` takes `lastRecordAt` from it and keeps the unit's timestamp as `lastRunAt`, so the incident can say the ticks
 // are still starting and not finishing. `failed` is the unit's `ActiveState`.
 //
@@ -186,7 +186,7 @@ function unixMilliseconds(text, field) {
 /**
  * The work-tick unit: `failed` is systemd's own state and `failedAt` when it entered it; `lastRunAt` is when the unit last RAN (systemd's
  * `InactiveEnterTimestamp`, which a tick that died moves exactly as a good one -- the 2026-10-02 outage); `lastRecordAt` is when a tick last COMPLETED,
- * from the record `work-tick.mjs` writes only at the end of `main()` (#3040). A record that is absent or unreadable THROWS: no tick known to have
+ * from the record `work-tick.ts` writes only at the end of `main()` (#3040). A record that is absent or unreadable THROWS: no tick known to have
  * completed is not a clean reading. `work-tick.service` declares `SuccessExitStatus=0 1 2`, so a quiet or partial tick is not a failure and `failed`
  * means the gate really crashed (exit 70, #3038).
  * @param {{ unit: string | undefined, systemctl: (argv: string[]) => Promise<string>, recordPath: string }} deps
@@ -284,7 +284,7 @@ export async function readWaitingRows({ github, repo }) {
 }
 
 /**
- * The org's own GitHub accounts, whose comments on a fix row say what is being done. Restated from `hand-fix-ledger.mjs`'s `ORG_LOGINS` because this file is a
+ * The org's own GitHub accounts, whose comments on a fix row say what is being done. Restated from `hand-fix-ledger.ts`'s `ORG_LOGINS` because this file is a
  * leaf and that one imports the tool; a login added there must be added here.
  */
 export const ORG_LOGINS = Object.freeze(["a11ign-ai-workers", "a11ign-ai-leads", "a11ign-bot"]);
@@ -425,7 +425,7 @@ export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }) {
  *
  * @param {{ github: Github, repo: string, stateDir: string, fleetStatePath: string, unit: string | undefined, now: () => number,
  *   systemctl: (argv: string[]) => Promise<string>, readSeats: () => { label: string, status: string }[] | null, log?: (line: string) => void,
- *   completionPath: string, ledgerPath?: string }} deps `completionPath` is where `work-tick.mjs` records a completed tick
+ *   completionPath: string, ledgerPath?: string }} deps `completionPath` is where `work-tick.ts` records a completed tick
  */
 export function createReaders({ github, repo, stateDir, fleetStatePath, unit, now, systemctl, readSeats, log, completionPath, ledgerPath = join(stateDir, LEDGER_FILE) }) {
   return {

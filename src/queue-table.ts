@@ -5,7 +5,7 @@
 /**
  * THE HOURLY TABLE, AS A COMMAND RATHER THAN A HABIT -- ceo's ruling, 2026-09-08.
  *
- *   node packages/agent-org/src/queue-table.mjs [--json]
+ *   node packages/agent-org/src/queue-table.ts [--json]
  *
  * ## Why this exists at all
  *
@@ -26,7 +26,7 @@
  * `mergeStateStatus` reads `BLOCKED` for a stale base and for a failing required check identically --
  * measured 2026-09-09, when `dispatcher` reported a PR as BEHIND that was zero commits behind and merely
  * red. So "behind" here is `git rev-list --count <head>..<base>`, the countable fact, reusing
- * `behindByCount` from `queue-stalled.mjs` rather than spelling it a second time. The status word is
+ * `behindByCount` from `queue-stalled.ts` rather than spelling it a second time. The status word is
  * printed too, as a label, never as the measurement.
  *
  * ## It reports what it could not ask
@@ -47,7 +47,7 @@ import { newestPerName } from "./newest-check-run.ts";
 import { holdersOf } from "./pr-hold-state.ts";
 import { brokenChecks } from "./red-pr.ts";
 import { armedFromApi } from "./pr-armed-state.ts";
-// `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.mjs` needs the
+// `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.ts` needs the
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
 import { poolFromHeaders } from "./api-pool.ts";
 
@@ -120,7 +120,7 @@ const ask = <T>(fn: () => T): T | null => { try { return fn(); } catch { return 
  * #790: THROWS on failure, unlike the local `git` above -- that one folds a failed command into `status:
  * 1` because a queue-table row degrading to `?` is this file's whole design, but a completeness statement
  * that swallowed its own read would report "OK, 0 of 0 checked" having asked nothing. Same discipline as
- * `ready-label-audit.mjs`'s `defaultRun`.
+ * `ready-label-audit.ts`'s `defaultRun`.
  * @type {(args: string[]) => string}
  */
 const defaultRunGit: (args: string[]) => string = (args): string => execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() });
@@ -129,7 +129,7 @@ const defaultRunGit: (args: string[]) => string = (args): string => execFileSync
  * #790: every remote branch's SHORT name (no `origin/`), examined against an INDEPENDENT second read of
  * the same remote -- `git ls-remote --heads` talks to the network, `for-each-ref` reads this checkout's
  * own ref database, and a `fetch` that ran a while ago can leave the second stale without either command
- * failing. Same shape as `ready-label-audit.mjs`'s `fetchOpenIssuesChecked` (#788): THROWS on a mismatch
+ * failing. Same shape as `ready-label-audit.ts`'s `fetchOpenIssuesChecked` (#788): THROWS on a mismatch
  * rather than reporting a population that may have moved between the two reads.
  *
  * The measured anomaly this exists for: a branch pushed to `origin` literally named `origin` -- one path
@@ -314,7 +314,7 @@ export function trunkState(): { sha: string; runId: string; conclusion: string; 
 
 /**
  * The queue field REST cannot carry, for every open pull request in ONE call -- `mergeQueueEntry` is a
- * GraphQL-only object (`pr-armed-state.mjs`'s `ARMED_QUERY` says the same about its per-PR read), and
+ * GraphQL-only object (`pr-armed-state.ts`'s `ARMED_QUERY` says the same about its per-PR read), and
  * `ARMED_QUERY` asks about one PR by number, which would be a call per row. `autoMergeRequest` rides along
  * so a single node answers `armedFromApi`'s whole question. First 100, matching the REST page above.
  */
@@ -386,7 +386,7 @@ export function armedState(pr: { number: number; auto_merge?: unknown; }, queue:
  * `{position: 1, state: AWAITING_CHECKS}`). Wrong in the reassuring direction: "nobody has got to this
  * yet" is the reading that gets a pull request armed that is already merging, and a TRUE UNARMED (a refused
  * arming credential, #1257/#1969) looks identical in the one table people scan. So the question is now put
- * to `armedFromApi` -- the predicate `arm-pr.mjs` and `auto-arm-sweep.mjs` already ask (#1729, #2004,
+ * to `armedFromApi` -- the predicate `arm-pr.ts` and `auto-arm-sweep.ts` already ask (#1729, #2004,
  * #2046) -- and the queue is read with ONE bulk GraphQL call beside the REST list, `queueEntries`.
  *
  * THE ANSWER IS THREE-VALUED, because the table was made REST-only to survive a GraphQL outage (above) and
@@ -406,7 +406,7 @@ export function armedState(pr: { number: number; auto_merge?: unknown; }, queue:
  * still miss the queue, so "use GraphQL" was never the lesson -- ask the ONE predicate is. None is
  * changed here, this row's Region being this file:
  *
- *   queue-stalled.mjs `examinePr`         a queued PR is not armed -> not green -> `examined: false`, so the
+ *   queue-stalled.ts `examinePr`         a queued PR is not armed -> not green -> `examined: false`, so the
  *                                         conflict stall check never runs on it. SILENTLY
  *                                         UNEXAMINED. Not a one-line swap: `ageMs` reads
  *                                         `autoMergeRequest.enabledAt`, which a queued PR does not have, and
@@ -440,7 +440,7 @@ export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}
     // states where it carries this field on.
     draft: pr.draft ?? null,
     // THE HOLD LABEL COMES BACK ON THE SAME PAYLOAD, so reading it costs nothing. It has to be read,
-    // because a held PR is DISARMED ON PURPOSE (`pr-hold.mjs` disarms as part of taking the hold) and
+    // because a held PR is DISARMED ON PURPOSE (`pr-hold.ts` disarms as part of taking the hold) and
     // "UNARMED" for a held PR is a true word for the wrong reason -- it reads as nobody has got to it
     // yet, when somebody has decided it must not merge. #819 sat in section 2 as UNARMED at 15:37Z while
     // ceo held it pending a gate stage. Wrong in the reassuring direction, which is the only direction
@@ -460,7 +460,7 @@ export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}
 }
 
 /**
- * THE TABLE'S `red` AND `absorbed` ARE DECIDED BY `red-pr.mjs`, NOT BY `isRed` (#2981, the fourth consumer #2956's scan found). A PR held
+ * THE TABLE'S `red` AND `absorbed` ARE DECIDED BY `red-pr.ts`, NOT BY `isRed` (#2981, the fourth consumer #2956's scan found). A PR held
  * with `hold:*` is red in `deliberateRefusals` and `gate` BY DESIGN (#2883, #2954), so `isRed` over its check runs read a hold as a
  * breakage and called a held, behind PR "absorbed" -- a state that says its owner is fixing a red nobody is fixing. `brokenChecks` leaves a
  * hold's own two jobs out and keeps every other red, so a held PR with a real failure is still named.
@@ -792,7 +792,7 @@ export const ghHeaders = (args: string[]): string => execFileSync("gh", args, { 
  * How the budget line reads. A remaining count with no window is not a measurement -- 4000 left with
  * fifty minutes to go and 4000 left with two are different states -- so the reset is always beside it.
  *
- * `poolFromHeaders` AND THIS TYPEDEF NOW LIVE IN `api-pool.mjs` (#2003). `work-gate.mjs`'s refusal path
+ * `poolFromHeaders` AND THIS TYPEDEF NOW LIVE IN `api-pool.ts` (#2003). `work-gate.ts`'s refusal path
  * needs the identical reading and cannot import this file -- it runs before any `pnpm install`, and this one
  * reaches five other modules -- so the reader moved to a leaf and both callers import it. The move is why
  * there is still only one place that knows what "exhausted" looks like.
@@ -1124,7 +1124,7 @@ export function collect(now = new Date()) {
 }
 
 function main() {
-  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node packages/agent-org/src/queue-table.mjs" });
+  refuseUnknownFlags(["--json"], { entry: import.meta.url, command: "node packages/agent-org/src/queue-table.ts" });
   const data = collect();
   if (flagValue(process.argv, "json") !== undefined || process.argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify({

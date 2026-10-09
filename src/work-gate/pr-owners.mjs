@@ -1,17 +1,17 @@
 // @ts-check
 // module: who owns a pull request -- the owner each of the gate's PR orders is addressed to (#2898)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2898, the third split of #928's lever 2a): the three rungs that name a
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the third split of #928's lever 2a): the three rungs that name a
 // PR's owner (the row it closes, the session its branch names, the worktree stamp), the ended-label sweep that runs
 // before them, and the `git worktree` read the last one needs. Measured on #2898: five rows waited behind two pull
 // requests whose only edits were to exactly these definitions.
 //
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only the owner rungs use lives here; the session
 // vocabulary shared with the answer and claim families (`liveWorkspaceLabels`, `endedSessionLabels`, `defaultSpawn`)
-// stays in `work-gate.mjs` and is IMPORTED from it, the cycle that module documents, safe while nothing here reads an
+// stays in `work-gate.ts` and is IMPORTED from it, the cycle that module documents, safe while nothing here reads an
 // imported binding at load time. THE `git worktree` READ STAYED (`readWorktreeStamps`, `stampLookup`): a function that
 // reads git or gh stays in the shim (`pr-orders.mjs`'s boundary), and `git-spawn-classification.test.ts` refuses a file
-// that spawns git without the scrubbing helper `defaultSpawn` already carries. `work-gate.mjs` re-exports every name this file exports that it exported before.
+// that spawns git without the scrubbing helper `defaultSpawn` already carries. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, sessionOf, liveWorkspaceLabels, endedSessionLabels } from "../work-gate.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";

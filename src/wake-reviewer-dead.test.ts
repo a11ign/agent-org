@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/wake.mjs`, #2465: A REVIEWER THAT DIES UNDER AN OPEN PULL REQUEST IS CLEARED, AND ONLY WHEN
+ * `packages/agent-org/src/wake.ts`, #2465: A REVIEWER THAT DIES UNDER AN OPEN PULL REQUEST IS CLEARED, AND ONLY WHEN
  * THE LISTING THAT DOES NOT SHOW IT IS ONE THAT COULD HAVE.
  *
  * `spawnableReviewer` refuses to start a second instance under a label the registry holds and herdr does not list,

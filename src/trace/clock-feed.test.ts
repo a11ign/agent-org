@@ -177,7 +177,7 @@ test("a record of another repository with the same number dates nothing here, an
 
 // --- THE OTHER FIGURES IN #928'S READINGS THAT COUNT A ROW'S OR PULL REQUEST'S OWN TIME, joined the same way (the audit is in the pull request) ---------------------------
 
-test("#928's `median open-to-merge` (`org-retro.mjs` `mergedStats`) is the median of the store's wall-clock for the same pull requests", () => {
+test("#928's `median open-to-merge` (`org-retro.ts` `mergedStats`) is the median of the store's wall-clock for the same pull requests", () => {
   const mergedPrs = ITEMS.filter((i) => i.kind === "pr" && !open(i));
   const read = mergedStats(mergedPrs.map((i) => ({ number: i.number, createdAt: iso(i.createdAt), mergedAt: iso(i.closedAt) })), { since: ago(1000), until: NOW });
   assert.equal(read.count, 3, "POSITIVE CONTROL: three merged pull requests, so there is a median to compare");

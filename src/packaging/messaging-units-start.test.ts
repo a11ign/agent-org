@@ -11,7 +11,7 @@
  * `Environment=` lines BACK, and starts that `ExecStart` as a child process from that directory with exactly that environment. The mutant is the
  * pre-fix tool: a copy of the tool whose root is `process.cwd()` again, which must exit 2 and name the declaration it looked for under the tool directory.
  *
- * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.mjs`, which would charge it with a `history` requirement it has no use for.
+ * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.ts`, which would charge it with a `history` requirement it has no use for.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -76,7 +76,7 @@ const { localImports } = await import("../lib/local-import-closure.mjs");
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * Run in a CHILD, not imported: `host-units.mjs` calls `git log --all`, so a test that imports it derives a `history` requirement (#2174, `work-gate.test.ts`'s
+ * Run in a CHILD, not imported: `host-units.ts` calls `git log --all`, so a test that imports it derives a `history` requirement (#2174, `work-gate.test.ts`'s
  * ratchet) and its pull request owes `History: full` (#497). This file never reaches git: it needs only `toolForm`'s rendering, which is the real one run here.
  * The child resolves the tool's modules at import, so `AGENT_ORG_HOST` is the scratch host's.
  */
@@ -94,7 +94,7 @@ process.stdout.write(toolForm(name + ".service.in", renderTemplate(template, val
 
 /** @returns the shipped template `name` as a unit of THIS host, in tool form for `tool` (the real `toolForm`, not a copy of its lines) */
 function renderedToolForm(name: string, host: Scratch, tool: string): string {
-  const modules = ["host-units.mjs", "host-config.mjs"].map((file) => pathToFileURL(join(SRC, file)).href);
+  const modules = ["host-units.ts", "host-config.ts"].map((file) => pathToFileURL(join(SRC, file)).href);
   // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
   const script = join(dirname(host.project), "render.mjs");
   writeFileSync(script, RENDER);

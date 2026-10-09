@@ -1,4 +1,4 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#4040)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#4040)
 /**
  * `src/dora.ts`, a11ign/a11ign#4040: A REPOSITORY THAT PUBLISHES STRAIGHT TO `latest` HAS NO CHANNEL METRICS TO READ, AND SAYS SO.
  *

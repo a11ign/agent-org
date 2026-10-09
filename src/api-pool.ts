@@ -2,12 +2,12 @@
 // WHAT IS LEFT IN THE POOL WE ARE ABOUT TO SPEND -- a LEAF module, deliberately: no import but node's own,
 // so anything reaching for this one fact does not also drag in whatever else its original owner needed.
 //
-// This started life inside `queue-table.mjs` as a module-private `poolFromHeaders`, and moving it here
-// (#2003) is not a style choice. `work-gate.mjs` needs the identical reading on its refusal path, and its
+// This started life inside `queue-table.ts` as a module-private `poolFromHeaders`, and moving it here
+// (#2003) is not a style choice. `work-gate.ts` needs the identical reading on its refusal path, and its
 // own header states the constraint that forbids importing the owner: **it must run before any `pnpm install` or
-// build**. `queue-table.mjs` reaches `queue-stalled.mjs`, `newest-check-run.mjs`, `pr-hold-state.mjs`,
+// build**. `queue-table.ts` reaches `queue-stalled.ts`, `newest-check-run.ts`, `pr-hold-state.ts`,
 // `repo-identity.mjs` and `git-env.mjs`; the gate runs 720 times a day and would pay that graph on every
-// one of them to use a function it calls only when already refusing. `region-paths.mjs`'s own header
+// one of them to use a function it calls only when already refusing. `region-paths.ts`'s own header
 // records this exact trade being made before, for the same reason.
 //
 // A SECOND COPY OF "HOW TO READ A POOL" IS REFUSED, which is the other half of why this is a move rather
@@ -51,8 +51,8 @@ export const GRAPHQL_POOL_PROBE = Object.freeze(["api", "graphql", "-f", "query=
  * `refusalPoolLine` renders it.
  *
  * **ANSWERED, 2026-09-23** (`product-manager`'s ruling on #2003, comment 5791532987): no second call; the
- * login is bought HERE, at zero calls -- `gh-identity.mjs` (#1984) derives it locally from the config `gh`
- * is already routed to, and `work-gate.mjs` passes that DECLARED login into `refusalPoolLine` beside
+ * login is bought HERE, at zero calls -- `gh-identity.ts` (#1984) derives it locally from the config `gh`
+ * is already routed to, and `work-gate.ts` passes that DECLARED login into `refusalPoolLine` beside
  * whatever this probe's own response carried, so a dead pool's line names an account without ever paying
  * for a second request.
  */
@@ -121,7 +121,7 @@ export function poolFromResponse(raw: string | null, now: number = Date.now()): 
 }
 
 /**
- * One pool, from a call made here. The spelling `queue-table.mjs`'s `apiBudget` has always used.
+ * One pool, from a call made here. The spelling `queue-table.ts`'s `apiBudget` has always used.
  *
  * @param {string[]} args @param {(args: string[]) => string} run
  * @returns {Pool | null}
@@ -300,7 +300,7 @@ function poolPhrase(pool: Pool) {
  * takes that for an exhausted pool waits for a reset that is not coming.
  *
  * `login` NEED NOT COME FROM THIS PROBE (#1984): a live response names one directly, and a dead one names
- * none -- `work-gate.mjs` fills that second case with the DECLARED identity `gh-identity.mjs` reads off
+ * none -- `work-gate.ts` fills that second case with the DECLARED identity `gh-identity.ts` reads off
  * disk, at no extra call, and passes it here beside whatever `userId` the response itself carried.
  *
  * @param {{login: string | null, userId?: string | null, pool: Pool | null}} diagnosis

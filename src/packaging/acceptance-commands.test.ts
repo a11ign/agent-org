@@ -43,7 +43,7 @@ import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 const THIS_FILE = fileURLToPath(import.meta.url);
 const TOOL_SRC = resolve(THIS_FILE, "..", "..");
 
-// Matches acceptance-commands.mjs's own `fingerprint` -- concatenated so the resolver's name never
+// Matches acceptance-commands.ts's own `fingerprint` -- concatenated so the resolver's name never
 // appears contiguously in this file's own source.
 const spell = (a: string, b: string) => a + b;
 
@@ -59,10 +59,10 @@ const NO_HISTORY = { history: false, token: false, fleet: false };
 const WITH_HISTORY = { history: true, token: false, fleet: false };
 
 // #621's own worked example: reaches `gh` with NO `// requires:` header at all -- `resolveChromeBinary()`,
-// imported from `packages/agent-org/src/board-document.mjs`, is what actually shells out. The header-only mechanism
+// imported from `packages/agent-org/src/board-document.ts`, is what actually shells out. The header-only mechanism
 // (#510) cannot see this file; the closure-derived one is built specifically because it must.
 //
-// board-style.test.ts (the ORIGINAL worked example, via `collect()` in `packages/agent-org/src/board-data.mjs`) retired
+// board-style.test.ts (the ORIGINAL worked example, via `collect()` in `packages/agent-org/src/board-data.ts`) retired
 // 2026-09-10 in guard triage 4 of 6 (#906) -- this file has the identical shape (no header, reaches `gh`
 // only through a local import) and survives that row. Values below re-derived directly from
 // `deriveClosureRequirements`/`closureRequirementMessage` against this fixture, not carried over from the
@@ -72,14 +72,14 @@ const NO_TOKEN = { history: true, token: false, fleet: true, corpus: true };
 const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
 
 /**
- * #1458: WHERE `board-document.mjs` SPAWNS `gh`, BY SHAPE -- the first `SPAWNS_GH` line inside
+ * #1458: WHERE `board-document.ts` SPAWNS `gh`, BY SHAPE -- the first `SPAWNS_GH` line inside
  * `function publishToDraftRelease(`, provided it is also the file's first. The #621 tests below used to write
  * that line as a literal number, so any edit above the function failed all three, and #1345's builder had to
  * hold the file's line count to keep them true. `null` when the shape is not there, which fails the tests
  * rather than guessing a line.
  */
-const BOARD_DOCUMENT = "packages/agent-org/src/board-document.mjs";
-const TOOL_BOARD_DOCUMENT = join(TOOL_SRC, "board-document.mjs");
+const BOARD_DOCUMENT = "packages/agent-org/src/board-document.ts";
+const TOOL_BOARD_DOCUMENT = join(TOOL_SRC, "board-document.ts");
 function spawnLineOf(source: string): number | null {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => /^function publishToDraftRelease\(/.test(line));
@@ -92,14 +92,14 @@ function spawnLineOf(source: string): number | null {
 }
 const boardDocumentSpawnLine = (): number => {
   const line = spawnLineOf(readFileSync(TOOL_BOARD_DOCUMENT, "utf8"));
-  assert.ok(line !== null, "board-document.mjs's first gh spawn is no longer inside publishToDraftRelease -- "
+  assert.ok(line !== null, "board-document.ts's first gh spawn is no longer inside publishToDraftRelease -- "
     + "re-locate the #621 fixture rather than pin a line");
   return line;
 };
 
 // --- the fixture project (#3233) ---
 
-const SETTLE_SCRIPT = "packages/agent-org/src/settle-closed-rows.mjs";
+const SETTLE_SCRIPT = "packages/agent-org/src/settle-closed-rows.ts";
 const GLOB_RUNNER = "node packages/guards/src/assert-glob-not-empty.mjs";
 const FIXTURE_SCRIPTS: Record<string, string> = {
   lint: "eslint .",
@@ -150,7 +150,7 @@ function labFixtureFiles(): Record<string, string> {
   };
 }
 
-/** The board: a script that spawns `gh`, and a test that reaches `resolveChromeBinary` in a copy of the tool's own `board-document.mjs`. */
+/** The board: a script that spawns `gh`, and a test that reaches `resolveChromeBinary` in a copy of the tool's own `board-document.ts`. */
 function boardFixtureFiles(): Record<string, string> {
   return {
     [BOARD_DOCUMENT]: readFileSync(TOOL_BOARD_DOCUMENT, "utf8"),
@@ -158,7 +158,7 @@ function boardFixtureFiles(): Record<string, string> {
     // The import line is spelled in two halves: this file is itself walked (the self-reference test below), and an import written whole
     // inside a string is a real edge to the scanner.
     [BOARD_STYLE_FIXTURE]: [`import { test } from "node:test";`,
-      spell("import { resolveChromeBinary } fr", `om "../../../agent-org/src/board-document.mjs";`),
+      spell("import { resolveChromeBinary } fr", `om "../../../agent-org/src/board-document.ts";`),
       `test("finds a browser", () => { resolveChromeBinary(); });`, ""].join("\n"),
   };
 }
@@ -1024,7 +1024,7 @@ test("#510 unmetCommandRequirements: a non-`tsx --test` command is never inspect
 test("#510 classifyCommand: the real history fixture is REFUSED, named, when the job has no history", () => {
   // #621: the CLOSURE-derived check runs first now, and its message names the file by BASENAME (matching
   // #621's own worked example, "board-document-chrome-resolver.test.ts requires token via
-  // resolveChromeBinary -> board-document.mjs:<its gh spawn's line>") -- never the full repo-relative path
+  // resolveChromeBinary -> board-document.ts:<its gh spawn's line>") -- never the full repo-relative path
   // `unmetCommandRequirements`'s header-only message used. Both are correct; they answer different
   // questions ("what does the closure prove" vs. "what file declared it").
   const result = classifyCommand(`npx tsx --test ${HISTORY_FIXTURE}`, { capabilities: NO_HISTORY });
@@ -1168,7 +1168,7 @@ test("#540 acceptanceReport: a DUPLICATE Acceptance: never runs any command from
 test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must make the two-section "
   + "fixture pass with ok:true, which is exactly the silent regression this row exists to end", () => {
   // Reproduces the pre-fix behaviour directly (not by re-implementing extractSection) so this test fails
-  // if the real fix is ever reverted to `lines.findIndex`, without needing to touch acceptance-commands.mjs.
+  // if the real fix is ever reverted to `lines.findIndex`, without needing to touch acceptance-commands.ts.
   const body = "Acceptance: npm test\n\ntext\n\nAcceptance: npm run lint";
   const lines = body.split(/\r\n|\r|\n/);
   const oldStyleHeaderIndex = lines.findIndex((line) => /^Acceptance:/.test(line));
@@ -1180,19 +1180,19 @@ test("#540 MUTATION TARGET -- restoring the old single-findIndex behaviour must 
 
 // --- #621: a test file's requirements are DERIVED from its import closure, not read off an opt-in
 // header. board-document-chrome-resolver.test.ts has no `// requires:` header at all and reaches `gh`
-// only transitively, through `resolveChromeBinary()` in packages/agent-org/src/board-document.mjs -- the fourth instance
+// only transitively, through `resolveChromeBinary()` in packages/agent-org/src/board-document.ts -- the fourth instance
 // in two days of exactly this shape (#382), and the whole reason #510's header alone could never catch
 // it: an opt-in declaration cannot catch the file whose author did not know there was something to
 // declare. (Original worked example, board-style.test.ts via `collect()`, retired 2026-09-10 -- #906.) ---
 
 test("#621 deriveClosureRequirements: board-document-chrome-resolver.test.ts reaches `gh` transitively, "
-  + "via `resolveChromeBinary`, at the real line `board-document.mjs` spawns it on", () => {
+  + "via `resolveChromeBinary`, at the real line `board-document.ts` spawns it on", () => {
   const hits = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(hits.length, 1);
   assert.equal(hits[0].requirement, "token");
-  assert.equal(hits[0].file.endsWith("packages/agent-org/src/board-document.mjs"), true);
+  assert.equal(hits[0].file.endsWith("packages/agent-org/src/board-document.ts"), true);
   assert.equal(hits[0].line, boardDocumentSpawnLine(),
-    "board-document.mjs's own gh spawn inside publishToDraftRelease, located by shape (#1458)");
+    "board-document.ts's own gh spawn inside publishToDraftRelease, located by shape (#1458)");
 });
 
 test("#621 closureRequirementMessage: the EXACT worked example from the issue, naming the hop -- "
@@ -1200,7 +1200,7 @@ test("#621 closureRequirementMessage: the EXACT worked example from the issue, n
   + "them to the cause", () => {
   const [hit] = deriveClosureRequirements(BOARD_STYLE_FIXTURE);
   assert.equal(closureRequirementMessage(hit),
-    `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:${boardDocumentSpawnLine()}`);
+    `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.ts:${boardDocumentSpawnLine()}`);
 });
 
 test("#621 unmetClosureRequirements: refused against a job with no token, satisfied against one that "
@@ -1215,13 +1215,13 @@ test("#621 unmetCommandClosureRequirements: a non-`tsx --test`, non-node-script 
   assert.deepEqual(unmetCommandClosureRequirements("npm run lint", NO_TOKEN), []);
 });
 
-// #2724: `board:settle` (`node packages/agent-org/src/settle-closed-rows.mjs`) is the row's OWN worked
+// #2724: `board:settle` (`node packages/agent-org/src/settle-closed-rows.ts`) is the row's OWN worked
 // example -- an operational npm script whose module spawns `gh` directly (`execFileSync("gh", ...)` at its
 // own top level, not through a `.test.ts` entry), which nothing before this row's fix ever asked
 // `classifyCommand` to walk. Using the real script rather than an invented fixture keeps this test honest
 // about the actual defect: a temp-dir fixture cannot be named by a `package.json` script without touching
 // `package.json` itself, and the real instance already exists.
-const SPAWNS_GH_SCRIPT = "packages/agent-org/src/settle-closed-rows.mjs";
+const SPAWNS_GH_SCRIPT = "packages/agent-org/src/settle-closed-rows.ts";
 
 test("#2724 unmetCommandClosureRequirements: `npm run board:settle` is now inspected, naming its own `gh` "
   + "spawn -- the population `testFilesRunBy` alone could never see, because the command names no "
@@ -1262,8 +1262,8 @@ test("#2724: a chain naming the operational script anywhere is still refused (#2
 // crisp, falsifiable examples on the string itself, rather than leaning on whether some real script happens
 // to spawn `gh` (most do not, so a wrong resolution and a correct one would print the identical `[]`).
 test("#2724 singleNodeInvocation: a bare `node <file>` body resolves to the file", () => {
-  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.mjs"),
-    "packages/agent-org/src/settle-closed-rows.mjs");
+  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.ts"),
+    "packages/agent-org/src/settle-closed-rows.ts");
 });
 
 test("#2724 singleNodeInvocation: trailing flags are ignored, leading env assignments are stripped -- the "
@@ -1292,7 +1292,7 @@ test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing --
 // bin spawns nothing itself, so a script resolved to it would be charged for nothing: `npm run board:settle` would
 // read `runnable` against a job with no token. The command -> program mapping is the tool's command table
 // (`src/commands.mjs`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
-const TABLE = { "board:settle": "settle-closed-rows.mjs", "messaging:listen": "messaging/listen.mjs",
+const TABLE = { "board:settle": "settle-closed-rows.ts", "messaging:listen": "messaging/listen.mjs",
   "escapes": "../package.json.mjs", "no-file": "notes.txt" };
 const COMMAND_BODY = "agent-org board:settle";
 
@@ -1313,7 +1313,7 @@ function classifyAgainstScript(body: string, commands: Record<string, string> | 
 
 test("#3063 singleNodeInvocation: `agent-org <command>` resolves to the PROGRAM the table names, under the tool's "
   + "src/, in every spelling a project runs the bin by, flags ignored, a subdirectory program kept", () => {
-  const settle = join(TOOL_SRC, "settle-closed-rows.mjs");
+  const settle = join(TOOL_SRC, "settle-closed-rows.ts");
   assert.equal(singleNodeInvocation(COMMAND_BODY, TABLE), settle);
   assert.equal(singleNodeInvocation("pnpm exec agent-org board:settle --dry-run", TABLE), settle);
   assert.equal(singleNodeInvocation("npx agent-org board:settle", TABLE), settle);
@@ -1343,13 +1343,13 @@ test("#3063 singleNodeInvocation: the tool's OWN table, read by default, never t
 });
 
 test("#3063 singleNodeInvocation: the `node <file>` form is untouched", () => {
-  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.mjs", TABLE),
-    "packages/agent-org/src/settle-closed-rows.mjs");
+  assert.equal(singleNodeInvocation("node packages/agent-org/src/settle-closed-rows.ts", TABLE),
+    "packages/agent-org/src/settle-closed-rows.ts");
 });
 
 test("#3063 ACCEPTANCE: `npm run board:settle` is REFUSED for `token` when the script is `agent-org board:settle` -- "
   + "the positive control is the same command against the direct form, which is refused today", () => {
-  const direct = classifyAgainstScript(`node ${join(TOOL_SRC, "settle-closed-rows.mjs")}`);
+  const direct = classifyAgainstScript(`node ${join(TOOL_SRC, "settle-closed-rows.ts")}`);
   assert.equal(direct.verdict, "refused", "control: the direct form must refuse, or the bin case proves nothing");
   const viaBin = classifyAgainstScript(COMMAND_BODY);
   assert.equal(viaBin.verdict, "refused");
@@ -1391,7 +1391,7 @@ test("#621 MUTATION direction (the issue's own instruction): WITHOUT the closure
   + "failure #382/#619 measured four times", () => {
   // Reproduces the OLD, header-only path directly (unmetCommandRequirements, never touching the closure
   // walk) so this fails if #621's derivation is ever bypassed or deleted, without needing to touch
-  // acceptance-commands.mjs itself.
+  // acceptance-commands.ts itself.
   const preClosureUnmet = unmetCommandRequirements(`npx tsx --test ${BOARD_STYLE_FIXTURE}`, NO_TOKEN);
   assert.deepEqual(preClosureUnmet, [],
     "the header-only mechanism finds NOTHING unmet here -- board-document-chrome-resolver.test.ts "
@@ -1401,15 +1401,15 @@ test("#621 MUTATION direction (the issue's own instruction): WITHOUT the closure
 });
 
 // NOTE ON THIS TEST'S OWN NAME: deliberately does not spell out, verbatim, the three identifiers
-// acceptance-commands.mjs's patterns search for -- this file (acceptance-commands.test.ts) is ITSELF
+// acceptance-commands.ts's patterns search for -- this file (acceptance-commands.test.ts) is ITSELF
 // walked by the test below, and a test NAME is a string literal, real code, not a comment. Spelling them
 // out here reproduces the exact bug on the very test written to guard against it -- caught live on this
-// row's first run, one level up from where it was already caught inside acceptance-commands.mjs.
-test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.mjs describes the three fingerprinted "
+// row's first run, one level up from where it was already caught inside acceptance-commands.ts.
+test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.ts describes the three fingerprinted "
   + "identifiers (the GitHub token env var, the runs-root override vars, the shallow-checkout flag) in "
   + "its OWN comments and regex literals, and acceptance-commands.test.ts imports it -- the derivation "
   + "must not read its own describing code as performing the operations it describes. Found live: the "
-  + "first version of this row derived a requirement from acceptance-commands.mjs's own comment prose, "
+  + "first version of this row derived a requirement from acceptance-commands.ts's own comment prose, "
   + "and separately from its own regex-literal SOURCE TEXT (comment-stripping cannot fix that half -- the "
   + "fingerprint is real code). Both classes are fixed; this pins zero derived requirements for the file "
   + "that defines them.", () => {
@@ -1419,9 +1419,9 @@ test("#621 SELF-REFERENCE REGRESSION: acceptance-commands.mjs describes the thre
 });
 
 test("#621 local-import-closure.mjs's own JSDoc example is not read as a real import -- it demonstrates "
-  + "`import { collect } from \"./board-data.mjs\"` as prose, and a comment-unaware walk treated that "
-  + "as a genuine edge into board-data.mjs, adding a phantom \"token\" hit with a nonsensical chain "
-  + "(\"classifyCommand -> localImports -> collect -> board-data.mjs\") to any file merely importing "
+  + "`import { collect } from \"./board-data.ts\"` as prose, and a comment-unaware walk treated that "
+  + "as a genuine edge into board-data.ts, adding a phantom \"token\" hit with a nonsensical chain "
+  + "(\"classifyCommand -> localImports -> collect -> board-data.ts\") to any file merely importing "
   + "`localImports` from it", () => {
   const hits = deriveClosureRequirements("packages/guards/src/local-import-closure.mjs");
   assert.deepEqual(hits, [], "the shared closure-walk module must derive nothing from its own docstring");
@@ -1488,7 +1488,7 @@ test("#3103 deriveClosureRequirements: a RELATIVE entry importing a tool module 
   try {
     mkdirSync(join(dir, "sub"));
     writeFileSync(join(dir, "sub", "x.test.mjs"), `import { q } from "${"agent-org" + "/src/nobody-installed.mjs"}";\nexport const x = q;\n`);
-    const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.mjs", import.meta.url).href)};`
+    const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.ts", import.meta.url).href)};`
       + ` console.log(JSON.stringify(deriveClosureRequirements("sub/x.test.mjs")));`;
     const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
     assert.deepEqual(JSON.parse(out), []);
@@ -1530,7 +1530,7 @@ test("#3103 deriveClosureRequirements: the tool is followed through a dynamic im
 // is itself walked by the #621 self-reference test below, and a call-shaped mention in a test NAME or a
 // fixture STRING LITERAL is real code, not a comment; `stripComments` cannot fix that half. Every mention
 // here either drops the trailing parenthesis (harmless in prose) or is built the same concatenated way
-// `fingerprint()` builds its own patterns in acceptance-commands.mjs. ---
+// `fingerprint()` builds its own patterns in acceptance-commands.ts. ---
 
 const REAL_JOB_CAPABILITIES = jobCapabilities("History: full");
 
@@ -1639,9 +1639,9 @@ test("#731 MUTATION: point a write-only corpus-root user's declared write path a
 
 // --- #827: `token` means TWO things too -- a file whose OWN operation needs it, and a file that merely
 // SHARES A MODULE with one that does. `board-markdown.test.ts`/`board-achievement-retirement.test.ts` each
-// import only `document` from `board-document.mjs`, render it from a literal fixture, and pass with `gh`
+// import only `document` from `board-document.ts`, render it from a literal fixture, and pass with `gh`
 // stubbed to exit 4 -- but the walk scans the WHOLE FILE's text for every pattern, not the one export a
-// caller actually imports, so reaching `board-document.mjs` at all charges every test for its OTHER
+// caller actually imports, so reaching `board-document.ts` at all charges every test for its OTHER
 // export (`todaysReleaseExists`, a real `gh release view` spawn) even when that export is never imported.
 //
 // SAME SELF-REFERENCE DISCIPLINE AS THE #731 SECTION ABOVE: this file is walked by its own #621
@@ -1649,7 +1649,7 @@ test("#731 MUTATION: point a write-only corpus-root user's declared write path a
 // every fixture builds it through `spell()`, exactly as the corpus section builds `runsRoot(`. ---
 
 /**
- * A SYNTHETIC board-document.mjs-SHAPED module: one file exporting a SAFE function (pure, no `gh`) beside
+ * A SYNTHETIC board-document.ts-SHAPED module: one file exporting a SAFE function (pure, no `gh`) beside
  * a RISKY one (spawns `gh`) -- the real shape #827 fixes. `riskyFnName` is a parameter, never a shared
  * default, so a mutation test below can be sure it is naming the SAME identifier it declares against.
  */
@@ -2178,7 +2178,7 @@ const tempFixture = (files: Record<string, string>): string => {
  * and refusing the command. Measured: five previously-passing tests went red, `actual: null` against a
  * command they expect to run.
  *
- * Concatenated, exactly as `fingerprint()` does for the token identifiers in `acceptance-commands.mjs`
+ * Concatenated, exactly as `fingerprint()` does for the token identifiers in `acceptance-commands.ts`
  * itself. The identifier exists at runtime and never in this file's source.
  */
 const CORPUS_FN = `runsR${"oot"}`;
@@ -2423,7 +2423,7 @@ test("#1116: the remedy is NOT offered on a declaration already judged wrong", (
   // future edit could start doing exactly that. Driven over the shape rather than a real file, because
   // no tracked file carries a wrong declaration and one planted here would be a fixture of the defect.
   const wrong = { requirement: "token" as const, file: "x.mjs", line: 1, wrongDeclaration: true,
-    chain: [MERGE_GUARD_TEST, join(TOOL_SRC, "merge-guard.mjs")] };
+    chain: [MERGE_GUARD_TEST, join(TOOL_SRC, "merge-guard.ts")] };
   const message = closureRequirementMessage(wrong);
   assert.match(message, /DOES call/, "the wrong-declaration refusal itself is unchanged");
   assert.doesNotMatch(message, /may declare/,
@@ -2590,12 +2590,12 @@ test("#1449 CONTROL: `execFile` of a DIFFERENT command is not charged", () => {
 /** How many lines the moved control inserts above `publishToDraftRelease`. */
 const PADDING_LINES = 7;
 
-/** A temporary tree holding `board-document-chrome-resolver.test.ts` and a given `board-document.mjs`. */
+/** A temporary tree holding `board-document-chrome-resolver.test.ts` and a given `board-document.ts`. */
 function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "acceptance-1458-"));
   try {
     mkdirSync(join(dir, "scripts"), { recursive: true });
-    // board-document.mjs lives in @a11ign/agent-org now, so the sandbox needs that directory too --
+    // board-document.ts lives in @a11ign/agent-org now, so the sandbox needs that directory too --
     // BOARD_DOCUMENT below is written into it.
     mkdirSync(join(dir, "packages/agent-org/src"), { recursive: true });
     mkdirSync(join(dir, "packages/lab/src/packaging"), { recursive: true });
@@ -2624,7 +2624,7 @@ test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape l
     assert.ok(hit);
     assert.equal(hit.line, expected, "and the deriver's hit moves with it");
     assert.equal(closureRequirementMessage(hit),
-      `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.mjs:${expected}`);
+      `board-document-chrome-resolver.test.ts requires token via resolveChromeBinary → board-document.ts:${expected}`);
   });
 });
 
@@ -2902,7 +2902,7 @@ test("#2099: a DECLARED hand-run Acceptance files clean -- the ruling is DECLARE
 });
 
 // The `row-file` WIRING -- that `fileRefusalReason` actually calls this rule -- is pinned in
-// `row-file.test.ts` instead, and the reason is this file's own subject: importing `row-file.mjs` here
+// `row-file.test.ts` instead, and the reason is this file's own subject: importing `row-file.ts` here
 // puts a `gh` spawn in THIS file's import closure, which charges it `token` and makes the Acceptance
 // command that runs it unrunnable in the acceptance job. Measured: it did, and took four other tests red
 // with it. `row-file.test.ts` carries the `// no-token: gh` declaration that answers it, proved rather
@@ -3624,7 +3624,7 @@ test("#2308: two `## Measured` sections fail rather than pick one", () => {
 });
 
 test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints its line", () => {
-  const run = (body: string) => spawnSync(process.execPath, [join(TOOL_SRC, "acceptance-commands.mjs")],
+  const run = (body: string) => spawnSync(process.execPath, [join(TOOL_SRC, "acceptance-commands.ts")],
     { encoding: "utf8", env: { ...process.env, PR_BODY: body } });
   const bad = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l")}`);
   assert.match(bad.stdout, /MEASURED: MALFORMED/);

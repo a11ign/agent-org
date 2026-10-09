@@ -1,15 +1,15 @@
 // @ts-check
 // module: the claim-stall tick -- what the gate says to a session whose claim has stopped moving (#2898)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2898, the fifth split of #928's lever 2a): `claimStallTick`, the
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the fifth split of #928's lever 2a): `claimStallTick`, the
 // claim evaluation it runs, the declared-wait reading that excuses a quiet claim, and the helpers only they use.
 // Measured on #2898: a row waited behind three pull requests in a day for edits to exactly these definitions.
 //
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
 // stayed behind also uses (`readPrs`, `readClaimedRowComments`, `readMergedPrs`, `gitRun`) is IMPORTED from
-// `work-gate.mjs`, the cycle that module documents, safe while nothing here reads an imported binding at load time.
+// `work-gate.ts`, the cycle that module documents, safe while nothing here reads an imported binding at load time.
 // `withChecksPending` STAYED: it reads the PR rollup, and `org-health.test.ts`'s #2956 guard enlists any file that does.
-// `work-gate.mjs` re-exports every name this file exports that it exported before.
+// `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers, withChecksPending, readMergedPrs,
   readElsewherePrs } from "../work-gate.ts";
 import { familyNumber } from "../arm-pr.ts";
@@ -39,7 +39,7 @@ function declaredWait(row, holder) {
 }
 
 /**
- * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.mjs` counts as a field (#2999): ONE decider for "this
+ * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.ts` counts as a field (#2999): ONE decider for "this
  * row has a wait field", so the idle reading and the clock reading cannot disagree about a row. `blocked` (the label) is not a kind: it names
  * no referent. `fleet-hold` is a `Fleet-hold-until:` line, whose second meaning -- a claim on the workers -- nothing else reads.
  * @param {any} row @param {string} holder @returns {{ kind: string, phrase: string } | null}
@@ -74,7 +74,7 @@ function movesOf(facts) {
 
 /**
  * THE WHOLE OF `claim-stalled` FOR ONE TICK: read every claimed row, decide, keep the nudge memory, and return the orders
- * (a nudge to a holder; a RELEASE that `wake.mjs` performs).
+ * (a nudge to a holder; a RELEASE that `wake.ts` performs).
  *
  * A READ THAT WAS REFUSED EVALUATES NOTHING. `claimedComments === null` means the row comments -- one of the four signals --
  * were not read, and a row read without them looks stalled when it may have been commented on a minute ago. `mergedPrs`

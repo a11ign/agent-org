@@ -10,7 +10,7 @@
 // `main`'s current tip): those need opposite remedies from this one. Behind `main` -- update the branch.
 // Runs predate `main` -- re-run. GitHub's head is not the tip -- RE-PUSH, so GitHub picks up the commit
 // that is already there. This is also the ONE rule `mergeSafetyVerdict` (the self-reference-safe CI-gate
-// check, in `merge-guard.mjs`) composes on its own -- see that function's own comment for why ancestry and
+// check, in `merge-guard.ts`) composes on its own -- see that function's own comment for why ancestry and
 // closing-claim are deliberately excluded from a required job asking about its own commit.
 
 /**

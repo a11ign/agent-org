@@ -28,7 +28,7 @@ const CLOSES = "Closes: none — a reason";
 const BODY = [ACCEPTANCE, CLOSES, "Mutation: none -- the fixture changes no test"].join("\n\n");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
-/** The project's `verify --check`: the contract `verify-stamp.mjs` reads, in a script of its own so the spawn is the real one. */
+/** The project's `verify --check`: the contract `verify-stamp.ts` reads, in a script of its own so the spawn is the real one. */
 const VERIFY_MJS = `
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";

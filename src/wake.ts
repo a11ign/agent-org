@@ -2,13 +2,13 @@
 // @ts-check
 // command: wake -- deliver work-gate's orders to the sessions that can take them. The other half of #912.
 //
-// `work-gate.mjs` answers "is there work" and says, in its own header, that it "DECIDES NOTHING ABOUT WHO
-// IS FREE ... `wake.mjs` owns that half". This is that half.
+// `work-gate.ts` answers "is there work" and says, in its own header, that it "DECIDES NOTHING ABOUT WHO
+// IS FREE ... `wake.ts` owns that half". This is that half.
 //
 // WHAT THIS REPLACES, AND WHY THE CLOCK IS NOT THE THING BEING FIXED. Six sessions each held a cron that
 // woke a MODEL every 10-30 minutes to ask a question a script answers in one API call -- 672 model turns a
 // day, most finding nothing, a weekly allowance gone in three days, and both Codex reviewers at their own
-// quota the same way. The tick was never the problem: `work-gate.mjs` costs two `gh` calls and can run all
+// quota the same way. The tick was never the problem: `work-gate.ts` costs two `gh` calls and can run all
 // day inside the rate limit. The problem was that the tick WAS a model turn. So the tick stays cheap, and a
 // model is woken only with the answer already in its prompt.
 //
@@ -28,6 +28,7 @@
 // prompt into a bare shell. But declining SILENTLY is the defect the org already had once: the
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
@@ -36,7 +37,7 @@ import { homedir, loadavg, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
-// `work-gate.mjs` and `org-watch.mjs` state at their own imports.
+// `work-gate.ts` and `org-watch.ts` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { profileFor, agentArgs, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
@@ -53,8 +54,8 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { stateEntryPath, hostConfigPath, readHostConfig } from "./host-config.ts"; // #2799; the other two for #2969's `clones`, read by host-config since #2991
 import { REPO } from "./project-identity.ts";
 import { roleBriefPath } from "./project-roles.ts";
-// #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.mjs`'s
-// re-export of `waiting-condition.mjs`'s own field, so it is not re-imported here.
+// #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.ts`'s
+// re-export of `waiting-condition.ts`'s own field, so it is not re-imported here.
 import { SESSION_PREFIX, READY_LABEL } from "./project-vocabulary.ts";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.mjs";
@@ -64,7 +65,7 @@ import { worktreeOwner } from "./worktree-owner.ts";
 import { recordRemoval } from "./worktree-removal.ts"; // #2827
 import { spawnMemoryGate } from "./spawn-memory-floor.ts";
 // THE FAMILY IS THE ROSTER'S, READ BY ONE MODULE (#2403): `worker-<n>` for n from 4 is a spare engineer role, and
-// `arm-pr.mjs` is where every other reader of a `session:<name>` label already asks whether a name is one.
+// `arm-pr.ts` is where every other reader of a `session:<name>` label already asks whether a name is one.
 import { SPARE_FAMILIES, familyNumber } from "./arm-pr.ts";
 // THE CLAIM'S OWN CHECKS, called rather than restated (#2324): a spawn is refused for the reasons the claim
 // would refuse the row, and a copy of either rule here would go stale the next time the rule changed.
@@ -75,14 +76,14 @@ import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 // #2470: THIS FILE NOW SENDS A BODY TO GITHUB (the release comment), so it reaches the leak guard like every other tracker writer (#1053).
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
-// #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.mjs` and this file both import it and neither imports the other's
+// #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.ts` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
   INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions, CONTINUATION_CAUSES, MAX_CONTINUATIONS }
   from "./claim-stall.ts";
-// THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.mjs` can read it
-// too, without importing this file (which already imports `claim-stall.mjs` and would cycle). Re-exported below so
+// THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.ts` can read it
+// too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
 import { readAgents, listingIsComplete, absentSeats } from "./herdr-agents.ts";
 import { persistentRoles, persistentEntries } from "./project-roles.ts";
@@ -93,7 +94,7 @@ export { readAgents, listingIsComplete };
 
 /**
  * `0` QUIET nothing to deliver; `1` ATTENTION an order had nowhere to go; `2` CANNOT_ASK herdr did not
- * answer. Matches `work-gate.mjs`'s polarity for the same stated reason: under this one the predictable
+ * answer. Matches `work-gate.ts`'s polarity for the same stated reason: under this one the predictable
  * misuse is loud within a tick, and a refused read is never reported as a quiet org.
  */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
@@ -369,7 +370,7 @@ const guardedGh = (args: string[]) => {
  * Which concrete session takes this order, or `null` when none can.
  *
  * `work-gate` addresses engineers as a POOL (`"engineers"`), because whether a ROW is yours is
- * `row-claim.mjs`'s question and not a thing the gate may pre-empt. Here the pool resolves to one free
+ * `row-claim.ts`'s question and not a thing the gate may pre-empt. Here the pool resolves to one free
  * engineer; the order still says "claim it", so an engineer woken for a row another has since claimed
  * finds that out from the claim, which is the authority.
  *
@@ -634,7 +635,7 @@ export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
  *
  * READ, NOT TYPED (#2279). The default roster here was the literal `"worker-capture,worker-judge,worker-tooling"`,
  * so a role added to `sessions.json` could be claimed under and armed for and still never be offered work or
- * spawned into -- the second copy of a list `arm-pr.mjs` already reads from the file (#1453). File order is
+ * spawned into -- the second copy of a list `arm-pr.ts` already reads from the file (#1453). File order is
  * the offer order, so the standing three come before the spares and a spare is only started once they are
  * all taken.
  *
@@ -1181,7 +1182,7 @@ export function reviewCheckoutPath(session: string, root: string = REVIEW_CHECKO
 const reviewRef = (pr: number, key: string = "") => (key === "" ? `refs/review/pr-${pr}` : `refs/review/${key}/pr-${pr}`);
 
 /**
- * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones`, or why it cannot be said. The reading moved to `claim-stall.mjs`'s
+ * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones`, or why it cannot be said. The reading moved to `claim-stall.ts`'s
  * {@link cloneOfKey} (#3453: the merged release reads the same clones and that file cannot import this one); a clone is still never defaulted
  * to the primary's checkout, whose `origin` would put the wrong repository's pull request in front of a reviewer.
  * @param {string} key @param {Parameters<typeof cloneOfKey>[1]} [from]
@@ -1699,7 +1700,7 @@ function removeLoggedCheckout({ path, session, git, repoRoot, record }: {
         path: string; session: string; git: NonNullable<CheckoutDeps["git"]>; repoRoot: string;
         record: typeof recordRemoval;
     }) {
-  const line = { path, caller: "wake.mjs removeReviewCheckout", reason: `the reviewer instance ${session} ended (#2401)` };
+  const line = { path, caller: "wake.ts removeReviewCheckout", reason: `the reviewer instance ${session} ended (#2401)` };
   record({ ...line, event: "removing" });
   try {
     git("git", ["-C", repoRoot, "worktree", "remove", "--force", path]);
@@ -1987,7 +1988,7 @@ export const REVIEWER_DEAD_AFTER_TICKS = 3;
  */
 export type ReviewerInstance = {spawnedAt: number, absentTicks?: number, absentNoted?: string, duplicateNoted?: number};
 
-/** `listingIsComplete` moved to `./herdr-agents.ts` (#2747), which `claim-stall.mjs` needs too; imported above and re-exported below. */
+/** `listingIsComplete` moved to `./herdr-agents.ts` (#2747), which `claim-stall.ts` needs too; imported above and re-exported below. */
 
 /**
  * What one tick's listing does to a registered reviewer whose pull request is still open: its next registry entry
@@ -2342,13 +2343,13 @@ export function parseOrders(text: string): { session: string; causeKey: string; 
 }
 
 // ---------------------------------------------------------------------------------------------------
-// HANDOFFS -- THE ORDERS AN AUTHOR WROTE AND `prompt-session.mjs` COULD NOT DELIVER.
+// HANDOFFS -- THE ORDERS AN AUTHOR WROTE AND `prompt-session.ts` COULD NOT DELIVER.
 //
 // EVERY ORDER ABOVE THIS LINE IS DERIVED; EVERY ORDER BELOW IT IS AUTHORED, AND THE DIFFERENCE DECIDES
 // EVERY DESIGN CHOICE HERE. A `causeKey` is a function of GitHub state, so an undelivered cause costs
 // nothing to lose -- the next tick re-derives it from the same unreviewed PR and offers it again. An
 // author's prompt is a function of nothing but the author: lose it and there is no second copy anywhere,
-// which is why `deliver`'s refusal path can afford to drop a cause on the floor and `prompt-session.mjs`'s
+// which is why `deliver`'s refusal path can afford to drop a cause on the floor and `prompt-session.ts`'s
 // could not.
 //
 // MEASURED 2026-09-22, `worker-tooling`, filing draft #1963 (#1966). `pnpm run prompt:session reviewer`
@@ -2379,9 +2380,9 @@ export function parseOrders(text: string): { session: string; causeKey: string; 
 // append, having already been told `QUEUED` and told not to retry. See {@link dropHandoffs}.
 
 /**
- * The file `prompt-session.mjs` leaves an undelivered order in, beside the ledger.
+ * The file `prompt-session.ts` leaves an undelivered order in, beside the ledger.
  *
- * THE NAME IS THE JOIN. `work-gate.mjs` and this file knew nothing of `prompt-session.mjs` until this
+ * THE NAME IS THE JOIN. `work-gate.ts` and this file knew nothing of `prompt-session.ts` until this
  * constant, which is what #1966's open-check greps for -- so the string is in code that runs rather than
  * in a comment that could rot away from it.
  */
@@ -2393,7 +2394,7 @@ export function handoffQueuePath(ledgerPath: string): string {
 }
 
 /**
- * Where the ledger lives for this invocation -- one definition, because `work-tick.mjs` has to resolve
+ * Where the ledger lives for this invocation -- one definition, because `work-tick.ts` has to resolve
  * the same queue from the same `--ledger` it passes through to this script.
  * @param {string[]} argv @returns {string}
  */
@@ -2549,7 +2550,7 @@ export function queueHandoff(path: string, { session, prompt, decision = false, 
  * against `queueHandoff`'s append: an author appending between the read and the write lost that append
  * outright. #2009's reviewer reproduced it against the committed function -- injecting an append into the
  * write callback left the final queue EMPTY and the concurrent order gone. The comment there conceded the
- * window and argued the loss was visible and re-sendable; IT IS NEITHER. `prompt-session.mjs` has by then
+ * window and argued the loss was visible and re-sendable; IT IS NEITHER. `prompt-session.ts` has by then
  * printed `QUEUED <id>` and `DO NOT RETRY` to the only process that holds a copy, so the author believes
  * the order is held, does not re-send by design, and nothing anywhere ever says otherwise. A queue whose
  * whole purpose is that an order survives to the next tick cannot have a path that silently deletes one.
@@ -3285,7 +3286,7 @@ const ORDER_SEPARATOR_BYTES = 2;
  * THE DEFECT THIS CLOSES (second review of #2125, reproduced before fixing). `orderHeading` above had
  * already moved the budget off the authored prompt and onto the heading and the wrapper -- but
  * {@link addressed} does one more thing to the body on its way to `execFileSync`: it substitutes the
- * target's name for every `<you>`, and `work-gate.mjs` writes that placeholder into the row orders it
+ * target's name for every `<you>`, and `work-gate.ts` writes that placeholder into the row orders it
  * queues. `<you>` is five bytes and `worker-capture` is fourteen, so an order that mentions the
  * placeholder a hundred times is charged 900 bytes less than it renders. Reproduced: 3,000 queued
  * `engineers` orders each repeating `<you>` 100 times were charged as fitting and rendered 163,952
@@ -3789,7 +3790,7 @@ const ENGINEER_BRIEF_SENTENCE = `Before you start, read \`${ENGINEER_BRIEF}\`: t
  * The prompt as the woken session receives it: the order's text, prefixed with WHO IT IS.
  *
  * THE DEFECT THIS FIXES, seen in production 2026-09-17. `work-gate`'s row order says *"claim it with
- * `row-claim.mjs claim <n> --session=<you> --branch=agent/<branch>`"*, and `<you>` is a placeholder no
+ * `row-claim.ts claim <n> --session=<you> --branch=agent/<branch>`"*, and `<you>` is a placeholder no
  * woken agent can resolve. A freshly spawned session has no memory and no assignment: it knows the work
  * but not its own name. The first engineer woken by this system stopped and asked a human which session
  * it was, rather than guess a name and mutate shared GitHub state under it -- which was the RIGHT call
@@ -4858,7 +4859,7 @@ export function compactContext(run: (args: string[]) => string, label: string, s
 /**
  * A PER-ROW INSTANCE'S OWN CONTEXT SIZE, RIGHT NOW (#2688) -- the live proxy #928's own offline report is
  * built from, read live instead of only reported. `claudeTurns` and `transcriptFiles` are
- * `token-audit.mjs`'s own readers; nothing here is a new metric, only this one read at delivery time.
+ * `token-audit.ts`'s own readers; nothing here is a new metric, only this one read at delivery time.
  *
  * THE MOST RECENTLY WRITTEN TRANSCRIPT NAMING THIS SESSION WINS. More than one file can carry the session's
  * name (a restarted process opens a fresh one), and only the newest describes the window the next order
@@ -4946,7 +4947,7 @@ export function isPerRowInstance(label: string) {
  *
  * `KEEP_WITHIN_MS` -- N, 30 minutes: the previous order's age at or under which the window is kept. WOULD CHANGE ON: the gap
  * distribution per lead at the point where the cache-write saving of a kept order stops exceeding the cost of the stale context
- * it carries, read from the transcripts (`token-audit.mjs` sums `cache_creation_input_tokens` per session). Measured 2026-10-04 over
+ * it carries, read from the transcripts (`token-audit.ts` sums `cache_creation_input_tokens` per session). Measured 2026-10-04 over
  * 2026-10-01..04: 32 of 50 gaps to `ceo` and 18 of 39 to `product-manager` were at or under 30 minutes, 3 of 11 to `orchestrator`.
  *
  * `KEEP_FILL_TOKENS` -- 50% of a 200k window: the cache read at or under which a recent window is kept and over which it is
@@ -5069,7 +5070,7 @@ function recentOrderAction(label: string, clock: OrderClock, contextRoot?: strin
 
 /**
  * WHAT HAPPENS TO THE WINDOW BEFORE AN ORDER, FOR EVERY PATH THAT DELIVERS ONE (`deliver` here, `clearThenPrompt` in
- * `prompt-session.mjs`): a per-row instance ({@link isPerRowInstance}) and a PERSISTENT seat ({@link isPersistentRole}) keep it and are
+ * `prompt-session.ts`): a per-row instance ({@link isPerRowInstance}) and a PERSISTENT seat ({@link isPersistentRole}) keep it and are
  * `/compact`ed over {@link COMPACT_THRESHOLD_TOKENS} (#2483, #2688, #3415); any OTHER standing seat reads the clock second
  * ({@link recentOrderAction}, #3440) -- a persistent seat never reaches it. Both callers go through here, because fixing one leaves the
  * reviewer wiped by its own author.
@@ -5572,7 +5573,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
  *
  * @param {{session: string, causeKey: string, prompt: string, cause?: string, title?: string, replaces?: {branch: string}[], resume?: boolean, outageNow?: boolean}[]} orders
  *   `resume` (#2470) sends the prompt WITHOUT the `/clear` a standing seat is otherwise given first; `outageNow`
- *   (#2685) is `work-gate.mjs`'s reading that GitHub itself refused several of THIS TICK's own reads together
+ *   (#2685) is `work-gate.ts`'s reading that GitHub itself refused several of THIS TICK's own reads together
  * @param {{label: string, status: string}[]} agents
  * @param {string[]} roster
  * @param {{run?: (args: string[]) => string, record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void,
@@ -6003,7 +6004,7 @@ export function drainedRoles(path: string | URL = SESSIONS_FILE): string[] {
   return live.filter((s) => s.role === "engineer" && s.drain === true).map((s) => s.name);
 }
 
-/** `persistentRoles` moved to `./project-roles.ts` (#3539), the roster's reader, which `host-units.mjs` needs too and cannot reach through this file; imported above and re-exported. */
+/** `persistentRoles` moved to `./project-roles.ts` (#3539), the roster's reader, which `host-units.ts` needs too and cannot reach through this file; imported above and re-exported. */
 export { persistentRoles };
 
 /**
@@ -6122,7 +6123,7 @@ export function checkChairmanPath({ spawn = spawnSync, program = fileURLToPath(n
     return [`MESSAGING SELFTEST NOT RUN: it could not be asked whether a run is due (${herdrReason(err)})`];
   }
   if (!asked.spawn) return asked.line === null ? [] : [asked.line];
-  const child = spawn(process.execPath, [program, "--tick"], { encoding: "utf8", timeout: SELFTEST_STEP_TIMEOUT_MS });
+  const child = spawn(process.execPath, [...TSX_IMPORT, program, "--tick"], { encoding: "utf8", timeout: SELFTEST_STEP_TIMEOUT_MS });
   const lastLine = String(child.stdout ?? "").trim().split("\n").at(-1) ?? "";
   let answer: { lines?: string[]; report?: string | null; } | null = null;
   try {
@@ -6380,11 +6381,11 @@ const CLAIM_NOT_LANDED = Object.freeze([1, 2]);
  */
 function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, string>, exec: Exec): string {
   // AN ADOPTED TREE IS NEVER REMOVED BY THE UNDO (#2470): unlike one this call just made, it holds another instance's work.
-  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
+  const ran = exec("node", [...TSX_IMPORT, ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
     ...(claimed.adopted ? ["--keep-worktree"] : [])], { cwd: claimed.launchDir, env });
   if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
   return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
-    + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.mjs `
+    + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.ts `
     + `decline ${claimed.row} --session=${role}\` from a linked worktree`;
 }
 
@@ -6415,7 +6416,7 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       if ("refusal" in launch) return launch;
       const left = settleGoneKept(kept(row) ?? treeOfClosedPrBranch(order, { exec, primary, env }), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
       const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left, exists });
-      const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
+      const ran = exec("node", [...TSX_IMPORT, ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
       if (landed && exists(claimed.worktree)) {
         if (claimed.adopted !== undefined) forget(row);
@@ -6846,7 +6847,7 @@ export function tearDownSpares(agents: { label: string; status: string; }[], led
 
 // --- #2470: A CLAIM TAKEN BACK, AND THE WORK KEPT ---------------------------------------------------------------------
 //
-// THE GATE DECIDES (`claim-stall.mjs`) AND THIS PERFORMS, because the parts of a release that need a pane, a process or a row are this
+// THE GATE DECIDES (`claim-stall.ts`) AND THIS PERFORMS, because the parts of a release that need a pane, a process or a row are this
 // file's: ending the holder's workspace (as `endFinishedSpares` ends a finished one), running `row-claim decline` as the holder, and
 // leaving a record the respawn reads. THE RELEASE KEEPS THE WORK (done-when 7): `decline` alone removes the recorded worktree first and
 // refuses while it is dirty, so a stalled tree with 215 uncommitted lines could neither be released nor survive a release. Here the tree
@@ -7069,7 +7070,7 @@ export function performRelease(request: ReleaseRequest, deps: ReleaseDeps): { re
   const launch = launchWorktree(request.session, { exec: deps.exec, exists: deps.host.exists,
     worktreesDir: deps.host.worktreesDir, primary: deps.host.primary });
   if ("refusal" in launch) return { released: false, why: `no launch worktree for ${request.session} (${launch.refusal})` };
-  const ran = deps.exec("node", [ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
+  const ran = deps.exec("node", [...TSX_IMPORT, ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
     ...(plan.keep ? ["--keep-worktree"] : []), ...(plan.keep && confirmedGone ? ["--predecessor-gone"] : []),
     ...(request.answer === undefined ? [] : [`--answer=${request.answer}`])],
   { cwd: launch.dir, env: deps.env });
@@ -7816,7 +7817,7 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/wake.mjs",
+    entry: import.meta.url, command: "node packages/agent-org/src/wake.ts",
   });
   const ledgerPath = ledgerPathFrom(process.argv);
   if (process.argv.includes("--cycles")) printCycles(ledgerPath);

@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `wake.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#2618)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#2618)
 /**
  * #2618 (child 3c of #69): THE GATE AND WAKE ENUMERATE EVERY REPOSITORY THE PROJECT DECLARES, AND A SEAT NAME CANNOT COLLIDE ACROSS TWO.
  *

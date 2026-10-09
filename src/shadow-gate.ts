@@ -9,7 +9,7 @@
 // perform the cut-over and it does not run the real 1,440-tick window -- that is the extraction row's job,
 // against the real state, once this instrument exists and has been rehearsed here on a copy.
 //
-// WHY BOTH GATES ARE PARAMETERS, NOT `decide` FROM `work-gate.mjs` IMPORTED DIRECTLY. `decide()` is today's
+// WHY BOTH GATES ARE PARAMETERS, NOT `decide` FROM `work-gate.ts` IMPORTED DIRECTLY. `decide()` is today's
 // live gate, and the "candidate" (extracted) gate does not exist yet -- it is child 5's output. Taking both
 // as plain functions keeps this instrument usable the day the candidate exists, and lets it be rehearsed
 // today against fixture gates, without reaching GitHub or the fleet/lab (the resource ban in
@@ -70,11 +70,11 @@ export function refuseLiveStateDir(dir: string, { liveStateDir = LIVE_STATE_DIR,
   }
 }
 
-/** the shape `work-gate.mjs`'s `decide()` returns. */
+/** the shape `work-gate.ts`'s `decide()` returns. */
 export type Order = { causeKey: string, session?: string, cause?: string, subject?: string, discriminator?: string, prompt?: string };
 
 /**
- * Two order arrays for ONE tick, compared by `causeKey` -- the same identity `wake.mjs`'s `undelivered()`
+ * Two order arrays for ONE tick, compared by `causeKey` -- the same identity `wake.ts`'s `undelivered()`
  * dedupes by and the ledger keys on, so a difference reported here is a difference a real delivery would
  * also see. An order present on only one side, or present on both with any other field different, is a
  * difference; the same orders in a different array order are not.
@@ -142,7 +142,7 @@ export function shadowRun({ ticks, liveGate, candidateGate, stateDir, liveStateD
  * mirroring decision 5's "the cut is a swap of two units in the gap between ticks". Proves no tick is
  * skipped (every tick in `ticks` is answered by exactly one gate) and no order is dropped (every order
  * either gate produced appears in `allOrders`); it does not itself deliver anything -- delivery is
- * `wake.mjs`'s job, out of scope for a read-only rehearsal instrument (decision 5, "and never writes a
+ * `wake.ts`'s job, out of scope for a read-only rehearsal instrument (decision 5, "and never writes a
  * state file, a marker or the queue").
  * @param {{ ticks: { tick: number, reads: unknown }[], cutAtTick: number, oldGate: GateFn, newGate: GateFn,
  *   stateDir: string, liveStateDir?: string, realpath?: typeof realpathSync }} args

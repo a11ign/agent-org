@@ -16,7 +16,7 @@
 // at the one place a key enters is what lets every later reader trust one.
 //
 // The module imports only `node:fs` and `node:path`: `scripts/repo-identity.mjs` imports it, and it in turn is imported by 31
-// files of this package, so anything heavier here is paid by every one of them (`api-pool.mjs` says why that matters).
+// files of this package, so anything heavier here is paid by every one of them (`api-pool.ts` says why that matters).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -41,7 +41,7 @@ export type LeakPattern = { name: string, pattern: string };
  * where a repository's releases are read: a published npm version (the registry's `time` map), or a `v*` tag with a GitHub Release
  */
 export type DoraRelease = { kind: "npm", package: string } | { kind: "tag" };
-/** one repository the daily DORA reading covers (`dora.mjs`) */
+/** one repository the daily DORA reading covers (`dora.ts`) */
 export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[] };
 export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number };
 
@@ -195,7 +195,7 @@ function readReleasablePaths(entry: Record<string, unknown>, at: string, source:
 }
 
 /**
- * The repositories the daily DORA reading covers (`dora.mjs`), and where each one's releases are read. `agent-org` names no project, so which
+ * The repositories the daily DORA reading covers (`dora.ts`), and where each one's releases are read. `agent-org` names no project, so which
  * repositories and where is DECLARED here. An ABSENT field reads as an empty list, for the reason `leakPatterns` does: it adds a report and answers
  * no question about WHICH project this is. A PRESENT entry is held to the same rule as every other, and a repository declared twice is refused.
  * @param {Record<string, unknown>} declaration @param {string} source
@@ -267,13 +267,13 @@ export function readProjectDeclaration(root: string): Readonly<ProjectDeclaratio
 }
 
 /**
- * The variable that names the host file. `host-config.mjs` owns it (`HOST_CONFIG_ENV`) and imports THIS module, so this one
+ * The variable that names the host file. `host-config.ts` owns it (`HOST_CONFIG_ENV`) and imports THIS module, so this one
  * cannot import it back: the name is written here too, and `standalone-candidate.test.ts` pins that the two agree.
  */
 export const HOST_ENV = "AGENT_ORG_HOST";
 
 /**
- * The `checkout` of the host file's `primary` project. Read here, minimally, and not through `host-config.mjs` (a cycle, and
+ * The `checkout` of the host file's `primary` project. Read here, minimally, and not through `host-config.ts` (a cycle, and
  * that reader checks far more than a checkout needs). EVERY failure REFUSES naming the host file and what is wrong: a host
  * file that is set and unusable is never answered with the directory three levels up (chairman, 2026-09-24: no fallback).
  * @param {string} hostPath @returns {string}

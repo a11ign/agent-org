@@ -2,9 +2,9 @@
 /**
  * ARMED MEANS "NOTHING LEFT TO ARM", AND ONE PLACE DECIDES WHETHER A PR IS ARMED.
  *
- * #2046. This is `pr-hold-state.mjs`'s argument, made a second time about the other half of the same
- * decision, and `arm-pr.mjs`'s own header had already written the lesson down: *"The predicate was
- * written twice and only one copy was correct. It now lives once, in `pr-hold-state.mjs`, and both
+ * #2046. This is `pr-hold-state.ts`'s argument, made a second time about the other half of the same
+ * decision, and `arm-pr.ts`'s own header had already written the lesson down: *"The predicate was
+ * written twice and only one copy was correct. It now lives once, in `pr-hold-state.ts`, and both
  * callers read it -- adding the missing `if` here would have made it two correct copies, which is the
  * same shape with a longer fuse."* The HOLD predicate was unified. The ARMED predicate was not, and it
  * has now cost three rows:
@@ -18,13 +18,13 @@
  *
  * Each time the rule was already written, already exported and already tested, and the deciding read
  * did not call it. So the rule moved out of the sweep and into a module with no imports at all, beside
- * the hold module it is the mirror of. `auto-arm-sweep.mjs` re-exports `armedFromApi` because
- * `work-gate.mjs` reads it from there and the gate's own header reasons about the shape of that import
+ * the hold module it is the mirror of. `auto-arm-sweep.ts` re-exports `armedFromApi` because
+ * `work-gate.ts` reads it from there and the gate's own header reasons about the shape of that import
  * graph; the re-export is a second SPELLING of one definition, never a second copy of the rule.
  *
  * LEAF-SHAPED ON PURPOSE. This module imports nothing -- not `node:*`, not `cli-flags.mjs`. Both
  * callers state as a property of themselves that they run under a bare `actions/checkout` with no
- * `pnpm install` and no build (`auto-arm-sweep.mjs`'s header records what the circular bootstrap cost in
+ * `pnpm install` and no build (`auto-arm-sweep.ts`'s header records what the circular bootstrap cost in
  * #330/#331), and a shared predicate must not be the thing that takes that property away.
  */
 
@@ -85,7 +85,7 @@ export function armedFromApi(pr: { merged?: boolean; autoMergeRequest?: unknown;
  * #2046: a caller that is about to say "there was nothing left to arm" has to be able to say WHY, and
  * the three states are not interchangeable to the person reading a green `arm` step: a QUEUED PR is
  * somebody else's arm having won the race, a MERGED one is the race having finished, and a pending
- * auto-merge is this PR having been armed before. `settledReason` in `arm-pr.mjs` is the same shape for
+ * auto-merge is this PR having been armed before. `settledReason` in `arm-pr.ts` is the same shape for
  * the same reason -- a reason that names the state is how a reader tells a real verdict from a
  * swallowed error.
  *

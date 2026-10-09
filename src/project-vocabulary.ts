@@ -1,13 +1,13 @@
 // @ts-check
 // #2619 (child 3d of #69): THE PROJECT'S VOCABULARY -- the row template's field names and the label,
 // milestone, lane-prefix and shared-resource words the machinery reads (ADR 0040, decision 1, surface 2).
-// Read from `.agent-org/project.json`'s `vocabulary` key the same way `project-config.mjs` reads
+// Read from `.agent-org/project.json`'s `vocabulary` key the same way `project-config.ts` reads
 // `tracker`/`code`: IT REFUSES, IT NEVER DEFAULTS. A missing or mistyped field is refused naming it, and
 // a11ign's values are read back rather than assumed, so a second project can name its own.
 //
-// THE FOUR CLAIM-LIFECYCLE LABELS ARE DELIBERATELY NOT PARSED HERE. `claim-labels.mjs` is a pinned,
+// THE FOUR CLAIM-LIFECYCLE LABELS ARE DELIBERATELY NOT PARSED HERE. `claim-labels.ts` is a pinned,
 // import-free LEAF (`ready-label-audit.test.ts`, #804) precisely so nothing depending on it can form a
-// cycle through `row-claim.mjs`'s rule-set graph. Moving `ready`/`was-ready`/`in-progress`/`started` into
+// cycle through `row-claim.ts`'s rule-set graph. Moving `ready`/`was-ready`/`in-progress`/`started` into
 // this file's own JSON read would mean either breaking that leaf's contract or stating the same four
 // facts twice -- this module does neither: it imports them from their one owner and re-exports them
 // beside the rest of the vocabulary, so a caller who needs all of it can still get all of it from here.
@@ -50,7 +50,7 @@ function requiredString(holder: Record<string, unknown>, name: string, path: str
 }
 
 /**
- * `vocabulary.resources`: `FLEET_LAB_PATTERNS`' own values, moved out of `acceptance-commands.mjs`. An
+ * `vocabulary.resources`: `FLEET_LAB_PATTERNS`' own values, moved out of `acceptance-commands.ts`. An
  * ABSENT list reads as empty -- a project with no fleet or lab has none of its own, and adds to no floor
  * the tool enforces itself, because every entry here is a11ign's alone.
  * @param {Record<string, unknown>} vocabulary
@@ -147,7 +147,7 @@ export const NEEDS_CHAIRMAN_LABEL = vocabulary.labels.needsChairman;
 export const OUT_OF_RELEASE_LABEL = vocabulary.labels.outOfRelease;
 export const BLOCKED_LABEL = vocabulary.labels.blocked;
 export const LANE_PREFIX = vocabulary.prefixes.lane;
-/** `lane:any`: the sentinel `laneLabelsFor` (`row-file.mjs`) assigns when a Region touches no lane's
+/** `lane:any`: the sentinel `laneLabelsFor` (`row-file.ts`) assigns when a Region touches no lane's
  * paths -- CODE'S OWN answer, never a value `docs/lane-ownership.json` declares, so it is a constant
  * built from the prefix rather than a sixth field. */
 export const LANE_ANY_LABEL = `${LANE_PREFIX}any`;

@@ -2,10 +2,10 @@
 // #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK RE-READS IT UNTIL IT DOES (the chairman, 2026-10-02: "why do I have to keep messaging
 // it?"). `ceo` ruled at 06:50Z that the freeze was over, acted on the process and ended its turn; the fields that encoded the freeze stood four hours, because a
 // ruling is a claim about state and nothing re-read the state. This is the PURE half: the closed vocabulary a check is written in, and the verdict over the open
-// rows and pull requests the tick already holds. `ruling-record.mjs` is the half that touches a file, `work-gate.mjs` the half that touches GitHub.
+// rows and pull requests the tick already holds. `ruling-record.ts` is the half that touches a file, `work-gate.ts` the half that touches GitHub.
 //
 // THE VOCABULARY IS CLOSED ON PURPOSE: a check that is free text is a sentence, and a sentence cannot be re-read by a program. The single-reference kinds are
-// #2996's own grammar (`closed #n`, `merged #n`, `labelled|unlabelled <label> #n`), parsed and decided by `wait-condition.mjs` and not restated here; the
+// #2996's own grammar (`closed #n`, `merged #n`, `labelled|unlabelled <label> #n`), parsed and decided by `wait-condition.ts` and not restated here; the
 // population kinds are this file's: `no-open-row-body-matches <regex>`, `no-open-pr-label <label>`, `no-open-row-label <label> [except #n ...]`.
 import { parseWaits, conditionHolds, isItemWait } from "./wait-condition.ts";
 
@@ -128,7 +128,7 @@ export function settleRulings(rulings: Ruling[], world: World, now: number): { r
 
 /**
  * THE ORDER FOR A RULING THAT HAS NOT TAKEN EFFECT, to the session that recorded it. It is the `org-health` cause, as #2996's stale-wait order is: a cause of its
- * own would be declared in `cause-declaration.mjs`, outside this row's Region, and judgment-high is the right profile for an order to look and fix. The discriminator
+ * own would be declared in `cause-declaration.ts`, outside this row's Region, and judgment-high is the right profile for an order to look and fix. The discriminator
  * carries the clock hour, so a ruling still failing is offered once an hour and not once a tick.
  * @param {Ruling} ruling @param {Reading} reading @param {number} now
  */

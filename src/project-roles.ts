@@ -1,10 +1,10 @@
 // @ts-check
 // #2621 (child 3e of #69): WHERE A PROJECT'S ROLE BRIEFS LIVE (ADR 0040, decision 1, surface 3). Read from
-// `.agent-org/project.json`'s `roles` key, `project-vocabulary.mjs`'s own pattern: IT REFUSES, IT NEVER
-// DEFAULTS, and re-reads the declaration rather than teaching `project-config.mjs`'s strict reader a field
+// `.agent-org/project.json`'s `roles` key, `project-vocabulary.ts`'s own pattern: IT REFUSES, IT NEVER
+// DEFAULTS, and re-reads the declaration rather than teaching `project-config.ts`'s strict reader a field
 // it does not otherwise need.
 //
-// THE TOOL SHIPS NO ROLE BRIEF. `wake.mjs`'s `ENGINEER_BRIEF` and the roster (`sessions.json`, read by
+// THE TOOL SHIPS NO ROLE BRIEF. `wake.ts`'s `ENGINEER_BRIEF` and the roster (`sessions.json`, read by
 // `engineerRoles`/`spareRoles`/`spareInstances`/`isSpareRole`) used to be a path baked into this package,
 // `packages/agent-org/docs/roles/...`; they are now a11ign's own files, at the directory this module names
 // -- so a second project supplies its own directory and its own briefs, or has none.
@@ -25,7 +25,7 @@ const describe = (value: unknown) => (value === null ? "null" : Array.isArray(va
 
 /**
  * Parse `.agent-org/project.json`'s `roles` key, PURE: a test drives every refusal with a plain object,
- * `project-vocabulary.mjs`'s `parseVocabulary` discipline.
+ * `project-vocabulary.ts`'s `parseVocabulary` discipline.
  * @param {unknown} parsed the whole parsed JSON document
  * @returns {string} the role-briefs directory, relative to the project root
  */

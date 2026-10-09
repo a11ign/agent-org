@@ -69,7 +69,7 @@ function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Reco
 const create = (body: string) => ["create", "--draft", "--body", body];
 const CREATE_ONLY = (sent: string[][]) => sent.map((args) => args.slice(0, 2));
 
-const IN_REGION = ["packages/agent-org/src/pr-open.mjs", "packages/lab/src/packaging/pr-open-region.test.ts"];
+const IN_REGION = ["packages/agent-org/src/pr-open.ts", "packages/lab/src/packaging/pr-open-region.test.ts"];
 const ROW = { 2417: regionBody(IN_REGION) };
 
 // --- done-when 1: a diff outside the Region is REFUSED, and the refusal is the whole answer ---------------------
@@ -174,10 +174,10 @@ test("#2417 done-when 4: the exempt set is ONE named constant and every entry ca
   }
 });
 
-const ROW_2167_WHEN_REFUSED = regionBody([".claude/rules/agent-practices.md", "packages/agent-org/src/prompt-session.mjs",
+const ROW_2167_WHEN_REFUSED = regionBody([".claude/rules/agent-practices.md", "packages/agent-org/src/prompt-session.ts",
   "packages/lab/src/packaging/prompt-session.test.ts"]);
 const PR_2253_AT_A308B8B6 = [".claude/rules/agent-practices.md", "docs/operational-lessons.md",
-  "packages/agent-org/src/prompt-session.mjs", "packages/lab/src/packaging/prompt-session.test.ts"];
+  "packages/agent-org/src/prompt-session.ts", "packages/lab/src/packaging/prompt-session.test.ts"];
 
 test("#2417 REPLAY, #2253 at a308b8b6 (refused by both reviewers): `docs/operational-lessons.md` is the one path refused", () => {
   const r = drive(create(prBody("Closes #2167")), { rows: { 2167: ROW_2167_WHEN_REFUSED }, changed: PR_2253_AT_A308B8B6 });
@@ -192,11 +192,11 @@ test("#2417 REPLAY, #2253 at a308b8b6 (refused by both reviewers): `docs/operati
 });
 
 const ROW_2406 = regionBody(["packages/agent-org/docs/roles/engineer.md", "packages/agent-org/docs/roles/sessions.json",
-  "packages/agent-org/src/wake.mjs", "packages/lab/src/packaging/wake-engineer-brief.test.ts",
+  "packages/agent-org/src/wake.ts", "packages/lab/src/packaging/wake-engineer-brief.test.ts",
   "packages/lab/src/packaging/wake.test.ts", "packages/nvda-worker/CLAUDE.md", "packages/lab/CLAUDE.md",
   "packages/judge/CLAUDE.md"]);
 const PR_2408_AT_A0FFB58A = ["packages/agent-org/docs/roles/README.md", "packages/agent-org/docs/roles/engineer.md",
-  "packages/agent-org/docs/roles/sessions.json", "packages/agent-org/src/wake.mjs", "packages/judge/CLAUDE.md",
+  "packages/agent-org/docs/roles/sessions.json", "packages/agent-org/src/wake.ts", "packages/judge/CLAUDE.md",
   "packages/lab/CLAUDE.md", "packages/lab/src/packaging/wake-engineer-brief.test.ts",
   "packages/lab/src/packaging/wake.test.ts", "packages/nvda-worker/CLAUDE.md"];
 
@@ -213,7 +213,7 @@ test("#2417 REPLAY, #2408 at a0ffb58a (the round that refused): `roles/README.md
 
 // --- done-when 5, and the three decisions the row took --------------------------------------------------------
 
-test("#2417 done-when 5: the Region is read through `region-paths.mjs`, so its forms are honoured (a directory "
+test("#2417 done-when 5: the Region is read through `region-paths.ts`, so its forms are honoured (a directory "
   + "entry, a fenced path with no extension) and no second parser exists in pr-open", () => {
   const row = "## Region\n\n```\nscripts/git-hooks/pre-push\n```\n\n- `packages/control/ansible/`\n";
   const r = drive(create(prBody("Closes #9")), { rows: { 9: row },
@@ -314,7 +314,7 @@ test("#3083 done-when 1: a row of the home repository is read byte for byte as b
   assert.deepEqual(stating.sent, plain.sent);
 });
 
-test("#3083 WIRING: the sentence is read by the one `statedRepository` in row-file.mjs, never a second copy of its pattern in pr-open", () => {
+test("#3083 WIRING: the sentence is read by the one `statedRepository` in row-file.ts, never a second copy of its pattern in pr-open", () => {
   assert.match(PR_OPEN_SOURCE, /statedRepository/);
   assert.doesNotMatch(PR_OPEN_SOURCE, /repository is\\s/i, "no second reading of the sentence");
 });

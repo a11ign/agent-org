@@ -1,10 +1,10 @@
 // @ts-check
-// A LEAF (`pr-hold-state.mjs` imports only the leaf `wait-condition.mjs`, and `newest-check-run.mjs` nothing): `org-retro.mjs` is a leaf `work-gate.mjs` imports before any
-// build, so this file may not reach `work-gate/pr-orders.mjs`, which imports `work-gate.mjs` back.
+// A LEAF (`pr-hold-state.ts` imports only the leaf `wait-condition.ts`, and `newest-check-run.ts` nothing): `org-retro.ts` is a leaf `work-gate.ts` imports before any
+// build, so this file may not reach `work-gate/pr-orders.mjs`, which imports `work-gate.ts` back.
 //
 // IS THIS PULL REQUEST BROKEN, OR RED ON PURPOSE? (#2954, ceo's retrospective of 2026-10-02). `deliberateRefusals` fails BY DESIGN on a PR
-// carrying `hold:*` (`merge-guard.mjs --ci-gate`: "a hold is a decision somebody made by hand"), and the rolled-up `gate` fails with it, so
-// #2883 read as a red PR for the whole of ceo's freeze. `merge-guard.mjs` records why that is not harmless: a deliberate red "trains people
+// carrying `hold:*` (`merge-guard.ts --ci-gate`: "a hold is a decision somebody made by hand"), and the rolled-up `gate` fails with it, so
+// #2883 read as a red PR for the whole of ceo's freeze. `merge-guard.ts` records why that is not harmless: a deliberate red "trains people
 // to skip the section" (#690). A report that counts a hold as a breakage is a number its source cannot say.
 //
 // ONE DECIDER, `isBrokenRed`, so the report's count and its `held` line cannot disagree about what a hold excuses.
@@ -15,7 +15,7 @@ import { holdersOf } from "./pr-hold-state.ts";
 export const RED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"]);
 
 /**
- * The two jobs a `hold:` label turns red and nothing else does: `deliberateRefusals` (the job that runs `merge-guard.mjs --ci-gate`) and
+ * The two jobs a `hold:` label turns red and nothing else does: `deliberateRefusals` (the job that runs `merge-guard.ts --ci-gate`) and
  * `gate`, which is red only because it `needs` it. THE SAME LIST AS `work-gate/pr-orders.mjs`'s `HOLD_RED_JOBS`, copied because that file
  * cannot be imported from a leaf; `org-retro.test.ts` pins the two equal AND pins both to the jobs `ci.yml` defines.
  */
@@ -49,7 +49,7 @@ export function redChecks(pr: { statusCheckRollup?: any[]; }): { name: string; f
  * #549's `Closes` mismatch, and that is a broken PR.
  *
  * `holdStands` IS WHETHER THE HOLD STILL EXCUSES (#2996). Its default is the label alone, which is what every caller before #2996
- * got and what `org-retro.mjs` and `queue-table.mjs` still ask; `org-health.mjs`'s reading passes `holdExcused`, so a hold whose
+ * got and what `org-retro.ts` and `queue-table.ts` still ask; `org-health.mjs`'s reading passes `holdExcused`, so a hold whose
  * reason is gone stops hiding the red it caused.
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
  * @param {{ holdStands?: (pr: any) => boolean }} [options]
@@ -64,7 +64,7 @@ const hasHolder = (pr: { labels?: any[]; }): boolean => holdersOf(labelNames(pr)
 
 /**
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
- * @param {any} [options] `{ holdStands }` as `brokenChecks` takes it (#2996). TYPED `any` BECAUSE `.filter(isBrokenRed)` (`org-retro.mjs`) hands a function its
+ * @param {any} [options] `{ holdStands }` as `brokenChecks` takes it (#2996). TYPED `any` BECAUSE `.filter(isBrokenRed)` (`org-retro.ts`) hands a function its
  *   index second, and a number has no `holdStands`: the default is the label, which is what that caller asked before.
  * @returns {boolean} red for a reason a hold does not explain
  */

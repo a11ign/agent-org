@@ -14,9 +14,9 @@
  * ## It has been fixed FOUR TIMES at four call sites
  *
  * the since-retired update-branch sweep (#500, then again at #517), the since-retired revert script (#582),
- * `queue-table.mjs` (which is where this function was, with a header naming the other three). **That is this repository's
+ * `queue-table.ts` (which is where this function was, with a header naming the other three). **That is this repository's
  * most expensive recurring shape — a remedy applied where the fault was noticed rather than everywhere
- * the behaviour reaches — and a fifth call site had never had it**: `merge-queue.mjs`'s
+ * the behaviour reaches — and a fifth call site had never had it**: `merge-queue.ts`'s
  * `checksBlocking`, which decides whether a PR is mergeable, filtered the RAW rollup and would report
  * `checks failing` for a PR whose current runs are all green.
  *
@@ -42,7 +42,7 @@ const stampOf = (check: { completedAt?: string | null; startedAt?: string | null
 /**
  * The workflow run a check run belongs to, read from its `detailsUrl` (`.../actions/runs/<id>/job/<job>`) -- or
  * `null` when the entry names none: a status context, a hand-built fixture, or a REST read that did not select
- * the URL (`queue-table.mjs`'s `checksOnSha` selects only name, conclusion and completion time).
+ * the URL (`queue-table.ts`'s `checksOnSha` selects only name, conclusion and completion time).
  *
  * Workflow run ids are issued in creation order and stay below 2^53, so they compare as numbers.
  * @param {{detailsUrl?: string | null}} check
@@ -83,7 +83,7 @@ export function isAtLeastAsNew(a: { completedAt?: string | null; startedAt?: str
  *
  * The RETURN type has a required `name`, and that is not a convenience: the loop skips any entry
  * without one, so every value that comes back has been through that filter. Typing it as optional made
- * `queue-table.mjs`'s `.map((c) => c.name)` produce `(string | undefined)[]` where a `string[]` was
+ * `queue-table.ts`'s `.map((c) => c.name)` produce `(string | undefined)[]` where a `string[]` was
  * wanted -- a type describing what the input might be rather than what the output IS.
  *
  * @param {{name?: string, conclusion?: string, completedAt?: string, startedAt?: string}[]} rollup
@@ -119,7 +119,7 @@ export function newestConclusionOf(rollup: { name?: string; conclusion?: string;
 /**
  * The one spelling of success, in the normalised vocabulary -- lower case, like every other conclusion.
  *
- * EXPORTED because `queue-stalled.mjs` compares a normalised conclusion in several places, and a literal there
+ * EXPORTED because `queue-stalled.ts` compares a normalised conclusion in several places, and a literal there
  * is a copy of a fact that file learns the vocabulary for from here.
  */
 export const SUCCESS = "success";

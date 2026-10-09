@@ -1,7 +1,7 @@
 // a11ign/a11ign#4184 (#4055 next wave, item 5): the headless pilot's script, against a FAKE `claude` and a STUB `gh`. No model, no network, no org write.
 // Run with `AGENT_ORG_HOST=<checkout>/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/trace/headless-pilot.test.ts`.
 // The git side is real (a local bare `origin` and a clone), so the throwaway worktree is a real worktree and "it does not exist afterwards" is read off the disk.
-// no-token: gh -- `gh` is an injected stub that fails the run on any write; wake.mjs is imported for `addressed` only and its gh readers are never called here
+// no-token: gh -- `gh` is an injected stub that fails the run on any write; wake.ts is imported for `addressed` only and its gh readers are never called here
 // Every claim carries a positive control (the same input made valid passes) and a negative one (the input that must be refused or must fail does), so none is an emptiness assertion.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";

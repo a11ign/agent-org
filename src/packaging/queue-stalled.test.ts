@@ -5,7 +5,7 @@
  *
  * `stalledVerdict` is the whole decision, as one pure function, and `mergeTreeConflict` drives the real
  * `git merge-tree --write-tree --name-only` invocation with an injectable runner so the parsing is tested
- * against real, captured output rather than a guessed shape. See queue-stalled.mjs's own header for the
+ * against real, captured output rather than a guessed shape. See queue-stalled.ts's own header for the
  * incident (#232/#281, 12.5 PR-hours invisible) and why `mergeable` is not the instrument.
  */
 import { test } from "node:test";
@@ -22,7 +22,7 @@ import { newestConclusion } from "../newest-check-run.ts";
 // ---------------------------------------------------------------------------------------------------
 // #1100: THIS FILE'S SUBJECT HAS A SECOND VOCABULARY, and it arrived through a shared function.
 //
-// `newestConclusion` lives in `newest-check-run.mjs` and normalises `gh`'s two spellings of the same
+// `newestConclusion` lives in `newest-check-run.ts` and normalises `gh`'s two spellings of the same
 // verdict -- `SUCCESS` on `statusCheckRollup`, `success` on the REST check-runs API -- at its own edge.
 // **That changed what THIS file reads**, and its three comparisons still spelled `"SUCCESS"`, so every
 // green armed pull request reported "has not concluded SUCCESS".
@@ -131,24 +131,24 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
   // git actually emits.
   const stdout = [
     "43bb45c033083196df4059b2d6b668f60c140698",
-    "packages/agent-org/src/board-data.mjs",
-    "packages/agent-org/src/board-document.mjs",
+    "packages/agent-org/src/board-data.ts",
+    "packages/agent-org/src/board-document.ts",
     "scripts/board-only-check.mjs",
-    "packages/agent-org/src/board-report.mjs",
+    "packages/agent-org/src/board-report.ts",
     "scripts/ci-changed.mjs",
     "packages/guards/src/isolation-gate.mjs",
     "",
-    "Auto-merging packages/agent-org/src/board-data.mjs",
-    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-data.mjs",
-    "Auto-merging packages/agent-org/src/board-document.mjs",
-    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-document.mjs",
+    "Auto-merging packages/agent-org/src/board-data.ts",
+    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-data.ts",
+    "Auto-merging packages/agent-org/src/board-document.ts",
+    "CONFLICT (content): Merge conflict in packages/agent-org/src/board-document.ts",
     "",
   ].join("\n");
   const result = mergeTreeConflict("origin/main", "deadbeef", () => ({ status: 1, stdout }));
   assert.equal(result.conflict, true);
   assert.deepEqual(result.files, [
-    "packages/agent-org/src/board-data.mjs", "packages/agent-org/src/board-document.mjs", "scripts/board-only-check.mjs",
-    "packages/agent-org/src/board-report.mjs", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
+    "packages/agent-org/src/board-data.ts", "packages/agent-org/src/board-document.ts", "scripts/board-only-check.mjs",
+    "packages/agent-org/src/board-report.ts", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
   ]);
 });
 
@@ -348,7 +348,7 @@ test("headCommittedAt: empty stdout on a successful exit is also `null`, not an 
 
 // --- the CLI, guarded like every other argv-reading script here ---
 
-test("queue-stalled.mjs refuses an unknown flag rather than silently ignoring it", () => {
+test("queue-stalled.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
     execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
@@ -361,7 +361,7 @@ test("queue-stalled.mjs refuses an unknown flag rather than silently ignoring it
   assert.ok(threw, "an unknown flag must exit non-zero, not silently run the default");
 });
 
-test("queue-stalled.mjs refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed default", () => {
+test("queue-stalled.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed default", () => {
   let threw = false;
   try {
     const env = { ...process.env };
@@ -561,7 +561,7 @@ test("#3019 done-when 1, the ORDER: it goes to the PR's owner, names the failed 
   const split = readEjections([16], fakeGh({ "16": EJECTED_16 }));
   const ejection = split?.ejections.get(16);
   assert.deepEqual(ejection, { removedAt: "2026-10-02T13:15:05Z", runId: 37011501222,
-    failingTests: ["#2174: work-gate.mjs loads in a tree with NO node_modules", "the count of non-test files carrying the literal"] },
+    failingTests: ["#2174: work-gate.ts loads in a tree with NO node_modules", "the count of non-test files carrying the literal"] },
   "the run is the newest failed merge_group run no later than the removal (13:12:50Z, not the 13:09:54Z one)");
   const pr = { ...GREEN_16, armed: false, ejection };
   assert.equal(stallReasonOf(pr, ["gate"]), STALL_REASON.EJECTED);
@@ -612,7 +612,7 @@ function fakeGh(timelines: Record<string, unknown>, { runs = "ok" }: { runs?: "o
     }
     if (args[0] === "run" && args[1] === "view") {
       return ["gate\tTest\t2026-10-02T13:14:00Z # Subtest: x",
-        "gate\tTest\t2026-10-02T13:14:01Z not ok 301 - #2174: work-gate.mjs loads in a tree with NO node_modules",
+        "gate\tTest\t2026-10-02T13:14:01Z not ok 301 - #2174: work-gate.ts loads in a tree with NO node_modules",
         "gate\tTest\t2026-10-02T13:14:02Z not ok 302 - the count of non-test files carrying the literal",
         "gate\tTest\t2026-10-02T13:14:03Z # fail 2"].join("\n");
     }

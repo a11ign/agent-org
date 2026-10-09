@@ -2,7 +2,7 @@
  * PORTED from a11ign/a11ign `packages/lab/src/packaging/` at 95cb57e33 (a11ign/a11ign#3106), where the tool's source was one slice of a
  * whole-tree walk and stopped being walked once the tool left. It now walks this tool's `src/` (source AND tests, off disk: see
  * `tool-source.ts`) and classifies against this tool's two helpers. Its first run here found two real unscrubbed spawns, in
- * `close-rows-full-form.test.mjs` and `release-safety.test.ts`, both fixed in the same change; the rest of this header is the original.
+ * `close-rows-full-form.test.ts` and `release-safety.test.ts`, both fixed in the same change; the rest of this header is the original.
  *
  * EVERY place in this repo that spawns `git` must scrub `GIT_*` from its environment, or be discovered
  * and refused — not just the eleven tests that left evidence when this went wrong.
@@ -103,7 +103,7 @@ function trackedSourceFiles(): ToolFile[] {
 /**
  * WHAT THIS POPULATION IS NOT, MEASURED 2026-09-09 AFTER IT MISSED A REAL COLLISION (#890).
  *
- * `trunk-revert-guard.test.ts` spawned `node packages/agent-org/src/trunk-revert-guard.mjs` with `cwd` set to the real
+ * `trunk-revert-guard.test.ts` spawned `node packages/agent-org/src/trunk-revert-guard.ts` with `cwd` set to the real
  * checkout. That script runs `git fetch origin` unconditionally, so a `npm test` in any worktree fetched
  * into the SHARED primary `.git` and could collide with another worktree doing the same on the
  * remote-tracking refs. A test mutating the checkout that drives the fleet.

@@ -11,7 +11,7 @@
 // `ci-health.yml` posts the chairman's CI targets on the report issue every Monday. Nothing in this org reads comments, and a
 // schedule that stops firing reports nothing: GitHub disables a schedule after 60 days without repository activity, silently,
 // and measured on 2026-10-05 the workflow had one run ever (a `workflow_dispatch`) and a cron slot 3 h 53 min past with no
-// `schedule` run. `board-schedule-liveness.mjs` names the shape; this asks the same question of this workflow, as a GATE QUESTION
+// `schedule` run. `board-schedule-liveness.ts` names the shape; this asks the same question of this workflow, as a GATE QUESTION
 // (an API call per tick, not a model turn: `.claude/rules/org-routing-and-timers.md`).
 //
 // ## Four verdicts, never two -- and the fifth is not "healthy"
@@ -43,7 +43,7 @@
 // ## Where the offer is wired, and what it does not do
 //
 // `ciHealthOrders` returns the gate's own order shape (`session`, `cause`, `subject`, `discriminator`, `prompt`, `causeKey`),
-// the way `rowOffBoardOrders` does. The wiring is ONE line in `work-gate.mjs`'s `decide`, beside `rowOffBoardOrders`
+// the way `rowOffBoardOrders` does. The wiring is ONE line in `work-gate.ts`'s `decide`, beside `rowOffBoardOrders`
 // (`orders.push(...ciHealthOrders(await readCiHealth()))`), and it is not in this row's Region, so it is named on the row and
 // `product-manager` amends it in. This module also does not fix a schedule that did not fire, and does not read any other
 // workflow's liveness.

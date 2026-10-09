@@ -1,4 +1,4 @@
-// no-token: gh -- importing `row-file.mjs` and `ready-label-audit.mjs` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` a fake `run`
+// no-token: gh -- importing `row-file.ts` and `ready-label-audit.ts` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` a fake `run`
 /**
  * #4005: A WAIT NAMES THE CONDITION, NOT AN UMBRELLA ROW. The release states (`published <pkg>@<dist-tag>`, `<pkg> latest = next`, `tagged <tag>`) are read from the registry or
  * the remote, a failed read is an unknown, and `row-file` and the audit refuse an edge onto a row of several done-whens that names none of them.

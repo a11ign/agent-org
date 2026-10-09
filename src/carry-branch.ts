@@ -14,7 +14,7 @@
 // The `session:` label records who holds a ROW; `git worktree list` records who holds a BRANCH. Neither
 // record knows about the other, so a row could be escalated and reassigned while its branch stayed
 // checked out somewhere the new owner could not reach -- an offer made in good faith and found
-// impossible. `row-claim.mjs`'s claim now RECORDS the branch (`branch:<name>`), so a session can tell a
+// impossible. `row-claim.ts`'s claim now RECORDS the branch (`branch:<name>`), so a session can tell a
 // portable row from a held one before offering; this file is the mechanism that makes the offer real
 // once made.
 //
@@ -56,7 +56,7 @@ import { REPO } from "./project-identity.ts";
 import { parseWorktreeList } from "./prune-worktrees.ts";
 import { stampWorktree } from "./worktree-owner.ts";
 import { recordRemoval } from "./worktree-removal.ts"; // #2827
-// RELATIVE, not the `@a11ign/screenreader-fleet/cli-flags` package specifier -- see `row-claim.mjs`'s own
+// RELATIVE, not the `@a11ign/screenreader-fleet/cli-flags` package specifier -- see `row-claim.ts`'s own
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
@@ -75,13 +75,13 @@ function errMsg(error: unknown): string {
 }
 
 /**
- * Is `branch` checked out in ANY worktree of this repository, right now? Reuses `prune-worktrees.mjs`'s
+ * Is `branch` checked out in ANY worktree of this repository, right now? Reuses `prune-worktrees.ts`'s
  * own `parseWorktreeList` rather than a second reading of `git worktree list --porcelain` -- two
  * independent parsers of the identical output is the drift this repo pays for most, and #621 already
  * refused to repeat it one layer over for local-import closures.
  *
  * INFORMATIONAL, not a gate on `carryBranch` below -- the detached technique works whether the branch is
- * held or not, so this exists for a caller (a human, or `row-claim.mjs check`'s own branch-naming) to
+ * held or not, so this exists for a caller (a human, or `row-claim.ts check`'s own branch-naming) to
  * decide WHETHER a carry is even the right move, not to be consulted by the carry itself.
  *
  * @param {string} branch
@@ -109,7 +109,7 @@ export function branchCheckedOutLocally(branch: string, repoRoot: string, { run 
  * @param {{ run: typeof defaultRun, record: typeof recordRemoval }} deps
  */
 function removeCarryScratch(dir: string, repoRoot: string, { run, record }: { run: typeof defaultRun; record: typeof recordRemoval; }) {
-  const line = { path: dir, caller: "carry-branch.mjs carryBranch", reason: "the carry's throwaway detached worktree (#656)" };
+  const line = { path: dir, caller: "carry-branch.ts carryBranch", reason: "the carry's throwaway detached worktree (#656)" };
   try {
     record({ ...line, event: "removing" });
   } catch (error) {
@@ -239,7 +239,7 @@ export function noteCarryOnPr(branch: string, carrier: string, reason: string, {
 
 function usage() {
   return "Usage:\n"
-    + "  node packages/agent-org/src/carry-branch.mjs <branch> --carrier=<session> --reason=<text> [--repo-root=<dir>]\n";
+    + "  node packages/agent-org/src/carry-branch.ts <branch> --carrier=<session> --reason=<text> [--repo-root=<dir>]\n";
 }
 
 /** @param {string} text */
@@ -303,7 +303,7 @@ export function carryMain(argv: string[], { run = defaultRun, stamp = stampWorkt
 
 function main() {
   refuseUnknownFlags(["--carrier=", "--reason=", "--repo-root="],
-    { entry: import.meta.url, command: "node packages/agent-org/src/carry-branch.mjs" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/carry-branch.ts" });
   process.exitCode = carryMain(process.argv.slice(2));
 }
 

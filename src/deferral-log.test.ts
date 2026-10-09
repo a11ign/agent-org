@@ -106,7 +106,7 @@ test("a caller that names no ledger keeps no log (it could not say `delivered`),
     assert.equal(logOf(dir), "");
   });
   // The control that the skip above is not what the gate does: `finishTick` is the gate's one caller, and it hands the ledger over.
-  const wake = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "wake.mjs"), "utf8");
+  const wake = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "wake.ts"), "utf8");
   assert.match(wake, /deferralAges\(`\$\{dirname\(ledgerPath\)\}\/wake-deferred`, keys, Date\.now\(\), \{ ledgerPath \}\)/);
 });
 
@@ -127,7 +127,7 @@ test("the default append creates the log's directory and writes the line", () =>
 
 test("the QUIET tick (nothing offered, nothing queued) ends a deferral that went away: `finishTick` is never reached from there, so the entry itself must", () => {
   inTmp((dir) => {
-    const wake = join(dirname(fileURLToPath(import.meta.url)), "wake.mjs");
+    const wake = join(dirname(fileURLToPath(import.meta.url)), "wake.ts");
     writeFileSync(join(dir, "wake-deferred"), `${KEY}\t${T0}\n`);
     // No herdr is asked: the quiet exit comes before the roster is read, so this is the whole entry run for real against a scratch ledger directory.
     const ran = spawnSync(process.execPath, [wake, `--ledger=${join(dir, "wake-ledger")}`], { input: "", encoding: "utf8", env: { ...process.env, HOME: dir } });

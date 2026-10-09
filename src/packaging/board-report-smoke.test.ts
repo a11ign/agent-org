@@ -1,5 +1,5 @@
 // no-token: REPO
-// This file imports board-report.mjs, whose closure reads REPO from board-data.mjs, which spawns `gh`. Every test here
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Every test here
 // renders from an injected fact set and, since #1442, an injected instant; nothing here calls or spawns it.
 /**
  * Guard triage 4 of 6 (#906): the board's content/style guards retire with the org shape they policed.

@@ -1,4 +1,4 @@
-// no-token: GH_READS -- #3384. Importing anything from `work-gate.mjs` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
+// no-token: GH_READS -- #3384. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
 // run: `rowCallCountSignals` is handed an injected `waitClearedAt` and `readWaitClearedAt` an injected `run`.
 /**
  * #3384: THE CALL-COUNT SIGNAL AUDITS A ROW THAT IS ONLY WAITING. #2905's one open item was a word from the chairman, and a standing seat

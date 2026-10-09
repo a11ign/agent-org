@@ -86,7 +86,7 @@ test("today is the alphabet the field is written in", () => {
  *
  * `agent-practices.md` now says a waiting condition goes in a field rather than a sentence -- and that
  * instruction is itself a sentence, in a document nothing checks. This repository has proved twice that
- * it cannot keep such a rule by habit: `/clear` was one until `wake.mjs` mechanised it, and the
+ * it cannot keep such a rule by habit: `/clear` was one until `wake.ts` mechanised it, and the
  * author-prompt path then bypassed even that. A rule with no witness decays to the state it was written
  * to fix.
  */

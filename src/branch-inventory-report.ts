@@ -2,7 +2,7 @@
 // command: produce the #623 four-fact inventory of every branch on origin with no open PR and commits
 //          main lacks -- read-only, modifies nothing -- `pnpm run branches:inventory`
 //
-// THE FETCHING HALF. The classification lives in `branch-inventory.mjs`, which spawns nothing, so the
+// THE FETCHING HALF. The classification lives in `branch-inventory.ts`, which spawns nothing, so the
 // row's acceptance runs in a job with no token (#1009). This file reads git and `gh` and therefore does
 // carry that requirement.
 //

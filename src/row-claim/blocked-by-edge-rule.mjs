@@ -4,11 +4,11 @@
 //
 // `waitingOn` (`../waiting-condition.ts`) is already the one reader of "is this row waiting on
 // something" -- the gate's own wake computation reads it before a row is ever offered as
-// `ready-row-unclaimed`. `row-claim.mjs`'s `sessionEligibilityReason` composed B2 (own-pr-health) and B4
+// `ready-row-unclaimed`. `row-claim.ts`'s `sessionEligibilityReason` composed B2 (own-pr-health) and B4
 // (file-overlap) and nothing else, so a row the gate correctly shelves could still be claimed directly by
 // any session that found it by label instead of through the gate: #1852 carried an open `blockedBy` on
 // #1878 and #1883 while mislabelled `ready`, and neither B2 nor B4 has anything to say about a `blockedBy`
-// edge -- confirmed, `row-claim.mjs` never imported `waiting-condition.mjs` at all.
+// edge -- confirmed, `row-claim.ts` never imported `waiting-condition.ts` at all.
 //
 // ONLY THE `blockedBy` KIND, deliberately. `waitingOn` also reports a `Not-before:` date wait; whether a
 // claim should refuse on that too is a different question this row's own Region/Acceptance never asks,

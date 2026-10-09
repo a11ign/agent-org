@@ -2,7 +2,7 @@
 // THE TICK'S SNAPSHOT (#4148): ONE cheap question per repository per tick -- "did anything change?" -- asked of REST with an ETag, where an unchanged answer is a
 // 304 that costs NO point, instead of every reader of the tick asking GitHub's GraphQL for the same pull requests and rows again.
 //
-// THE READS THEMSELVES ARE ANSWERED BY `host/gh`, not here: every reader (the gate, its batch worker, `wake.mjs`, `row-claim`, a session) reaches GitHub through that
+// THE READS THEMSELVES ARE ANSWERED BY `host/gh`, not here: every reader (the gate, its batch worker, `wake.ts`, `row-claim`, a session) reaches GitHub through that
 // wrapper, so a cache there reaches all of them and no reader had to learn it. What this file does is the one thing the wrapper cannot do in shell: decide, per
 // repository, whether the entries stored under it are still true. It keeps a GENERATION per repository (`<counter> <verified-at>` in
 // `$GH_CONFIG_DIR/read-cache/gen/<repository>`): the counter moves when a probe says the repository changed, `verified-at` moves every time the probes ran and

@@ -1,4 +1,4 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through `githubReaders`; every test here injects its readers, so nothing imported reaches the real ones
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through `githubReaders`; every test here injects its readers, so nothing imported reaches the real ones
 /**
  * `src/dora.ts`, a11ign/a11ign#3135: THE FOUR DORA METRICS, PER REPOSITORY, FROM THE REGISTRY AND GITHUB, and their place in the daily retrospective.
  *
@@ -341,5 +341,5 @@ test("the declaration: `dora` is read, an absent field is an empty list, and eac
 });
 
 test("`agent-org dora` is a command", () => {
-  assert.equal((COMMANDS as Any).dora, "dora.mjs");
+  assert.equal((COMMANDS as Any).dora, "dora.ts");
 });

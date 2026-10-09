@@ -1,6 +1,6 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run`, `orgHealthNow` the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run`, `orgHealthNow` the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
 /**
- * `packages/agent-org/src/wait-condition.mjs` and its wiring, #2996: A DECLARED WAIT NAMES THE CONDITION IT WAITS FOR, AND THE TICK RE-READS IT.
+ * `packages/agent-org/src/wait-condition.ts` and its wiring, #2996: A DECLARED WAIT NAMES THE CONDITION IT WAITS FOR, AND THE TICK RE-READS IT.
  *
  * THE INCIDENT, REPLAYED (the chairman, 2026-10-02): the freeze ended at 06:50Z and four hours later `hold:ceo` was still on #2988/#2990 while twelve sessions
  * sat idle, because `holdersOf` and `NOT_STARTABLE` read a declared wait as proof of health. The positive control is that PR: `hold:ceo`, `Waiting-for: closed #2867`,
@@ -171,7 +171,7 @@ test("a hold with NO reason is excused only while the PR is younger than 4 h qui
   assert.equal(redReadingFor(quiet(5), open2867).status, "tripped");
 });
 
-test("THE DEFECT, KEPT AS A CONTROL: with no `holdStands` the label alone excuses, which is what red-pr.mjs did before #2996 and what org-retro and queue-table still ask", () => {
+test("THE DEFECT, KEPT AS A CONTROL: with no `holdStands` the label alone excuses, which is what red-pr.ts did before #2996 and what org-retro and queue-table still ask", () => {
   const pr = heldPr([marker("Waiting-for: closed #2867", NOW - 8 * HOUR_MS)]);
   const prs = withPrOwners([pr] as never, ROWS as never, () => null);
   assert.deepEqual(redPrFacts(prs, decide({ prs, readyRows: [], openRows: ROWS } as never)), []);

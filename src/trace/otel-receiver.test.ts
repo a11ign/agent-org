@@ -3,7 +3,7 @@
 // the run's first body cut to its `user_prompt` and `hook_registered` events. Both are byte-for-byte what was received EXCEPT that `user.id`, `user.email`, `user.account_uuid`, `user.account_id`
 // and `organization.id` are replaced by "REDACTED" (they identify a person, and nothing here reads them). Nothing in them is invented: change a value and you are no longer testing the exporter.
 // no-token: gh -- no `gh` call is made; the receiver listens on loopback with port 0 and a temp store.
-// THE UNIT'S HOST-UNIT ASSERTIONS ARE NOT HERE: `host-units.mjs` reads git history, which CI's acceptance job does not have, and a command that imports it is REFUSED there (a11ign/a11ign#4071); they are in `src/packaging/host-units.test.ts`.
+// THE UNIT'S HOST-UNIT ASSERTIONS ARE NOT HERE: `host-units.ts` reads git history, which CI's acceptance job does not have, and a command that imports it is REFUSED there (a11ign/a11ign#4071); they are in `src/packaging/host-units.test.ts`.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";

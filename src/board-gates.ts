@@ -1,14 +1,14 @@
 // @ts-check
 // WHAT A RECORDED GATE SAID, AND WHICH ONE THE BOARD'S VERDICT SLOT MEANS -- pure, and in its own module (#429).
 //
-// Split out of `board-data.mjs` so a test of the SELECTION can run anywhere, CI's acceptance job included:
-// `board-data.mjs` spawns `gh` and `git`, so anything importing it is classed as needing a token, and the
+// Split out of `board-data.ts` so a test of the SELECTION can run anywhere, CI's acceptance job included:
+// `board-data.ts` spawns `gh` and `git`, so anything importing it is classed as needing a token, and the
 // row's own acceptance command would otherwise have been refused. Nothing here reads a file or starts a
-// process. `board-data.mjs` re-exports every name, so no importer of it changes.
+// process. `board-data.ts` re-exports every name, so no importer of it changes.
 
 /** The verdicts a gate PRINTED, quoted from its own output and never retyped.
  *
- * THE BOARD'S DOCUMENT COULD NOT SAY WHETHER A CHECK PASSED. `board-report.mjs` prints the gate's whole
+ * THE BOARD'S DOCUMENT COULD NOT SAY WHETHER A CHECK PASSED. `board-report.ts` prints the gate's whole
  * output verbatim into the GitHub edition; the PDF quoted only the COMMAND and the capture spread. So the
  * two editions would have disagreed about whether a check passed, and the silent one is the one the board
  * reads -- found 2026-09-07, the day before the first FAIL was due to be recorded.

@@ -98,17 +98,17 @@ test("#3209 (3): neither `checkBody` nor the CLI entry spells its own list of re
   const prOpen = strip("../pr-open.ts");
   const reports = ["acceptanceReport", "closesDeclarationReport", "mutationRecordReport", "measuredSectionReport", "defectClassReport"];
   for (const name of reports) {
-    assert.ok(!prOpen.includes(`${name}(`), `pr-open.mjs calls ${name} itself, a second spelling of the list`);
+    assert.ok(!prOpen.includes(`${name}(`), `pr-open.ts calls ${name} itself, a second spelling of the list`);
   }
   const acceptance = strip("../acceptance-commands.ts");
   const main = acceptance.slice(acceptance.indexOf("\nfunction main() {"));
   for (const name of reports) {
-    assert.ok(!main.includes(`${name}(`), `acceptance-commands.mjs's main() calls ${name} itself, a second spelling`);
+    assert.ok(!main.includes(`${name}(`), `acceptance-commands.ts's main() calls ${name} itself, a second spelling`);
   }
   assert.ok(main.includes("runCiBodyReports("), "the positive control: main() does run the list");
 });
 
-test("#3209 (4): `pr:edit` is `pr-open.mjs edit`, and `main` runs the same `checkBody` for it", () => {
+test("#3209 (4): `pr:edit` is `pr-open.ts edit`, and `main` runs the same `checkBody` for it", () => {
   assert.equal(COMMANDS["pr:edit"], COMMANDS["pr:open"], "the same file");
   assert.deepEqual(FIXED_ARGS["pr:edit"], ["edit"]);
   assert.deepEqual(FIXED_ARGS["pr:open"], ["create"]);

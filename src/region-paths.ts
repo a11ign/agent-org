@@ -4,19 +4,19 @@
 // tree, so anything reaching for this one fact does not also drag in whatever else its original owner
 // needed.
 //
-// This started life inside `row-reachability.mjs`, and moving it here (#462, B4) is not a style choice:
+// This started life inside `row-reachability.ts`, and moving it here (#462, B4) is not a style choice:
 // `row-claim/file-overlap-rule.mjs` needs the identical extraction -- a row's Region must mean the same
 // set of files to both tools, or the fact-stated-twice shape recurs with a second regex that can disagree
-// about what counts as a path -- but `row-reachability.mjs` itself imports
+// about what counts as a path -- but `row-reachability.ts` itself imports
 // `@a11ign/screenreader-fleet/cli-flags` (a package specifier, fine for its own CLI parsing, fatal before
 // `pnpm install`/`pnpm run build`) for its own `main()`. Importing `regionPathsFromBody` FROM that file would
-// have pulled that specifier into `row-claim.mjs`'s own import graph, which is reachable from a
+// have pulled that specifier into `row-claim.ts`'s own import graph, which is reachable from a
 // pre-install entry: `pre-install-import-graph.test.ts` caught exactly this the first time it was tried.
-// `row-reachability.mjs` was also built to run as a SEPARATE PROCESS on purpose (see its own header on
+// `row-reachability.ts` was also built to run as a SEPARATE PROCESS on purpose (see its own header on
 // `reportReachability`) precisely so importing it would not become the default; reaching into it for one
 // regex would have quietly defeated that.
 
-// The one import, and it stays leaf-shaped: `git-env.mjs` imports nothing itself, so `row-claim.mjs`'s
+// The one import, and it stays leaf-shaped: `git-env.mjs` imports nothing itself, so `row-claim.ts`'s
 // pre-install import graph gains no package specifier. Every git spawn in this repo scrubs `GIT_*`
 // (`git-spawn-classification.test.ts`), including a read-only one: an inherited `GIT_DIR` would have this
 // module list another repository's root files and report on them as though they were ours.
@@ -137,7 +137,7 @@ export function slashlessDirectoryEntries(body: string, isDirectory: (entry: str
 
 /**
  * Does `entry` name a tracked DIRECTORY rather than a file? Asked as "are there tracked files beneath
- * it", so a path that is itself a tracked file answers false -- `packages/agent-org/src/row-file.mjs/` holds nothing.
+ * it", so a path that is itself a tracked file answers false -- `packages/agent-org/src/row-file.ts/` holds nothing.
  * @param {string} entry @returns {boolean}
  */
 function namesTrackedDirectory(entry: string): boolean {
@@ -327,7 +327,7 @@ function linesUntilNextHeading(lines: string[], startIndex: number): string[] {
 // Region: ... `.github/workflows/nightly.yml`.**"*, `declaredRegionFiles` returned that workflow, and it is
 // the ONE path lane in `docs/lane-ownership.json`: the row was labelled `lane:ceo`, which refuses every
 // other session, for a workflow it had said in terms it would not touch. It is #1988's shape one section
-// over (`SCOPE_DISCLAIMER` in `acceptance-commands.mjs`), which fixed only the Acceptance span -- and the
+// over (`SCOPE_DISCLAIMER` in `acceptance-commands.ts`), which fixed only the Acceptance span -- and the
 // Region span is the one feeding BOTH the lane label and B4 file-overlap.
 //
 // A NAMED LIST OF LABELS, NEVER AN INFERRED ONE, for #1988's reason: a list somebody chose is what makes
@@ -387,7 +387,7 @@ export function extractRegionSection(body: string): string | null {
  * #2177: THE ONE SPELLING OF "THIS ROW HAS NO FILES, ON PURPOSE", read by the filer AND the claimer.
  *
  * #989's own words, so the clock, the filer and `row-reachability` name one category rather than three
- * spellings. It lived as a private `const` in `row-file.mjs`, so the filer demanded the sentence and the
+ * spellings. It lived as a private `const` in `row-file.ts`, so the filer demanded the sentence and the
  * claimer never heard of it and told a correctly declared row to add paths it does not have. It sits
  * beside `extractRegionSection` because that is what scopes it: a regex of its own over the whole body
  * disagreed with the shared extractor both ways (the inline `Region:` form, and a `###` sub-heading that
@@ -480,7 +480,7 @@ const DIRECTORY_ITEM = /^(?:[-*+]\s+)?`?((?:[a-z0-9][a-z0-9-]*:)?(?:[A-Za-z0-9_.
  */
 const FENCE_LINE = /^\s*(?:```|~~~)/;
 // #2617: AN ITEM MAY NAME ANOTHER REPOSITORY OF THE PROJECT, `nvda-worker:src/x.ts` -- the prefix is that repository's declared KEY (ADR
-// 0040, decision 2; `project-config.mjs`'s `code[].key`). A bare path is the project's FIRST repository's, so every Region written before
+// 0040, decision 2; `project-config.ts`'s `code[].key`). A bare path is the project's FIRST repository's, so every Region written before
 // this row reads exactly as it did. The prefixed form needs a `/` or a `.` after the colon, so a fenced line like `npm:test` is not a path.
 // #3149: A TRAILING PARENTHETICAL IS A NOTE, NOT PART OF THE PATH -- `agent-org:src/x.test.ts (new)` is what #3134 was filed with, and the template
 // says nothing against it. Read whole or not at all: `(new)` after the path, nothing else, so a line that is prose still declares nothing.
@@ -543,7 +543,7 @@ export function regionCoversIn(entry: string, repoKey: string, file: string) {
 /**
  * #710: the paths a row's OWN `## Region` section declares it will touch -- NOT every path its prose
  * mentions anywhere (that question is `regionPathsFromBody`'s, unchanged, and still what
- * `row-reachability.mjs`'s STARTABLE check wants). A row citing a file as a worked example, a fixture, or
+ * `row-reachability.ts`'s STARTABLE check wants). A row citing a file as a worked example, a fixture, or
  * something someone else's PR already touches is not declaring intent to change it, and
  * `fileOverlapReason` needs exactly that narrower question. `null` when the body has no Region section at
  * all -- CANNOT_ASK, distinct from `[]` (a Region section that names no source path).

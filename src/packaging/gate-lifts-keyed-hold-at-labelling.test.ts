@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs the real
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs the real
 // release puts a fake `gh` first on its PATH.
 /**
  * #4189: A KEYED PULL REQUEST HELD AFTER ITS `Waiting-for: merged` WAS ALREADY TRUE IS LIFTED BY THE NEXT TICK, through the path the tick takes (`waitTickFacts`, then
@@ -29,10 +29,10 @@ const HELD = 401;
 
 type Release = { number: number; session: string; repoKey: string | undefined };
 
-/** The hold comment `pr-hold.mjs` writes, dated `at`, declaring `lines`. */
+/** The hold comment `pr-hold.ts` writes, dated `at`, declaring `lines`. */
 const marker = (at: number, lines: string[]) => ({ author: { login: "a11ign-ai-workers" }, createdAt: ISO(at), body: `${WAIT_MARKER}\nHeld by \`worker-4175\`.\n${lines.map((l) => `Waiting-for: ${l}`).join("\n")}` });
 
-/** A pull request of the keyed repository, as `tagged` (work-gate.mjs) leaves it: `repoKey` and `repo` on the raw item. */
+/** A pull request of the keyed repository, as `tagged` (work-gate.ts) leaves it: `repoKey` and `repo` on the raw item. */
 function keyedPr(labels: string[], waits: string[], { heldAt, extra = {} }: { heldAt: number; extra?: Record<string, unknown> }) {
   return { number: HELD, repoKey: KEY, repo: REPO, labels: labels.map((name) => ({ name })), body: "", comments: [marker(heldAt, waits)], updatedAt: ISO(heldAt), ...extra };
 }
@@ -55,7 +55,7 @@ function fakeRun(issues: Record<string, Issue>) {
 
 /**
  * One tick of `orgHealthNow`, with `release` recording what it was asked to release and answering `ok`. `keyed` is the declared repositories' open pull requests, which the gate hands
- * over as `keyedPrsRead` and never inside `prsRead`, the first repository's own list (work-gate.mjs `pullRequestsOfOthers`).
+ * over as `keyedPrsRead` and never inside `prsRead`, the first repository's own list (work-gate.ts `pullRequestsOfOthers`).
  */
 function tick({ prs = [], keyed = [] }: { prs?: Record<string, unknown>[]; keyed?: Record<string, unknown>[] }, issues: Record<string, Issue>, { ok = true }: { ok?: boolean } = {}) {
   const asked: Release[] = [];

@@ -157,7 +157,7 @@ function seatHost(labels: string[], broken = false) {
 }
 function hostCheck(env: ReturnType<typeof seatHost>, ...flags: string[]) {
   const done = spawnSync(process.execPath, [join(TOOL_ROOT, "src/host-units.ts"), ...flags], { encoding: "utf8", env });
-  assert.notEqual(done.stdout, "", `host-units.mjs ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
+  assert.notEqual(done.stdout, "", `host-units.ts ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
   return done;
 }
 

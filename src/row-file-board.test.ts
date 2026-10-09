@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Imports `row-file.mjs`, which spawns `gh`; true of the IMPORT and false of the CALL. Every dependency
+// Imports `row-file.ts`, which spawns `gh`; true of the IMPORT and false of the CALL. Every dependency
 // below is injected (`run`, the board and label readers, `moveStatus`, `ensureLabels`, the lanes), so no
 // test lets a real spawn happen -- the same arrangement as `packaging/row-file.test.ts`.
 /**

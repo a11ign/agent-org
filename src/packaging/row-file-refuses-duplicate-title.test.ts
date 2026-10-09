@@ -170,7 +170,7 @@ test("8. `--promote --allow-same-title` is refused, naming the flag, and nothing
 });
 
 test("9. the flag is in the tool's known-flag list: the unknown-flag refusal does not fire on it, and still fires on a near miss", () => {
-  const entry = join(HERE, "..", "row-file.mjs");
+  const entry = join(HERE, "..", "row-file.ts");
   const run = (flag: string) => spawnSync(process.execPath, [entry, flag], { encoding: "utf8", env: process.env });
   const known = run("--allow-same-title");
   assert.doesNotMatch(known.stderr, /unknown flag/, "the flag is known");

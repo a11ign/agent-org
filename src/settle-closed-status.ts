@@ -1,6 +1,6 @@
 // #1227: PURE OF `gh`, and that is placement rather than style.
 //
-// `moveProjectStatus` lives in `row-claim.mjs`, whose closure carries a `token`. Importing it here would
+// `moveProjectStatus` lives in `row-claim.ts`, whose closure carries a `token`. Importing it here would
 // give every test that reaches this file a token requirement -- and `close-rows-on-merge.test.ts`
 // already has one, so the row's named acceptance command could never run in the job that runs acceptance
 // commands. #1009 records the rule: the fix is PLACEMENT, not weakening. `moveStatus` is injected and
@@ -65,15 +65,15 @@ export function unsettledVerdict(unsettled: Refusal[]): { degraded: boolean; oth
  * #1292 and #1271, each already Done, and the account's GraphQL pool hit zero that afternoon. `currentStatus`
  * answers from data the caller ALREADY HOLDS -- the process's board snapshot -- never from a new read per row,
  * which would spend the same budget the skip exists to save. It is injected, like `moveStatus`, because the
- * snapshot's module carries a token into any test that imports it (`board-snapshot.mjs`'s own header).
+ * snapshot's module carries a token into any test that imports it (`board-snapshot.ts`'s own header).
  * `null` means "not known", and an unknown Status is moved exactly as before: skipping on a guess would leave
  * a closed row at a live Status, which is the defect #1227 exists to prevent.
  *
  * #2081: `prefix` NAMES WHICH PATH DID THE WORK, and defaults to the one both close paths have always
- * logged. `close-rows-sweep.mjs`'s own header states the rule -- "which path did the work is a fact about
+ * logged. `close-rows-sweep.ts`'s own header states the rule -- "which path did the work is a fact about
  * the pipeline's health" -- and this line was the one place it could not be honoured: the sweep prints
  * `SWEEP:` for everything it decides and `CLOSE-ROWS:` for everything settled here. The board-keyed pass
- * (`settle-closed-rows.mjs`) is a third path, and a log that cannot tell it from a merge's settle cannot
+ * (`settle-closed-rows.ts`) is a third path, and a log that cannot tell it from a merge's settle cannot
  * answer whether the board pass is now doing all the work.
  *
  * @param {number} n
@@ -126,7 +126,7 @@ export function settleClosedStatus(n: number, { moveStatus, currentStatus = () =
  * #2081: THE POPULATION, KEYED ON THE BOARD RATHER THAN ON A MERGED PR.
  *
  * Both settle paths that existed before this one are keyed on **a merged PR inside a window**:
- * `close-rows-for-merged-pr.mjs` takes a PR number, and `close-rows-sweep.mjs` walks
+ * `close-rows-for-merged-pr.ts` takes a PR number, and `close-rows-sweep.ts` walks
  * `gh pr list --state merged` over its window. A row closed with `gh issue close` is in NEITHER
  * population, so nothing looks at its Status again -- not CI, not the sweep, not a session running the
  * sweep with any window at all. Measured 2026-09-23: of the 7 boarded rows still drifted after a
@@ -147,7 +147,7 @@ export function settleClosedStatus(n: number, { moveStatus, currentStatus = () =
  * even though the write that repairs both is the same one. Folding them into a single filter would undo
  * exactly the split that row paid for.
  *
- * NOTHING WITHOUT AN ISSUE NUMBER IS EVER EMITTED. `board-snapshot.mjs` records a draft item -- one with
+ * NOTHING WITHOUT AN ISSUE NUMBER IS EVER EMITTED. `board-snapshot.ts` records a draft item -- one with
  * no linked issue -- as `number: null`, and `gh project item-edit --url` has no URL to name for it. Today
  * such an item is also `state: null`, so `statusContradictions` excludes it before this sees it; the
  * narrowing below is what makes that this function's own contract against its DECLARED input type, where
@@ -209,7 +209,7 @@ export function settleBoardRows(items: BoardItem[], { settle, log = console.log 
  * and turning trunk red for a ceiling it cannot lift would make the repair's own arrival the outage.
  *
  * Classified by `refusalCause` -- the same classifier, on `fetchBoardItems`'s own thrown message, which
- * carries GraphQL's `NOT_FOUND (<owner>.projectV2)` verbatim (`board-snapshot.mjs` attaches it via
+ * carries GraphQL's `NOT_FOUND (<owner>.projectV2)` verbatim (`board-snapshot.ts` attaches it via
  * `graphqlErrorFromFailedRun`, #555).
  *
  * @param {string} message the message `fetchBoardItems` threw
@@ -294,7 +294,7 @@ export function floorReadRefusal(message: string): { degraded: boolean; line: st
  *
  * **So the read is now a cursor walk of `repository.issues(states: CLOSED)`, which GitHub does not cap.**
  * A `project:<owner>/<number>` qualifier does not exist on this connection, so membership is read PER
- * ISSUE instead, the same way `readRowsOffBoard` (`work-gate.mjs`, #2075) already reads it for OPEN rows:
+ * ISSUE instead, the same way `readRowsOffBoard` (`work-gate.ts`, #2075) already reads it for OPEN rows:
  * each node carries its own `projectItems`, and `closedRowsPageFromRead` keeps only the ones naming this
  * Project. **It is `gh issue list`'s replacement, never `gh pr list`** -- this pass's population must not
  * depend on any PR existing, which is the whole of #2081.

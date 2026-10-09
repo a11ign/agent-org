@@ -14,9 +14,9 @@
  * side). Editing a11ign's `host.json` and reinstalling the unit is #2623's cut-over, after the shadow window.
  *
  * WHAT IT DOES NOT COVER. `stateDir` is READ and VALIDATED here, and the readers of the org's state entries that already derive their
- * paths from one ledger path (`wake.mjs`'s queue, spare, reviewer and kept-claim paths) are shown to follow it. FOUR CONSTANTS STILL
- * SPELL `~/.cache/a11ign` -- `DRAIN_MARKER` and `REVIEWER_STATE_DIR` in `work-gate.mjs`, `LIVE_STATE_DIR` in `shadow-gate.mjs`, and the
- * default of `ledgerPathFrom` in `wake.mjs` -- and those files are other rows' Regions, so wiring them to `stateFilePath` is not done
+ * paths from one ledger path (`wake.ts`'s queue, spare, reviewer and kept-claim paths) are shown to follow it. FOUR CONSTANTS STILL
+ * SPELL `~/.cache/a11ign` -- `DRAIN_MARKER` and `REVIEWER_STATE_DIR` in `work-gate.ts`, `LIVE_STATE_DIR` in `shadow-gate.ts`, and the
+ * default of `ledgerPathFrom` in `wake.ts` -- and those files are other rows' Regions, so wiring them to `stateFilePath` is not done
  * here. The last test below reads `ledgerPathFrom([])` so that the residue is a named value rather than a claim of absence.
  */
 import { test } from "node:test";
@@ -167,7 +167,7 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
     assert.deepEqual(linesOnlyIn(plain, installed), [
       "WorkingDirectory=" + dirs.widgets,
       "ExecStartPre=-%h/.local/bin/pnpm run primary:update",
-      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.ts",
     ], "the three lines that leave");
     assert.deepEqual(linesOnlyIn(installed, plain), [
       "WorkingDirectory=" + dirs.tool,
@@ -252,7 +252,7 @@ test("#2974: the prune and the board report take their project from the checkout
   withProjects((dirs) => {
     const toolHost = hostAt(dirs, { tool: dirs.tool });
     const prune = nonComment(serviceOf(toolHost, "worktree-prune"));
-    assert.ok(prune.includes(`ExecStart=/usr/bin/node src/prune-worktrees.mjs --apply ${dirs.widgets}`),
+    assert.ok(prune.includes(`ExecStart=/usr/bin/node src/prune-worktrees.ts --apply ${dirs.widgets}`),
       `the prune is handed the repository it prunes (its cwd is the tool's now): ${prune.join(" | ")}`);
     const report = nonComment(serviceOf(toolHost, "board-report"));
     assert.ok(report.includes("ExecStart=/usr/bin/bash host/board-report-dispatch.sh"));
@@ -339,7 +339,7 @@ test("#2793: a host with no `stateDir` gets a REFUSAL from `stateFilePath`, neve
   assert.equal((refusal(() => stateFilePath(homeHostConfig(), "wake-ledger")) as any).field, "stateDir", "and a11ign's own host.json, unedited, declares none");
 });
 
-// --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.mjs`'s, #3443) ---------------------------------
+// --- 4. `update-tool`: refuses a dirty tree and a linked worktree (what it moves TO is `update-tool.test.ts`'s, #3443) ---------------------------------
 
 /** git in a directory, with every `GIT_*` variable stripped so a leaked one cannot reach a real repository. */
 const gitAt = (dir: string) => (args: string[]) => execFileSync("git", args, { cwd: dir, env: sandboxGitEnv(), encoding: "utf8" });

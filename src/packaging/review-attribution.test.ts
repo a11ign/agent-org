@@ -4,7 +4,7 @@
  * satisfied by the account that posts the review.
  *
  * THE DEFECT THIS PINS. `.claude/rules/agent-practices.md` gives odd pull requests to `reviewer` and
- * even ones to `reviewer-2`, and `work-gate.mjs` routes on exactly that. On 2026-09-23 `reviewer-2`
+ * even ones to `reviewer-2`, and `work-gate.ts` routes on exactly that. On 2026-09-23 `reviewer-2`
  * reviewed #2105 -- an ODD number -- twice, including the APPROVED, and nothing could see it: all four
  * reviews on that pull request carry `user.login == "a11ign-bot"`, because the two sessions share one
  * GitHub account. The session's name lived only in the review's body prose. A rule nothing can observe

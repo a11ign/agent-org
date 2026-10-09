@@ -324,7 +324,7 @@ function runTool(root: string, argv: string[]) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: `--drift` only READS (the gate spawns it, #2781); --detach/--quiet go to git.
-  refuseUnknownFlags(["--drift"], { entry: import.meta.url, command: "node packages/agent-org/src/update-primary.mjs" });
+  refuseUnknownFlags(["--drift"], { entry: import.meta.url, command: "node packages/agent-org/src/update-primary.ts" });
   if (process.argv.slice(2).includes("--drift")) {
     const drift = readPrimaryDrift();
     process.stdout.write(`${JSON.stringify({ asked: drift !== null, drift })}\n`);

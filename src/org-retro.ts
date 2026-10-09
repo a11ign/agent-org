@@ -16,7 +16,7 @@
 // per number, the previous reading, the delta and `better | worse | same | no baseline | unknown`. `NUMBERS` is the ONE table that says what each number
 // is and which way is better, so a number the report prints with no direction cannot be written (and a fixture that has one goes red).
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports it and runs before any `pnpm install`/build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports it and runs before any `pnpm install`/build.
 //
 // EVERY READ CAN BE REFUSED, AND A REFUSED READ IS `unknown`, NEVER 0 (#1286). A retrospective that printed "0 red PRs" because
 // the PR list could not be read would be the org's own health reported as good by an absence, which is the defect it exists to find.
@@ -25,7 +25,7 @@ import { appendFileSync, readFileSync, readdirSync, realpathSync, renameSync, st
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
-// A LEAF (`claim-labels.mjs` imports nothing): the label is read from where it is declared, `repeating-lines.mjs`'s own reason.
+// A LEAF (`claim-labels.ts` imports nothing): the label is read from where it is declared, `repeating-lines.ts`'s own reason.
 import { READY_LABEL } from "./claim-labels.ts";
 import { brokenChecks, redChecks as redChecksOf, isBrokenRed, isHeldRed, holdsOn } from "./red-pr.ts";
 // THE SIBLING ROW'S MODULE (#2939): it DERIVES the count from git and gh and writes no file, so the report calls it rather than reading a path.
@@ -38,7 +38,7 @@ import { homeProjectDeclaration } from "./project-config.ts";
 // THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
 import { unwaitedStockRows, unwaitedLines, ghTrackerReader } from "./unwaited-stock-rows.ts";
 
-/** The cause this file feeds (`cause-declaration.mjs` declares it), addressed to `ceo`. */
+/** The cause this file feeds (`cause-declaration.ts` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
 
 /** What an unreadable source prints. Never `0`: "could not read" and "none" are different states and never share a value. */
@@ -52,7 +52,7 @@ const MS_PER_MINUTE = 60 * MS_PER_SECOND;
 const MINUTES_PER_HOUR = 60;
 
 /**
- * Minutes one tick stands for. The tick runs about every 2.1 minutes (`repeating-lines.mjs` measured it), so 2 UNDERSTATES
+ * Minutes one tick stands for. The tick runs about every 2.1 minutes (`repeating-lines.ts` measured it), so 2 UNDERSTATES
  * idle time slightly: the figure is a floor, and a floor is the honest direction for "how long did the org sit idle".
  */
 export const TICK_MINUTES = 2;
@@ -167,7 +167,7 @@ export function journalLines(text: string, { since, until }: { since: number; un
 /**
  * IDLE MINUTES WHILE A CLAIMABLE ROW EXISTED, and what that means precisely: the ticks in which a `ready-row-unclaimed` offer
  * went `UNDELIVERED` or `DEFERRED` (the gate offered a Ready row, and no engineer was idle and allowed to take it; `DEFERRED` is the
- * wait for a seat that is merely busy, which `wake.mjs` stopped counting as a fault in a11ign/a11ign#3266 and which is still idle
+ * wait for a seat that is merely busy, which `wake.ts` stopped counting as a fault in a11ign/a11ign#3266 and which is still idle
  * capacity beside claimable work), each counted as `TICK_MINUTES`. INFERRED FROM THE JOURNAL, NOT MEASURED PER SESSION: it says a claimable row waited through a tick, not how
  * many sessions sat idle in it -- so it is a floor on lost time, and the number to read it against is the day before.
  * @param {{ at: number, message: string }[]} lines
@@ -201,7 +201,7 @@ export function releaseStats(lines: { at: number; message: string; }[]): { voide
 
 /**
  * What the wake ledger says was DELIVERED in the window: `<epochMs>\t<causeKey>[\t...]`, with the three marker lines
- * (`RESET`, `ESCALATED`, `VOIDED`) carrying their key second. THE LEDGER'S FORMAT IS `wake.mjs`'s, which this leaf cannot
+ * (`RESET`, `ESCALATED`, `VOIDED`) carrying their key second. THE LEDGER'S FORMAT IS `wake.ts`'s, which this leaf cannot
  * import (`wake` imports the gate), so the shape is read here and `org-retro.test.ts` pins it with a fixture.
  * @param {string} text @param {{ since: number, until: number }} window
  * @returns {{ at: number, key: string, marker: string | null }[]}
@@ -242,7 +242,7 @@ export function ledgerStats(entries: { at: number; key: string; marker: string |
 }
 
 /**
- * How long each BROKEN open PR has been red, as of `now`, from the EARLIEST completion among the red checks that make it broken (`red-pr.mjs`:
+ * How long each BROKEN open PR has been red, as of `now`, from the EARLIEST completion among the red checks that make it broken (`red-pr.ts`:
  * a held PR's own two jobs do not). A PR red only because it is held is not counted: it is returned in `held`, with who holds it and for how
  * long, so the hold is reported and never silently dropped.
  * @param {{ number: number, labels?: any[], statusCheckRollup?: { name?: string, conclusion?: string, completedAt?: string }[] }[] | null} openPrs
@@ -272,7 +272,7 @@ function minutesRed(checks: { failedAt: number; }[], now: number): number | null
 }
 
 /**
- * Tokens in the window, from `token-audit.mjs`'s reading of the transcripts. `fresh + cacheRead + cacheWrite + output` is every
+ * Tokens in the window, from `token-audit.ts`'s reading of the transcripts. `fresh + cacheRead + cacheWrite + output` is every
  * token the model handled; the cache split stays visible in `token-audit` itself, and a figure that dropped `cacheRead` would be
  * wrong by an order of magnitude in the flattering direction.
  * @param {{ at: number, fresh: number, cacheRead: number, cacheWrite: number, output: number, thinking: number }[] | null} turns
@@ -437,7 +437,7 @@ export function verdictFor({ better, previous, id, current }: { better: "lower" 
 /**
  * Each number the report holds against the previous reading. The population is the REPORT's own `numbers`, so a number with no declared direction
  * is found here, in the report, and printed as a defect. `declarations` are the numbers whose direction is decided at run time: the DORA metrics
- * of the repositories the project declares (`dora.mjs`'s own table), each of which may be `undefinedToday`.
+ * of the repositories the project declares (`dora.ts`'s own table), each of which may be `undefinedToday`.
  * @param {Record<string, number | null>} numbers @param {ReturnType<typeof previousReading>} previous
  * @param {readonly { id: string, label: string, better: "lower" | "higher", undefinedToday?: boolean }[]} [declarations]
  */
@@ -460,7 +460,7 @@ function trendLines({ numbers, previous, dora }: ReturnType<typeof buildReport>)
   const against = previous.status === "read" ? `the previous reading, ${previous.date}` : previous.status === "none" ? "the previous reading (none yet)" : `the previous reading (${UNKNOWN}: ${READINGS_FILE} could not be read)`;
   const lines = compareReadings(numbers, previous, doraDeclarations(dora)).map((c) => {
     if (c.verdict === "undefined") return `- ${c.label}: undefined (nothing to measure today; not 0)`;
-    if (c.verdict === "undeclared") return `- ${c.label}: NO DIRECTION DECLARED -- a defect in org-retro.mjs's NUMBERS table, not a reading (now ${shown(c.current)})`;
+    if (c.verdict === "undeclared") return `- ${c.label}: NO DIRECTION DECLARED -- a defect in org-retro.ts's NUMBERS table, not a reading (now ${shown(c.current)})`;
     const was = c.previous === null || previous.status !== "read" ? "" : `, previous ${shown(c.previous)} on ${previous.date}${c.delta === null ? "" : `, delta ${c.delta > 0 ? "+" : ""}${grouped(c.delta)}`}`;
     return `- ${c.label}: ${c.verdict} (now ${shown(c.current)}${was})`;
   });
@@ -562,7 +562,7 @@ function spendLines({ tokens, merged, handFixes }: ReturnType<typeof buildReport
   const handFix = handFixes === null ? `- HAND FIXES: ${UNKNOWN} (the hand-fix ledger could not be run)` : `- ${handFixLine(handFixes)}`;
   if (tokens === null) return [`- Tokens per merged PR: ${UNKNOWN} (no transcript could be read)`, handFix];
   const perPr = merged === null ? UNKNOWN : merged.count === 0 ? "n/a, no PR merged" : grouped(Math.round(tokens.total / merged.count));
-  return [`- Tokens per merged PR: ${perPr} (${grouped(tokens.total)} tokens over ${grouped(tokens.turns)} turns; the transcripts' own usage fields via token-audit.mjs, cache reads included)`,
+  return [`- Tokens per merged PR: ${perPr} (${grouped(tokens.total)} tokens over ${grouped(tokens.turns)} turns; the transcripts' own usage fields via token-audit.ts, cache reads included)`,
     handFix];
 }
 
@@ -627,7 +627,7 @@ export function retrospectiveOrder(date: string, reportText: string) {
     subject: "org",
     discriminator: date,
     prompt: `THE DAILY RETROSPECTIVE for ${date} (UTC). Optimising the org is your scheduled duty, not a thing the chairman has to ask for. `
-      + "The numbers below were computed by `node packages/agent-org/src/org-retro.mjs` from the GitHub, journal and ledger reads the gate "
+      + "The numbers below were computed by `node packages/agent-org/src/org-retro.ts` from the GitHub, journal and ledger reads the gate "
       + "already makes; no model read a log, so do not re-derive them.\n\n"
       + `${reportText}\n${CLASS_FIX_INSTRUCTION} The verdict beside each number is against the previous reading; \`no baseline\` and \`unknown\` are not good days.\n`
       + `Post the reading and every row you filed on ${RETRO_DESTINATION}. If nothing tripped, post "nothing tripped" WITH the numbers: a day with nothing to file is never silence. `
@@ -771,9 +771,9 @@ function readJournal(unit: string): string | null {
 }
 
 /**
- * Every read the report wants, once. `stateDir` holds the wake ledger. THE HAND-FIX COUNT IS NOT A FILE IN IT: `hand-fix-ledger.mjs` derives
+ * Every read the report wants, once. `stateDir` holds the wake ledger. THE HAND-FIX COUNT IS NOT A FILE IN IT: `hand-fix-ledger.ts` derives
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
- * THE DORA READ IS THE DECLARATION'S (`dora.mjs`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
+ * THE DORA READ IS THE DECLARATION'S (`dora.ts`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
  *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
  * MERGED PRS ARE READ FROM EVERY DECLARED REPOSITORY (`readMerged`, #3593), each named with `-R`; `merged` stays the PRIMARY's list, the definition the count had before.
@@ -875,7 +875,7 @@ function keepReading(record: typeof recordReading, reading: Parameters<typeof re
 }
 
 function main() {
-  refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "node packages/agent-org/src/org-retro.mjs" });
+  refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "node packages/agent-org/src/org-retro.ts" });
   const stateDir = stateEntryPath("");
   const nowFlag = flagValue(process.argv, "now");
   const now = nowFlag === undefined ? Date.now() : Date.parse(nowFlag);

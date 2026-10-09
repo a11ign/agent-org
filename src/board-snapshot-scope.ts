@@ -1,15 +1,15 @@
 // @ts-check
 // #1275: THE SCOPED HALF OF A BOARD SNAPSHOT, PURE OF `gh` -- and that is placement rather than style.
 //
-// `board-snapshot.mjs` runs `gh`, so every test importing it needs a `token` that CI's acceptance job does not
+// `board-snapshot.ts` runs `gh`, so every test importing it needs a `token` that CI's acceptance job does not
 // have. #1275's first Acceptance command was refused for exactly that: "board-snapshot.test.ts requires token via
-// fetchBoardItems → board-snapshot.mjs:361". #1009 and #1219 (`board-status-health.mjs`) record the fix: the logic
+// fetchBoardItems → board-snapshot.ts:361". #1009 and #1219 (`board-status-health.ts`) record the fix: the logic
 // lives where a pure test can reach it, the request is injected, and the one `gh` call the scoped read needs is
-// made in `board-snapshot.mjs`. NOTHING HERE MAY IMPORT `board-snapshot.mjs`, not even a constant, or this file
+// made in `board-snapshot.ts`. NOTHING HERE MAY IMPORT `board-snapshot.ts`, not even a constant, or this file
 // inherits its requirement again -- so the constants both halves need live here, and that file re-exports them.
 //
 // What the scoped half is: a mutation that names the item it touches snapshots that item, not the board. Every
-// board mutation in `scripts/` is one item's Status (`row-claim.mjs`'s `moveProjectStatus`); #399's accident was a
+// board mutation in `scripts/` is one item's Status (`row-claim.ts`'s `moveProjectStatus`); #399's accident was a
 // FIELD rewrite that no script sends. A full sweep before each one-item edit cost 6 GraphQL pages at 555 items plus
 // the ready-issue list, and the account's GraphQL budget ran out twice on 2026-09-13.
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -183,7 +183,7 @@ function launchCheckRefusal(command: string, { cwd, fs }: { cwd: string; fs: Git
 }
 
 /**
- * One `gh` invocation without `gh` itself: its arguments in, its stdout out. `board-snapshot.mjs` supplies a request that runs `gh` with these arguments. A failure throws with the failed process's stdout on `.stdout`, as `execFileSync` does, so GraphQL's own error is still read (#555).
+ * One `gh` invocation without `gh` itself: its arguments in, its stdout out. `board-snapshot.ts` supplies a request that runs `gh` with these arguments. A failure throws with the failed process's stdout on `.stdout`, as `execFileSync` does, so GraphQL's own error is still read (#555).
  */
 export type GhRequest = (args: string[]) => string;
 
@@ -192,7 +192,7 @@ export type GhRequest = (args: string[]) => string;
  *
  * `user.projectV2` is asked for although only its presence is read. CI's token cannot read the user-owned
  * Project (#546), and the close path classifies that refusal by GraphQL's own
- * `NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.mjs`'s
+ * `NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.ts`'s
  * `refusalCause`). Measured live 2026-09-13 with project 999: exit 1, `data.organization.projectV2: null`, and exactly
  * that error, while `repository.issue` still answered. What a token that cannot see the Project gets back for
  * `projectItems` ALONE is not measured -- this host's token can read it -- so the Project is named in the request,
@@ -256,7 +256,7 @@ export function describeGraphqlErrors(errors: GraphqlError[]) {
 /**
  * `execFileSync` throws on a non-zero exit, but `gh api graphql` still writes the full response body --
  * `errors` included -- to stdout first, and Node's thrown error carries it verbatim on `.stdout` (a plain
- * string, since `board-snapshot.mjs`'s `defaultRun` passes `encoding: "utf8"`). Measured directly: a request naming a repository
+ * string, since `board-snapshot.ts`'s `defaultRun` passes `encoding: "utf8"`). Measured directly: a request naming a repository
  * that does not resolve exits 1 with `{"data":{...},"bad":null},"errors":[{"type":"NOT_FOUND",...}]}` on
  * `.stdout`. So a non-zero exit does not mean the API's own answer is lost -- only that nobody had read it
  * yet. Returns `null` (never throws) for anything that is not a parseable GraphQL error body, so the
@@ -389,7 +389,7 @@ const scopedSnapshots: Map<number, { path: string; takenAt: Date; status: string
  * for, so asking again for the next item spends a request to learn the same thing. Measured on main before this: 7
  * rows settled against an unreadable Project made 7 requests on the scoped route, and 7 full-route mutations made 7.
  * ONLY THAT REFUSAL IS RECORDED. Any other failure, a transient exit or a bad answer about one item, is read again,
- * because it says nothing about the next read. Both routes share it: `board-snapshot.mjs` reads through
+ * because it says nothing about the next read. Both routes share it: `board-snapshot.ts` reads through
  * `readUnlessProjectUnreadable` too.
  * @type {Error | null}
  */
@@ -397,7 +397,7 @@ let projectUnreadable: Error | null = null;
 
 /**
  * #1425: RUN `read`, UNLESS THIS PROCESS HAS ALREADY BEEN REFUSED THE PROJECT. A recorded refusal throws without
- * calling `read`, and quotes the first refusal, so `settle-closed-status.mjs`'s `refusalCause` still classifies it as
+ * calling `read`, and quotes the first refusal, so `settle-closed-status.ts`'s `refusalCause` still classifies it as
  * project-unreadable -- the cause #546's DEGRADED bridge reads. The classification is that function's own anchor,
  * imported, never a second copy of it.
  * @template T
@@ -616,7 +616,7 @@ function defaultWriteFile(path: string, data: string) { writeFileSync(path, data
 function defaultMkdir(path: string) { mkdirSync(path, { recursive: true }); }
 
 /**
- * FORGET THE SCOPED SNAPSHOTS. For tests, and `board-snapshot.mjs`'s `forgetProcessSnapshot` calls it: a scoped file
+ * FORGET THE SCOPED SNAPSHOTS. For tests, and `board-snapshot.ts`'s `forgetProcessSnapshot` calls it: a scoped file
  * one case took must not become another case's silent precondition.
  */
 export function forgetScopedSnapshots() {

@@ -6,7 +6,7 @@
 // wrongness was invisible until somebody happened to run `gh pr update-branch` right after. Nothing
 // compared the guard's verdict to what actually happened, so the disagreement left no record anywhere.
 //
-// So: every verdict `merge-guard.mjs` computes for an OPEN PR is appended to a log. Once a PR is terminal
+// So: every verdict `merge-guard.ts` computes for an OPEN PR is appended to a log. Once a PR is terminal
 // (merged or closed), `--reconcile` compares the LAST recorded verdict against the real outcome and
 // records whether they AGREED or DISAGREED -- always, not only on conflict, because a log that only
 // records disagreements cannot tell "the two agreed" from "the two were never compared" (`worker-capture`'s

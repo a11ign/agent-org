@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.mjs` and `wake.mjs` are stubs,
+// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts` are stubs,
 // with the PATH pointed at an empty directory. ERASABLE TYPESCRIPT ONLY (no enum, namespace or parameter property): node strips the types itself.
 
 /**
@@ -40,12 +40,12 @@ function runTick({ gate, wake = "process.exit(0);", costIsADirectory = false, ti
   try {
     const src = join(dir, "src");
     mkdirSync(src);
-    const own = new Set(["work-tick.mjs", "work-gate.mjs", "wake.mjs"]);
+    const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-    writeFileSync(join(src, "work-tick.mjs"), readFileSync(join(SRC, "work-tick.mjs"), "utf8"));
-    writeFileSync(join(src, "work-gate.mjs"), gate);
-    writeFileSync(join(src, "wake.mjs"),
-      `export * from ${JSON.stringify(join(SRC, "wake.mjs"))};\n`
+    writeFileSync(join(src, "work-tick.ts"), readFileSync(join(SRC, "work-tick.ts"), "utf8"));
+    writeFileSync(join(src, "work-gate.ts"), gate);
+    writeFileSync(join(src, "wake.ts"),
+      `export * from ${JSON.stringify(join(SRC, "wake.ts"))};\n`
       + `import { fileURLToPath } from "node:url";\n`
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  ${wake}\n}\n`);
     mkdirSync(join(dir, "empty"));
@@ -55,7 +55,7 @@ function runTick({ gate, wake = "process.exit(0);", costIsADirectory = false, ti
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: join(dir, "empty") };
     delete env.INVOCATION_ID; // a test run under systemd would otherwise ask systemd about ITS unit
     delete env.GH_CONFIG_DIR; // (#4148) the tick's snapshot refresh probes GitHub and writes under the account's config: with none, it says SNAPSHOT OFF and starts nothing, which is what these tests count
-    const run = () => spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`], { encoding: "utf8", cwd: dir, env });
+    const run = () => spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], { encoding: "utf8", cwd: dir, env });
     let ran = run();
     for (let tick = 1; tick < ticks; tick += 1) ran = run();
     const lines = !costIsADirectory && existsSync(cost) ? readFileSync(cost, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
@@ -165,7 +165,7 @@ test("#3566: children's CPU is read from /proc/self/stat past a command name wit
 test("#3566: the census names a command by its basename, cuts an argument to its tail, and keeps the slowest 5 by wall", () => {
   assert.deepEqual(describeSpawn("/home/agent/.local/bin/gh", ["pr", "list"]), { cmd: "gh", line: "gh pr list", sub: "pr list" });
   assert.equal(describeSpawn("git status --short", undefined).line, "git status --short", "an execSync string is split, not taken as one name");
-  const long = describeSpawn("node", [`/very/long/${"d/".repeat(40)}work-gate.mjs`]);
+  const long = describeSpawn("node", [`/very/long/${"d/".repeat(40)}work-gate.ts`]);
   assert.match(long.line, /work-gate\.mjs$/);
   const records = [
     { cmd: "gh", line: "gh a", ms: 5 }, { cmd: "gh", line: "gh b", ms: 900 }, { cmd: "git", line: "git c", ms: 70 },
@@ -231,7 +231,7 @@ test("#3566: a gh, git or herdr call is named by its SUBCOMMAND, with the number
   assert.equal(sub("git", ["-C", "/home/agent/repos/x", "-c", "core.quotepath=off", "rev-parse", "HEAD"]), "rev-parse", "git's -C and -c take a value");
   assert.equal(sub("herdr", ["agent", "list", "--json"]), "agent list");
   assert.equal(describeSpawn("git rev-list --count HEAD", undefined).sub, "rev-list", "an execSync string is split like an argv");
-  assert.equal("sub" in describeSpawn("node", ["work-gate.mjs"]), false, "the control: a node is named by its script in `slowest`, and has no subcommand");
+  assert.equal("sub" in describeSpawn("node", ["work-gate.ts"]), false, "the control: a node is named by its script in `slowest`, and has no subcommand");
   assert.equal("sub" in describeSpawn("gh", ["--version"]), false, "a call with only flags names no subcommand, rather than an empty one");
 });
 
@@ -355,13 +355,13 @@ test("#3566: an open list the tick already read is not read again by `readElsewh
 });
 
 test("#3566: `main` hands the lanes `readOtherScopes` read to the claim-stall read, so no other repository's open list is asked twice", () => {
-  const source = readFileSync(join(SRC, "work-gate.mjs"), "utf8");
+  const source = readFileSync(join(SRC, "work-gate.ts"), "utf8");
   assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes\)/);
   assert.match(source, /elsewhere: \(\) => readElsewherePrs\(undefined, undefined, otherScopes\)/);
 });
 
 test("#3566: the tick still has ONE exit, so no path out of main() skips the cost line", () => {
-  const source = readFileSync(join(SRC, "work-tick.mjs"), "utf8");
+  const source = readFileSync(join(SRC, "work-tick.ts"), "utf8");
   assert.equal((source.match(/process\.exit\(/g) ?? []).length, 1);
 });
 

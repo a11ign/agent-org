@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // Every `gh` call in this file is a fixture: `runArmPr` and `refusalBeforeArming` take an injected `run`, and the sweep is
-// driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.mjs` and `auto-arm-sweep.mjs`
+// driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.ts` and `auto-arm-sweep.ts`
 // spawn `gh`) and false of every CALL.
 /**
  * #3487: A PULL REQUEST THE MERGE QUEUE EJECTED FOR `failed_checks` IS NOT ARMED AGAIN WHILE ITS HEAD IS UNMOVED.

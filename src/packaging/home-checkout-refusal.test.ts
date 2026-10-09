@@ -106,7 +106,7 @@ test("POSITIVE CONTROL: a set variable still answers the host file's primary che
 
 const TOOL = "/srv/acme/tool";
 const UNIT = "acme-tick.service";
-const withoutVariable = `[Service]\nWorkingDirectory=${TOOL}\nExecStart=/usr/bin/node src/work-tick.mjs\n`;
+const withoutVariable = `[Service]\nWorkingDirectory=${TOOL}\nExecStart=/usr/bin/node src/work-tick.ts\n`;
 const withVariable = withoutVariable.replace("[Service]\n", `[Service]\nEnvironment=${HOST_VARIABLE}=/srv/acme/repos/widgets/.agent-org/host.json\n`);
 
 const host = parseHostConfig(JSON.stringify({

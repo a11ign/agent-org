@@ -20,7 +20,7 @@
  * SO THE CHECK COMPARES TWO FACTS THIS PIPELINE ALREADY HOLDS, rather than trusting either side alone:
  * what the author DECLARED (`extractClosesDeclaration`, B7's own gate, already run on every PR) against
  * what GitHub RESOLVED (`lookupClosingIssues`, the same `closingIssuesReferences` query
- * `close-rows-for-merged-pr.mjs` already relies on). Neither is new work.
+ * `close-rows-for-merged-pr.ts` already relies on). Neither is new work.
  *
  * TWO DIRECTIONS, TWO DIFFERENT FAULTS: a number GitHub resolves that the body never declared is an
  * ACCIDENTAL CLOSURE (today's two incidents); a number the body declares that GitHub never resolves is
@@ -46,7 +46,7 @@
  * two example patterns while drafting the body that explains them: `Closes: none` inside a sentence
  * describing the bug matched `extractClosesDeclaration`'s own whole-body regex, and backticked
  * `closes #494`/`closes #492` examples matched its list pattern too -- neither this file's own scan nor
- * `acceptance-commands.mjs`'s parser is line-anchored or fence-aware, so quoting the trigger phrase
+ * `acceptance-commands.ts`'s parser is line-anchored or fence-aware, so quoting the trigger phrase
  * anywhere in prose (even inside backticks) can still fire it. The same shape hit #508's own body when
  * hard-wrapping put `Acceptance:` at a line start inside a paragraph explaining #506. Break the adjacency
  * when writing about this mechanism -- a word between the keyword and the `#number` is enough (`closes`
@@ -195,7 +195,7 @@ export function isRepoWideResolutionFault(underTest: { declared: number[]; resol
 export const REPO_WIDE_WARNING = Object.freeze([
   "CLOSES MISMATCH: WARNING -- GitHub resolved no closing reference for this PR or for the last "
     + `${REPO_WIDE_SIBLINGS} open PRs that declare one, so the condition is repo-wide and not this body.`,
-  "  Passing: the post-merge closer (close-rows-for-merged-pr.mjs) will close the declared rows FROM THE BODY'S "
+  "  Passing: the post-merge closer (close-rows-for-merged-pr.ts) will close the declared rows FROM THE BODY'S "
     + "DECLARATION, because GitHub resolved none.",
 ]);
 
@@ -228,13 +228,13 @@ export function mismatchVerdict(report: { ok: false; reasons: string[]; }, under
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
   const prNumber = Number(process.argv[2]);
   if (!prNumber) {
-    console.error("usage: closes-mismatch-check.mjs <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
+    console.error("usage: closes-mismatch-check.ts <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
     process.exit(2);
   }
-  // FROM AN ENV VAR, NEVER ARGV -- identical reasoning to `acceptance-commands.mjs`'s own `main()`: a PR
+  // FROM AN ENV VAR, NEVER ARGV -- identical reasoning to `acceptance-commands.ts`'s own `main()`: a PR
   // body is adversarial input, and GitHub Actions' `env:` mapping keeps it one opaque string.
   const body = process.env.PR_BODY ?? "";
   const declaration = extractClosesDeclaration(body);
@@ -253,7 +253,7 @@ function main() {
     // (allow on `null`) makes the check go silent EXACTLY when the API is unwell, which is the one moment
     // an author is least able to notice its absence. This repo's own rule throughout `merge-guard/
     // lookups.mjs` is that "could not ask" and "asked and got nothing" are different states and neither
-    // may read as clean -- the same choice `merge-guard.mjs --ci-gate` already makes (exit 2, CANNOT ASK,
+    // may read as clean -- the same choice `merge-guard.ts --ci-gate` already makes (exit 2, CANNOT ASK,
     // never treated as READY). A transient GraphQL failure is rare and retriable (push again, or the
     // `update-branch` sweep's own re-push re-runs this); a real accidental closure sailing through
     // silently is not.

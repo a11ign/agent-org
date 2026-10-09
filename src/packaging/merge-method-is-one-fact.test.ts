@@ -14,17 +14,17 @@
  * fails to take it. #698 was found in exactly that state by `ceo` earlier the same day.
  *
  * WHAT ACTUALLY CAUGHT IT was reading `autoMergeRequest` back from the API. That is already this
- * repository's rule for the mirror case -- `pr-hold-state.mjs`: "DISARM IS VERIFIED FROM THE STATE, NEVER
+ * repository's rule for the mirror case -- `pr-hold-state.ts`: "DISARM IS VERIFIED FROM THE STATE, NEVER
  * THE EXIT CODE, because `gh pr merge --disable-auto` returns success on a PR that is already merging,
  * having changed nothing." Arming has the same asymmetry in the other direction, and the same remedy.
  *
  * AND `grep '"--merge"' packages/lab/**\/*.test.ts` LOOKS LIKE COVERAGE AND IS NOT. Every hit is in
- * `merge-queue.test.ts` and every one is about `merge-queue.mjs`'s OWN `--merge=<n>` PR-selector flag
+ * `merge-queue.test.ts` and every one is about `merge-queue.ts`'s OWN `--merge=<n>` PR-selector flag
  * (#178) -- the same six characters naming an unrelated thing. A count of the adjacent thing, in the
  * search you would run to check whether this guard was needed.
  *
  * PORTED from a11ign/a11ign `packages/lab/src/packaging/` at 95cb57e33 (a11ign/a11ign#3106), where it walked this tool's source as part of
- * a larger population; it now walks `src/` here, and the sweep finds FIVE sites in four files (`pr-hold.mjs` arms and disarms).
+ * a larger population; it now walks `src/` here, and the sweep finds FIVE sites in four files (`pr-hold.ts` arms and disarms).
  *
  * So: the call sites are swept out of the source rather than listed here, because a fifth added next
  * month is the case a hand-written list cannot cover -- and a fifth is exactly what happened to
@@ -60,9 +60,9 @@ test("the sweep FINDS the call sites -- a floor, because an empty population pas
   assert.ok(sites.length >= 5,
     `expected at least the five known gh pr merge call sites, found ${sites.length}. If the call shape `
     + "changed, this regex now sweeps an empty population and every assertion below passes vacuously.");
-  // Five sites in four files: `pr-hold.mjs` holds the arm AND the disarm.
+  // Five sites in four files: `pr-hold.ts` holds the arm AND the disarm.
   const files = sites.map((s) => s.file);
-  for (const expected of ["arm-pr.mjs", "auto-arm-sweep.mjs", "merge-queue.mjs", "pr-hold.mjs"]) {
+  for (const expected of ["arm-pr.ts", "auto-arm-sweep.ts", "merge-queue.ts", "pr-hold.ts"]) {
     assert.ok(files.includes(`src/${expected}`), `src/${expected} carries a gh pr merge call and the sweep must reach it`);
   }
 });
@@ -82,7 +82,7 @@ test("every call site that ARMS or MERGES names --merge explicitly, rather than 
 
 test("--disable-auto is exempt, and deliberately so -- it names no method because it removes one", () => {
   const disarms = realSites().filter(isDisarm);
-  assert.deepEqual(disarms.map((d) => d.file), ["src/pr-hold.ts"], "pr-hold.mjs holds the only disarm");
+  assert.deepEqual(disarms.map((d) => d.file), ["src/pr-hold.ts"], "pr-hold.ts holds the only disarm");
   assert.ok(!/"--merge"|"--squash"/.test(disarms[0].args),
     "a disarm takes no merge method; requiring one here would be the guard firing on the honest use");
 });

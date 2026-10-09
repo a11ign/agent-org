@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs`, whose default readers spawn `gh`; the lanes are read through an injected `run` and the per-tick reads are stubs, so nothing is spawned (#3493)
+// no-token: gh -- imports `work-gate.ts`, whose default readers spawn `gh`; the lanes are read through an injected `run` and the per-tick reads are stubs, so nothing is spawned (#3493)
 /**
  * #3493: A CODE-ONLY SCOPE DOES NOT ASK A TRACKER QUESTION, because it has no tracker.
  *

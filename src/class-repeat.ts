@@ -19,7 +19,7 @@ export const CLASS_LABEL_PREFIX = "class:";
  * HOW LONG A REPEAT STAYS OFFERED, and it is what makes the offer ONE offer. A closed row stays closed, so the condition "two rows under one class"
  * never clears by itself, and an order for a condition that stands would be re-sent every two hours until `MAX_DELIVERIES`. The repeat is therefore
  * offered only while its NEWEST instance closed within this window, and the discriminator names that instance: the same newest row is the same key,
- * and a third row is a new key and a new offer. STRICTLY UNDER `wake.mjs`'s `JUDGMENT_TTL_MS` (two hours), as `ANSWER_GIVEN_WINDOW_MS` is and for the
+ * and a third row is a new key and a new offer. STRICTLY UNDER `wake.ts`'s `JUDGMENT_TTL_MS` (two hours), as `ANSWER_GIVEN_WINDOW_MS` is and for the
  * same reason: past the TTL the ledger would send the same key a second time. The price is that a gate that did not tick for this long misses the offer.
  */
 export const CLASS_REPEAT_WINDOW_MS = 90 * 60 * 1000;

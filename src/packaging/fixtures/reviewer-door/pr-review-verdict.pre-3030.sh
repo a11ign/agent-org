@@ -7,7 +7,7 @@
 # the flag. This script is the one narrow way a review is posted, which is exactly why the attribution
 # belongs here: it is the only point in the whole path where the reviewing session's identity is known
 # at all. GitHub loses it one line later -- every reviewer instance shares the `a11ign-bot` account,
-# so `user.login` on the posted review says nothing (see review-attribution.mjs for the measurement).
+# so `user.login` on the posted review says nothing (see review-attribution.ts for the measurement).
 #
 # THIS FILE IS THE SOURCE; the host copy at the reviewer's `bin/` is an install of it. It lived only on
 # the host until #2127, which is how a change to the posting path could not be reviewed or tested.
@@ -34,7 +34,7 @@ set -euo pipefail
 REPO="${GH_REPO:-a11ign/a11ign}"
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
   echo "pr-review-verdict: GH_REPO must be owner/name, got '$REPO'" >&2; exit 2; }
-# ONE SPELLING WITH `attributionContext` IN review-attribution.mjs. A shell writer and a JS reader cannot
+# ONE SPELLING WITH `attributionContext` IN review-attribution.ts. A shell writer and a JS reader cannot
 # share a constant, so `review-attribution.test.ts` reads this line and compares the two.
 ATTRIBUTION_CONTEXT_PREFIX=review/
 
@@ -53,7 +53,7 @@ body="$(head -n 1 "$file")"
 # no `A11Y_REVIEWER_SESSION` (`herdr.service` restarted at 12:01:57Z on 2026-09-25 and `reviewer-2485`'s `codex resume`
 # began a second later). The one place every path converges is this door, so the name is closed here. DERIVED FROM THE
 # CHECKOUT, NEVER FROM THE PR NUMBER ALONE: any session can be handed a pull request number, but only the instance for
-# pull request n runs in `<root>/reviews/reviewer-<n>` (`reviewCheckoutPath` in wake.mjs). Prints the name, or nothing.
+# pull request n runs in `<root>/reviews/reviewer-<n>` (`reviewCheckoutPath` in wake.ts). Prints the name, or nothing.
 derive_session() {
   local dir; dir="$(pwd -P)"
   while [[ "$dir" != / && -n "$dir" ]]; do

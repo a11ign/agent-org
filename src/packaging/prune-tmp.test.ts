@@ -1,5 +1,5 @@
 /**
- * #2166: THE GUARD FOR `prune-tmp.mjs` -- and the half that matters is the REFUSALS.
+ * #2166: THE GUARD FOR `prune-tmp.ts` -- and the half that matters is the REFUSALS.
  *
  * The row this file closes was filed because a 16G RAM-backed `/tmp` reached 80% and a write failed with
  * `disk quota exceeded`, while the root disk read 47%. The obvious remedy -- a sweep keyed to `rv-*` --
@@ -444,7 +444,7 @@ function fakeGh(root: string, json: string): string {
 test("the CLI defaults to the listing, and only --apply removes -- the argv path, run as a process", () => {
   // `dryRun` is decided in argv and nowhere else, so it is exercised rather than reasoned about. The
   // default is the listing because a command whose name reads as a report is one somebody runs to LOOK --
-  // `prune-worktrees.mjs` paid for the other way round by deleting three sessions' worktrees.
+  // `prune-worktrees.ts` paid for the other way round by deleting three sessions' worktrees.
   const root = makeRoot();
   const dead = scratchpad(root, DEAD_SESSION);
   const open = leftover(root, "rv-2049-y");
@@ -536,7 +536,7 @@ test("#2782 DONE-WHEN 1: a removal is logged BEFORE the delete, names the worktr
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines.map((l) => l.event), ["removing", "removed"]);
   assert.equal(lines[0].path, dead);
-  assert.equal(lines[0].caller, "prune-tmp.mjs");
+  assert.equal(lines[0].caller, "prune-tmp.ts");
   assert.match(lines[0].owner, new RegExp(`${tree}=worker-2000`), "the owner file is read before the tree is gone");
   assert.match(lines[0].detail, /holds worktree\(s\)/);
   assert.match(linesAtDelete[0], /"event":"removing"/, "the line was already on disk when the delete ran");

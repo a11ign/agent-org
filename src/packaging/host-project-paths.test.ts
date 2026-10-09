@@ -9,18 +9,18 @@
  *
  * `agent-org` is becoming a project-agnostic tool. Before this row its sources and unit files named a11ign's host -- `/home/agent/...` --
  * in twelve files, and the routing wrapper, the board dispatcher and the unit-name prefix were a11ign's by construction. What a host
- * knows is now `.agent-org/host.json` (`host-config.mjs` reads it), what a project knows is its `.agent-org/project.json`, and the tool's
+ * knows is now `.agent-org/host.json` (`host-config.ts` reads it), what a project knows is its `.agent-org/project.json`, and the tool's
  * three units and its `gh` wrapper are TEMPLATES rendered from the two.
  *
  * WHAT THIS FILE OWES, in the row's words: no home-directory literal in the tool's own files; a host's `host.json` reproducing every path
  * the tool used to name; the entries the host directory held classified exactly once (tool, project, host data) and an
  * unclassified one REFUSED; the three tool units rendered from templates to today's bytes; and a project with different paths changing what
  * the readers use. (#3233) THE PARTS THAT READ A11IGN'S LIVE TREE MOVED TO A11IGN -- its `host.json` saying those paths, its `.agent-org/units/` being the eight
- * `units.own` lists and naming what it names, `wake.mjs`'s two constants equalling its `host.json` -- and what is left runs over a recorded host and project.
+ * `units.own` lists and naming what it names, `wake.ts`'s two constants equalling its `host.json` -- and what is left runs over a recorded host and project.
  * NO UNIT IS RENAMED AND NONE IS REINSTALLED BY THIS ROW: the rendered names are asserted equal to the installed ones,
  * and rows 4 and 5 (the shadow run and the extraction) are where an install happens.
  *
- * WHAT IT DOES NOT COVER, said so it cannot be read as covered. `wake.mjs`, `work-gate.mjs` and `lib/worktree-resolution.mjs` still name
+ * WHAT IT DOES NOT COVER, said so it cannot be read as covered. `wake.ts`, `work-gate.ts` and `lib/worktree-resolution.mjs` still name
  * `/home/agent` (two constants and some prose); they belong to rows 3b and 3c, whose Regions those files are. That the constants equal a11ign's
  * `host.json` was asserted here until #3233, and is a11ign's to assert.
  */
@@ -35,8 +35,8 @@ import { fileURLToPath } from "node:url";
 
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, AND A11IGN'S VALUES ARE A RECORDED HOST ---
 //
-// Two things in a11ign's tree fed this file: the project the tool serves (`HOME_CHECKOUT`, resolved at import, which the defaults of `host-units.mjs` and
-// `host-config.mjs` read -- `package.json`, `.agent-org/units/`, `host.json`) and a11ign's own `host.json`, whose values the units are rendered from and whose
+// Two things in a11ign's tree fed this file: the project the tool serves (`HOME_CHECKOUT`, resolved at import, which the defaults of `host-units.ts` and
+// `host-config.ts` read -- `package.json`, `.agent-org/units/`, `host.json`) and a11ign's own `host.json`, whose values the units are rendered from and whose
 // bytes were pinned. A verdict that moved when a11ign edited either was not about this tool (agent-org #77 and #79). So the host file is set FIRST and the tool
 // imported AFTER it, dynamically, over `fixtures/host-project-paths/project` copied to a temp directory; and a11ign's host values are `a11ign-host.json`, a
 // recording passed to every call that renders from them. That a11ign's LIVE `host.json` says what the recording says is a11ign's invariant, and moved there.
@@ -67,7 +67,7 @@ const TOOL_SRC = fileURLToPath(new URL("../", import.meta.url));
 const HOME_LITERAL = /\/home\/[A-Za-z_][\w.-]*/;
 
 /** The three files of the tool's own source this row edited, and every entry of the tool's host directory. */
-const TOOL_SOURCES = ["host-units.mjs", "host-config.mjs", "board-snapshot-scope.mjs"];
+const TOOL_SOURCES = ["host-units.ts", "host-config.ts", "board-snapshot-scope.ts"];
 const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -120,7 +120,7 @@ const TODAYS_TEXT = {
 // DIVERGED until `host:install` runs, which is a host action and not this row's.
 // a11ign/a11ign#3589 MOVED IT AGAIN, deliberately: each ledger line gains a ninth field, the session id (`CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`). Same staleness, same remedy.
 // #3642 MOVED IT AGAIN, deliberately: a call with no workspace id and no GH_CONFIG_DIR refuses instead of acting as the human account. Same staleness, same remedy.
-// a11ign/a11ign#4148 MOVED IT AGAIN, deliberately: the wrapper answers an identical repeated READ from a cache (20 s, 30 at most), serves the tick's own processes from the generation `tick-snapshot.mjs` keeps, and counts what the ledger trim drops into `<ledger>.hourly`. Same staleness, same remedy.
+// a11ign/a11ign#4148 MOVED IT AGAIN, deliberately: the wrapper answers an identical repeated READ from a cache (20 s, 30 at most), serves the tick's own processes from the generation `tick-snapshot.ts` keeps, and counts what the ledger trim drops into `<ledger>.hourly`. Same staleness, same remedy.
 const TODAYS_GH_WRAPPER = "346938accf5a9bd217e1bf8f8ec108f35f64bf66b1848f1c2f7f94b7bed75c4c";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";

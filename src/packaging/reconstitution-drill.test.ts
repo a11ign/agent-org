@@ -2,7 +2,7 @@
 //
 // `.agent-org/roles/README.md`'s "contingency drill" section already names the acceptance test for the role
 // system: a fresh clone producing every agent's first message from the repo alone. Until this unit that
-// was five lines of `cat`/`git clone` typed by a human. `packages/agent-org/src/reconstitution-drill.mjs` is the same
+// was five lines of `cat`/`git clone` typed by a human. `packages/agent-org/src/reconstitution-drill.ts` is the same
 // drill as a command, extended to also compose the accumulated memory into each message -- and this file
 // is that script's own test, not a restatement of `roles-readme.test.ts`'s roster/completeness checks,
 // which stay exactly where they are and keep doing their own job.

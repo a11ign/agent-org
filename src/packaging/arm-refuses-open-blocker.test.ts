@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // Every `gh` call in this file is a fixture: `runArmPr`, `blockerVerdict` and `refusalBeforeArming` take an injected `run`, and the
-// sweep is driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.mjs` and `auto-arm-sweep.mjs` spawn
+// sweep is driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.ts` and `auto-arm-sweep.ts` spawn
 // `gh`) and false of every CALL.
 /**
  * #3544: A PULL REQUEST WHOSE CLOSING ROW HAS AN OPEN `blocked-by` EDGE IS NOT ARMED, and the refusal names the blocker.

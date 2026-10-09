@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` task here runs through an INJECTED `run`; survey.mjs's own default `run`
+// no-token: gh -- every `gh` task here runs through an INJECTED `run`; survey.ts's own default `run`
 // (which really would spawn `gh`) is exercised only by tasks of kind `grep`/`read`, which reach `git`, in a
 // throwaway repository this test creates and deletes.
 /**
@@ -49,8 +49,8 @@ const FILES = {
 };
 
 /**
- * A `run` explicitly INJECTED wherever a test wants survey.mjs's real `git` spawn -- never a bare omission
- * that falls through to survey.mjs's own default. #1401's live-default-seams guard cannot tell "this call
+ * A `run` explicitly INJECTED wherever a test wants survey.ts's real `git` spawn -- never a bare omission
+ * that falls through to survey.ts's own default. #1401's live-default-seams guard cannot tell "this call
  * doesn't need gh" from "this call forgot to inject", so every call site here passes one explicitly.
  */
 const execRun = (cmd: string, args: string[], opts: Parameters<typeof execFileSync>[2]): string =>

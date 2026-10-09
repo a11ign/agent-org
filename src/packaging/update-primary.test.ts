@@ -1,4 +1,4 @@
-// no-token: claimRefusal -- updatePrimary and readPrimaryDrift reach prune-worktrees.mjs only for `isPrimaryWorktree`, a `.git`-is-a-directory check; nothing here asks GitHub, and the gate's cases live in work-gate.test.ts
+// no-token: claimRefusal -- updatePrimary and readPrimaryDrift reach prune-worktrees.ts only for `isPrimaryWorktree`, a `.git`-is-a-directory check; nothing here asks GitHub, and the gate's cases live in work-gate.test.ts
 /**
  * `primary:update` is the ONE sanctioned way to move the primary checkout (#126), which makes it the only
  * place a rebuild can live and be reached every time.

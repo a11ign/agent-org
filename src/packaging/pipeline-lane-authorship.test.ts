@@ -2,7 +2,7 @@
 //
 // Every `gh` call in this file is a fixture: `runArmPr` and `main` take an injected `run`/`login`, and the sweep is
 // driven as a real process with a fake `gh` first on PATH that records its calls and answers from a script. True of
-// the IMPORT (`arm-pr.mjs` and `pr-open.mjs` spawn `gh`) and false of every CALL.
+// the IMPORT (`arm-pr.ts` and `pr-open.ts` spawn `gh`) and false of every CALL.
 /**
  * #3254, #1756 RULING ITEM 7: `ceo`, `product-manager` and `orchestrator` do not author pull requests touching
  * `.github/workflows/`, and nothing made that true. Four PRs from `a11ign-ai-leads` touched the pipeline in about a day

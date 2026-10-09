@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// #1278 added `import { inventory }`, which pulls `branch-inventory-report.mjs` into this file's closure
+// #1278 added `import { inventory }`, which pulls `branch-inventory-report.ts` into this file's closure
 // -- and that file spawns `gh` (`openPrHeads`) and `git`. Nothing here reaches either: every test passes
 // `run` injected, and `ownerOfBranch`/`groupByOwner`/`reconcile` are pure.
 //
@@ -16,7 +16,7 @@
  * says whose each one is. **The owner is the fact that nearly was not deliverable**, which is what most
  * of this file is about.
  *
- * PURE, and the separation is the reason: `branch-inventory-report.mjs` spawns git and `gh` and therefore
+ * PURE, and the separation is the reason: `branch-inventory-report.ts` spawns git and `gh` and therefore
  * needs a token; this module spawns nothing, so the row's acceptance command runs in a job that has none
  * (#1009). Every fixture here is shaped like the real data and several ARE the real data, quoted.
  */

@@ -101,7 +101,7 @@ test("main()'s PDF path actually CALLS resolveChromeBinary(), rather than hardco
   const code = readFileSync(SCRIPT, "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   const chromeAssignment = code.match(/\bchrome\s*=\s*([^;]+);/);
-  assert.ok(chromeAssignment, "no `chrome = ...` assignment found in board-document.mjs -- the call site "
+  assert.ok(chromeAssignment, "no `chrome = ...` assignment found in board-document.ts -- the call site "
     + "moved or was renamed, and this scan needs updating rather than silently examining nothing");
   assert.match(chromeAssignment[1], /resolveChromeBinary\(\)/,
     `the call site assigns \`chrome = ${chromeAssignment[1].trim()}\`, not the resolver's return value -- `

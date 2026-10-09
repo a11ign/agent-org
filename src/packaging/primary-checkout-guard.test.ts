@@ -17,7 +17,7 @@
  * That was #198: a real `.git` directory is true of every ordinary CLONE, so `core.hooksPath` carried
  * `post-checkout` to the lab with a `git pull` and every `lab:job -e ref=<branch>` began failing —
  * `run-job.yml` detaches at the ref you asked for, which is how every job runs at a branch. The predicate
- * is correct for `prune-worktrees.mjs`'s question (within one repo, primary worktree or linked one?) and
+ * is correct for `prune-worktrees.ts`'s question (within one repo, primary worktree or linked one?) and
  * answers nothing about WHICH MACHINE this is.
  *
  * So the sandbox now MARKS itself (`git config --local a11y.primaryCheckout true`), which is what a real
@@ -251,7 +251,7 @@ test("post-checkout is silent before any fetch has ever populated origin/main", 
 });
 
 /**
- * `packages/agent-org/src/update-primary.mjs` — "the ONE npm script updates the primary: fetch, then detach at
+ * `packages/agent-org/src/update-primary.ts` — "the ONE npm script updates the primary: fetch, then detach at
  * origin/main. Nothing else" (issue #126's acceptance, verbatim). Tested through its injectable `run`
  * seam, the same shape `install-git-hooks.mjs`'s `installHooks` already uses, so this never needs a real
  * network fetch to prove the two calls happen, in order, and nothing else does.

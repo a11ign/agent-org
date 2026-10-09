@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Nothing here reaches the network or the real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.mjs` and `wake.mjs` are stubs,
+// Nothing here reaches the network or the real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts` are stubs,
 // with the PATH pointed at one directory holding a `gh` STUB that records what it was asked and whether the completion file already existed when it
 // was. ERASABLE TYPESCRIPT ONLY: node strips the types itself, so no enum, namespace or parameter property here.
 
@@ -45,12 +45,12 @@ function runTick({ gate, wakeExit = 0, ghFails = false as Fails, recordIsADirect
     const bin = join(dir, "bin");
     mkdirSync(src);
     mkdirSync(bin);
-    const own = new Set(["work-tick.mjs", "work-gate.mjs", "wake.mjs"]);
+    const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-    writeFileSync(join(src, "work-tick.mjs"), tickSource(readFileSync(join(SRC, "work-tick.mjs"), "utf8")));
-    writeFileSync(join(src, "work-gate.mjs"), gate);
-    writeFileSync(join(src, "wake.mjs"),
-      `export * from ${JSON.stringify(join(SRC, "wake.mjs"))};\n`
+    writeFileSync(join(src, "work-tick.ts"), tickSource(readFileSync(join(SRC, "work-tick.ts"), "utf8")));
+    writeFileSync(join(src, "work-gate.ts"), gate);
+    writeFileSync(join(src, "wake.ts"),
+      `export * from ${JSON.stringify(join(SRC, "wake.ts"))};\n`
       + `import { fileURLToPath } from "node:url";\n`
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) process.exit(${wakeExit});\n`);
     const ledger = join(dir, "ledger.jsonl");
@@ -59,7 +59,7 @@ function runTick({ gate, wakeExit = 0, ghFails = false as Fails, recordIsADirect
     const log = join(dir, "gh.log");
     writeFileSync(join(bin, "gh"), ghStub(log, record, ghFails));
     chmodSync(join(bin, "gh"), 0o755);
-    const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
       // (#4148) NO GH_CONFIG_DIR: with one the tick's snapshot refresh makes its own (read-only) `gh` probes and writes under that account's config, and this test counts the tick's WRITES.
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: bin, GH_CONFIG_DIR: "" },
     });

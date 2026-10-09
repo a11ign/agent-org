@@ -1,11 +1,11 @@
 [Unit]
-# THE DRAINED REBOOT ONTO A NEWER KERNEL, RUN BY A CLOCK -- a11ign/a11ign#4053, the follow-up #4046 named. `host-kernel.mjs --reboot` is the whole
+# THE DRAINED REBOOT ONTO A NEWER KERNEL, RUN BY A CLOCK -- a11ign/a11ign#4053, the follow-up #4046 named. `host-kernel.ts --reboot` is the whole
 # procedure (the tick timer stopped, every seat and host job waited out, the one granted `sudo systemctl reboot`, the 24 h loop guard, the record the
 # read-back finding reads), and until this unit existed NOTHING called it: `host:check`'s `newer kernel installed, not running` was a note that woke
 # nobody. Shipping the module was not the wiring, which is the shape @@prefix@@worktree-prune.service already records.
 #
 # ON A DAY WITH NOTHING TO DO THIS IS A NO-OP: the procedure reads the running and installed kernels first and prints `no reboot` when they agree.
-Description=a11ign: reboot onto a newer installed kernel, drained (host-kernel.mjs --reboot, #4053)
+Description=a11ign: reboot onto a newer installed kernel, drained (host-kernel.ts --reboot, #4053)
 
 [Service]
 Type=oneshot
@@ -24,9 +24,9 @@ Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
 # EXACTLY `--reboot`, AND NOTHING THAT GRANTS MORE. The privileged command is a constant in the module (`REBOOT_ARGV`, compared by value before it spawns)
-# and the sudoers line is `/usr/bin/systemctl reboot` alone; a flag added here would be a second thing a unit can ask for, and `host-kernel.test.mjs` pins
+# and the sudoers line is `/usr/bin/systemctl reboot` alone; a flag added here would be a second thing a unit can ask for, and `host-kernel.test.ts` pins
 # this line so that adding one is a reviewed change. `--self` and `--row` are for a session that runs it by hand.
-ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.mjs --reboot
+ExecStart=/usr/bin/node --import tsx packages/agent-org/src/host-kernel.ts --reboot
 
 # THE DRAIN IS THE LONG PART: the module waits up to `DRAIN_BOUND_MS` (30 min) for a seat mid-turn or a host job, then defers, plus the two `systemctl`
 # calls it times at 60 s each. A oneshot has no start timeout by default, so this states the bound and a hung `systemctl` cannot hold the unit forever.

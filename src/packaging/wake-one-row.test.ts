@@ -5,7 +5,7 @@
  * roster, the registry, `herdr` and every `gh` call are injected or stubbed on PATH. `row-claim`'s half is
  * `row-claim-one-row.test.ts`.
  *
- * Driven through `route`/`deliver` and the `wake.mjs` entry, with `sessions.json` ITSELF as the source of "spare": a
+ * Driven through `route`/`deliver` and the `wake.ts` entry, with `sessions.json` ITSELF as the source of "spare": a
  * test that handed the router a literal list would pass with the mark deleted from the file. Every refusal has the
  * same fixture with ONE thing changed as its control, so what flipped the outcome is named by the test.
  */

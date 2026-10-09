@@ -1,7 +1,7 @@
 // @ts-check
 // THE DATA LAYER BOTH BOARD OUTPUTS READ, and the only place that talks to GitHub or git.
 //
-// Extracted from `board-report.mjs` when the weekly board document was added, rather than letting the
+// Extracted from `board-report.ts` when the weekly board document was added, rather than letting the
 // document grow its own copy of `mergeState`, `issues` and `reported`. A fact stated twice is this repo's
 // most-repeated defect and the two copies would have drifted the first time a field moved -- the daily
 // edition and the weekly PDF disagreeing about a merge count is exactly the failure the reports exist to
@@ -33,9 +33,9 @@ import path from "node:path";
 import { REPO } from "./project-identity.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 // A LEAF module with no imports of its own (#804), so this cannot form a cycle -- the same property that
-// let `close-rows-for-merged-pr.mjs` import it under the no-`pnpm install` constraint.
+// let `close-rows-for-merged-pr.ts` import it under the no-`pnpm install` constraint.
 import { READY_LABEL } from "./claim-labels.ts";
-// The gate predicates live in `board-gates.mjs` (#429), a module with no process in it, so a test of the
+// The gate predicates live in `board-gates.ts` (#429), a module with no process in it, so a test of the
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.
 import { latestVerdictGate } from "./board-gates.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
@@ -234,8 +234,8 @@ export const META_LABEL = "meta";
  * footnote beside the total now names how many rows are in this state, so the two reconcile BY
  * CONSTRUCTION rather than by a reader working it out. Ruled by `ceo` 2026-09-07; see issue #290.
  *
- * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): the label is `project-vocabulary.mjs`'s field, and
- * `ready-label-audit.mjs` in turn imports it from here so the fact stays in the one place this module
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): the label is `project-vocabulary.ts`'s field, and
+ * `ready-label-audit.ts` in turn imports it from here so the fact stays in the one place this module
  * already exposed it.
  */
 export { OUT_OF_RELEASE_LABEL };
@@ -264,15 +264,15 @@ function labelsOf(i: any) {
 /**
  * The rows that are PICKABLE -- `ready` and nothing has claimed them yet.
  *
- * ONE DERIVATION, because there were about to be two. `board-report.mjs` carried
+ * ONE DERIVATION, because there were about to be two. `board-report.ts` carried
  * `open.filter(i => i.labelNames.includes("ready"))` inline, and #912's work-gate needs the identical
  * question to decide whether an idle engineer has anything to be woken FOR. A second copy would be the
  * fact-stated-twice shape this file's own header names as the repo's most-repeated defect -- and worse
  * than usual here, because the two readers would disagree about whether the org has work while each
  * reported confidently.
  *
- * THE LITERAL COMES FROM `claim-labels.mjs`, never from here. That leaf module exists (#804) precisely
- * because `"ready"` had been spelled in three files; the inline copy in `board-report.mjs` was a fourth
+ * THE LITERAL COMES FROM `claim-labels.ts`, never from here. That leaf module exists (#804) precisely
+ * because `"ready"` had been spelled in three files; the inline copy in `board-report.ts` was a fourth
  * that predated it. Importing the constant means this follows a rename by construction.
  *
  * `labelsOf` rather than `i.labelNames` directly: the inline version threw on any payload carrying
@@ -303,7 +303,7 @@ export function milestone() {
  * hand-resolving a conflict there risks precisely what the file exists to prevent: a number surviving
  * into the board document from a run nobody can name.
  *
- * NAMED BY THE ENTRY'S OWN IDENTITY, NEVER BY POSITION -- `ARRAY_IDENTITY` in board-summary-check.mjs
+ * NAMED BY THE ENTRY'S OWN IDENTITY, NEVER BY POSITION -- `ARRAY_IDENTITY` in board-summary-check.ts
  * already keys gates on `command` and achievements on `issue`, and this follows it rather than inventing
  * a second scheme. Position-keyed names are the defect `withRealisticScale` paid for: inserting one entry
  * re-labels every entry after it.
@@ -662,7 +662,7 @@ export function composeConflictMetrics(since: string, { run }: { run?: (args: st
 }
 
 /**
- * The LIVE entry, the one `board-report.mjs` calls for every edition: the composition above, reading GitHub
+ * The LIVE entry, the one `board-report.ts` calls for every edition: the composition above, reading GitHub
  * through `gh`. No test calls it (#1407).
  * @param {string} since
  */

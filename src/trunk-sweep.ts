@@ -59,7 +59,7 @@ export function needsGateSweep(checkRunCount: number): boolean {
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-sweep.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
@@ -94,5 +94,5 @@ function main() {
   process.exit(EXIT.DONE);
 }
 
-// The entry guard `merge-guard.mjs`/`auto-arm-sweep.mjs` use.
+// The entry guard `merge-guard.ts`/`auto-arm-sweep.ts` use.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

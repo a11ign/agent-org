@@ -1,7 +1,7 @@
 // no-token: lookupClosingIssues
 // #827. Every fact this file feeds a decider is INJECTED, and the three CLI tests run the script against a fake
 // `gh` first on PATH that answers from files, so nothing here reaches GitHub. The closure walk still finds
-// `lookups.mjs`'s `gh` through `closes-mismatch-check.mjs`'s import; reaching it live is not what is tested.
+// `lookups.mjs`'s `gh` through `closes-mismatch-check.ts`'s import; reaching it live is not what is tested.
 /**
  * #549: a PR body can declare `Closes: none` and still close two issues, and nothing compared what the
  * author DECLARED against what GitHub RESOLVED. Measured live, same day: #545 declared `none` and closed

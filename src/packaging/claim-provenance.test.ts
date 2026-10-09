@@ -2,7 +2,7 @@
  * #683: a CLOSED row must still answer "who worked this". The `session:<name>` label is correctly removed
  * when a row closes, and the row read that as attribution being DESTROYED — but GitHub keeps the
  * `LabeledEvent` that applied the label forever, so the record survives the label. See
- * `packages/agent-org/src/claim-provenance.mjs`'s header for the measurement that decided the build: 189 of 295 closed
+ * `packages/agent-org/src/claim-provenance.ts`'s header for the measurement that decided the build: 189 of 295 closed
  * rows still name their claimant, and 77 of the 83 sitting behind a branch with no open PR — and for why
  * this reads the repository's own event log rather than GitHub's GraphQL timeline, which narrows a
  * nested history AND the `totalCount` describing it, so no assertion on the response can see it.

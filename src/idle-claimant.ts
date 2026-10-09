@@ -8,12 +8,12 @@
 // correctly and one that has simply stopped looked identical to it. The measurement is on #2999 (2026-10-02T12:50Z): the existing
 // nudge woke three holders in 07:00Z-10:40Z, while #2968 and #2969 sat behind `pr-owned` for 171 and 233 minutes.
 //
-// THIS FILE IS THE PURE HALF AND A LEAF (`herdr-agents.mjs` and the vocabulary only), for the reason `claim-stall.mjs` is one:
-// `work-gate.mjs` runs before any `pnpm install`. It DECIDES whether an idle holder has a wait the org can READ; `claim-stall.mjs` carries
+// THIS FILE IS THE PURE HALF AND A LEAF (`herdr-agents.ts` and the vocabulary only), for the reason `claim-stall.ts` is one:
+// `work-gate.ts` runs before any `pnpm install`. It DECIDES whether an idle holder has a wait the org can READ; `claim-stall.ts` carries
 // the decision as the nudge and, a second reading later, the release it already owned.
 //
 // A WAIT IS A FIELD, OR IT IS NOT A WAIT (`.claude/rules/waiting-conditions.md`). WAIT_FIELDS below is the whole list, and a kind is
-// only in it when something the gate already reads can prove it: the row kinds are `waiting-condition.mjs`'s own (the gate asks it
+// only in it when something the gate already reads can prove it: the row kinds are `waiting-condition.ts`'s own (the gate asks it
 // through `declaredWait`, never a second copy), the pull-request kinds are facts on the `pr list` payload and the herdr listing.
 import { listingIsComplete } from "./herdr-agents.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
@@ -44,23 +44,23 @@ export const IDLE_CLAIMANT_MS = IDLE_CLAIMANT_MINUTES * MINUTE_MS;
 export const IDLE_STATUSES = Object.freeze(["idle", "done"]);
 
 /**
- * `awaiting-evidence` as `work-gate.mjs` declares it (`AWAITING_EVIDENCE_LABEL`). A leaf cannot import its importer, so this is the one
+ * `awaiting-evidence` as `work-gate.ts` declares it (`AWAITING_EVIDENCE_LABEL`). A leaf cannot import its importer, so this is the one
  * restatement; `idle-claimant.test.ts` pins it equal to the gate's own export, so the two cannot drift silently.
  */
 export const EVIDENCE_LABEL = "awaiting-evidence";
 
 /**
- * `pr-hold-state.mjs`'s `HOLD_PREFIX`, restated for the reason `EVIDENCE_LABEL` is (a leaf cannot import what imports `wait-condition.mjs`);
+ * `pr-hold-state.ts`'s `HOLD_PREFIX`, restated for the reason `EVIDENCE_LABEL` is (a leaf cannot import what imports `wait-condition.ts`);
  * `idle-claimant.test.ts` pins it equal to the original.
  */
 export const HOLD_LABEL_PREFIX = "hold:";
 
 /**
  * EVERY KIND OF WAIT THAT CLEARS A HOLDER, and what the holder writes to declare it. `on: "row"` kinds are decided by the gate through
- * `waiting-condition.mjs` (the one reader of a row's wait) and arrive as `waitKinds`; `on: "pr"` kinds are decided here from the holder's own
+ * `waiting-condition.ts` (the one reader of a row's wait) and arrive as `waitKinds`; `on: "pr"` kinds are decided here from the holder's own
  * open pull request. A new kind cannot be added without a case: `idle-claimant.test.ts` derives its table from this object's keys.
  *
- * `blocked` (the label) IS NOT HERE, deliberately: `waiting-condition.mjs` records it as a claim with no referent that nothing can ever check.
+ * `blocked` (the label) IS NOT HERE, deliberately: `waiting-condition.ts` records it as a claim with no referent that nothing can ever check.
  * @type {Readonly<Record<string, { on: "row" | "pr", spelling: string }>>}
  */
 export const WAIT_FIELDS: Readonly<Record<string, { on: "row" | "pr"; spelling: string; }>> = Object.freeze({

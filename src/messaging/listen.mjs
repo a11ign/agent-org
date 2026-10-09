@@ -15,7 +15,7 @@
 // (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
 // What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for the `liaison` and nobody else.
 //
-// **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.mjs` and `wake.mjs` read the project's declaration when they are
+// **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.ts` and `wake.ts` read the project's declaration when they are
 // imported and REFUSE without it (the `chairman-listen` unit sets `$AGENT_ORG_HOST`, #3064). A message `converse` could not queue for that reason is TOLD to the
 // chairman (a send) and ledgered `refused` by `tellingWhenUndelivered`, never dropped.
 //

@@ -42,7 +42,7 @@ const CHANGESET_DIR = ".changeset/";
 const NO_RELEASE_LINE = /^[ \t]*no-release:[ \t]*(.*?)[ \t]*$/;
 const PLACEHOLDER = "<reason>";
 
-/** `isNameReservation` of `dora.mjs`, restated because that module runs its readers at import: a `0.0.0-` version is a name held on the registry and is no release. */
+/** `isNameReservation` of `dora.ts`, restated because that module runs its readers at import: a `0.0.0-` version is a name held on the registry and is no release. */
 const isNameReservation = (version: string) => version.startsWith("0.0.0-");
 
 /** the latest release; `at` is epoch ms of its publish or release time */

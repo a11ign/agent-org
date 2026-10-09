@@ -126,7 +126,7 @@ console.error("NOT_FOUND (a11ign.projectV2): Could not resolve to a ProjectV2 wi
 `);
   chmodSync(join(dir, "bin/gh"), 0o755);
   spawnSync("git", ["init", "-q", dir], { env: sandboxGitEnv() });
-  const run = spawnSync(process.execPath, [join(SRC, "close-rows-for-merged-pr.mjs"), "17"], { cwd: dir, encoding: "utf8",
+  const run = spawnSync(process.execPath, [join(SRC, "close-rows-for-merged-pr.ts"), "17"], { cwd: dir, encoding: "utf8",
     env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, GITHUB_REPOSITORY: LAYER } });
   const log = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
   return { run, issueCalls: log.filter((args) => args[0] === "issue") };

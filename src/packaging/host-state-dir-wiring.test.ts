@@ -8,8 +8,8 @@
  * `stateDir`, not a hard-coded `~/.cache/a11ign` -- with the running unit untouched.
  *
  * #2793 (child 5b) gave `host.json` a `stateDir` and the reader `stateFilePath`, and four constants went on spelling a11ign's directory:
- * `DRAIN_MARKER` and `REVIEWER_STATE_DIR` (`work-gate.mjs`), `LIVE_STATE_DIR` (`shadow-gate.mjs`) and `ledgerPathFrom`'s default
- * (`wake.mjs`). Until they read the host's, #2623's cut-over would point `host.json` at the installed tool while the gate, the drain marker,
+ * `DRAIN_MARKER` and `REVIEWER_STATE_DIR` (`work-gate.ts`), `LIVE_STATE_DIR` (`shadow-gate.ts`) and `ledgerPathFrom`'s default
+ * (`wake.ts`). Until they read the host's, #2623's cut-over would point `host.json` at the installed tool while the gate, the drain marker,
  * the reviewer state and the wake ledger still read a11ign's directory.
  *
  * **It changes nothing that runs.** a11ign's `host.json` declares no `stateDir`, so each of the four resolves to the string it always did
@@ -33,7 +33,7 @@ const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";
 const A11IGN_STATE = `${FIXTURE_HOME}/.cache/a11ign`;
 const FIXTURE_STATE_DIR = "/srv/acme/state";
-/** The fixture project's checkout. It does not exist, and `project-config.mjs` now reads `project.json` from the primary's checkout
+/** The fixture project's checkout. It does not exist, and `project-config.ts` now reads `project.json` from the primary's checkout
  * (#2873), so `readFourUnder` swaps in a checkout that does: this file reads the four paths, not the vocabulary. */
 const FIXTURE_CHECKOUT = "/srv/acme/repos/widgets";
 const REAL_CHECKOUT = HOME_CHECKOUT;
@@ -54,9 +54,9 @@ const fixtureHost = (extra: Record<string, unknown> = {}) => JSON.stringify({
 });
 
 const READER = `
-  const gate = await import(${JSON.stringify(`${SRC}work-gate.mjs`)});
-  const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.mjs`)});
-  const wake = await import(${JSON.stringify(`${SRC}wake.mjs`)});
+  const gate = await import(${JSON.stringify(`${SRC}work-gate.ts`)});
+  const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.ts`)});
+  const wake = await import(${JSON.stringify(`${SRC}wake.ts`)});
   process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: gate.REVIEWER_STATE_DIR,
     LIVE_STATE_DIR: shadow.LIVE_STATE_DIR, "ledgerPathFrom([])": wake.ledgerPathFrom([]) }));`;
 
@@ -130,9 +130,9 @@ test("#2799: `stateEntryPath` is `stateFilePath`'s answer under a declared `stat
 test("#2799: none of the four sites spells `.cache/a11ign` in code, and the documented default is spelled once", () => {
   const CODE = /^\s*(?!\/\/|\*|\/\*)\S.*\.cache\/a11ign/;
   const spelling = (file: string) => readFileSync(join(SRC, file), "utf8").split("\n").filter((line) => CODE.test(line));
-  const sites = ["work-gate.mjs", "shadow-gate.mjs", "wake.mjs"];
+  const sites = ["work-gate.ts", "shadow-gate.ts", "wake.ts"];
   assert.equal(sites.length, 3, "POSITIVE CONTROL: the three files the row names are scanned, so an empty offender list is not a scan of nothing");
   const offenders = sites.flatMap((file) => spelling(file).map((line) => `${file}: ${line.trim()}`));
   assert.deepEqual(offenders, [], "each of these still names a11ign's directory instead of reading the host's");
-  assert.equal(spelling("host-config.mjs").length, 1, "POSITIVE CONTROL: the scan does find a spelling where one is documented (the default), so an empty result above is not a scan that matches nothing");
+  assert.equal(spelling("host-config.ts").length, 1, "POSITIVE CONTROL: the scan does find a spelling where one is documented (the default), so an empty result above is not a scan that matches nothing");
 });

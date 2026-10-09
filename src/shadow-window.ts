@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 // command: shadow-window -- ONE tick of the candidate gate beside the live one, over a copy of the state, appended to a diff record
-// Row #2846 (the split, child 5d of #69): the program ADR 0040 decision 5 (1) describes and `shadow-gate.mjs` (child 4)
+// Row #2846 (the split, child 5d of #69): the program ADR 0040 decision 5 (1) describes and `shadow-gate.ts` (child 4)
 // only gave the instrument for. One invocation is ONE tick; running it every two minutes for 1,440 ticks is a host
 // arrangement asked of `ceo` on #2623 and is NOT started by this file.
 //
@@ -13,7 +13,7 @@
 //   a GAP or a REFUSAL is a row in the record naming the time and the cause, never a silence. Whether a gap resets the 1,440 is the close
 //                   row's to say from the record (decision 5), so this counts every recorded tick and decides nothing about gaps.
 //
-// THE LIVE SIDE IS RECORDED, NOT RECOMPUTED (`product-manager`'s ruling on #2846, 2026-10-01). `work-gate.mjs`'s `main()`
+// THE LIVE SIDE IS RECORDED, NOT RECOMPUTED (`product-manager`'s ruling on #2846, 2026-10-01). `work-gate.ts`'s `main()`
 // has no seam to take its reads from outside and WRITES state when run (`claimStallTick`), so #2849 makes the live tick
 // leave `<stateDir>/shadow-reads/<tickUtcMs>.json` = `{ tick, args, orders }` while `<stateDir>/shadow-window-open`
 // exists: `args` is the exact object `decide` was called with and `orders` is `decide`'s raw return. This file runs
@@ -25,6 +25,7 @@
 // or refusal row first). Never a state file or the handoff queue; the live directory is read and never written -- EXCEPT the window's
 // marker, which `--arm` creates and the window's own end removes, and which nothing else here touches. The record path and the
 // copy path are both refused when they resolve inside the live directory, because either would be a write there.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync }
   from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -43,11 +44,11 @@ export const EXIT = { OK: 0, REFUSED: 2 };
 /** Where #2849's live tick leaves the reads, and the file inside the COPY that says the runner made that directory. */
 export const READS_DIR = "shadow-reads";
 export const COPY_MARKER = SHADOW_COPY_MARKER;
-/** Handed to the candidate so one that reads local state can read the COPY; `decide` has no parameter for it. The gate honours it in `host-config.mjs`'s `stateEntryPath`. */
+/** Handed to the candidate so one that reads local state can read the COPY; `decide` has no parameter for it. The gate honours it in `host-config.ts`'s `stateEntryPath`. */
 export const STATE_DIR_ENV = SHADOW_STATE_DIR_ENV;
 
 const SELF = fileURLToPath(import.meta.url);
-/** The tool this runner runs from (its `src/..`), wherever it is checked out: `--arm` compares the candidate against it. Not imported from `host-units.mjs`, whose closure needs git history. */
+/** The tool this runner runs from (its `src/..`), wherever it is checked out: `--arm` compares the candidate against it. Not imported from `host-units.ts`, whose closure needs git history. */
 const TOOL_ROOT = resolve(dirname(SELF), "..");
 /** A candidate that has not answered in this long is recorded as failed; it must not hold the next tick's turn. */
 const CANDIDATE_TIMEOUT_MS = 120_000;
@@ -91,7 +92,7 @@ export function refreshCopy({ liveDir, copyDir }: { liveDir: string; copyDir: st
   for (const name of readdirSync(liveDir)) {
     if (name !== READS_DIR) cpSync(join(liveDir, name), join(copyDir, name), { recursive: true, dereference: true });
   }
-  writeFileSync(join(copyDir, COPY_MARKER), "made by shadow-window.mjs; emptied and refilled from the live directory every tick\n");
+  writeFileSync(join(copyDir, COPY_MARKER), "made by shadow-window.ts; emptied and refilled from the live directory every tick\n");
 }
 
 /**
@@ -183,7 +184,7 @@ async function runAsCandidateChild(modulePath: string) {
  * @returns {{ exit: number | null, orders: any[] | null, error: string | null }}
  */
 export function runCandidate({ module, args, copyDir }: { module: string; args: unknown; copyDir: string; }): { exit: number | null; orders: any[] | null; error: string | null; } {
-  const run = spawnSync(process.execPath, [SELF, "--candidate-child", `--module=${module}`], {
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, SELF, "--candidate-child", `--module=${module}`], {
     input: JSON.stringify(args), encoding: "utf8", timeout: CANDIDATE_TIMEOUT_MS, maxBuffer: CANDIDATE_MAX_BUFFER,
     env: { ...process.env, [STATE_DIR_ENV]: copyDir },
   });
@@ -492,12 +493,12 @@ function armReport({ t0, tEnd, hardStop, candidate, tool, files }: ReturnType<ty
 
 async function main() {
   const known = ["--live-dir=", "--copy-dir=", "--record=", "--candidate=", "--candidate-child", "--module=", "--window-timer=", "--arm"];
-  refuseUnknownFlags(known, { entry: import.meta.url, command: "node packages/agent-org/src/shadow-window.mjs" });
+  refuseUnknownFlags(known, { entry: import.meta.url, command: "node packages/agent-org/src/shadow-window.ts" });
   const argv = process.argv.slice(2);
   if (argv.includes("--candidate-child")) return runAsCandidateChild(String(flagValue(argv, "module")));
   const copyDir = flagValue(argv, "copy-dir"), recordPath = flagValue(argv, "record"), candidate = flagValue(argv, "candidate");
   if (!copyDir || !recordPath || !candidate) {
-    process.stderr.write("usage: shadow-window.mjs --copy-dir=<dir> --record=<file.jsonl> --candidate=<module exporting decide> [--live-dir=<dir>] [--window-timer=<unit> | --arm]\n");
+    process.stderr.write("usage: shadow-window.ts --copy-dir=<dir> --record=<file.jsonl> --candidate=<module exporting decide> [--live-dir=<dir>] [--window-timer=<unit> | --arm]\n");
     process.exit(EXIT.REFUSED);
   }
   const liveDir = flagValue(argv, "live-dir"), timerUnit = flagValue(argv, "window-timer");

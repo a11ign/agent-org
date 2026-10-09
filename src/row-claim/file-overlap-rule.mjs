@@ -62,7 +62,7 @@
 // to the asking row, and the wait lived in a comment nothing reads. The exclusion needs BOTH facts (`ceo`, #2400
 // section 2), because either alone is a hole: a `hold:` label with no edge is a PR that may still merge when the
 // hold lifts, and an edge with no hold is a PR that `deliberateRefusals` will let merge first. See
-// `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.mjs`'s `blockedOnOpenPr`).
+// `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.ts`'s `blockedOnOpenPr`).
 //
 // #2617 (child 3b of #69): B4 READS EVERY CODE REPOSITORY THE PROJECT DECLARES, NOT THE FIRST. "No two open pull requests touch the
 // same file" is a claim about the PROJECT's open work, and the project's work is in every repository `.agent-org/project.json`'s

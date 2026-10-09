@@ -3,7 +3,7 @@
 // THE CHAIRMAN'S PATH, CHECKED END TO END BY THE ORGANISATION (a11ign/a11ign#3540, done-whens 1 to 4).
 //
 // Which parts are REAL and which are FAKE, said once: `createInbound`, `createConverse`, `createLedger` and `measure` are the real modules. The QUEUE is a fake port that writes the same entry shape and
-// prints the same kind of refusal as `prompt-session.mjs` (the real port cannot be driven to "the inbox is full" without filling a real inbox), the ROSTER is a list, and the PROVIDER is the self-test's own recorder.
+// prints the same kind of refusal as `prompt-session.ts` (the real port cannot be driven to "the inbox is full" without filling a real inbox), the ROSTER is a list, and the PROVIDER is the self-test's own recorder.
 // The live reading, with the real queue and herdr's real roster, is done-when 5 and is on the row.
 
 import assert from "node:assert/strict";
@@ -292,7 +292,7 @@ describe("done-when 4: the trigger is a pure function", () => {
   test("the path list: positive control for the matcher, and what it deliberately leaves out", () => {
     assert.ok(touchesMessaging(["src/messaging/listen.mjs"]));
     assert.ok(!touchesMessaging(["src/work-gate.ts", "docs/messaging.md", "src/messaging/listen.test.ts"]));
-    assert.ok(!touchesMessaging(["src/messaging", "src/wake.mjs.bak", "lib/src/wake.mjs", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
+    assert.ok(!touchesMessaging(["src/messaging", "src/wake.ts.bak", "lib/src/wake.ts", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
   });
 });
 
@@ -384,16 +384,16 @@ describe("the command", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-// THE TICK STEP in `wake.mjs`: it is the one place a report can reach `ceo`'s queue, because `src/messaging/` may not name the queue.
-// `wake.mjs` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
-// and the "wake.mjs loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
+// THE TICK STEP in `wake.ts`: it is the one place a report can reach `ceo`'s queue, because `src/messaging/` may not name the queue.
+// `wake.ts` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
+// and the "wake.ts loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
 const wake = await import("../wake.ts").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
-const skipUnlessLoaded = "reason" in wake ? `wake.mjs cannot load here: ${wake.reason}` : false;
+const skipUnlessLoaded = "reason" in wake ? `wake.ts cannot load here: ${wake.reason}` : false;
 
 describe("the tick step queues a report for ceo and for nobody else", () => {
   const spawned = (/** @type {Record<string, any>} */ answer: Record<string, any>, status = 0) => /** @type {any} */ (() => ({ status, stdout: `noise\n${JSON.stringify(answer)}\n`, stderr: "" }));
 
-  test("wake.mjs loaded whenever the host declaration it needs exists (the skips below are for a bare checkout only)", () => {
+  test("wake.ts loaded whenever the host declaration it needs exists (the skips below are for a bare checkout only)", () => {
     const declared = process.env.AGENT_ORG_HOST !== undefined && existsSync(process.env.AGENT_ORG_HOST);
     assert.ok(skipUnlessLoaded === false || !declared, String(skipUnlessLoaded));
   });
@@ -452,7 +452,7 @@ describe("a quiet tick starts no process and asks no model", () => {
     assert.equal(worthAChild({ state, current: "v1.0.1", now: h.now() }).spawn, true, "the next release asks again");
   });
 
-  test("the step in wake.mjs starts no process when the question says there is nothing to do, and says so when it cannot ask", { skip: skipUnlessLoaded }, () => {
+  test("the step in wake.ts starts no process when the question says there is nothing to do, and says so when it cannot ask", { skip: skipUnlessLoaded }, () => {
     const step = (ask: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn: noSpawn, ask });
     assert.deepEqual(step(() => ({ spawn: false, line: null })), []);
     assert.deepEqual(step(() => ({ spawn: false, line: "messaging selftest still RED at seat for v1.0.0; retrying after 60 s" })), ["messaging selftest still RED at seat for v1.0.0; retrying after 60 s"]);
@@ -461,8 +461,8 @@ describe("a quiet tick starts no process and asks no model", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-// THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.mjs`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
-// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.mjs` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
+// THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.ts`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
+// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.ts` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
 // its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
 // `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
 const ENTRY = fileURLToPath(new URL("./selftest.mjs", import.meta.url));

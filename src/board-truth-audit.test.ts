@@ -1,4 +1,4 @@
-// no-token: gh -- `board-truth-audit.mjs` reaches `gh` and `herdr` only through the readers `readBoardFacts` is given; every one this file calls is an injected fake, and the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4043)
+// no-token: gh -- `board-truth-audit.ts` reaches `gh` and `herdr` only through the readers `readBoardFacts` is given; every one this file calls is an injected fake, and the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4043)
 // a11ign/a11ign#4043: the board is read against reality, and every row whose state disagrees is named with the field to fix. Fixtures only: nothing here reaches GitHub or herdr.
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each `disagrees` test has an `agrees` twin that differs by ONE fact, so a question that always fires is red in the twin and one that

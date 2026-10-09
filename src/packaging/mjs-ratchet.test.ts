@@ -80,7 +80,7 @@ test("the ratchet RUNS: the baseline sits at the repository root and the tree it
 test("a baseline with one name removed FAILS and names the file", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
   const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const removed = "work-gate.mjs";
+  const removed = "work-gate.ts";
   const index = baseline.files.indexOf(removed);
   assert.notEqual(index, -1, `${removed} is not in the committed baseline, so this control proves nothing`);
   const result = judgeScratch({ files, baseline: { ...baseline, files: baseline.files.filter((_, at) => at !== index) } });
@@ -97,7 +97,7 @@ test("the same tree against an EMPTIED baseline fails and names every file", () 
 
 test("a tree that holds FEWER files than the baseline passes and says the baseline can be lowered", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
-  const result = judgeScratch({ files: files.filter((path) => basename(path) !== "work-gate.mjs"), baseline: baselineAt(findBaselineRoot(JUDGED)) });
+  const result = judgeScratch({ files: files.filter((path) => basename(path) !== "work-gate.ts"), baseline: baselineAt(findBaselineRoot(JUDGED)) });
   assert.equal(result.ok, true, result.message);
   assert.match(result.message, /lower/i);
   assert.ok(result.count < result.baselineCount, "the check did not see a tree smaller than its baseline");

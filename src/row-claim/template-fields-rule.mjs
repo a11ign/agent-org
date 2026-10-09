@@ -14,7 +14,7 @@
 // question matters at the moment a session is about to spend a day on it, not at the moment it was typed.
 //
 // A MISSING FIELD IS REFUSED BY NAME, never folded into one generic "template incomplete" message -- the
-// same reason `owned-path-signoff.mjs` (#603) names each unstated fact rather than saying "sign-off
+// same reason `owned-path-signoff.ts` (#603) names each unstated fact rather than saying "sign-off
 // missing": a reader fixing the row needs to know WHICH of the three to add, not that something is wrong.
 import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
@@ -48,7 +48,7 @@ export function missingTemplateFields(body) {
  * time it costs a rewrite of a section written hours earlier by someone who has moved on.
  *
  * ONE IMPLEMENTATION, NOT A SECOND COPY. `runsTheWholeSuite` and `extractAcceptanceSection` are imported
- * from `acceptance-commands.mjs` unchanged, so the same command string gets the same answer here and at
+ * from `acceptance-commands.ts` unchanged, so the same command string gets the same answer here and at
  * PR time. A second parser is the shape that produced `#842`'s and `#71`'s findings on the same day.
  *
  * ONLY THE COMMAND-SHAPE HALF LIFTS, and that is a deliberate limit rather than an oversight.

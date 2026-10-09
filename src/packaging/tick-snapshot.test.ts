@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { MAX_UNCHANGED_SECONDS, parseAnswer, probeOnce, probePaths, refreshTickSnapshot, slugOf } from "../tick-snapshot.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
-// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE: see `org-health-auto-off-refusal.test.ts`. `work-tick.mjs` resolves the checkout it serves when it is imported.
+// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE: see `org-health-auto-off-refusal.test.ts`. `work-tick.ts` resolves the checkout it serves when it is imported.
 const SCRATCH = tmpDirForFile("tick-snapshot-project-");
 const PROJECT = join(SCRATCH, "project");
 cpSync(fileURLToPath(new URL("./fixtures/org-health/project", import.meta.url)), PROJECT, { recursive: true });

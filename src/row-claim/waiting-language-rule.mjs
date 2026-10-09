@@ -5,7 +5,7 @@
 // dependencies as dependencies").
 //
 // C made `--blocked-by`/`--blocking` the machine-readable form of a waiting relationship
-// (`waiting-condition.mjs`, `gh issue edit --add-blocking`) -- but nothing caught the gap AT FILING TIME
+// (`waiting-condition.ts`, `gh issue edit --add-blocking`) -- but nothing caught the gap AT FILING TIME
 // between a body that SAYS it waits and one that DECLARES it. `ceo`'s own comment named the checkable
 // shape directly: a guard that flags a row whose body matches a waiting-language pattern ("waits for",
 // "blocked by", "after the ... publish/lands/merges") but declares no native `blocked-by`/`blocking`
@@ -13,7 +13,7 @@
 // way #1734's own four instances were.
 //
 // A WARNING, NEVER A REFUSAL -- the same shape `directoryRegionWarning` and `unrecognisedRegionWarning`
-// (`row-file.mjs`) already use. English is not reliably parseable: "the audit that ran after the sweep"
+// (`row-file.ts`) already use. English is not reliably parseable: "the audit that ran after the sweep"
 // is not a blocking relationship, and refusing on a heuristic pattern match would block correct filings
 // to prevent a possible false positive. The failure this row is about is SILENCE; a line on stderr ends
 // it without taking the decision away.
@@ -21,10 +21,10 @@
 // A ROW THAT ALREADY CARRIES A `## Not-before: <date>` FIELD IS NEVER WARNED, even when its prose also
 // reads as waiting language -- that field is already the machine-readable form for a date-shaped wait
 // (the other half of C), and this guard is only about the row-shaped kind that today has no
-// representation at all. `notBeforeDate` is imported from `waiting-condition.mjs` unchanged, the one
+// representation at all. `notBeforeDate` is imported from `waiting-condition.ts` unchanged, the one
 // reader of that field, never a second copy.
 //
-// NOT A SECOND `proseBlockers`. `waiting-condition.mjs`'s own `proseBlockers` reads ALREADY-FILED rows
+// NOT A SECOND `proseBlockers`. `waiting-condition.ts`'s own `proseBlockers` reads ALREADY-FILED rows
 // from GitHub (a nightly hygiene sweep over the whole tracker, per that file's own header) and excludes
 // any row that already carries an open `blockedBy` edge or a `Not-before:` field. This reads a BODY
 // BEFORE FILING, against the flags THIS invocation is about to send -- a row cannot yet have a

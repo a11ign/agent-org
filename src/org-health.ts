@@ -45,9 +45,10 @@
 // counter carries ticks and no time: it is keyed on the ROWS, for the reason given there.
 //
 // A READ THAT WAS REFUSED IS A STATED UNKNOWN, NEVER A CLEAR (#1286). Each reading is `tripped`, `clear` or `unknown`, and an
-// unknown says why on stderr -- a line that repeats for a persistent refusal and is therefore offered by `repeating-lines.mjs`.
+// unknown says why on stderr -- a line that repeats for a persistent refusal and is therefore offered by `repeating-lines.ts`.
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.mjs`: `work-gate.mjs` imports this, and it runs before any `pnpm install`/build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports this, and it runs before any `pnpm install`/build.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -55,13 +56,13 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { spenderPhrase } from "./gh-ledger.ts";
-// A LEAF (`claim-labels.mjs` imports nothing), so the label is read from where it is declared, as `repeating-lines.mjs` does.
+// A LEAF (`claim-labels.ts` imports nothing), so the label is read from where it is declared, as `repeating-lines.ts` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
 import { boardTruthTable } from "./board-truth-audit.ts";
 // The checkout the tool serves and the project's own words are read from where they are declared (`standalone-roots.test.ts`, `project-vocabulary.test.ts`).
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { ANSWER_PREFIX, BACKLOG_LABEL } from "./project-vocabulary.ts";
-// A LEAF too (it imports `newest-check-run.mjs` and `pr-hold-state.mjs`, which import nothing): the ONE decider of what counts as red.
+// A LEAF too (it imports `newest-check-run.ts` and `pr-hold-state.ts`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "./wait-condition.ts";
@@ -80,7 +81,7 @@ export const REFUSED_TICKS = 75;
 export const PRIMARY_STALE_MINUTES = 60;
 /**
  * HOW LONG AN ORDER MAY WAIT ON A SESSION THAT IS BUSY BEFORE THE WAIT IS A STALL: FIFTEEN MINUTES (#3448, the chairman, 2026-10-04). ONE number for
- * both of its readers: `wake.mjs`'s deferred order (`BUSY_SEAT_DEFERRAL_MS` is this) and a standing seat's queue, whose oldest entry is the same wait
+ * both of its readers: `wake.ts`'s deferred order (`BUSY_SEAT_DEFERRAL_MS` is this) and a standing seat's queue, whose oldest entry is the same wait
  * seen from the inbox.
  *
  * WHY NOT THE HOUR IT WAS: #3406 sat green and approved for forty minutes behind `orchestrator`, and the hour said nothing for all of them. MEASURED
@@ -134,12 +135,12 @@ export const PANE_PROMPT_MINUTES = ORDER_STALL_MINUTES;
 const MS_PER_MINUTE = 60_000;
 const MINUTES_PER_HOUR = 60;
 const MS_PER_HOUR = MINUTES_PER_HOUR * MS_PER_MINUTE;
-/** A span is quoted in minutes up to this many and in hours past it, `repeating-lines.mjs`'s `spanOf` rule. */
+/** A span is quoted in minutes up to this many and in hours past it, `repeating-lines.ts`'s `spanOf` rule. */
 const HOURS_FROM_MINUTES = 120;
 /** How much of a quoted refusal or a stderr reason a prompt keeps. */
 const MAX_QUOTED_CHARS = 200;
 const MAX_REASON_CHARS = 160;
-/** The measured tick (`repeating-lines.mjs`'s `MINUTES_PER_TICK`): a streak of ticks is quoted in minutes only as "about". */
+/** The measured tick (`repeating-lines.ts`'s `MINUTES_PER_TICK`): a streak of ticks is quoted in minutes only as "about". */
 const MINUTES_PER_TICK = 2.1;
 /** How many PRs or rows one prompt names before it says "and N more". */
 const MAX_NAMED = 5;
@@ -269,12 +270,12 @@ export function noMergeReading({ now, lastMergedAt, lastMergedIn = null, work }:
 export type RedPr = { number: number | string, owner: string | null, redSince: number | null, ownerCommentAts: number[] };
 
 /**
- * WHEN DID THIS PULL REQUEST'S BREAKAGE BEGIN, or `null` when it has none to date (#2956). RED IS DECIDED ONCE, BY `red-pr.mjs`
+ * WHEN DID THIS PULL REQUEST'S BREAKAGE BEGIN, or `null` when it has none to date (#2956). RED IS DECIDED ONCE, BY `red-pr.ts`
  * (`isBrokenRed`, #2954), and the question is asked of it here and not re-answered: `pr-checks-failing` excuses a hold only when the
  * hold is its ADDRESSEE's own (#2400), so a PR a worker owns and `ceo` holds is still ordered, and a count built from those orders
  * alone offered `ceo` its own freeze every day of it (#2883). THE HOLD'S OWN TWO JOBS ARE LEFT OUT and every other red is dated by
  * ITSELF: a held PR with a real `ts / run` failure is red since THAT check finished, not since the hold's `gate` did.
- * `options.holdStands` is `red-pr.mjs`'s: whether the hold still EXCUSES (#2996), so a hold whose reason is gone dates the red it caused.
+ * `options.holdStands` is `red-pr.ts`'s: whether the hold still EXCUSES (#2996), so a hold whose reason is gone dates the red it caused.
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
  * @param {{ holdStands?: (pr: any) => boolean }} [options]
  * @returns {number | null} epoch ms of the earliest broken check, `null` for none or for a broken check GitHub gave no time
@@ -788,11 +789,11 @@ export function toolVersionReading({ agreement }: { agreement: { result: ToolAgr
 
 /**
  * THE READ, in a CHILD: `lib/tool-version-agreement.mjs --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
- * those readers would carry the history readers into every test that reaches the tick (`host-units.mjs`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
+ * those readers would carry the history readers into every test that reaches the tick (`host-units.ts`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
  * declares no tool); `null` is a read that failed, which the reading says. NEVER THROWS.
  * @param {(args: string[]) => string} [run] @returns {{ now: number, result: ToolAgreement } | null | undefined}
  */
-export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, args, { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
+export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...TSX_IMPORT, ...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
   try {
     const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.mjs"), "--json"]));
     return parsed.asked === false ? undefined : parsed;
@@ -1193,7 +1194,7 @@ function tryJson(read: () => string): any {
 /**
  * SIGNAL 21 (#4128, class fix for a11ign/a11ign#4084): A DORA REPOSITORY'S `main` HOLDS A SHIPPED-PATH COMMIT THAT NO RELEASE CARRIES, AND THE OLDEST IS OVER 24 HOURS OLD. Beside
  * `release-run-failed` (signal 18), which sees a release that ran and failed; this sees one that never started. ONE READING PER TRIPPED REPOSITORY, each with its own discriminator
- * (`release-behind-main@<repo>@<oldest sha>`), so a later commit does not re-raise it and one repository's order does not re-key another's. The verdicts are `release-behind-main.mjs`'s.
+ * (`release-behind-main@<repo>@<oldest sha>`), so a later commit does not re-raise it and one repository's order does not re-key another's. The verdicts are `release-behind-main.ts`'s.
  * A repository whose read was refused is UNKNOWN, never clear, and its being unknown does not hide another's trip: a trip and the unknowns are both returned.
  * @param {{ now: number, behind: import("./release-behind-main.ts").RepoFact[] | null }} input
  * @returns {Reading[]}
@@ -1444,7 +1445,7 @@ const readersOf = (signal: string): string[] => [...(FIRST_READERS[signal] ? [FI
 
 /**
  * ONE ORDER PER TRIPPED SIGNAL, to `ceo` (and to the signal's first reader where `FIRST_READERS` names one), the numbers in the prompt. THE PROMPT CARRIES THE OTHER TRIPPED SIGNALS, because a
- * session is delivered one order per tick (`repeating-lines.mjs`' reason). An unknown or clear reading emits nothing here.
+ * session is delivered one order per tick (`repeating-lines.ts`' reason). An unknown or clear reading emits nothing here.
  * @param {Reading[]} readings
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}
  */
@@ -1480,9 +1481,9 @@ function copiesToCompare(pairs: CopyPair[] | null): CopyPair[] | null | undefine
 /**
  * THE WHOLE TICK: say each unknown on stderr, return the orders. NEVER THROWS -- a detector that can crash the gate stops every
  * order behind it (`repeatingLinesTick`'s rule). Only unknowns are written: a tripped signal's report is its order, and a
- * line written every tick for a standing condition would be offered by `repeating-lines.mjs` as a fault of its own.
+ * line written every tick for a standing condition would be offered by `repeating-lines.ts` as a fault of its own.
  * THE COPIES ARE READ HERE, from disk, when the caller gives none: they are files of the checkout the tick runs from, so no
- * caller has them already, and a leaf that reads them keeps `work-gate.mjs` out of it. In an extracted tree no original is
+ * caller has them already, and a leaf that reads them keeps `work-gate.ts` out of it. In an extracted tree no original is
  * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
  * @param {Parameters<typeof orgHealthReadings>[0]} facts
  * @param {{ log?: (line: string) => void, readCopies?: () => CopyPair[] | null, readAutoOff?: () => AutoOffFact }} [io]

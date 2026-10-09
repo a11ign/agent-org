@@ -6,9 +6,9 @@
 // time, on another row. A status check says "working" and is right; THE ROW is what had stalled. Nothing in the gate
 // read a claim going unmoved, and the one nudge that worked cost a `ceo` turn spent reading a pane.
 //
-// THIS FILE IS THE PURE HALF, AND A LEAF: it imports only `node:*`, the git-env scrubber, `claim-labels.mjs` and the
-// shared `herdr-agents.mjs` leaf, so `work-gate.mjs` (which runs before any `pnpm install`) and `wake.mjs` can both import
-// it without one importing the other. It DECIDES; the gate carries the decision as an order and `wake.mjs` performs
+// THIS FILE IS THE PURE HALF, AND A LEAF: it imports only `node:*`, the git-env scrubber, `claim-labels.ts` and the
+// shared `herdr-agents.ts` leaf, so `work-gate.ts` (which runs before any `pnpm install`) and `wake.ts` can both import
+// it without one importing the other. It DECIDES; the gate carries the decision as an order and `wake.ts` performs
 // the parts that need a pane.
 //
 // FIVE THINGS LIVE HERE, EACH THE ANSWER TO ONE DONE-WHEN (#2470's, or #2747's):
@@ -29,7 +29,7 @@ import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 // #3076: how a person is told a pull request's number -- `#38`, or `agent-org#38` for another tracked repository. A pure leaf, like the imports above.
 import { subjectMention } from "./review-attribution.ts";
-// #2747: THE SAME "IS THIS LISTING THE WHOLE ORG" CHECK `wake.mjs`'s REVIEWER TEARDOWN USES (#2465) -- a leaf, so
+// #2747: THE SAME "IS THIS LISTING THE WHOLE ORG" CHECK `wake.ts`'s REVIEWER TEARDOWN USES (#2465) -- a leaf, so
 // this file stays one. A listing that lacks `ceo`/`orchestrator` is a PARTIAL one and proves nothing about who else
 // it left out; a session absent from a COMPLETE listing is real evidence, not yet a verdict (see `goneReading`).
 import { listingIsComplete } from "./herdr-agents.ts";
@@ -183,7 +183,7 @@ export type ClaimRecord = { at: number, author: string | null, branch: string | 
 
 /**
  * The newest claim record on a row, or `null` when none is a CLAIM: no record at all (a dispatch, or a claim that named
- * neither a branch nor a worktree), or the newest one is a RELEASE. `row-claim.mjs` owns the format
+ * neither a branch nor a worktree), or the newest one is a RELEASE. `row-claim.ts` owns the format
  * (`claimRecordComment`) and is unimportable from a tick, so this reads it by the same marker and the same three field
  * names, and the test round-trips the real writer through it. A `Claimed-nothing:` record (#3407) IS a claim, with a null
  * branch and worktree; a release has no field and is "released by", so the two never share a spelling.
@@ -351,8 +351,8 @@ export function workAtRisk(io: HostReads, { worktree, branch, repo }: { worktree
  * #2969: WHERE A DECLARED KEY'S CLONE LIVES, from `host.json`'s `clones` (`{ "<key>": "<absolute path>" }`), or why it cannot be said. A clone is a
  * machine fact no repository can know (ADR 0040, decision 3). EVERY failure is a refusal naming the host file and what is wrong -- an unreadable file
  * is never read as "no clone declared", and a clone is never defaulted to the primary's checkout, whose `origin` is the wrong repository's. The reading
- * is `host-config.mjs`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`. MOVED HERE from `wake.mjs`'s
- * `reviewCloneOf` (which now calls it), because the merged release reads the same clones and this file cannot import `wake.mjs`.
+ * is `host-config.ts`'s (#2991), so a relative clone is refused with the whole file, naming `clones.<key>`. MOVED HERE from `wake.ts`'s
+ * `reviewCloneOf` (which now calls it), because the merged release reads the same clones and this file cannot import `wake.ts`.
  * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from] @returns {CloneAnswer}
  */
 export function cloneOfKey(key: string, { path = hostConfigPath(), read = readFileSync }: { path?: string; read?: typeof readFileSync; } = {}): CloneAnswer {
@@ -644,7 +644,7 @@ function mergedReading(facts: ClaimFacts): Reading | null {
 }
 
 /**
- * herdr's word for a workspace with no agent detected in it (#2534, `wake.mjs`'s `hasNoAgent`, which this leaf cannot import).
+ * herdr's word for a workspace with no agent detected in it (#2534, `wake.ts`'s `hasNoAgent`, which this leaf cannot import).
  * @param {{status?: string}} agent
  */
 function holdsNoAgent(agent: { status?: string; }) {
@@ -861,7 +861,7 @@ export function nextStallState(before: StallState, readings: { facts: ClaimFacts
  * What one reading leaves in the memory, or `null` for nothing. A NUDGE is recorded at `now` (`idle` when it was the idle-claimant's, #2999), a
  * `nudged` one keeps its record, an `idle-watch` the tick the holder was first found idle, a `vacating` one the tick it was first found gone.
  *
- * A STALL RELEASE THAT HAS NOT YET BEEN PERFORMED KEEPS ITS MEMORY: `wake.mjs` performs it after this tick, may fail (a workspace that will
+ * A STALL RELEASE THAT HAS NOT YET BEEN PERFORMED KEEPS ITS MEMORY: `wake.ts` performs it after this tick, may fail (a workspace that will
  * not close, a decline that is refused), and the gate emits the order again next tick -- which must read as the SECOND reading again, not
  * forget the nudge and start a fresh two hours. Once performed the row is no longer claimed and the entry goes with it. A GONE RELEASE THAT HAS
  * NOT YET BEEN PERFORMED keeps its `goneSince` for the same reason.
@@ -957,7 +957,7 @@ function nudgeOrder(facts: ClaimFacts, nudgedAt: number, lastMoveAt: number): St
 }
 
 /**
- * The nudge's `causeKey`: one per stall episode. The gate derives it here and reads the wake ledger for it, and `wake.mjs` records it on delivery,
+ * The nudge's `causeKey`: one per stall episode. The gate derives it here and reads the wake ledger for it, and `wake.ts` records it on delivery,
  * so the key has ONE spelling. @param {string} session @param {number} row @param {number} nudgedAt
  */
 export function nudgeKey(session: string, row: number, nudgedAt: number) {
@@ -966,7 +966,7 @@ export function nudgeKey(session: string, row: number, nudgedAt: number) {
 
 /**
  * When the wake ledger last recorded `key` as DELIVERED, or `null`: the line `<epochMs>\t<causeKey>[...]` the tick writes once herdr has accepted the
- * prompt, with a `VOIDED` line (a delivery a restart killed) taking one back. THE LEDGER'S FORMAT IS `wake.mjs`'s, which this leaf cannot import, so
+ * prompt, with a `VOIDED` line (a delivery a restart killed) taking one back. THE LEDGER'S FORMAT IS `wake.ts`'s, which this leaf cannot import, so
  * the test writes a line with the real `ledgerLine` and reads it here: a change of format breaks that test and not the release.
  * @param {string} raw the ledger's text @param {string} key @returns {number | null}
  */
@@ -986,7 +986,7 @@ export function nudgeDeliveredAt(raw: string, key: string): number | null {
 
 /**
  * (#3076) A PULL REQUEST'S NUMBER AS A PERSON READS IT: `#38` for the home repository, `agent-org#38` for another tracked one, because `#38` alone
- * opens the home repository's. Every spelling of a release's pull request -- the order's prompt here, the comment `wake.mjs` leaves on the row --
+ * opens the home repository's. Every spelling of a release's pull request -- the order's prompt here, the comment `wake.ts` leaves on the row --
  * goes through this and the two below, so no sentence can name one without saying which repository it is in.
  * @param {number} number @param {string | undefined} repoKey @returns {string}
  */
@@ -1005,7 +1005,7 @@ export function openPrMentions(release: { openPrs?: number[]; openPrRepoKeys?: (
 }
 
 /**
- * The release, as an order `wake.mjs` PERFORMS. It carries every fact the performer needs and the prompt is only what a
+ * The release, as an order `wake.ts` PERFORMS. It carries every fact the performer needs and the prompt is only what a
  * log line says: a release is not a question, and no session is asked anything.
  * @param {Pick<ClaimFacts, "row" | "session" | "branch" | "worktree">} facts @param {Extract<Reading, { kind: "release" }>} reading @returns {StallOrder}
  */

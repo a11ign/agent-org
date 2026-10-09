@@ -33,7 +33,7 @@ export type Result = { task: Task, ok: true, output: string } | { task: Task, ok
 /** `Read`'s own default in engineer.md: a whole read only under about 200 lines. */
 export const DEFAULT_READ_LIMIT = 200;
 
-/** `gh`'s own output is capped, the same ceiling `prune-tmp.mjs`'s neighbours use for a `gh` read. */
+/** `gh`'s own output is capped, the same ceiling `prune-tmp.ts`'s neighbours use for a `gh` read. */
 const MAX_GH_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 const defaultRun: (cmd: string, args: string[], opts: import("node:child_process").ExecFileSyncOptions) => string = (cmd, args, opts): string => (execFileSync(cmd, args, opts) as string);

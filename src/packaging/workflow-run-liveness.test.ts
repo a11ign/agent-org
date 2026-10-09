@@ -7,7 +7,7 @@
  * workflow's expected run never happened. Two commits reached `main` outside their PR; `ci.yml` arrived
  * and `lint.yml` (retired the same day) went, and every one of those three guards stayed green.
  *
- * `merge-guard.mjs` (#161) already answers the run-half of this correctly, for one PR given its number.
+ * `merge-guard.ts` (#161) already answers the run-half of this correctly, for one PR given its number.
  * This generalises it into a check runnable for any commit that has already reached `main` — the shape
  * that actually failed silently — reusing `lookupRequiredContexts`/`lookupCheckRuns`/`checkReasons`
  * rather than re-deriving them, since a second copy of "how do I know a check actually ran" is exactly

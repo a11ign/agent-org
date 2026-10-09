@@ -4,14 +4,14 @@
 //
 //   node src/trace/headless-pilot.mjs --row <n> --named-on <issue> --max-turns <N> --max-budget-usd <D> [--dry-run]
 //
-// `ceo` ruled the shape on 2026-10-08 (comment on #4184): (b) FIRST, a script a person runs, and no change to `wake.mjs`. A second spawn path is built only if this shows a
+// `ceo` ruled the shape on 2026-10-08 (comment on #4184): (b) FIRST, a script a person runs, and no change to `wake.ts`. A second spawn path is built only if this shows a
 // saving worth the claim-path work, and that is a new ruling. THIS FILE RUNS NO PILOT: it is the instrument, and the ten runs are a second row's.
 //
 // WHAT IT DOES, in order: refuse (six ways, each named) -> read the row -> add a throwaway worktree off `origin/main` -> launch `claude` with `agentArgs(profile, { headless })` and send
 // the row's brief -> run the row's own Acceptance in that worktree -> write ONE record -> remove the worktree, on a success and on a failure.
 //
-// THE BRIEF IS `addressed()`'s (wake.mjs, exported): the very function a spawned pane worker's first-contact order is built by, handed the same `spawned` facts, so the text is a
-// pane worker's for that row and not a copy that drifts. `wake.mjs` is imported and never edited. THE PROFILE IS `profileFor("ready-row-unclaimed")`, the cause that spawns a per-row
+// THE BRIEF IS `addressed()`'s (wake.ts, exported): the very function a spawned pane worker's first-contact order is built by, handed the same `spawned` facts, so the text is a
+// pane worker's for that row and not a copy that drifts. `wake.ts` is imported and never edited. THE PROFILE IS `profileFor("ready-row-unclaimed")`, the cause that spawns a per-row
 // engineer. Two things differ from a pane worker, on purpose: the label is `pilot-<row>` (NOT `worker-<row>`: the pane worker that builds the same row afterwards must keep its own
 // cost under its own name, and a claim made under `worker-<row>` would be a claim), and a tail paragraph says this is a measurement (below).
 //
@@ -40,7 +40,7 @@ import { REPO } from "../project-identity.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { eventsOfTranscript, repriceEvents } from "./store.mjs";
 
-/** The cause whose profile a per-row engineer is spawned with (`SPAWN_CAUSES` in wake.mjs). */
+/** The cause whose profile a per-row engineer is spawned with (`SPAWN_CAUSES` in wake.ts). */
 export const PILOT_CAUSE = "ready-row-unclaimed";
 export const ORDER_PREVIEW_LINES = 20;
 const MINUTE_MS = 60_000;
@@ -129,7 +129,7 @@ export function rowRefusal({ row, namedOn, namedBody, issue }) {
 }
 
 /**
- * The first-contact order a pane worker would get for this row, plus {@link MEASUREMENT_TAIL}. `addressed` is wake.mjs's, handed the facts a spawn hands it.
+ * The first-contact order a pane worker would get for this row, plus {@link MEASUREMENT_TAIL}. `addressed` is wake.ts's, handed the facts a spawn hands it.
  * @param {{ issue: Issue, label: string, worktree: string, branch: string }} input
  */
 export function pilotOrder({ issue, label, worktree, branch }) {

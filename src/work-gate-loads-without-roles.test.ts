@@ -2,13 +2,13 @@
 /**
  * #3675: THE WORK GATE REQUIRES THE PROJECT'S ROSTER, AND SAYS SO WHEN IT IS ABSENT.
  *
- * #2174 once wanted the gate to load with no `.agent-org/roles`. It no longer can, and the ruling on #3675 is that it need not: `work-gate.mjs` reaches
- * `arm-pr.mjs` through `auto-arm-sweep.mjs` and `work-gate/org-health.mjs`, and `arm-pr.mjs` reads `sessions.json` at import. `project-roles.mjs` refuses a missing
+ * #2174 once wanted the gate to load with no `.agent-org/roles`. It no longer can, and the ruling on #3675 is that it need not: `work-gate.ts` reaches
+ * `arm-pr.ts` through `auto-arm-sweep.ts` and `work-gate/org-health.mjs`, and `arm-pr.ts` reads `sessions.json` at import. `project-roles.ts` refuses a missing
  * roles directory on purpose (#2621: nothing is defaulted to another project's value). What matters is that the refusal is the NAMED one, so this pins the
  * outcome rather than leaving it to three comments.
  *
  * The tree is built as `packaging/work-gate.test.ts` builds its own (`copyToolAndProject`: the gate's import closure, the project's declaration and the plugin it names).
- * Direction one leaves the roles directory out and expects the `roles.dir` refusal; direction two is the SAME copy plus the smallest `sessions.json` `arm-pr.mjs` accepts and
+ * Direction one leaves the roles directory out and expects the `roles.dir` refusal; direction two is the SAME copy plus the smallest `sessions.json` `arm-pr.ts` accepts and
  * expects a clean load, which is the control for the first: a copy that failed for any other reason would fail here too.
  */
 import { test } from "node:test";
@@ -44,7 +44,7 @@ function loadGate({ roster }: { roster?: object }) {
   }
 }
 
-test("#3675: work-gate.mjs with NO .agent-org/roles refuses, naming roles.dir", () => {
+test("#3675: work-gate.ts with NO .agent-org/roles refuses, naming roles.dir", () => {
   const { status, stderr } = loadGate({});
   assert.notEqual(status, 0, "the gate loaded with no roster; the requirement this file pins is gone");
   assert.match(stderr, /field `roles\.dir` REFUSED/, `it must fail with the named refusal and not for another reason: ${stderr}`);

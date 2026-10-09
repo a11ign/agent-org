@@ -7,7 +7,7 @@
  * already refuses a held PR. **Demonstrating that instead of citing it is what found the hole**, and
  * there were three:
  *
- *   1. `auto-arm-sweep.mjs` refuses to ARM a held PR. True — and it is the only place that does.
+ *   1. `auto-arm-sweep.ts` refuses to ARM a held PR. True — and it is the only place that does.
  *   2. `auto-arm.yml`'s per-PR `arm` job gates on `draft == false && base.ref == 'main'` and NOTHING
  *      else, then runs `gh pr merge --auto` unconditionally. It re-arms a held PR on its next event.
  *   3. **Nothing disarms.** `git grep "disable-auto"` over the whole tree was EMPTY. Once auto-merge is
@@ -43,12 +43,12 @@ export type WaitFacts = import("./wait-condition.ts").WaitFacts;
  * every armed PR in the org.
  *
  * A `session:` label on a PR is never consulted by the hold path again (ceo, 2026-09-09). Rows keep
- * `session:` — `row-claim.mjs` and `ready-label-audit.mjs` are unchanged and MUST stay that way, which
+ * `session:` — `row-claim.ts` and `ready-label-audit.ts` are unchanged and MUST stay that way, which
  * is why this constant is not shared with them.
  *
  * WHAT THIS RENAME DOES NOT DO: it does not make a hold stop a MERGE. The hold is enforced at ARM time —
  * `pr-hold` disarms when it takes the hold, and `armabilityOf` below stops anything re-arming. Nothing in
- * the required `gate` context consults a label: `merge-guard.mjs --ci-gate` calls `mergeSafetyVerdict`,
+ * the required `gate` context consults a label: `merge-guard.ts --ci-gate` calls `mergeSafetyVerdict`,
  * which reads head-vs-tip and nothing else. So a hold placed on an ALREADY-ARMED PR still stops nothing,
  * before this rename and after it. Recorded here rather than left to be discovered, because a reader who
  * sees a namespace built for holds will reasonably assume the holds are enforced.
@@ -80,7 +80,7 @@ export function holdReasonOf(pr: { body?: string; comments?: any[]; labels?: any
 }
 
 /**
- * IS THIS HELD PR STILL EXCUSED? THE LABEL ALONE NO LONGER SAYS SO (#2996): `red-pr.mjs`, `org-health.mjs` and the claim treated
+ * IS THIS HELD PR STILL EXCUSED? THE LABEL ALONE NO LONGER SAYS SO (#2996): `red-pr.ts`, `org-health.mjs` and the claim treated
  * `hold:*` as proof of health and a freeze that ended stood for four hours. A hold is excused while a condition it names is
  * UNRESOLVED OR UNKNOWN, while a `manual` hold is younger than `MANUAL_WAIT_HOURS`, and while a hold with NO reason has been quiet
  * for less than that. A PR that is not held is not excused: there is nothing to excuse.

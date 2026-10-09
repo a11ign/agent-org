@@ -1,10 +1,10 @@
 // #2782: WHO DELETED THIS WORKTREE, AND WAS ITS ROW STILL CLAIMED? Two questions every remover of a worktree
-// directory (`prune-worktrees.mjs`, `prune-tmp.mjs`, `row-claim.mjs`) now answers through this one file.
+// directory (`prune-worktrees.ts`, `prune-tmp.ts`, `row-claim.ts`) now answers through this one file.
 //
 // The incident: `wt-2623` was deleted under its live claim twice (2026-09-28 and 2026-09-29), and NOTHING
 // recorded the removal. The prune's own journal could not convict or clear it -- its summary lines read
-// `removed N worktree(s)` and its trees are listed in interleaved blocks -- and `prune-tmp.mjs` and
-// `row-claim.mjs` write no line at all. A second investigation was the price of the first having left nothing.
+// `removed N worktree(s)` and its trees are listed in interleaved blocks -- and `prune-tmp.ts` and
+// `row-claim.ts` write no line at all. A second investigation was the price of the first having left nothing.
 //
 // TWO PARTS, both here so the three removers cannot drift apart:
 //   1. `recordRemoval` -- one JSON line per removal under `~/.cache/a11ign/worktree-removals`: the path, the
@@ -80,7 +80,7 @@ export function rowCandidates({ path, branch }: { path: string; branch?: string 
 }
 
 /**
- * A LITERAL `spawnSync("gh", ...)`, on purpose: `host-units.mjs`'s `SPAWNS_GH` reads the quoted name, and a spawn it cannot read is a unit that spends an API pool while the guard reports it clean (the prune unit does, since #2782).
+ * A LITERAL `spawnSync("gh", ...)`, on purpose: `host-units.ts`'s `SPAWNS_GH` reads the quoted name, and a spawn it cannot read is a unit that spends an API pool while the guard reports it clean (the prune unit does, since #2782).
  */
 export type Gh = (args: string[]) => string;
 /**
@@ -160,7 +160,7 @@ export function rowsClosed(tree: { path: string; branch?: string | null; }, { gh
 
 /**
  * Every directory at or under `dir` that IS a worktree (its `.git` is a file), for a remover that deletes a whole directory
- * and so can take worktrees with it: `prune-tmp.mjs` removes scratchpads recursively.
+ * and so can take worktrees with it: `prune-tmp.ts` removes scratchpads recursively.
  * @param {string} dir @param {number} [depth] @returns {string[]}
  */
 export function nestedWorktrees(dir: string, depth: number = NESTED_DEPTH): string[] {

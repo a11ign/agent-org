@@ -38,7 +38,7 @@
  *    census behind a logging `gh` shim covers those; the stranded-branches CLI tests are the shape (#1430).
  * 2. **A default destructured from a rest element**, as in `withBoardSnapshot`'s
  *    `const { run = defaultRun } = snapshotDeps` where `snapshotDeps` is `...snapshotDeps` of `deps`
- *    (`board-snapshot.mjs`). The body-default rule reads only a destructure of a parameter.
+ *    (`board-snapshot.ts`). The body-default rule reads only a destructure of a parameter.
  * 3. **A call through a renamed local** (`const f = imported; f()`), a dynamic `import()`, or a package-specifier
  *    import. Imports are resolved by relative path only.
  * 4. **An injected value that is itself live**, such as a test passing `{ run: defaultRun }` it imported.

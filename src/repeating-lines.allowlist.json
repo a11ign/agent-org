@@ -1,10 +1,10 @@
 {
-  "_what": "Lines the gate EXPECTS to see repeating (#2848). Each entry is a regex over the NORMALISED line (numbers -> N, timestamps -> T, shas -> H; see normaliseLine in repeating-lines.mjs -- so `a11ign` reads `aNign`) and carries the reason. An entry without a reason is refused at load.",
+  "_what": "Lines the gate EXPECTS to see repeating (#2848). Each entry is a regex over the NORMALISED line (numbers -> N, timestamps -> T, shas -> H; see normaliseLine in repeating-lines.ts -- so `a11ign` reads `aNign`) and carries the reason. An entry without a reason is refused at load.",
   "_rule": "Add an entry only for a line that is the org working as designed. A line that reports a fault is fixed or filed `ready`; it is never allowlisted to make the offer stop.",
   "allow": [
     {
       "pattern": "^DEFERRED ",
-      "reason": "wake.mjs's report of an order whose seat is mid-turn (#3029): the queue waiting for a turn to end, which it exists to do. It is written until the seat is idle and carries its own age; past one hour (BUSY_SEAT_DEFERRAL_MS) the order is written as UNDELIVERED with the `nowhere to go` summary instead, and neither of those is allowlisted."
+      "reason": "wake.ts's report of an order whose seat is mid-turn (#3029): the queue waiting for a turn to end, which it exists to do. It is written until the seat is idle and carries its own age; past one hour (BUSY_SEAT_DEFERRAL_MS) the order is written as UNDELIVERED with the `nowhere to go` summary instead, and neither of those is allowlisted."
     },
     {
       "pattern": "^SHELVED row #N: ",
@@ -12,23 +12,23 @@
     },
     {
       "pattern": "^tool checkout detached at origin/main \\(H\\)$",
-      "reason": "update-tool.mjs states where the tool's own checkout is on every tick it runs (the work-tick unit's first ExecStartPre); it is a position reading, the twin of the primary's line below, and was offered to orchestrator after 30 ticks on 2026-10-02. A failed update throws and prints a different line (`has uncommitted changes to tracked files`, `is not a primary checkout`), which is not allowlisted."
+      "reason": "update-tool.ts states where the tool's own checkout is on every tick it runs (the work-tick unit's first ExecStartPre); it is a position reading, the twin of the primary's line below, and was offered to orchestrator after 30 ticks on 2026-10-02. A failed update throws and prints a different line (`has uncommitted changes to tracked files`, `is not a primary checkout`), which is not allowlisted."
     },
     {
       "pattern": "^agent-org vN\\.N\\.N( \\(H\\))?$",
-      "reason": "the tick's version banner (a11ign/a11ign#3443): update-tool.mjs prints `agent-org vX.Y.Z (<sha>)` and work-tick.mjs prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (a11ign/a11ign#3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
+      "reason": "the tick's version banner (a11ign/a11ign#3443): update-tool.ts prints `agent-org vX.Y.Z (<sha>)` and work-tick.ts prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (a11ign/a11ign#3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
     },
     {
       "pattern": "^github-status: operational \\(call N ms\\)\\.$",
-      "reason": "the gate's reading of githubstatus.com, written on EVERY tick (work-gate.mjs `holdForIncidentNow`, a11ign/a11ign#3723) so the cost of the call is in the journal: the CLEAR state, the one it is in whenever GitHub has no incident. It is a position reading, the twin of the version banner, and 30 consecutive ticks of it were offered to orchestrator on 2026-10-06. The other two states print different lines, `github-status: UNKNOWN (...)` (the status page could not be read) and `GITHUB INCIDENT: ...` (a runner outage is holding orders), and neither is allowlisted."
+      "reason": "the gate's reading of githubstatus.com, written on EVERY tick (work-gate.ts `holdForIncidentNow`, a11ign/a11ign#3723) so the cost of the call is in the journal: the CLEAR state, the one it is in whenever GitHub has no incident. It is a position reading, the twin of the version banner, and 30 consecutive ticks of it were offered to orchestrator on 2026-10-06. The other two states print different lines, `github-status: UNKNOWN (...)` (the status page could not be read) and `GITHUB INCIDENT: ...` (a runner outage is holding orders), and neither is allowlisted."
     },
     {
       "pattern": "^primary checkout detached at origin/main \\(H\\)$",
-      "reason": "update-primary.mjs states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
+      "reason": "update-primary.ts states where the checkout is on every tick it runs; it is a position reading, not a fault. A failed update prints a different line, which is not allowlisted."
     },
     {
       "pattern": "^> (aNign-monorepo@N\\.N\\.N primary:update( /\\S+)?|node packages/agent-org/src/update-primary\\.mjs|agent-org primary:update)$",
-      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since a11ign/a11ign#2974's cut-over 3, appends the checkout path (`... primary:update /home/agent/repos/a11y-witness`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02. The SECOND line pnpm prints is the script body: `node packages/agent-org/src/update-primary.mjs` until a11ign/a11ign#3097's cut-over 4, `agent-org primary:update` since, and that body was offered after 30 ticks on 2026-10-03."
+      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since a11ign/a11ign#2974's cut-over 3, appends the checkout path (`... primary:update /home/agent/repos/a11y-witness`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02. The SECOND line pnpm prints is the script body: `node packages/agent-org/src/update-primary.ts` until a11ign/a11ign#3097's cut-over 4, `agent-org primary:update` since, and that body was offered after 30 ticks on 2026-10-03."
     },
     {
       "pattern": "^aNign-work-tick\\.service: Consumed ",

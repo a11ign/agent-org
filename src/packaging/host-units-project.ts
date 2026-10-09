@@ -3,13 +3,13 @@
  * (#3233) THE PROJECT `host-units.test.ts` RUNS AGAINST: a temp directory built from `fixtures/host-units/`, made the tool's project BEFORE
  * the tool is imported.
  *
- * The tool resolves its project once, at import (`HOME_CHECKOUT`, from `$AGENT_ORG_HOST`), and `host-units.mjs` derives its unit directory,
+ * The tool resolves its project once, at import (`HOME_CHECKOUT`, from `$AGENT_ORG_HOST`), and `host-units.ts` derives its unit directory,
  * its `package.json` scripts and its declared keys from it. In CI that was a11ign's live checkout, so the file's verdict moved whenever a11ign
  * merged a unit, a script or a workflow -- and the file had four tests that failed outright anywhere the tool is not laid at
  * `<project>/packages/agent-org`. A fixture project makes both true at once: the tool's own templates are the only a11ign-independent input
  * left, and the layout is one this file builds.
  *
- * IMPORT THIS FIRST. ES modules evaluate in import order, so the environment variable is set before `host-units.mjs` (and `project-config.mjs`
+ * IMPORT THIS FIRST. ES modules evaluate in import order, so the environment variable is set before `host-units.ts` (and `project-config.ts`
  * beneath it) are evaluated; it imports nothing from the tool for the same reason.
  */
 import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";

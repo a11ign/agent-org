@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3892)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3892)
 /**
  * #3892: A READY ROW WHOSE BRANCH'S PULL REQUEST WAS CLOSED UNMERGED IS OFFERED, NOT SHELVED.
  *

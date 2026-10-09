@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.mjs` resolves one (#3233)
+import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
 const { hostIdentityDrift, hostIdentityInstall, hostUnitDrift, ownedIdentityFiles, shippedScriptText } = await import("../host-units.ts");
 const { homeHostConfig } = await import("../host-config.ts");
@@ -143,7 +143,7 @@ const PROBE = `import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const program = process.argv[1] ?? "";
 if (!program.endsWith("bin.mjs")) {
-  const config = pathToFileURL(program.slice(0, program.lastIndexOf("/src/") + "/src/".length) + "project-config.mjs").href;
+  const config = pathToFileURL(program.slice(0, program.lastIndexOf("/src/") + "/src/".length) + "project-config.ts").href;
   let line;
   try { line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
   appendFileSync(process.env.PROBE_OUT, line + "\\n");

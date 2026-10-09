@@ -1,5 +1,5 @@
-// no-token: settle-closed-rows.mjs -- #827, #2719. Two cases below `await import` this module for
-// `closedRowsOnProject`, whose default `gh` (execFileSync("gh", ...), settle-closed-rows.mjs:74) this
+// no-token: settle-closed-rows.ts -- #827, #2719. Two cases below `await import` this module for
+// `closedRowsOnProject`, whose default `gh` (execFileSync("gh", ...), settle-closed-rows.ts:74) this
 // file never lets run: every call here hands it its own fake page-returning function instead, testing the
 // cursor-walk assembly as pure data, never a real `gh`. Measured -- both cases pass with `gh` off `PATH`
 // entirely and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset. Without this the acceptance job refuses the
@@ -175,7 +175,7 @@ test("#1360 a Status read that FAILS refuses with its classified cause, and the 
  * `statusContradictions`, supplied by the fixtures.
  *
  * The remedy has two halves and neither is a test: the name has ONE copy (`RESTING_STATUS`), and
- * `board-snapshot.mjs` reads the live option list and reports what this code writes that the board will
+ * `board-snapshot.ts` reads the live option list and reports what this code writes that the board will
  * not take. What a test CAN hold is that the copy really is one -- which is
  * `board-status-health.test.ts`'s `one copy` case -- and that consolidating it did not change the name
  * actually sent, which is the existing `it asks for \`Done\` by name` case above, deliberately left
@@ -208,7 +208,7 @@ const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.
 /** Whole-line comments dropped, so a check reads the code rather than the prose beside it. */
 const codeOnly = (text: string) => text.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
 
-/** The board as `board-snapshot.mjs` records it, narrowed to the three fields the classifier reads. */
+/** The board as `board-snapshot.ts` records it, narrowed to the three fields the classifier reads. */
 type Item = { number: number | null, state: string | null, status: string | null };
 const item = (number: number | null, state: string | null, status: string | null): Item => ({ number, state, status });
 
@@ -333,7 +333,7 @@ test("#2081 the log prefix says which path did the work, and the two older paths
   settleClosedStatus(1, { moveStatus: () => ({ moved: true }), log: (l) => said.push(l), prefix: "SETTLE-BOARD" });
   settleClosedStatus(2, { moveStatus: () => ({ moved: true }), log: (l) => said.push(l) });
   assert.deepEqual(said, ["SETTLE-BOARD: #1 Status -> Done.", "CLOSE-ROWS: #2 Status -> Done."],
-    "close-rows-sweep.mjs's own rule -- which path did the work is a fact about the pipeline's health -- and "
+    "close-rows-sweep.ts's own rule -- which path did the work is a fact about the pipeline's health -- and "
     + "the default is the literal both close paths have always logged");
 });
 
@@ -347,11 +347,11 @@ test("#2081 the board-keyed command reads no PR list -- and the same check DOES 
   // at length why it reads no PR list -- and a check that cannot tell a mention from a call is a check on
   // the wording rather than on the code.
   const readsPrList = (text: string) => /\["pr", "list"|closingIssuesReferences/.test(codeOnly(text));
-  assert.equal(readsPrList(source("settle-closed-rows.mjs")), false, "the board-keyed pass keys on the board alone");
-  assert.equal(readsPrList(source("settle-closed-status.mjs")), false,
+  assert.equal(readsPrList(source("settle-closed-rows.ts")), false, "the board-keyed pass keys on the board alone");
+  assert.equal(readsPrList(source("settle-closed-status.ts")), false,
     "AND the pure module the floor's own `gh` argv moved into on review -- the done-when follows the "
     + "population read wherever it is built, or the check protects the file rather than the pass");
-  assert.equal(readsPrList(source("close-rows-sweep.mjs")), true,
+  assert.equal(readsPrList(source("close-rows-sweep.ts")), true,
     "THE POSITIVE CONTROL: the sweep this pass complements does read one, so the check above is not vacuous");
 });
 
@@ -398,7 +398,7 @@ test("#2081 the floor credits nothing to a numberless item, and an empty populat
  * up: measured, the population crossed the 500 `FLOOR_LIMIT` four days after being read at 201 with "real
  * headroom." #2719 replaces the search with a cursor walk of `repository.issues(states: CLOSED)`, which
  * GitHub does not cap, so no number here can be outgrown the same way again -- only a per-run page-count
- * safety valve remains, and that is a bug guard, never a population ceiling (`settle-closed-rows.mjs`'s
+ * safety valve remains, and that is a bug guard, never a population ceiling (`settle-closed-rows.ts`'s
  * own `CLOSED_ROWS_MAX_PAGES` comment says so).
  */
 
@@ -534,7 +534,7 @@ test("#2719 a population that never finishes paging REFUSES rather than looping 
 });
 
 test("#2081 the live wiring supplies the declared Project and a named page-count safety valve", () => {
-  const wiring = codeOnly(source("settle-closed-rows.mjs"));
+  const wiring = codeOnly(source("settle-closed-rows.ts"));
   assert.match(wiring, /closedRowsPageFromRead\(raw, PROJECT_NUMBER\)/,
     "the one call site passes the DECLARED identity, never a literal retyped here -- the floor asking "
     + "about the wrong Project is the second review point one level up");

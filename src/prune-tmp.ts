@@ -36,7 +36,7 @@
 // `herdr --session org workspace list` returns `label`, `workspace_id` and `agent_status` -- and NO session
 // uuid. It answers "which sessions are alive", never "which scratchpad is theirs". Worse, every live
 // `claude` process runs `claude --resume <uuid>` holding `<that uuid>/tasks` open, and that uuid is the one
-// it STARTED with: `prompt:session`/`wake.mjs` clear before every order, and a clear mints a NEW uuid and a
+// it STARTED with: `prompt:session`/`wake.ts` clear before every order, and a clear mints a NEW uuid and a
 // NEW scratchpad. Measured 2026-09-23T21:5xZ on this host: six live `claude` processes, every argv uuid
 // 7-9h cold, while the uuid each of those sessions is actually WRITING is named by no process at all.
 //
@@ -68,7 +68,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, lstatSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
-// RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.mjs` records:
+// RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.ts` records:
 // files in this package run before `pnpm install`, where a package specifier dies.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { worktreeOwner } from "./worktree-owner.ts";
@@ -98,7 +98,7 @@ import { claimRefusal, nestedWorktrees, recordRemoval, worktreeBranch } from "./
 const MS_PER_HOUR = 60 * 60 * 1000;
 
 /** What the removal log names as the asker. */
-const CALLER = "prune-tmp.mjs";
+const CALLER = "prune-tmp.ts";
 export const ACTIVITY_WINDOW_MS = 24 * MS_PER_HOUR;
 
 /** Where session scratchpads live, relative to the tmp root: `<tmp>/claude-1000/<project>/<uuid>`. */
@@ -359,7 +359,7 @@ export type Verdict = { path: string, family: Family["family"], verdict: "remove
  * THE CLASSIFIER: one path in, one verdict and one REASON out.
  *
  * Every branch that cannot answer says so and refuses. There is deliberately no default that reads
- * "could not tell" as "safe to remove" -- that collapse is the defect `prune-worktrees.mjs`'s
+ * "could not tell" as "safe to remove" -- that collapse is the defect `prune-worktrees.ts`'s
  * INCONCLUSIVE bucket exists for, and here it would be unrecoverable rather than merely wrong.
  *
  * The ORDER below decides which reason is printed and nothing else: every one of these refuses, so a path
@@ -529,7 +529,7 @@ const sleep: (ms: number) => void = (ms): void => { Atomics.wait(new Int32Array(
  * until the run's budget is spent.
  *
  * `dryRun` SKIPS THE REMOVAL AND NOTHING ELSE. Same walk, same classifier, same reasons, so the listing
- * is this tool's own answer rather than a second implementation of it -- the shape `prune-worktrees.mjs`
+ * is this tool's own answer rather than a second implementation of it -- the shape `prune-worktrees.ts`
  * records a hand-rolled re-implementation getting wrong on 99 of 114 worktrees.
  *
  * THE ORDER IS THE STATE MACHINE: trees an earlier run began removing first (a killed run leaves exactly that), then the two
@@ -671,7 +671,7 @@ function removeContained(path: string, tmpRoot: string, remove: ((path: string) 
     if (rename) target = markDoomed(path);
     // `remove` walks a tree from its leaves and unlinks a symlink rather than following it, which matters here: a worktree's
     // `node_modules` is a SYMLINK into the primary checkout, and a recursive delete that followed one
-    // would empty the primary (`prune-worktrees.mjs`, #2012, reproduced with content behind the link).
+    // would empty the primary (`prune-worktrees.ts`, #2012, reproduced with content behind the link).
     const finished = (remove ?? ((entry) => removeFromLeaves(entry, { left: Infinity }, () => {})))(target) !== false;
     return { failure: null, finished, path: target };
   } catch (error) {
@@ -787,8 +787,8 @@ function refusalLines(refused: Verdict[]): string[] {
 
 async function main() {
   refuseUnknownFlags(["--apply", "--tmp", "--fixtures-only"],
-    { entry: import.meta.url, command: "node packages/agent-org/src/prune-tmp.mjs" });
-  // THE DEFAULT IS THE LISTING, for the reason `prune-worktrees.mjs` paid for: a command whose name reads
+    { entry: import.meta.url, command: "node packages/agent-org/src/prune-tmp.ts" });
+  // THE DEFAULT IS THE LISTING, for the reason `prune-worktrees.ts` paid for: a command whose name reads
   // as a report, on a host with eight live sessions, is one somebody runs to LOOK. There is deliberately
   // no timer for the REVIEW and SCRATCHPAD families -- #2166 puts that decision one cycle after the named list, which is
   // the precedent #2012/#2146 set. The timer (#3849) passes `--fixtures-only`: a test fixture is made by this repository's own tests,

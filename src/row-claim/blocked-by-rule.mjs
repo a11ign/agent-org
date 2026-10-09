@@ -114,7 +114,7 @@ export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run, repo 
     return { ok: false,
       reason: "there is no PR of this session's own to attach a measurement comment to -- a row IN BUILD "
         + "has none, which is what puts it in build. `--blocked-by` cannot excuse it: finish that row, or "
-        + "`row-claim.mjs decline <n> --session=<name>` to give it back, then claim" };
+        + "`row-claim.ts decline <n> --session=<name>` to give it back, then claim" };
   }
   const comments = lookupOwnPrComments(ownPr.number, { run, repo });
   if (comments === null) {

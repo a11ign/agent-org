@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub or an injected seam, and `git` is a fake: nothing imported reaches a real one
 /**
- * `packages/agent-org/src/wake.mjs`, #3031: A HANDOFF TO A LIVE REVIEWER INSTANCE IS DELIVERED, NOT REFUSED AS "ABOUT NO PULL REQUEST".
+ * `packages/agent-org/src/wake.ts`, #3031: A HANDOFF TO A LIVE REVIEWER INSTANCE IS DELIVERED, NOT REFUSED AS "ABOUT NO PULL REQUEST".
  *
  * `reviewerMismatch` read the pull request from the cause key, and a handoff's key (`handoff/<session>/<id>`) names none, so the
  * author's re-prompt (`prompt:session -- reviewer-<n>`), once queued because the seat was mid-turn, was refused on every tick until the

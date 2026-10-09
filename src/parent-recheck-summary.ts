@@ -22,7 +22,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
  * when a real failing subtest can be NAMED; anything else -- a log with no TAP summary at all, a `# fail
  * N` line with N > 0 but no matching `not ok` (a truncated or malformed capture) -- is `unknown`, never
  * `fail`, because a verdict this function cannot back up must not be recorded as though it
- * could. See `trunk-red.mjs`'s `attributionOf`: `unknown` is its own answer, never read as inherited (which
+ * could. See `trunk-red.ts`'s `attributionOf`: `unknown` is its own answer, never read as inherited (which
  * would send the fix to nobody in particular) and never as this merge's own (which would blame it).
  *
  * @param {string} text
@@ -60,10 +60,10 @@ export function testIdentity(notOkLine: string): string {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/parent-recheck-summary.mjs <log-file>" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/parent-recheck-summary.ts <log-file>" });
   const path = process.argv[2];
   if (!path) {
-    process.stderr.write("usage: node packages/agent-org/src/parent-recheck-summary.mjs <log-file>\n");
+    process.stderr.write("usage: node packages/agent-org/src/parent-recheck-summary.ts <log-file>\n");
     process.exitCode = 2;
     return;
   }

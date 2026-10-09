@@ -7,16 +7,16 @@
 // FOUR PRS WENT RED ON THE BODY IN ONE DAY, four authors, four different modes, none of them a defect in
 // the change: #708 a DUPLICATE Acceptance section, #723 prose in the Acceptance section (then Closes
 // missing), #727 a pipe the file pre-check cannot parse, #736 the section under a `## Verified` heading
-// instead of `## Acceptance`. Every one cost a CI round. The parser (`packages/agent-org/src/acceptance-commands.mjs`)
+// instead of `## Acceptance`. Every one cost a CI round. The parser (`packages/agent-org/src/acceptance-commands.ts`)
 // was right in all four cases -- the defect is only that its answer arrives four minutes and one CI round
 // after the mistake, instead of at the moment `gh pr create`/`gh pr edit` is about to send the body.
 //
 // NO SECOND PARSER. `checkBody` below iterates `CI_BODY_REPORTS` (#3209) -- the exact
-// functions `packages/agent-org/src/acceptance-commands.mjs`'s own CLI entry (the "acceptance / run" CI job) calls --
+// functions `packages/agent-org/src/acceptance-commands.ts`'s own CLI entry (the "acceptance / run" CI job) calls --
 // never a local regex re-deriving "is this body valid". A second implementation of that question would
 // drift from the first, which is this repository's most-repeated defect and would produce the worst
 // possible outcome here: a body that passes this wrapper and fails in CI, exactly the situation being
-// fixed. `packages/agent-org/src/acceptance-commands.mjs` is therefore NOT touched by this file -- it is imported, not
+// fixed. `packages/agent-org/src/acceptance-commands.ts` is therefore NOT touched by this file -- it is imported, not
 // duplicated.
 //
 // WHAT THIS DOES NOT DO: a PR body edited in the web UI -- where a `## Verified` heading is most likely to
@@ -26,7 +26,7 @@
 //
 // A DIFF OUTSIDE THE ROW'S REGION IS REFUSED TOO (#2417, ceo on #928, ruling 3). Three reviews were spent on a
 // path the row never declared (#2253 twice, #2408), each after the PR had reached a reviewer. The Region is read
-// from the row the body's `Closes #N` names, through `region-paths.mjs` -- the leaf the claim rules already
+// from the row the body's `Closes #N` names, through `region-paths.ts` -- the leaf the claim rules already
 // import, never a second parser of what counts as a path. The way through is a declared line, never an override:
 // `Outside-Region: <path> — <reason>`, em dash required. The wiring lives in the ENTRY block, like #1352's
 // `launchGate`: the row's body is read from GitHub, and the tests that call `main` directly must not reach it.
@@ -64,7 +64,7 @@ export const EXIT_USAGE = 2;
 export const EXIT_LANDED_THEN_FAILED = 3;
 
 /**
- * Runs a command FOR REAL, exactly as `acceptance-commands.mjs`'s own (unexported) `runForReal` does --
+ * Runs a command FOR REAL, exactly as `acceptance-commands.ts`'s own (unexported) `runForReal` does --
  * this is the injectable execution seam `acceptanceReport` was built to take, not a second parser: nothing
  * here interprets the body or classifies a command, it only runs the ones the real parser already decided
  * are runnable.
@@ -89,7 +89,7 @@ function runForReal(command: string): number {
  * create, and with no shim a tracker-reaching test ran against the real `gh` inside pr-open, where nothing could
  * count its calls (#1576). `A11Y_ACCEPTANCE_PATH` is prepended to the CHILD's `PATH` alone:
  *
- *     A11Y_ACCEPTANCE_PATH="$SHIM_DIR" node packages/agent-org/src/pr-open.mjs create --draft --body-file body.md ...
+ *     A11Y_ACCEPTANCE_PATH="$SHIM_DIR" node packages/agent-org/src/pr-open.ts create --draft --body-file body.md ...
  *
  * runs the Acceptance against the shim's `gh` while pr-open's own calls keep the real one. Unset or empty, the
  * child's environment is the process's, unchanged.
@@ -135,7 +135,7 @@ export function checkBody(body: string, { run = runForReal, diff = { ok: false, 
  * author's declaration of what they will change; these three change without anyone deciding to, so a Region naming
  * them would be padding and a refusal over them a false one. One entry per reason, because an author who is told
  * a path is exempt should be told why: an exemption nobody can argue with is a hole nobody can close.
- * `entry` is spelled as `region-paths.mjs`'s `regionCovers` reads it: a trailing `/` is a directory.
+ * `entry` is spelled as `region-paths.ts`'s `regionCovers` reads it: a trailing `/` is a directory.
  */
 export const REGION_EXEMPT = [
   { entry: "pnpm-lock.yaml",
@@ -217,7 +217,7 @@ function regionPassLine({ rows, changed, standing, base }: { rows: string; chang
 }
 
 /**
- * The union of the Regions of the rows a body closes, read through `region-paths.mjs`. A row whose body cannot be
+ * The union of the Regions of the rows a body closes, read through `region-paths.ts`. A row whose body cannot be
  * read is `unread` (refuse: absence is not proof the diff is inside), and one with no Region section at all is
  * `no-section` (nothing to compare against, said aloud).
  *
@@ -402,7 +402,7 @@ function mutationVerdict(command: string, code: number): { line: string; warned:
  * nonzero exit and not WHY, so a refusal on its reading would be wrong often enough to teach authors to
  * `gh pr create` around this wrapper. `ok` is therefore not a field here.
  *
- * WHY THE CI JOB STILL DOES NOT RUN IT. `acceptance-commands.mjs` scopes itself to `Acceptance:` because a
+ * WHY THE CI JOB STILL DOES NOT RUN IT. `acceptance-commands.ts` scopes itself to `Acceptance:` because a
  * mutation edits a real file and a shared runner must not; here the file is the AUTHOR's, in the author's
  * tree, so that objection does not apply.
  *
@@ -443,8 +443,8 @@ export function bodyFromArgs(args: readonly string[]): string | null {
 
 function usage() {
   return "Usage:\n"
-    + "  node packages/agent-org/src/pr-open.mjs create <gh pr create args...>   (checks --body/--body-file first)\n"
-    + "  node packages/agent-org/src/pr-open.mjs edit <pr-number> <gh pr edit args...>   (same check, same refusal)\n";
+    + "  node packages/agent-org/src/pr-open.ts create <gh pr create args...>   (checks --body/--body-file first)\n"
+    + "  node packages/agent-org/src/pr-open.ts edit <pr-number> <gh pr edit args...>   (same check, same refusal)\n";
 }
 
 /**
@@ -783,7 +783,7 @@ function regionStep(body: string, rest: string[], { git, rowBody, rootFiles, cod
 /**
  * #3215: A READY pull request is opened only on a green verify stamp for this head and this body; a DRAFT opens without one, because it is
  * where CI starts and work is shared, and refusing it would put the cost on the one step that cannot be re-run cheaply. `edit` opens nothing.
- * A project that declares no verify script is not refused, and the line says so by name (`verify-stamp.mjs`). WIRED IN THE ENTRY BLOCK like
+ * A project that declares no verify script is not refused, and the line says so by name (`verify-stamp.ts`). WIRED IN THE ENTRY BLOCK like
  * `rowBody`: the tests call `main` directly, and in CI's plain clone a refusal inside it would refuse them. `null` is "go on".
  * @param {string} mode @param {string[]} rest @param {string} body
  * @param {{ verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading, out: (line: string) => void, err: (line: string) => void }} io
@@ -1033,7 +1033,7 @@ export function armAfterCreate(mode: string, rest: string[]): string[][] {
 /**
  * THE SESSION LABEL BELONGS ON THE PR AT CREATION, NOT AT ARM -- and arming is the LAST thing that happens.
  *
- * `arm-pr.mjs`'s `labelArmedPr` already copies a row's `session:*` onto the PR, but only when the PR is
+ * `arm-pr.ts`'s `labelArmedPr` already copies a row's `session:*` onto the PR, but only when the PR is
  * armed (green AND convinced) and only via `closedRowNumbers(prBody)`. Both conditions fail on exactly the
  * population that needs routing:
  *
@@ -1044,7 +1044,7 @@ export function armAfterCreate(mode: string, rest: string[]): string[][] {
  *     PERMANENTLY unroutable.
  *
  * Measured 2026-09-21: 11 of the last 20 merged PRs carried no `session:*` label. #1844 -- `orchestrator`'s
- * own nightly-batch scheduler -- went red with no label, so `work-gate.mjs`'s `failingChecksOrder` fell back
+ * own nightly-batch scheduler -- went red with no label, so `work-gate.ts`'s `failingChecksOrder` fell back
  * to `product-manager`, whose entire job on that order is to find out whose PR it is and hand it back: an
  * extra session, an extra turn and an extra tick of latency, for a fact that was on disk the whole time.
  *
@@ -1053,7 +1053,7 @@ export function armAfterCreate(mode: string, rest: string[]): string[][] {
  * reads it -- it does not ask anyone to remember anything, which is the only kind of fix that has held in
  * this repository.
  *
- * NOTHING IS INVENTED. An unstamped tree yields no label rather than a guessed one -- `worktree-owner.mjs`'s
+ * NOTHING IS INVENTED. An unstamped tree yields no label rather than a guessed one -- `worktree-owner.ts`'s
  * own ruling, that a stamp naming nobody is worse than no stamp, applies with more force here because the
  * wrong session would then be woken for every red check. A retired or unknown owner is likewise refused,
  * for #1000's reason: a claim on the attribution record that no live session can answer for.

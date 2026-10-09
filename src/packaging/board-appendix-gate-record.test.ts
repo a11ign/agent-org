@@ -4,7 +4,7 @@
  * `board-appendix-gate-kind.test.ts` tests `latestVerdictGate` directly, so a revert at `reported()`'s CALL
  * SITE -- the slot back to "newest entry of any kind" -- leaves every one of its tests green. This reads the
  * slot `reported()` actually fills from `docs/board/reported/`, and it is the test that catches that revert.
- * In its own file because it imports `board-data.mjs`, which spawns `gh`, and CI's acceptance job refuses
+ * In its own file because it imports `board-data.ts`, which spawns `gh`, and CI's acceptance job refuses
  * anything that does; it runs in the ordinary `ts` suite.
  */
 import { declareWalkScope } from "../lib/walk-scope.mjs";

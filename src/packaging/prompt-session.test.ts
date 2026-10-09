@@ -1,9 +1,9 @@
 // no-token: clearContext -- every herdr call is the injected `run`; nothing here reaches gh or a real session
 // THE CLEAR THAT THE DOCUMENTED PATH SKIPPED.
 //
-// `wake.mjs` clears a session before every order the gate delivers -- 690k -> 37k input tokens on a real
+// `wake.ts` clears a session before every order the gate delivers -- 690k -> 37k input tokens on a real
 // session. But `agent-practices.md` told the AUTHOR of a draft to prompt the parity reviewer with a raw
-// `herdr --session org agent prompt`, which never passes through `wake.mjs` and therefore never clears.
+// `herdr --session org agent prompt`, which never passes through `wake.ts` and therefore never clears.
 //
 // MEASURED 2026-09-19 on a real `reviewer` transcript: six reviews in one unbroken session -- #1765,
 // #1767, #1769, #1771, #1775, #1777 -- of which only #1765 arrived through the gate. 2.29M cached input
@@ -132,7 +132,7 @@ test("the exit codes distinguish a LOST order from a QUEUED one", () => {
 // been told about, while the author believed they had told someone.
 //
 // So these do not assert a message. They assert that the FILE THE NEXT TICK READS has the order in it:
-// a `prompt-session.mjs` that goes back to printing `NOT PROMPTED` and exiting fails every one.
+// a `prompt-session.ts` that goes back to printing `NOT PROMPTED` and exiting fails every one.
 
 test("A REFUSED PROMPT IS WRITTEN TO THE QUEUE, and the file is the one wake reads", () => {
   inTempDir((dir) => {
@@ -477,8 +477,8 @@ test("there is ONE copy of the autonomy footer in the agent-org sources (with it
   const dir = new URL("../", import.meta.url);
   const holders = readdirSync(dir).filter((f) => f.endsWith(".mjs"))
     .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(sentence));
-  assert.deepEqual(holders, ["wake.mjs"],
-    "the control: wake.mjs holds it, so an empty result would mean the scan is blind, not that it is unique");
+  assert.deepEqual(holders, ["wake.ts"],
+    "the control: wake.ts holds it, so an empty result would mean the scan is blind, not that it is unique");
 });
 
 test("BOTH DIRECTIONS: a caller the roster does not list is named unknown, never another session, and is delivered", () => {

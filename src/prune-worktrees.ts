@@ -79,7 +79,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-// RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.mjs` imports this file before
+// RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, recordRemoval, rowsClosed } from "./worktree-removal.ts";
@@ -111,7 +111,7 @@ export const PAUSE_BETWEEN_REMOVALS_MS = 250;
 const sleep: (ms: number) => void = (ms): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 /** What the removal log names as the asker: this file's own CLI, run hourly by `a11ign-worktree-prune.service`. */
-const CALLER = "prune-worktrees.mjs";
+const CALLER = "prune-worktrees.ts";
 
 const defaultRun: (cmd: string, args: string[], opts: { cwd: string; }) => string = (cmd, args, opts): string =>
   execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
@@ -566,7 +566,7 @@ export function unverifiedRecords(worktreePath: string, primaryPath: string | nu
 /**
  * #2020: A TREE A SESSION STILL HOLDS, WHICH MERGED+CLEAN+INACTIVE CANNOT SEE.
  *
- * A claim (`row-claim.mjs`) makes a worktree and stamps it (`.a11y-owner`, #1128) BEFORE any work
+ * A claim (`row-claim.ts`) makes a worktree and stamps it (`.a11y-owner`, #1128) BEFORE any work
  * happens in it. Until that session's first commit, the tree's HEAD is still a commit on `origin/main`,
  * so `merge-base --is-ancestor` answers MERGED, `git status` answers CLEAN once the ignored entries are
  * discounted, and the only thing left is the activity window -- which times a COMMAND, while a claim is
@@ -589,7 +589,7 @@ export function unverifiedRecords(worktreePath: string, primaryPath: string | nu
  * WHAT THIS DOES NOT PROTECT, said plainly rather than left to be discovered:
  *   - an UNSTAMPED tree, which is every tree made before #1128 and any made without the stamp. Measured
  *     here 2026-09-22: 6 of the 97 merged linked worktrees, one of them a live session's role tree.
- *     `worktree-owner.mjs` refuses to invent a stamp for a tree whose owner nobody recorded, and
+ *     `worktree-owner.ts` refuses to invent a stamp for a tree whose owner nobody recorded, and
  *     inventing one here would name whoever ran the prune; the remedy is `pnpm run worktree:stamp`.
  *   - a stamped tree whose owner finished and never released it, which is now refused for ever. That is
  *     the cost, and it is bounded by measurement rather than by hope: on this host 8 of 129 linked trees
@@ -1211,7 +1211,7 @@ export function formatStranded({ examined, stranded, unreadable = [] }: ReturnTy
 async function main() {
   // Guarded per #164: positional repo root; git flags go onward.
   refuseUnknownFlags(["--apply"],
-    { entry: import.meta.url, command: "node packages/agent-org/src/prune-worktrees.mjs" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/prune-worktrees.ts" });
   // THE DEFAULT IS THE LISTING, AND IT IS THE WRONG WAY ROUND UNTIL IT IS NOT. Measured 2026-09-09: a
   // session ran `pnpm run worktrees:prune` to READ its breakdown before writing a row about worktree
   // accounting, and it removed three worktrees belonging to three other sessions. No work was lost -- the
@@ -1235,8 +1235,8 @@ async function main() {
 
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-// #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.mjs` imports this file now, and
-// `close-rows-for-merged-pr.mjs`, `close-rows-sweep.mjs` and `workflow-run-liveness.mjs` run it before
+// #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.ts` imports this file now, and
+// `close-rows-for-merged-pr.ts`, `close-rows-sweep.ts` and `workflow-run-liveness.ts` run it before
 // `pnpm install`, where a package specifier dies (`pre-install-import-graph.test.ts`).
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

@@ -21,7 +21,7 @@
 // `cache_read_input_tokens` is wrong by more than an order of magnitude -- in the flattering direction,
 // which is the dangerous one for a number meant to prove a saving.
 //
-// ATTRIBUTION COMES FROM THE WAKE ITSELF. `wake.mjs`'s `addressed()` writes "You are `<session>`" into
+// ATTRIBUTION COMES FROM THE WAKE ITSELF. `wake.ts`'s `addressed()` writes "You are `<session>`" into
 // every first-contact prompt it delivers, and `[order:<wake id> session:<session> cause:<cause>]` opens every follow-up
 // (#4068), so a transcript driven by the tick names its own org session in its own text.
 // That is a happy accident of a change made for a different reason, and it is the only link between a
@@ -284,7 +284,7 @@ export function table(rows: Map<string, { turns: number; fresh: number; cacheRea
 
 function main() {
   refuseUnknownFlags(["--claude-root", "--codex-root", "--since"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/token-audit.mjs",
+    entry: import.meta.url, command: "node packages/agent-org/src/token-audit.ts",
   });
   const home = process.env.HOME ?? "";
   const claudeRoot = flagValue(process.argv, "claude-root") ?? join(home, ".claude", "projects");

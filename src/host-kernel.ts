@@ -166,7 +166,7 @@ function readBackFindings(record: RebootRecord | null, bootedAt: () => number): 
   }
   if (!readBackOwed(record, booted)) return [];
   return [{ unit: "kernel", problem: "REBOOT NOT READ BACK",
-    detail: `the host rebooted at ${new Date(record.at).toISOString()} (${record.from} to ${record.to}) and nothing has posted the reading yet: \`node src/host-kernel.mjs --read-back\`.` }];
+    detail: `the host rebooted at ${new Date(record.at).toISOString()} (${record.from} to ${record.to}) and nothing has posted the reading yet: \`node src/host-kernel.ts --read-back\`.` }];
 }
 
 /** @returns {number} when this boot happened, in ms */
@@ -182,7 +182,7 @@ export function runPrivileged(argv: string[], run: (argv: string[]) => string) {
 
 /**
  * WHAT HOLDS A REBOOT: a seat mid-turn (`working`) and a host job (a `a11ign-*.service` still `activating`, which is how a oneshot job shows while it runs).
- * `blocked` and `idle` and `done` are not a turn in progress, and `unknown` is a workspace with no agent in it (wake.mjs). A listing that could not be
+ * `blocked` and `idle` and `done` are not a turn in progress, and `unknown` is a workspace with no agent in it (wake.ts). A listing that could not be
  * read HOLDS the reboot: unknown is not idle.
  * @param {{ agents: () => ReturnType<typeof readAgents>, run: (argv: string[]) => string, ignoreSeats?: string[], ignoreUnits?: string[] }} deps
  * @returns {string[]}

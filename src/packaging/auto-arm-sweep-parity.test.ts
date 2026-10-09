@@ -1,4 +1,4 @@
-// no-token: gh -- `sweepDecision` is pure. `auto-arm-sweep.mjs`'s `gh` helper is in the import closure because it is
+// no-token: gh -- `sweepDecision` is pure. `auto-arm-sweep.ts`'s `gh` helper is in the import closure because it is
 // in the module, and nothing here calls it: no `main()`, no spawn, no `gh` on any path.
 //
 // #2195, in its OWN file rather than beside the #827 tests in `auto-arm-sweep.test.ts`: that file declares the same

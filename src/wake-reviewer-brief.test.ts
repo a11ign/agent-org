@@ -1,4 +1,4 @@
-// no-token: gh -- imports wake.mjs only to call `addressed`, a pure string builder; nothing here reaches `gh`, `herdr` or `git`
+// no-token: gh -- imports wake.ts only to call `addressed`, a pure string builder; nothing here reaches `gh`, `herdr` or `git`
 /**
  * #2590: A REVIEWER IS NOT BRIEFED TO STOP ON A REFUSED ROW CLAIM, BECAUSE A REVIEWER CLAIMS NO ROW.
  *

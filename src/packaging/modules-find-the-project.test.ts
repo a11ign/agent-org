@@ -5,7 +5,7 @@
 /**
  * #3074: THE THREE MODULES THAT ONCE COUNTED DIRECTORIES UP FROM `src` FIND THE PROJECT THROUGH `HOME_CHECKOUT`.
  *
- * `lib/product-home.mjs`, `lib/walk-scope.mjs` and `ready-label-audit.mjs` each reached a project file (the product's manifest, the tree a
+ * `lib/product-home.mjs`, `lib/walk-scope.mjs` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
  * declared scope is relative to, `docs/row-filing.md`) by `src` up three or four, which is `packages/agent-org/src`'s root in the monorepo and
  * the HOME directory in this repository. A test that reads the project the host file names cannot tell the two apart when the tool also sits
  * in that project, so each child here runs against a SCRATCH project, one whose files are the only ones carrying the marker below: a module
@@ -72,7 +72,7 @@ test("walk-scope's REPO_ROOT is the PROJECT's checkout, the tree every declared 
 
 test("ready-label-audit reads the PROJECT's docs/row-filing.md, the guidance a filer reads", () => {
   const { hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/ready-label-audit.mjs`)}).then((m) => m.readRowFilingDoc())`), `${MARKER}\n`);
+  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/ready-label-audit.ts`)}).then((m) => m.readRowFilingDoc())`), `${MARKER}\n`);
 });
 
 test("POSITIVE CONTROL: a project that lacks the file makes the module FAIL naming it, so the three readings above are the project's and not a default", () => {

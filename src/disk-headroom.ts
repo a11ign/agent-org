@@ -9,7 +9,7 @@
 // here averages them, sums them or takes the better of the two. `disk-headroom.test.ts` pins the outage's own
 // shape (no free inodes, most of the bytes free) as the case that MUST fire.
 //
-// THIS FILE READS AND JUDGES; IT NEVER DECIDES WHO IS TOLD. The order to `ceo` is built in `work-gate.mjs`
+// THIS FILE READS AND JUDGES; IT NEVER DECIDES WHO IS TOLD. The order to `ceo` is built in `work-gate.ts`
 // beside the other orders, which is where `worker-profile.test.ts` looks for a cause a profile must exist for.
 // It imports only `node:*`, so the gate keeps the property its own header states.
 import { statfsSync, statSync } from "node:fs";

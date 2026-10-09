@@ -1,5 +1,5 @@
 /**
- * `shadow-window.mjs` is the runner for ADR 0040 decision 5 (1) (row #2846, child 5d of #69): ONE tick of the
+ * `shadow-window.ts` is the runner for ADR 0040 decision 5 (1) (row #2846, child 5d of #69): ONE tick of the
  * CANDIDATE gate over a COPY of the state, diffed against the orders the live tick RECORDED, appended to a diff
  * record. The live tick's recording is #2849's (`<stateDir>/shadow-reads/<tickUtcMs>.json` = `{ tick, args, orders }`);
  * these fixtures write that exact format into a real temp directory, and the candidate is a real module run as a real

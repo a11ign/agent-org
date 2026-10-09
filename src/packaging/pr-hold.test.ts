@@ -9,7 +9,7 @@
 // no-token: gh
 //
 // #827. Every function this file exercises is PURE -- `holdDecision`, `armVerdict`,
-// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.mjs`'s
+// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.ts`'s
 // `gh` helper is reached by the closure walk because it lives in the same module, never because these
 // tests call it: `takeHold` and `releaseHold`, the two functions that do, appear in this file only
 // inside an assertion message. The declaration is verified against the entry's own code, so a wrong one
@@ -232,7 +232,7 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
 
 const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const EXECUTABLE = 0o755;
-// The exit code pr-hold.mjs header documents for DISPLACED_NOT_HELD.
+// The exit code pr-hold.ts header documents for DISPLACED_NOT_HELD.
 const DISPLACED_NOT_HELD_EXIT = 3;
 const PR = "9001";
 
@@ -281,7 +281,7 @@ process.exit(1);
 /** `repoLabels`, when given, is the set of labels the repository HAS: `pr edit --add-label` of any other answers "not found", as `gh` does. */
 type HoldStubState = { labels: string[], failAdd?: boolean, failRemoveOf?: string, repoLabels?: string[], failCreate?: boolean };
 
-/** Runs `pr-hold.mjs` for PR 9001 with the stub first on PATH and no token in the environment. */
+/** Runs `pr-hold.ts` for PR 9001 with the stub first on PATH and no token in the environment. */
 function withStubbedHold(state: HoldStubState, ...argv: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "pr-hold-1481-"));
   try {

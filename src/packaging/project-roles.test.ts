@@ -2,14 +2,14 @@
  * #2621 (child 3e of #69): ROLE BRIEFS AND GATE CAUSES ARE A PROJECT'S DECLARATION (ADR 0040, decision 1,
  * surface 3). Two claims, each with its control in this file:
  *
- *   1. A CAUSE IS ONE DECLARATION, `{cause, group, profile}` (`cause-shape.mjs`/`cause-declaration.mjs`), so
+ *   1. A CAUSE IS ONE DECLARATION, `{cause, group, profile}` (`cause-shape.ts`/`cause-declaration.ts`), so
  *      `CAUSES`, `JUDGMENT_CAUSES`, `START_CAUSES` and `PROFILES` are COMPUTED from a list of them rather
  *      than four hand-maintained lists. Measured (ADR 0040's own reading, at `46b59abf0`): 29 causes, ONE
  *      routing to the fleet (`fleet-batch-due`) -- so 28 were the tool's own code and 1 a plugin. Two tool
  *      causes landed after that snapshot (`pr-codeowner-review-missing` #1959, `row-call-count-signal`
  *      #2691), so TODAY's classification is **30 tool / 1 project (N=1, at most 2)**, re-derived below
  *      rather than trusted from the stale snapshot -- this row's own convention for a quoted count.
- *   2. A ROLE BRIEF IS READ FROM THE PROJECT'S DECLARED DIRECTORY (`project-roles.mjs`), not a path baked
+ *   2. A ROLE BRIEF IS READ FROM THE PROJECT'S DECLARED DIRECTORY (`project-roles.ts`), not a path baked
  *      into the tool: `.agent-org/project.json`'s `roles.dir` names it, a missing directory is REFUSED
  *      naming it, and the tool's own tree (`packages/agent-org/`) ships none.
  *
@@ -127,19 +127,19 @@ const EXPECTED_JUDGMENT = ["answer-given", "awaiting-evidence-stale", "backlog-a
 const EXPECTED_START = ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed", "unclaimed-blocker-cleared"];
 
-test("CAUSES (re-exported by work-gate.mjs) equals the recorded list, by value", () => {
+test("CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", () => {
   assert.deepEqual([...CAUSES].sort(), [...EXPECTED_CAUSES].sort());
 });
 
-test("JUDGMENT_CAUSES (re-exported by work-gate.mjs) equals the recorded list, by value", () => {
+test("JUDGMENT_CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", () => {
   assert.deepEqual([...JUDGMENT_CAUSES].sort(), [...EXPECTED_JUDGMENT].sort());
 });
 
-test("START_CAUSES (re-exported by work-gate.mjs) equals today's 9, by value", () => {
+test("START_CAUSES (re-exported by work-gate.ts) equals today's 9, by value", () => {
   assert.deepEqual([...START_CAUSES].sort(), [...EXPECTED_START].sort());
 });
 
-test("PROFILES (re-exported by worker-profile.mjs) has one entry per cause, each with kind/model/effort/why", () => {
+test("PROFILES (re-exported by worker-profile.ts) has one entry per cause, each with kind/model/effort/why", () => {
   assert.deepEqual(Object.keys(PROFILES).sort(), [...EXPECTED_CAUSES].sort());
   for (const [cause, profile] of Object.entries(PROFILES)) {
     assert.ok(["claude", "codex"].includes(profile.kind), `${cause}'s kind`);

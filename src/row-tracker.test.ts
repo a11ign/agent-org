@@ -84,7 +84,7 @@ test("#4078: a key that is not declared is refused, naming every key that IS", (
   assert.match(named.refusal, /"" \(example\/product\), "agent-org" \(a11ign\/agent-org\)/);
 });
 
-test("#4078: ORG_TRACKER_REPO is the repository work-gate.mjs calls the tool's own", () => {
+test("#4078: ORG_TRACKER_REPO is the repository work-gate.ts calls the tool's own", () => {
   const source = readFileSync(new URL("./work-gate.ts", import.meta.url), "utf8");
   const declared = /^const TOOL_REPO = "([^"]+)";$/m.exec(source);
   assert.ok(declared, "the positive control: the pattern finds work-gate's constant, so an equality below is not between two nothings");

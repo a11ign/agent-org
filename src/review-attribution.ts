@@ -11,7 +11,7 @@
  * BREAKABLE-INTO-VIEW: #2105 is odd, `reviewer-2` reviewed it twice including the APPROVAL, and it
  * took a human reading four review bodies an hour later to notice.
  *
- * WHY NOT A PARSER OVER THE BODY. `review-verdict.mjs` already reads a `by <name>` out of the opener
+ * WHY NOT A PARSER OVER THE BODY. `review-verdict.ts` already reads a `by <name>` out of the opener
  * line, and that is exactly as far as prose can be pushed: it returns `null` whenever the writer did
  * not say, so an UNATTRIBUTED review and a CORRECTLY attributed one are the same answer, and a wrong
  * name is indistinguishable from a right one. A rule whose only evidence is the sentence written by
@@ -29,7 +29,7 @@
  * the poster chooses and a `target_url`. `pr-review-verdict.sh` writes one per review it posts:
  * context `review/<session>`, `target_url` the review's own `html_url`. Both are STRUCTURED fields of
  * a first-class GitHub object; neither is a sentence. `gh pr view --json statusCheckRollup` already
- * returns them in a call `work-gate.mjs` makes every tick, so reading them costs nothing new.
+ * returns them in a call `work-gate.ts` makes every tick, so reading them costs nothing new.
  *
  * ALWAYS `state: success`, WHATEVER THE VERDICT. This is an attribution record, not a gate: a
  * `failure` context turns the pull request's own checks summary red and would make a refusal look
@@ -130,7 +130,7 @@ export function seatName(role: string, key: RepoKey, number: number | string): s
 
 /**
  * The reviewing session that owns a pull request: `reviewer-<n>`, the herdr workspace the per-PR path
- * starts for it (#2401; `wake.mjs`'s `route` finds it by that label).
+ * starts for it (#2401; `wake.ts`'s `route` finds it by that label).
  *
  * THE ARITHMETIC LIVES HERE, beside the reader that checks whether a posted review obeyed it, since #2127:
  * a detector with its own copy would agree with a router that had drifted.
@@ -170,7 +170,7 @@ export function reviewerInstance(label: string): { key: string; number: number; 
   const match = /^reviewer-(?:(.+)-)?([1-9][0-9]*)$/.exec(label);
   if (match === null || RETIRED_REVIEWERS.includes(label)) return null;
   const key = match[1] ?? "";
-  // A key that ends in `-<digits>` would make this name parse two ways (`project-config.mjs` refuses one at the only place a key
+  // A key that ends in `-<digits>` would make this name parse two ways (`project-config.ts` refuses one at the only place a key
   // enters), so a label of that shape is no instance of any declared repository.
   if (key !== "" && (!/^[a-z0-9-]+$/.test(key) || /-[0-9]+$/.test(key))) return null;
   return { key, number: Number(match[2]) };
@@ -213,7 +213,7 @@ function isRetiredHistory(status: any) {
 /**
  * REST spells it `target_url`, GraphQL `targetUrl`, and the same status arrives through both: the gate
  * reads `statusCheckRollup` (GraphQL) while a one-off check reads `commits/{sha}/statuses` (REST).
- * Accepting both here is the same choice `NO_VERDICT` made for its two cases in `work-gate.mjs`.
+ * Accepting both here is the same choice `NO_VERDICT` made for its two cases in `work-gate.ts`.
  * @param {any} status
  */
 const targetUrlOf = (status: any) => String(status?.target_url ?? status?.targetUrl ?? "");

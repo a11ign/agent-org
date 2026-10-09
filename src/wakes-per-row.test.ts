@@ -163,7 +163,7 @@ test("reviewerTarget names the repository and the number", () => {
   assert.equal(reviewerTarget("worker-3390", ROW_REPO), null);
   assert.equal(reviewerTarget("ceo", ROW_REPO), null);
   assert.deepEqual(reviewerTarget("reviewer-tool-9", "acme/board"), { repo: "acme/tool", number: 9 });
-  // A key is [a-z0-9-] and never ends in -<digits> (project-config.mjs), so a digit inside it is a key, and the number is the last run of digits.
+  // A key is [a-z0-9-] and never ends in -<digits> (project-config.ts), so a digit inside it is a key, and the number is the last run of digits.
   assert.deepEqual(reviewerTarget("reviewer-tool2-9", "acme/board"), { repo: "acme/tool2", number: 9 });
   assert.deepEqual(reviewerTarget("reviewer-3d-viewer-12", "acme/board"), { repo: "acme/3d-viewer", number: 12 });
   assert.deepEqual(reviewerTarget("reviewer-12", "acme/board"), { repo: "acme/board", number: 12 });

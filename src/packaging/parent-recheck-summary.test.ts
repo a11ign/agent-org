@@ -8,7 +8,7 @@
  *
  * `summarizeTestLog` fixes the confirmed defect: it reads the TAP summary (`# fail N`) and the individual
  * `not ok <n>` lines, wherever they sit in the log, and reports `unknown` -- never `fail` -- when it
- * cannot actually name a failing subtest. `trunk-red.mjs`'s own `attributionOf` already treats a
+ * cannot actually name a failing subtest. `trunk-red.ts`'s own `attributionOf` already treats a
  * `recheck` that is not literally `"pass"` or `"fail"` as `unknown` (its own answer), so `unknown` was
  * already the safe answer this function needed to be ABLE to give; it just could not, because `tail -40`
  * never told it "I don't know", it told it "fail" with the wrong evidence attached.

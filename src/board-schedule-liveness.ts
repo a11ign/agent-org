@@ -8,8 +8,8 @@
 //
 // ## The gap this closes, and why the previous shape could not
 //
-// Every refusal in this pipeline is reported BY THE JOB ITSELF. `board-report.mjs` refuses without a
-// summary and says so; `board-summary-check.mjs` warns on the morning of the edition; both comment on the report
+// Every refusal in this pipeline is reported BY THE JOB ITSELF. `board-report.ts` refuses without a
+// summary and says so; `board-summary-check.ts` warns on the morning of the edition; both comment on the report
 // issue. All of that is correct and none of it can fire when the job does not run at all — a job that does
 // not exist reports nothing, which is this repository's oldest defect (*"a check that reports success
 // having examined nothing"*) with the check removed rather than weakened.
@@ -404,7 +404,7 @@ export function livenessVerdict({ lastDay, now, hasSummary }: { lastDay: string 
     return { code: EXIT.ALIVE, headline: since,
       detail: "and no summary was written for any of those days, so the 08:00 gate refused exactly as it "
         + "is designed to. This is the pipeline working, not the schedule dying -- the missing thing is "
-        + "the summary, which `board-summary-check.mjs` already warns about at 07:15 on the morning of the edition (the board moved it off 21:00 on 2026-09-08, `2a1bdd92`: a summary written the evening before is a forecast about a night that has not happened)." };
+        + "the summary, which `board-summary-check.ts` already warns about at 07:15 on the morning of the edition (the board moved it off 21:00 on 2026-09-08, `2a1bdd92`: a summary written the evening before is a forecast about a night that has not happened)." };
   }
   return { code: EXIT.STOPPED, headline: since,
     detail: `and a summary WAS written for ${withSummary.length} of those days `

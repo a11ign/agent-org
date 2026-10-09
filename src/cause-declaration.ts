@@ -1,23 +1,23 @@
 // @ts-check
 // #2621 (child 3e of #69): A CAUSE IS ONE DECLARATION, `{cause, group, profile}`, so a new one is added in
-// ONE place instead of four. Before this, `work-gate.mjs` held `CAUSES`, `JUDGMENT_CAUSES` and
-// `START_CAUSES` as three hand-maintained arrays and `worker-profile.mjs` held a fourth, `PROFILES` --
+// ONE place instead of four. Before this, `work-gate.ts` held `CAUSES`, `JUDGMENT_CAUSES` and
+// `START_CAUSES` as three hand-maintained arrays and `worker-profile.ts` held a fourth, `PROFILES` --
 // four lists a cause had to be added to together, and a cause added to one and not the others is a
 // recorded trap this file exists to close. `CAUSES`, `JUDGMENT_CAUSES`, `START_CAUSES` and `PROFILES` are
 // now COMPUTED from the declarations below and re-exported, unchanged in name and value, from
-// `work-gate.mjs` and `worker-profile.mjs` -- nothing that imports them changes.
+// `work-gate.ts` and `worker-profile.ts` -- nothing that imports them changes.
 //
 // TWO SOURCES OF DECLARATIONS, AND THE LINE BETWEEN THEM IS ADR 0040's (decision 1, surface 3). Measured:
 // of every cause the gate can emit, exactly ONE names the fleet (`orchestrator/` appears once against 10
-// `product-manager/` and 4 `ceo/` in `work-gate.mjs`'s `causeKey` prefixes) -- so **30 are the tool's own
+// `product-manager/` and 4 `ceo/` in `work-gate.ts`'s `causeKey` prefixes) -- so **30 are the tool's own
 // code** (`TOOL_CAUSE_DECLARATIONS`, this file) **and 1 is a plugin** a project supplies because it must
-// RUN project code: `fleet-batch-due`'s actual detection (`fleetBatchOrders` in `work-gate.mjs`, unmoved
+// RUN project code: `fleet-batch-due`'s actual detection (`fleetBatchOrders` in `work-gate.ts`, unmoved
 // by this row) reads the `fleet-gated` label, which a project without a fleet does not have. A project
 // with no fleet, lab or corpus declares no plugin and gets no fleet cause: `projectCauseDeclarations`
-// reads an absent `.agent-org/project.json` `causes` field as none, for `project-vocabulary.mjs`'s
+// reads an absent `.agent-org/project.json` `causes` field as none, for `project-vocabulary.ts`'s
 // `readResources`'s own reason.
 //
-// `GROUPS`/`declareCause`/the four combinators live in `cause-shape.mjs`, a LEAF, and are re-exported here
+// `GROUPS`/`declareCause`/the four combinators live in `cause-shape.ts`, a LEAF, and are re-exported here
 // rather than defined here: a plugin that needed `declareCause` from THIS file, rather than from the leaf,
 // would import this file right back -- a cycle. (It also keeps the plugin load below a `require`, not an
 // `import`, out of the risk entirely: `declared-walk-scope.test.ts` refuses a computed `import()` anywhere
@@ -26,7 +26,7 @@
 // _resolveFilename` records what it resolved -- and Node 22 loads a plain ESM module (no top-level await
 // of its own) through it synchronously, so this whole file needs no top-level await either.)
 //
-// RELATIVE IMPORTS ONLY, like `work-gate.mjs` and `region-paths.mjs`: this module is on both files' import
+// RELATIVE IMPORTS ONLY, like `work-gate.ts` and `region-paths.ts`: this module is on both files' import
 // graph and both state, at their own top, that they must run before any `pnpm install`/build.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -43,7 +43,7 @@ const require = createRequire(import.meta.url);
 
 /**
  * Read `.agent-org/project.json`'s `causes` key, PURE: a test drives every refusal with a plain object,
- * `project-vocabulary.mjs`'s `parseVocabulary` discipline. ABSENT reads as no plugin -- a project with no
+ * `project-vocabulary.ts`'s `parseVocabulary` discipline. ABSENT reads as no plugin -- a project with no
  * fleet, lab or corpus has no causes of its own and loses no other rule, `readResources`'s own reason.
  * @param {unknown} parsed the whole parsed JSON document
  * @returns {string | undefined} the plugin module's path, relative to `.agent-org/`
@@ -72,8 +72,8 @@ export function parseProjectCauseModule(parsed: unknown): string | undefined {
  * cause name: a second project with no such file in its `.agent-org/plugins/` gets no plugin and no extra
  * cause.
  *
- * Reads `.agent-org/project.json` a second time rather than teaching `project-config.mjs`'s strict reader
- * a field it does not otherwise need -- `project-vocabulary.mjs`'s `homeVocabulary` makes the identical
+ * Reads `.agent-org/project.json` a second time rather than teaching `project-config.ts`'s strict reader
+ * a field it does not otherwise need -- `project-vocabulary.ts`'s `homeVocabulary` makes the identical
  * choice, for the identical reason.
  * @param {string} root @returns {ReturnType<typeof declareCause>[]}
  */
@@ -104,7 +104,7 @@ export function projectCauseDeclarations(root: string = HOME_CHECKOUT): ReturnTy
 /**
  * The tool's own 30 causes (ADR 0040, decision 1, surface 3): every cause but `fleet-batch-due`, which a
  * project without a fleet does not get. Each `why` is the reasoning a router that had to think would
- * rebuild the burn `worker-profile.mjs` exists to remove -- see that file's own header for the routing
+ * rebuild the burn `worker-profile.ts` exists to remove -- see that file's own header for the routing
  * policy these apply (`.claude/rules/agent-practices.md`'s haiku/sonnet/opus rule, unchanged here).
  */
 export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
@@ -447,7 +447,7 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     model: "sonnet",
     // HIGH, for `pr-checks-failing`'s reason: the act is a rebase, and resolving a conflict is a judgment
     // about which side of each hunk wins. A cheap tier that guesses pushes a merge that still fails CI or,
-    // worse, silently drops the other pull request's change -- #2203 conflicted on `work-gate.mjs` and
+    // worse, silently drops the other pull request's change -- #2203 conflicted on `work-gate.ts` and
     // `agent-practices.md` after #2205 landed, files whose every hunk carries a ruling.
     effort: "high",
     why: "resolving a merge conflict is judgment about which side of each hunk wins, and a wrong guess "
@@ -516,7 +516,7 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     kind: "claude",
     model: "sonnet",
     // MEDIUM, and the recipient is `ceo`, a standing decision-holder that is never spawned (#3567), so this is the profile a spawned worker would
-    // take if one ever were. `work-tick-health.mjs` has already read the tick's own cost line and named the phase that took longest, or found the
+    // take if one ever were. `work-tick-health.ts` has already read the tick's own cost line and named the phase that took longest, or found the
     // marker a killed tick left; the work is deciding which row owns that phase, a short judgment over stated figures.
     effort: "medium",
     why: "the tick has already measured itself, or found what a killed one left; the output is a decision about which phase to chase "
@@ -671,11 +671,11 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
  */
 const DECLARED = declaredCauses([...TOOL_CAUSE_DECLARATIONS], projectCauseDeclarations());
 
-/** The causes this gate can emit. `wake.mjs` and the matrix validate against this list, never a copy. */
+/** The causes this gate can emit. `wake.ts` and the matrix validate against this list, never a copy. */
 export const CAUSES = causesOf(DECLARED);
 /** Causes whose answer is a JUDGMENT about the current state, not an action on a named thing. See `GROUPS`. */
 export const JUDGMENT_CAUSES = judgmentCausesOf(DECLARED);
 /** The causes that START new work, as opposed to finishing work already begun. See `GROUPS`. */
 export const START_CAUSES = startCausesOf(DECLARED);
-/** CAUSE -> the worker that should take it, kind/model/effort/why. See `worker-profile.mjs`. */
+/** CAUSE -> the worker that should take it, kind/model/effort/why. See `worker-profile.ts`. */
 export const PROFILES = profilesOf(DECLARED);

@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/wake.mjs`, #2401: ONE CODEX REVIEWER PER PULL REQUEST, addressed by herdr name.
+ * `packages/agent-org/src/wake.ts`, #2401: ONE CODEX REVIEWER PER PULL REQUEST, addressed by herdr name.
  *
  * Its own file, and not a block in `wake.test.ts`, for #2280's reason: that file reaches `gh`, so the token-less
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, git -- is an injected seam
@@ -41,7 +41,7 @@ process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("review-removal-log-"), "workt
 
 /**
  * The door's spelling as the INSTALLER writes it (`${A11Y_REVIEWER_BIN:-$HOME/reviewer/bin}/pr-review-verdict`), read from the script and not
- * restated and not imported from `wake.mjs`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
+ * restated and not imported from `wake.ts`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
  */
 const DOOR_SPELLING = (() => {
   const line = readFileSync(fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url)), "utf8").split("\n").find((l) => l.startsWith("dest="));
@@ -337,7 +337,7 @@ test("#2827 (done-when 1, 2): `removeReviewCheckout` WRITES THE REMOVAL LOG -- `
   prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams });
   assert.equal(removeReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams, record }), null);
   assert.deepEqual(lines, ["removing", "removed"].map((event) => ({ event, path: `${REVIEW_ROOT}/reviewer-7`,
-    caller: "wake.mjs removeReviewCheckout", reason: "the reviewer instance reviewer-7 ended (#2401)" })));
+    caller: "wake.ts removeReviewCheckout", reason: "the reviewer instance reviewer-7 ended (#2401)" })));
   const at = (needle: string) => events.findIndex((event) => event.includes(needle));
   assert.ok(at("record removing") < at("worktree remove") && at("worktree remove") < at("record removed"),
     `the line is written BEFORE the delete and the outcome after it: ${events.join(" | ")}`);
@@ -370,7 +370,7 @@ test("#2827 (done-when 2): with NO seam, the default writes the line to the real
   assert.equal(removeReviewCheckout({ pr: 8, session: "reviewer-8", ...co.seams }), null);
   const written = removalLines(log).slice(before);
   assert.deepEqual(written.map((line) => [line.event, line.path, line.caller]),
-    [["removing", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"], ["removed", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"]]);
+    [["removing", `${REVIEW_ROOT}/reviewer-8`, "wake.ts removeReviewCheckout"], ["removed", `${REVIEW_ROOT}/reviewer-8`, "wake.ts removeReviewCheckout"]]);
 });
 
 test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `refs/pull/<n>/head`, re-pointed on a push, "
@@ -973,7 +973,7 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeGitStub(dir);
     const before = Date.now();
-    const ran = spawnSync(process.execPath, [TICK_ENTRY.replace("work-tick.mjs", "wake.mjs"), `--ledger=${ledger}`,
+    const ran = spawnSync(process.execPath, [TICK_ENTRY.replace("work-tick.ts", "wake.ts"), `--ledger=${ledger}`,
       "--roster=worker-4"], { input: `${JSON.stringify(reviewOrder(2398))}\n`, encoding: "utf8",
       // The memory gate (#2508) reads the HOST unless told a file: this test is about the registry, so it is handed an idle host.
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_MEMINFO_PATH: idleMeminfo(dir) } });

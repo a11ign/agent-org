@@ -1,4 +1,4 @@
-// A LEAF, `node:` IMPORTS ONLY: `host-units.mjs` resolves the project it serves when it is imported and refuses a host with none declared, so a
+// A LEAF, `node:` IMPORTS ONLY: `host-units.ts` resolves the project it serves when it is imported and refuses a host with none declared, so a
 // check that needs only a PATH and a `package.json` lives where it can be asked without one (#2896).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";

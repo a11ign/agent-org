@@ -1,4 +1,4 @@
-// no-token: gh -- `defect-class-line.mjs` reads a row's labels only through the reader it is given, `pr-open`'s `main` and `row-file`'s `createIssue` take `git`, `gh` and the label reader as seams, and every one here is a fake; nothing reaches GitHub
+// no-token: gh -- `defect-class-line.ts` reads a row's labels only through the reader it is given, `pr-open`'s `main` and `row-file`'s `createIssue` take `git`, `gh` and the label reader as seams, and every one here is a fake; nothing reaches GitHub
 // #4123 (child A of #4122): a pull request that closes a `defect` row carries exactly one `Class:` line, and `row-file --kind defect` is what puts the label on the row.
 //
 // EVERY REFUSAL HAS ITS ACCEPTING TWIN differing by ONE fact, so a check that always refuses is red in the twin and one that never refuses is red in the first.

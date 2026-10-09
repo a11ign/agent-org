@@ -3,7 +3,7 @@
  * a11ign#3592: AN `AWAITING_REVIEW` PULL REQUEST STARTS ITS REVIEWER, AND NO ORDER GOES TO ONE BUSY SEAT FOR IT.
  *
  * THE DEFECT (retro 2026-10-05): `reviewBlocked` reported every green, unheld pull request GitHub was holding for a review, so each one earned
- * a `pr-review-blocked` order to `product-manager` in the SAME TICK that `draftOrder` (#2176) had already ordered, and `wake.mjs` had started,
+ * a `pr-review-blocked` order to `product-manager` in the SAME TICK that `draftOrder` (#2176) had already ordered, and `wake.ts` had started,
  * `reviewer-<n>` for it. MEASURED 2026-10-05 by re-running the row's journal grep over its own window (2026-10-04T00:22Z to 2026-10-05T00:22Z):
  * 67 `DEFERRED product-manager/pr-review-blocked/` lines (the row quoted 54), of which 4 name a `REFUSED` arm and 63 do not. agent-org#188 is the pair
  * on one tick: `WOKE reviewer-agent-org-188 <- .../draft-awaiting-verdict/... (STARTED gpt-5.6-luna/medium)` and, the same second, `DEFERRED

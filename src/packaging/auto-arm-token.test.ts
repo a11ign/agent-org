@@ -190,7 +190,7 @@ test("#2358: trunk.yml no longer reads the arming secret -- the auto-revert path
 // The tests above pinned (until #4198) that both jobs BRANCH on whether `A11IGN_BOT_TOKEN` is SET. That branch was
 // the whole of the token's story, and on 2026-09-22 it was measured to be the wrong question: the secret
 // was set, the branch took the PAT path, and the PAT's GraphQL pool was exhausted from 18:45:53Z to
-// 19:13:44Z. Every `pull_request` run of `auto-arm.yml` failed on `arm-pr.mjs`'s label read, and what it
+// 19:13:44Z. Every `pull_request` run of `auto-arm.yml` failed on `arm-pr.ts`'s label read, and what it
 // printed -- `could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld` -- is TRUE,
 // COMPLETE, and indistinguishable from the same refusal on a single unreadable pull request.
 //
@@ -278,7 +278,7 @@ test("#1969: the reset is UNREADABLE rather than guessed when the probe brings n
   assert.match(said, /could NOT read/, "and the minute is not");
   assert.doesNotMatch(said, /until \d{2}:\d{2}/,
     "an instrument that cannot answer must not answer: a guessed minute sends a reader to wait for a "
-    + "return that is not coming (api-pool.mjs's own rule)");
+    + "return that is not coming (api-pool.ts's own rule)");
 });
 
 test("#1969: the fingerprint is a FINGERPRINT -- it recognises GitHub's wording and nothing else", () => {
@@ -303,7 +303,7 @@ test("#1969: a pool with budget LEFT is reported as possibly SECONDARY -- the nu
 
 // --- #1969: AND THE REPORT THAT NAMES WHAT THE OUTAGE STRANDS ---------------------------------------
 //
-// `ceo`'s ruling, 2026-09-22: shape 3 only, "it lands as DATA in `work-gate.mjs`, not as a new red
+// `ceo`'s ruling, 2026-09-22: shape 3 only, "it lands as DATA in `work-gate.ts`, not as a new red
 // check", read "under `${{ github.token }}`, never the arming PAT". The gate runs on the agent host
 // under the host's own `gh` identity -- measured 2026-09-23 as `a11ign-ai-workers`, while the arming PAT
 // is `DanBeckDev`'s (user ID 46429371, the account the outage named) -- and never reads

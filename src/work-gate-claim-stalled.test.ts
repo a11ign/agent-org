@@ -56,7 +56,7 @@ type Order = { session: string; cause: string; causeKey: string; prompt: string;
 type Facts = Parameters<typeof claimReading>[0];
 type Stalls = NonNullable<Parameters<typeof decide>[0]["claimStalls"]>;
 
-/** The claim record exactly as `row-claim.mjs` writes it -- the REAL writer, so a change to its format breaks these. */
+/** The claim record exactly as `row-claim.ts` writes it -- the REAL writer, so a change to its format breaks these. */
 const claim = (minutesAgo: number, { session = "worker-7", author = "a11ign-ai-workers" } = {}): Comment => ({
   body: claimRecordComment({ session, branch: BRANCH, worktree: WORKTREE }), createdAt: iso(ago(minutesAgo)), author: { login: author },
 });
@@ -1802,9 +1802,9 @@ test("#2470 (9) a pane interrupted for LESS than the settle time is left alone (
     "and the prompt itself tells a deliberately stopped session what to do");
 });
 
-test("#2841 every argv wake.mjs sends to row-claim.mjs passes row-claim's REAL flag guard, and the guard refuses one flag short of that", () => {
+test("#2841 every argv wake.ts sends to row-claim.ts passes row-claim's REAL flag guard, and the guard refuses one flag short of that", () => {
   // Callers covered: `performRelease` (decline: --keep-worktree, --predecessor-gone, --answer=), `spawnClaimer.claim` (claim: fresh and --adopt=),
-  // and `releaseClaim`'s undo (decline, plain and --keep-worktree). Those are every `ROW_CLAIM` spawn in wake.mjs; no other src/ file spawns it.
+  // and `releaseClaim`'s undo (decline, plain and --keep-worktree). Those are every `ROW_CLAIM` spawn in wake.ts; no other src/ file spawns it.
   const argvs: { from: string; args: string[] }[] = [];
   const release = (o: { answer?: string; spare?: boolean }, from: string) => {
     const r = releaseHost({ world: { dirty: [{ file: "a.mjs", ago: 900 }], unpushed: 2 } });
@@ -2013,7 +2013,7 @@ test("#3076 a GONE release with open pull requests names each by its key, a home
   assert.equal("openPrRepoKeys" in home.release!, false, "CONTROL: a home-only release carries no key field, so it is today's order");
 });
 
-test("#3076 the release COMMENT wake.mjs writes carries the key for a merged and for an open pull request elsewhere, and is today's for a home one", () => {
+test("#3076 the release COMMENT wake.ts writes carries the key for a merged and for an open pull request elsewhere, and is today's for a home one", () => {
   const merged = releaseHost();
   performRelease({ ...STALL, why: "merged", mergedPr: 38, mergedPrRepoKey: "agent-org", answer: "product-manager" }, merged.deps);
   assert.match(merged.comment(), /agent-org#38 MERGED and this row stayed open/);

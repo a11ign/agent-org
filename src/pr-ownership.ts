@@ -6,7 +6,7 @@
  * `agent/a-needs-chairman-row-3390`: the merged release never fired, and the holder was nudged as idle 46 minutes later, a wake that re-reads a whole context to
  * say nothing.
  *
- * A LEAF, like `claim-stall.mjs`, which calls it: it imports nothing from the gate.
+ * A LEAF, like `claim-stall.ts`, which calls it: it imports nothing from the gate.
  *
  * NOT A RUNG: the body's prose. #134's body names the row in a sentence after `Closes: none`, and a sentence is not a field.
  */

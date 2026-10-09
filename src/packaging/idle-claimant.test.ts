@@ -99,7 +99,7 @@ for (const kind of Object.keys(WAIT_FIELDS)) {
 
 test("#2999 `awaiting-evidence` is the gate's own label, and `blocked` (a claim with no referent) is NOT a wait field", () => {
   assert.equal(EVIDENCE_LABEL, AWAITING_EVIDENCE_LABEL);
-  assert.equal(HOLD_LABEL_PREFIX, HOLD_PREFIX, "#3569: the leaf's restatement of the hold prefix cannot drift from `pr-hold-state.mjs`'s");
+  assert.equal(HOLD_LABEL_PREFIX, HOLD_PREFIX, "#3569: the leaf's restatement of the hold prefix cannot drift from `pr-hold-state.ts`'s");
   assert.equal(Object.hasOwn(WAIT_FIELDS, "blocked"), false);
 });
 

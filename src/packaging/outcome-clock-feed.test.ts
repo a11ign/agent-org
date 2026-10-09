@@ -2,7 +2,7 @@
 /**
  * THE ROW CLOCK IS FED (#3486, slice 2). `outcome-clock.test.ts` proves the clock on facts handed to it; THIS file proves the tick hands it the facts. The
  * gate's `orgHealthNow({ ... })` call used to omit `claimedComments`, so production clocked PRs and was silent about every claimed row -- and every test of the
- * clock still passed, because each of them called the clock directly. So these tests run THE GATE (`work-gate.mjs` as a process), whose own `orgHealthNow`
+ * clock still passed, because each of them called the clock directly. So these tests run THE GATE (`work-gate.ts` as a process), whose own `orgHealthNow`
  * call is the thing under test, against a stub `gh` that answers the three reads the row clock depends on: the open PRs, the open rows, and the claimed rows'
  * comments.
  *

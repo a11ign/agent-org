@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// This file imports `fileRefusalReason` from `packages/agent-org/src/row-file.mjs`, and that module's `openMilestones`
+// This file imports `fileRefusalReason` from `packages/agent-org/src/row-file.ts`, and that module's `openMilestones`
 // (`:303`) spawns `gh` for the milestone list -- a path none of these tests take: every one of them hands
 // the wrapper a body and an injected runner, and the runner this file injects THROWS if it is ever called
 // for a body the test expects refused.

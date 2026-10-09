@@ -18,19 +18,19 @@
 // would lose the diagnosis the original was built for -- #135's runs genuinely predate the tip, and that
 // sentence, with both timestamps, is still the right thing to print about it.
 //
-// `behind_by` FROM THE COMPARE API, NOT `mergeStateStatus`. That distinction is `merge-guard.mjs`'s whole
+// `behind_by` FROM THE COMPARE API, NOT `mergeStateStatus`. That distinction is `merge-guard.ts`'s whole
 // reason for existing, so it is worth being exact: `mergeStateStatus` folds together checks, conflicts and
 // branch protection into one opinion about mergeability, which is why it reads `CLEAN` for a PR nothing
 // ever tested. `behind_by` is arithmetic on the commit graph -- how many commits `main` has that this head
 // does not -- and it is the same fact `git merge-base --is-ancestor` answers, asked of a server that has
 // both commits without this checkout needing to fetch a PR ref it may never have seen. That fetch is
-// oriented `compare/main...<head>`, never the reverse (#188) -- `merge-guard.mjs`'s own `facts()` builds
+// oriented `compare/main...<head>`, never the reverse (#188) -- `merge-guard.ts`'s own `facts()` builds
 // it, since the value arrives alongside the other per-PR facts a live check gathers in one round trip.
 //
 // `ceo` ALSO RULED THIS OUT AS A REQUIRED-CI REFUSAL, and the reason is throughput, not principle: with
 // `strict=false` and merges landing roughly one a minute, almost every open PR is behind `main` almost all
 // the time. `mergeSafetyVerdict` (the narrower check a required CI job runs against its own commit,
-// composed in `merge-guard.mjs`) deliberately does NOT include this rule for exactly that measurement --
+// composed in `merge-guard.ts`) deliberately does NOT include this rule for exactly that measurement --
 // see its own comment there. This rule stays advice for a HUMAN deciding whether to update a branch by
 // hand; under strict protection (restored 02:15Z, #442) GitHub itself now enforces it at merge time.
 

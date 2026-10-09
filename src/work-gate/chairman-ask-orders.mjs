@@ -22,7 +22,7 @@
 // ONE WRITE PATH, ORDERED SO A FAILURE IS RECOVERABLE: the comment first (a label with no brief sends no alert), then the label, then the body edit. A comment already posted (a tick that
 // died after it) is not posted twice: it is found by `MARKER` and only the label and the edit are redone.
 //
-// A LEAF OF THE GATE: it imports no binding from `work-gate.mjs`, so the `gh` runner and the fact reader arrive as arguments.
+// A LEAF OF THE GATE: it imports no binding from `work-gate.ts`, so the `gh` runner and the fact reader arrive as arguments.
 import { parseWaits, conditionHolds, isItemWait, waitItemOf } from "../wait-condition.ts";
 import { requestEvent, NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
 import { readReleaseFacts, registryDistTags, remoteTagExists } from "./held-on-satisfied-orders.mjs";

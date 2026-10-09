@@ -8,8 +8,8 @@
  * a delivered key for `JUDGMENT_TTL_MS`.
  *
  * THE REPLAY USES THE REAL PIECES, NOT A COPY OF THEIR RULE: the order comes from `answerOrders`, the window from
- * `readLedger` handed `JUDGMENT_CAUSES` exactly as `wake.mjs`'s `main` hands it, and the declaration from
- * `cause-declaration.mjs`. A test that passed its own judgment set would pass whatever the declaration said.
+ * `readLedger` handed `JUDGMENT_CAUSES` exactly as `wake.ts`'s `main` hands it, and the declaration from
+ * `cause-declaration.ts`. A test that passed its own judgment set would pass whatever the declaration said.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

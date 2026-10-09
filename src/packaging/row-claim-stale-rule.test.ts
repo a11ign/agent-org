@@ -52,7 +52,7 @@ const detach = (root: string, sha: string) =>
   execFileSync("git", ["checkout", "--quiet", "--detach", sha], { cwd: root, env: sandboxGitEnv(), stdio: "pipe" });
 
 /** The pathspec the real guard uses, spelled for the fixture rather than derived from it. */
-const SPEC = ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"];
+const SPEC = ["packages/agent-org/src/row-claim.ts", "packages/agent-org/src/row-claim/"];
 
 test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the file that moved", () => {
   const { root, commit } = syntheticRepo();
@@ -76,7 +76,7 @@ test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the 
 test("#1014: a checkout behind on UNRELATED files answers normally -- this is not a staleness refusal", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     const ahead = commit("docs/operational-lessons.md", "a paragraph nobody's verdict is computed from\n");
     setRef(root, "refs/remotes/origin/main", ahead);
@@ -91,7 +91,7 @@ test("#1014: a checkout behind on UNRELATED files answers normally -- this is no
 test("#1014: a checkout LEVEL with origin/main answers normally", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
+    const base = commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     detach(root, base);
     assert.equal(staleRuleReason({ repoRoot: root, files: SPEC }), null);
@@ -102,7 +102,7 @@ test("#1014: NO origin/main is CANNOT ASK, never 'up to date' -- the answer this
   () => {
     const { root, commit } = syntheticRepo();
     try {
-      const base = commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n");
+      const base = commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n");
       detach(root, base); // no refs/remotes/origin/main at all
 
       const reason = staleRuleReason({ repoRoot: root, files: SPEC });
@@ -146,9 +146,9 @@ test("#1014: the rule-file list is DERIVED from row-claim's own import closure, 
   assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.mjs")),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
-    `expected the rule modules beside row-claim.mjs, got ${derived.length}: ${derived.join(", ")}`);
+    `expected the rule modules beside row-claim.ts, got ${derived.length}: ${derived.join(", ")}`);
   assert.ok(derived.every((f) => f === at("src/row-claim.ts") || f.startsWith(at("src/row-claim/"))),
-    "and NOTHING else -- the closure reaches merge-guard.mjs and board-snapshot.mjs, real dependencies of "
+    "and NOTHING else -- the closure reaches merge-guard.ts and board-snapshot.ts, real dependencies of "
     + "the TOOL whose movement says nothing about whether the RULE changed. Folding those in would make "
     + "this the blanket staleness refusal the row rules out");
 });
@@ -156,7 +156,7 @@ test("#1014: the rule-file list is DERIVED from row-claim's own import closure, 
 test("#1014: a BLINDED closure walker still refuses -- the one tree this guard is for is the one whose "
   + "walker cannot be trusted", () => {
   // Not hypothetical. Measured 2026-09-12 in a worktree at `6dee44a4`, a main from before #1019 fixed
-  // `stripComments`: `localImports("packages/agent-org/src/row-claim.mjs")` returned 0 there, so the derivation produced
+  // `stripComments`: `localImports("packages/agent-org/src/row-claim.ts")` returned 0 there, so the derivation produced
   // ONLY the entry and five rule modules were invisible. The error runs toward NOT refusing, which is this
   // row's own defect arriving inside this row's own fix.
   const blinded = rulePathspec(resolve(TOOL_ROOT, "src/row-claim.ts"), REPO, { imports: () => [] });
@@ -165,7 +165,7 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
 
   const { root, commit } = syntheticRepo();
   try {
-    commit("packages/agent-org/src/row-claim.mjs", "export const claim = () => null;\n"); // tracked, so the entry-only pathspec below is one that matches (#3041)
+    commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n"); // tracked, so the entry-only pathspec below is one that matches (#3041)
     const base = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => null;\n");
     setRef(root, "refs/remotes/origin/main", base);
     const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.mjs", "export const templateFieldsReason = () => 'x';\n");
@@ -176,7 +176,7 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
     // go stale with the tree -- and it is the only reason this refuses.
     assert.ok(staleRuleReason({ repoRoot: root, files: blinded }),
       "a rule module the walker could not see still has to stop the verdict");
-    assert.equal(staleRuleReason({ repoRoot: root, files: ["packages/agent-org/src/row-claim.mjs"] }), null,
+    assert.equal(staleRuleReason({ repoRoot: root, files: ["packages/agent-org/src/row-claim.ts"] }), null,
       "and WITHOUT the directory in the pathspec it does not -- which is what makes the union "
       + "load-bearing rather than decoration");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -193,15 +193,15 @@ function importFresh(path: string, query: string) {
 /**
  * THE GUARD, AS IT LIVES IN A TOOL CHECKOUT: this repository's own `stale-rule-guard.mjs` (and the two leaf modules it imports) committed into a
  * throwaway repository at `<prefix>src/row-claim/`, then IMPORTED FROM THERE, so `import.meta.url` is the fixture's and `staleRuleReason()` is
- * called with no options -- exactly how `row-claim.mjs` calls it. A test that passes `repoRoot` or `files` never reaches the layout decision, which
- * is the one #3041 got wrong (the claim of a spawned engineer died on `ENOENT ... /home/agent/packages/agent-org/src/row-claim.mjs`).
+ * called with no options -- exactly how `row-claim.ts` calls it. A test that passes `repoRoot` or `files` never reaches the layout decision, which
+ * is the one #3041 got wrong (the claim of a spawned engineer died on `ENOENT ... /home/agent/packages/agent-org/src/row-claim.ts`).
  */
 async function guardInTool(prefix: string) {
   const { root, commit } = syntheticRepo();
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
   for (const rel of ["src/row-claim/stale-rule-guard.mjs", "src/lib/local-import-closure.mjs", "src/lib/git-env.mjs"]) commit(`${prefix}${rel}`, source(rel));
   commit(`${prefix}src/row-claim/own-pr-health-rule.mjs`, "export const inBuildReason = () => null;\n");
-  const base = commit(`${prefix}src/row-claim.mjs`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
+  const base = commit(`${prefix}src/row-claim.ts`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
   setRef(root, "refs/remotes/origin/main", base);
   const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.mjs"), `fixture=${encodeURIComponent(root)}`);
   return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.mjs` };
@@ -234,8 +234,8 @@ test("#3041: a guard in the MONOREPO layout (`<root>/packages/agent-org/src/row-
 });
 
 test("#3041: the rule directory is the one BESIDE the entry, whatever the layout", () => {
-  assert.equal(ruleDirOf("/r/src/row-claim.mjs", "/r"), "src/row-claim/");
-  assert.equal(ruleDirOf("/r/packages/agent-org/src/row-claim.mjs", "/r"), "packages/agent-org/src/row-claim/");
+  assert.equal(ruleDirOf("/r/src/row-claim.ts", "/r"), "src/row-claim/");
+  assert.equal(ruleDirOf("/r/packages/agent-org/src/row-claim.ts", "/r"), "packages/agent-org/src/row-claim/");
 });
 
 test("#3041: a pathspec that matches NO tracked file is CANNOT ASK by name, never 'up to date' -- an empty list and a list of untracked paths alike", () => {
@@ -243,7 +243,7 @@ test("#3041: a pathspec that matches NO tracked file is CANNOT ASK by name, neve
   try {
     const base = commit("src/elsewhere.mjs", "export {};\n");
     setRef(root, "refs/remotes/origin/main", base);
-    for (const files of [[], ["packages/agent-org/src/row-claim.mjs", "packages/agent-org/src/row-claim/"]]) {
+    for (const files of [[], ["packages/agent-org/src/row-claim.ts", "packages/agent-org/src/row-claim/"]]) {
       const reason = staleRuleReason({ repoRoot: root, files });
       assert.ok(reason, `files ${JSON.stringify(files)} must not read as up to date`);
       assert.match(reason, /CANNOT ASK/);
@@ -364,8 +364,8 @@ test("#3188: an install directory that names no commit is CANNOT ASK by name, no
 });
 
 test("#3188: installedLayoutOf reads the sha off pnpm's directory and says 'not installed' for a checkout", () => {
-  assert.deepEqual(installedLayoutOf(`/c/${PNPM_DIR(SHA)}/src/row-claim.mjs`),
+  assert.deepEqual(installedLayoutOf(`/c/${PNPM_DIR(SHA)}/src/row-claim.ts`),
     { installed: true, sha: SHA, packageRoot: `/c/${PNPM_DIR(SHA)}` });
-  assert.equal(installedLayoutOf("/r/src/row-claim.mjs").installed, false);
-  assert.equal(installedLayoutOf("/r/packages/agent-org/src/row-claim.mjs").installed, false);
+  assert.equal(installedLayoutOf("/r/src/row-claim.ts").installed, false);
+  assert.equal(installedLayoutOf("/r/packages/agent-org/src/row-claim.ts").installed, false);
 });

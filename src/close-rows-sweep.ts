@@ -12,7 +12,7 @@
 // point of failure.
 //
 // THIS RIDES `trunk.yml`'s EXISTING `push: main` RUN (unit 3), as a second entry into the SAME
-// `closurePlan` decision `close-rows-for-merged-pr.mjs` already drives -- imported, never re-derived,
+// `closurePlan` decision `close-rows-for-merged-pr.ts` already drives -- imported, never re-derived,
 // because a second copy of that decision is the exact "fact stated twice" shape this repo keeps paying
 // for. A push to `main` happens on every merge (that IS what triggers `trunk.yml`), which is also
 // why this cannot be the ONLY path: the row exists because a trigger cannot be trusted, and `push` is a
@@ -52,12 +52,12 @@
 //      EXCEPT when every refusal is `project-unreadable` (the token cannot read the Project, #546): that exits 0
 //      with a DEGRADED line naming the rows -- `closeRowsExit`'s bridge, shared with the immediate path.
 //
-//   node packages/agent-org/src/close-rows-sweep.mjs [--window=<minutes>]
+//   node packages/agent-org/src/close-rows-sweep.ts [--window=<minutes>]
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never the package specifier -- this job runs with `actions/checkout` and nothing else, the
-// identical reason close-rows-for-merged-pr.mjs's own header gives (#330/#331).
+// identical reason close-rows-for-merged-pr.ts's own header gives (#330/#331).
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 // #1227: `settleClosedStatus` is imported rather than re-derived, for the reason this file's own header
 // gives about `stripClaimLabels`: a second copy of that decision is the "fact stated twice" shape.
@@ -128,8 +128,8 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
   let issues, sha, prMergedAt;
   try {
     // `labels(first:20){nodes{name}}` added for #754, same reason as the immediate path's identical
-    // change in close-rows-for-merged-pr.mjs: one lookup carries both what to close and what to strip.
-    // #1877: `mergedAt` and each issue's last `ReopenedEvent` -- see close-rows-for-merged-pr.mjs's
+    // change in close-rows-for-merged-pr.ts: one lookup carries both what to close and what to strip.
+    // #1877: `mergedAt` and each issue's last `ReopenedEvent` -- see close-rows-for-merged-pr.ts's
     // `closurePlan` for what this backs (the sweep drives the identical, imported decision).
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
       + `mergedAt mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
@@ -157,7 +157,7 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
     console.log(`SWEEP: #${number} declared NO closing references.`);
     return { failed: [], unsettled: [], skipped: [] };
   }
-  // #776/#791: the identical fix as close-rows-for-merged-pr.mjs's own already loop -- GitHub can close a
+  // #776/#791: the identical fix as close-rows-for-merged-pr.ts's own already loop -- GitHub can close a
   // row NATIVELY, before either path runs, and its claim is exactly as stale as one this script closes.
   // #1299: SETTLE'S ANSWER IS READ, on both paths. It was a bare statement, so a sweep that moved no Status
   // still reached EXIT.DONE -- the prescribed repair for tracker-health axis 4, reported done while nothing moved.
@@ -204,7 +204,7 @@ export function sweepExit(outcome: { failed: number[]; unsettled: Refusal[]; }):
 
 /**
  * #1443: every exit AFTER "before sweep" pairs with an "after sweep" reading first -- see
- * `close-rows-for-merged-pr.mjs`'s own `exitAfterSweep` for why this is a matching pair rather than a
+ * `close-rows-for-merged-pr.ts`'s own `exitAfterSweep` for why this is a matching pair rather than a
  * standalone log call at the end.
  * @param {number} code
  * @returns {never}
@@ -215,7 +215,7 @@ function exitAfterSweep(code: number): never {
 }
 
 function main() {
-  refuseUnknownFlags(["--window"], { entry: import.meta.url, command: "node packages/agent-org/src/close-rows-sweep.mjs" });
+  refuseUnknownFlags(["--window"], { entry: import.meta.url, command: "node packages/agent-org/src/close-rows-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
@@ -249,5 +249,5 @@ function main() {
   exitAfterSweep(code);
 }
 
-// The entry guard `merge-guard.mjs`/`close-rows-for-merged-pr.mjs` use.
+// The entry guard `merge-guard.ts`/`close-rows-for-merged-pr.ts` use.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

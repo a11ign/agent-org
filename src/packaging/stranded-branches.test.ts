@@ -1,9 +1,9 @@
 // no-token: defaultRun
 //
 // #1409: every `gh` the CLI calls reaches a stub this file writes first on PATH, and every in-process test injects
-// `run`. `stranded-branches.mjs`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
+// `run`. `stranded-branches.ts`'s `defaultRun`, the function that spawns a real `gh`, is never reached here.
 /**
- * `packages/agent-org/src/stranded-branches.mjs` finds a pushed branch that has NEVER had a PR of any state and still
+ * `packages/agent-org/src/stranded-branches.ts` finds a pushed branch that has NEVER had a PR of any state and still
  * carries commits `origin/main` lacks -- see that file's own header for the incident
  * (`agent/ssh-key-defaults`, a finished security fix, pushed and invisible for eleven hours) and why the
  * obvious `git rev-list --count` check is defeated by squash merges on the wider population.
@@ -349,7 +349,7 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
 
 // --- The real CLI, end to end, with NO road to GitHub (#1409) ---
 //
-// It ran `node packages/agent-org/src/stranded-branches.mjs` in this checkout and accepted ANY of its three exit codes, so its PR
+// It ran `node packages/agent-org/src/stranded-branches.ts` in this checkout and accepted ANY of its three exit codes, so its PR
 // listing paged the live pulls API on every local run (worker-capture's census on #1275) -- and with no token it
 // still passed, on exit 2. Now the CLI runs inside the fixture repo above, so its `git` reads that repo's own
 // refs, and every `gh` it calls reaches a stub first on PATH that logs its argv. Each documented exit code is

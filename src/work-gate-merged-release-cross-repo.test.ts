@@ -193,7 +193,7 @@ test("#3453 (5) a clone that LISTED and holds no tree of the holder's is `none`;
 });
 
 test("#3453 (5) `host.json`'s clones: a declared key answers, an undeclared one and an unreadable file are REFUSALS naming the file", () => {
-  // A host declaration `host-config.mjs` accepts (`packaging/keyed-repo-review.test.ts`'s own shape): `cloneOfKey` reads through that reader.
+  // A host declaration `host-config.ts` accepts (`packaging/keyed-repo-review.test.ts`'s own shape): `cloneOfKey` reads through that reader.
   const file = (clones: object) => JSON.stringify({ schema: 1, home: "/h", binDir: "/h/bin", primary: "p", projects: [{ id: "p", checkout: "/h/p" }],
     gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] }, clones });
   const declared = cloneOfKey("agent-org", { path: "/h.json", read: (() => file({ "agent-org": CLONE })) as never });

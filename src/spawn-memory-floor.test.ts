@@ -1,6 +1,6 @@
 // no-token: gh -- every `herdr` here is an injected seam or a stub on PATH, the claim is a fake, and the memory reading is a fixture; nothing imported reaches the real `gh`, `herdr` or `/proc/meminfo`
 /**
- * `packages/agent-org/src/spawn-memory-floor.mjs`, #2508: THE SPAWNER HOLDS A NEW INSTANCE WHILE `MemAvailable` IS BELOW A FLOOR.
+ * `packages/agent-org/src/spawn-memory-floor.ts`, #2508: THE SPAWNER HOLDS A NEW INSTANCE WHILE `MemAvailable` IS BELOW A FLOOR.
  *
  * WHAT IS PINNED, in the row's own order: the pure decision (Done-when 1), the floor's value and that it says it is
  * CHOSEN (2), the hold BOTH ways with no pane and no claim behind it (3), an unreadable reading that neither holds nor
@@ -232,7 +232,7 @@ test("#2508 (reviewer): a NEW `reviewer-<n>` is held below the floor BEFORE its 
 
 // --- The wake ENTRY: the wiring in `main` is read, not assumed -----------------------------------------------
 
-/** Run `wake.mjs` with one order on stdin and `herdr`/`gh` as stubs; returns what the tick said and what herdr saw. */
+/** Run `wake.ts` with one order on stdin and `herdr`/`gh` as stubs; returns what the tick said and what herdr saw. */
 function tick(dir: string, meminfoText: string | null) {
   const log = join(dir, "herdr-calls");
   writeFileSync(join(dir, "herdr"), `#!/bin/sh\necho "$*" >> ${log}\ncase "$*" in\n  *'workspace list') printf '%s' '{"result":{"workspaces":[]}}' ;;\n`

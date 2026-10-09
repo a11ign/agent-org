@@ -678,7 +678,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 
 /** @returns {{ weekly: boolean }} */
 function parseArgs(): { weekly: boolean; } {
-  refuseUnknownFlags(["--weekly"], { entry: import.meta.url, command: "node packages/agent-org/src/org-watch.mjs" });
+  refuseUnknownFlags(["--weekly"], { entry: import.meta.url, command: "node packages/agent-org/src/org-watch.ts" });
   return { weekly: process.argv.includes("--weekly") };
 }
 

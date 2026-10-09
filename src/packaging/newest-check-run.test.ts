@@ -1,6 +1,6 @@
 // @ts-check
 // `newestConclusion` / `newestRun` / `normaliseConclusion`, which moved here from the deleted update-branch
-// sweep (#3047) because `queue-stalled.mjs` still reads them. The fixtures are REAL rollup entries, so the
+// sweep (#3047) because `queue-stalled.ts` still reads them. The fixtures are REAL rollup entries, so the
 // vocabulary under test is the one `gh pr list --json statusCheckRollup` returns (upper case).
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -50,13 +50,14 @@
 // (recorded by a worker who found reality different, pairing the tool's own verdict with what they found)
 // is the NUMERATOR. A log that only ever grew on disagreement could never tell "the tool was right" from
 // "nobody checked" -- the exact trap #188's `agreementLogPath` already exists to avoid, and the reason
-// this reuses its `gitCommonDir`/`appendJsonl` (both exported from `merge-guard.mjs` for exactly this)
+// this reuses its `gitCommonDir`/`appendJsonl` (both exported from `merge-guard.ts` for exactly this)
 // rather than inventing a second version of "append one JSON line, fail loud".
 //
 // IT RECORDS; IT NEVER GATES -- same as `reportReachability` below. A log write failing is reported and
 // never touches `process.exitCode`, for the identical reason `reportReachability`'s own failure does not:
 // "I could not tell you whether it is claimed" and "I could not log that I told you" are different
 // failures, and conflating them would make a full disk read as an unreadable board.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync } from "node:fs";
@@ -74,7 +75,7 @@ import { gitCommonDir, appendJsonl } from "./merge-guard.ts";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.ts";
-import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.mjs` above already loads it, and it never loads this file
+import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file
 import { readJsonObject, writeJsonObject } from "./claim-stall.ts";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
@@ -83,7 +84,7 @@ import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lo
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.mjs";
 import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
-// `work-gate.mjs` now asks the same question of every Ready row, and #2031's own filing names the reason
+// `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
 // it may not re-derive it: "both parse a trailing `-<n>` out of an `ls-remote` listing, and #2014's
 // `rowBranchesOnOrigin` is the tested spelling". The FAILURE POLICY stayed here -- see `rowBranchesOnOrigin`
 // below, which still throws -- because the gate's is deliberately different.
@@ -93,7 +94,7 @@ import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.ts";
 import { claimRefusal, recordRemoval } from "./worktree-removal.ts";
 
 /** What the worktree-removal log (#2782) names as the asker for this file's two removers. */
-const CALLER = "row-claim.mjs";
+const CALLER = "row-claim.ts";
 import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `blocked`, `answer:`, `session:`.
 import { BLOCKED_LABEL, BACKLOG_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
@@ -101,20 +102,20 @@ import { worktreeOwner, stampWorktree, OWNER_FILE } from "./worktree-owner.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
-// #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
-// here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing
+// #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.ts and re-exported
+// here, not declared in this file -- see claim-labels.ts's own header for why. Every existing
 // `import { CLAIM_LABEL } from "./row-claim.ts"` call site is unchanged. A bare `export {...} from`
 // would forward the binding WITHOUT creating a local one, and this file's own code below needs the local
 // name -- hence import-then-export as two separate statements rather than one re-export line.
 export { CLAIM_LABEL, STARTED_LABEL };
-// #2619 (child 3d of #69): IMPORTED, NOT REDECLARED -- `project-vocabulary.mjs`'s fields, re-exported
+// #2619 (child 3d of #69): IMPORTED, NOT REDECLARED -- `project-vocabulary.ts`'s fields, re-exported
 // under this file's own established name so `BLOCKED_LABEL`'s existing importers keep working unchanged.
 export { BLOCKED_LABEL };
-/** #2470: `decline --answer=<session>` adds `answer:<session>`, the label `waiting-condition.mjs` reads as "that session owes an answer". */
+/** #2470: `decline --answer=<session>` adds `answer:<session>`, the label `waiting-condition.ts` reads as "that session owes an answer". */
 const ANSWER_LABEL_PREFIX = ANSWER_PREFIX;
 
 /**
- * #771: the `Filed-by: <session>` line `row-file.mjs` writes, or `null` when absent -- a LITERAL line
+ * #771: the `Filed-by: <session>` line `row-file.ts` writes, or `null` when absent -- a LITERAL line
  * match only. Older prose ("Filed by `orchestrator`", no hyphen, no colon-value structure) is NEVER
  * inferred as this: #737 and #758 both carry that sentence and both must read `unrecorded`, the same rule
  * #603's owned-path sign-off already applies to "I checked" standing in for a stated fact.
@@ -157,8 +158,8 @@ export const WORKTREE_LABEL_PREFIX = "worktree:";
 // product-manager amends -- one was amended on THIS row while it sat in the Ready column -- and a claim
 // rewriting a body it read a moment earlier would silently drop that edit. A comment is append-only, so
 // two writers cannot clobber each other, and `row-claim` already posts one (#741's exception note).
-// RE-EXPORTED FROM THE LEAF, not declared here -- #2110 gave `work-gate.mjs` a reason to read it, and
-// this file is unimportable from a tick (see `claim-labels.mjs`'s own header for the whole argument).
+// RE-EXPORTED FROM THE LEAF, not declared here -- #2110 gave `work-gate.ts` a reason to read it, and
+// this file is unimportable from a tick (see `claim-labels.ts`'s own header for the whole argument).
 // Every existing `import { CLAIM_RECORD_MARKER } from "./row-claim.ts"` keeps working unchanged,
 // exactly as it did for the four labels above it.
 export { CLAIM_RECORD_MARKER };
@@ -174,7 +175,7 @@ const NOTHING_REASON = "the claim named no branch and no worktree";
  *
  * The marker is an HTML comment so it is invisible in the rendered thread while still being the thing
  * `claimRecordFrom` matches on -- a prose heading would be matched by anyone quoting this comment, which
- * is the mention-versus-use trap `acceptance-commands.mjs`'s header already names.
+ * is the mention-versus-use trap `acceptance-commands.ts`'s header already names.
  *
  * A release writes the marker with NO field lines rather than writing nothing, because "released" and
  * "never recorded" have to be distinguishable: without it the last CLAIM comment would still be the
@@ -311,7 +312,7 @@ function readsOnce(run: typeof defaultRun): typeof defaultRun {
 // `--force` makes creation idempotent (updates color/description rather than erroring) so this never
 // fails on a label a previous claim already made.
 /**
- * #883: EXPORTED, not module-private -- `row-file.mjs` needs the identical creation for the `lane:<owner>`
+ * #883: EXPORTED, not module-private -- `row-file.ts` needs the identical creation for the `lane:<owner>`
  * labels it derives, and a second copy of "create a label idempotently before adding it" is the same
  * fact-stated-twice shape #749 itself exists to name. Behaviour is unchanged for every existing caller.
  * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
@@ -535,7 +536,7 @@ export function decideClaim(labelsBefore: string[], mySession: string): { procee
  * refuses if any open `ready` row has no Status, and it does not know the difference between "a row
  * silently lost its Status, neglected" and "this exact call is what is about to give it one" -- so a row
  * that already carries `ready` by the time it reaches `gh project item-add` (any caller passing gh's own
- * `-l ready`/`--label=ready` straight through does this; `row-file.mjs`'s `--ready` sentinel is a separate,
+ * `-l ready`/`--label=ready` straight through does this; `row-file.ts`'s `--ready` sentinel is a separate,
  * later convention that does not stop it) trips the floor on ITSELF, refusing every time. See
  * `readyRowsMissingStatus`'s own header for the full account.
  *
@@ -590,7 +591,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  *
  * ALSO REMOVES `ready` IN THE SAME CALL. `dispatchRow`/`claimRow` only ever added labels, so a row still
  * carrying `ready` at the moment it was dispatched came out the other side as `ready` + `in-progress` +
- * `session:*` -- exactly the state `ready-label-audit.mjs` exists to catch (a row cannot be both
+ * `session:*` -- exactly the state `ready-label-audit.ts` exists to catch (a row cannot be both
  * "unclaimed, pickable" and "claimed"), found on #197's own review after being stripped by hand seventeen
  * times in one evening. `--remove-label` on a label a row does not carry is a harmless no-op, so this needs
  * no branch for "was it ready in the first place".
@@ -598,7 +599,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  * `runner:*` (#444) IS DELIBERATELY NEVER REMOVED HERE -- it survives a claim, unlike `ready`. It records
  * WHO the row was reserved for, and that fact does not stop being true once the reservation is honoured;
  * removing it would lose the record of why a specific session took this row rather than another. A closed
- * row still carrying it is handled separately, as debris (`ready-label-audit.mjs`'s `isClosedDebrisLabel`).
+ * row still carrying it is handled separately, as debris (`ready-label-audit.ts`'s `isClosedDebrisLabel`).
  */
 
 /**
@@ -609,7 +610,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  * ALL THREE FAIL OPEN ON A LOOKUP FAILURE, deliberately -- the opposite of `decideClaim`'s own "unclaimed
  * must be EARNED, not defaulted to" rule a few functions up. That rule protects a VERDICT about who holds
  * a row; this protects a session's ability to claim ANYTHING at all when the network is down or `gh` is
- * unauthenticated -- the identical reasoning `merge-guard.mjs`'s `racesAnArmedMerge` states for the same
+ * unauthenticated -- the identical reasoning `merge-guard.ts`'s `racesAnArmedMerge` states for the same
  * choice made the other way: a convenience guard that blocks all work on a lookup failure gets bypassed
  * and then never consulted again, which is worse than the rare miss it would have caught.
  *
@@ -871,7 +872,7 @@ export function labelSetForClaim(labels: readonly string[], add: readonly string
 /**
  * #2151: `PUT /repos/<repo>/issues/<n>/labels` -- GitHub's "Set labels for an issue" -- as `gh api`
  * arguments: the whole list in ONE request, so there is no add half and no remove half to come apart.
- * `row-file.mjs`'s `labelSetArgs` builds the identical request for the promote act (#2111) and cannot be
+ * `row-file.ts`'s `labelSetArgs` builds the identical request for the promote act (#2111) and cannot be
  * imported from here (it imports this module and runs an act on load); it is outside this row's Region, so
  * folding the two into one function is left to whoever next touches that file.
  * @param {number} issueNumber
@@ -1134,7 +1135,7 @@ function completeClaim(issueNumber: number,
 /**
  * Print whether the row can be STARTED today, alongside whether it is claimed (#177).
  *
- * A SEPARATE PROCESS on purpose. `row-reachability.mjs` walks every remote ref and shells `git` dozens of
+ * A SEPARATE PROCESS on purpose. `row-reachability.ts` walks every remote ref and shells `git` dozens of
  * times; importing it would make every `check` pay that even when the answer is not wanted, and a slow
  * claim tool is one people stop running before claiming -- which is the defect `row-claim` exists for.
  *
@@ -1145,7 +1146,7 @@ function completeClaim(issueNumber: number,
  *
  * RETURNS the verdict (#226), rather than only printing it, so the caller can log the exact same answer
  * it showed the worker -- `code: null` for the one case not even the subprocess's own exit code can name
- * (the spawn itself failing, e.g. `node` missing), kept distinct from `row-reachability.mjs`'s own real
+ * (the spawn itself failing, e.g. `node` missing), kept distinct from `row-reachability.ts`'s own real
  * `CANNOT_ASK` (2), which IS a code and is logged as one.
  *
  * @param {number} issueNumber
@@ -1160,7 +1161,7 @@ function reportReachability(issueNumber: number): { code: number | null; output:
     // exact defect for entry-point guards built by string concatenation; it is the same trap read from
     // the other end.
     const out = execFileSync("node",
-      [fileURLToPath(new URL("row-reachability.mjs", import.meta.url)), String(issueNumber)],
+      [...TSX_IMPORT, fileURLToPath(new URL("row-reachability.ts", import.meta.url)), String(issueNumber)],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     process.stdout.write(out);
     return { code: 0, output: out };
@@ -1229,7 +1230,7 @@ export function claimRow(issueNumber: number, mySession: string, deps: {
 //
 // WHAT A CLAIM IN ANOTHER TRACKER CAN DO TODAY: `check` reads it in full. A `claim`, `dispatch`, `decline` or `conflict` there is REFUSED
 // BEFORE ANY WRITE, and says why: they write the row's labels and move its card on the Project board, and the tool's labels are #2619's
-// (3d) and its board snapshot is bound to the first tracker's board (`board-snapshot-scope.mjs`), so a write would land on the wrong
+// (3d) and its board snapshot is bound to the first tracker's board (`board-snapshot-scope.ts`), so a write would land on the wrong
 // board or half-apply. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
 
 export type Tracker = { key: string, repo: string, board: { owner: string, number: number } };
@@ -1853,7 +1854,7 @@ export function worktreeStatus(worktreePath: string, { run = defaultRun }: { run
  *
  * #1373: CLEAN IS A FACT ABOUT WHAT GIT TRACKS. `runs/` is gitignored, so a worktree holding the only copies
  * of board snapshots reads clean and `git worktree remove` deletes them. It refuses, naming the count, unless
- * every `runs/` file is in the primary checkout with a matching non-empty sha256 -- `prune-worktrees.mjs`'s
+ * every `runs/` file is in the primary checkout with a matching non-empty sha256 -- `prune-worktrees.ts`'s
  * `unverifiedRecords`, the one predicate both removers share. `hash` is injectable so a test can drive the
  * row's incident: two failed reads that compare equal.
  * #2782: THE ROW'S CLAIM IS READ, AND THE LINE IS WRITTEN. `decline` already proved the row is claimed by `session`; this asks
@@ -1924,7 +1925,7 @@ function declineRemoveLabels(status: { branch: string | null; worktree: string |
  * and `gh` refuses to add a label it has never created. #749/#2151 fixed this for `claimRow`
  * (`ensureLabelsExist` before the write, then a re-read `writeRowLabels`'s own header calls
  * WRITE-THEN-VERIFY) -- `declineRow` never got either half, and #2623's row is the live cost: the gate's
- * `claim-stall.mjs` released it at 03:44:09Z, `decline` exited clean and printed `DECLINED`, and the
+ * `claim-stall.ts` released it at 03:44:09Z, `decline` exited clean and printed `DECLINED`, and the
  * row's `in-progress`/`started`/`session:worker-2623` labels never moved on GitHub. A `gh` exit code is
  * proof the COMMAND ran, never proof the EFFECT landed (`docs/operational-lessons.md`'s own standing
  * rule, restated here because this call had never had to honour it): create what is about to be added,
@@ -2034,7 +2035,7 @@ function declineOwnershipReason(status: { claimed: boolean; sessions: string[]; 
  *
  * #752: A CLOSED ROW HAS NO LANE TO GO BACK TO. Measured live: `decline`d #721 restored `ready` because
  * it carried `WAS_READY_LABEL`, and #721 was already closed -- the row that was "genuinely unclaimed,
- * pickable" one edit ago is now "done", and a closed row cannot be both. `ready-label-audit.mjs`'s own
+ * pickable" one edit ago is now "done", and a closed row cannot be both. `ready-label-audit.ts`'s own
  * `isClosedDebrisLabel` already names `ready`/`in-progress`/`session:*` as debris ON a closed row; this
  * is that same fact enforced at the ONE place that was still writing `ready` onto one. `isClosed` wins
  * over EVERY other reason to add a label -- `wasReady` and `blockedReason` both describe what the row
@@ -2132,7 +2133,7 @@ function releaseRow(issueNumber: number,
   if (blockedReason && !isClosed) {
     // A LABEL CARRIES NO FREE TEXT -- the reason has to live somewhere a future reader can see it, and an
     // issue comment is where every other "record why" in this codebase already puts one
-    // (board-report.mjs, npm-token-liveness.mjs).
+    // (board-report.ts, npm-token-liveness.mjs).
     run("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body",
       `Declined by \`${mySession}\` and marked \`blocked\`: ${blockedReason}`]);
     landed.push("posted the blocked reason");
@@ -2150,7 +2151,7 @@ function releaseRow(issueNumber: number,
     return { declined: true, restoredReady: false, blocked: Boolean(blockedReason), closed: false, statusMoved: true };
   }
   // #400: THE MATCHING MOVE ON RELEASE. "Genuinely unclaimed" and "Ready" are the same state in this
-  // tracker's own model (`ready-label-audit.mjs`'s definition: a row cannot be both "unclaimed, pickable"
+  // tracker's own model (`ready-label-audit.ts`'s definition: a row cannot be both "unclaimed, pickable"
   // and "claimed"), so a decline moves the view back the same way a claim moved it forward. Never throws;
   // see `moveProjectStatus`'s own comment for why an unexpected failure here is surfaced distinctly rather
   // than folded into a plain `declined: true`.
@@ -2201,7 +2202,7 @@ export function recordConflict(logPath: string, entry: { issueNumber: number; re
 
 /**
  * The most recently recorded `check` entry for an issue, or `null` if `check` was never run against it --
- * mirrors `merge-guard.mjs`'s `latestVerdictFor` exactly, one field renamed.
+ * mirrors `merge-guard.ts`'s `latestVerdictFor` exactly, one field renamed.
  *
  * @param {string} logPath
  * @param {number} issueNumber
@@ -2239,22 +2240,22 @@ function recordCheckSafely(entry: Parameters<typeof recordCheck>[1]) {
 
 function usage() {
   return "Usage:\n"
-    + "  node packages/agent-org/src/row-claim.mjs --row=<issue-number>                       (status: three states)\n"
-    + "  node packages/agent-org/src/row-claim.mjs check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
-    + "  node packages/agent-org/src/row-claim.mjs dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
-    + "  node packages/agent-org/src/row-claim.mjs claim <issue-number> --session=<name> [--branch=<name>] "
+    + "  node packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
+    + "  node packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
+    + "  node packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
+    + "  node packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
     + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #2748: omitting --adopt still does this when the target is your OWN --session's already-stamped tree and your predecessor instance is independently confirmed gone, never merely quiet; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
     + "-- #987: in a claim COMMENT, so a path of ANY length works, where a label capped it at 41 characters, "
     + "so a future escalation can tell portable from held, and decline can remove the worktree safely; "
     + "#741: --blocked-by releases B2 only with a measurement comment already on this session's own open "
     + "PR, and only while #N is open)\n"
-    + "  node packages/agent-org/src/row-claim.mjs decline <issue-number> --session=<name> [--keep-worktree] "
+    + "  node packages/agent-org/src/row-claim.ts decline <issue-number> --session=<name> [--keep-worktree] "
     + "[--predecessor-gone] [--answer=<session>]    (give it back; #665: also "
     + "removes the recorded worktree, refusing by name if it is dirty; #2470: --keep-worktree leaves it, with its work, and "
     + "#2748: --predecessor-gone additionally attests --session's holder is confirmed gone (never implied by --keep-worktree "
     + "alone), so an ordinary same-session reclaim can later adopt the tree it left; "
     + `--answer= releases to that session's \`${ANSWER_PREFIX}\` label instead of \`${READY_LABEL}\`)\n`
-    + "  node packages/agent-org/src/row-claim.mjs conflict <issue-number> --found=<text>     (#226: reality differed)\n";
+    + "  node packages/agent-org/src/row-claim.ts conflict <issue-number> --found=<text>     (#226: reality differed)\n";
 }
 
 /**
@@ -2365,7 +2366,7 @@ export function b4Lines(myFiles: string[] | null, otherPrFiles: { number: number
   const lines = [];
   // THREE STATES, THREE SENTENCES -- worker-capture reviewing #1085. The first version printed a refusal,
   // announced INCONCLUSIVE, and said NOTHING when clear. So `row-claim check` on a clean row was
-  // byte-identical to `row-reachability.mjs` run standalone, while the verdict above promised the reader
+  // byte-identical to `row-reachability.ts` run standalone, while the verdict above promised the reader
   // they had the B4 half. **I closed the null-versus-clean conflation inside this function and left the
   // clean-versus-not-run one open at its edge**, which is the same defect one step out.
   lines.push(reason
@@ -2470,7 +2471,7 @@ function runStatus(issueNumber: number, trackerKey: string = "") {
 
 /**
  * #2617: `renderStatus` for a row of a tracker that is not the first: the same three-state answer and the same B4, named `<key>#<n>` (decision 2)
- * so two trackers' row 7 read as two rows, and with the reachability read left out and SAID to be -- `row-reachability.mjs` reads the first
+ * so two trackers' row 7 read as two rows, and with the reachability read left out and SAID to be -- `row-reachability.ts` reads the first
  * tracker's rows and would answer about the wrong one. The log entry carries the key, so it is never taken for the first tracker's `check`.
  * @param {Tracker} tracker
  * @param {{ issueNumber: number, title: string, status: ReturnType<typeof claimStatus>, body: string | null,
@@ -2484,7 +2485,7 @@ function renderTrackerStatus(tracker: Tracker, { issueNumber, title, status, bod
   const filedBy = body === null ? "(could not read body)" : filedByLine(body) ?? "unrecorded";
   if (!status.claimed) {
     process.stdout.write(`UNCLAIMED -- ${name} "${title}" -- Filed-by: ${filedBy}\n`);
-    process.stdout.write(`REACHABILITY: not run for ${name} -- \`row-reachability.mjs\` reads the first tracker's rows only, so its answer would be about another row (#2617).\n`);
+    process.stdout.write(`REACHABILITY: not run for ${name} -- \`row-reachability.ts\` reads the first tracker's rows only, so its answer would be about another row (#2617).\n`);
     reportB4(issueNumber, { repo: tracker.repo });
     process.exitCode = 0;
     recordCheckSafely({ issueNumber, tracker: tracker.key, claimed: false, started: false, sessions: [], reachability: null });
@@ -2536,7 +2537,7 @@ function claimOrDispatch(mode: "dispatch" | "claim", issueNumber: number, mySess
 }
 
 /**
- * #2324: the roles the drain holds back at the moment of THIS claim -- the same `activeDrain` `wake.mjs`'s router
+ * #2324: the roles the drain holds back at the moment of THIS claim -- the same `activeDrain` `wake.ts`'s router
  * reads, so the offer and the refusal cannot disagree. Read here, at the CLI, and not inside the library
  * functions: a test or another caller handing `claimRow` a session gets the claim's other rules and not a fact
  * about this host's ledger.
@@ -2826,7 +2827,7 @@ function runConflict(issueNumber: number, rest: string[]) {
 }
 
 /**
- * EVERY FLAG THIS COMMAND ACCEPTS, exported so a test can drive the argv its callers build (`wake.mjs`'s claim, release and undo) through the
+ * EVERY FLAG THIS COMMAND ACCEPTS, exported so a test can drive the argv its callers build (`wake.ts`'s claim, release and undo) through the
  * REAL list rather than a restated copy. #2841: `--predecessor-gone` was parsed below and sent by `performRelease` from #2748, but was
  * never added here, so every gone-worker release was refused at the guard before any parse -- each side was tested alone.
  */
@@ -2835,7 +2836,7 @@ export const ROW_CLAIM_FLAGS = ["--session", "--row=", "--found=", "--blocked=",
 
 async function main() {
   // THE PULL LOOP RESTS ON THIS COMMAND, so a flag it silently discards is the worst place for one.
-  // Measured 2026-09-07 before this guard: `row-claim.mjs check 161 --jsonn` printed the ordinary claim
+  // Measured 2026-09-07 before this guard: `row-claim.ts check 161 --jsonn` printed the ordinary claim
   // line and exited 0, and so did `--format=json`. Both look like a machine-readable request that was
   // honoured.
   //
@@ -2843,7 +2844,7 @@ async function main() {
   // the bare status-read shape below, and a guard listing only `--session` would refuse the command's
   // own documented invocation. A flag guard that has not been merged forward is a guard that breaks the
   // thing it protects.
-  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.mjs" });
+  refuseUnknownFlags(ROW_CLAIM_FLAGS, { entry: import.meta.url, command: "node packages/agent-org/src/row-claim.ts" });
   // #1352: FIRST OF ALL, where it was launched. From the primary checkout or a plain clone this refuses before any read,
   // exit 2 -- the "could not determine at all" outcome every consumer already classifies, as the stale-rule guard does.
   if (launchGate("row-claim")) {

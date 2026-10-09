@@ -28,7 +28,7 @@
 //
 // SCOPED TO `Acceptance:` ONLY, DELIBERATELY -- not `Mutation:`. A mutation check edits a real file (even
 // restored, it is a mutating, slower operation than this job is built to gate every PR on); #353's own
-// region names `packages/agent-org/src/acceptance-commands.mjs`, not a mutation runner, and folding the two together
+// region names `packages/agent-org/src/acceptance-commands.ts`, not a mutation runner, and folding the two together
 // would make "did the acceptance command pass" wait on something with a different risk profile and cost.
 //
 // #471: THIS JOB ALSO REQUIRES A `Closes:` DECLARATION, on the identical shape -- `Closes #N`,
@@ -869,7 +869,7 @@ const fingerprint = (a: string, b: string): string => a + b;
  * `typescript`, LOADED ONLY WHEN A CLOSURE IS ACTUALLY SCANNED -- and this is not a style choice.
  *
  * A STATIC import breaks two pre-install entries, and `pre-install-import-graph.test.ts` said so by name
- * rather than my assuming the CI ordering held everywhere: `arm-pr.mjs` and `workflow-run-liveness.mjs`
+ * rather than my assuming the CI ordering held everywhere: `arm-pr.ts` and `workflow-run-liveness.ts`
  * both reach this module for `extractClosesDeclaration` -- one function that touches none of this -- and
  * both run before `pnpm install`, where a package specifier dies with ERR_MODULE_NOT_FOUND. The acceptance job
  * itself runs after `pnpm install --ignore-scripts` and `pnpm run build`, so the parser is there when needed.
@@ -1090,10 +1090,10 @@ const CLOSURE_REQUIREMENT_PATTERNS =
 
 // #827: THE MIRROR OF `// writes:`, ON THE TEST FILE RATHER THAN THE FILE THAT CALLS THE RISKY FUNCTION --
 // `board-markdown.test.ts` and `board-achievement-retirement.test.ts` each import only `document` from
-// `board-document.mjs`, render it from a literal fixture object, and pass 5/5 and 7/7 with `gh` stubbed to
-// exit 4 on every call. Neither calls `todaysReleaseExists` (`board-document.mjs`'s own `gh release view`
+// `board-document.ts`, render it from a literal fixture object, and pass 5/5 and 7/7 with `gh` stubbed to
+// exit 4 on every call. Neither calls `todaysReleaseExists` (`board-document.ts`'s own `gh release view`
 // spawn, line ~1190) -- but the walk scans the WHOLE FILE'S text for every requirement pattern, not the
-// one export a caller actually imports, so any test reaching `board-document.mjs` at all is charged for
+// one export a caller actually imports, so any test reaching `board-document.ts` at all is charged for
 // EVERY spawn anywhere in it, including ones its own import never uses.
 //
 // `// writes:` sits where the RISKY CALL lives (git-fixture-cache.mjs calls `runsRoot()` itself, so its own
@@ -1374,7 +1374,7 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
 
 /**
  * The human-facing form of a `ClosureHit` -- `"board-style.test.ts requires token via collect →
- * board-data.mjs:72"` for a one-hop chain, matching #621's own worked example verbatim. A direct hit (the
+ * board-data.ts:72"` for a one-hop chain, matching #621's own worked example verbatim. A direct hit (the
  * entry file itself matches, zero hops) reads as `"<entry> requires <req>, at <entry>:<line>"`.
  *
  * #731: A `wrongDeclaration` HIT SAYS SO, naming the file's OWN claim as the thing that failed -- a reader
@@ -1716,7 +1716,7 @@ export function unresolvedAcceptancePaths(body: string, deps: { exists?: (path: 
   });
 }
 
-// `git ls-files` once per process, like `trackedTopLevelDirs` in `region-paths.mjs` -- and, like that one,
+// `git ls-files` once per process, like `trackedTopLevelDirs` in `region-paths.ts` -- and, like that one,
 // read only when a check needs it. Kept here rather than exported from there: #2192's Region is this file.
 let trackedFilesCache: string[] | null = null;
 function trackedFiles() {
@@ -2171,7 +2171,7 @@ const PACKAGE_SCRIPT_RUN = /(?:^|&&|\|\||;)\s*p?npm\s+run\s+([\w:-]+)(?![:\w-])/
 /**
  * #2724: the ONE file `scriptBody` runs, when it is nothing but a bare `node <file>` invocation -- optional
  * leading env assignments (the same shape `firstRealToken` already strips), optional trailing flags, but no
- * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.mjs`)
+ * `&&`/`||`/`|`/`;` of its own. `board:settle`'s body (`node packages/agent-org/src/settle-closed-rows.ts`)
  * is exactly this shape; a script that chains further commands, or does not invoke `node` at all, resolves
  * to `null` -- this only ever ADDS a file to check, never guesses one where the shape is ambiguous.
  *
@@ -2778,7 +2778,7 @@ export function extractRefutationSection(body: string | null | undefined): Secti
 /**
  * #2307: the `Mutation:` section, read by the ONE section parser rather than a fourth copy of it -- this
  * file's header says to read it before adding a section reader. This job still never RUNS it (see the
- * SCOPED TO `Acceptance:` ONLY note above); the reader is for `pr-open.mjs`, which runs it on the AUTHOR's
+ * SCOPED TO `Acceptance:` ONLY note above); the reader is for `pr-open.ts`, which runs it on the AUTHOR's
  * machine, where the objection to executing a mutation on a shared runner does not apply.
  * @param {string | null | undefined} body
  * @returns {Section}
@@ -3400,7 +3400,7 @@ export function acceptanceReport(body: string | null | undefined, run: (command:
 
 /**
  * Runs a command for real, via a shell (these are arbitrary shell strings out of a PR body, potentially
- * carrying flags/pipes/quoting -- the same trust boundary `merge-guard.mjs`'s `--ci-gate` and this
+ * carrying flags/pipes/quoting -- the same trust boundary `merge-guard.ts`'s `--ci-gate` and this
  * project's other CI-invoked scripts already accept, contained by `pull_request`'s read-only token and
  * fork checkout rather than by refusing shell syntax).
  * @param {string} command
@@ -3433,7 +3433,7 @@ const CLOSES_NONE_PATTERN = new RegExp(`\\b${CLOSES_FIELD}:\\s*none\\b([^\\n]*)`
 // #2617 (child 3b of #69): A ROW CAN BE NAMED ACROSS REPOSITORIES -- `Closes owner/repo#7`, the form a layer repository's
 // pull request uses for a row that lives in the project's tracker (ADR 0040, decision 2). Measured by RUNNING this parser on it
 // before the change: `Closes owner/repo#7` read MALFORMED, because the list pattern wanted `#` straight after the word, so a
-// layer PR could not have declared its row at all. The qualifier is `owner/name` exactly (the two halves `project-config.mjs`
+// layer PR could not have declared its row at all. The qualifier is `owner/name` exactly (the two halves `project-config.ts`
 // accepts), and NOTHING ELSE is a qualifier: `owner#7`, `owner/#7`, `a/b/c#7` and `owner/repo#` are each still malformed.
 const REPO_QUALIFIER = "[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+";
 const CLOSES_REF = `(?:${REPO_QUALIFIER})?#\\d+`;
@@ -3473,7 +3473,7 @@ export function extractClosesDeclaration(body: string | null | undefined): Close
       : { kind: "malformed", detail: "`Closes: none` names no reason" };
   }
   // #527: EVERY match, not the first. `.exec()` once made `Closes #510\nCloses #497` report only #510 --
-  // both close for real (`close-rows-for-merged-pr.mjs` reads GitHub's own `closingIssuesReferences`,
+  // both close for real (`close-rows-for-merged-pr.ts` reads GitHub's own `closingIssuesReferences`,
   // never this regex), so the gate was silently under-reporting a fact GitHub and this file both see.
   const listMatches = [...text.matchAll(CLOSES_LIST_PATTERN_GLOBAL)];
   if (listMatches.length > 0) {
@@ -3612,9 +3612,9 @@ export function mutationRecordReport({ body, diff }: { body: string | null | und
 // declaration of the section -- while the template's own guidance comment names the heading and must
 // not count as one.
 //
-// THE SHAPE is `row-file.mjs`'s Open-check rule (`hasAdjacentTranscript`, #1174): a fenced block with a
+// THE SHAPE is `row-file.ts`'s Open-check rule (`hasAdjacentTranscript`, #1174): a fenced block with a
 // command line and, directly under it, a line it printed. That helper is copied rather than imported
-// because `row-file.mjs` drags the board and claim machinery into a job that must stay a plain parser.
+// because `row-file.ts` drags the board and claim machinery into a job that must stay a plain parser.
 // A copy can drift; the tests below pin the shapes this side accepts.
 //
 // WHAT THIS CANNOT DO, as #1174 says of its own: it cannot tell a pasted run from an invented adjacent
@@ -3756,13 +3756,13 @@ export function wholeSuiteNote(commands: string[]): string[] {
 }
 
 /**
- * `rowLabels` is the caller's reader of a row's labels (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.mjs` prints as NOT CHECKED
+ * `rowLabels` is the caller's reader of a row's labels (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.ts` prints as NOT CHECKED
  */
 export type BodyReportInput = { body: string, run: (command: string) => number, diff: DiffReading, rowLabels?: (row: { repo: string | null, number: number }) => string[] };
 export type BodyReport = { name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } };
 
 /**
- * #3209: THE REPORTS CI'S ACCEPTANCE JOB RUNS OVER A PR BODY, AS ONE LIST. `main` below and `pr-open.mjs`'s
+ * #3209: THE REPORTS CI'S ACCEPTANCE JOB RUNS OVER A PR BODY, AS ONE LIST. `main` below and `pr-open.ts`'s
  * `checkBody` both iterate THIS value, so a fifth body check reaches `pr:open` and `pr:edit` with no second edit.
  * It was two spellings of one list: the CLI entry grew a `Mutation:` and a `## Measured` report and `checkBody`
  * kept its copy of two, so a body passed `pr:open` and went red in CI on `MUTATION: MISSING` -- 8 of the 9
@@ -3835,7 +3835,7 @@ export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] =
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/acceptance-commands.ts" });
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.

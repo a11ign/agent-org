@@ -4,7 +4,7 @@
 # NO `Requires=` ON THE SERVICE, AND IT IS LOAD-BEARING. `host:install` runs `enable --now` over every shipped `.timer`, and `Requires=` in a timer's [Unit] makes
 # that start job start the service too (measured, @@prefix@@worktree-prune.timer; `host-units.test.ts` pins the partition). For the prune that is an install-time
 # prune; here it would be an install-time REBOOT onto a newer kernel at whatever hour somebody ran `host:install`. Of every timer this tool ships this is the
-# one that must not run on activation, and `host-kernel.test.mjs` pins the absence.
+# one that must not run on activation, and `host-kernel.test.ts` pins the absence.
 Description=a11ign: daily 05:30 London drained reboot onto a newer installed kernel (#4053)
 
 [Timer]

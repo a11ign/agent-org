@@ -3,7 +3,7 @@
 // command: render the board's PDF from the same data the daily GitHub report reads
 // THE BOARD DOCUMENT — what the board reads. The GitHub edition is the data trail; this is the answer.
 //
-// It shares `board-data.mjs` with the daily GitHub edition rather than re-deriving anything, so the two
+// It shares `board-data.ts` with the daily GitHub edition rather than re-deriving anything, so the two
 // cannot disagree about a merge count or a blocker list. That is not tidiness: the reports exist to stop
 // numbers being read from the wrong place, and two generators with two data layers would reproduce that
 // failure inside the reporting itself.
@@ -513,7 +513,7 @@ function sourceTable(d: any) {
   const captureAge = d.latestGate ? realPageCaptureAge(d.latestGate.output) : null;
   // THE VERDICT COMES FIRST, because the board could not previously see one. This row quoted the COMMAND
   // and the capture spread; whether the check PASSED appeared nowhere in the document, while
-  // `board-report.mjs` printed the gate's whole output into the GitHub edition. Two editions that would
+  // `board-report.ts` printed the gate's whole output into the GitHub edition. Two editions that would
   // have disagreed about whether a check passed, with the silent one being the one the board reads.
   const worst = d.latestGate ? worstVerdict(d.latestGate.output) : null;
   push("Most recent conformance check result",
@@ -833,7 +833,7 @@ const PAGE_CSS = `
   hr { border: 0; border-top: 0.4px solid #ccd2da; margin: 5mm 0; }
 `;
 
-// NOTHING RUNS ON IMPORT -- see the note in `board-report.mjs`. `document()` stays exported above
+// NOTHING RUNS ON IMPORT -- see the note in `board-report.ts`. `document()` stays exported above
 // so the renderer test can build a real document without rendering a PDF or touching GitHub.
 /** THE SUMMARY GATES THE EDITION, and a missing one is a MISSING EDITION rather than a summary-less
  * document. A summary assembled from the sections below it is precisely what the chairman's third rule

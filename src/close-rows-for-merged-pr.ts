@@ -71,7 +71,7 @@
 // ## #2822: WHEN GITHUB RESOLVED NOTHING, THE BODY'S OWN DECLARATION IS THE PLAN
 //
 // From 2026-09-30T09:12Z GitHub stopped resolving `closingIssuesReferences` for every new PR, and
-// `closes-mismatch-check.mjs` was made to PASS that repo-wide case with a warning (the chairman's ruling) on
+// `closes-mismatch-check.ts` was made to PASS that repo-wide case with a warning (the chairman's ruling) on
 // the promise that THIS job closes the declared rows anyway. A guard that passes while this job still read
 // only GitHub's answer would merge every PR and close no row -- the #298 failure again. So: when
 // `closingIssuesReferences` is EMPTY and the body has line-start `Closes #N` lines, those are the plan
@@ -86,7 +86,7 @@
 //   3  every row closed, but one or more Statuses did not move for a cause OTHER than an unreadable Project
 //      (#1299). A run whose every refusal is `project-unreadable` exits 0 with a DEGRADED line: see `closeRowsExit`.
 //
-//   node packages/agent-org/src/close-rows-for-merged-pr.mjs <pr-number>
+//   node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>
 import { execFileSync } from "node:child_process";
 import { settleClosedStatus, unsettledVerdict } from "./settle-closed-status.ts";
 // The token-carrying half, imported HERE (an entry point) and injected, so the pure module stays pure.
@@ -100,24 +100,24 @@ import { pathToFileURL } from "node:url";
 // `node:path`, `node:fs` and `node:url`.
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 // #804: A LEAF IMPORT, safe under the identical no-`pnpm install`/no-build constraint the rest of this header
-// names -- `claim-labels.mjs` imports nothing at all, so it cannot be part of a cycle. This replaced two
+// names -- `claim-labels.ts` imports nothing at all, so it cannot be part of a cycle. This replaced two
 // rounds of "duplicate the constant locally instead" (#754 for CLAIM_LABEL/STARTED_LABEL, #782 for
-// READY_LABEL): each was individually defensible against the immediate risk (row-claim.mjs's heavy import
-// graph; a cycle back through ready-label-audit.mjs) but the accumulation was itself the fact-stated-twice
+// READY_LABEL): each was individually defensible against the immediate risk (row-claim.ts's heavy import
+// graph; a cycle back through ready-label-audit.ts) but the accumulation was itself the fact-stated-twice
 // shape this repo names as its own most expensive recurring defect -- three copies of four literals is
-// worse than the cycle either duplicate was solving. See claim-labels.mjs's own header for the full story.
+// worse than the cycle either duplicate was solving. See claim-labels.ts's own header for the full story.
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { labelsToStrip, stripClaimLabelsVia } from "./claim-label-strip.ts";
 import { REPO } from "./project-identity.ts";
-// #2202: `waiting-condition.mjs` imports NOTHING, so it is import-safe under this header's no-`pnpm install`/no-build
-// constraint for the same reason `claim-labels.mjs` is: it cannot be part of a cycle.
+// #2202: `waiting-condition.ts` imports NOTHING, so it is import-safe under this header's no-`pnpm install`/no-build
+// constraint for the same reason `claim-labels.ts` is: it cannot be part of a cycle.
 import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // #2036/#1053: THE LEAK GUARD, IN THE SPAWN HELPER. This file now sends a `--body` -- the orphaned-row
 // report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
 // module through its import closure. Guarded in `gh` rather than at the one call site, the way
-// `row-claim.mjs`, `carry-branch.mjs` and `stranded-branches.mjs` do it, so every call added tomorrow is
+// `row-claim.ts`, `carry-branch.ts` and `stranded-branches.ts` do it, so every call added tomorrow is
 // covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.mjs`
-// imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.mjs`
+// imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
 // carries above.
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
@@ -212,8 +212,8 @@ export function closurePlan(issues: { number: number; state: string; labels?: st
 
 /**
  * #2822: THE ROWS A MERGED PR'S BODY DECLARES, for the one case where GitHub resolved none. LINE-ANCHORED and
- * deliberately STRICTER than `extractClosesDeclaration`, which this file cannot import (`acceptance-commands.mjs`
- * pulls `region-paths.mjs` and more behind it, and this job runs with `actions/checkout` and nothing else):
+ * deliberately STRICTER than `extractClosesDeclaration`, which this file cannot import (`acceptance-commands.ts`
+ * pulls `region-paths.ts` and more behind it, and this job runs with `actions/checkout` and nothing else):
  * that parser reads `closes #494` mid-sentence, and a closer acting on a prose mention would close a row the
  * author only talked about (#549). Here a row is declared only by a LINE that starts with `Closes` (or `Closes:`)
  * and then `#N`, `#N, #M` or `#N and #M`. Text after the list is ignored, as the real parser ignores it, EXCEPT
@@ -234,13 +234,13 @@ export function declaredRowsFromBody(body: string | null | undefined): number[] 
   return [...new Set(numbers)];
 }
 
-// #3883: `labelsToStrip` and the strip itself live in `claim-label-strip.mjs`, a leaf the work gate can import; re-exported so every caller here is unchanged.
+// #3883: `labelsToStrip` and the strip itself live in `claim-label-strip.ts`, a leaf the work gate can import; re-exported so every caller here is unchanged.
 export { labelsToStrip };
 
 /**
  * #2036: THE ROW A MERGED PR WAS BUILT FOR, READ OFF ITS BRANCH NAME. `agent/worktree-prune-unit-2000`
  * names row #2000; `agent/rstest-spike` names none. A trailing `-<digits>` is this repo's own branch
- * convention (`row-claim.mjs` writes it), and the number is a HINT, never a closing reference -- the
+ * convention (`row-claim.ts` writes it), and the number is a HINT, never a closing reference -- the
  * caller confirms the row is real, open and claimed before it says anything.
  * @param {string | null | undefined} headRefName
  * @returns {number | null}
@@ -256,7 +256,7 @@ export function rowNumberFromBranch(headRefName: string | null | undefined): num
  * ## Why this exists at all
  *
  * Every component behaves as designed and the row stays open. The declaration is well-formed, so `gate`
- * passes it; GitHub resolves no issue, so `closes-mismatch-check.mjs` -- which compares DECLARED against
+ * passes it; GitHub resolves no issue, so `closes-mismatch-check.ts` -- which compares DECLARED against
  * RESOLVED -- sees the two sides AGREE and reads that as healthy; and `applyClosurePlan` correctly closes
  * nothing. Measured 2026-09-22 on #2011 (branch `agent/worktree-prune-unit-2000`), which merged at
  * 22:43:48Z carrying #2000's own body text as its `Closes: none` reason. #2000 sat `in-progress` with its
@@ -308,13 +308,13 @@ export function orphanedRowReport({ row, prNumber, sha, branch, declaration }: {
  *
  * This decides NOTHING. What this PR closed is already GitHub's own answer (`closingIssuesReferences`,
  * read above); this only puts the author's own sentence in front of the person who has to act, so they
- * can see at a glance whether the reason still holds. `closes-mismatch-check.mjs`'s `findClosingPhrase`
+ * can see at a glance whether the reason still holds. `closes-mismatch-check.ts`'s `findClosingPhrase`
  * draws exactly this line for exactly this reason -- "used only to LOCATE the phrase in the body for a
  * refusal message, never to decide the verdict" -- and a parser that decides nothing is not a second copy
  * of one that does.
  *
- * The real parser is also a heavier import than this path should carry: `acceptance-commands.mjs` pulls
- * `region-paths.mjs`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
+ * The real parser is also a heavier import than this path should carry: `acceptance-commands.ts` pulls
+ * `region-paths.ts`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
  * `actions/checkout` and nothing else (see this file's own header on why that matters).
  *
  * @param {string} body @returns {string} the declaration as written, or a stated absence -- never a guess
@@ -362,7 +362,7 @@ const gh = (args: string[]) => {
 
 /**
  * #1443: was #1360's saving (no Status move for a row already Done) worth anything, MEASURED, on a real
- * closeRows run? Neither this file nor `close-rows-sweep.mjs` printed a rate-limit reading at all, so
+ * closeRows run? Neither this file nor `close-rows-sweep.ts` printed a rate-limit reading at all, so
  * the before/after cost of one sweep could not be read from CI -- the exact evidence the reviewer's
  * `not-convinced` on #1429 named as missing.
  *
@@ -494,12 +494,12 @@ function closeOneRow(n: number, { prNumber, sha, repo, owedBy = [], basis = "git
  * second pass, which is a second thing to remember and the whole reason `audit`'s DEBRIS finding kept
  * coming back. A label-removal failure must NEVER prevent or roll back the close (the close is the point;
  * a row that closed with a stale label is strictly better than one left open because a label edit failed),
- * so this never throws -- it only reports. EXPORTED so `close-rows-sweep.mjs`'s backstop path can call
+ * so this never throws -- it only reports. EXPORTED so `close-rows-sweep.ts`'s backstop path can call
  * the identical decision rather than re-deriving it -- that file's own header names the rule this follows:
  * "a second copy of that decision is the exact 'fact stated twice' shape this repo keeps paying for."
  * @param {number} n @param {string[]} labels @param {string} repo
  * @param {string} [logPrefix] the immediate path logs `CLOSE-ROWS:`, the sweep logs `SWEEP:` -- callers
- *   must stay distinguishable in the log, the same reason close-rows-sweep.mjs's own header gives for
+ *   must stay distinguishable in the log, the same reason close-rows-sweep.ts's own header gives for
  *   never reusing `CLOSE-ROWS:` itself: which path did the work is a fact about the pipeline's health.
  */
 export function stripClaimLabels(n: number, labels: string[], repo: string, logPrefix: string = "CLOSE-ROWS") {
@@ -513,7 +513,7 @@ const CLOSURE_EFFECTS = (["closeOne", "strip", "settle"] as const);
 
 /**
  * #1360: THE LIVE SETTLE DEPENDENCIES, DEFINED ONCE. The per-merge path (`liveClosureEffects` below) and the sweep
- * (`close-rows-sweep.mjs`'s `closeOnePr`) both settle with these. Measured before this existed: each built its own
+ * (`close-rows-sweep.ts`'s `closeOnePr`) both settle with these. Measured before this existed: each built its own
  * inline, and dropping `currentStatus` from the sweep's copy left close-rows-sweep, trunk-sweep and close-rows-on-merge
  * at 49 / 0 -- a caller could lose the whole saving silently. `close-rows-on-merge.test.ts` holds both uses.
  */
@@ -570,7 +570,7 @@ export function liveOrphanEffects(repo: string): {
  * can close a row NATIVELY, before this script ever runs, so `already` needs the identical strip `close`
  * gets), then closes each still-open row and strips its labels too. Split out of `main` so the WIRING --
  * which rows get closed, which get stripped, and that `already` is never silently skipped -- is
- * unit-testable without a live `gh` call, the same reason `close-rows-sweep.mjs`'s own `closeOnePr` is
+ * unit-testable without a live `gh` call, the same reason `close-rows-sweep.ts`'s own `closeOnePr` is
  * split out of ITS `main`. The effects are injected so a test can prove call order and arguments.
  *
  * #1400: THE THREE EFFECTS ARE REQUIRED, AND NONE HAS A LIVE DEFAULT. Each used to default to the real one, so a
@@ -729,14 +729,14 @@ function exitAfterSweep(code: number): never {
 function main() {
   refuseUnknownFlags([], {
     entry: import.meta.url,
-    command: "node packages/agent-org/src/close-rows-for-merged-pr.mjs <pr-number>",
+    command: "node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
   });
 
   const repo = process.env.GITHUB_REPOSITORY;
   const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
   if (!repo || !number) {
     console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
-      + "  node packages/agent-org/src/close-rows-for-merged-pr.mjs <pr-number>");
+      + "  node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
     process.exit(EXIT.CANNOT_ASK);
   }
 
@@ -817,6 +817,6 @@ function main() {
   exitAfterSweep(code);
 }
 
-// The entry guard `merge-guard.mjs` uses: a bare `file://` + argv[1] comparison misreads a path with a
+// The entry guard `merge-guard.ts` uses: a bare `file://` + argv[1] comparison misreads a path with a
 // space in it and a symlinked checkout, and reports the module as imported when it was run.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

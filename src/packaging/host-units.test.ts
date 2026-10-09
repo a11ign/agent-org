@@ -199,7 +199,7 @@ test("#1858: every unit this repository ships is discovered -- against the real 
     "and the project's own nightly, read from `.agent-org/units/` beside the tool's templates");
   // #1941 RETIRED `a11ign-fleet-gated-nightly.*`, which this test originally named as its second example
   // (it was #1858's own case: shipped by #1844 and never installed). Its question -- are there
-  // fleet-gated rows to dispatch? -- moved into `work-gate.mjs` as `fleet-batch-due`, because it is a
+  // fleet-gated rows to dispatch? -- moved into `work-gate.ts` as `fleet-batch-due`, because it is a
   // STATE question and `agent-practices.md` forbids putting those on a clock. The units are gone so
   // `host:install` cannot put the timer back beside the gate cause and fire the same batch twice.
   assert.ok(!units.some((u) => u.startsWith("a11ign-fleet-gated-nightly")),
@@ -868,7 +868,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
 test("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and names its entry point", () => {
   // The assertion above is an emptiness assertion, so this is where it is shown capable of failing.
   // Stub directories, so the finding is produced by the rule rather than by the repository's own state.
-  const unit = "[Service]\nExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs\n";
+  const unit = "[Service]\nExecStart=/usr/bin/node packages/agent-org/src/work-tick.ts\n";
   const [f] = identityDrift({
     shippedDir: "/shipped",
     readDir: (() => ["a11ign-spends.service"]) as never,
@@ -912,11 +912,11 @@ test("#1974: `npm run <script>` is followed through package.json to the file it 
   // that stopped at the word `npm` would find no entry point in two of this repo's three units.
   const entries = entriesFromCommand("/usr/bin/npm run work:tick", {
     repoRoot: "/repo",
-    scripts: { "work:tick": "node packages/agent-org/src/work-gate.mjs | node packages/agent-org/src/wake.mjs" },
+    scripts: { "work:tick": "node packages/agent-org/src/work-gate.ts | node packages/agent-org/src/wake.ts" },
     exists: (() => true) as never,
   });
   assert.deepEqual(entries,
-    ["/repo/packages/agent-org/src/work-gate.mjs", "/repo/packages/agent-org/src/wake.mjs"],
+    ["/repo/packages/agent-org/src/work-gate.ts", "/repo/packages/agent-org/src/wake.ts"],
     "and BOTH sides of the pipeline -- `work:tick` is two programs and either of them can spend the pool");
   assert.deepEqual(entriesFromCommand("/usr/bin/npm run nope",
     { repoRoot: "/repo", scripts: {}, exists: (() => true) as never }), [],
@@ -1034,7 +1034,7 @@ test("#1993: an Exec command this repository cannot follow is OPAQUE, not clean"
   assert.deepEqual(opaqueCommands("[Service]\nExecStart=/home/agent/.local/bin/board-report-dispatch.sh\n"),
     ["/home/agent/.local/bin/board-report-dispatch.sh"]);
   assert.deepEqual(opaqueCommands("[Service]\nExecStartPre=-/usr/bin/npm run primary:update\n"
-    + "ExecStart=/usr/bin/node packages/agent-org/src/work-tick.mjs\n"), [],
+    + "ExecStart=/usr/bin/node packages/agent-org/src/work-tick.ts\n"), [],
   "POSITIVE CONTROL: `npm` and `node` are exactly the two this repository CAN follow into a file, so "
   + "charging them here would put the warning on every unit and therefore on none");
 });
@@ -1126,8 +1126,8 @@ test("#1993: the board dispatch declares the PATH that reaches this host's `gh`,
 
 // --- #2000: the prune existed for 13 days and no clock ever called it --------------------------------
 //
-// MEASURED ON THE AGENT HOST 2026-09-22. `prune-worktrees.mjs` shipped 2026-09-09 with 45k of measured
-// refusals, and `crontab -l`, `systemctl --user list-timers` and a grep of `.github/` and `work-gate.mjs`
+// MEASURED ON THE AGENT HOST 2026-09-22. `prune-worktrees.ts` shipped 2026-09-09 with 45k of measured
+// refusals, and `crontab -l`, `systemctl --user list-timers` and a grep of `.github/` and `work-gate.ts`
 // all came back with nothing that runs it. What that cost: 143 worktrees, 133 carrying a trailing row
 // number, 124 of those belonging to CLOSED rows, `~/repos` at 16G, and the oldest leaked tree 9 days old
 // rather than ancient debris. `row-claim claim` makes a worktree per claim (#1432) and about 7% were ever
@@ -1171,7 +1171,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
 });
 
 test("#2782: the prune's API spend is ONE claim read per removable tree, declared under the workers' account, and READ rather than assumed", () => {
-  // `ceo`'s 2026-09-22 ruling on #1950 refused a `work-gate.mjs` cause for this chore because it cost no API budget and needed
+  // `ceo`'s 2026-09-22 ruling on #1950 refused a `work-gate.ts` cause for this chore because it cost no API budget and needed
   // no judgment. THE FIRST HALF STOPPED BEING TRUE ON #2782: `wt-2623` was deleted under its live claim twice, and the only
   // fact that could have stopped it is the `session:` label on the row, which is on GitHub. The second half stands -- no model
   // turn, no judgment -- and that is the half that puts it on a clock. This test is the collision the previous version of
@@ -1280,7 +1280,7 @@ test("#2000: which shipped timers run their service at `host:install`, and which
   // working fails both halves rather than passing vacuously.
   assert.deepEqual(requiring, [
     "a11ign-corpus-release-nightly.timer",
-    // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.mjs --arm` creates the
+    // #2867: the shadow window's timer. Its service runs once at `host:install` and is a DORMANT NO-OP until `shadow-window.ts --arm` creates the
     // marker (no marker, nothing read, exit 0), which the unit's own comments say; that is why a fifth entry here is a decision made and not one missed.
     "a11ign-shadow-window.timer",
     // a11ign/a11ign#3849: the /tmp janitor's timer. Its service runs once at `host:install`, and that run IS wanted: it is the first batch of the clear, bounded to one run's budget.
@@ -1432,7 +1432,7 @@ test("#1998: a shell script spawns `gh` as a WORD, which the JavaScript pattern 
     + "deletes a REAL `gh` call further along -- a false NEGATIVE, which here reads as a unit that "
     + "spends nobody's pool");
   assert.equal(shellSpawnsGh("# gh workflow run x\necho done\n"), false,
-    "NEGATIVE CONTROL: a `gh` in a COMMENT is not a spawn -- the shape that charged row-file.mjs for a "
+    "NEGATIVE CONTROL: a `gh` in a COMMENT is not a spawn -- the shape that charged row-file.ts for a "
     + "note about the guard that read it (#804)");
   assert.equal(shellSpawnsGh("git push origin agent/gh-wrapper-1974\n"), false,
     "nor is `gh` inside a branch name, a path or a jq filter -- #1860 is this repository's own record "
@@ -2169,7 +2169,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
-      assert.notEqual(done.stdout, "", `host-units.mjs ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
+      assert.notEqual(done.stdout, "", `host-units.ts ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
       return done;
     };
     const identityFindings = (out: string) => JSON.parse(out).findings
@@ -2737,7 +2737,7 @@ test("#2971: no other timer is excused -- one that names no record reads NOT ENA
 });
 
 // --- #3443: THE HOST RUNS ONE AGENT-ORG VERSION -- `toolVersion` pins it, and every unit that runs agent-org code runs the one tool checkout ---------------
-// The tool checkout follows release TAGS (`update-tool.test.mjs` is that half). This half is the host's declaration of which one, and the units: the chairman
+// The tool checkout follows release TAGS (`update-tool.test.ts` is that half). This half is the host's declaration of which one, and the units: the chairman
 // listener and watcher ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version its lockfile pins, so the host ran two versions at once.
 
 const TOOL_3443 = "/srv/tools/agent-org";
@@ -2815,16 +2815,16 @@ test("#3443 + #3464: THE PROPERTY -- every shipped service in tool form runs age
     }
   }
   const workTick = shippedUnitText(renderedName("work-tick.service.in", units.prefix), { host: toolHost3443() }) ?? "";
-  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`),
+  assert.ok(hasLine(workTick, `ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`),
     "POSITIVE CONTROL: the project's beforeTick is rendered, and it is the tool's own update-primary");
 });
 
 test("#3464: a `beforeTick` naming a tool command runs it from the tool, one that does not is the project's own, and an unknown or foreign one REFUSES", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`]);
-  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs --drift`], "arguments follow");
-  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/host-units.mjs --install`], "the table's own fixed arguments come first, as in bin.mjs");
+  assert.deepEqual(pre("agent-org primary:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`]);
+  assert.deepEqual(pre("agent-org primary:update --drift"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts --drift`], "arguments follow");
+  assert.deepEqual(pre("agent-org host:install"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/host-units.ts --install`], "the table's own fixed arguments come first, as in bin.mjs");
   assert.deepEqual(pre("npm run widgets:update"), [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} npm run widgets:update`], "a command of the project's own is run as written");
   assert.throws(() => pre("agent-org no:such-command"), HostConfigRefusal, "an unknown tool command refuses");
   assert.throws(() => pre("agent-org"), HostConfigRefusal, "and so does a bare `agent-org`");
@@ -2833,7 +2833,7 @@ test("#3464: a `beforeTick` naming a tool command runs it from the tool, one tha
 test("#3464: a tool command is the same command however its words are separated -- a tab or a run of spaces is accepted by parseBeforeTick, so it must not fall back to the project's pinned copy", () => {
   const rendered = renderTemplate(readFileSync(join(SHIPPED_DIR, "work-tick.service.in"), "utf8"), templateValues(plainHost3443(), readUnitsDeclaration()), "work-tick");
   const pre = (command: string) => workTickToolForm(rendered, TOOL_3443, [{ checkout: PROJECT_ROOT, command }]).split("\n").filter((line) => line.startsWith("ExecStartPre=")).slice(1);
-  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.mjs`];
+  const viaTool = [`ExecStartPre=-/usr/bin/env -C ${PROJECT_ROOT} /usr/bin/node ${TOOL_3443}/src/update-primary.ts`];
   for (const spelling of ["agent-org\tprimary:update", "agent-org  primary:update", "agent-org \t primary:update"]) {
     const declared = JSON.stringify({ schema: 1, beforeTick: spelling });
     assert.equal(parseBeforeTick(declared), spelling, `POSITIVE CONTROL: parseBeforeTick ACCEPTS ${JSON.stringify(spelling)}, so the rendering below is what decides`);

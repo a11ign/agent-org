@@ -110,7 +110,7 @@ ledger_record() { # status stdout-copy first-arg second-arg
 # --- #4148: THE HOURLY ROLLUP -- a reading for any hour, though the ledger keeps only the newest half -------------
 #
 # What the trim is about to drop is counted FIRST, per UTC hour, account and resource, into `<ledger>.hourly` (one TAB line:
-# hour, account, resource, calls, points READ, floor points; the same two numbers `gh-ledger.mjs` reads off a ledger line, so a
+# hour, account, resource, calls, points READ, floor points; the same two numbers `gh-ledger.ts` reads off a ledger line, so a
 # reading adds the two files and never double-counts: a line is in the ledger or in the rollup, never both). Merged on every trim
 # so the file holds one line per hour x account x resource and not one per trim. If the rollup cannot be written the trim does NOT
 # go ahead (the caller's `&&`): a kept ledger past its bound is a diagnostic's lesser harm than a lost hour. Two calls trimming at
@@ -135,7 +135,7 @@ rollup_dropped() { # ledger-file dropped-bytes
 #   1. N SECONDS (`A11Y_GH_READ_CACHE_SECONDS`, default 20, clamped to 30): an IDENTICAL read (same arguments, same repository, same
 #      directory and branch, since a bare `gh pr view` answers for the branch) is answered from the entry a moment ago. Any caller.
 #   2. THE TICK'S SNAPSHOT: a process the tick started carries `A11Y_TICK_SNAPSHOT`, and its entry stays good while the repository's
-#      GENERATION has not moved. `tick-snapshot.mjs` moves it from a REST call that costs nothing when nothing changed (a 304), once per
+#      GENERATION has not moved. `tick-snapshot.ts` moves it from a REST call that costs nothing when nothing changed (a 304), once per
 #      tick; the generation is `<counter> <last verified>` and an entry is not served past `A11Y_TICK_SNAPSHOT_MAX_AGE` (150 s) of
 #      the last verification, so a tick that stopped refreshing stops being believed. A session (no such variable) is never served this.
 #

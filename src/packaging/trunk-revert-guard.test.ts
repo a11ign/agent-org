@@ -5,7 +5,7 @@
  * -- a deleted path is EXPLAINED only when a non-merge commit unique to the branch actually touched it --
  * was verified against two real commits in the project's history before being written down here: `f2cdfaf3`
  * (the incident: a deletion no branch commit ever mentions) and `fc9b89d2` (#354, a deliberate
- * consolidation: a real commit, `ca922204`, names the deletion). See trunk-revert-guard.mjs's own header
+ * consolidation: a real commit, `ca922204`, names the deletion). See trunk-revert-guard.ts's own header
  * for why the more obvious instruments -- `git merge-tree` on the merge's own two parents, and GitHub's
  * `gh pr view --json files` -- both FAIL to distinguish the two, because the loss happened several commits
  * deep inside the branch's own internal main-sync history, not at the outermost merge.
@@ -18,7 +18,7 @@
 // no-token: gh
 //
 // #827. `trunkRedOrders` takes its facts as an argument and returns the order -- `readTrunkRed`, in
-// `trunk-red.mjs`, does the lookups -- and this file calls the first with a fixture. The closure walk reaches
+// `trunk-red.ts`, does the lookups -- and this file calls the first with a fixture. The closure walk reaches
 // `gh` through that module's graph rather than through anything these tests execute.
 //
 // The spawned script runs `git`, not `gh`.
@@ -108,7 +108,7 @@ function fixtureHistory(root: string): void {
 /**
  * A REPOSITORY OF ITS OWN WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.
  *
- * `trunk-revert-guard.mjs` runs `git fetch origin --quiet` before it looks at anything (unconditional, and
+ * `trunk-revert-guard.ts` runs `git fetch origin --quiet` before it looks at anything (unconditional, and
  * deliberately so -- worker-contracts' finding that the guard must not read a remote-tracking ref that a
  * checkout happens to have fetched an hour ago). Every spawn below used to pass the checkout running the
  * suite as `cwd`, so a test run in any worktree fetched into the SHARED primary `.git`, writing its
@@ -239,7 +239,7 @@ test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (the #354 shape) is 
 
 // --- the CLI, guarded like every other argv-reading script here ---
 
-test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignoring it", () => {
+test("trunk-revert-guard.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
     execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
@@ -253,7 +253,7 @@ test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignori
   assert.ok(threw);
 });
 
-test("trunk-revert-guard.mjs refuses to run without --merge", () => {
+test("trunk-revert-guard.ts refuses to run without --merge", () => {
   let threw = false;
   try {
     execFileSync("node", [SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });

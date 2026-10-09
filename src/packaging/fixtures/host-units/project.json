@@ -1,5 +1,5 @@
 {
-  "_what": "(#3233) A RECORDED FIXTURE PROJECT for host-units.test.ts: the smallest declaration the tool's readers accept, naming the one unit this project owns. It is NOT a11ign's declaration -- a test that read that one changed verdict whenever a11ign merged. `vocabulary` is the tool's own default wording, read at import by `project-vocabulary.mjs`.",
+  "_what": "(#3233) A RECORDED FIXTURE PROJECT for host-units.test.ts: the smallest declaration the tool's readers accept, naming the one unit this project owns. It is NOT a11ign's declaration -- a test that read that one changed verdict whenever a11ign merged. `vocabulary` is the tool's own default wording, read at import by `project-vocabulary.ts`.",
   "schema": 1,
   "beforeTick": "agent-org primary:update",
   "tracker": [

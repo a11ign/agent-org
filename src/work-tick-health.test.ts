@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.mjs` and `wake.mjs` are stubs
+// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts` are stubs
 // (the `wake` one records what it was handed), with the PATH pointed at an empty directory. ERASABLE TYPESCRIPT ONLY: node strips the types itself.
 
 /**
@@ -24,7 +24,7 @@ const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
 const COST_PATH = "/state/agent-org/tick-cost.jsonl";
 const START = Date.parse("2026-10-04T21:40:04Z");
 
-/** A `tick-cost` line as `work-tick.mjs` writes it, with only what the health reading reads; `wallS` is the wall in seconds. */
+/** A `tick-cost` line as `work-tick.ts` writes it, with only what the health reading reads; `wallS` is the wall in seconds. */
 const costLine = (wallS: number, extra: Record<string, unknown> = {}) => ({
   at: START + wallS * 1000, wallMs: wallS * 1000, prestartMs: null, cpuMs: { self: 4000, children: 21_000 },
   phases: { startup: { wallMs: 900, cpuMs: 800 }, gate: { wallMs: wallS * 800, cpuMs: 15_000 }, wake: { wallMs: 700, cpuMs: 100 } }, ...extra,
@@ -158,12 +158,12 @@ test("#3567: delivery hands `wake` one JSON line per order, and a `wake` that re
 function tickIn(dir: string, gate = "process.exit(0);") {
   const src = join(dir, "src");
   mkdirSync(src);
-  const own = new Set(["work-tick.mjs", "work-gate.mjs", "wake.mjs"]);
+  const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
   for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-  writeFileSync(join(src, "work-tick.mjs"), readFileSync(join(SRC, "work-tick.mjs"), "utf8"));
-  writeFileSync(join(src, "work-gate.mjs"), gate);
-  writeFileSync(join(src, "wake.mjs"),
-    `export * from ${JSON.stringify(join(SRC, "wake.mjs"))};\n`
+  writeFileSync(join(src, "work-tick.ts"), readFileSync(join(SRC, "work-tick.ts"), "utf8"));
+  writeFileSync(join(src, "work-gate.ts"), gate);
+  writeFileSync(join(src, "wake.ts"),
+    `export * from ${JSON.stringify(join(SRC, "wake.ts"))};\n`
     + `import { appendFileSync, readFileSync } from "node:fs";\nimport { fileURLToPath } from "node:url";\n`
     + `if (process.argv[1] === fileURLToPath(import.meta.url)) appendFileSync(${JSON.stringify(join(dir, "delivered.jsonl"))}, readFileSync(0, "utf8"));\n`);
   mkdirSync(join(dir, "empty"));
@@ -173,7 +173,7 @@ function tickIn(dir: string, gate = "process.exit(0);") {
     delete base.INVOCATION_ID;
     return base;
   };
-  const args = [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`];
+  const args = [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
   return {
     marker: tickMarkerPath(ledger),
     run: (extra?: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { encoding: "utf8", cwd: dir, env: env(extra) }),

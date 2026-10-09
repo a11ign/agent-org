@@ -1,6 +1,6 @@
 // no-token: gh -- every GitHub read is an injected `holder`; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/wake.mjs`, #2853: A QUEUED ORDER THAT CAN NEVER BE DELIVERED IS RETIRED, NOT KEPT FOR EVER.
+ * `packages/agent-org/src/wake.ts`, #2853: A QUEUED ORDER THAT CAN NEVER BE DELIVERED IS RETIRED, NOT KEPT FOR EVER.
  *
  * `handoff/worker-2783/409773f7` sat in the queue for 533 ticks and wrote three lines each. `worker-2783` wrote it for
  * `reviewer-2826`; the reviewer ended; the order was re-addressed to "the holder of #2783", which was `worker-2783`

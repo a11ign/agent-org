@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `wake.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
 /**
  * #3264: A KEYED REPOSITORY'S FIRST REVIEW CANNOT FOLLOW THE TICK'S OWN REMEDY, and a second host act the tick never names stands behind it.
  *

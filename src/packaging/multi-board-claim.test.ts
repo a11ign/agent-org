@@ -38,7 +38,7 @@ const TWO_TRACKERS = declaration(
   [FIRST, { key: "agent-org", repo: "a11ign/agent-org" }],
 );
 
-/** A Region in the fenced shape `region-paths.mjs` reads, so the prefix goes through the real extractor. */
+/** A Region in the fenced shape `region-paths.ts` reads, so the prefix goes through the real extractor. */
 const regionBody = (...lines: string[]) => `## What it is\n\nx\n\n## Region\n\n\`\`\`\n${lines.join("\n")}\n\`\`\`\n\n## Acceptance\n\nx\n`;
 
 /** An open pull request as `gh pr list --json number,changedFiles,files,body,labels` answers. */
@@ -88,8 +88,8 @@ test("#2617 POSITIVE CONTROL: the SAME claim with only the first repository decl
 });
 
 test("#2617: the first repository's pull requests keep their number as their whole name -- a refusal there reads as it always did", () => {
-  const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.mjs"),
-    prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.mjs"])] } });
+  const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.ts"),
+    prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.ts"])] } });
   const reason = eligibility(fake, BOTH);
   assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.mjs\./);
 });
@@ -97,10 +97,10 @@ test("#2617: the first repository's pull requests keep their number as their who
 // --- 2. a repository prefix is that key's path; a bare path is the first's -------------------------------------------------
 
 test("#2617 done-when 1b: `nvda-worker:src/x.ts` is read as the second repository's path and a bare path as the first's, by the real extractor", () => {
-  const entries = declaredRegionFiles(regionBody("nvda-worker:src/x.ts", "nvda-worker:src/lib/", "packages/agent-org/src/row-claim.mjs"),
+  const entries = declaredRegionFiles(regionBody("nvda-worker:src/x.ts", "nvda-worker:src/lib/", "packages/agent-org/src/row-claim.ts"),
     { rootFiles: NO_ROOT_FILES });
   const split = (entries ?? []).map(splitRegionEntry);
-  assert.deepEqual(split.filter((e) => e.key === "").map((e) => e.path), ["packages/agent-org/src/row-claim.mjs"], "a bare path is the first's");
+  assert.deepEqual(split.filter((e) => e.key === "").map((e) => e.path), ["packages/agent-org/src/row-claim.ts"], "a bare path is the first's");
   assert.deepEqual(split.filter((e) => e.key === "nvda-worker").map((e) => e.path).sort(), ["src/lib/", "src/x.ts"], "a prefixed one is that key's");
   assert.equal(entries?.length, 3, "all three declared -- an extractor that dropped the prefixed lines would leave one");
 });

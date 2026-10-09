@@ -149,11 +149,11 @@ function rig(): Rig {
   const gate = `import { helper } from "./lib/helper.mjs";\nexport const decide = (args) => helper(${DECIDE})(args);\n`;
   for (const base of [join(root, "candidate"), join(root, "runner")]) {
     mkdirSync(join(base, "src", "lib"), { recursive: true });
-    writeFileSync(join(base, "src", "work-gate.mjs"), gate);
+    writeFileSync(join(base, "src", "work-gate.ts"), gate);
     writeFileSync(join(base, "src", "lib", "helper.mjs"), "export const helper = (decide) => decide;\n");
     writeFileSync(join(base, "src", "unrelated.mjs"), "export const x = 1;\n");
   }
-  return { root, live, copy: join(root, "copy"), record: join(root, "out", "diff.jsonl"), candidate: join(root, "candidate", "src", "work-gate.mjs"),
+  return { root, live, copy: join(root, "copy"), record: join(root, "out", "diff.jsonl"), candidate: join(root, "candidate", "src", "work-gate.ts"),
     tool: join(root, "runner"), stopped: [] };
 }
 
@@ -483,10 +483,10 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     const git = (...args: string[]) => execFileSync("git", ["-C", tool, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { env: sandboxGitEnv(), encoding: "utf8" });
     git("init", "-q");
     git("commit", "-q", "--allow-empty", "-m", "snapshot");
-    const gate = join(tool, "src", "work-gate.mjs");
+    const gate = join(tool, "src", "work-gate.ts");
     const armCli = () => spawnSync(process.execPath, [RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
       { encoding: "utf8" });
-    const shared = join(tool, "src", "host-config.mjs");
+    const shared = join(tool, "src", "host-config.ts");
     const original = readFileSync(shared, "utf8");
     writeFileSync(shared, `${original}\n// drifted\n`);
     const refused = armCli();

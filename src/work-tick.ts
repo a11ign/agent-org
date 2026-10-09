@@ -3,7 +3,7 @@
 // command: work-tick -- one tick of the org: ask work-gate, hand the orders to wake. Runs on a timer.
 //
 // THIS EXISTS BECAUSE A SHELL PIPE GETS THE ONE CASE WRONG THAT MATTERS.
-// `work-gate.mjs | wake.mjs` looks like the whole job and is a silent-failure machine: the gate writes
+// `work-gate.ts | wake.ts` looks like the whole job and is a silent-failure machine: the gate writes
 // NOTHING to stdout when it cannot read GitHub and exits `CANNOT_ASK` (2), so `wake` reads an empty stdin,
 // finds no orders, and exits QUIET. A refused read would report as a quiet org -- the exact reading both
 // of those files spend a paragraph refusing to allow. `sh` keeps only the LAST exit status, so the gate's
@@ -20,6 +20,7 @@
 // ... AND "CHEAP" IS A CLAIM THE TICK NOW CARRIES THE EVIDENCE FOR (a11ign/a11ign#3566). Two to ten minutes of wall clock was measured on 2026-10-04
 // and nobody could say whether it was the host or the children, so every tick appends one `tick-cost` line: wall and CPU per phase, children's CPU
 // included, and the commands started, by name.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -38,7 +39,7 @@ import { CENSUS_ENV, childrenCpuMs, installSpawnCensus, readCensus, setCensusPha
 // Where the reader now lives (the census times each spawn's CPU with it); the tick's tests and callers still import it from here.
 export { childrenCpuMs };
 // THE ONE THING THIS FILE ASKS THAT IS NOT ABOUT DELIVERY. A session herdr reports as `blocked` is
-// stopped on a question nobody will answer, and `wake.mjs`'s `WAKEABLE` is `idle`/`done` -- so it is
+// stopped on a question nobody will answer, and `wake.ts`'s `WAKEABLE` is `idle`/`done` -- so it is
 // never offered another cause and never mentioned anywhere. It has to be reported from HERE rather than
 // from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
@@ -60,7 +61,7 @@ export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
  * gate that threw would be read as a busy org whose orders were handed to `wake` with nothing on stdin, and `wake` exits `1` for ATTENTION.
  * The unit's own `--import` covers the tick itself and cannot reach a child, so the tick passes it down.
  */
-const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.mjs", import.meta.url).href];
+const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.mjs", import.meta.url).href, ...TSX_IMPORT];
 
 /** work-gate's own contract, named here so the mapping below reads as a mapping and not as magic numbers. */
 export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
@@ -73,8 +74,8 @@ export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
  * reported rather than waited for. Holding real work back because a different queue was unreachable would
  * be the quiet-org reading in the other direction.
  *
- * A QUIET GATE IS NOT AN IDLE TICK WHEN SOMEBODY HAS QUEUED AN ORDER (#1966). `prompt-session.mjs` leaves
- * an order it could not deliver in a queue `wake.mjs` delivers from -- and the case that queue exists for
+ * A QUIET GATE IS NOT AN IDLE TICK WHEN SOMEBODY HAS QUEUED AN ORDER (#1966). `prompt-session.ts` leaves
+ * an order it could not deliver in a queue `wake.ts` delivers from -- and the case that queue exists for
  * is a reviewer who is busy REVIEWING, which is very often a tick with nothing else outstanding. Exiting
  * here on the gate's code alone would have held that order back exactly when it was the only work there
  * was, and the author would have been told it was queued by something that then never ran.
@@ -154,7 +155,7 @@ const round = (ms: number) => Math.round(ms);
  * Times named steps of one tick, wall and CPU (children included), and reads the totals. Every source is a parameter so a test can run a tick of two
  * phases with numbers it states; the defaults are the real ones.
  *
- * `startup` is there from the start: it is node's boot and the imports (`wake.mjs` is six thousand lines), which no step of `main()` can time.
+ * `startup` is there from the start: it is node's boot and the imports (`wake.ts` is six thousand lines), which no step of `main()` can time.
  * @param {{ clock?: () => number, cpu?: () => { selfMs: number, childrenMs: number }, uptimeMs?: () => number, maxRssKb?: () => number }} [sources]
  */
 export function createMeter({ clock = () => performance.now(), cpu = readCpu, uptimeMs = () => process.uptime() * MS_PER_SECOND,
@@ -235,7 +236,7 @@ export function appendTickCost(path: string, line: object) {
 }
 
 /**
- * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the two reports a tick makes about itself (`work-tick-health.mjs`).
+ * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the two reports a tick makes about itself (`work-tick-health.ts`).
  */
 export type Run = { recordPath: string, costPath: string, censusPath: string, markerPath: string, wakeCommand: { node: string, args: string[] }, meter: ReturnType<typeof createMeter>, wakes: number };
 
@@ -473,7 +474,7 @@ export function refreshSnapshotOrSay({ declaration = homeProjectDeclaration, con
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/work-tick.mjs",
+    entry: import.meta.url, command: "node packages/agent-org/src/work-tick.ts",
   });
   const passthrough = process.argv.slice(2);
   const ledgerPath = ledgerPathFrom(passthrough);

@@ -19,6 +19,9 @@ import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
 const REFUSED = 2;
 const SIGNAL_EXIT_BASE = 128;
 const SRC = dirname(fileURLToPath(import.meta.url));
+// ADR 0043 Decision 8: checkout-run code is `.ts`, run as `node --import tsx <file>.ts` -- the host's Node has no type stripping. The loader is
+// resolved from THIS file, not from the caller's directory: a command runs wherever the caller stands, and only the tool's own checkout holds `tsx`.
+const TSX_LOADER = import.meta.resolve("tsx");
 const FORWARDED_SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
 
 /**
@@ -51,7 +54,7 @@ function withoutRepeatedFixed(rest, fixed) {
 /** @param {string} program @param {string[]} args @returns {Promise<number>} the program's exit code, 128 + n for a signal n */
 function runProgram(program, args) {
   return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [program, ...args], { stdio: "inherit" });
+    const child = spawn(process.execPath, ["--import", TSX_LOADER, program, ...args], { stdio: "inherit" });
     for (const signal of FORWARDED_SIGNALS) process.on(signal, () => child.kill(signal));
     child.on("error", fail);
     child.on("close", (code, signal) => done(code ?? SIGNAL_EXIT_BASE + (signal ? constants.signals[signal] : 0)));

@@ -1,10 +1,10 @@
 // no-token: clearContext -- nothing here clears a session or calls gh; every herdr/gh call is absent or injected
 // #2222 -- A SENDER DECLARES WHETHER AN ORDER ASKS FOR AN ANSWER; THE QUEUE RECORDS IT AND THE BUNDLE HEADER
-// LISTS IT. `prompt-session.mjs` writes the declaration, `wake.mjs` reads it.
+// LISTS IT. `prompt-session.ts` writes the declaration, `wake.ts` reads it.
 //
 // ITS OWN FILE, AND THE REASON IS THE ACCEPTANCE JOB'S CAPABILITY GATE (#2221): the acceptance job has no
 // `gh` token, and since #2221 reads a named test file's import closure, `wake.test.ts` and
-// `prompt-session.test.ts` are both refused there (`route` and `clearContext` reach wake.mjs's `gh` runner).
+// `prompt-session.test.ts` are both refused there (`route` and `clearContext` reach wake.ts's `gh` runner).
 // Nothing below calls either, so this file is the one the row's Acceptance can actually RUN.
 import { test } from "node:test";
 import assert from "node:assert/strict";

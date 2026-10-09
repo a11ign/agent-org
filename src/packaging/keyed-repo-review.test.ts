@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `wake.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
 /**
  * #2969: A REPOSITORY THE ORG OPENS PULL REQUESTS IN, THAT THE GATE DOES NOT DECLARE, IS INVISIBLE TO EVERY PULL-REQUEST CAUSE.
  *
@@ -53,7 +53,7 @@ const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckou
 const SESSION = "reviewer-agent-org-6";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */
 const refusalOf = (answer: { clone: string } | { refusal: string }) => ("refusal" in answer ? answer.refusal : undefined);
-/** A host declaration `host-config.mjs` accepts, with `extra` laid over it: `reviewCloneOf` reads through that reader (#2991), so a bare `{ clones }` is no host file. */
+/** A host declaration `host-config.ts` accepts, with `extra` laid over it: `reviewCloneOf` reads through that reader (#2991), so a bare `{ clones }` is no host file. */
 const hostFile = (extra: Record<string, unknown>) => JSON.stringify({ schema: 1, home: "/h", binDir: "/h/bin", primary: "p",
   projects: [{ id: "p", checkout: "/h/p" }], gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] }, ...extra });
 

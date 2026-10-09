@@ -6,16 +6,16 @@
 // `gh` account directories are, which workspaces act as the leads account -- was written into the tool's sources and unit files
 // as absolute home-directory paths, and this module is where it now comes from. The three tool units and the routing wrapper are TEMPLATES
 // (`packages/agent-org/host/*.in`, and `gh` under its own name; `@@name@@` placeholders) that `renderTemplate` fills from `templateValues`, and
-// `host-units.mjs` compares and installs the RENDERED text, so what runs is still a file on disk and `host:check` still compares
+// `host-units.ts` compares and installs the RENDERED text, so what runs is still a file on disk and `host:check` still compares
 // bytes (0039 item 6: the installed copy is the program).
 //
-// IT REFUSES, IT NEVER DEFAULTS, like `project-config.mjs` and for the same reason: a reader that answered a11ign's home
+// IT REFUSES, IT NEVER DEFAULTS, like `project-config.ts` and for the same reason: a reader that answered a11ign's home
 // directory when the file was absent would make "the tool names no a11ign host path" true of the SOURCE and false of the
 // BEHAVIOUR. There is deliberately no `DEFAULT_*` constant here. The one thing that is not a value is WHERE the file is:
 // `$AGENT_ORG_HOST`, else the file beside the project's declaration in the checkout this tool runs from. No unit sets that
 // variable yet (rows 4 and 5 install it), and the running units are untouched.
 //
-// A LEAF, like `project-config.mjs`: `node:fs`, `node:path` and that module only.
+// A LEAF, like `project-config.ts`: `node:fs`, `node:path` and that module only.
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA } from "./project-config.ts";
@@ -26,7 +26,7 @@ export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 export const HOST_DECLARATION_PATH = ".agent-org/host.json";
 /**
  * SERVICES NO CLOCK STARTS (#3025): templates whose unit is a LONG-RUNNING `Type=simple` process, so `enable --now` on the SERVICE is the only thing
- * that runs it. Everything else `host-units.mjs` asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
+ * that runs it. Everything else `host-units.ts` asks "enabled? active?" of is a timer; these get the same two questions, and the same remedy.
  * Named here rather than read off an `[Install]` section because `work-tick.service` carries one too and is a oneshot its timer starts.
  */
 export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in", "otel-receiver.service.in"]);
@@ -264,7 +264,7 @@ export function homeHostConfig(): Readonly<HostConfig> {
 
 /**
  * The `units` block of a project's declaration: the prefix its unit names carry, the workflow the tool's board-report unit
- * dispatches, and `own` -- the unit files the PROJECT keeps in `.agent-org/units/` (decision 9's partition). Read HERE and not in `project-config.mjs` because this is the only reader of these two fields, and that module is
+ * dispatches, and `own` -- the unit files the PROJECT keeps in `.agent-org/units/` (decision 9's partition). Read HERE and not in `project-config.ts` because this is the only reader of these two fields, and that module is
  * imported by 31 files that need neither.
  * @param {string} text @param {string} [source]
  * @returns {Readonly<UnitsDeclaration>}
@@ -355,7 +355,7 @@ export function readBeforeTick(checkout: string, read: (path: string, encoding: 
 /**
  * Where one of the org's state entries lives on THIS host: under `host.json`'s `stateDir`. REFUSED when the host declares none, and
  * never answered with `~/.cache/a11ign` -- the directory a11ign's host uses is a value of its `host.json`, not a fact of the tool.
- * @param {HostConfig} host @param {string} name a file name in the state directory, as `wake.mjs` and `work-gate.mjs` spell it
+ * @param {HostConfig} host @param {string} name a file name in the state directory, as `wake.ts` and `work-gate.ts` spell it
  */
 export function stateFilePath(host: HostConfig, name: string) {
   if (host.stateDir === undefined) throw new HostConfigRefusal("stateDir", "it is missing; the host declares no state directory", HOST_DECLARATION_PATH);

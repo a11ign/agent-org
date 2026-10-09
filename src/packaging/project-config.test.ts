@@ -108,8 +108,8 @@ test("the constants every importer reads are the declaration's values, read at i
   withFixtureProject(SECOND_PROJECT, ({ hostPath }) => {
     // A child process, because the constants are read ONCE at import from the process's own project: a different project is a different process.
     const read = spawnSync(process.execPath, ["--input-type=module", "-e",
-      `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.mjs", import.meta.url).href)});`
-      + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.mjs", import.meta.url).href)});`
+      `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.ts", import.meta.url).href)});`
+      + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.ts", import.meta.url).href)});`
       + "console.log(JSON.stringify({ REPO, PROJECT_OWNER, PROJECT_NUMBER }));"],
     { encoding: "utf8", env: { ...process.env, [HOST_ENV]: hostPath } });
     assert.equal(read.status, 0, read.stderr);
@@ -277,8 +277,8 @@ function filesCarryingTheLiteral(srcDir: string): string[] {
 
 /** Each is a surface a later row of #69 moves (3f: units; 3e: the verdict script). A file that joins them is declared HERE, beside its reason. */
 const DECLARED_CARRIERS: Declaration[] = [
-  { name: "host-units.mjs", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
-  { name: "org-watch.mjs", reason: "a later row of #69 moves it" },
+  { name: "host-units.ts", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
+  { name: "org-watch.ts", reason: "a later row of #69 moves it" },
   { name: "reviewer/pr-review-verdict.sh", reason: "the verdict script; row 3e of #69 moves it" },
 ];
 

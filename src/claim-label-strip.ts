@@ -1,8 +1,8 @@
 // @ts-check
 // #3883: THE CLAIM LABELS A CLOSED ROW SHOULD NOT KEEP, AND THE ONE ACT THAT TAKES THEM OFF, in a leaf of its own so the work gate can strip them without
-// importing `close-rows-for-merged-pr.mjs`. That file reaches `row-claim.mjs` -> `wake.mjs` -> `arm-pr.mjs`, which reads `.agent-org/roles` at import, and
+// importing `close-rows-for-merged-pr.ts`. That file reaches `row-claim.ts` -> `wake.ts` -> `arm-pr.ts`, which reads `.agent-org/roles` at import, and
 // #2174 requires the gate to load in a copied closure that carries none (`src/packaging/work-gate.test.ts`). The decision and the act are MOVED, not copied:
-// the close paths and the audit still import them from `close-rows-for-merged-pr.mjs`, which re-exports `labelsToStrip` and binds `stripClaimLabels` to its
+// the close paths and the audit still import them from `close-rows-for-merged-pr.ts`, which re-exports `labelsToStrip` and binds `stripClaimLabels` to its
 // own guarded `gh`. Imports only leaves, so the gate keeps the property its own header states.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
@@ -24,7 +24,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
  *
  * `was-ready` is DELIBERATELY NEVER in this list. It is a record of what the row WAS, not a claim on it
  * (#703 still carries it correctly, and this must not change that) -- the same distinction
- * `declineRemoveLabels` in `row-claim.mjs` draws for the identical label on a different path.
+ * `declineRemoveLabels` in `row-claim.ts` draws for the identical label on a different path.
  *
  * Safe on a row missing any of these: the caller strips only what `currentLabels` actually contains, and
  * `gh issue edit --remove-label` is itself a harmless no-op on a label a row does not carry.
@@ -47,7 +47,7 @@ export function labelsToStrip(currentLabels: string[]): string[] {
  * @param {number} n @param {string[]} labels @param {string} repo
  * @param {{ gh: (args: string[]) => unknown, say: (line: string) => void, logPrefix?: string }} deps
  *   `logPrefix`: the immediate path logs `CLOSE-ROWS:`, the sweep logs `SWEEP:`, the gate `GATE:` -- callers must stay distinguishable in the log, the same
- *   reason close-rows-sweep.mjs's own header gives for never reusing `CLOSE-ROWS:` itself: which path did the work is a fact about the pipeline's health.
+ *   reason close-rows-sweep.ts's own header gives for never reusing `CLOSE-ROWS:` itself: which path did the work is a fact about the pipeline's health.
  * @returns {"nothing" | "stripped" | "failed"}
  */
 export function stripClaimLabelsVia(n: number, labels: string[], repo: string, { gh, say, logPrefix = "CLOSE-ROWS" }: { gh: (args: string[]) => unknown; say: (line: string) => void; logPrefix?: string; }): "nothing" | "stripped" | "failed" {

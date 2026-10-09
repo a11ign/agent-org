@@ -3,14 +3,14 @@
 // command: arm-pr -- enable auto-merge on ONE pull request, unless it is held
 //
 // #645. `auto-arm.yml`'s per-PR `arm` job ran `gh pr merge --auto` from three lines of `run:` bash,
-// gated on `draft == false && base.ref == 'main'` and NOTHING else. `auto-arm-sweep.mjs` refused a HELD
+// gated on `draft == false && base.ref == 'main'` and NOTHING else. `auto-arm-sweep.ts` refused a HELD
 // PR; this path did not, so a PR held by a ruling was re-armed by its own next `pull_request` event.
 //
 // The predicate was written twice and only one copy was correct. It now lives once, in
-// `pr-hold-state.mjs`, and both callers read it -- adding the missing `if` here would have made it two
+// `pr-hold-state.ts`, and both callers read it -- adding the missing `if` here would have made it two
 // correct copies, which is the same shape with a longer fuse.
 //
-// A NODE SCRIPT RATHER THAN BASH, for the reason `auto-arm-sweep.mjs`'s own header gives: a predicate
+// A NODE SCRIPT RATHER THAN BASH, for the reason `auto-arm-sweep.ts`'s own header gives: a predicate
 // written in `run:` can only ever be checked by asserting on the text of a shell script, and a guard
 // whose expectations are scraped out of the source it tests is this repository's own recorded defect.
 import { execFileSync } from "node:child_process";
@@ -21,17 +21,17 @@ import { armabilityOf } from "./pr-hold-state.ts";
 import { authorshipVerdict } from "./lane-ownership.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { roleBriefPath } from "./project-roles.ts";
-// #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.mjs`
+// #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.ts`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
-// `pr-armed-state.mjs` imports nothing at all, so the `actions/checkout`-only property holds.
+// `pr-armed-state.ts` imports nothing at all, so the `actions/checkout`-only property holds.
 import { armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.ts";
 import { extractClosesDeclaration } from "./acceptance-commands.ts";
-// #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.mjs`'s own header gives. The
+// #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.ts`'s own header gives. The
 // reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
 // could silently disagree about what exhausted looks like.
 import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
 // #2391: WHAT "MAIN IS RED" MEANS IS THE GATE'S DEFINITION, IMPORTED. `newestVerdictRun` looks THROUGH a
-// cancelled or in-flight run, so the streak read below agrees with the order `work-gate.mjs` wakes a fixer
+// cancelled or in-flight run, so the streak read below agrees with the order `work-gate.ts` wakes a fixer
 // with -- a second reading of red here would let the two disagree about whether the fix is owed.
 import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.ts";
 
@@ -126,7 +126,7 @@ export function looksPoolRefused(message: string | null): boolean {
  * `stdout`, confirmed the same day. `gh api rate_limit` is NOT a substitute and is forbidden as a gauge
  * (`agent-practices.md`, #1275/#1967): during this very outage it returned `graphql {remaining: 5000}`.
  *
- * AN UNREADABLE RESET IS SAID, NEVER GUESSED -- `api-pool.mjs`'s rule, for its reason: a reader who takes
+ * AN UNREADABLE RESET IS SAID, NEVER GUESSED -- `api-pool.ts`'s rule, for its reason: a reader who takes
  * a guessed minute for a measured one waits for a return that is not coming.
  *
  * @param {{ number: string, poolRefused: boolean, pool: import("./api-pool.ts").Pool | null }} refusal
@@ -141,8 +141,8 @@ export function refusalScope({ number, poolRefused, pool }: { number: string; po
   return `arm-pr: SCOPE -- THIS IS NOT A FACT ABOUT #${number}. The arming credential's API pool refused `
     + "the read, so this is a REPOSITORY-WIDE outage that happens to be charged to whichever pull "
     + `request's event fired. Nothing can arm any pull request ${returnPhrase(pool)}, and no report names `
-    + "a green, unheld, UNARMED pull request -- `queue-stalled.mjs` names only ARMED ones. See #1969; "
-    + "`work-gate.mjs`'s `pr-green-unarmed` is the report that does name them.";
+    + "a green, unheld, UNARMED pull request -- `queue-stalled.ts` names only ARMED ones. See #1969; "
+    + "`work-gate.ts`'s `pr-green-unarmed` is the report that does name them.";
 }
 
 /** `HH:MM` inside `2026-09-22T19:13:44.000Z` -- the minute a reader acts on, without the seconds. */
@@ -316,7 +316,7 @@ export function sessionLabelsOf(rowLabels: string[]): string[] {
  *
  * Four `session:*` labels are RETIRED BY DESCRIPTION rather than deleted -- `dispatcher`, `worker-audit`,
  * `worker-contracts`, `worker-config` -- because deleting one strips it from the merged PRs that carry it as
- * attribution, which `attributionFor` (`claim-provenance.mjs`) reads. A record of the past is never renamed. So the
+ * attribution, which `attributionFor` (`claim-provenance.ts`) reads. A record of the past is never renamed. So the
  * labels that exist are not the live set, and neither is `.agent-org/roles/README.md`'s roster, which records every role this
  * org has had.
  *
@@ -330,7 +330,7 @@ export function sessionLabelsOf(rowLabels: string[]): string[] {
  *
  * #1951: `live` LISTS ROLES, AND A NAME HERE IS A ROUTING ADDRESS RATHER THAN A PROCESS HANDLE. Each entry used to
  * carry a `workspace` naming a herdr pane; nothing read it, so the roster lied whenever a pane moved, and it is gone.
- * The pane a session currently holds is herdr's answer at runtime (`wake.mjs` asks for the workspace list and matches
+ * The pane a session currently holds is herdr's answer at runtime (`wake.ts` asks for the workspace list and matches
  * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
 const SESSIONS = (
@@ -411,7 +411,7 @@ export function sessionLabelsForArm(rowLabelLists: string[][]): string[] {
 
 /**
  * IMPURE: reads the label set of every row this PR closes and, in the SAME act as arming, puts each
- * row's `session:*` label(s) on the PR. `--add-label` is idempotent (`row-claim.mjs`'s own convention:
+ * row's `session:*` label(s) on the PR. `--add-label` is idempotent (`row-claim.ts`'s own convention:
  * this needs no special case for a label already present), so re-arming an already-labelled PR calls
  * this again harmlessly rather than churning anything.
  *
@@ -538,7 +538,7 @@ export function waitForSettled({ number, repo }: { number: string; repo: string;
  *
  * `prState` above asks `gh pr view --json state`, and a pull request sitting at position 1 of the merge
  * queue answers `OPEN` to it forever. That is not a gap in the read, it is a gap in REST: `mergeQueueEntry`
- * is a GraphQL-only object, which is why `pr-armed-state.mjs` exists and why this asks it instead.
+ * is a GraphQL-only object, which is why `pr-armed-state.ts` exists and why this asks it instead.
  *
  * UNREADABLE IS NOT ARMED. A throw here returns `null`, and `null` re-throws the original merge failure --
  * `armDecision`'s "Unreadable is not unheld" pointed at the other predicate. The direction matters: a false
@@ -924,12 +924,12 @@ function readPr({ number, repo, run, error }: { number: string; repo: string; ru
  *
  * ONE POINT, AND ONLY ON A REFUSAL THAT ALREADY LOOKS LIKE THE POOL. A healthy arm pays nothing; an
  * ordinary unreadable PR pays nothing; and the one case that does pay is a pool that by definition has
- * nothing left to protect. That is `cannotAskReport`'s bargain in `work-gate.mjs`, made here for the same
+ * nothing left to protect. That is `cannotAskReport`'s bargain in `work-gate.ts`, made here for the same
  * reason and at the same price.
  *
  * THE PROBE IS ALLOWED TO FAIL, and it usually will -- it is the same credential and the same pool that
  * just refused. `rawResponse` reads the headers off the thrown error's `stdout`, which is exactly why
- * `api-pool.mjs` exists: an instrument that fails precisely when its subject fails reports the alarming
+ * `api-pool.ts` exists: an instrument that fails precisely when its subject fails reports the alarming
  * state as no state.
  *
  * @param {{ number: string, failure: string | null, run: typeof defaultRun }} refusal
@@ -1069,7 +1069,7 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
 }
 
 function main() {
-  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.mjs" });
+  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.ts" });
   process.exitCode = runArmPr({ argv: process.argv, env: process.env });
 }
 

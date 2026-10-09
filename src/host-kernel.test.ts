@@ -1,4 +1,4 @@
-// no-token: gh -- `host-kernel.mjs` starts a process only through the injected `run` (its `gh issue comment` post is in `--read-back`'s main, never called here), reads herdr only through the injected `agents`, and the record is a temp-dir fixture; nothing here reboots, stops a timer or reaches a network
+// no-token: gh -- `host-kernel.ts` starts a process only through the injected `run` (its `gh issue comment` post is in `--read-back`'s main, never called here), reads herdr only through the injected `agents`, and the record is a temp-dir fixture; nothing here reboots, stops a timer or reaches a network
 // a11ign/a11ign#4046: a newer kernel than the one running is NOTED by `host:check`, and the org does the drained reboot in #3846's order. FIXTURES ONLY.
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each "gives the note" test has a "gives none" twin that differs by ONE fact (which kernel runs), each "defers" has an
@@ -113,7 +113,7 @@ describe("the note: version order, and what a refused read is", () => {
     assert.doesNotMatch(driftReport([], true, notesFor("7.0.0-38-generic")), /newer kernel/);
   });
 
-  test("the wiring: host-units.mjs adds the note to hostNotes and the findings to hostFindings", () => {
+  test("the wiring: host-units.ts adds the note to hostNotes and the findings to hostFindings", () => {
     const source = readFileSync(new URL("./host-units.ts", import.meta.url), "utf8");
     assert.match(source, /function hostNotes\(\)[^}]*\.\.\.kernelNotes\(\)/);
     assert.match(source, /function hostFindings\(\)[^}]*\.\.\.kernelFindings\(\)/);
@@ -391,7 +391,7 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
     const starts = text(SERVICE).split("\n").filter((line) => /^ExecStart=/.test(line));
     assert.equal(starts.length, 1);
     assert.equal(starts[0], "ExecStart=/usr/bin/node src/host-kernel.ts --reboot", "the tool form");
-    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.mjs --reboot", "the plain form");
+    assert.equal(text(SERVICE, plainHost).split("\n").filter((line) => /^ExecStart=/.test(line)).join(), "ExecStart=/usr/bin/node packages/agent-org/src/host-kernel.ts --reboot", "the plain form");
     assert.doesNotMatch(text(SERVICE), /^ExecStart.*--(self|row|read-back)/m);
     assert.match(text(SERVICE), /^Type=oneshot$/m);
     assert.doesNotMatch(text(SERVICE), /^\[Install\]/m, "a boot must not start a reboot");

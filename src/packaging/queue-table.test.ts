@@ -11,7 +11,7 @@
 //
 // #827/#790. Every test in this file drives a PURE function (`prRow`, `nonSuccessByName`,
 // `branchPrefixCensus`, `renderBranchPrefixes`, ...) or passes its own injected `run` fixture to a
-// fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.mjs`'s real `gh`/`git` wrappers are declared in
+// fetcher (`fetchRemoteBranchesChecked`) -- `queue-table.ts`'s real `gh`/`git` wrappers are declared in
 // the same module these tests import from, which is why a closure walk reaches them, but nothing here
 // ever calls the real ones. #1405: that was not true of the budget line -- `render()` read it live through
 // `apiBudget()`, two `gh` calls per render and 24 per run. `collect()` reads it now, and `render()` is handed it.
@@ -611,7 +611,7 @@ test("#737 a direct commit to main with a red check still counts, with no PR num
  *
  * `.metadata_never_index` was measured on 2026-09-09 and does not work per-directory: placed on all 68
  * worktrees at 12:47Z and verified present, `mds_stores` read 54.8% at 12:45Z and 80% at 12:52Z. #734
- * corrected the claim in `.gitignore` and `scripts/spotlight-exclude.mjs` — and missed `queue-table.mjs`'s
+ * corrected the claim in `.gitignore` and `scripts/spotlight-exclude.mjs` — and missed `queue-table.ts`'s
  * relief line and `docs/pipeline.md`'s remedy table, **which are the two a reader actually reaches**.
  *
  * The fix was found by grepping for the SENTENCE rather than revisiting the file that was edited. That is
@@ -792,8 +792,8 @@ test("#1405 apiBudget reads both pools through the injected run, with the argv t
     ["api", "repos/a11ign/a11ign", "-i", "--jq", ".name"],
     ["api", "graphql", "-f", "query=query { viewer { login } }", "-i"],
   ], "one call per pool, each of its own kind -- core through REST, graphql through GraphQL");
-  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.mjs` so
-  // `work-gate.mjs`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
+  // `resource` and `resetAt` joined the shape in #2003, when `poolFromHeaders` moved to `api-pool.ts` so
+  // `work-gate.ts`'s refusal could name WHICH pool refused and WHEN it comes back in absolute terms. This
   // fixture sends neither header, so both read `null` -- which is the honest answer and not a zero.
   assert.deepEqual(budget, {
     core: { remaining: 4000, limit: 5000, used: 1000, resetInMinutes: null, resource: null, resetAt: null },
@@ -1078,7 +1078,7 @@ test("#2245 a failing REST list is still `null` -- the queue call does not paper
 });
 
 // ---------------------------------------------------------------------------------------------------
-// #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.mjs, THROUGH THE REAL openPRs READ.
+// #2981: THE TABLE'S `red` AND `absorbed` ARE DECIDED BY red-pr.ts, THROUGH THE REAL openPRs READ.
 // ---------------------------------------------------------------------------------------------------
 
 /** What `checksOnSha`'s `--jq` prints: REST check runs, one JSON object a line, `conclusion` LOWER-CASE. */

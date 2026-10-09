@@ -17,7 +17,7 @@
  *
  * THE PROBE COMMAND IS `worktrees:prune`, NOT `row-file --help` (the row's wording): `row-file` refuses without `--session=`, and every program
  * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.mjs`: "an ignored flag runs the default and reports success"), so no command
- * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.mjs`, so it exits 0 exactly when the project resolved.
+ * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.ts`, so it exits 0 exactly when the project resolved.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -123,7 +123,7 @@ function installedProject({ withTypescript }: { withTypescript: boolean }) {
   return { project, added };
 }
 
-/** `project-config.mjs` resolves its checkout when it is IMPORTED, so a tree with no project cannot import it: seed a host for the import alone.
+/** `project-config.ts` resolves its checkout when it is IMPORTED, so a tree with no project cannot import it: seed a host for the import alone.
  * It is done BEFORE any test is registered: a top-level `await` after a `test(` lets the first tests finish, and `test.after` delete the seeded host, mid-import. */
 if (process.env[HOST_VARIABLE] === undefined || process.env[HOST_VARIABLE] === "") {
   const seeded = projectRepository();

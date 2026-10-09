@@ -1,4 +1,4 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3949)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3949)
 /**
  * `src/dora.ts`, a11ign/a11ign#3949: DORA READS THE TWO CHANNELS, AND PRINTS THE TARGETS BESIDE THE NUMBERS.
  *

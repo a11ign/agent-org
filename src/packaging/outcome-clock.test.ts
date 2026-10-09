@@ -81,7 +81,7 @@ function clock({ prs = [], rows = [], comments = [], holders }: { prs?: Record<s
   return { facts, orders: orders.filter((o) => o.subject === SIGNALS.OVERDUE) };
 }
 
-/** A claim record as the REAL writer words it (`row-claim.mjs`'s `claimRecordComment`), so the reader is tested against the writer and not a copy of it. */
+/** A claim record as the REAL writer words it (`row-claim.ts`'s `claimRecordComment`), so the reader is tested against the writer and not a copy of it. */
 const claimComment = (session: string, at: number) => ({ body: claimRecordComment({ session, branch: `agent/x-${session}`, worktree: `../wt-${session}`, nothing: null }),
   createdAt: iso(at), author: BOT });
 

@@ -1,5 +1,5 @@
 // @ts-check
-// A LEAF, like `claim-stall.mjs`: `node:*` only, so `work-tick.mjs` takes it without a cycle and a test imports it without a gate.
+// A LEAF, like `claim-stall.ts`: `node:*` only, so `work-tick.ts` takes it without a cycle and a test imports it without a gate.
 //
 // A TICK THAT IS SLOW, OR KILLED, TELLS `ceo` (a11ign/a11ign#3567). On 2026-10-04 a tick ran 10 min 13 s and was killed by `TimeoutStartSec`, and the
 // only trace was a journal line nobody reads. The signal has two halves, because a tick that is killed cannot report itself from inside:

@@ -152,17 +152,17 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   // #1355: THE TWO SPELLINGS OF AN OWN DAY ARE ASKED SEPARATELY, because one file needs one exemption and no more.
   const LONDON_DAY = /timeZone:\s*"Europe\/London",\s*year:/;
   const UTC_DAY = /toISOString\(\)\.slice\(0,\s*10\)/;
-  // board-schedule-liveness.mjs's `missedDays` steps UTC midnights forward from a stored edition-date string and
+  // board-schedule-liveness.ts's `missedDays` steps UTC midnights forward from a stored edition-date string and
   // slices each back out: zone-free date arithmetic, examined on #1355 and not a copy. Only that function's body is
   // removed, so a UTC slice anywhere else in the file -- the scheduled runs' days, today's day -- still goes red.
   const MISSED_DAYS = /^export function missedDays\(.*\n(?:.*\n)*?\}\n/m;
-  const liveness = code("board-schedule-liveness.mjs");
+  const liveness = code("board-schedule-liveness.ts");
   assert.match(liveness, MISSED_DAYS, "missedDays is where #1355 examined it -- if it moved, re-examine the exemption");
   const withoutMissedDays = liveness.replace(MISSED_DAYS, "");
   assert.doesNotMatch(withoutMissedDays, /\bfunction missedDays\(/, "the exemption removed missedDays and only it");
-  const edition = (file: string) => file === "board-schedule-liveness.mjs" ? withoutMissedDays : code(file);
+  const edition = (file: string) => file === "board-schedule-liveness.ts" ? withoutMissedDays : code(file);
   const editionScripts = [
-    "board-document.mjs", "board-summary-check.mjs", "board-schedule-liveness.mjs", "board-report.mjs",
+    "board-document.ts", "board-summary-check.ts", "board-schedule-liveness.ts", "board-report.ts",
   ];
   for (const file of editionScripts) {
     assert.doesNotMatch(edition(file), LONDON_DAY, `${file} computes a London day of its own instead of importing editionDay`);
@@ -170,10 +170,10 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
     assert.match(edition(file), /\beditionDay\(/, `${file} must take its day from editionDay`);
   }
   // A THIRD COPY ANYWHERE IN THE BOARD SCRIPTS: a day of its own, in EITHER spelling, in any `scripts/board-*.mjs` but the
-  // definition. Until #1442 only the London half could be globbed, because board-report.mjs:290 titled the edition with a
+  // definition. Until #1442 only the London half could be globbed, because board-report.ts:290 titled the edition with a
   // UTC slice; it takes editionDay now, so both halves are, and `missedDays` keeps its one exemption through `edition()`.
-  const boardScripts = readdirSync(TOOL_SRC).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.mjs");
-  assert.ok(["board-schedule-liveness.mjs", "board-summary-check.mjs", "board-report.mjs"].every((f) => boardScripts.includes(f)),
+  const boardScripts = readdirSync(TOOL_SRC).filter((f) => /^board-.*\.mjs$/.test(f) && f !== "board-discussion.ts");
+  assert.ok(["board-schedule-liveness.ts", "board-summary-check.ts", "board-report.ts"].every((f) => boardScripts.includes(f)),
     `POSITIVE CONTROL: the glob reaches the files named above -- it found ${boardScripts.join(", ")}`);
   for (const file of boardScripts) {
     const path = `${file}`;
@@ -182,6 +182,6 @@ test("#1302: no edition script computes its own day -- each imports editionDay, 
   }
   // POSITIVE CONTROLS for both patterns: the one definition matches the London half, and the UTC half matches the
   // spelling it names, so a regex that matches nothing cannot make the loops above pass.
-  assert.match(code("board-discussion.mjs"), LONDON_DAY);
+  assert.match(code("board-discussion.ts"), LONDON_DAY);
   assert.match("const day = new Date(t).toISOString().slice(0, 10);", UTC_DAY);
 });

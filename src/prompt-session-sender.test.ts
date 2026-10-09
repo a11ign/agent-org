@@ -4,7 +4,7 @@
 // a label returned verbatim would let any session that can run `herdr workspace rename` claim it.
 //
 // RUN FROM THIS CHECKOUT ALONE: `AGENT_ORG_HOST=<project>/.agent-org/host.json node --test src/prompt-session-sender.test.ts`.
-// `prompt-session.mjs` reads the project's declaration at import, so this points `AGENT_ORG_HOST` at the host file the project
+// `prompt-session.ts` reads the project's declaration at import, so this points `AGENT_ORG_HOST` at the host file the project
 // carries (`A11IGN_CHECKOUT`) BEFORE importing it. Inside the project's own tree there is nothing to point at and nothing is set.
 import { test } from "node:test";
 import assert from "node:assert/strict";

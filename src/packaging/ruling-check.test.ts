@@ -1,6 +1,6 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
 /**
- * `src/ruling-check.ts`, `src/ruling-record.ts` and their wiring in `work-gate.mjs`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
+ * `src/ruling-check.ts`, `src/ruling-record.ts` and their wiring in `work-gate.ts`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
  * RE-READS IT UNTIL IT DOES.
  *
  * THE INCIDENT, REPLAYED (the chairman, 2026-10-02): `ceo` ruled the freeze over at 06:50Z, and at 10:40Z three rows still carried a `Not-before: 2026-10-03T18:2x`

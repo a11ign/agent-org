@@ -1,4 +1,4 @@
-// no-token: gh -- nothing here calls `gh`: the tree is read as text, and `host-pnpm.mjs` is handed a PATH and a project of fixtures
+// no-token: gh -- nothing here calls `gh`: the tree is read as text, and `host-pnpm.ts` is handed a PATH and a project of fixtures
 /**
  * THE TOOL'S OWN REMEDIES SAY pnpm (a11ign/a11ign#2896, row 9 of 10 of "Finish the move to pnpm", #57).
  *

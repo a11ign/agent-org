@@ -1,4 +1,4 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (a11ign/a11ign#3910)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (a11ign/a11ign#3910)
 /**
  * `src/dora.ts`, a11ign/a11ign#3910: A REPOSITORY THAT RELEASES OFTEN MUST NOT READ ITS LEAD TIME `unknown` BECAUSE IT RELEASES OFTEN.
  *

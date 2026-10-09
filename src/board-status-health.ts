@@ -1,17 +1,17 @@
 // PURE. No `gh`, no network, no `execFileSync` -- and that is the point rather than a style.
 //
 // #1219: the classification below could have lived beside `readyRowsMissingStatus` in
-// `board-snapshot.mjs`, which is where its sibling is. It does not, because that file's import closure
+// `board-snapshot.ts`, which is where its sibling is. It does not, because that file's import closure
 // carries a `token` requirement (`fetchReadyIssueNumbers` shells out to `gh`), and a test importing it
 // inherits that requirement whether or not it calls anything -- so the row's own acceptance command
 // would be REFUSED by `pr-open` in the job that runs acceptance commands, which has no token.
 //
 // That is #1009's lesson applied before the refusal rather than after it: the fix is PLACEMENT, not
-// weakening. The classifier is pure and lives where a pure test can reach it; `board-snapshot.mjs`
+// weakening. The classifier is pure and lives where a pure test can reach it; `board-snapshot.ts`
 // imports it and supplies the items it fetched.
 
 /**
- * A board item, typed to what the PRODUCER actually emits rather than to what this file finds convenient. `tsc` caught the narrower version: `board-snapshot.mjs` can return `number: null` and `state: null` for a draft item, and a type here that forbade them would have made the two modules' `BoardItem`s structurally incompatible -- two copies of one type, disagreeing. The nulls are real and the classifier already handles them: a row with no state is an offender in neither direction, which is what the third clause of the test asserts.
+ * A board item, typed to what the PRODUCER actually emits rather than to what this file finds convenient. `tsc` caught the narrower version: `board-snapshot.ts` can return `number: null` and `state: null` for a draft item, and a type here that forbade them would have made the two modules' `BoardItem`s structurally incompatible -- two copies of one type, disagreeing. The nulls are real and the classifier already handles them: a row with no state is an offender in neither direction, which is what the third clause of the test asserts.
  */
 export type BoardItem = { number: number | null, state: string | null, status: string | null };
 
@@ -42,17 +42,17 @@ export const RESTING_STATUS = "Done";
  * disagree, so a fifth writer cannot appear without this list learning about it.
  */
 export const WRITTEN_STATUSES = Object.freeze([
-  "Backlog", // row-file.mjs `boardingFor` -- a row filed without `--ready`
-  "Ready", // row-file.mjs `boardingFor`, and row-claim.mjs's promotion
-  "In progress", // row-claim.mjs, on claim
-  RESTING_STATUS, // settle-closed-status.mjs, on close
+  "Backlog", // row-file.ts `boardingFor` -- a row filed without `--ready`
+  "Ready", // row-file.ts `boardingFor`, and row-claim.ts's promotion
+  "In progress", // row-claim.ts, on claim
+  RESTING_STATUS, // settle-closed-status.ts, on close
 ]);
 
 /**
  * #1996: WHICH NAMES THIS CODE WRITES THAT THE LIVE BOARD DOES NOT OFFER.
  *
  * PURE, and handed the option names rather than reading them, for this file's stated reason: a `gh` call
- * here would put a token requirement into every test that imports the classifier. `board-snapshot.mjs`
+ * here would put a token requirement into every test that imports the classifier. `board-snapshot.ts`
  * makes the read -- in the query it already sends, so the check costs no extra call -- and calls this.
  *
  * ONE DIRECTION ONLY, deliberately. A name the board offers and nothing writes (`Blocked`,

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-// EVERY NETWORK/PROCESS LOOKUP `merge-guard.mjs`'s RULES READ -- kept separate from the rules themselves
+// EVERY NETWORK/PROCESS LOOKUP `merge-guard.ts`'s RULES READ -- kept separate from the rules themselves
 // because a rule is a pure function of facts already looked up, and mixing the two is what made this file
 // hard to read as eight decisions rather than one. `null` on failure, never an empty answer, throughout:
 // "could not ask" and "asked and got nothing" are different states and a rule needs to tell them apart

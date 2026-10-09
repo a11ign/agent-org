@@ -15,7 +15,7 @@
 // A RELEASE TAG IS NOT AN ANCESTOR OF `main`: the release workflow commits the version bump on top of the merge and pushes that commit as the tag alone, so it is
 // reachable from no branch, and a plain `git fetch origin` does not bring it down. The fetch here NAMES TAGS (`--tags`), and the checkout is of the tag.
 //
-// A ROLLBACK TARGET MUST ITSELF FOLLOW TAGS: the checkout is a tag's tree, so the NEXT run is that tag's own `update-tool.mjs`. Pin a release cut after #3443; a
+// A ROLLBACK TARGET MUST ITSELF FOLLOW TAGS: the checkout is a tag's tree, so the NEXT run is that tag's own `update-tool.ts`. Pin a release cut after #3443; a
 // pin to an older one is held for exactly one run and then moved to `origin/main` by that release's own code (measured in a scratch clone, 2026-10-04).
 //
 // NO TAG, NO MOVE, AND NO FALLBACK TO `origin/main`. With no `vX.Y.Z` tag, or a pinned one that is absent, it refuses by name and leaves the checkout where it is.
@@ -24,7 +24,7 @@
 // IT UPDATES THE CHECKOUT THIS FILE LIVES IN, and no other. Not the working directory and not a path it is handed: a command that
 // took a path could be pointed at a project's checkout, and "never touches a project's checkout" is the one promise it makes. The
 // root is `git rev-parse --show-toplevel` of this file's own directory, and it refuses outside a primary checkout (a real `.git`
-// directory) for the reason `update-primary.mjs` does: detaching a linked worktree takes it off the branch it is for.
+// directory) for the reason `update-primary.ts` does: detaching a linked worktree takes it off the branch it is for.
 //
 // A DIRTY TREE IS REFUSED, NOT STASHED AND NOT RESET. The tool's checkout is read-only except fast-forward, so a modified tracked file
 // is somebody's edit made where none belongs, and moving under it would either lose it or fail half way. Untracked files are not

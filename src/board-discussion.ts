@@ -6,7 +6,7 @@
 // It was a PDF on a DRAFT release until 2026-09-13, and the chairman moved it for reasons measured that
 // day: a draft release creates no tag, is visible only to write-access accounts, and is the least portable
 // object on a repository move -- with the transfer two days out. Six releases existed against eight edition
-// dates. The WORDS do not change; `board-document.mjs` still produces them. Only the carrier does.
+// dates. The WORDS do not change; `board-document.ts` still produces them. Only the carrier does.
 //
 // THE CATEGORY IS RESOLVED BY SLUG ON EVERY RUN, NEVER TYPED AS AN ID. An id is per-repository; the transfer
 // creates a new repository, where "Board editions" has to be created again by hand -- no API mutation
@@ -16,7 +16,7 @@
 // document published into the wrong category looks exactly like success, which is the failure this row was
 // filed to remove, one level down.
 //
-//   node packages/agent-org/src/board-discussion.mjs --exists     the workflow's republish precondition
+//   node packages/agent-org/src/board-discussion.ts --exists     the workflow's republish precondition
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
@@ -30,7 +30,7 @@ export const EDITION_CATEGORY_SLUG = "board-editions";
  * and the summary check that warns when it is missing.
  *
  * LONDON, NOT UTC, because the edition's day is the board's day, and between 00:00 and 01:00 London in
- * summer the two differ. This was a UTC slice until #1302, while `board-summary-check.mjs` already asked for
+ * summer the two differ. This was a UTC slice until #1302, while `board-summary-check.ts` already asked for
  * London's day for exactly that reason, so two copies of "today" disagreed for one hour a night. Measured on
  * #1295's review: a republish dispatched at 00:30 London found YESTERDAY's Discussion and was permitted. Its
  * freshness refusal then told the operator to rewrite the summary, and doing so updated yesterday's edition.
@@ -151,9 +151,9 @@ const EXIT_ABSENT = 1;
 const EXIT_CANNOT_ASK = 2;
 
 function main() {
-  refuseUnknownFlags(["--exists"], { entry: import.meta.url, command: "node packages/agent-org/src/board-discussion.mjs" });
+  refuseUnknownFlags(["--exists"], { entry: import.meta.url, command: "node packages/agent-org/src/board-discussion.ts" });
   if (!process.argv.includes("--exists")) {
-    console.error("usage: node packages/agent-org/src/board-discussion.mjs --exists");
+    console.error("usage: node packages/agent-org/src/board-discussion.ts --exists");
     process.exit(EXIT_CANNOT_ASK);
   }
   const day = editionDay();

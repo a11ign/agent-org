@@ -9,7 +9,7 @@
 //   #281  armed, gate=SUCCESS, standing since 08:00 (4.5 hours)  -- 2 files CONFLICT against origin/main
 //
 // Twelve and a half PR-hours of two workers' finished work, invisible -- neither author was told, both
-// found by hand. This is the gap `auto-arm-sweep.mjs` (#344) closed at the OTHER end: that sweep reports
+// found by hand. This is the gap `auto-arm-sweep.ts` (#344) closed at the OTHER end: that sweep reports
 // every PR it will not arm, with a reason. It says nothing about a PR it DID arm, because from its side
 // arming succeeded -- GitHub then declines to complete the merge and tells nobody. Same hole, one step
 // further along the queue.
@@ -35,14 +35,14 @@
 //    `gate` has actually concluded SUCCESS.
 // 3. REACHABLE WITHOUT A SCHEDULE. GitHub disables scheduled workflows after 60 days of inactivity
 //    (`board-liveness.test.ts`), and a stall reporter that fails by going quiet has the disease it
-//    watches for. Rides the same `pull_request` trigger `auto-arm-sweep.mjs` does, plus (#1633) the
+//    watches for. Rides the same `pull_request` trigger `auto-arm-sweep.ts` does, plus (#1633) the
 //    `workflow_run` (`ci` completed) event, so a PR only revealed as stalled by a gate concluding is
 //    named without waiting for the queue's next unrelated `pull_request` or `push`.
 //
 // A THRESHOLD, NOT AN INSTANT REPORT, on the conflict itself too: a PR whose `gate` concluded seconds ago
 // may not yet reflect a `main` that just moved underneath it, and a conflict computed against a stale
 // local view of `origin/main` is a false alarm waiting to happen. `DEFAULT_STALL_THRESHOLD_MS` (30
-// minutes) is the same shape as `auto-arm-sweep.mjs`'s own "REPORT, never silently skip" -- except here
+// minutes) is the same shape as `auto-arm-sweep.ts`'s own "REPORT, never silently skip" -- except here
 // the risk runs the other way, so the guard is against reporting TOO EARLY rather than not at all.
 //
 // Exit codes are the contract:
@@ -75,7 +75,7 @@ export const DEFAULT_STALL_THRESHOLD_MS = 30 * 60 * 1000;
 // the first workflow run GitHub scheduled for that exact sha: 5s to 128s, most in the 20-50s band. Five
 // minutes is roughly double the observed maximum and three orders of magnitude below #1808's real 51
 // minutes -- the same "headroom over a measured sample, not tuned against a queue" reasoning
-// `STOPPED_AFTER_LAG_HOURS` in `org-watch.mjs` uses for its own bound.
+// `STOPPED_AFTER_LAG_HOURS` in `org-watch.ts` uses for its own bound.
 export const DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS = 5 * 60 * 1000;
 
 /**
@@ -203,7 +203,7 @@ export type QueuedPr = { number: number, headRefOid: string, autoMergeRequest?: 
  * that was behind, so the PR was unstuck only because main moved.
  *
  * "Newest" is `newestRun`, which orders by WORKFLOW RUN when the entries name one (#1623's comparator in
- * newest-check-run.mjs). Every entry in a PR's rollup is on its current head, so "the same head" is the rollup itself.
+ * newest-check-run.ts). Every entry in a PR's rollup is on its current head, so "the same head" is the rollup itself.
  *
  * REPORTS, NEVER ACTS: it names both runs and the one action that clears it. A still-running newest gate is not this
  * (the run may yet succeed), and a red gate with no success anywhere on the head is an ordinary red, not this shape.
@@ -260,7 +260,7 @@ export function supersededLine(blocked: number[]): string {
  *
  * A DRAFT IS NEVER FLAGGED, REGARDLESS OF AGE. Not because CI skips drafts (`ci.yml`'s `pull_request`
  * trigger carries no draft filter, so one ordinarily still runs) but because a draft is a PR its own
- * author has not yet asked anyone -- human or workflow -- to look at; `merge-queue.mjs`'s own
+ * author has not yet asked anyone -- human or workflow -- to look at; `merge-queue.ts`'s own
  * `pr.isDraft` short-circuit reads the same population the same way.
  *
  * `checkRunCount > 0` clears this predicate NO MATTER THE CONCLUSION -- a run that failed, is still
@@ -391,7 +391,7 @@ function reportExaminedPr(result: ReturnType<typeof examinePr>, sinks: { stalled
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
@@ -432,7 +432,7 @@ function main() {
   process.exit(EXIT.EXAMINED);
 }
 
-// The same entry guard `merge-guard.mjs`/`auto-arm-sweep.mjs` use: a bare `file://` + argv[1] comparison
+// The same entry guard `merge-guard.ts`/`auto-arm-sweep.ts` use: a bare `file://` + argv[1] comparison
 // misreads a path with a space in it and a symlinked checkout, and reports the module as "imported, not
 // run".
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

@@ -6,14 +6,14 @@
 // class. A pull request that closes a row `row-file --kind defect` marked therefore says, in one line, which class it was and what stops it
 // everywhere -- or says plainly that no class applies.
 //
-// ONE DEFINITION FOR BOTH READERS, the way `hand-fix-ledger.mjs` serves `pr-open` and `org-retro`: CI's acceptance job reaches this through
+// ONE DEFINITION FOR BOTH READERS, the way `hand-fix-ledger.ts` serves `pr-open` and `org-retro`: CI's acceptance job reaches this through
 // `CI_BODY_REPORTS` and `pr-open` through `checkBody`, which runs that same list, so a body cannot pass one and fail the other.
 //
 // THE LABELS ARE READ THROUGH AN INJECTED READER, and its three states are kept apart:
 //   no reader      the caller cannot ask (CI's acceptance step runs tracker-less on purpose). NOT CHECKED, printed, never a pass in disguise.
 //   a refused read UNKNOWN, and a refusal: "could not ask" is not "no defect label" (ABSENCE IS NOT ZERO).
 //   an answer      a defect label on any named row requires the line; none on all of them does not.
-// This file imports nothing: `acceptance-commands.mjs` does the `Closes` parse and hands the rows in, so there is no cycle.
+// This file imports nothing: `acceptance-commands.ts` does the `Closes` parse and hands the rows in, so there is no cycle.
 
 /** The label `row-file --kind defect` adds and this check reads: one spelling for both. */
 export const DEFECT_LABEL = "defect";

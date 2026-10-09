@@ -9,7 +9,7 @@
 // cannot push a `ceo/` branch, and "file the row and it gets built from that" is an instruction to an
 // agent org.
 //
-// THE LANE DATA OUTLIVES THE CHECK. `row-file.mjs` derives a row's `lane:<owner>` label through these two
+// THE LANE DATA OUTLIVES THE CHECK. `row-file.ts` derives a row's `lane:<owner>` label through these two
 // functions, and `row-claim/runner-rule.mjs` reasons about the same file -- so the reader stays and the
 // refusal goes. A lane is still a recorded fact about who owns a path; it is no longer a wall in CI.
 
@@ -27,7 +27,7 @@ export type Lane = {lane: string, owner: string, branchPrefixes: string[], paths
 
 /**
  * A lane's role-name owner, spelled as the GitHub login that authors that role's pull requests.
- * `docs/lane-ownership.json` names the ROLE and never the account, so the mapping lives here; `work-gate.mjs` and
+ * `docs/lane-ownership.json` names the ROLE and never the account, so the mapping lives here; `work-gate.ts` and
  * `codeowners-lane-sync.test.ts` each re-assert their own copy (#3254 files the work-gate one).
  */
 export const ROLE_LOGIN = Object.freeze({ ceo: "a11ign-ai-leads" });
@@ -35,7 +35,7 @@ export const ROLE_LOGIN = Object.freeze({ ceo: "a11ign-ai-leads" });
 /**
  * The lanes, read from the file `ceo` owns.
  *
- * READ, NEVER INLINED, for `owned-path-signoff.mjs`'s reason: a copy here would be a second spelling of
+ * READ, NEVER INLINED, for `owned-path-signoff.ts`'s reason: a copy here would be a second spelling of
  * the ruling, and the two would drift. Absent or malformed is CANNOT_ASK, never "nothing has a lane" --
  * a check that answers "clear" because it could not find its own rules is worse than no check.
  *
@@ -59,7 +59,7 @@ export function loadLanes(path = resolve(REPO, LANES_FILE_PATH)): { lanes: Lane[
  *
  * Prefix matching on a directory boundary, so `.github/workflows-notes/x` does not match
  * `.github/workflows/`. A bare file path in the list matches exactly. Same predicate as
- * `owned-path-signoff.mjs`'s `isOwned`, deliberately duplicated rather than shared: the two files answer
+ * `owned-path-signoff.ts`'s `isOwned`, deliberately duplicated rather than shared: the two files answer
  * different questions from different owners' data, and importing one into the other would make a change
  * to either owner's rule reach the other's check.
  *

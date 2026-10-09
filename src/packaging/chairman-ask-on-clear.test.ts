@@ -1,4 +1,4 @@
-// no-token: gh -- importing `row-file.mjs` reaches `gh`, and this file never lets it run: every write goes through a recording `run`, every fact through a fake reader, and `registryDistTags` is replaced by `readers`
+// no-token: gh -- importing `row-file.ts` reaches `gh`, and this file never lets it run: every write goes through a recording `run`, every fact through a fake reader, and `registryDistTags` is replaced by `readers`
 /**
  * #4020: A WAIT THAT CLEARS ON A RELEASE FACT RAISES `needs:chairman` WHEN THE ACT THAT REMAINS IS THE CHAIRMAN'S. #2885 and #2887 sat parked three days after `screenreader-worker` 0.3.0
  * and `screenreader-fleet` 0.5.1 shipped, because "ask the chairman once the packages have real releases" was a sentence and nothing named the condition or the ask.

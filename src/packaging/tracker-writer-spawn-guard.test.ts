@@ -37,7 +37,7 @@ test("#1053: each of the FIVE spawn helpers refuses a leaking argv, at the helpe
   // Driven through the real helpers. `gh --version` is harmless if a helper ever stops checking, so this
   // asserts a refusal without being able to cause the write it guards against.
   const helpers: [string, (args: string[]) => unknown][] = [
-    ["board-data.mjs gh", (await import("../board-data.ts")).gh],
+    ["board-data.ts gh", (await import("../board-data.ts")).gh],
     ["merge-guard/lookups.mjs gh", (await import("../merge-guard/lookups.mjs")).gh],
   ];
   for (const [name, spawn] of helpers) {

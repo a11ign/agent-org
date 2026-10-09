@@ -1,5 +1,5 @@
 // command: (not a command) the PURE half of the #623 branch inventory -- classification and
-//          reconciliation over data somebody else fetched; `branch-inventory-report.mjs` is the CLI.
+//          reconciliation over data somebody else fetched; `branch-inventory-report.ts` is the CLI.
 //
 // #623: 93 branches on `origin` have no open PR and carry 291 commits that exist on no other ref, and the
 // org transfer on 2026-09-15 rewrites history. **After the 15th, "was there anything in that branch" stops

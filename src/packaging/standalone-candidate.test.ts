@@ -2,7 +2,7 @@
  * #2873 (child 5d-2 of #69): THE TOOL TAKES ITS PROJECT FROM `host.json`, NOT FROM THREE DIRECTORIES ABOVE ITSELF.
  *
  * `HOME_CHECKOUT` was `packages/agent-org/src` up three, which holds only while the tool runs inside the product checkout. In the
- * standalone repository `src/` is at the root, up three is the home directory, and importing `project-vocabulary.mjs` died with
+ * standalone repository `src/` is at the root, up three is the home directory, and importing `project-vocabulary.ts` died with
  * `ProjectDeclarationRefusal: .../.agent-org/project.json ... ENOENT` (#2846's real run). With `$AGENT_ORG_HOST` set it is now the
  * `checkout` of the host file's `primary` project (ADR 0040, decision 3).
  *
@@ -34,7 +34,7 @@ const UP_THREE = 3;
 
 /** What a child prints: the labels it resolved, which is the whole of "whose project did it read". */
 const PRINT_LABELS = `
-  const v = await import(process.argv[1] + "/project-vocabulary.mjs");
+  const v = await import(process.argv[1] + "/project-vocabulary.ts");
   console.log(JSON.stringify({ backlog: v.BACKLOG_LABEL, lane: v.LANE_PREFIX, session: v.SESSION_PREFIX, acceptance: v.ACCEPTANCE_FIELD }));
 `;
 
@@ -80,7 +80,7 @@ function fixtureProject(): string {
   return checkout;
 }
 
-/** Import `<src>/project-vocabulary.mjs` in a child with `$AGENT_ORG_HOST` as given (`undefined` removes it, whatever this process holds). */
+/** Import `<src>/project-vocabulary.ts` in a child with `$AGENT_ORG_HOST` as given (`undefined` removes it, whatever this process holds). */
 /** `cwd` is a scratch directory in no repository (#3532): a standalone tool answers the repository it is run in when that holds a declaration, and the suite runs from the project's root. */
 function readIn(src: string, host: string | undefined): Reading {
   const env = { ...process.env };

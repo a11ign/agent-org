@@ -285,7 +285,7 @@ test("#2405 an order whose row cannot be read opens no pane", () => {
 
 test("#2405 slugOf: a few words of the title, and `row` for a title with none", () => {
   assert.equal(slugOf("A spawned engineer starts in the primary checkout"), "a-spawned-engineer-starts");
-  assert.equal(slugOf("Fix `wake.mjs`: it's (broken)!"), "fix-wake-mjs-it");
+  assert.equal(slugOf("Fix `wake.ts`: it's (broken)!"), "fix-wake-mjs-it");
   assert.equal(slugOf("!!!"), "row");
   assert.equal(slugOf(undefined), "row");
   assert.ok(slugOf("x".repeat(200)).length <= 40);

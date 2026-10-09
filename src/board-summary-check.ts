@@ -438,7 +438,7 @@ function nextEditionDay(now = new Date()) {
 
 /**
  * #1345: the month names a summary writes ("on 13 September"), derived from the platform rather than retyped.
- * `board-document.mjs` has its own `MONTHS`, and importing it would put that file's `gh` spawns in this file's
+ * `board-document.ts` has its own `MONTHS`, and importing it would put that file's `gh` spawns in this file's
  * closure -- and it already imports this one.
  */
 const MONTHS_IN_YEAR = 12;

@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.mjs` resolves one (#3233)
+import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
 const { REVIEWER_DOOR_SOURCE, driftReport, hostUnitDrift, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorPath, reviewerDoorState }
   = await import("../host-units.ts");
@@ -121,7 +121,7 @@ test("2. the detector refuses the bare name and accepts the installed path (both
   assert.equal(bareDoorName("post it as `A11Y_REVIEWER_SESSION=reviewer-6 $HOME/reviewer/bin/pr-review-verdict <n>`"), false);
 });
 
-test("2. every order in wake.mjs and pr-orders.mjs that tells a reviewer to post names the installed path", () => {
+test("2. every order in wake.ts and pr-orders.mjs that tells a reviewer to post names the installed path", () => {
   const orders = [WAKE, PR_ORDERS].flatMap((file) => readFileSync(file, "utf8").split("\n").map((text, i) => ({ file, text, line: i + 1 })))
     .filter(({ text }) => instructsToPost(text));
   assert.ok(orders.length >= 2, "positive control: both files carry an order that names the door");

@@ -1,4 +1,4 @@
-// no-token: gh -- `unpark-satisfied.mjs` reaches GitHub only through the `UnparkIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4050)
+// no-token: gh -- `unpark-satisfied.ts` reaches GitHub only through the `UnparkIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4050)
 // a11ign/a11ign#4050: a parked row whose EVERY condition is true is un-parked on the tick, to `ready` or to `backlog` + `answer:product-manager`.
 //
 // THE POSITIVE CONTROL for every "writes nothing" below is the first test: the SAME harness (`world`, `run`) un-parks a row there, so an empty `calls` is a reading of a wired pass and not of
@@ -232,7 +232,7 @@ test("pins: the parked label is the gate's, and the gate wires the pass into the
 });
 
 test("pin: the labels that block a ready row are the audit's own, one by one", () => {
-  assert.deepEqual([...NOT_PICKABLE_BESIDE_READY], [...MUTEX_LABELS], "restated in the gate's closure because ready-label-audit.mjs cannot be imported there; this is what keeps the copy honest");
+  assert.deepEqual([...NOT_PICKABLE_BESIDE_READY], [...MUTEX_LABELS], "restated in the gate's closure because ready-label-audit.ts cannot be imported there; this is what keeps the copy honest");
   assert.ok(NOT_PICKABLE_BESIDE_READY.length > 0, "positive control for the loop below");
   for (const label of NOT_PICKABLE_BESIDE_READY) {
     assert.match(String(ineligibilityOf([label])), new RegExp(`\\\`${label}\\\``), `${label} fails the check`);
@@ -252,7 +252,7 @@ test("the merged-closer read: only MERGED pull requests count, and a refused or 
 // --- a11ign/a11ign#4202: THE PROMOTION RUNS FROM A LINKED WORKTREE THE TICK OWNS ---
 //
 // THE REAL SHAPE, not a stub that returns the refusal: a PRIMARY-checkout fixture (`git init`, so its `.git` is a directory, as the tool checkout's is) is the tick's working directory, and the
-// REAL `row-file.mjs` is spawned. `gh` on the PATH is a fake that fails every call, so a launch that gets past the guard stops at its first read and writes nothing to GitHub.
+// REAL `row-file.ts` is spawned. `gh` on the PATH is a fake that fails every call, so a launch that gets past the guard stops at its first read and writes nothing to GitHub.
 /** @param {string[]} args @param {string} cwd */
 const git = (args: string[], cwd: string) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8", env: sandboxGitEnv() }).trim();
 
@@ -347,7 +347,7 @@ test("(#4202) PIN: every script the gate starts that carries a launch guard is r
   const children = [...new Set(["./work-gate.ts", "./unpark-satisfied.ts"].flatMap(spawned))].sort();
   const guarded = children.filter((c) => /\blaunchGate\(/.test(read(`./${c}`)));
   // The positive control: the scan finds the children (update-primary, host-units, row-file) and finds row-file guarded.
-  assert.deepEqual(children, ["host-units.mjs", "row-file.mjs", "update-primary.mjs"]);
-  assert.deepEqual(guarded, ["row-file.mjs"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
+  assert.deepEqual(children, ["host-units.ts", "row-file.ts", "update-primary.ts"]);
+  assert.deepEqual(guarded, ["row-file.ts"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
   assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
 });

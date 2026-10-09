@@ -340,7 +340,7 @@ function readDeferralLog({ file, entry, now }) {
 }
 
 /**
- * Ingest the gate's deferral logs (`deferral-log.mjs`) INCREMENTALLY, through the same state as the transcripts (#3526): only the bytes a log gained are read, and a log that shrank or whose first
+ * Ingest the gate's deferral logs (`deferral-log.ts`) INCREMENTALLY, through the same state as the transcripts (#3526): only the bytes a log gained are read, and a log that shrank or whose first
  * bytes changed is read again from byte 0 and SAID. One event per span, appended to the open store as ONE batch; the state is the caller's to save AFTER that append. A log that does not exist
  * (a host whose gate has not ticked since #3510) is listed as absent, never as empty.
  * @param {{ logs: string[], rowRepo: string, store: ReturnType<typeof openStore>, state: IngestState, now: number }} input

@@ -71,7 +71,7 @@
 //   1  REFUSE -- one or more deleted paths are unexplained by the branch's own history. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 //
-//   node packages/agent-org/src/trunk-revert-guard.mjs --merge=<sha>
+//   node packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -133,11 +133,11 @@ export function branchTouchedPaths(p1: string, p2: string, paths: string[], git_
 }
 
 function main() {
-  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-revert-guard.mjs" });
+  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/trunk-revert-guard.ts" });
 
   const merge = flagValue(process.argv, "merge");
   if (!merge) {
-    console.error("CANNOT ASK: need --merge=<sha>.\n  node packages/agent-org/src/trunk-revert-guard.mjs --merge=<sha>");
+    console.error("CANNOT ASK: need --merge=<sha>.\n  node packages/agent-org/src/trunk-revert-guard.ts --merge=<sha>");
     process.exit(EXIT.CANNOT_ASK);
   }
 
@@ -202,5 +202,5 @@ function main() {
   process.exit(EXIT.REFUSE);
 }
 
-// The entry guard `merge-guard.mjs`/`auto-arm-sweep.mjs` use.
+// The entry guard `merge-guard.ts`/`auto-arm-sweep.ts` use.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

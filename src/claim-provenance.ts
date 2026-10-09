@@ -2,7 +2,7 @@
 // WHO WORKED A ROW, AFTER THE LABEL THAT SAID SO IS GONE -- #683.
 //
 // `session:<name>` answers "who holds this NOW", so it is correct to remove it when a row closes, and
-// `ready-label-audit.mjs`'s `closedDebris` fires on every closed row that still carries one. #683 read
+// `ready-label-audit.ts`'s `closedDebris` fires on every closed row that still carries one. #683 read
 // that as attribution being DESTROYED by normal operation -- 59 branches with no open PR pointing at
 // closed rows whose claimant "cannot be recovered by any method keyed on the tracker".
 //
@@ -126,7 +126,7 @@ export function describeClaims(claims: Claim[]): string {
 // THE DATE THIS CHECK BEGAN TO BIND, AND IT IS A BOUNDARY RATHER THAN A CONSTANT SOMEBODY CHOSE.
 //
 // Measured 2026-09-09: 111 of 288 closed rows carry no claim event. Every one of them is a row taken by
-// hand before `row-claim.mjs` was the only route in (#673, landed 12:14Z as #713), and NO METHOD RECOVERS
+// hand before `row-claim.ts` was the only route in (#673, landed 12:14Z as #713), and NO METHOD RECOVERS
 // THEM -- there is nothing to read, because nothing was ever written. Reporting 111 permanent findings
 // would make this check say the same number every run, which is the shape of a check nobody reads.
 //

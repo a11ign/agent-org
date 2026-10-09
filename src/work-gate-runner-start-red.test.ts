@@ -6,7 +6,7 @@
  * `main` handed `orgHealthNow` the orders from BEFORE the hold, and `redPrFacts` reads an order as "asked". So the red the gate chose not to wake anyone
  * for still tripped `red-pr-unattended` after two hours: a second alarm for a failure the org had decided not to act on.
  *
- * THE FIXTURE IS A `TIMED_OUT` JOB WITH NO STEPS AND NO RUNNER, not a `CANCELLED` one: `red-pr.mjs`'s `RED_CONCLUSIONS` has no `CANCELLED`, so a cancelled check is no red
+ * THE FIXTURE IS A `TIMED_OUT` JOB WITH NO STEPS AND NO RUNNER, not a `CANCELLED` one: `red-pr.ts`'s `RED_CONCLUSIONS` has no `CANCELLED`, so a cancelled check is no red
  * to the signal at all and a test built on it would pass on the unfixed code. (A hung check and an ejection are not rollup reds either; only a runner-start red the
  * rollup carries as `FAILURE`, `TIMED_OUT` or `STARTUP_FAILURE` could ever trip it.)
  *

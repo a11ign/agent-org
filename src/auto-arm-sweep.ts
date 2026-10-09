@@ -28,7 +28,7 @@
 // opposite -- a PR that has been STANDING, long enough that what was true when it opened may not be now.
 // Three of the four it was built for must not be armed on sight, each for a reason a machine can check:
 //
-//   NO CHECK RUNS (#172)   `merge-guard.mjs`'s own headline: a required context that never ran is not a
+//   NO CHECK RUNS (#172)   `merge-guard.ts`'s own headline: a required context that never ran is not a
 //                          failing check, it is the ABSENCE of one, and it reads as CLEAN. Arming it is
 //                          harmless (GitHub withholds), and REPORTING it is the useful act -- a PR nothing
 //                          has ever tested is STRANDED, not slow, and needs a push, not patience.
@@ -83,16 +83,16 @@ import { authorshipVerdict } from "./lane-ownership.ts";
 // A LEAF (no imports), so this job's `actions/checkout`-only bootstrap still resolves it.
 import { PARITY } from "./review-attribution.ts";
 import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.ts";
-// #2046: ONE PLACE DECIDES WHETHER A PR IS ARMED, the way `pr-hold-state.mjs` above owns whether it is
-// held. The rule was written here and `arm-pr.mjs`'s refusal path did not call it, which is the third
+// #2046: ONE PLACE DECIDES WHETHER A PR IS ARMED, the way `pr-hold-state.ts` above owns whether it is
+// held. The rule was written here and `arm-pr.ts`'s refusal path did not call it, which is the third
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
 // file is now one of its readers rather than its owner.
 import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.ts";
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
 import { announceBlocked, blockerVerdict } from "./arm-pr.ts";
 
-// RE-EXPORTED, NOT REDEFINED. `work-gate.mjs` imports `armedFromApi` from this file and its own header
-// reasons about the shape of that import graph -- `pr-armed-state.mjs` is leaf-shaped, so the property
+// RE-EXPORTED, NOT REDEFINED. `work-gate.ts` imports `armedFromApi` from this file and its own header
+// reasons about the shape of that import graph -- `pr-armed-state.ts` is leaf-shaped, so the property
 // the gate states about itself still holds through this line.
 export { armedFromApi };
 
@@ -142,7 +142,7 @@ export function decideAndWarn({ number, labels, checkRunCount }: { number: strin
  * repository's own recorded defect (`SIGNAL_TYPES`, the `sweepLog` regex) -- both passed having examined
  * nothing.
  *
- * `parity` is `review-attribution.mjs`'s own answer for the review that would arm this PR (#2195), and ONLY
+ * `parity` is `review-attribution.ts`'s own answer for the review that would arm this PR (#2195), and ONLY
  * `violation` refuses. `correct`, absent and `unobservable` all arm: `unobservable` is deliberate, because it
  * was every review's answer before attribution recorded and refusing on it would stop the queue rather than
  * the defect. #2079 was armed on an off-parity approval and the parity owner's refusal landed 61s later.
@@ -161,7 +161,7 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
   }
   // ONE PLACE DECIDES WHETHER A PR IS HELD (#645). This was written here and NOT in `auto-arm.yml`'s
   // per-PR `arm` job, so a held PR was refused by the sweep and re-armed by its own next event -- the
-  // fact-stated-twice shape, with only one copy correct. Both callers now read `pr-hold-state.mjs`.
+  // fact-stated-twice shape, with only one copy correct. Both callers now read `pr-hold-state.ts`.
   const held = armabilityOf({ labels, holdReason });
   if (!held.arm) return held;
   if (parity === PARITY.violation) return { arm: false, reason: parityViolationReason({ parityOwner, reviewedBy }) };
@@ -379,7 +379,7 @@ export function unarmedCandidates(nodes: Array<{ number: number | string; isDraf
  * precisely the defect #2004 measured against #1999. `armedFromApi`'s own comment says a fourth armed
  * state must be added in ONE place; this keeps the read that feeds it in one place too.
  *
- * `work-gate.mjs` is that second reader. It cannot import the CALL -- it injects its own `run` and must
+ * `work-gate.ts` is that second reader. It cannot import the CALL -- it injects its own `run` and must
  * keep working before any `pnpm install` -- but it must not ask a different question either.
  *
  * @param {string} repo `owner/name`
@@ -443,7 +443,7 @@ function sleepSync(ms: number) {
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
@@ -521,6 +521,6 @@ function main() {
   process.exit(EXIT.DRAINED);
 }
 
-// The same entry guard `merge-guard.mjs` uses: a bare `file://` + argv[1] comparison misreads a path
+// The same entry guard `merge-guard.ts` uses: a bare `file://` + argv[1] comparison misreads a path
 // with a space in it and a symlinked checkout, and reports the module as "imported, not run".
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

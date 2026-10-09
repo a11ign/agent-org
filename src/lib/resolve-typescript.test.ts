@@ -3,7 +3,7 @@
  * #3729: A `typescript` THAT LOADS BUT HAS NO JS COMPILER API IS NOT ONE THE TOOL CAN USE.
  *
  * TypeScript 7 is the native compiler; `require("typescript")` returns it without throwing and `ts.ScriptTarget` is `undefined`, so resolving the project's copy
- * FIRST crashed `pr:open` in `acceptance-commands.mjs` and the fallback to the tool's own was never taken. The resolver is copied into a scratch tool tree, so
+ * FIRST crashed `pr:open` in `acceptance-commands.ts` and the fallback to the tool's own was never taken. The resolver is copied into a scratch tool tree, so
  * the tool's own `node_modules` is the one this test lays out and the project's is another.
  */
 import { after, test } from "node:test";

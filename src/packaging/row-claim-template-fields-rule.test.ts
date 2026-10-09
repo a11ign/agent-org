@@ -53,7 +53,7 @@ test("a heading present but with NOTHING under it before the next heading is sti
   assert.deepEqual(missingTemplateFields(body), ["Region"]);
 });
 
-test("an inline `Field:` line (no heading) also counts as stated -- the same two shapes region-paths.mjs "
+test("an inline `Field:` line (no heading) also counts as stated -- the same two shapes region-paths.ts "
   + "already accepts for Region", () => {
   const body = "Region: packages/lab/src/packaging/foo.ts\n"
     + "Acceptance: npx tsx --test x\n"

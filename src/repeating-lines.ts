@@ -11,11 +11,11 @@
 // normalised, and a line present in K CONSECUTIVE complete ticks is OFFERED to `orchestrator` WITH its count and
 // first-seen time, which is `org-routing-and-timers.md`'s rule for a question: it goes in the gate, not in a cron.
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `work-gate.mjs` itself, which imports this: it runs before any `pnpm install`/build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `work-gate.ts` itself, which imports this: it runs before any `pnpm install`/build.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-// A LEAF (`claim-labels.mjs` imports nothing), so this file keeps its own: the label is read from where it is declared.
+// A LEAF (`claim-labels.ts` imports nothing), so this file keeps its own: the label is read from where it is declared.
 import { READY_LABEL } from "./claim-labels.ts";
 
 /**
@@ -184,7 +184,7 @@ const lineId = (line: string) => createHash("sha1").update(normaliseLine(line)).
  *
  * KEYED ON THE HEADLINE'S NORMALISED TEXT ALONE, never on the count or the first-seen time: both move every tick, and a
  * key that moved with them would re-ask every two minutes instead of once per judgment window. THE PROMPT CARRIES THE
- * OTHER GROUPS, because a session is delivered one order per tick (`alsoOwned`'s argument in `work-gate.mjs`).
+ * OTHER GROUPS, because a session is delivered one order per tick (`alsoOwned`'s argument in `work-gate.ts`).
  *
  * @param {RepeatingGroup[]} groups
  * @returns {{session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[]}

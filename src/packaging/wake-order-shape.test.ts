@@ -84,7 +84,7 @@ test("#3444 (2) a spawned engineer's first order is its identity, row, worktree,
   }
   for (const paragraph of THREE_PARAGRAPHS) assert.ok(!text.includes(paragraph), `does not repeat: ${paragraph}`);
   // #4070: ROW 3390 IS EVEN, SO THIS IS A CALM-ARM PREAMBLE, which ends with one more paragraph. The bound is on the preamble itself, so the paragraph is
-  // taken off before it is read; a preamble that grew elsewhere still breaks it, and the paragraph's own shape is pinned in `wake-calm-arm.test.mjs`.
+  // taken off before it is read; a preamble that grew elsewhere still breaks it, and the paragraph's own shape is pinned in `wake-calm-arm.test.ts`.
   const calmTail = text.endsWith(CALM_FINISH_PARAGRAPH) ? bytes(`\n\n${CALM_FINISH_PARAGRAPH}`) : 0;
   assert.ok(bytes(text) - calmTail <= MEASURED_SPAWNED_BYTES, `${bytes(text) - calmTail} bytes without the calm paragraph (was 1,714)`);
 });
@@ -149,7 +149,7 @@ const STALE_WAIT = [{ item: { number: 5, title: "t" }, wait: { key: "closed #1",
 const BRANCH = { branch: "agent/worktree-prune-unit-2000", head: "1f4e9c7a3b5d8e2016243c5f7a9b0d1e2f3a4b5c", row: 2000 };
 const TOO_MANY_ROWS = Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] }));
 
-/** Every cause whose order text once carried a dated incident (`work-gate.mjs` 13, `idle-claimant.mjs`, `org-health.mjs`, `wake.mjs` 2), by builder. */
+/** Every cause whose order text once carried a dated incident (`work-gate.ts` 13, `idle-claimant.ts`, `org-health.mjs`, `wake.ts` 2), by builder. */
 const RENDERED: Record<string, Order[]> = {
   "primary-stale": primaryStaleOrders(PRIMARY),
   "blocked-unexaminable": blockedReferentOrders([{ number: 1, title: "row 1", labels: [{ name: "backlog" }, { name: "blocked" }] }], [], TODAY),

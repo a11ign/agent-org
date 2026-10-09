@@ -9,7 +9,7 @@
 //   - `umbrellaEdges` / `umbrellaEdgeOrders`: a `ready` row held by a native edge onto an OPEN row of more than one done-when that names no condition (part c, ii).
 //
 // THEY READ MACHINE-READABLE TRUTH ONLY (registry, remote, labels, state, the edge), never prose, and cost API calls, not a model turn.
-// A LEAF OF THE GATE: it imports no binding from `work-gate.mjs` (`org-health.mjs` does, and is a cycle), so the order cap and the `gh` runner arrive as arguments.
+// A LEAF OF THE GATE: it imports no binding from `work-gate.ts` (`org-health.mjs` does, and is a cycle), so the order cap and the `gh` runner arrive as arguments.
 import { spawnSync } from "node:child_process";
 import { READY_LABEL } from "../claim-labels.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";

@@ -257,7 +257,7 @@ function laterMerge(known: { repo: string; pulls: number[]; firstOpenedAt: numbe
  */
 export function reviewerTarget(session: string, rowRepo: string): { repo: string; number: number; } | null {
   const named = /^reviewer-(?:([a-z0-9-]+?)-)?(\d+)$/.exec(session);
-  // A key ending in -<digits> cannot be declared (project-config.mjs), because the name would parse two ways: `reviewer-tool-2-9` is no reviewer.
+  // A key ending in -<digits> cannot be declared (project-config.ts), because the name would parse two ways: `reviewer-tool-2-9` is no reviewer.
   if (!named || (named[1] && /-[0-9]+$/.test(named[1]))) return null;
   return { repo: named[1] ? `${rowRepo.split("/")[0]}/${named[1]}` : rowRepo, number: Number(named[2]) };
 }

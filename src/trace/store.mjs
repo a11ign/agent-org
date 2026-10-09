@@ -24,7 +24,7 @@
 // ONE API MESSAGE IS WRITTEN ONCE PER CONTENT BLOCK (measured: 23 assistant records were 8 message ids in one live transcript). A reader that sums every record
 // double counts, so a turn is built per `message.id` from its LAST record, whose `output_tokens` is the final figure.
 //
-// IT READS `wakes-per-row.mjs`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
+// IT READS `wakes-per-row.ts`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
 // transcript is walked here once more for the records this store needs; the wake record it yields is `isWake`'s, the same test.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -199,7 +199,7 @@ export function subjectOfSession(session, rowRepo) {
 }
 
 /**
- * One event per ended deferral of the gate's log (`deferral-log.mjs`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
+ * One event per ended deferral of the gate's log (`deferral-log.ts`). The id is made of the cause key and the start, so a line read twice (a tick killed between the log and `wake-deferred` appends it
  * again) is the one event. `at` is the END, which is when the store learned of it; the start is `startedAt`.
  * @param {import("../deferral-log.ts").EndedDeferral[]} spans @param {string} rowRepo
  * @returns {TraceEvent[]}

@@ -1,8 +1,8 @@
 // no-token: defaultRun
 //
 // #1406: every `gh` answer in this file is RECORDED and handed to `fetchLabels` through `run`, never
-// `row-claim.mjs`'s own `defaultRun`, the one function that spawns a real `gh`. The reason lives on these lines,
-// though since #1465 `acceptance-commands.mjs` also reads one written after ` -- ` on the marker's own line.
+// `row-claim.ts`'s own `defaultRun`, the one function that spawns a real `gh`. The reason lives on these lines,
+// though since #1465 `acceptance-commands.ts` also reads one written after ` -- ` on the marker's own line.
 /**
  * #513: split out of `row-claim.test.ts`, because these tests made real GitHub API calls and the other 52 made
  * none. #1406: they no longer do. worker-capture's census on #1275 (5655682618) found this file making 2 live

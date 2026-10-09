@@ -1,5 +1,5 @@
 // @ts-check
-// A markdown -> HTML converter for EXACTLY the subset `board-document.mjs` emits, and no more.
+// A markdown -> HTML converter for EXACTLY the subset `board-document.ts` emits, and no more.
 //
 // Not a general markdown library, and deliberately not one. The alternative was a dependency (`marked`,
 // `markdown-it`) in a repo whose isolation gate exists to catch phantom dependencies, or a system binary

@@ -11,7 +11,7 @@
 //            is neither an org identity nor automation. What this FINDS is every human-side change; what it WRONGLY
 //            CATCHES is the part that was never a fault -- a decision, a credential, a publish (see NOT_A_HAND_FIX).
 //   DECLARED a `Hand-fix: <what the org should have done> — <which gate or brief would have done it>` line in the PR
-//            body, which `pr-open.mjs` accepts and refuses malformed. It exists because the author field cannot see
+//            body, which `pr-open.ts` accepts and refuses malformed. It exists because the author field cannot see
 //            a hand fix made THROUGH an org account: the session acting as `a11ign-ai-leads` is, to GitHub, the org.
 // A change is counted ONCE however many commits it carries and however many mechanisms see it (`via: "both"`).
 //
@@ -45,7 +45,7 @@ export const WINDOW_DAYS = 14;
 export const UNREAD_SHARE_BOUND = 0.1;
 
 /**
- * The org's own accounts (the three the row names), by login. NOT read off `gh-identity.mjs`: that module answers
+ * The org's own accounts (the three the row names), by login. NOT read off `gh-identity.ts`: that module answers
  * which account THE CURRENT PROCESS acts as and deliberately names none, and a ledger over history needs the names of
  * accounts that are not the current one. A renamed account reads as a human until this list moves, which RAISES the
  * count, so the failure is loud and not a silent zero.
@@ -107,7 +107,7 @@ export function declarationsIn(body: string | null | undefined): {
 }
 
 /**
- * The refusal `pr-open.mjs` prints for a malformed declaration, or null when the body has none.
+ * The refusal `pr-open.ts` prints for a malformed declaration, or null when the body has none.
  * @param {string} body
  * @returns {string | null}
  */
@@ -435,7 +435,7 @@ function parseArgs(argv: string[]) {
   const days = argv.includes("--days") ? Number(argv[argv.indexOf("--days") + 1]) : WINDOW_DAYS;
   const unknown = argv.filter((a, i) => !["--days", "--json", "--list"].includes(a) && argv[i - 1] !== "--days");
   if (!Number.isInteger(days) || days < 1 || unknown.length > 0) {
-    throw new Error(`usage: hand-fix-ledger.mjs [--days N] [--json] [--list]${unknown.length ? ` (unknown: ${unknown.join(" ")})` : ""}`);
+    throw new Error(`usage: hand-fix-ledger.ts [--days N] [--json] [--list]${unknown.length ? ` (unknown: ${unknown.join(" ")})` : ""}`);
   }
   return { days, json: argv.includes("--json"), list: argv.includes("--list") };
 }

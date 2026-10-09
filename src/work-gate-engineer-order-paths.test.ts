@@ -6,7 +6,7 @@
  * worktree `git worktree list` names)". Read on the host at `a7a91408a`, `role-<name>` existed for two of the eight
  * engineer addresses, and the fallback made the other six BORROW a peer's tree while that peer worked in it.
  *
- * The gate cannot know who takes a pool order, so it leaves `LAUNCH_PLACEHOLDER` and `wake.mjs` fills it in at
+ * The gate cannot know who takes a pool order, so it leaves `LAUNCH_PLACEHOLDER` and `wake.ts` fills it in at
  * delivery -- and these tests read the order as the ENGINEER receives it, once for each engineer role in
  * `sessions.json` and in both states of the filesystem, so a role added tomorrow is judged without anyone listing it.
  */
@@ -104,7 +104,7 @@ test("#2405 NO ORDER SAYS TO BORROW: neither the delivered text nor the source c
   // THE SOURCE, for the words being GONE rather than merely unreachable: the phrase was in two files' comments once.
   // #2542: `work-gate/pr-orders.mjs` holds the pull-request orders' prompts now, so an absence asserted over the
   // gate alone would pass having read less of the gate than before.
-  for (const file of ["wake.mjs", "work-gate.mjs", "work-gate/pr-orders.mjs"]) {
+  for (const file of ["wake.ts", "work-gate.ts", "work-gate/pr-orders.mjs"]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     assert.doesNotMatch(source, /any other linked worktree/i, `${file} still says it`);
   }

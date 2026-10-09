@@ -37,7 +37,7 @@
 // ready-row-unclaimed/2002`. `worker-capture` was one turn from claiming a row whose whole point was
 // that it must not run yet -- running it would have made an unruled decision real on the host.
 //
-// IT WAS NOT THAT NOTHING READ THE LABEL. `work-gate.mjs` reads it on every tick and wakes the session
+// IT WAS NOT THAT NOTHING READ THE LABEL. `work-gate.ts` reads it on every tick and wakes the session
 // that owes the answer (`answerOrders`). The gate KNEW the row was waiting; the waiting-condition reader
 // was simply never told, so every OTHER question -- is this promotable, is this offerable, is this
 // reachable -- was answered as if the row were free.
@@ -48,16 +48,16 @@ import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 /**
  * The label prefix that says which session owes an answer on a row.
  *
- * IT LIVES HERE NOW RATHER THAN IN `work-gate.mjs` (#2005), and the move is the fix rather than tidying.
+ * IT LIVES HERE NOW RATHER THAN IN `work-gate.ts` (#2005), and the move is the fix rather than tidying.
  * A waiting condition spelled in the file that CONSUMES it can only ever be read by that consumer's own
  * code paths; this module's first line says it is the one reader of "this row is waiting on something",
- * imported and never retyped, and that promise is only true of conditions declared in it. `work-gate.mjs`
+ * imported and never retyped, and that promise is only true of conditions declared in it. `work-gate.ts`
  * re-exports this name, so every existing importer is untouched.
  *
  * @see `answerOwedBy` for why the label, and not an assignee, is the mechanism.
  *
- * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.mjs`'s field, re-exported under
- * this file's own established name so every existing importer -- `work-gate.mjs` included -- keeps
+ * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.ts`'s field, re-exported under
+ * this file's own established name so every existing importer -- `work-gate.ts` included -- keeps
  * working unchanged.
  */
 export { ANSWER_PREFIX };
@@ -266,7 +266,7 @@ function roundTripsUtc(iso: string) {
  * `worktree:/private/tmp/wt-rla851` and a dozen more are per-instance labels nobody ever collected.
  *
  * A DECLARED BODY FIELD IS THIS REPOSITORY'S OWN PROVEN PATTERN, not an invention: `Acceptance:` and
- * `Closes:` are parsed out of PR bodies by `acceptance-commands.mjs` and BLOCK THE MERGE. This is that
+ * `Closes:` are parsed out of PR bodies by `acceptance-commands.ts` and BLOCK THE MERGE. This is that
  * pattern applied to the other object type.
  *
  * THE OPTIONAL TIME IS #2113, AND IT IS WHY THE COMPARISON MOVED (see `waitingOn`). A date-only field
@@ -373,7 +373,7 @@ export function waitingOn(row: {
  *
  * IT WAS DECLARED IN `packages/control/src/fleet-playbook.mjs` (#1839), whose own comment calls it "the
  * fourth" of this file's shapes while implementing it a package away. #2005 had already paid for exactly
- * that: `ANSWER_PREFIX` was spelled in `work-gate.mjs`, so every OTHER reader of "is this row waiting on
+ * that: `ANSWER_PREFIX` was spelled in `work-gate.ts`, so every OTHER reader of "is this row waiting on
  * something" answered `no` for three days about rows the gate itself was holding. A waiting condition
  * declared in the file that CONSUMES it can only ever be read by that consumer's own code paths, and this
  * module's first line promises it is the ONE reader, imported and never retyped. That promise is only
@@ -522,7 +522,7 @@ export function describeWaiting(waiting: { kind: string; numbers?: number[]; dat
  * WITHOUT THIS, THE FIX IS THE DEFECT. `agent-practices.md` now says a waiting condition goes in a field
  * rather than a sentence -- and that instruction is itself a sentence, in a document nothing checks. This
  * repository has proved twice over that it cannot keep such a rule by habit: `/clear` was one until
- * `wake.mjs` mechanised it, and the author-prompt path bypassed even that. A rule with no witness decays
+ * `wake.ts` mechanised it, and the author-prompt path bypassed even that. A rule with no witness decays
  * to exactly the state it was written to fix.
  *
  * A SMELL, NOT A VERDICT, and reported as one. A row may legitimately DISCUSS blocking -- this very

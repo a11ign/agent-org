@@ -1,4 +1,4 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3591)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3591)
 /**
  * `src/dora.ts`, a11ign/a11ign#3591: A RELEASE WITH NO `gitHead` AND NO TAG TAKES ITS COMMIT FROM ITS PROVENANCE ATTESTATION, AND A NAME RESERVATION IS NOT A RELEASE.
  *

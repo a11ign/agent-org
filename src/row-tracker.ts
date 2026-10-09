@@ -11,8 +11,8 @@
 import { productRegionsOf, rowKind } from "./work-gate.ts";
 
 /**
- * The tracker an ORG row is filed in. `work-gate.mjs` keeps the same fact as an unexported `TOOL_REPO` (that file is not this row's
- * Region), and `row-tracker.test.mjs` reads it from there and pins the two equal.
+ * The tracker an ORG row is filed in. `work-gate.ts` keeps the same fact as an unexported `TOOL_REPO` (that file is not this row's
+ * Region), and `row-tracker.test.ts` reads it from there and pins the two equal.
  */
 export const ORG_TRACKER_REPO = "a11ign/agent-org";
 
@@ -21,7 +21,7 @@ export type Tracker = import("./project-config.ts").Tracker;
 /**
  * The tracker `entries` (a row's Region, as `declaredRegionFiles` reads it) belong in.
  *
- * The FIRST declared tracker is the project's own (`project-config.mjs`), so a product row goes there. An org row goes to the tracker of
+ * The FIRST declared tracker is the project's own (`project-config.ts`), so a product row goes there. An org row goes to the tracker of
  * `ORG_TRACKER_REPO` when one is declared, else to the first: a project that has not declared the second tracker files everything where
  * it always did, which is why this row can merge before that declaration exists. With ONE tracker the Region cannot matter.
  * `unreadable` is `rowKind`'s own word for a Region it found no entries in, said back so the caller can SAY the row went to the org

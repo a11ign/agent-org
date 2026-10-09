@@ -1,6 +1,6 @@
 // no-token: gh -- no `gh` runs here; every fact the teardown reads is an injected seam
 /**
- * `packages/agent-org/src/wake.mjs`, #2860: `endFinishedSpares` settles a spare-registry entry whose workspace is gone.
+ * `packages/agent-org/src/wake.ts`, #2860: `endFinishedSpares` settles a spare-registry entry whose workspace is gone.
  * Since #2469 a spare is named `worker-<row>`, so an address is never spawned twice and `settleAbsentInstance` (which
  * `registerSpawn` runs for the SAME address) never fired: the registry kept one stale entry per finished engineer, and
  * `targetState` read each of them `absent` rather than `ended` (#2853's source).

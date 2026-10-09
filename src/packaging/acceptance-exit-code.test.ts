@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// The `pr:open` test below imports `pr-open.mjs`, whose `defaultGh` spawns `gh` -- a path none of these tests take: `checkBody` is handed
+// The `pr:open` test below imports `pr-open.ts`, whose `defaultGh` spawns `gh` -- a path none of these tests take: `checkBody` is handed
 // the body and an injected `run`, and nothing here calls `gh(` or spawns it.
 //
 // DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file must not call `gh(`). Run with `GH_TOKEN`/`GITHUB_TOKEN`
@@ -10,7 +10,7 @@
 /**
  * #438: A GUARD CAN ONLY BE SHOWN TO BITE BY A COMMAND WHOSE SUCCESS IS A NON-ZERO EXIT, and
  * `acceptanceReport` hardcoded `passed = code === 0` -- so #418's own `Acceptance:` line, demonstrating
- * `trunk-revert-guard.mjs` correctly REFUSING a known-bad merge, was reported as this job's own failure
+ * `trunk-revert-guard.ts` correctly REFUSING a known-bad merge, was reported as this job's own failure
  * for doing exactly what the PR set out to prove.
  *
  * ceo's ruling: a separate `Refutation:` section, sharing `Acceptance:`'s own parser rather than a second

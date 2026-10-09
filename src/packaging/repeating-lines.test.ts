@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `journalctl` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/repeating-lines.mjs` and its wiring in `work-gate.mjs`, #2848: A LOG LINE THAT REPEATS ABOUT A FAULT IS A DEFECT,
+ * `packages/agent-org/src/repeating-lines.ts` and its wiring in `work-gate.ts`, #2848: A LOG LINE THAT REPEATS ABOUT A FAULT IS A DEFECT,
  * AND THE GATE NOW COUNTS THEM.
  *
  * THE POSITIVE CONTROL IS THE TWO LINES THE ROW WAS FILED ABOUT -- `NOT RELEASED decline of N ...` and `UNDELIVERED claim release not done --
@@ -183,7 +183,7 @@ test("a11ign/a11ign#3723: the gate's `github-status: operational` reading repeat
   }
 });
 
-// --- #3029: the lines `wake.mjs` writes for a refusal, run through the detector as the journal would hold them ------
+// --- #3029: the lines `wake.ts` writes for a refusal, run through the detector as the journal would hold them ------
 
 /** The stderr lines `finishTick` writes for these refusals at this wait, which is what the journal carries. */
 const refusalLines = (refused: string[], waitMinutes: number) => {

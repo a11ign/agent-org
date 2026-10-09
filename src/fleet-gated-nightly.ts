@@ -4,7 +4,7 @@
 // examined count as a fact on #914, then wake `orchestrator` to run the by-row batch #914's bar requires.
 //
 // #1941: THE TIMER IS GONE AND THIS IS NOW A MANUAL COMMAND. The scheduled path is
-// `work-gate.mjs`'s `fleet-batch-due` cause, which asks the same question every two minutes off a read
+// `work-gate.ts`'s `fleet-batch-due` cause, which asks the same question every two minutes off a read
 // the tick already makes, and fires when the GATED SET CHANGES rather than at 01:00 UTC.
 //
 // The cadence was never chosen. #914 recorded what a PERSON did late at night, #1830 automated the
@@ -32,7 +32,7 @@
 // (a busy session, `herdr` unreachable) -- the exact "batch that runs and reports nothing" #914's own
 // gate-ruling paragraph names as this project's most-recorded shape.
 //
-// A REFUSED READ MUST NEVER READ AS "EXAMINED 0" -- `work-gate.mjs`'s own rule, for the same reason:
+// A REFUSED READ MUST NEVER READ AS "EXAMINED 0" -- `work-gate.ts`'s own rule, for the same reason:
 // `gh issue list` exits non-zero with empty stdout on a refusal, and reading that as zero rows would post
 // a comment claiming a clean sweep of nothing when nothing was actually asked. `fleetGatedRows` below
 // throws on a failed read rather than returning `[]`, and `main` reports CANNOT_ASK and posts nothing.
@@ -60,7 +60,7 @@ const defaultGhRun = (args: string[]) => gh(args);
 const defaultHerdrRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
 // `gh issue list` defaults to 30 -- fine for a label-scoped slice today, silent
-// truncation the day it is not. `board-data.mjs`'s own `issues()` already met this: a higher number alone
+// truncation the day it is not. `board-data.ts`'s own `issues()` already met this: a higher number alone
 // just moves the cliff (`length === LIMIT` reads the same as "there were exactly LIMIT"), so the read
 // asks for more than this query should ever return AND refuses to report on a listing that might be
 // partial, the same as that read does.
@@ -102,7 +102,7 @@ export function examinedComment(issues: { number: number; }[], firedAtIso: strin
 
 /**
  * PURE. The order handed to `orchestrator` -- names the rows so the woken session does not have to
- * re-run the query itself, matching `work-gate.mjs`'s own orders (the answer arrives with the wake, the
+ * re-run the query itself, matching `work-gate.ts`'s own orders (the answer arrives with the wake, the
  * session does not wake to go and look).
  * @param {{ number: number }[]} issues
  */
@@ -118,7 +118,7 @@ export type FiringResult = { kind: "cannot-ask", message: string } | { kind: "qu
 
 /**
  * THE WHOLE ORCHESTRATION, injectable, so a test can inject stubs for `ghRun`/`herdrRun` and assert what
- * this firing actually DOES rather than only its pure text helpers -- the same seam `work-gate.mjs`'s
+ * this firing actually DOES rather than only its pure text helpers -- the same seam `work-gate.ts`'s
  * `performActions` uses (`@param run`, defaulted to the real spawn). Before this, only `fleetGatedRows`,
  * `examinedComment` and `wakeText` were under test; `main`'s own two side effects -- the comment on #914
  * and the wake to `orchestrator` -- were not (reviewer-2 proved it on PR #1844 by swapping the real #914
@@ -160,7 +160,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
   if (why) {
     // NOT FATAL: the examined-count comment already landed, which is this firing's own contract with
     // #914. A session that cannot be prompted right now (busy, or `herdr` unreachable) is reported to the
-    // journal for a human to notice, the same as `work-tick.mjs`'s own BLOCKED report -- not escalated
+    // journal for a human to notice, the same as `work-tick.ts`'s own BLOCKED report -- not escalated
     // into "the firing failed", because it did not.
     return { kind: "not-woken", comment, why };
   }
@@ -177,7 +177,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url,
-    command: "node packages/agent-org/src/fleet-gated-nightly.mjs" });
+    command: "node packages/agent-org/src/fleet-gated-nightly.ts" });
 
   const result = performFiring();
   if (result.kind === "cannot-ask") {

@@ -20,11 +20,11 @@
 //
 // THE CHECK IS "DOES THIS ROW'S SUBJECT EXIST ON `main` YET", NOT "IS ANYONE ELSE IN THESE FILES".
 // #186 is the case that forces the distinction and a naive implementation scores it CLEAR: nobody is
-// editing `board-summary-check.mjs`, and the row is unstartable anyway because the function it is about
+// editing `board-summary-check.ts`, and the row is unstartable anyway because the function it is about
 // is not in it. Region contention is the easier half and falls out of the same walk.
 //
-//   node packages/agent-org/src/row-reachability.mjs <issue-number>
-//   node packages/agent-org/src/row-reachability.mjs --row=<issue-number>
+//   node packages/agent-org/src/row-reachability.ts <issue-number>
+//   node packages/agent-org/src/row-reachability.ts --row=<issue-number>
 //
 // IT REPORTS; IT NEVER REFUSES A CLAIM. A row can be worth starting for reasons this cannot see -- the
 // blocking PR may land in ten minutes, or the worker may intend to build on that branch deliberately.
@@ -689,11 +689,11 @@ function main() {
   // `packages/{lab,worker-fleet}/{src,scripts}` and cannot see top-level `scripts/` -- which is #164, and
   // is why this file could have shipped unguarded without a single test objecting. Guarding it because it
   // is right, not because something asked.
-  refuseUnknownFlags(["--row"], { entry: import.meta.url, command: "node packages/agent-org/src/row-reachability.mjs" });
+  refuseUnknownFlags(["--row"], { entry: import.meta.url, command: "node packages/agent-org/src/row-reachability.ts" });
   const argv = process.argv.slice(2);
   const row = Number(argv.map((a) => a.replace(/^--row=/, "")).find((a) => /^\d+$/.test(a)));
   if (!row) {
-    console.error("Usage: node packages/agent-org/src/row-reachability.mjs <issue-number>\n"
+    console.error("Usage: node packages/agent-org/src/row-reachability.ts <issue-number>\n"
       + "Answers whether a row can be STARTED today, computed from the tree rather than from its labels.");
     process.exit(EXIT.CANNOT_ASK);
   }

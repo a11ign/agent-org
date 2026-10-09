@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/wake.mjs`, #2323: a SPAWNED engineer is ended when its row closes, and it acts as the
+ * `packages/agent-org/src/wake.ts`, #2323: a SPAWNED engineer is ended when its row closes, and it acts as the
  * workers account. Its own file, and not a block in `wake.test.ts`, for #2280's reason: that file spawns `route`,
  * which reaches `gh`, so the token-less acceptance job refused it and verified nothing. Every fact the teardown
  * reads -- herdr, GitHub, git -- is injected or stubbed on PATH here, so the row's declared Acceptance is a

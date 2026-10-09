@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs `pr-hold.mjs` puts a fake `gh` first on its PATH.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs `pr-hold.ts` puts a fake `gh` first on its PATH.
 /**
  * `src/wait-condition.ts`'s `liftableHolds` and `src/work-gate/org-health.mjs`'s `liftResolvedHolds`, #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of
  * waking a busy session to remove one label.
@@ -52,10 +52,10 @@ function lift(raw: Record<string, unknown>, facts: Record<string, Fact>, { kind 
 // --- (1) the population: every wait field that does not clear itself has a verdict and a reason ----------------------------------
 
 const VERDICT: Record<string, [verdict: "gate lifts" | "a session lifts", reason: string]> = {
-  "hold:*": ["gate lifts", "removing the label IS the whole remedy once the declared merged/closed condition is true, and `pr-hold.mjs --release` re-arms what the hold disarmed"],
+  "hold:*": ["gate lifts", "removing the label IS the whole remedy once the declared merged/closed condition is true, and `pr-hold.ts --release` re-arms what the hold disarmed"],
   "answer:*": ["a session lifts", "removing the label IS the answer: the session it is addressed to must give it, whatever the condition says"],
   "blocked": ["a session lifts", "`blocked` has no referent, so only a human can say what would clear it; a condition beside it does not make the gate's reading the human's"],
-  "parked": ["a session lifts", "`parked` is a row's label and the gate only ever releases a pull request's hold; a true condition on a parked row is `unpark-satisfied`'s to act on, not `pr-hold.mjs`'s"],
+  "parked": ["a session lifts", "`parked` is a row's label and the gate only ever releases a pull request's hold; a true condition on a parked row is `unpark-satisfied`'s to act on, not `pr-hold.ts`'s"],
 };
 
 test("every wait field kind that does not clear itself has a verdict and a reason, and a kind added without one is red", () => {
@@ -115,8 +115,8 @@ const NEGATIVES: { name: string; raw: Record<string, unknown>; facts: Record<str
   { name: "a hold beside an `answer:*` (the answer is not the gate's to give)", raw: heldPr(["hold:ceo", "answer:ceo"], ["closed #3220"]), facts: { "#3220": resolved("closed") } },
   { name: "one true wait and one still open (the hold may be waiting for that one)", raw: heldPr(["hold:ceo"], ["closed #3220", "closed #3221"]), facts: { "#3220": resolved("closed"), "#3221": OPEN } },
   { name: "a label condition, which is not a merged/closed one", raw: heldPr(["hold:ceo"], ["unlabelled needs:chairman #7"]), facts: { "#7": OPEN } },
-  { name: "a ROW carrying hold:* (`pr-hold.mjs` releases pull requests)", raw: heldPr(["hold:ceo"], ["closed #3220"]), facts: { "#3220": resolved("closed") }, kind: "row" },
-  { name: "a pull request of a repository the project does NOT declare (`pr-hold.mjs` refuses its key, #3479)", raw: heldPr(["hold:ceo"], ["closed #3220"], { repoKey: "other/repo" }), facts: { "#3220": resolved("closed") } },
+  { name: "a ROW carrying hold:* (`pr-hold.ts` releases pull requests)", raw: heldPr(["hold:ceo"], ["closed #3220"]), facts: { "#3220": resolved("closed") }, kind: "row" },
+  { name: "a pull request of a repository the project does NOT declare (`pr-hold.ts` refuses its key, #3479)", raw: heldPr(["hold:ceo"], ["closed #3220"], { repoKey: "other/repo" }), facts: { "#3220": resolved("closed") } },
 ];
 
 for (const { name, raw, facts, kind } of NEGATIVES) {
@@ -131,7 +131,7 @@ for (const { name, raw, facts, kind } of NEGATIVES) {
 
 // --- the release is the hold module's, and it re-arms ---------------------------------------------------------------------------
 
-/** A `gh` that answers `pr-hold.mjs`'s calls from a JSON file, and writes its changes back to it. */
+/** A `gh` that answers `pr-hold.ts`'s calls from a JSON file, and writes its changes back to it. */
 const FAKE_GH = `#!/usr/bin/env node
 const fs = require("node:fs");
 const file = process.env.FAKE_GH_STATE;

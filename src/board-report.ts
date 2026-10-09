@@ -10,7 +10,7 @@
 // was on disk. Every one of those was true of something; none was true of the thing being reported.
 //
 // This is the DAILY edition, and it is the data trail. The weekly document the board actually reads is
-// `board-document.mjs`, which shares this one's data layer rather than re-deriving it.
+// `board-document.ts`, which shares this one's data layer rather than re-deriving it.
 //
 // NOTHING RUNS ON IMPORT: `node -e "import(...)"` is the only real check that an .mjs file still
 // loads, and without the guard at the bottom that check would post a board edition as a side effect.
@@ -279,7 +279,7 @@ const AGING_DAYS = 7;
 const MINUTES_PER_HOUR = 60;
 const HOURS_PER_DAY = 24;
 // Every label event in the repository, projected to four fields inside `gh` (`--jq`), one object per line so
-// paginated pages concatenate. Same shape `claim-provenance.mjs` reads; restated because that file keeps it
+// paginated pages concatenate. Same shape `claim-provenance.ts` reads; restated because that file keeps it
 // private and a copy of a jq string is cheaper than widening its exports past this row's Region.
 const LABEL_EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
 const LABEL_EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
@@ -558,7 +558,7 @@ function facts(since: string, sinceLabel: string) {
   const conflict = conflictMetrics(since);
 
   const closed = closedSince(all, since);
-  // Meta rows are containers, not work -- see `countable` in board-data.mjs, and section 6 prints the rule.
+  // Meta rows are containers, not work -- see `countable` in board-data.ts, and section 6 prints the rule.
   const open = countable(all.filter((i: any) => i.state === "OPEN"));
   const blockers = open.filter((i: any) => i.milestone?.title === MILESTONE);
   const ready = readyRows(open);

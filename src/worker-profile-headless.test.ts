@@ -90,9 +90,9 @@ test("the flag is OFF by default: no profile carries it, and no cause turns it o
   }
 });
 
-// SELF: worker-profile.mjs itself spells `headless:` on purpose; every OTHER module that does is a caller turning the
+// SELF: worker-profile.ts itself spells `headless:` on purpose; every OTHER module that does is a caller turning the
 // form on, which is the row that follows this one and not this one. (This file is `.ts`, so the `.mjs` walk never meets it.)
-const SELF = new Set(["worker-profile.mjs"]);
+const SELF = new Set(["worker-profile.ts"]);
 const TURNS_IT_ON = /agentArgs\([^)]*headless\s*:/;
 
 function callersTurningItOn(files: { name: string; text: string }[]) {

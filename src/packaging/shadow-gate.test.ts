@@ -1,14 +1,14 @@
 // no-token: VOIDED -- read only as a string, in `new RegExp(VOIDED)` and a template literal, to build a
 // real wake-ledger fixture line; never called or spawned, so this file never reaches `defaultGh`/`guardedGh`.
 /**
- * `shadow-gate.mjs` is the rehearsal instrument for ADR 0040 decision 5 (row #2622, child 4 of #69): a
+ * `shadow-gate.ts` is the rehearsal instrument for ADR 0040 decision 5 (row #2622, child 4 of #69): a
  * read-only runner that feeds a live gate and a candidate gate the SAME reads and diffs their orders, tick
  * for tick, and a second mode that replays a recorded sequence of ticks across a simulated cut-over on a
  * COPY of the state directory. The extracted gate does not exist yet (that is child 5, #2623) -- this
  * proves the INSTRUMENT against injected fixture gates, which is exactly what it must still do once the
  * extraction lands.
  *
- * Every fixture below writes REAL files to a real temp directory and reads them back with `wake.mjs`'s
+ * Every fixture below writes REAL files to a real temp directory and reads them back with `wake.ts`'s
  * own formats (`ledgerLine`, `VOIDED`, `queueHandoff`, `readHandoffs`) rather than inventing a shape --
  * so "the marker crossed the cut" and "the handoff was still there" are checks against the format the
  * live ledger and queue actually use, not a stand-in for it.
@@ -161,7 +161,7 @@ test("a simulated cut-over on a copy with a VOIDED marker and a queued handoff i
   const ledgerPath = join(dir, "wake-ledger");
   const queuePath = join(dir, HANDOFF_QUEUE_FILE);
   // A delivery, then a VOIDED line taking it back (a restart killed it) -- decision 5's marker, written
-  // exactly as `wake.mjs`'s `actOnKilledWork` writes it.
+  // exactly as `wake.ts`'s `actOnKilledWork` writes it.
   writeFileSync(ledgerPath, ledgerLine(1000, "stalled-row-9") + `${1500}\t${VOIDED}\t${"stalled-row-9"}\t${1000}\n`);
   // A handoff QUEUED before the cut and not yet delivered -- "in flight" at the moment of the swap.
   const inFlight = queueHandoff(queuePath, { session: "worker-2", prompt: "finish row 9", now: 1200 });

@@ -62,8 +62,8 @@ import { READY_LABEL, WAS_READY_LABEL, CLAIM_LABEL, STATE_LABELS, stateLabelFind
 // #782: THE PURE DECISION ONLY -- `labelsToStrip` classifies a label, it never calls `gh`. Importing it
 // does NOT give this file a mutation capability; the header above's ruling ("this audit REPORTS the
 // debris; it does not strip it... a bulk label mutation is product-manager's deliberate act") is
-// untouched. Safe from a cycle (#804): `close-rows-for-merged-pr.mjs` imports its own label constants
-// from the leaf `claim-labels.mjs`, never from this file, so this file importing FROM it forms no loop.
+// untouched. Safe from a cycle (#804): `close-rows-for-merged-pr.ts` imports its own label constants
+// from the leaf `claim-labels.ts`, never from this file, so this file importing FROM it forms no loop.
 import { labelsToStrip } from "./close-rows-for-merged-pr.ts";
 // #1130: the label constant comes from where the BOARD reads it, never restated here -- the drift
 // check below exists because two copies of one fact disagreed, so it must not add a third.
@@ -71,12 +71,12 @@ import { OUT_OF_RELEASE_LABEL } from "./board-data.ts";
 // #2190: the rule the CLAIM path refuses by, CALLED here and never re-derived -- see `unclaimableReadyRows`.
 import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
 // #2619 (child 3d of #69): the remaining vocabulary this file names -- `backlog` is not a claim-lifecycle
-// label (`claim-labels.mjs`'s header says it holds exactly four), `blocked` is a mutex label nobody claims,
+// label (`claim-labels.ts`'s header says it holds exactly four), `blocked` is a mutex label nobody claims,
 // and `session:`/`Out of release` are read elsewhere too, so all four come from the one field module.
 import { BACKLOG_LABEL, SESSION_PREFIX, BLOCKED_LABEL, OUT_OF_RELEASE_MILESTONE } from "./project-vocabulary.ts";
 
-// #804: READY_LABEL/WAS_READY_LABEL are IMPORTED (above) from the leaf claim-labels.mjs and re-exported
-// here, not declared in this file -- see claim-labels.mjs's own header for why. Every existing
+// #804: READY_LABEL/WAS_READY_LABEL are IMPORTED (above) from the leaf claim-labels.ts and re-exported
+// here, not declared in this file -- see claim-labels.ts's own header for why. Every existing
 // `import { READY_LABEL } from "./ready-label-audit.ts"` call site is unchanged. A bare `export {...}
 // from` would forward the binding WITHOUT creating a local one, and this file's own code below needs the
 // local name -- hence import-then-export as two separate statements rather than one re-export line.
@@ -84,9 +84,9 @@ export { READY_LABEL, WAS_READY_LABEL };
 
 /**
  * #2150: the Project Status option that says the same thing as the `ready` label -- the name
- * `row-file.mjs` writes on a promotion (its own `READY_STATUS`, which is not exported and whose module
+ * `row-file.ts` writes on a promotion (its own `READY_STATUS`, which is not exported and whose module
  * runs an act on import, so it is restated here rather than imported). `vocabularyDrift`
- * (`board-status-health.mjs`) holds `"Ready"` in `WRITTEN_STATUSES`, so a board that stopped offering it
+ * (`board-status-health.ts`) holds `"Ready"` in `WRITTEN_STATUSES`, so a board that stopped offering it
  * is reported there; this constant only has to match what the board offers.
  */
 const READY_STATUS = "Ready";
@@ -95,7 +95,7 @@ const READY_STATUS = "Ready";
  * Every label that already means "not actually pickable", independent of `ready`.
  *
  * `in-progress` USED TO belong here (#246), and #673 split it out into its own check
- * (`handClaims`/`reportHandClaims`, below). A claim written through `row-claim.mjs` adds
+ * (`handClaims`/`reportHandClaims`, below). A claim written through `row-claim.ts` adds
  * `in-progress`/`session:*` and removes `READY_LABEL`, so a completed claim is not left carrying both.
  * `ready` + `in-progress` together is therefore not a generic contradiction the way `ready` + `blocked`
  * is: it is strong evidence that the claim was made through some other route (`gh issue edit
@@ -108,7 +108,7 @@ const READY_STATUS = "Ready";
  * reproduction showed one combined `gh issue edit` half-applying (its `--remove-label ready` applied while
  * every `--add-label` did not) -- and that made the mechanism's OWN failure mode a row carrying `ready`
  * beside `in-progress`, permanently if the second call never landed. **#2151 CLOSED THAT CAUSE: the claim's
- * labels are now ONE `PUT .../labels`** (`row-claim.mjs`'s `applyClaimLabels`), so a claim through the
+ * labels are now ONE `PUT .../labels`** (`row-claim.ts`'s `applyClaimLabels`), so a claim through the
  * mechanism either leaves the row as claimed or leaves its labels untouched, and can no longer leave this
  * pair. What the pair still cannot distinguish is named on the finding itself (`HAND_CLAIM_CAUSES`).
  *
@@ -134,7 +134,7 @@ export type LabelledIssue = { number: number, title: string, labels: string[] };
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
 /**
- * #4080 (row 2 of #4056): WHICH TRACKER THE CHECKS ARE ABOUT. The 23 reads below named `REPO` -- the first code repository -- so a row filed in a second declared tracker was never listed, never counted and never audited. Each read now asks `trackerRepo()` (its issues) or `codeRepo()` (its pull requests), which answer for the scope `auditTrackers` has set and, with none set, for `REPO`: every exported reader called on its own (the tests, `row-claim`) behaves exactly as it did. A module-level scope and not a parameter on every reader, for the reason `work-gate.mjs`'s `inRepo` gives: the checks are zero-argument closures in `CHECKS`, and 17 exported readers keep their signatures. `repo` is the tracker's repository; `codeRepo` the code repository of the SAME key, else the tracker's own
+ * #4080 (row 2 of #4056): WHICH TRACKER THE CHECKS ARE ABOUT. The 23 reads below named `REPO` -- the first code repository -- so a row filed in a second declared tracker was never listed, never counted and never audited. Each read now asks `trackerRepo()` (its issues) or `codeRepo()` (its pull requests), which answer for the scope `auditTrackers` has set and, with none set, for `REPO`: every exported reader called on its own (the tests, `row-claim`) behaves exactly as it did. A module-level scope and not a parameter on every reader, for the reason `work-gate.ts`'s `inRepo` gives: the checks are zero-argument closures in `CHECKS`, and 17 exported readers keep their signatures. `repo` is the tracker's repository; `codeRepo` the code repository of the SAME key, else the tracker's own
  */
 export type AuditScope = { key: string, repo: string, codeRepo: string };
 let activeScope: AuditScope | null = null;
@@ -149,7 +149,7 @@ const codeRepo = (): string => activeScope?.codeRepo ?? REPO;
 const rowName = (number: number): string => (activeScope === null || activeScope.key === "" ? `#${number}` : `${activeScope.key}#${number}`);
 
 /**
- * Reads every OPEN issue's labels from the real board. Same discipline as `row-claim.mjs`'s `fetchLabels`:
+ * Reads every OPEN issue's labels from the real board. Same discipline as `row-claim.ts`'s `fetchLabels`:
  * `gh` failing, or answering with a shape this function does not recognise, THROWS -- it never falls
  * through to an empty issue list, which would report "audited: 0 violations" having examined nothing. A
  * clean sweep and a broken query must never print the same thing.
@@ -434,7 +434,7 @@ export function mutexViolations(issues: LabelledIssue[]): Array<{ number: number
 }
 
 /**
- * #673: Pure -- which open issues carry BOTH `ready` and `in-progress`? `row-claim.mjs`'s
+ * #673: Pure -- which open issues carry BOTH `ready` and `in-progress`? `row-claim.ts`'s
  * `writeRowLabels` removes `READY_LABEL` in the SAME REQUEST that sets `in-progress`/`session:*` (#2151:
  * one `PUT .../labels`; before it, two `gh issue edit` calls, and the pair was a claim's own failure mode
  * as well as a hand claim's). A row claimed through the real mechanism therefore never reaches this
@@ -467,7 +467,7 @@ export function handClaims(issues: LabelledIssue[]): Array<{ number: number; tit
  *
  * `runner:*` stays as this function's OWN addition, deliberately not folded into `labelsToStrip` (#444): a
  * reservation is the same family as `session:*` -- a claim on a row with nobody left to honour it once the
- * row is closed -- but `labelsToStrip` must never remove it (`row-claim.mjs`'s own comment: it survives a
+ * row is closed -- but `labelsToStrip` must never remove it (`row-claim.ts`'s own comment: it survives a
  * claim on purpose, recording WHO a row was reserved for). A closed, runner-reserved row is not a
  * contradiction (see `mutexViolations`'s own doc for why `runner:` must NOT join `MUTEX_LABELS` instead),
  * it is the identical stale-bookkeeping shape `session:*` debris already is -- reported here, never
@@ -539,7 +539,7 @@ export type AlreadyMergedRow = { number: number, title: string, state: "ALREADY-
  * Pure: which OPEN `ready`/`in-progress` issues does a MERGED PR already claim to close, and -- #550 --
  * was the row put back DELIBERATELY after that merge, rather than simply forgotten? #443 -- #438 was
  * merged as #440 at 02:31Z, never auto-closed (bot-attributed merges do not close a referenced issue --
- * see `close-rows-for-merged-pr.mjs`'s own header), and sat `ready` until a worker claimed it and had to
+ * see `close-rows-for-merged-pr.ts`'s own header), and sat `ready` until a worker claimed it and had to
  * revert. Every existing check misses this: the collision check asks "does anyone else hold this row",
  * the mutex check asks "is `ready` beside a not-pickable LABEL", `openRowsAbsentFromBoard` asks "is it on
  * the board" -- none of them ask "did the work already ship".
@@ -838,7 +838,7 @@ function reportMutexViolations() {
 
 /**
  * #2151: what `ready` + `in-progress` can still be, each with its own remedy, because `handClaims` reads
- * the LABELS and two causes leave the same ones. Claiming through `row-claim.mjs` is no longer one of them
+ * the LABELS and two causes leave the same ones. Claiming through `row-claim.ts` is no longer one of them
  * (one `PUT`, see `MUTEX_LABELS`' note), so the finding no longer has to hedge about it.
  *
  * The second is INFERRED, not measured: `declineRow` restores `ready` and removes `in-progress` in one
@@ -847,11 +847,11 @@ function reportMutexViolations() {
  * claim through row-claim" would be wrong -- nobody is working the row.
  */
 export const HAND_CLAIM_CAUSES = [
-  { cause: "a claim made by hand (a label applied outside row-claim.mjs)",
-    remedy: "route the claim through row-claim.mjs: `row-claim.mjs decline <n> --session=<holder>`, then "
+  { cause: "a claim made by hand (a label applied outside row-claim.ts)",
+    remedy: "route the claim through row-claim.ts: `row-claim.ts decline <n> --session=<holder>`, then "
       + "claim or dispatch it properly" },
   { cause: `a \`decline\` whose one combined edit half-applied (\`${READY_LABEL}\` came back, \`${CLAIM_LABEL}\` did not go)`,
-    remedy: "the holder has released it and nobody works it: `row-claim.mjs decline <n> --session=<holder>` "
+    remedy: "the holder has released it and nobody works it: `row-claim.ts decline <n> --session=<holder>` "
       + "again finishes the release; do not re-claim on its behalf" },
 ];
 
@@ -865,12 +865,12 @@ export function handClaimFinding({ number, title, sessions }: { number: number; 
   const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
   const causes = HAND_CLAIM_CAUSES.map(({ cause, remedy }, i) => `(${i + 1}) ${cause} -- ${remedy}`).join("; ");
   return `HAND CLAIM  ${rowName(number)} "${title}" -- \`ready\` and \`in-progress\` together, held by ${who}. A claim `
-    + `through row-claim.mjs does not leave this pair (its label write is one request, #2151), so it is one of: `
+    + `through row-claim.ts does not leave this pair (its label write is one request, #2151), so it is one of: `
     + `${causes}\n`;
 }
 
 /**
- * #673: Report rows carrying `ready` + `in-progress`, which a COMPLETED claim through `row-claim.mjs` does
+ * #673: Report rows carrying `ready` + `in-progress`, which a COMPLETED claim through `row-claim.ts` does
  * not leave behind. Named separately from `reportMutexViolations` because the two need different remedies:
  * the fix is never to remove one of the two labels as `mutexViolations`' generic wording would suggest,
  * and it depends on which cause left the pair (`HAND_CLAIM_CAUSES`).
@@ -880,12 +880,12 @@ function reportHandClaims() {
   const claims = handClaims(issues);
   if (claims.length === 0) {
     process.stdout.write(`OK  ${issues.length} of ${reportedCount} open issue(s) checked, none carry `
-      + `ready + in-progress together -- the state a claim made outside row-claim.mjs leaves\n`);
+      + `ready + in-progress together -- the state a claim made outside row-claim.ts leaves\n`);
     return 0;
   }
   for (const claim of claims) process.stdout.write(handClaimFinding(claim));
   process.stderr.write(`\n${claims.length} row(s) carry \`ready\` beside \`in-progress\`. The remedy depends on `
-    + `the cause -- see each line; \`row-claim.mjs decline <n> --session=<holder>\` is the release in both.\n`);
+    + `the cause -- see each line; \`row-claim.ts decline <n> --session=<holder>\` is the release in both.\n`);
   return claims.length;
 }
 
@@ -900,7 +900,7 @@ function reportHandClaims() {
  * any check, which is the half of the finding this function is.
  *
  * WHAT IT COSTS IS NOT WHAT IT LOOKS LIKE, and the message has to say so or it reads as tidying.
- * `backlog` is not in `work-gate.mjs`'s `NOT_PICKABLE`, so the row is still offered and still claimable:
+ * `backlog` is not in `work-gate.ts`'s `NOT_PICKABLE`, so the row is still offered and still claimable:
  * nobody is hidden. The cost is DOUBLE-COUNTED STOCK -- `readPromotableRows` reads `--label backlog`
  * SERVER-SIDE and then filters only on `NOT_STARTABLE` and `waitingOn`, neither of which excludes
  * `ready`, so a promoted row that keeps `backlog` is counted as promotable backlog while also being
@@ -913,7 +913,7 @@ function reportHandClaims() {
  * `backlog`, never `ready`. Same argument `handClaims` makes for its own separate check (#673): a
  * finding whose cause and remedy are known names them, rather than describing the contradiction.
  *
- * THE SOURCE-SIDE FIX IS `row-file.mjs --promote=<n>`, which does not add and remove at all: it SETS the
+ * THE SOURCE-SIDE FIX IS `row-file.ts --promote=<n>`, which does not add and remove at all: it SETS the
  * row's whole label list in one `PUT .../issues/<n>/labels`, which has no add half and no remove half to
  * come apart, so a row promoted through it is never left in this state (#2111 rework -- the first version
  * packed an add and a remove into one `gh issue edit` and called that atomic, which #677's reproduction
@@ -954,7 +954,7 @@ function reportBothBoardLabels() {
   process.stderr.write(`\n${rows.length} row(s) were promoted without the \`${BACKLOG_LABEL}\` label being `
     + `removed. Remove \`${BACKLOG_LABEL}\` -- never \`${READY_LABEL}\`: the promotion is the later, `
     + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
-    + `this state: \`node packages/agent-org/src/row-file.mjs --promote=<n> --session=<you>\`.\n`);
+    + `this state: \`node packages/agent-org/src/row-file.ts --promote=<n> --session=<you>\`.\n`);
   return rows.length;
 }
 
@@ -993,7 +993,7 @@ function statusLabelKind(status: string, labels: string[]): string | null {
  * EVERY OTHER CHECK IN THIS FILE READS LABELS, so a row could read `Ready` on the Project while its labels
  * said `backlog`, or carry `ready` while its Status said `Backlog`, and nothing reported either. The
  * nearest neighbours answer narrower questions and this is the population between them: `openRowsAbsentFromBoard`
- * owns a row with NO board item and `readyRowsMissingStatus` (`board-snapshot.mjs`, run by
+ * owns a row with NO board item and `readyRowsMissingStatus` (`board-snapshot.ts`, run by
  * `fetchBoardItems` itself) owns a `ready` row whose item has NO Status. **This owns the row where both
  * fields exist and contradict each other**, which is why a null Status and an unboarded row are SKIPPED
  * here rather than reported a second time (done-when 5).
@@ -1033,7 +1033,7 @@ export function statusLabelDisagreements(issues: LabelledIssue[], boardItems: Ar
  * #2150: what to DO about each kind. The interrupted promotion has one right answer (finish it); the two
  * hand-moved kinds have two readings and only whoever moved the field knows which is right, so both are
  * printed and neither is picked. `--promote` is the repair whenever the row SHOULD be `Ready`: it writes
- * the Status and every label together and is idempotent (`row-file.mjs`), though it refuses a claimed row.
+ * the Status and every label together and is idempotent (`row-file.ts`), though it refuses a claimed row.
  * @param {number} number @param {string} kind
  */
 export function statusLabelRemedy(number: number, kind: string) {
@@ -1175,7 +1175,7 @@ function reportUnclaimableReadyRows() {
  * OPEN ROWS THAT CARRY NEITHER `backlog` NOR `ready` -- INVISIBLE TO THE GATE, NOT MERELY UNTIDY.
  *
  * `reportLabelless` above catches a row with ZERO labels. This catches the commoner and quieter case: a
- * row that is carefully labelled and still cannot be reached, because `work-gate.mjs`'s
+ * row that is carefully labelled and still cannot be reached, because `work-gate.ts`'s
  * `readPromotableRows` filters SERVER-SIDE on `--label backlog` and `readReadyRows` on `--label ready`.
  * A row in neither set is read by no cause, so no session is ever ordered to touch it.
  *
@@ -1219,7 +1219,7 @@ function reportInvisibleRows() {
  * thread nobody was ever meant to promote.
  *
  * #3942: `parked` IS ON THE LIST, because it is a state of its own and no longer rides beside `backlog` (the state-label rule: one of six).
- * A row parked on purpose is not forgotten -- `ceo` schedules it (`PARKED_LABEL`, `work-gate.mjs`) -- and the eight two-state rows could not
+ * A row parked on purpose is not forgotten -- `ceo` schedules it (`PARKED_LABEL`, `work-gate.ts`) -- and the eight two-state rows could not
  * be migrated to `parked` alone while this check named every one UNREACHABLE. `blocked` is NOT added: whether a `blocked`-only row is
  * reached is a ruling this row does not make, and the rows that carry it today carry `backlog` too.
  */
@@ -1234,7 +1234,7 @@ const REACHED_BY_A_CAUSE = [BACKLOG_LABEL, READY_LABEL, "epic", "meta", "parked"
  * A CLAIMED ROW IS REACHED BY ITS OWNER, NOT BY A CAUSE (#2008). Measured 2026-09-22 over all 48 open
  * rows: 3 of 3 findings were claimed rows -- #1996, #1966 and #1955, one of them with an open PR, a
  * reviewer mid-review and an owner. A claim is the strongest reachability this board has: a named
- * session is holding the row right now. `work-gate.mjs`'s `NOT_STARTABLE` CONTAINS `in-progress`
+ * session is holding the row right now. `work-gate.ts`'s `NOT_STARTABLE` CONTAINS `in-progress`
  * (`NOT_PICKABLE` minus what is merely routed, and `CLAIM_LABEL` is in `NOT_PICKABLE`), so
  * `readPromotableRows` filters a claimed row out EVEN WHEN IT CARRIES `backlog` -- there is no state in
  * which a claimed row needs a promotable cause to be seen, and the two label states are equally
@@ -1363,7 +1363,7 @@ function reportClosedDebris() {
   const readyOnClosed = debris.filter((d) => d.debris.includes(READY_LABEL)).length;
   // #752: STATE-AWARE, NOT A SINGLE COMMAND FOR BOTH POPULATIONS -- `decline` needs `in-progress` (a
   // claim to release) and only then removes labels without adding `ready` back on a closed row
-  // (row-claim.mjs's own fix for this exact incident: declining #721 while it was already closed had
+  // (row-claim.ts's own fix for this exact incident: declining #721 while it was already closed had
   // restored `ready`, turning one debris finding into another). A row carrying ONLY `ready`, with no
   // claim for `decline` to act on, has nothing for it to do -- named separately so the remediation never
   // sends a reader to a command that will refuse.
@@ -1371,7 +1371,7 @@ function reportClosedDebris() {
   process.stderr.write(`\n${debris.length} closed row(s) still carry a pickable/claimed label -- nobody `
     + `will act on these, but a Ready count taken by label rather than by state is wrong by `
     + `${readyOnClosed} because of them. Stale bookkeeping, not a contradiction: ${claimedDebris.length} `
-    + `still carry \`${CLAIM_LABEL}\` and can be cleared with \`node packages/agent-org/src/row-claim.mjs decline <n> `
+    + `still carry \`${CLAIM_LABEL}\` and can be cleared with \`node packages/agent-org/src/row-claim.ts decline <n> `
     + `--session=<whoever holds it>\` (safe here -- a closed row is never returned to \`${READY_LABEL}\`); the `
     + `rest carry only \`${READY_LABEL}\` or a stray \`${SESSION_PREFIX}\`/\`runner:\` label, which decline has no claim to `
     + `release and the tracker owner clears by hand.\n`);
@@ -1662,7 +1662,7 @@ export function provenanceFindings(verdicts: ReturnType<typeof provenanceVerdict
 /**
  * The closing pull request that COULD carry the label this check reads, or `null` when there is none.
  *
- * This asks `attributionFor`'s own first clause (`claim-provenance.mjs`) a second time, and the second
+ * This asks `attributionFor`'s own first clause (`claim-provenance.ts`) a second time, and the second
  * copy is deliberate: the verdict it returns spells both `undeclared` sub-cases with one word, and the
  * repair differs between them. `ready-label-audit.test.ts` runs the two over the same fixtures and
  * asserts they agree, so the copy cannot drift in silence.
@@ -1676,7 +1676,7 @@ function labellablePr(pr?: import("./claim-provenance.ts").ClosingPr | null) {
 /**
  * The paragraph the provenance check exits with: ONE FOLLOWABLE COMMAND PER `undeclared` SUB-CASE.
  *
- * #1960: this used to tell the reader to get `row-claim.mjs claim` re-run, over a list 68 rows long --
+ * #1960: this used to tell the reader to get `row-claim.ts claim` re-run, over a list 68 rows long --
  * and the wording is not quoted here because the row's own Open-check greps for it. That command
  * writes the ROW's labels (`gh issue edit --add-label`) while `attributionFor` decides this verdict
  * from the merged PULL REQUEST's labels, which only `arm-pr` ever writes -- so following that sentence
@@ -2130,7 +2130,7 @@ function reportReleaseDrift() {
   }
   for (const n of milestoneOnly) {
     process.stdout.write(`RELEASE DRIFT  #${n} is in "${OUT_OF_RELEASE_MILESTONE}" and does NOT `
-      + `carry \`${OUT_OF_RELEASE_LABEL}\` -- invisible to \`board-data.mjs\`'s \`outOfRelease()\`, which `
+      + `carry \`${OUT_OF_RELEASE_LABEL}\` -- invisible to \`board-data.ts\`'s \`outOfRelease()\`, which `
       + `reads the label, so the board's out-of-release figure undercounts it\n`);
   }
   process.stderr.write(`\n${labelOnly.length + milestoneOnly.length} row(s) declare themselves out of `
@@ -2449,14 +2449,14 @@ export function runCheck(what: string, check: () => number, refused: string[], n
 
 /**
  * #4080: THE CHECKS THAT READ THE PRIMARY PROJECT ONLY, each with the reason, so that skipping one for a keyed tracker is a SAID skip and never a quiet "none". Each reads a source
- * this file does not choose: the Project board (`board-snapshot.mjs` is aimed at the primary board), the closed-row event log (`claim-provenance.mjs` names the primary repository),
+ * this file does not choose: the Project board (`board-snapshot.ts` is aimed at the primary board), the closed-row event log (`claim-provenance.ts` names the primary repository),
  * the product's criterion table and its release milestone. A keyed tracker gets them when those readers take a repository; until then they are not run for it.
  * @type {ReadonlyMap<string, string>}
  */
 export const PRIMARY_ONLY: ReadonlyMap<string, string> = new Map([
-  ["board membership", "board-snapshot.mjs reads the primary project's board only"],
-  ["status vs ready label", "board-snapshot.mjs reads the primary project's board only"],
-  ["closed-row provenance", "claim-provenance.mjs reads the primary repository's event log only"],
+  ["board membership", "board-snapshot.ts reads the primary project's board only"],
+  ["status vs ready label", "board-snapshot.ts reads the primary project's board only"],
+  ["closed-row provenance", "claim-provenance.ts reads the primary repository's event log only"],
   ["coverage vs tracker", "criterion-coverage.ts is the product's criterion table"],
   ["release declaration", "the release milestone is the product's"],
   ["filing guidance", "the release milestone is the product's"],

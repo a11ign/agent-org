@@ -23,7 +23,7 @@ import { confirmArmed, mergedMeanwhile, waitBetweenReads, SWEEP_WAIT_ENV, CONFIR
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
-/** Read from the paths, not through `host-units.mjs`, which wants git history that the acceptance job does not have. */
+/** Read from the paths, not through `host-units.ts`, which wants git history that the acceptance job does not have. */
 const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
 const PROJECT_UNITS_DIR = join(HOME_CHECKOUT, ".agent-org/units");
 const WORKFLOWS = fileURLToPath(new URL("../../.github/workflows/", import.meta.url));
@@ -82,7 +82,7 @@ const namingTheVariable = (files: string[]) => files.filter((file) => {
 });
 
 const isTest = (file: string) => /\.test\.(ts|mjs)$/.test(file);
-const OWNER = join(SRC, "auto-arm-sweep.mjs");
+const OWNER = join(SRC, "auto-arm-sweep.ts");
 
 test("nothing sets the override but the tests: no shipped unit, project unit, workflow or non-test source names it", () => {
   const units = [...filesUnder(SHIPPED_DIR), ...filesUnder(PROJECT_UNITS_DIR), ...filesUnder(WORKFLOWS)];
@@ -107,7 +107,7 @@ test("CONTROL: the scan notices the variable in a unit, and in a source, when on
 
 test("the owner, this file and the three spawning tests are the only files that name it: the discovery is real, not vacuous", () => {
   const named = namingTheVariable(filesUnder(SRC)).map((file) => file.slice(SRC.length)).sort();
-  assert.deepEqual(named, ["auto-arm-sweep.mjs", "packaging/arm-refuses-an-ejected-pr.test.ts",
+  assert.deepEqual(named, ["auto-arm-sweep.ts", "packaging/arm-refuses-an-ejected-pr.test.ts",
     "packaging/arm-refuses-open-blocker.test.ts", "packaging/pipeline-lane-authorship.test.ts",
     "packaging/sweep-wait-override.test.ts"]);
 });

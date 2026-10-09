@@ -6,7 +6,7 @@
  * #3068: `agent-org <command>` -- THE COMMAND TABLE AND THE BIN'S REFUSALS.
  *
  * `commands.mjs` is the ONE table from a command name to the program under `src/` that runs it, read by `bin.mjs` to dispatch and by
- * `acceptance-commands.mjs` (#3063) to resolve a project script `agent-org <command>`. Pinned here:
+ * `acceptance-commands.ts` (#3063) to resolve a project script `agent-org <command>`. Pinned here:
  *   (c) an unknown name, and no name at all, REFUSE (exit 2) and list the commands -- there is no default command -- and they do it in a
  *       directory that holds no project, because refusing needs none;
  *   (d) every program whose header says `// command:` is in the table or is listed INTERNAL with a reason, and every entry names a real file.

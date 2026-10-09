@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` spawn named or fixtured below is a STRING inside a fixture or a comment, never
 // a real invocation: this file reads `hosts.yml` fixtures and walks the local import closure with its own
-// small copy of `host-units.mjs`'s `ghSpawnReachedFrom` (see that function's own header for why this file
+// small copy of `host-units.ts`'s `ghSpawnReachedFrom` (see that function's own header for why this file
 // keeps its own rather than importing it), and makes no network call and starts no `gh` process.
 //
 // #1984: "32 scripts spawn gh and none can say which account they are about to act as."
@@ -12,13 +12,13 @@
 // scope decision this row has to make explicitly rather than leave implicit.
 //
 // **THE SCOPE DECISION (read this before touching the population test below):** the row's Region is five
-// files -- `gh-identity.mjs`, `api-pool.mjs`, `work-gate.mjs`, this file and `work-gate.test.ts` -- and does
-// NOT include any of the ~30 files that actually spawn `gh` today (`board-data.mjs`, `pr-open.mjs`,
-// `wake.mjs`, and so on). Editing them would be OUT OF REGION (`.agent-org/roles/engineer.md`:
+// files -- `gh-identity.ts`, `api-pool.ts`, `work-gate.ts`, this file and `work-gate.test.ts` -- and does
+// NOT include any of the ~30 files that actually spawn `gh` today (`board-data.ts`, `pr-open.ts`,
+// `wake.ts`, and so on). Editing them would be OUT OF REGION (`.agent-org/roles/engineer.md`:
 // "a finding outside your row's Region goes to the row or the owner, never into your diff"), and there is
 // no shared `gh`-spawning helper today for the seam to reach through in one edit -- each of those files
 // defines its OWN local `const gh = (args) => execFileSync("gh", args, ...)`. So "a guard... that makes
-// reaching it non-optional" cannot mean "every population member imports `gh-identity.mjs`" without either
+// reaching it non-optional" cannot mean "every population member imports `gh-identity.ts`" without either
 // violating the Region or landing dozens of unreviewed, untested edits in one sitting -- and "never land a
 // red test to prove a point" (the same role brief) forbids shipping a guard that is red on arrival because
 // the population it just discovered has not been wired yet.
@@ -38,7 +38,7 @@
 // directory ever loses its `hosts.yml`, THIS test goes red -- which is the guard's whole job: it fails when
 // the population's answer stops being answerable, not when a file has not yet been individually wired.
 // Wiring each of the ~30 files to name the account on ITS OWN error path (question 1's "report on the
-// refusal path" answer, already done for `work-gate.mjs`'s `CANNOT ASK`) is real, sizeable follow-up work
+// refusal path" answer, already done for `work-gate.ts`'s `CANNOT ASK`) is real, sizeable follow-up work
 // this row does not attempt, and is reported as such rather than claimed done.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -279,12 +279,12 @@ test("#1984: an unreadable host declaration degrades to UNKNOWN rather than cras
   // ISOLATED IN A SUBPROCESS, DELIBERATELY: `homeHostConfig()` memoises its read for the LIFE OF THE
   // PROCESS, so provoking its refusal in-process would either race whichever test runs first here or
   // poison every later test in this worker with a cached failure. `AGENT_ORG_HOST` naming a file the host reader refuses is the
-  // one way to make the REAL default path (no `host` override) refuse, which is what `work-gate.mjs`'s own call site
+  // one way to make the REAL default path (no `host` override) refuse, which is what `work-gate.ts`'s own call site
   // (`declaredGhAccount()`, no arguments) actually exercises in production. The file must still name a primary project that
-  // exists (#2873): `project-config.mjs` reads that first, and a path with no file at all is refused THERE, at import, before
+  // exists (#2873): `project-config.ts` reads that first, and a path with no file at all is refused THERE, at import, before
   // this module is reached -- covered by `standalone-candidate.test.ts`.
   const script = `
-    import(${JSON.stringify(new URL("../gh-identity.mjs", import.meta.url).href)}).then((m) => {
+    import(${JSON.stringify(new URL("../gh-identity.ts", import.meta.url).href)}).then((m) => {
       const account = m.declaredGhAccount({ env: {} });
       process.stdout.write(JSON.stringify(account));
     });
@@ -326,14 +326,14 @@ function environmentOf(file: string): "github-actions" | "control-plane" | "lab"
 
 /**
  * The file whose `gh` spawn `entry` reaches through its local import closure, or `null`. A SMALL LOCAL
- * WALKER, deliberately, rather than importing `host-units.mjs`'s own `ghSpawnReachedFrom`: that module
+ * WALKER, deliberately, rather than importing `host-units.ts`'s own `ghSpawnReachedFrom`: that module
  * also contains the `--is-shallow-repository` check `deriveClosureRequirements` reads as a `history`
  * requirement (#2174's own pinned population), and importing it here would tax this file with a full-clone
  * requirement it does not otherwise need -- `gh-token-jobs.test.ts` keeps the identical small walker for
  * the same reason, rather than reaching for the shared one. COMMENTS ARE STRIPPED FIRST, unlike that
  * file's own version: this walk runs over the WHOLE tree rather than one CI job's named test globs, and a
  * prose example inside a docstring (`execFileSync("gh", ...)`, which this very file's header contains) is
- * exactly the false positive `host-units.mjs`'s own `ghSpawnReachedFrom` guards against for the same reason.
+ * exactly the false positive `host-units.ts`'s own `ghSpawnReachedFrom` guards against for the same reason.
  * @param {string} entry @param {Set<string>} [seen]
  * @returns {string | null}
  */
@@ -460,7 +460,7 @@ test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from th
 //
 // THE WRAPPER IS RUN, NOT READ (`host-units.test.ts` does the same for its own cases): a stub `gh-real` sits behind it and a marker file
 // is the POSITIVE CONTROL for "reached gh-real", since a wrapper that refused and a wrapper that ran a stub printing nothing look alike.
-// The wrapper text is rendered with a regex rather than through `host-units.mjs` (which needs the project's git history), as
+// The wrapper text is rendered with a regex rather than through `host-units.ts` (which needs the project's git history), as
 // `gh-call-ledger.test.ts` does; every path a placeholder stands for is overridden by an environment variable below.
 
 const WRAPPER_FILE = (() => {

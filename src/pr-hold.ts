@@ -25,7 +25,7 @@
  * ## Why this is a command rather than a remembered `gh pr edit --add-label`
  *
  * #197's finding was not that people are careless, it was that **a claim depending on somebody
- * remembering to record it does not get recorded**: `row-claim.mjs` only wrote the label when a worker
+ * remembering to record it does not get recorded**: `row-claim.ts` only wrote the label when a worker
  * ran `claim`, so a row named in a dispatch message carried no label at all and three double-dispatches
  * followed. A hold that costs a hand-typed `gh` invocation with a label name spelled from memory is a
  * sentence with extra steps — it will be skipped exactly when things are busy, which is when it matters.
@@ -115,7 +115,7 @@ const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8", stdi
  *
  * NEVER `[]` ON FAILURE. An empty list reads as "nobody holds this PR", which is the answer that lets
  * you proceed — so a failed lookup returning it would hand out a hold on the strength of a network
- * error. The same rule `merge-guard.mjs` applies to every one of its own lookups.
+ * error. The same rule `merge-guard.ts` applies to every one of its own lookups.
  *
  * @param {number} number @param {string} [repo] `owner/repo`; the first repository's when absent
  * @returns {string[] | null}
@@ -219,7 +219,7 @@ function readAutoMerge(pr: HeldPr): { autoMergeRequest?: unknown; } | null {
 }
 
 function usage() {
-  return "usage: pr-hold.mjs <pr-number | owner/repo#n> [--repo-key=<key>] [--session=<name>] [--release] [--steal] [--until=<state> <ref> | manual]\n"
+  return "usage: pr-hold.ts <pr-number | owner/repo#n> [--repo-key=<key>] [--session=<name>] [--release] [--steal] [--until=<state> <ref> | manual]\n"
     + "  with --session: takes the hold (or releases it with --release)\n"
     + "  without       : reports who holds it and writes nothing\n";
 }

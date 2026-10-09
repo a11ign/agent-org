@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3365)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3365)
 /**
  * #3365: THE GATE PAGES THE FILES OF A PULL REQUEST `gh pr list` TRUNCATED, INSTEAD OF DROPPING IT.
  *

@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run` AND fake release readers, `orgHealthNow` the clock, the last merge and the log
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run` AND fake release readers, `orgHealthNow` the clock, the last merge and the log
 /**
  * #4005: A ROW HELD ON A CONDITION THAT IS ALREADY TRUE, OR ON AN UMBRELLA ROW THAT NAMES NO CONDITION. The fixtures are the rows of 2026-10-07, built from the shapes the
  * issue timeline recorded (`blocked_by_added` onto #3778): #2568, #3202, #3361 and #3950 needed only that a version EXISTS on the registry and sat from 17:13Z until `ceo` lifted

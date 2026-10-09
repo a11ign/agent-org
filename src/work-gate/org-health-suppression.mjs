@@ -13,7 +13,7 @@
 // CROSSING, once, and not again until the churn has fallen to the bound and passed it again); or its class is in no table (a new detector is loud, never silent -- and the test fails until it is declared).
 // Only orders to `ceo` are touched: an order to a first reader (`product-manager`) is that session's work and is not a turn of `ceo`'s.
 //
-// A LEAF: it imports only the host's state-path helper, so `work-gate.mjs` can import it. It NEVER THROWS -- an unreadable or unwritable state lets every order through (the old behaviour) and says so on stderr.
+// A LEAF: it imports only the host's state-path helper, so `work-gate.ts` can import it. It NEVER THROWS -- an unreadable or unwritable state lets every order through (the old behaviour) and says so on stderr.
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stateEntryPath } from "../host-config.ts";

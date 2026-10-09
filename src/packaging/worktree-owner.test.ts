@@ -131,7 +131,7 @@ test("#1128: `--stamp` with no A11Y_SESSION REFUSES and writes nothing", () => {
 });
 
 test("#1128: a stamped worktree still reads CLEAN to `git status --porcelain`", () => {
-  // NOT COSMETIC. `prune-worktrees.mjs`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
+  // NOT COSMETIC. `prune-worktrees.ts`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
   // counts untracked files -- so an unignored stamp would make every stamped tree read dirty and no tree
   // would ever be reported safe to delete again. The remedy is the `.gitignore` entry, and this drives it
   // rather than trusting that the entry is spelled right.

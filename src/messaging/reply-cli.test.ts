@@ -485,17 +485,17 @@ describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads t
 
   const STATE = fileURLToPath(new URL("./state.mjs", import.meta.url));
 
-  test("state.mjs reaches neither host-config.mjs nor project-config.mjs", () => {
+  test("state.mjs reaches neither host-config.ts nor project-config.ts", () => {
     assert.deepEqual(forbiddenReachableFrom(STATE), []);
   });
 
   test("positive control: the walk finds a forbidden module one hop away, and sees through a re-export and a bare side-effect import", () => {
     const dir = mkdtempSync(join(scratch, "leaf-"));
-    writeFileSync(join(dir, "host-config.mjs"), "export const x = 1;\n");
-    writeFileSync(join(dir, "middle.mjs"), 'export { x } from "./host-config.mjs";\n');
+    writeFileSync(join(dir, "host-config.ts"), "export const x = 1;\n");
+    writeFileSync(join(dir, "middle.mjs"), 'export { x } from "./host-config.ts";\n');
     writeFileSync(join(dir, "top.mjs"), 'import { x } from "./middle.mjs";\n');
-    writeFileSync(join(dir, "bare.mjs"), 'import "./host-config.mjs";\n');
-    for (const entry of ["top.mjs", "bare.mjs"]) assert.deepEqual(forbiddenReachableFrom(join(dir, entry)).map((path) => path.split("/").pop()), ["host-config.mjs"], entry);
+    writeFileSync(join(dir, "bare.mjs"), 'import "./host-config.ts";\n');
+    for (const entry of ["top.mjs", "bare.mjs"]) assert.deepEqual(forbiddenReachableFrom(join(dir, entry)).map((path) => path.split("/").pop()), ["host-config.ts"], entry);
   });
 });
 

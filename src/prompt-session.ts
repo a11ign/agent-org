@@ -2,7 +2,7 @@
 //
 // PROMPT A SESSION THE WAY THE GATE DOES: CLEARED FIRST.
 //
-// `wake.mjs` clears a session's context before every order it delivers, and its own comment carries the
+// `wake.ts` clears a session's context before every order it delivers, and its own comment carries the
 // measurement -- 690k -> 37k input tokens on a real session, an 18x cut, written after a day that spent
 // 786M input tokens against 782k output and 7% of a weekly allowance while very little shipped.
 //
@@ -11,7 +11,7 @@
 //
 //     herdr --session org agent prompt reviewer "Draft #<n> (odd) ..."
 //
-// which reaches herdr WITHOUT passing through `wake.mjs`, and therefore without the clear. Measured
+// which reaches herdr WITHOUT passing through `wake.ts`, and therefore without the clear. Measured
 // 2026-09-19 on a real `reviewer` transcript: six reviews in one unbroken session -- #1765, #1767, #1769,
 // #1771, #1775, #1777 -- of which only #1765 arrived through the gate. The session carried 2.29M cached
 // input tokens and had auto-compacted at least once. FIVE OF THE SIX PROMPTS WERE THE DOCUMENTED PATH,
@@ -44,7 +44,7 @@ import { ANSWER_PREFIX } from "./project-vocabulary.ts";
  * `2` WAS `NOT_WAKEABLE` AND THE RENAME IS THE CHANGE (#1966). The number is the same because the shell
  * contract is; what it means is not. It used to say "this session may not receive a prompt", full stop,
  * and the order ended there -- the author was the only thing in the world that knew an order existed. It
- * now says the order is on the queue `wake.mjs` delivers from, so `2` is a DEFERRAL rather than a
+ * now says the order is on the queue `wake.ts` delivers from, so `2` is a DEFERRAL rather than a
  * failure, and `1` is the only code that means somebody has to send something again.
  */
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
@@ -156,7 +156,7 @@ export function attributed(text: string, sender: string | null): string {
 }
 
 /**
- * THE TEXT THE CLEARED SESSION RECEIVES: `wake.mjs`'s `addressed`, the ONE function, around the asker and
+ * THE TEXT THE CLEARED SESSION RECEIVES: `wake.ts`'s `addressed`, the ONE function, around the asker and
  * the order. A second wrapper here would be a second place for the autonomy clause to drift (#2344).
  *
  * A SESSION NOT CLEARED FIRST is a per-row instance mid-row (#2483), whose window already holds the first-contact preamble, so
@@ -222,13 +222,13 @@ export function promptWithContext(run: (args: string[]) => string, label: string
 /**
  * THE REFUSAL PATH, WHICH IS NOW A WRITE. Returns the exit code, and reports on stderr either way.
  *
- * `wake.mjs`'s `deliver` has handled this case since #912: a busy target means the order is simply not
+ * `wake.ts`'s `deliver` has handled this case since #912: a busy target means the order is simply not
  * written to the ledger, and the next tick offers it again. This path had no equivalent -- it printed and
  * exited, and that was the end of the order -- so the routing rule's *"the author of a draft prompts its
  * parity reviewer the moment the PR opens"* was satisfiable only when the reviewer happened to be idle at
  * that moment. Measured 2026-09-22 on draft #1963: three refusals in 4m37s, no trace of any of them.
  *
- * WHAT IT DOES NOT DO IS RETRY, and `wake.mjs`'s handoff section carries why at length: the refusal is
+ * WHAT IT DOES NOT DO IS RETRY, and `wake.ts`'s handoff section carries why at length: the refusal is
  * load-bearing, because a standing seat is CLEARED first and a retry that wins the race wipes the work it
  * interrupted (a per-row instance is not cleared, #2483, so for one the retry is only a second copy). The gate
  * delivers when the gate judges the session free.
@@ -400,7 +400,7 @@ export const DEEP_QUEUE = 10;
  * for an answer is known to whoever wrote it and computable by nobody else: on the delivery that filed
  * the row, 22 of the 30 orders that OPENED as a routine report also asked for a decision, so a classifier
  * on the text is wrong in the dangerous direction. It is declared here, recorded on the queue entry, and
- * surfaced in the bundle header ({@link decisionHeader} in `wake.mjs`).
+ * surfaced in the bundle header ({@link decisionHeader} in `wake.ts`).
  *
  * It does NOT replace `answer:<session>`. Where a row exists the label stays the answer -- it found 8 of
  * 8 on that delivery. This is for the ask with no row to put it on: a constant to ratify, a policy
@@ -626,11 +626,11 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
 
 function main() {
   // `--ledger` IS READ, THOUGH NOT BY THIS FILE. It names the ledger whose DIRECTORY holds the handoff
-  // queue, so it must mean here exactly what it means to `wake.mjs` -- `ledgerPathFrom` is the one
+  // queue, so it must mean here exactly what it means to `wake.ts` -- `ledgerPathFrom` is the one
   // definition both use. Accepting it is what lets a test, or an operator on a second org, point both
   // halves of the queue at the same place.
   refuseUnknownFlags(["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG], {
-    entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.mjs" });
+    entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.ts" });
   // NO FLAG IS PART OF THE PROMPT -- `parseStance` strips them, and its comment carries why.
   const parsed = parseStance(process.argv.slice(2));
   if ("refusal" in parsed && parsed.refusal) {

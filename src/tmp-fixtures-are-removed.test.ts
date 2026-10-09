@@ -15,7 +15,7 @@
  * file that removes one of its two directories counts as cleaning: a floor, as the row says.
  *
  * WHO IS READ: every `*.test.ts`/`*.test.mjs` under `src`, plus `SUPPORT_FILES`, the non-test modules a test builds its fixture with. The tool's own
- * modules are not read: `carry-branch.mjs` removes through `git worktree remove` and `reconstitution-drill.mjs --clone` leaves its clone for the
+ * modules are not read: `carry-branch.ts` removes through `git worktree remove` and `reconstitution-drill.ts --clone` leaves its clone for the
  * operator on purpose.
  *
  * THE REMEDY IS `lib/tmp-fixture.ts`: `tmpDir(prefix)` is `mkdtempSync` plus the removal in `afterEach`. A file that uses it no longer calls

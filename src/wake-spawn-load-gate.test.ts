@@ -1,6 +1,6 @@
 // no-token: gh -- every `herdr` and `git` call here is an injected seam; nothing imported reaches the real one
 /**
- * `wake.mjs`, #3560: A NEW ENGINEER IS NOT STARTED WHILE THE HOST'S 1-MINUTE LOAD IS OVER ITS CORE COUNT.
+ * `wake.ts`, #3560: A NEW ENGINEER IS NOT STARTED WHILE THE HOST'S 1-MINUTE LOAD IS OVER ITS CORE COUNT.
  *
  * Measured by `ceo` at 21:35Z on 2026-10-04: load 98 on 16 cores with swap in use, the gate's tick 6 min 44 s, and one more
  * full-suite engineer started per tick because `MAX_SPAWNS_PER_TICK` capped the count and nothing read the load.

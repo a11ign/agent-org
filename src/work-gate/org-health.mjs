@@ -1,18 +1,19 @@
 // @ts-check
 // module: the org-health facts and orders -- what the tick reads and says about whether the org is landing work (#2898)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2898, the second split of #928's lever 2a, after #2542): the readings
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the second split of #928's lever 2a, after #2542): the readings
 // `orgHealthNow` hands to `org-health.mjs` (red pull requests, the fleet's captures, the wait facts and the rulings
 // the tick re-reads) and the orders built from them. Measured on #2898 over the pairs of pull requests that waited
 // on B4: six rows waited behind fixes to exactly these definitions and nothing else in the file.
 //
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here, and what a family
 // that stayed behind also uses (`readPrs`, `shouldBeMerging`, `partitionUnclaimed`, `holdExcused`'s callers) stays in
-// `work-gate.mjs` and is IMPORTED from it. That import is a cycle with the entry point, safe only while nothing
+// `work-gate.ts` and is IMPORTED from it. That import is a cycle with the entry point, safe only while nothing
 // here reads an imported binding at load time; the one top-level `const` here (`MAX_WAIT_READS`) is a literal.
-// `redPrFacts` STAYED in `work-gate.mjs`: it is the one place the gate asks `red-pr.mjs`'s `isBrokenRed`, and
+// `redPrFacts` STAYED in `work-gate.ts`: it is the one place the gate asks `red-pr.ts`'s `isBrokenRed`, and
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
-// import and its one caller stay together. `work-gate.mjs` re-exports every name this file exports that it exported before.
+// import and its one caller stay together. `work-gate.ts` re-exports every name this file exports that it exported before.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
   shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers } from "../work-gate.ts";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";
@@ -62,7 +63,7 @@ const isLedgerWorker = (worker) => Boolean(worker) && Array.isArray(worker.rises
  * entry makes the whole file null, as in the writer, because an empty ledger would answer "zero captures", a claim about the fleet nobody
  * read). `undefined` is NO READING: the ledger is YOUNGER than the window and holds no capture, and a zero from a ledger started a
  * minute ago is not a day of idleness -- but it is not a fault either, and `orgHealthReadings` reads an omitted fleet as silent, so
- * the first day does not log an UNKNOWN every tick for `repeating-lines.mjs` to offer at 30 ticks (`copiesToCompare`'s reason). A capture
+ * the first day does not log an UNKNOWN every tick for `repeating-lines.ts` to offer at 30 ticks (`copiesToCompare`'s reason). A capture
  * inside a young ledger is still a capture.
  * @param {{ now: number, path?: string, read?: (path: string, encoding: "utf8") => string }} io
  * @returns {{ captures24h: number, lastCaptureAt: number | null } | null | undefined}
@@ -242,7 +243,7 @@ export function claimedRowFacts(openRows, claimedComments, holders) {
 
 /**
  * Whether the herdr listing is NEEDED: some claimed row is in question for the idle shapes. A quiet org, and a tick whose claims are all moving or own a
- * pull request, makes no herdr call (`work-gate.mjs` pays for a read only when a condition derived from rows in hand asks for it).
+ * pull request, makes no herdr call (`work-gate.ts` pays for a read only when a condition derived from rows in hand asks for it).
  * @param {any[]} openRows @param {Map<number, ClaimMoves> | null} moves @param {number} now
  */
 export function needsHolderAgents(openRows, moves, now) {
@@ -370,7 +371,7 @@ export function waitTickFacts({ prsRead, openRowsRead, now, run = defaultRun, re
 /**
  * THE SETTER'S ORDER, one per stale wait (capped like every row order): the item, the condition that is now true, and the exact fields to
  * remove. IT IS THE `org-health` CAUSE, addressed to the setter and not to `ceo`: a cause of its own would be declared in
- * `cause-declaration.mjs`, outside #2996's Region, and the profile (judgment, high) is the right one for an order to look and remove.
+ * `cause-declaration.ts`, outside #2996's Region, and the profile (judgment, high) is the right one for an order to look and remove.
  *
  * INCIDENT BEHIND THE ORDER'S TEXT (moved out of it, #3444: the agent reading the order cannot use it):
  * chairman, 2026-10-02: a freeze ended at 06:50Z and the waits it caused stood four hours.
@@ -392,7 +393,7 @@ export function staleWaitOrders(stale) {
 const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 
 /**
- * #3364: RELEASE ONE SESSION'S HOLD THROUGH THE MODULE THAT OWNS IT, `pr-hold.mjs --release`, which removes the label AND re-arms a pull request that carried
+ * #3364: RELEASE ONE SESSION'S HOLD THROUGH THE MODULE THAT OWNS IT, `pr-hold.ts --release`, which removes the label AND re-arms a pull request that carried
  * `rearm-on-release` (a bare label removal leaves it unarmed: "Lifting a hold does not arm"). A child process rather than an import, because the module is a
  * CLI whose `main` runs on load. Exit `0` is DONE; `2` (released but the re-arm could not be proven) is NOT done, so the order still goes to a session.
  * #3479: `repoKey` AIMS IT at the pull request's repository, and the first repository's call is exactly what it was (no flag).
@@ -400,7 +401,7 @@ const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
  */
 export function releaseHoldViaModule(number, session, repoKey) {
   const aim = repoKey ? [`--repo-key=${repoKey}`] : [];
-  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
   if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${subjectRef(repoKey, number)} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
   return result.status === 0;
 }
@@ -469,7 +470,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
  * a refused read must reach the detector as an unknown. A refusal of the streak read is the counter's own stderr line
- * (`claim-refusals: could not run`), which `repeating-lines.mjs` offers if it persists; it reaches here as no streaks.
+ * (`claim-refusals: could not run`), which `repeating-lines.ts` offers if it persists; it reaches here as no streaks.
  *
  * #2980: THE FLEET FACTS ARE PASSED, because `orgHealthReadings` reads an OMITTED `fleet` as "this caller does not ask" -- silent -- so
  * a gate that never passed them had the idle-fleet signal dead for as long as nobody noticed. `openRowsRead` is the raw read for the
@@ -494,7 +495,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  *           teamAccess?: () => import("../org-health.ts").TeamAccessFact | undefined,
  *           readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined }} [io] `readBoardTruth` (#4045) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes `boardTruthNow`, which reads the closed rows, the merged PRs and herdr (a fixed three calls a tick) and posts the day's table, so no test reaches a remote; `readReleaseRuns` (#4001) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test; the gate's call site passes the real one (ONE `gh api` call a tick, three while the newest release is a failure), so no test reaches a remote; `teamAccess` (#3634) is the team-level read, ONE `gh api` call per declared team each tick (the 2-minute tick is 30 calls an hour of a 5,000-an-hour core pool, 0.6% per team, the same price as `lastMergedAt`), and NO CALL AT ALL for a project that declares no `teamAccess`; a test that must reach no remote passes `() => undefined` `readToolAgreement` (#3533) is `undefined` WHEN THE CALLER DOES NOT ASK, which is every test
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
- *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.mjs`
+ *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.ts`
  */
 export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   io = {}) {

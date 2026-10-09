@@ -48,7 +48,7 @@ export const MODELS = Object.freeze(["haiku", "sonnet", "opus", "fable"]);
  * `~/.claude/settings.json` is per MODEL ID, so a model change silently drops effort to that model's default unless
  * somebody adds the entry. 2026-09-29: the chairman moved the org to `claude-sonnet-5-5` and added
  * `modelSettings.claude-sonnet-5-5.effortLevel: high` by hand -- host state no repo file recorded. `modelEffortDrift`
- * (host-units.mjs) reads the host against this table. It is the FLOOR: the highest effort any `PROFILES` entry on the alias asks for.
+ * (host-units.ts) reads the host against this table. It is the FLOOR: the highest effort any `PROFILES` entry on the alias asks for.
  */
 export const DECLARED_CLAUDE_MODELS = Object.freeze({
   sonnet: Object.freeze({ id: "claude-sonnet-5-5", effortLevel: "high" }),
@@ -80,7 +80,7 @@ export const MIN_WORKING_ROOM_TOKENS = 100_000;
 /**
  * The `--autocompact` window for a per-row Claude engineer, DERIVED rather than picked so the next
  * change to any of the three constants above re-lands this number rather than silently under-cutting it.
- * Still far below the 479k-615k peaks #2717 set out to cap in the first place (see `worker-profile.mjs`'s
+ * Still far below the 479k-615k peaks #2717 set out to cap in the first place (see `worker-profile.ts`'s
  * own history), so a genuinely runaway row still compacts before reaching them -- the margin and the
  * base are cleared FIRST, not assumed away.
  */
@@ -166,9 +166,9 @@ export const ROUND_TRIPS_PARAGRAPH = "Every tool call is a round trip that reads
  * CAUSE -> the worker that should take it.
  *
  * #2621 (child 3e of #69): COMPUTED, NOT SPELLED HERE. `PROFILES` used to be a fourth hand-maintained
- * list a cause had to be added to, beside `work-gate.mjs`'s `CAUSES`, `JUDGMENT_CAUSES` and
+ * list a cause had to be added to, beside `work-gate.ts`'s `CAUSES`, `JUDGMENT_CAUSES` and
  * `START_CAUSES` -- four lists in two files, and a cause added to one and not the others is a recorded
- * trap. `cause-declaration.mjs` is now the one place a cause is declared (`{cause, group, profile}`), and
+ * trap. `cause-declaration.ts` is now the one place a cause is declared (`{cause, group, profile}`), and
  * this name -- unchanged from here on, same keys, same `kind`/`model`/`effort`/`why` shape -- is its
  * computation. See that file's `TOOL_CAUSE_DECLARATIONS` for every cause's own profile and the reasoning
  * behind it, kept verbatim from this file's own history.
@@ -273,7 +273,7 @@ export function agentArgs(profile: { kind: string; model: string; effort: string
   // comment for which tools joined it and why.
   //
   // `--autocompact` (#2717) bounds compaction to a TURN, not only to the gap between orders. #2688's
-  // `/compact`-before-order (`wake.mjs`'s `deliver()`, `prompt-session.mjs`'s `clearThenPrompt()`) only
+  // `/compact`-before-order (`wake.ts`'s `deliver()`, `prompt-session.ts`'s `clearThenPrompt()`) only
   // checks cache-read tokens at the seam where an order REACHES a session; a session that never returns
   // for a new order on one long-running row (measured: 340 calls, peak context 479k in a single turn) is
   // never checked there.
@@ -338,7 +338,7 @@ function headlessClaudeArgs(profile: { kind: string; model: string; effort: stri
 
 function main() {
   refuseUnknownFlags(["--cause", "--model", "--effort"], {
-    entry: import.meta.url, command: "node packages/agent-org/src/worker-profile.mjs",
+    entry: import.meta.url, command: "node packages/agent-org/src/worker-profile.ts",
   });
   const cause = flagValue(process.argv, "cause");
   if (!cause) {

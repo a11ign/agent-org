@@ -17,7 +17,7 @@
 //
 // This answers both at once: the population is every CLOSED board item whose Status is not `Done`
 // (`closedRowsToSettle`), so a hand-closed row is in it by construction and a CI merge whose settle was
-// refused is picked up on the next pass. The decision lives in `settle-closed-status.mjs`, which is pure
+// refused is picked up on the next pass. The decision lives in `settle-closed-status.ts`, which is pure
 // of `gh`; this file is the wiring, and it supplies the two things that carry a token.
 //
 // IT NEVER CLOSES A ROW. Its population is rows GitHub ALREADY reports closed; it changes a Status and
@@ -27,18 +27,18 @@
 // NO `gh pr list`, ANYWHERE IN THIS FILE OR ITS CLOSURE -- that is the row's done-when, not an incidental
 // property: reading a PR list is what makes a hand-closed row invisible.
 //
-// NO LAUNCH GATE (#1352), deliberately, and `close-rows-sweep.mjs` is the precedent: this runs in CI's
+// NO LAUNCH GATE (#1352), deliberately, and `close-rows-sweep.ts` is the precedent: this runs in CI's
 // plain clone as well as from a session's worktree, and the gate refuses a plain clone. The snapshot it
 // writes resolves from the git common dir, so a session running it from any worktree writes where every
 // other board mutation writes.
 //
-// Exit codes are the contract, and they are `close-rows-sweep.mjs`'s, imported rather than restated:
+// Exit codes are the contract, and they are `close-rows-sweep.ts`'s, imported rather than restated:
 //   0  every drifted row settled -- or the board could not be read because the token cannot read the
 //      Project (#546), which is DEGRADED and must not turn trunk red for a ceiling it cannot lift
 //   2  the board could not be read for any OTHER cause. INCONCLUSIVE, never "fine".
 //   3  one or more Statuses did not move. NAMED, never counted.
 //
-//   node packages/agent-org/src/settle-closed-rows.mjs
+//   node packages/agent-org/src/settle-closed-rows.ts
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -120,7 +120,7 @@ function settleOne(n: number, heldStatus: string | null): import("./settle-close
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/settle-closed-rows.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/settle-closed-rows.ts" });
 
   let items;
   try {
@@ -159,5 +159,5 @@ function main() {
   process.exit(code);
 }
 
-// The entry guard `merge-guard.mjs`/`close-rows-for-merged-pr.mjs` use.
+// The entry guard `merge-guard.ts`/`close-rows-for-merged-pr.ts` use.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

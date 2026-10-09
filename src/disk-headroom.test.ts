@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/disk-headroom.mjs` and its wiring in `work-gate.mjs`, #2163: THE GATE WATCHES FREE BYTES
+ * `packages/agent-org/src/disk-headroom.ts` and its wiring in `work-gate.ts`, #2163: THE GATE WATCHES FREE BYTES
  * AND FREE INODES ON `/` AND `/tmp`.
  *
  * THE OUTAGE, 2026-09-25: `/tmp` ran out of INODES (1,048,576 of 1,048,576) at 73% of its bytes, and every session
@@ -228,9 +228,9 @@ test("#2163: when GitHub cannot be read the gate still says DISK LOW -- a CANNOT
 
 // --- WHAT `wake` DOES WHEN ITS OWN WRITES THROW (#2163 done-when 4) -----------------------------------------------
 //
-// MEASURED 2026-09-25 with the real `wake.mjs` and a `herdr` stub. A full disk breaks the writes `wake` makes, and
+// MEASURED 2026-09-25 with the real `wake.ts` and a `herdr` stub. A full disk breaks the writes `wake` makes, and
 // the two it makes around a delivery fail differently. These are CHARACTERISATION, not a specification: they pin
-// what the tick does TODAY so the claim in `work-gate.mjs` is checked rather than remembered, and whoever makes
+// what the tick does TODAY so the claim in `work-gate.ts` is checked rather than remembered, and whoever makes
 // `wake`'s writes non-fatal is expected to update them (the gap is named on #2163). Both need a writable-file check
 // that a superuser passes, so they are skipped under root WITH the reason, and the writable case below is the control.
 

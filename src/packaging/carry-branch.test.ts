@@ -1,5 +1,5 @@
 /**
- * `packages/agent-org/src/carry-branch.mjs` — #656, ceo's own mechanism: a detached worktree merges `origin/main` into
+ * `packages/agent-org/src/carry-branch.ts` — #656, ceo's own mechanism: a detached worktree merges `origin/main` into
  * a branch and pushes, without ever checking that branch NAME out locally, so it cannot collide with
  * wherever its owner already has it. See that file's own header for the incident (#614) and the
  * three limits ceo stated as the point rather than caveats.
@@ -13,7 +13,7 @@
  */
 // no-token: gh
 //
-// #1477: carry-branch.mjs spawns `gh` in `noteCarryOnPr`, so the acceptance classifier charges this whole file
+// #1477: carry-branch.ts spawns `gh` in `noteCarryOnPr`, so the acceptance classifier charges this whole file
 // for a token -- measured, it refused this row's own acceptance command on origin/main as filed. No test here
 // reaches that spawn: these tests call `carryBranch` with the default `run`, which only ever spawns `git`, and
 // the `gh`-calling functions moved to `carry-branch-exit-codes.test.ts`, which injects `run` throughout.
@@ -239,7 +239,7 @@ test("#2827 (done-when 1, 2): the carry's scratch removal WRITES THE REMOVAL LOG
     "the line is written BEFORE the delete, so the tree is still there; the outcome after, so it is not");
   assert.equal(new Set(lines.map((line) => line.path)).size, 1, "both lines name the one scratch tree");
   assert.match(lines[0].path, /carry-branch-/);
-  assert.equal(lines[0].caller, "carry-branch.mjs carryBranch");
+  assert.equal(lines[0].caller, "carry-branch.ts carryBranch");
   assert.match(lines[0].reason, /throwaway detached worktree/);
 });
 
@@ -262,7 +262,7 @@ test("#2827 (done-when 2): with NO seam, the default writes the line to the real
   assert.equal(carryBranch(topo.primary, topo.branch).carried, true);
   const written = readFileSync(log, "utf8").trim().split("\n").slice(before).map((line) => JSON.parse(line));
   assert.deepEqual(written.map((line) => [line.event, line.caller]),
-    [["removing", "carry-branch.mjs carryBranch"], ["removed", "carry-branch.mjs carryBranch"]]);
+    [["removing", "carry-branch.ts carryBranch"], ["removed", "carry-branch.ts carryBranch"]]);
 });
 
 test("#716 ACCEPTANCE: the shared fixture is genuinely reset between tests -- state from an earlier "

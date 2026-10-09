@@ -416,7 +416,7 @@ test("fetchReadyIssueNumbers: reads --json number off gh issue list, filtered to
 });
 
 test("fetchReadyIssueNumbers: exactly `limit` rows back is refused as indistinguishable from truncated, "
-  + "same discipline as ready-label-audit.mjs's fetchIssues", () => {
+  + "same discipline as ready-label-audit.ts's fetchIssues", () => {
   const run = () => JSON.stringify(Array.from({ length: 3 }, (_, i) => ({ number: i })));
   assert.throws(() => fetchReadyIssueNumbers({ run, limit: 3 }), /exactly the requested limit/);
 });
@@ -958,7 +958,7 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
     const env = { ...sandboxGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` } as NodeJS.ProcessEnv;
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
-    for (const [script, code] of [["row-claim.mjs", 2], ["row-file.mjs", 1], ["pr-open.mjs", 1]] as const) {
+    for (const [script, code] of [["row-claim.ts", 2], ["row-file.ts", 1], ["pr-open.ts", 1]] as const) {
       const fromPlain = spawnSync("node", [joinPath(scripts, script)], { cwd: plain, encoding: "utf8", env });
       assert.equal(fromPlain.status, code, `${script} from a plain checkout: ${fromPlain.stderr}`);
       assert.match(fromPlain.stderr, new RegExp(`REFUSED -- launched from ${plain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which is not a linked worktree`),
@@ -983,7 +983,7 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
 // `reviewer-2` on #2010, upheld by `product-manager`: clause 2's deliverable is a CALL --
 // `fetchBoardItems` parsing `field.options` and handing them to `reportVocabularyDrift`. The reviewer
 // commented that call out and the stated 25-test Acceptance stayed green, because
-// `board-status-health.test.ts` imports only the pure module and never `board-snapshot.mjs`.
+// `board-status-health.test.ts` imports only the pure module and never `board-snapshot.ts`.
 //
 // **And the fixtures could not have caught it either.** Every existing `page()` omitted `field` entirely,
 // so `statusOptions` stayed `null` and the implementation took its SHORT-READ branch -- printing

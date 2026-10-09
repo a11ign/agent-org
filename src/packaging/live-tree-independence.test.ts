@@ -69,7 +69,7 @@ const UNCONVERTED_CONTROL = {
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 test("the trunk workflow runs the close-rows sweep from the monorepo path", () => {
   const text = readFileSync(join(HOME_CHECKOUT, ".github/workflows/trunk.yml"), "utf8");

@@ -1,4 +1,4 @@
-// no-token: gh -- this file drives merge-queue.mjs only through its pure exports and an injected runner; its own code never calls or spawns gh (#1482, route (a))
+// no-token: gh -- this file drives merge-queue.ts only through its pure exports and an injected runner; its own code never calls or spawns gh (#1482, route (a))
 /**
  * THE MERGE ROUTINE MUST BE ABLE TO EXPRESS THE RULE IT ENFORCES.
  *
@@ -76,25 +76,25 @@ test("a draft is held, whatever its checks say", () => {
  * as "nothing to merge" and nothing said a merge did not happen.
  */
 test("--merge=<n> (equals form) is read, not silently dropped to list mode", () => {
-  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge=156"]), "156");
+  assert.equal(wantedPrNumber(["node", "merge-queue.ts", "--merge=156"]), "156");
 });
 
 test("--merge <n> (space form) still works — the fix must not break the shape that already worked", () => {
-  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge", "156"]), "156");
+  assert.equal(wantedPrNumber(["node", "merge-queue.ts", "--merge", "156"]), "156");
 });
 
 test("both shapes produce the IDENTICAL wanted value for the same PR", () => {
-  const equals = wantedPrNumber(["node", "merge-queue.mjs", "--merge=156"]);
-  const space = wantedPrNumber(["node", "merge-queue.mjs", "--merge", "156"]);
+  const equals = wantedPrNumber(["node", "merge-queue.ts", "--merge=156"]);
+  const space = wantedPrNumber(["node", "merge-queue.ts", "--merge", "156"]);
   assert.equal(equals, space);
 });
 
 test("no --merge flag at all means list mode, not a crash", () => {
-  assert.equal(wantedPrNumber(["node", "merge-queue.mjs"]), null);
+  assert.equal(wantedPrNumber(["node", "merge-queue.ts"]), null);
 });
 
 test("--merge as the last argument, with nothing after it, is null rather than a stray flag string", () => {
-  assert.equal(wantedPrNumber(["node", "merge-queue.mjs", "--merge"]), null);
+  assert.equal(wantedPrNumber(["node", "merge-queue.ts", "--merge"]), null);
 });
 
 /**
@@ -170,7 +170,7 @@ function queue(stub: ReturnType<typeof queueRun>, { appendFails = false } = {}) 
   const out: string[] = [];
   const err: string[] = [];
   const appended: string[] = [];
-  const code = runMergeQueue({ argv: ["node", "merge-queue.mjs", "--merge", "77"], gh: stub.run,
+  const code = runMergeQueue({ argv: ["node", "merge-queue.ts", "--merge", "77"], gh: stub.run,
     logPath: () => "/tmp/orphaned-branch-log.jsonl",
     append: (_path: string, data: string) => { if (appendFails) throw new Error("EROFS: read-only file system"); appended.push(data); },
     out: (text: string) => { out.push(text); }, err: (text: string) => { err.push(text); } });

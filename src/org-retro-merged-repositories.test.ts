@@ -1,4 +1,4 @@
-// no-token: gh -- `org-retro.mjs` reaches `gh` only through the `readPrs` seam every test here supplies; nothing imported reaches the real one
+// no-token: gh -- `org-retro.ts` reaches `gh` only through the `readPrs` seam every test here supplies; nothing imported reaches the real one
 /**
  * a11ign/a11ign#3593: THE RETROSPECTIVE COUNTS MERGED PULL REQUESTS ACROSS EVERY DECLARED REPOSITORY. Its 2026-10-05 reading said "PRs merged: worse, -56" and
  * "tokens per merged PR" doubled, both from a count of ONE repository (a11ign/a11ign, 48) against tokens summed over EVERY session, while `a11ign/agent-org` merged 82.

@@ -14,7 +14,7 @@
 // THE OBVIOUS HAND-ROLLED CHECK IS DEFEATED BY SQUASH MERGES, and this is the part worth recording.
 // `git rev-list --count origin/main..origin/<branch>` reads > 0 for EVERY branch this repo squash-merges,
 // because the squash commit is a different object from anything on the branch -- the same two-dot/three-dot
-// diffing trap `row-reachability.mjs` already documents for held regions. Run over every pushed branch,
+// diffing trap `row-reachability.ts` already documents for held regions. Run over every pushed branch,
 // this named 66 of 134 -- nearly all already landed. A check with that false-positive rate is unreadable.
 //
 // SO THE FILTER IS TWO STAGES, IN THIS ORDER, and the order is what makes the second stage trustworthy:
@@ -71,7 +71,7 @@ const writeErr = (line: string) => { process.stderr.write(line); };
 
 /**
  * Every branch pushed under `origin/agent/*` or `origin/lead/*` -- the two prefixes this repo's own
- * worktree/branch convention uses (see `prune-worktrees.mjs`'s `isStandingBranch`) -- with the `origin/`
+ * worktree/branch convention uses (see `prune-worktrees.ts`'s `isStandingBranch`) -- with the `origin/`
  * prefix stripped so it matches a PR's `headRefName` verbatim.
  *
  * @param {{ run?: typeof defaultRun }} [deps]
@@ -488,7 +488,7 @@ function sweepCommand(argv: string[], { run, err }: { run: typeof defaultRun; er
  */
 export function main(argv: string[] = process.argv.slice(2), { run = defaultRun, out = writeOut, err = writeErr }: { run?: typeof defaultRun; out?: (line: string) => void; err?: (line: string) => void; } = {}): number {
   refuseUnknownFlags(["--dry-run", "--close", "--max-age-hours="],
-    { entry: import.meta.url, argv, command: "node packages/agent-org/src/stranded-branches.mjs" });
+    { entry: import.meta.url, argv, command: "node packages/agent-org/src/stranded-branches.ts" });
   if (argv.includes("--dry-run") || argv.includes("--close")) return sweepCommand(argv, { run, err });
   let pushed: string[];
   let prs: { refs: Set<string>; calls: number; prs: number; };

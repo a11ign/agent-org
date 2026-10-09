@@ -11,7 +11,7 @@
 // every other lookup here. The caller decides what null means; for this one specifically it must mean
 // ALLOW, loudly, never refuse (see `racesAnArmedMerge`'s own comment).
 //
-// GREEN IS ANSWERED THE SAME WAY `merge-guard.mjs`'s `facts()`/`mergeReadiness` ANSWER IT --
+// GREEN IS ANSWERED THE SAME WAY `merge-guard.ts`'s `facts()`/`mergeReadiness` ANSWER IT --
 // `lookupRequiredContexts()` + `lookupCheckRuns()` fed to `checkReasons()` (`checks-rule.mjs`), empty
 // reasons meaning nothing is missing, unfinished or failing -- never a second, independently-invented
 // reading of "green" off `statusCheckRollup`. That field is GitHub's own rolled-up combined-status object,
@@ -30,7 +30,7 @@
 // tip -- so a PR that is armed, green AND behind is not a race, it is the FROZEN state #442 exists to
 // unfreeze. Read via `repos/.../compare/main...<oid>`'s `behind_by`, the identical ancestry fact
 // `ancestry-rule.mjs` already reads for -- never `mergeStateStatus`, for the reason at the top of
-// `merge-guard.mjs`. Only asked when green: an armed-but-not-green PR never races (see `racesAnArmedMerge`
+// `merge-guard.ts`. Only asked when green: an armed-but-not-green PR never races (see `racesAnArmedMerge`
 // below), so a behind-by lookup there would be a round trip for a value nothing reads. `null` (could not
 // determine) folds into "does not race" the same fail-open direction as everything else here.
 import { REPO } from "../project-identity.ts";
@@ -40,7 +40,7 @@ import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.m
 /**
  * #1408: `run`, `requiredContexts` and `checkRuns` are the real lookups unless a caller injects them -- the test does, so
  * a local suite never asks GitHub, and an ARMED PR's path is driven rather than assumed. The defaults are exercised only
- * by `merge-guard.mjs`'s own call, through the real pre-push hook; if that wiring broke, the hook's armed-PR refusal
+ * by `merge-guard.ts`'s own call, through the real pre-push hook; if that wiring broke, the hook's armed-PR refusal
  * (or its absence) is where it would show.
  * @param {string} branchName
  * @param {{ run?: typeof gh, requiredContexts?: typeof lookupRequiredContexts, checkRuns?: typeof lookupCheckRuns }} [deps]
@@ -86,7 +86,7 @@ export function lookupArmedPrStatus(branchName,
  * premise had moved. `behindBy === 0` is the up-to-date case (#386's real one, unchanged); anything else --
  * a positive count, or `null` because it could not be determined -- does not race.
  *
- * FAILS OPEN, DELIBERATELY, and this is the opposite of `merge-guard.mjs`'s own "could not ask is not
+ * FAILS OPEN, DELIBERATELY, and this is the opposite of `merge-guard.ts`'s own "could not ask is not
  * clean" rule elsewhere: that rule protects a VERDICT about evidence; this protects a developer's ability
  * to push at all. A convenience guard against a race is not a correctness gate, and a hook that blocks
  * work when the network is down or `gh` is unauthenticated gets deleted within a day (CLAUDE.md already

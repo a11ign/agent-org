@@ -341,7 +341,7 @@ test("#3849: the service runs niced and at the idle IO class, with the fixtures-
   assert.ok(timeout > 0 && timeout < 60, "a stuck run must be ended before the next one would start");
 });
 
-test("#3849: installed as the tool, the janitor runs prune-tmp.mjs from the tool, niced, and told where the host's declaration is", () => {
+test("#3849: installed as the tool, the janitor runs prune-tmp.ts from the tool, niced, and told where the host's declaration is", () => {
   const rendered = shipped("tmp-prune.service.in")
     .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
   assert.match(rendered, /^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/prune-tmp\.mjs --apply --fixtures-only$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");

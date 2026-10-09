@@ -38,7 +38,7 @@ const ROOT = path.resolve(path.dirname(realpathSync(new URL(import.meta.url).pat
 const ACHIEVEMENTS_DIR = "docs/board/reported/achievements";
 
 /** The fields a record cannot be written without. `order` and `boardClaim` are optional by design:
- * `board-data.mjs` already defaults an absent `order` to the end and falls back to `claim`. */
+ * `board-data.ts` already defaults an absent `order` to the end and falls back to `claim`. */
 const REQUIRED_FIELDS = ["claim", "evidence", "issue", "reportedBy", "at"];
 
 /**
@@ -55,7 +55,7 @@ export function missingFields(draft: any): string[] {
   });
 }
 
-/** How far apart assigned `order` values sit. `board-data.mjs`'s own comment: spacing by tens means
+/** How far apart assigned `order` values sit. `board-data.ts`'s own comment: spacing by tens means
  * inserting between two entries picks a value between them and re-labels nothing. */
 const ORDER_STEP = 10;
 
@@ -102,7 +102,7 @@ export function collisionRefusal(draft: any, records: { issue: unknown; order: u
   const sameIssue = records.find((r) => r.issue === draft.issue);
   if (sameIssue) {
     return `board:record REFUSES — issue ${draft.issue} already has a record (${sameIssue.file}).\n`
-      + "Nothing was written. `board-summary-check.mjs` keys achievements on `issue`, so a second record "
+      + "Nothing was written. `board-summary-check.ts` keys achievements on `issue`, so a second record "
       + "for one issue is two claims wearing one identity. Edit the existing file, or record this under "
       + "the issue it is actually about.";
   }
@@ -118,7 +118,7 @@ export function collisionRefusal(draft: any, records: { issue: unknown; order: u
 /**
  * Pure: the file this record lands in. Deterministic from the issue number and the claim, so writing the
  * same record twice is visibly the same file rather than a second copy with a different name — the
- * duplicate-record shape `board-summary-check.mjs` keys `achievements` on `issue` to detect.
+ * duplicate-record shape `board-summary-check.ts` keys `achievements` on `issue` to detect.
  * @param {any} draft
  * @returns {string}
  */
@@ -148,7 +148,7 @@ export function refusalForDraft(draft: any, capRefusal: (d: any, md: string) => 
       + "rather than an assertion, and a record without it renders as a heading with no body.";
   }
   // COLLISIONS BEFORE THE CAP, DELIBERATELY, and the ordering is asserted. The collision check reads only
-  // the files on disk; the cap check reads GitHub through `board-data.mjs`. So a duplicate identity or a
+  // the files on disk; the cap check reads GitHub through `board-data.ts`. So a duplicate identity or a
   // taken `order` is refused with no network at all — which matters because on 2026-09-09 the tracker was
   // unreachable for fifteen minutes and a collision should not need a working tracker to detect.
   const collision = collisionRefusal(draft, records);

@@ -14,16 +14,16 @@
 //     SENTENCE ("ceo's dispatched run ... ends") has a field no one can ever clear, so it is counted, and `unwaitedLines` names it `unreadable wait` so the
 //     reader knows which sentence to turn into a field (#4237; #4090 sat ten hours on one). A real wait beside the sentence still moves the row.
 //
-// A READ THE TOOL COULD NOT MAKE IS `unknown`, NEVER 0 (`org-retro.mjs`'s header, #1286). A refused list, a missing edge field or a refused timeline makes the
+// A READ THE TOOL COULD NOT MAKE IS `unknown`, NEVER 0 (`org-retro.ts`'s header, #1286). A refused list, a missing edge field or a refused timeline makes the
 // whole reading `unknown` and NAMES the read; it does not drop the row, because a dropped row is the org's idleness reported as health by an absence.
 //
-// A LEAF: relative imports of leaves only, like `org-retro.mjs`, which imports it and runs before any install.
+// A LEAF: relative imports of leaves only, like `org-retro.ts`, which imports it and runs before any install.
 import { execFileSync } from "node:child_process";
 import { waitingOn } from "./waiting-condition.ts";
 import { parseWaits, namedDoneWhens } from "./wait-condition.ts";
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 
-/** The `parked` state label; `project-vocabulary.mjs` declares `backlog` and `work-gate.mjs` (not a leaf) the other. */
+/** The `parked` state label; `project-vocabulary.ts` declares `backlog` and `work-gate.ts` (not a leaf) the other. */
 const PARKED_LABEL = "parked";
 const STOCK_LABELS = [BACKLOG_LABEL, PARKED_LABEL];
 

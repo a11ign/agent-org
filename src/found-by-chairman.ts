@@ -5,13 +5,13 @@
 // for this and was never built. A row the chairman or his session originated carries the label `found-by-chairman`, applied by hand by `ceo`
 // and `product-manager` (his own message and `needs:chairman` answers are the evidence). This module counts them per UTC week.
 //
-// THE POPULATION IS ROWS, NOT CHANGES. `hand-fix-ledger.mjs` counts CHANGES a human-side author made; this counts ROWS the chairman
+// THE POPULATION IS ROWS, NOT CHANGES. `hand-fix-ledger.ts` counts CHANGES a human-side author made; this counts ROWS the chairman
 // originated. They are different populations and the two numbers are not merged.
 //
 // A ROW IS COUNTED IN THE WEEK ITS OPENING FALLS IN, not the week it was labelled or closed: the label is applied after the fact, so a
 // count by labelling date would move the week a finding belongs to.
 //
-// ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A refused tracker listing never reaches this module: `board-data.mjs`'s `issues()` throws,
+// ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A refused tracker listing never reaches this module: `board-data.ts`'s `issues()` throws,
 // so the document is not built and no `0` is printed. What can reach it is a labelled row whose opening cannot be read; that makes the count
 // `null` and the line says `unknown`, because only a read that succeeded may print `0`. The previous week says `no baseline` when it begins before
 // the label was first applied, because a zero from a week nobody was labelling is not a reading.
@@ -30,7 +30,7 @@ const COUNT_ID = "foundByChairman";
 
 /** `since` inclusive, `until` exclusive, both midnight UTC */
 export type Week = { since: string, until: string };
-/** an issue as `board-data.mjs`'s `issues()` returns it */
+/** an issue as `board-data.ts`'s `issues()` returns it */
 export type Row = { number: number, createdAt?: string, labelNames: string[] };
 
 /** @param {Date} date @returns {string} `YYYY-MM-DDT00:00:00Z` */

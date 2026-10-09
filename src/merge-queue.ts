@@ -21,8 +21,8 @@
  *
  * So the queue is asked for, never assembled:
  *
- *   node packages/agent-org/src/merge-queue.mjs            # what is mergeable RIGHT NOW, and why each other PR is not
- *   node packages/agent-org/src/merge-queue.mjs --merge N  # merge PR N through `gh pr merge`, or refuse with the reason
+ *   node packages/agent-org/src/merge-queue.ts            # what is mergeable RIGHT NOW, and why each other PR is not
+ *   node packages/agent-org/src/merge-queue.ts --merge N  # merge PR N through `gh pr merge`, or refuse with the reason
  *
  * It never runs `git merge` and never pushes. Landing a PR is `gh pr merge`, which cannot merge a branch
  * that has no PR, and refuses one whose checks are not green.
@@ -100,7 +100,7 @@ export function refusalFor(pr: {
   // NEWEST PER NAME (#634). This filtered the RAW rollup, which UNIONS superseded check-runs -- so a
   // cancelled or replaced FAILED run survived on the head and this reported `checks failing` for a PR
   // whose current runs were all green. It is the FIFTH call site of a fix applied four times elsewhere
-  // (#500, #517, #582, and `queue-table.mjs`), and the one that decides whether a PR is mergeable.
+  // (#500, #517, #582, and `queue-table.ts`), and the one that decides whether a PR is mergeable.
   const checks = newestPerName(pr.statusCheckRollup ?? []);
   // No checks at all is NOT green. Before branch protection exists, a PR with no run is indistinguishable
   // from one whose workflow never triggered, and that is the state that let a frozen branch through.
@@ -309,6 +309,6 @@ export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, log
 
 function main() {
   // Guarded per #164: reads --merge; --json/--state go to gh.
-  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/merge-queue.mjs" });
+  refuseUnknownFlags(["--merge"], { entry: import.meta.url, command: "node packages/agent-org/src/merge-queue.ts" });
   process.exitCode = runMergeQueue({ argv: process.argv });
 }

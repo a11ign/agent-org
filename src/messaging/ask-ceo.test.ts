@@ -5,7 +5,7 @@
 // SAME fixture with one thing taken away, and the runner is shown to be called in case 1, so "nothing was sent" in cases 2 to 4 is not a runner that never ran. The predicate (case 3)
 // is a pair, and a second pair shows it is the gate's grammar and not a look for the word: `Waiting-for: soon` and a bare `#3490` in a sentence are refused, as `manual` is.
 //
-// Run with the host's declaration (`AGENT_ORG_HOST`), because the predicate IS the gate's own parser, `wait-condition.mjs`, which reads it at import. Without it the cases that need the
+// Run with the host's declaration (`AGENT_ORG_HOST`), because the predicate IS the gate's own parser, `wait-condition.ts`, which reads it at import. Without it the cases that need the
 // parser are skipped, NAMING the reason, and the last case fails if they were skipped for any reason but the host's absence.
 
 import assert from "node:assert/strict";

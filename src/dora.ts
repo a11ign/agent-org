@@ -5,7 +5,7 @@
 // WHY NOT FROM THE ORG'S OWN STATE: an org that reports its own deployment frequency from its own ledger can report a good day while nothing shipped.
 // Every number here is read from where the world keeps it -- the npm registry's `time` map or a repository's GitHub Releases, its merged pull requests,
 // its `regression` rows, and git ancestry -- and `agent-org` names no project, so WHICH repositories and WHERE each is read come from the project's
-// declaration (`.agent-org/project.json`, field `dora`, read by `project-config.mjs`).
+// declaration (`.agent-org/project.json`, field `dora`, read by `project-config.ts`).
 //
 // THE FOUR (definitions ruled by `ceo`; `DORA_METRICS` below is the ONE table, so a number printed with no direction cannot be written):
 //   1. Deployment frequency: releases per UTC day. Higher is better; the target is one on any day a releasable change merged.
@@ -36,7 +36,7 @@
 // ONE npm PACKAGE PER REPOSITORY IS READ (`release.package`), and `renderDora` says which: a release of another package in the same repository is not a
 // deployment in this reading. a11ign publishes four together in one version pull request, so it declares the command.
 //
-// A LEAF: it imports nothing from the tool, so `org-retro.mjs` can import it and the test can run it with injected readers and no network.
+// A LEAF: it imports nothing from the tool, so `org-retro.ts` can import it and the test can run it with injected readers and no network.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -706,7 +706,7 @@ export function doraNumbers(report: DoraReport | null | undefined): Record<strin
 }
 
 /**
- * The same numbers as `org-retro.mjs`'s `NUMBERS` rows, for the repositories declared TODAY, plus whether the metric is `undefined` today.
+ * The same numbers as `org-retro.ts`'s `NUMBERS` rows, for the repositories declared TODAY, plus whether the metric is `undefined` today.
  * @param {DoraReport | null | undefined} report
  * @returns {{ id: string, label: string, better: "lower" | "higher", undefinedToday: boolean }[]}
  */
@@ -982,7 +982,7 @@ function fixOf(repo: string, references: { number: number; repository?: { name: 
 }
 
 /**
- * THE READING FOR TODAY: every declared repository, through the real readers. THE ONE CALL `org-retro.mjs` makes.
+ * THE READING FOR TODAY: every declared repository, through the real readers. THE ONE CALL `org-retro.ts` makes.
  * @param {{ repositories: Repository[], now: number, readers?: Readers }} input
  */
 export function readDora({ repositories, now, readers = githubReaders }: { repositories: Repository[]; now: number; readers?: Readers; }) {

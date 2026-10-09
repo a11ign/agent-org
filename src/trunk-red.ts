@@ -8,8 +8,8 @@
 // (#2349), not ever. THE OBJECTION WAS TO THE MECHANISM BEING IN CI at all.
 //
 // A RULING THAT ONLY DELETES LEAVES `main` RED UNTIL SOMEBODY HAPPENS TO LOOK, so this is the second half:
-// what makes a fix-forward FAST. `work-gate.mjs` reads it once a tick, no model, and hands what it finds to
-// `wake.mjs` -- the gate, not a cron and not a retry loop.
+// what makes a fix-forward FAST. `work-gate.ts` reads it once a tick, no model, and hands what it finds to
+// `wake.ts` -- the gate, not a cron and not a retry loop.
 //
 // WHAT THIS FILE KEEPS OF THE OLD DECISION, because it was the good part of it. the revert script knew
 // two ways a bare "act on red" is worse than nothing, both measured live: an INHERITED failure (13 of 19
@@ -33,7 +33,7 @@
 //      addressee when no merge is known or the failure is not the merge's. It is told to FILE A `ready` ROW and not to fix the red itself:
 //      the `ready-row-unclaimed` order then reaches an engineer who can claim it, which is the one path that reaches somebody who can act.
 //   3. WHAT IT COSTS THE PRIMARY. NOTHING: `readTrunkRed()` with no argument is the call it always was, and its order is byte for byte
-//      what it was. The other repositories' reads are made by `scopeTick` (`work-gate.mjs`), which one declared project never runs.
+//      what it was. The other repositories' reads are made by `scopeTick` (`work-gate.ts`), which one declared project never runs.
 // WHAT THIS DOES NOT DO: escalate a stuck agent-org red to `answer:ceo`. `stuckRowOf` reads a `pr-<n>` subject as a row of the PRIMARY, and
 // labelling a11ign's #56 for agent-org's would be wrong, so a keyed subject (`pr-agent-org#56`) names no row and is reported, not labelled.
 import { execFileSync } from "node:child_process";
@@ -266,7 +266,7 @@ function readOriginPr(run: (args: string[]) => string, repo: string, sha: string
  *      not land; what lands is what is independent of the break -- and holding that back is the cost the
  *      chairman's "always fix forward" ruling exists to avoid, because it slows the fix's own reviewers.
  *   3. `trunkGate` KEEPS RUNNING. The one way a merge onto a red `main` does real damage -- silently undoing
- *      work already there (#411) -- is still refused by `trunk-revert-guard.mjs`, red or not.
+ *      work already there (#411) -- is still refused by `trunk-revert-guard.ts`, red or not.
  *
  * THE FIX GOES FIRST BY THE ORDER, NOT BY THE QUEUE: it is the first order `decide` emits, ahead of every
  * other cause, not withheld by a drain, and re-offered on `wake`'s twenty-minute expiry until `main` is
@@ -301,7 +301,7 @@ function attributionParagraph(attribution: ReturnType<typeof attributionOf>) {
  *
  * ADDRESSED BY WHO OWES IT, WITH A WAY OUT WHEN THAT SESSION IS NOT THERE. Own or unknown: the merged
  * PR's session, which holds the context, falling back to `engineers` (any idle engineer) when that
- * session is gone or busy -- `wake.mjs` reads `fallback`. Inherited: `engineers`, because nothing about it
+ * session is gone or busy -- `wake.ts` reads `fallback`. Inherited: `engineers`, because nothing about it
  * is the merged PR's own and waking its author for a failure they did not cause is the misattribution the
  * old revert made. The order is NEVER withheld for being inherited (#2356 done-when 2).
  *

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 // REUSED, NOT RE-DERIVED. `reported()` already picks the single most-recently-recorded gate entry --
-// the same one `board-data.mjs`'s own consumers (the daily report, the weekly document) treat as the
+// the same one `board-data.ts`'s own consumers (the daily report, the weekly document) treat as the
 // current status. A second re-implementation of "which entry is current" here would be the fact-stated-
 // twice shape this repo keeps paying for.
 import { reported } from "../board-data.ts";

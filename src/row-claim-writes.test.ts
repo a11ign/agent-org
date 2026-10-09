@@ -130,7 +130,7 @@ test("a batch that cannot START does not stop the claim: the creates run one at 
 });
 
 test("THE WIRING: the real batch is the default only when `run` is the real `gh`, and the creates take it from there", () => {
-  const source = readFileSync(resolve(here, "row-claim.mjs"), "utf8");
+  const source = readFileSync(resolve(here, "row-claim.ts"), "utf8");
   assert.match(source, /labelBatch = run === defaultRun \? runBatch : undefined/);
   const apply = source.slice(source.indexOf("\nfunction applyClaimLabels("), source.indexOf("\n/**", source.indexOf("\nfunction applyClaimLabels(")));
   assert.match(apply, /ensureLabelsExist\([^)]*batch: labelBatch/, "`applyClaimLabels` hands the batch to the creates");

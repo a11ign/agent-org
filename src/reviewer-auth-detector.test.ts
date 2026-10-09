@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/work-gate.mjs`, #2401 ruling 2: THE DETECTOR that ships with per-PR reviewers.
+ * `packages/agent-org/src/work-gate.ts`, #2401 ruling 2: THE DETECTOR that ships with per-PR reviewers.
  *
  * The chairman's ruling was that the token-refresh reading does NOT gate the row -- the credential is valid to
  * 2026-10-03T18:47Z, forcing a refresh could log out live reviewers -- so a failure is DETECTED and RECOVERED
@@ -86,7 +86,7 @@ test("#2401 (a): codex's auth-failure text is matched verbatim as codex spells i
     "Your authentication session could not be refreshed automatically");
   assert.equal(authFailureShownIn("Failed to refresh token: 401"), "Failed to refresh token");
   // THE POSITIVE CONTROL for every `null` in this file: a pane mid-review reads healthy, and so does no pane at all.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
+  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
   assert.equal(authFailureShownIn(null), null);
   assert.equal(authFailureShownIn(""), null);
 });
@@ -106,7 +106,7 @@ test("#2555 (a): codex's logged-out startup screen is recognised by its welcome 
   assert.equal(authFailureShownIn("Sign in with ChatGPT"), null);
   assert.equal(authFailureShownIn("Welcome to Codex, OpenAI's command-line coding agent"), null);
   // Positive control for those nulls: the same healthy pane as above, and an invented phrase, are absent.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.mjs\n› Ask Codex to do anything"), null);
+  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
   assert.ok(!LOGGED_OUT_STARTUP.includes("Nothing in codex says this, invented"), "and the fixture can fail: an invented phrase is absent");
 });
 

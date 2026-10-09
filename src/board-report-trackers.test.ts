@@ -1,5 +1,5 @@
 // no-token: REPO
-// This file imports board-report.mjs, whose closure reads REPO from board-data.mjs, which spawns `gh`. Every test here hands the readers a recorded
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Every test here hands the readers a recorded
 // `run` and renders from an injected fact set; nothing here calls or spawns it.
 /**
  * #4080 (row 2 of #4056): THE EDITION READS EVERY DECLARED TRACKER, not the first one's board. A row filed in a second tracker was in no edition,

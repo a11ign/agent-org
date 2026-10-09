@@ -9,13 +9,13 @@
 // tick could not READ (a reference past the read cap, `manual`, outside the grammar) is an unknown, and an unknown is never true (`conditionHolds`): the row stays parked and is listed
 // as `unread`, so a refused read is not mistaken for a wait that ended.
 //
-// WHERE IT GOES: the eligibility is the one `ready-label-audit.mjs` applies to a `ready` row -- a label that already means "not pickable" (`mutexViolations`), no Region/Acceptance/Open-check
+// WHERE IT GOES: the eligibility is the one `ready-label-audit.ts` applies to a `ready` row -- a label that already means "not pickable" (`mutexViolations`), no Region/Acceptance/Open-check
 // (`unclaimableReadyRows`, which is `templateFieldsReason`, imported here from the rule module it delegates to) and a merged PR that already closes it (`readyRowsAlreadyMerged`, the #2905 shape:
 // promoted on closed edges alone it put a row with nothing to build in front of an engineer) -- and then `row-file --promote` itself, which refuses what the filing rule refuses. A row that
 // passes becomes `ready` THROUGH THAT ACT (the Status move, the label set and the read-back are its, not copied here); one that does not becomes `backlog` + `answer:product-manager` with the
 // failing check in the comment, so it is never offered half-formed.
 //
-// WHY NOT IMPORT `ready-label-audit.mjs` ITSELF: it reaches `row-claim.mjs` (through `close-rows-for-merged-pr.mjs`), and `row-claim.mjs` imports the gate, so the gate's closure would contain the
+// WHY NOT IMPORT `ready-label-audit.ts` ITSELF: it reaches `row-claim.ts` (through `close-rows-for-merged-pr.ts`), and `row-claim.ts` imports the gate, so the gate's closure would contain the
 // claim (`row-claim-reads-together.test.ts` pins that it never does). The one list restated here, `NOT_PICKABLE_BESIDE_READY`, is pinned equal to that file's `MUTEX_LABELS` by this module's test,
 // and the merged-closer check is the conservative form of `readyRowsAlreadyMerged`: ANY merged PR that names the row sends it to `product-manager`, without the reopen history that function adds
 // (a row reopened after its merge is a refuted fix, and is exactly what `product-manager` should look at).
@@ -33,9 +33,10 @@
 // WHERE THE PROMOTION RUNS (a11ign/a11ign#4202): `row-file` refuses a launch from a checkout whose `.git` is a directory (`launchGate`, #1352: a policy script's writes must not land in a tree
 // other sessions share), and the tick's working directory IS the tool's primary checkout, so every promotion was refused and every un-parked row landed on `backlog` + `answer:product-manager`
 // (a11ign/a11ign#4159 twice, #4182, #4183). The guard is right and stays as it is; the tick runs the child from `tickWorktree()`, a linked worktree it owns, and the log line says which one.
-// The other children the tick starts (`update-primary --drift`, `host-units --json`) carry no launch guard and need none; `unpark-satisfied.test.mjs` pins that list from the source.
+// The other children the tick starts (`update-primary --drift`, `host-units --json`) carry no launch guard and need none; `unpark-satisfied.test.ts` pins that list from the source.
 //
-// A LEAF AT LOAD TIME: no import of `work-gate.mjs` (which imports this), so the gate's `run` is passed in.
+// A LEAF AT LOAD TIME: no import of `work-gate.ts` (which imports this), so the gate's `run` is passed in.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,13 +49,13 @@ import { ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } fro
 import { REPO } from "./project-identity.ts";
 import { templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
 
-/** The label `work-gate.mjs` exports as `PARKED_LABEL`; restated because that file imports this one. `unpark-satisfied.test.mjs` pins the two equal. */
+/** The label `work-gate.ts` exports as `PARKED_LABEL`; restated because that file imports this one. `unpark-satisfied.test.ts` pins the two equal. */
 export const PARKED = "parked";
 /** Who reads a row the gate cannot make ready: `product-manager`, the first reader for rows and process (`org-routing-and-timers.md`). */
 export const PRODUCT_MANAGER = "product-manager";
 /** The line every comment this module writes starts with, so a reader (and a test) can tell its comment from a person's. */
 export const COMMENT_MARKER = "<!-- unpark-satisfied -->";
-/** The labels that already mean "not pickable", so `ready` beside one is a contradiction; `ready-label-audit.mjs`'s `MUTEX_LABELS`, restated because that file cannot be imported here (see the header) and pinned equal by the test. */
+/** The labels that already mean "not pickable", so `ready` beside one is a contradiction; `ready-label-audit.ts`'s `MUTEX_LABELS`, restated because that file cannot be imported here (see the header) and pinned equal by the test. */
 export const NOT_PICKABLE_BESIDE_READY = Object.freeze(["fleet-gated", "disputed", "decision", "awaiting-merge", BLOCKED_LABEL, "review-only"]);
 /** What the promotion's report names as the session, since `row-file --promote` takes one. */
 const SESSION = "work-gate";
@@ -303,7 +304,7 @@ export function promoteViaModule(number: number, worktree: () => TickWorktree = 
   const launch = worktree();
   if ("refusal" in launch) return { ok: false, refusal: `the tick has no linked worktree to run \`row-file --promote=${number}\` from: ${launch.refusal}` };
   process.stderr.write(`unpark-satisfied: row-file --promote=${number} runs from the tick's worktree ${launch.dir}\n`);
-  const result = spawnSync(process.execPath, [ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8", cwd: launch.dir });
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8", cwd: launch.dir });
   if (result.status === 0) return { ok: true };
   const said = String(result.stderr).trim();
   if (result.status === ROW_FILE_REFUSED) return { ok: false, refusal: said.replace(/^row-file: REFUSING to promote -- /, "") };

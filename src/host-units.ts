@@ -102,7 +102,7 @@ export const TOOL_ENTRIES = Object.freeze([
   "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
   // a11ign/a11ign#4071: the OTel receiver's service, a long-running one (`LONG_RUNNING_TEMPLATES`) with no timer, as the chairman listener's is.
   "otel-receiver.service.in",
-  // a11ign/a11ign#4053: the drained kernel reboot's pair. The service runs `host-kernel.mjs --reboot`; the timer is the hour `ceo` named and has NO `Requires=`, so `host:install` never reboots.
+  // a11ign/a11ign#4053: the drained kernel reboot's pair. The service runs `host-kernel.ts --reboot`; the timer is the hour `ceo` named and has NO `Requires=`, so `host:install` never reboots.
   "kernel-reboot.service.in", "kernel-reboot.timer.in",
 ]);
 
@@ -117,7 +117,7 @@ export const OPTIONAL_UNITS = (Object.freeze({
   "chairman-listen.service.in": "messaging",
 }) as Readonly<Record<string, string>>);
 
-// SERVICES NO CLOCK STARTS (#3025): see `LONG_RUNNING_TEMPLATES`, which lives in `host-config.mjs` (#3443: `update-tool.mjs` restarts them, and must not import this
+// SERVICES NO CLOCK STARTS (#3025): see `LONG_RUNNING_TEMPLATES`, which lives in `host-config.ts` (#3443: `update-tool.ts` restarts them, and must not import this
 // file to name them, since its history readers would put them in the closure of the test that runs `update-tool`).
 export { LONG_RUNNING_TEMPLATES };
 
@@ -262,7 +262,7 @@ const namesToolCommand = (command: string): boolean => commandWords(command)[0] 
  * tool checkout, through the same table `bin.mjs` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
  * is `agent-org primary:update` from the copy its lockfile pins, a second version of the tool running on every tick (#3464). Any other
  * command is the project's own and is run as written. An unknown tool command REFUSES, since a unit that quietly ran nothing would leave
- * the checkout it was declared to move stale.
+ * the checkout it was declared to move stale. The loader is the tool's own, by absolute path: the command runs in the PROJECT's checkout (`env -C`), which holds no `tsx`.
  * @param {string} tool @param {string} command
  */
 function beforeTickCommand(tool: string, command: string) {
@@ -271,14 +271,14 @@ function beforeTickCommand(tool: string, command: string) {
   if (!Object.hasOwn(COMMANDS, name)) {
     throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
   }
-  return ["/usr/bin/node", `${tool}/src/${(COMMANDS as Record<string, string>)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
+  return ["/usr/bin/node", "--import", `${tool}/node_modules/tsx/dist/loader.mjs`, `${tool}/src/${(COMMANDS as Record<string, string>)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
 }
 
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
 const WORK_TICK_TEMPLATE = "work-tick.service.in";
 
 /** The tool checkout's own update command, run from its `WorkingDirectory`: the analogue of `pnpm run primary:update`. */
-export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs src/update-tool.ts";
+export const TOOL_UPDATE_EXEC = "/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/update-tool.ts";
 
 /**
  * DECISION 3'S FORM OF THE `work-tick` UNIT: exactly three lines change, and nothing else in the text does. `WorkingDirectory` becomes
@@ -305,11 +305,11 @@ export function workTickToolForm(rendered: string, tool: string, beforeTicks: Be
   return [
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
     [/^ExecStartPre=.*$/m, steps.join("\n")],
-    [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts"],
+    [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs --import tsx packages\/agent-org\/src\/work-tick\.ts$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts"],
   ].reduce((text, [anchor, line]) => replaceOnce(text, (anchor as RegExp), (line as string)), rendered);
 }
 
-/** The variable a tool run from its own checkout reads to find the host's declaration, and from it the project (`project-config.mjs`'s `HOST_ENV`). */
+/** The variable a tool run from its own checkout reads to find the host's declaration, and from it the project (`project-config.ts`'s `HOST_ENV`). */
 const HOST_VARIABLE = "AGENT_ORG_HOST";
 
 /**
@@ -343,14 +343,14 @@ export function readProjectRepo(checkout: string, read: typeof readFileSync): st
 /**
  * THE OTHER SHIPPED SERVICES' TOOL FORM (#2974: cut-over 3 of 6, "every unit the tool ships names the `agent-org` checkout and no
  * `packages/agent-org` path"): template -> the anchored lines that change. Each is a one-line pattern that must match exactly once, and
- * `$CHECKOUT` stands for the primary project's checkout in the replacement, because `prune-worktrees.mjs` takes the repository it
+ * `$CHECKOUT` stands for the primary project's checkout in the replacement, because `prune-worktrees.ts` takes the repository it
  * prunes as an argument (its cwd is now the tool's, not the project's) and the board dispatcher reads `$AGENT_ORG_PROJECT`.
  * `WorkingDirectory` is handled for all of them, below; the work-tick unit has its own function (`workTickToolForm`).
  * @type {Readonly<Record<string, ReadonlyArray<readonly [RegExp, string]>>>}
  */
 const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, string]>>> = Object.freeze({
   "worktree-prune.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=/usr/bin/node src/prune-worktrees.ts --apply $CHECKOUT"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m, "ExecStart=/usr/bin/node --import tsx src/prune-worktrees.ts --apply $CHECKOUT"],
   ],
   "board-report.service.in": [
     [/^ExecStart=\/usr\/bin\/bash packages\/agent-org\/host\/board-report-dispatch\.sh$/m,
@@ -363,31 +363,31 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   ],
   // THE /TMP FIXTURE JANITOR (a11ign/a11ign#3849): run from the tool's checkout, like the prune above it.
   "tmp-prune.service.in": [
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/prune-tmp\.mjs --apply --fixtures-only$/m, "ExecStart=/usr/bin/node src/prune-tmp.ts --apply --fixtures-only"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/prune-tmp\.ts --apply --fixtures-only$/m, "ExecStart=/usr/bin/node --import tsx src/prune-tmp.ts --apply --fixtures-only"],
   ],
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node src/trace/publish.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/publish.mjs"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
   // (`messaging:listen` -> `src/messaging/listen.mjs`, `messaging:watch` -> `src/messaging/watch.mjs`), run directly, which is the form `worktree-prune` has.
   "chairman-listen.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node src/messaging/listen.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/listen.mjs"],
   ],
   "chairman-watch.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node src/messaging/watch.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/watch.mjs"],
   ],
   // THE OTEL RECEIVER (a11ign/a11ign#4071): run from the tool's checkout, like the trace pages' script.
   "otel-receiver.service.in": [
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node src/trace/otel-receiver.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/otel-receiver.mjs"],
   ],
   // THE DRAINED KERNEL REBOOT (a11ign/a11ign#4053): run from the tool's checkout, like the receiver above.
   "kernel-reboot.service.in": [
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/host-kernel\.mjs --reboot$/m, "ExecStart=/usr/bin/node src/host-kernel.ts --reboot"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/host-kernel\.ts --reboot$/m, "ExecStart=/usr/bin/node --import tsx src/host-kernel.ts --reboot"],
   ],
   "shadow-window.service.in": [
-    [/^ExecStart=\/usr\/bin\/node packages\/agent-org\/src\/shadow-window\.mjs /m, "ExecStart=/usr/bin/node src/shadow-window.ts "],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/shadow-window\.ts /m, "ExecStart=/usr/bin/node --import tsx src/shadow-window.ts "],
   ],
 });
 
@@ -655,6 +655,15 @@ export function entriesFromCommand(command: string, { repoRoot = REPO_ROOT, scri
   return programCandidates(command, { repoRoot, scripts, cwd }).filter((entry) => exists(entry));
 }
 
+/** The first argument node would run as a script: past its flags, and past the VALUE of a spaced `--import` (`--import tsx`), which is not a path. */
+function scriptOfNode(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--import") i += 1;
+    else if (!args[i].startsWith("-")) return args[i];
+  }
+  return undefined;
+}
+
 /**
  * THE SAME RESOLUTION AS `entriesFromCommand`, WITHOUT THE `exists` FILTER -- split out for #2174.
  *
@@ -683,8 +692,8 @@ export function programCandidates(command: string, { repoRoot = REPO_ROOT,
     for (const stage of String(text).split(/\|\||&&|[|;]/)) {
       const argv = stage.trim().split(/\s+/).filter(Boolean);
       const tool = basename(argv[0] ?? "");
-      // node's own leading options (`--import=<preload>`, #3038) are not the script; `bash -c` stays unread, as `isPath` says.
-      const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
+      // node's own leading options (`--import=<preload>`, #3038; `--import tsx`, ADR 0043 decision 8) are not the script; `bash -c` stays unread, as `isPath` says.
+      const script = tool === "node" ? scriptOfNode(argv.slice(1)) : argv[1];
       // The project's scripts run the tool through its one bin (`agent-org worktrees:prune`, #2975), which is the table's program, not a path.
       const command = agentOrgCommand([tool, ...argv.slice(1)]);
       if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, (COMMANDS as Record<string, string>)[command]));
@@ -863,7 +872,7 @@ const RUNS_PACKAGE_SCRIPT = /(?:["'`]npm["'`]\s*,\s*|pnpmCliInvocation\(\s*)\[\s
 /**
  * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local
  * imports, and an `pnpm run` of another script. `SPAWNS_GH` is IMPORTED rather than retyped -- it is the
- * one copy `acceptance-commands.mjs` and `gh-token-jobs.test.ts` already share, so the spawns that make
+ * one copy `acceptance-commands.ts` and `gh-token-jobs.test.ts` already share, so the spawns that make
  * a CI job need a token and the spawns that make a unit need an identity cannot drift apart.
  *
  * A `GH_TOKEN` read is deliberately NOT this question. A token is a credential; `GH_CONFIG_DIR` picks
@@ -1165,7 +1174,7 @@ function humanAccountDeclared(deps: Parameters<typeof unitsSpendingGh>[0] & { hu
         detail: `it sets \`GH_CONFIG_DIR=${dir}\`, the person's own login (which has ADMIN). No agent acts as `
           + `the chairman unless something explicitly asks (#1950): use \`${workersDirectory(deps)}/gh\` `
           + `(a11ign-ai-workers) or \`${leadsDirectory(deps)}/gh\` (a11ign-ai-leads, write on a11ign/a11ign and `
-          + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.mjs with the "
+          + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.ts with the "
           + "ruling that says why." }];
     });
 }
@@ -1265,7 +1274,7 @@ export type WindowEnd = { cause: string, ticks: number, at: string };
 /**
  * THE END A TIMER WAS DESIGNED TO COME TO (#2971), read from the window's own record rather than from the timer's name.
  *
- * `a11ign-shadow-window.timer` disables ITSELF (`shadow-window.mjs`'s `endWindow`) after appending a `stop` row to the diff record its
+ * `a11ign-shadow-window.timer` disables ITSELF (`shadow-window.ts`'s `endWindow`) after appending a `stop` row to the diff record its
  * service names with `--record=`, and `disable --now` is also how it is kept stopped on purpose. Reading that as `NOT ENABLED` woke
  * `orchestrator` every tick and offered `host:install` (`enable --now`) as the remedy for a timer somebody stopped.
  *
@@ -1295,7 +1304,7 @@ function windowRecordPath(unit: string, deps: ShippedDeps): string | null {
   return /--record=(\S+)/.exec(execCommands(String(shippedUnitText(service, deps) ?? "")).join("\n"))?.[1] ?? null;
 }
 
-/** The marker `shadow-window.mjs --arm` creates, by name; `shadow-reads.mjs` owns the constant and this file does not import it (its closure is the candidate's). */
+/** The marker `shadow-window.ts --arm` creates, by name; `shadow-reads.ts` owns the constant and this file does not import it (its closure is the candidate's). */
 const SHADOW_WINDOW_MARKER_NAME = "shadow-window-open";
 
 /** @param {string} text @returns {any} the parsed JSON, or null when it is not JSON */
@@ -1471,7 +1480,7 @@ export function systemdUserAvailable(systemctl: (args: string[]) => string = def
  * here, and the one that was missing on the day it mattered.
  *
  * MEASURED 2026-09-22. #1941 retired `a11ign-fleet-gated-nightly.{service,timer}`: the 01:00 batch
- * became `work-gate.mjs`'s `fleet-batch-due` cause, and the unit files were DELETED from
+ * became `work-gate.ts`'s `fleet-batch-due` cause, and the unit files were DELETED from
  * `packages/agent-org/host/` precisely so `host:install` could not put the clock back beside the gate
  * cause. The PR merged. And the timer was still installed, still `enabled`, still `active`, and still
  * scheduled for 01:00 the next morning:
@@ -1534,7 +1543,7 @@ export function orphanedUnits(deps: ShippedDeps & {
  * oversight. systemd will not read a unit out of the tree, so `~/.config/systemd/user` holds a copy and
  * `unitState`'s CURRENT question exists to report its drift. Nothing makes that demand of a program:
  * `a11ign-board-report.service` runs `packages/agent-org/host/board-report-dispatch.sh` where it sits,
- * exactly as `a11ign-work-tick.service` runs `work-tick.mjs` where it sits. So there is no CURRENT
+ * exactly as `a11ign-work-tick.service` runs `work-tick.ts` where it sits. So there is no CURRENT
  * question to ask about a script -- there is only one copy, and a merged edit is live at the next
  * firing rather than at the next `host:install`, which is #1858's whole finding pointing the other way.
  *
@@ -1614,7 +1623,7 @@ export const GLOBAL_ZSHENV = `${process.env.HOME ?? ""}/.zshenv`;
  */
 export const WORKERS_README = `# workers — the a11ign-ai-workers GitHub identity for agent sessions
 
-Owned by the repository (packages/agent-org/src/host-units.mjs): \`pnpm run host:install\` writes this file and
+Owned by the repository (packages/agent-org/src/host-units.ts): \`pnpm run host:install\` writes this file and
 \`pnpm run host:check\` reports it DIVERGED. Edit it there.
 
 - \`gh/\` — GH_CONFIG_DIR for the machine account \`a11ign-ai-workers\` (device-flow login; token lives only in gh/hosts.yml, mode 600).
@@ -1846,7 +1855,7 @@ export function windowEndNotes(deps: Parameters<typeof unitState>[1] = {}): Find
     .filter(endedOnPurpose).map((s) => ({ unit: s.unit, problem: "EXPECTED DISABLED -- ITS WINDOW ENDED",
       detail: `its window record holds a \`stop\` row (${s.windowEnded?.cause}, ${s.windowEnded?.ticks} ticks, ${s.windowEnded?.at}) `
         + "and no marker newer than it, so `disabled` is where it was meant to end. Not a failure: `host:install` skips it "
-        + "(`SKIPPED -- its window ended`), and it is armed again by `shadow-window.mjs --arm`, after which this note goes and `NOT ENABLED` returns if it is still off." }));
+        + "(`SKIPPED -- its window ended`), and it is armed again by `shadow-window.ts --arm`, after which this note goes and `NOT ENABLED` returns if it is still off." }));
 }
 
 /**
@@ -2391,7 +2400,7 @@ export function unclassifiedEntries(deps: ShippedDeps & { units?: UnitsDeclarati
     detail: Object.hasOwn(HOST_DATA_ENTRIES, name)
       ? `${name} is host data now: it is \`${HOST_DATA_ENTRIES[name]}\` in host.json, and is rendered rather than shipped`
       : `${shippedDir} holds ${name}, which is not one of the tool's ${TOOL_ENTRIES.length} entries. Add it to TOOL_ENTRIES in `
-        + "host-units.mjs if it is the tool's, or move it to the project's `.agent-org/units/` and list it in `units.own`",
+        + "host-units.ts if it is the tool's, or move it to the project's `.agent-org/units/` and list it in `units.own`",
   }));
   const foreign = projectDir === null ? [] : namesIn(projectDir, readDir).filter((name) => !own.has(name)).map((name) => ({
     unit: name, problem: "UNCLASSIFIED ENTRY",
@@ -2544,7 +2553,7 @@ export function hostUnitsInstall(deps: ShippedDeps & {
   for (const started of units.filter((u) => startedByEnable(u, unitPrefix(deps)))) {
     const ended = windowEndedOnPurpose(started, { ...deps, installedDir, systemctl });
     if (ended !== null) {
-      out(`SKIPPED ${started} -- its window ended (${ended.cause}, ${ended.ticks} ticks, ${ended.at}); arm it with shadow-window.mjs --arm\n`);
+      out(`SKIPPED ${started} -- its window ended (${ended.cause}, ${ended.ticks} ticks, ${ended.at}); arm it with shadow-window.ts --arm\n`);
       continue;
     }
     systemctl(["enable", "--now", started]);
@@ -2650,7 +2659,7 @@ export function modelEffortDrift({ settingsPath = `${process.env.HOME ?? ""}/.cl
     const found = has === undefined ? "has no entry" : `is ${JSON.stringify(has)}`;
     return [{ unit: "~/.claude/settings.json", problem: `EFFORT NOT SET FOR ${id}`,
       detail: `modelSettings.${id}.effortLevel ${found}, and the org declares \`${effortLevel}\` for \`${alias}\` `
-        + "(worker-profile.mjs `DECLARED_CLAUDE_MODELS`), so sessions on it run at the model's default effort. "
+        + "(worker-profile.ts `DECLARED_CLAUDE_MODELS`), so sessions on it run at the model's default effort. "
         + `Add \`"modelSettings": { "${id}": { "effortLevel": "${effortLevel}" } }\` by hand: this check cannot fix a `
         + "file outside the repository." }];
   });
@@ -2908,10 +2917,10 @@ function remedy(drift: Finding[]): string {
 }
 
 /**
- * `--json`: the SAME findings the report is built from, as data -- #2174's seam for `work-gate.mjs`.
+ * `--json`: the SAME findings the report is built from, as data -- #2174's seam for `work-gate.ts`.
  *
  * THE GATE SPAWNS THIS RATHER THAN IMPORTING IT, and the reason is measured rather than stylistic. A
- * direct `import { hostUnitDrift }` in `work-gate.mjs` costs nothing at load -- +1 file on a closure of
+ * direct `import { hostUnitDrift }` in `work-gate.ts` costs nothing at load -- +1 file on a closure of
  * 21, 39.3ms against 39.4ms -- but it drags this file's `git log --all` (`addedOnSomeRef`) into the
  * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.mjs`, which most of the
  * packaging suite reaches. MEASURED with `deriveClosureRequirements` over

@@ -4,10 +4,10 @@
 /**
  * #3867: THE PER-PR ARM JOB MUST NOT ARM A PULL REQUEST THAT CARRIES A `hold:` LABEL.
  *
- * `auto-arm-sweep.mjs` and `arm-pr.mjs` both read `armabilityOf` (src/pr-hold-state.ts) and refuse a held PR; the workflow's `arm` job, the path that
+ * `auto-arm-sweep.ts` and `arm-pr.ts` both read `armabilityOf` (src/pr-hold-state.ts) and refuse a held PR; the workflow's `arm` job, the path that
  * fires first, ran `gh pr merge --auto` on the event alone (measured on a11ign/agent-org#311: armed eight seconds after `ready_for_review`, hold on).
  *
- * The job runs on `actions/checkout` alone and must stay that way (`arm-pr.mjs`'s header), so it cannot import the predicate and mirrors its prefix in
+ * The job runs on `actions/checkout` alone and must stay that way (`arm-pr.ts`'s header), so it cannot import the predicate and mirrors its prefix in
  * shell. A mirror that nothing compares drifts, so this file RUNS the step's own `run:` text as the runner would (`bash -e`, the step's `env:`
  * resolved by hand) and ties the prefix to `HOLD_PREFIX`.
  */

@@ -4,7 +4,7 @@
 //
 // THE FREEZE ENDED AT 06:50Z AND FOUR HOURS LATER `hold:ceo` WAS STILL ON #2988/#2990, `Not-before 2026-10-03T18:27:56Z` ON FOUR MORE ROWS
 // AND `blockedBy #2972` ON FIVE, with twelve sessions idle. `org-health` did not trip because every stalled item carried a FIELD saying
-// "wait", and `red-pr.mjs`'s `holdersOf` and the claim's `NOT_STARTABLE` set read a declared wait as proof of health. A field says THAT
+// "wait", and `red-pr.ts`'s `holdersOf` and the claim's `NOT_STARTABLE` set read a declared wait as proof of health. A field says THAT
 // something waits and never WHAT FOR, so a wait outlives its reason and looks identical to a live one.
 //
 // THE FIX IS TO MAKE THE CONDITION A FIELD TOO, in a CLOSED vocabulary the gate can read -- a condition it cannot read is the sentence
@@ -31,14 +31,14 @@
 // `Waiting-for: manual` is the one non-condition, ALLOWED AND COUNTED: it is what `pr:hold --until manual` writes, and it expires into
 // the unexcused after `MANUAL_WAIT_HOURS` (the length the 2026-10-02 freeze held for before a human found it).
 //
-// THIS IS NOT `waiting-condition.mjs`, which decides whether a ROW is startable from its fields. That file reads the FIELDS; this one
+// THIS IS NOT `waiting-condition.ts`, which decides whether a ROW is startable from its fields. That file reads the FIELDS; this one
 // reads what a field is waiting FOR. They share the field list (`WAIT_FIELDS`) and nothing else.
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `red-pr.mjs`: `work-gate.mjs` imports it before any build.
+// A LEAF, RELATIVE IMPORTS ONLY, like `red-pr.ts`: `work-gate.ts` imports it before any build.
 import { notBeforeDate, fleetHoldUntil } from "./waiting-condition.ts";
 import { ANSWER_PREFIX, BLOCKED_LABEL, LANE_PREFIX, LANE_ANY_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 
-/** The label of a row held out of the queue on purpose; `work-gate.mjs` exports the same string as `PARKED_LABEL`, restated because that file imports this one. */
+/** The label of a row held out of the queue on purpose; `work-gate.ts` exports the same string as `PARKED_LABEL`, restated because that file imports this one. */
 export const PARKED_LABEL = "parked";
 
 /** How long a `manual` hold, or a hold with no condition at all, is excused: the 2026-10-02 freeze held this long unseen. */
@@ -70,7 +70,7 @@ const ITEM_STATES = Object.freeze(["closed", "merged", "labelled", "unlabelled"]
  * stall signals read it like a `hold:*`. Before this no detector did, and #4090 sat ten hours `parked` on a wait that had been met.
  *
  * WHO REMOVES THEM (#3364): THE GATE LIFTS a PULL REQUEST's `hold:*` once every `Waiting-for:` it declares is `merged`/`closed` and true
- * (`liftableHolds`, through `pr-hold.mjs --release`, which re-arms). A SESSION lifts everything else: a `hold:*` on a row, a hold whose
+ * (`liftableHolds`, through `pr-hold.ts --release`, which re-arms). A SESSION lifts everything else: a `hold:*` on a row, a hold whose
  * condition is a label, `manual`, unreadable or unread, and every `answer:*` (its removal IS the answer) and `blocked` (no referent).
  * `gate-lifts-resolved-holds.test.ts` gives each kind above its verdict and reason.
  */
@@ -355,7 +355,7 @@ export type HoldLift = { item: WaitItem, holders: string[], stale: StaleWait[] }
 /**
  * #3364: THE STALE WAITS THE GATE ENDS ITSELF, AND THE ONES IT LEAVES TO A SESSION. A stale wait is lifted by the gate only when removing the
  * `hold:*` label(s) IS the whole remedy, which is when ALL of these hold: the item is a PULL REQUEST of the first repository or of one the project
- * DECLARES (`pr-hold.mjs` is the release, and it is aimed at the repository by key, #3479); EVERY `Waiting-for:` it declares is `merged` or `closed` and true (one still open, a label condition, or a
+ * DECLARES (`pr-hold.ts` is the release, and it is aimed at the repository by key, #3479); EVERY `Waiting-for:` it declares is `merged` or `closed` and true (one still open, a label condition, or a
  * line the gate could not read keeps the hold, because the hold may be waiting for that one); and the only wait fields that need removing are
  * `hold:*` (an `answer:*` label's removal IS the answer, and `blocked` has no referent, so an item carrying either stays with a session whole).
  * @param {StaleWait[]} stale @param {number} now
@@ -391,7 +391,7 @@ export type BareWait = { item: WaitItem, fields: string[], quietSince: number | 
 /**
  * THE WAIT FIELDS THAT NEED A REASON, `parked` only when it stands alone without one. A park is excused by any other thing that says why the row is held: another wait field
  * (named in its own right), a `Not-before:` the gate can read (past or future: a passed date is `unpark-satisfied`'s to act on, not a park without reason), or `needs:chairman`
- * (the chairman's brief IS the reason, `board-truth-audit.mjs` rule 2).
+ * (the chairman's brief IS the reason, `board-truth-audit.ts` rule 2).
  * @param {WaitItem} item @param {number} now @returns {{ kind: string, label: string | null }[]}
  */
 function fieldsNeedingAReason(item: WaitItem, now: number): { kind: string; label: string | null; }[] {

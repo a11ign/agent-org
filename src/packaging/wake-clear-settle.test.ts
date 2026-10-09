@@ -15,7 +15,7 @@
  *  3. THE DEFAULT IS REAL, by the ONE test in the tree that does not inject. A `sleep` that defaulted to a no-op would
  *     make every test fast and the production path silently instant. It costs five seconds on purpose.
  *
- * #2688 EXTENDS THIS TO `/compact`: the same seam ({@link settleAfter} in `wake.mjs`) backs both commands, so the same
+ * #2688 EXTENDS THIS TO `/compact`: the same seam ({@link settleAfter} in `wake.ts`) backs both commands, so the same
  * three pins apply to it -- and `contextRoot` is fixed to an EMPTY directory throughout, so a fixture naming a real
  * org label (`ceo`, `reviewer-2546`) is never compacted by a coincidence of a shared host's real transcripts.
  */

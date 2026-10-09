@@ -1,4 +1,4 @@
-// no-token: gh -- `wake.mjs` spawns `gh` and `herdr`; every call here goes through an injected `run`, `prState` or `removeCheckout`
+// no-token: gh -- `wake.ts` spawns `gh` and `herdr`; every call here goes through an injected `run`, `prState` or `removeCheckout`
 /**
  * #3482: TWO HERDR WORKSPACES UNDER ONE REVIEWER LABEL ARE BOTH ENDED, AND THE DUPLICATE IS SEEN WHILE THE PULL REQUEST IS OPEN.
  *

@@ -1,6 +1,6 @@
-// no-token: gh -- `org-retro.mjs` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam; nothing imported reaches the real one
+// no-token: gh -- `org-retro.ts` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/org-retro.mjs` and its wiring in `work-gate.mjs`, #2938: THE DAILY RETROSPECTIVE. Once per UTC date the gate hands `ceo`
+ * `packages/agent-org/src/org-retro.ts` and its wiring in `work-gate.ts`, #2938: THE DAILY RETROSPECTIVE. Once per UTC date the gate hands `ceo`
  * the last 24 hours' numbers, already computed, and `ceo` is ordered to find the CLASS behind each number that worsened.
  *
  * EVERY NUMBER BELOW IS CHECKED BY HAND AGAINST A FIXTURE WINDOW, written out as a literal. A test built from the module's own constants moves
@@ -139,7 +139,7 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
 
 test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
-  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.mjs is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
+  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
   const next = ci.slice(from + 1).search(/\n {2}[\w-]+:\n/);
@@ -173,7 +173,7 @@ test("the hand-fix line is the ledger's own: one human-authored change prints 1,
 
 const AGENT_ORG_SRC = new URL("../", import.meta.url);
 /** The scan's own subject: it reads files and is not the writer it looks for. Excluded in CODE, here, and not by an entry in a list it also matches. */
-const SELF = "org-retro.mjs";
+const SELF = "org-retro.ts";
 const WRITE_CALL = /\b(writeFileSync|appendFileSync|renameSync)\(/;
 
 /** Comments removed, so a name that survives only in a header ("until the sibling row lands") is not a reader and not a writer. */
@@ -195,12 +195,12 @@ function readButNeverWritten(names: string[], writers: { text: string }[]): stri
   return names.filter((name) => !writers.some((w) => code(w.text).includes(name) && WRITE_CALL.test(code(w.text))));
 }
 
-test("every file org-retro.mjs reads from the state directory is written by some module in agent-org (#2954)", () => {
+test("every file org-retro.ts reads from the state directory is written by some module in agent-org (#2954)", () => {
   const source = readFileSync(new URL(SELF, AGENT_ORG_SRC), "utf8");
   const writers = sourceFiles(AGENT_ORG_SRC);
   const read = stateFilesRead(source);
   assert.ok(read.includes("wake-ledger"), "POSITIVE CONTROL: the scan finds the wake ledger, so the population is not empty");
-  assert.deepEqual(readButNeverWritten(["wake-ledger"], writers), [], "POSITIVE CONTROL: and the writer search finds wake.mjs writing it");
+  assert.deepEqual(readButNeverWritten(["wake-ledger"], writers), [], "POSITIVE CONTROL: and the writer search finds wake.ts writing it");
   assert.deepEqual(readButNeverWritten(read, writers), [], `read from the state directory and never written: ${readButNeverWritten(read, writers).join(", ")}`);
 });
 

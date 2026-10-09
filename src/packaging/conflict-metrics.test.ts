@@ -128,7 +128,7 @@ test("mergedPRNeededReconciliation: a bogus sha is unresolvable (null), not thro
 // listing this test writes, and every argv the composition sent is asserted.
 //
 // WHAT THIS CANNOT CATCH: GitHub's real answer -- what a `created:>=` search returns, the field names `--json`
-// yields, paging behind `--limit`. That is still exercised where it always mattered: `board-report.mjs` calls the
+// yields, paging behind `--limit`. That is still exercised where it always mattered: `board-report.ts` calls the
 // live `conflictMetrics` for every board edition. No local test reaches it any more, and that is the point.
 
 const SINCE = "2026-09-08T00:00:00.000Z";
@@ -207,7 +207,7 @@ test("wiring: conflictMetrics is the live entry and hands in gh; the composition
   const source = readFileSync(new URL("../board-data.ts", import.meta.url), "utf8");
   const body = (name: string) => {
     const start = source.indexOf(`export function ${name}(`);
-    assert.ok(start >= 0, `${name} is exported from board-data.mjs`);
+    assert.ok(start >= 0, `${name} is exported from board-data.ts`);
     return source.slice(start, source.indexOf("\n}\n", start)).replace(/\/\/.*$/gm, "");
   };
   assert.match(body("conflictMetrics"), /^export function conflictMetrics\(since\) \{\s*return composeConflictMetrics\(since, \{ run: gh \}\);\s*$/);

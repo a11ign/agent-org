@@ -1,5 +1,5 @@
 [Unit]
-# THE JANITOR'S CLOCK -- #3849, class fix 1a of the 2026-10-06 host-hang incident (#3846). `prune-tmp.mjs` has existed since #2166 and NOTHING RAN IT:
+# THE JANITOR'S CLOCK -- #3849, class fix 1a of the 2026-10-06 host-hang incident (#3846). `prune-tmp.ts` has existed since #2166 and NOTHING RAN IT:
 # `/tmp` reached 121,411 entries and 14 GB of test fixtures, and the kernel's soft lockup at 14:09:00Z was an `rmdir` over a directory that size. This
 # unit is the wiring that file's own header said was missing, and it is the SAME code that clears the existing pile: its first runs ARE the gentle clear.
 Description=a11ign: remove old test fixtures from /tmp in small niced batches (prune-tmp --apply --fixtures-only)
@@ -16,7 +16,7 @@ Environment=HOME=@@home@@
 # V8'S COMPILE CACHE GOES UNDER THE HOME, NOT /tmp (#2458): the very directory this unit is emptying must not be where its own node process writes.
 Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
 
-# DECLARED BECAUSE `prune-tmp.mjs` CAN REACH A `gh` SPAWN (the review family's open-pull-request read), and `host-units.mjs` refuses a unit that
+# DECLARED BECAUSE `prune-tmp.ts` CAN REACH A `gh` SPAWN (the review family's open-pull-request read), and `host-units.ts` refuses a unit that
 # reaches one and names no account (#1974). THIS UNIT NEVER TAKES THAT PATH: `--fixtures-only` below walks no review leftover, so the line costs no pool.
 Environment=GH_CONFIG_DIR=@@workersDir@@/gh
 
@@ -30,7 +30,7 @@ IOSchedulingClass=idle
 # scratchpad can be a live session's, a test fixture cannot be anyone's current work. ONE RUN REMOVES AT MOST `MAX_REMOVALS_PER_RUN` ENTRIES, one call
 # each with a pause after it, and never a whole tree at once; what a run cannot finish is renamed `.prune-tmp-doomed-*`, which the next run finishes
 # first, so a run killed mid-batch (`TimeoutStartSec`, a reboot, an OOM) leaves a state the next one completes.
-ExecStart=/usr/bin/node packages/agent-org/src/prune-tmp.mjs --apply --fixtures-only
+ExecStart=/usr/bin/node --import tsx packages/agent-org/src/prune-tmp.ts --apply --fixtures-only
 
 # A RUN IS ~300 REMOVALS AND 20 ms PAUSES, SO ABOUT TEN SECONDS. This bound is for a hung disk, not a slow run, and it must be shorter than the
 # timer's interval so a stuck run cannot stack on the next.
