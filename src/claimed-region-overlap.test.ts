@@ -52,18 +52,18 @@ const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };
 
 /** #3414's Region, as filed (measured 2026-10-04 off the row's body). */
 const REGION_3414 = [
-  "agent-org:src/messaging/sources/milestones.mjs", "agent-org:src/messaging/sources/milestones.test.mjs",
-  "agent-org:src/messaging/config.mjs", "agent-org:src/messaging/config.test.mjs", "agent-org:src/messaging/check.mjs",
+  "agent-org:src/messaging/sources/milestones.mjs", "agent-org:src/messaging/sources/milestones.test.ts",
+  "agent-org:src/messaging/config.mjs", "agent-org:src/messaging/config.test.ts", "agent-org:src/messaging/check.ts",
   "agent-org:src/messaging/watch.mjs", "agent-org:src/messaging/event.mjs", "agent-org:src/messaging/core.mjs",
 ];
 /** #3423's Region, as filed: 17 entries. */
 const REGION_3423 = [
-  "agent-org:src/messaging/providers/telegram/send.mjs", "agent-org:src/messaging/providers/telegram/send.test.mjs",
-  "agent-org:src/messaging/answers.mjs", "agent-org:src/messaging/answers.test.mjs", "agent-org:src/messaging/inbound.mjs",
-  "agent-org:src/messaging/inbound.test.mjs", "agent-org:src/messaging/watch.mjs", "agent-org:src/messaging/event.mjs",
-  "agent-org:src/messaging/core.mjs", "agent-org:src/messaging/core.test.mjs", "agent-org:src/messaging/listen.mjs",
-  "agent-org:src/messaging/listen.test.mjs", "agent-org:src/messaging/converse.mjs", "agent-org:src/messaging/converse.test.mjs",
-  "agent-org:src/messaging/providers/telegram/poll.test.mjs", "agent-org:src/messaging/watch-buttons.test.mjs",
+  "agent-org:src/messaging/providers/telegram/send.mjs", "agent-org:src/messaging/providers/telegram/send.test.ts",
+  "agent-org:src/messaging/answers.mjs", "agent-org:src/messaging/answers.test.ts", "agent-org:src/messaging/inbound.mjs",
+  "agent-org:src/messaging/inbound.test.ts", "agent-org:src/messaging/watch.mjs", "agent-org:src/messaging/event.mjs",
+  "agent-org:src/messaging/core.mjs", "agent-org:src/messaging/core.test.ts", "agent-org:src/messaging/listen.mjs",
+  "agent-org:src/messaging/listen.test.ts", "agent-org:src/messaging/converse.mjs", "agent-org:src/messaging/converse.test.ts",
+  "agent-org:src/messaging/providers/telegram/poll.test.ts", "agent-org:src/messaging/watch-buttons.test.ts",
   "agent-org:docs/messaging.md",
 ];
 const SHARED = ["agent-org:src/messaging/core.mjs", "agent-org:src/messaging/event.mjs", "agent-org:src/messaging/watch.mjs"];

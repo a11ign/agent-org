@@ -20,14 +20,14 @@ type Pr = { number: number, files: { path: string }[], changedFiles: number, lab
   headRefName: string };
 
 const CHANGESET = (name: string) => `.changeset/${name}.md`;
-const PR_148 = [CHANGESET("buttons-are-drawn"), "docs/messaging.md", "src/messaging/answers.mjs", "src/messaging/answers.test.mjs", "src/messaging/converse.mjs",
-  "src/messaging/converse.test.mjs", "src/messaging/core.mjs", "src/messaging/core.test.mjs", "src/messaging/event.mjs", "src/messaging/inbound.mjs",
-  "src/messaging/inbound.test.mjs", "src/messaging/listen.mjs", "src/messaging/listen.test.mjs", "src/messaging/providers/telegram/poll.test.mjs",
-  "src/messaging/providers/telegram/send.mjs", "src/messaging/providers/telegram/send.test.mjs", "src/messaging/watch-buttons.test.mjs", "src/messaging/watch.mjs"];
-const PR_149 = [CHANGESET("incident-says-what-is-being-done"), "docs/messaging.md", "src/messaging/sources/incidents.mjs", "src/messaging/sources/incidents.test.mjs",
-  "src/messaging/sources/readers.mjs", "src/messaging/sources/readers.test.mjs", "src/messaging/sources/stall.mjs", "src/messaging/sources/stall.test.mjs", "src/messaging/watch.mjs"];
-const PR_150 = [CHANGESET("a-milestone-moving-is-told"), "src/messaging/check.mjs", "src/messaging/config.mjs", "src/messaging/config.test.mjs", "src/messaging/core.mjs",
-  "src/messaging/event.mjs", "src/messaging/sources/milestones.mjs", "src/messaging/sources/milestones.test.mjs", "src/messaging/watch.mjs"];
+const PR_148 = [CHANGESET("buttons-are-drawn"), "docs/messaging.md", "src/messaging/answers.mjs", "src/messaging/answers.test.ts", "src/messaging/converse.mjs",
+  "src/messaging/converse.test.ts", "src/messaging/core.mjs", "src/messaging/core.test.ts", "src/messaging/event.mjs", "src/messaging/inbound.mjs",
+  "src/messaging/inbound.test.ts", "src/messaging/listen.mjs", "src/messaging/listen.test.ts", "src/messaging/providers/telegram/poll.test.ts",
+  "src/messaging/providers/telegram/send.mjs", "src/messaging/providers/telegram/send.test.ts", "src/messaging/watch-buttons.test.ts", "src/messaging/watch.mjs"];
+const PR_149 = [CHANGESET("incident-says-what-is-being-done"), "docs/messaging.md", "src/messaging/sources/incidents.mjs", "src/messaging/sources/incidents.test.ts",
+  "src/messaging/sources/readers.mjs", "src/messaging/sources/readers.test.ts", "src/messaging/sources/stall.mjs", "src/messaging/sources/stall.test.ts", "src/messaging/watch.mjs"];
+const PR_150 = [CHANGESET("a-milestone-moving-is-told"), "src/messaging/check.ts", "src/messaging/config.mjs", "src/messaging/config.test.ts", "src/messaging/core.mjs",
+  "src/messaging/event.mjs", "src/messaging/sources/milestones.mjs", "src/messaging/sources/milestones.test.ts", "src/messaging/watch.mjs"];
 const PR_151 = [CHANGESET("host-runs-one-tool-version"), "src/host-config.mjs", "src/host-units.mjs", "src/lib/release-tag.mjs", "src/lib/tool-version.mjs",
   "src/packaging/host-tool-install.test.ts", "src/packaging/host-units.test.ts", "src/packaging/work-tick-crash-exit.test.ts", "src/update-tool.mjs", "src/update-tool.test.mjs",
   "src/work-tick.mjs"];
