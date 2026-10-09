@@ -19,8 +19,18 @@ export const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 /** Where the project's plugin imports the tool from today (`../../packages/agent-org/src/...`), so a copy must put it there. */
 const TOOL_DIR = "packages/agent-org";
 
-/** The project's files a copied tool reads at import: its declaration, the plugin that declaration names (imported DYNAMICALLY, so `localImports` cannot see it). */
-const PROJECT_FILES = [".agent-org/project.json", ".agent-org/plugins/causes.mjs"];
+const PROJECT_DECLARATION = ".agent-org/project.json";
+
+/**
+ * The project's files a copied tool reads at import: its declaration, and the plugin that declaration names (imported DYNAMICALLY, so
+ * `localImports` cannot see it). The plugin is READ from the declaration rather than listed by name, so the project renaming it
+ * (`causes.mjs` to `causes.ts`, a11ign/a11ign#4393) cannot break a test here before this list moves.
+ */
+function projectFiles(): string[] {
+  const declaration = JSON.parse(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION), "utf8")) as { causes?: { module?: string } };
+  const plugin = declaration.causes?.module;
+  return plugin === undefined ? [PROJECT_DECLARATION] : [PROJECT_DECLARATION, join(".agent-org", plugin)];
+}
 
 export const toolFile = (relativePath: string): string => join(TOOL_ROOT, relativePath);
 
@@ -49,7 +59,7 @@ export function copyToolAndProject(entry: string, files: Iterable<string>, copyR
   for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
   // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under tsx.
   writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
-  for (const file of PROJECT_FILES) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
+  for (const file of projectFiles()) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
   const hostSource = process.env[HOST_ENV] ?? join(HOME_CHECKOUT, ".agent-org/host.json");
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };
   const hostPath = join(copyRoot, ".agent-org/host.json");
