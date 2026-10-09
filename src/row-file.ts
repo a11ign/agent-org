@@ -116,6 +116,7 @@ import { parseWaits, umbrellaEdge } from "./wait-condition.ts";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.ts"; // #4020
 import { loadLanes, inLane } from "./lane-ownership.ts";
 import { blastRadiusGate, ghBlastReads, type BlastVerdict } from "./blast-radius.ts"; // #4601
+import { sweepFilingAtFiling } from "./sweep-window.ts"; // #4603
 // #2111: both labels from the leaf module that OWNS them (#804), never the strings retyped -- a promotion
 // must refuse a row that is already claimed, and it writes `ready` four times. `ready-label-audit.test.ts`
 // enforces exactly this: a fresh local declaration of any of the four, anywhere in this directory, is a
@@ -1800,6 +1801,12 @@ export function createIssue(argv: string[], deps: {
   const duplicate = duplicateTitleRefusal(argv, tracker, run); // #4294: before the create call, so a refusal leaves nothing behind
   if (duplicate) {
     process.stderr.write(`${duplicate}\n`);
+    return 1;
+  }
+  // #4603: A SESSION HOLDING A CLAIMED SWEEP FILES NO FOLLOW-UP INTO ITS AREA UNTIL THE MERGE, refused before the create call like the duplicate title above -- the one filing path that can read both the session and the sweep.
+  const sweepHeld = sweepFilingAtFiling({ session, body: (body as string), reads: { run: (args) => run("gh", args), repo: tracker.repo, repos: declaration.code } });
+  if (sweepHeld) {
+    process.stderr.write(`${sweepHeld}\n`);
     return 1;
   }
   const boarding = boardingFor(argv);

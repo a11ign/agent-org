@@ -80,6 +80,7 @@ import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-clai
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.ts";
 import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
+import { readSweepWindows, sweepFreezeAtClaim, sweepFreezeOf, type SweepRow } from "./sweep-window.ts"; // #4603: a declared sweep freezes its Region for its window
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
 import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
@@ -666,7 +667,7 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
     }
     if (reason) return reason;
   }
-  return myFiles === null ? null : claimedRegionsReason(myFiles, { issueNumber, openPrs: otherPrFiles ?? [], run: ghRun, repo });
+  return myFiles === null ? null : claimedRegionsReason(myFiles, { issueNumber, openPrs: otherPrFiles ?? [], run: ghRun, repo, repos });
 }
 
 /**
@@ -681,10 +682,13 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
  *   `openPrs` is what the pull-request comparison was given, so a claimed row with a pull request is counted once, by its files
  * @returns {string | null}
  */
-function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; }): string | null {
+function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo, repos }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[]; }): string | null {
   if (myFiles.length === 0) return null;
   const claimed = lookupClaimedRegions({ run, repo });
   if (claimed === null) return claimedRowsUnread("retry the claim (the gate offers the row again by itself).");
+  // #4603: A DECLARED SWEEP'S FREEZE BEFORE THE VERDICT -- it holds its whole Region for its window, pull request or none, and its refusal names the minutes left.
+  const frozen = sweepFreezeAtClaim({ myFiles, issueNumber, reads: { run, repo, ...(repos === undefined ? {} : { repos }) } });
+  if (frozen) return frozen;
   return claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
 }
 
@@ -2404,6 +2408,7 @@ export function reportB4(issueNumber: number, deps: {
     mine?: (n: number, where?: { repo?: string; }) => string[] | null;
     others?: (where?: { trackerRepo?: string; }) => { number: number; files: string[]; changedFiles: number; closes?: number[]; }[] | null;
     claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null;
+    sweeps?: (where?: { repo?: string; }) => SweepRow[] | null;
 } = {}) {
   const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const mine = deps.mine ?? lookupMyRegionFiles;
@@ -2427,10 +2432,12 @@ export function reportB4(issueNumber: number, deps: {
  * @param {{ repo?: string, claimed?: (where?: { repo?: string }) => { number: number, files: string[], blockedBy: number[] }[] | null }} deps
  * @returns {string}
  */
-function claimedB4Line(myFiles: string[], issueNumber: number, openPrs: { closes?: number[] | number | null; }[], deps: { repo?: string; claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null; }): string {
+function claimedB4Line(myFiles: string[], issueNumber: number, openPrs: { closes?: number[] | number | null; }[], deps: { repo?: string; claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null; sweeps?: (where?: { repo?: string; }) => SweepRow[] | null; }): string {
   const claimed = (deps.claimed ?? lookupClaimedRegions)({ repo: deps.repo });
   if (claimed === null) return claimedRowsUnread("`row-claim claim` refuses on it.");
-  const reason = myFiles.length === 0 ? null : claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
+  // #4603: A caller that injects `claimed` supplies every read, so it reads no sweep unless it injects `sweeps` too -- as the pull-request reads beside it behave, and so a test of this line never reaches `gh`.
+  const sweeps = (deps.sweeps ?? (deps.claimed === undefined ? readSweepWindows : () => []))({ repo: deps.repo });
+  const reason = myFiles.length === 0 ? null : sweepFreezeOf({ myFiles, issueNumber, sweeps }) ?? claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
   return reason ? `B4 REFUSES THIS CLAIM: ${reason}` : "B4: no row already claimed holds any file in this row's Region.";
 }
 
