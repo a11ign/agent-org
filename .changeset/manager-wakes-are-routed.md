@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A MANAGER's gate order (`ceo`, `product-manager`, `orchestrator`) is asked about by the host's triage provider (`triageOrder`, a11ign/a11ign#4384) before it is delivered, and an answer of `digest` or `drop` HOLDS it (a11ign/a11ign#4385). Nothing is dropped: a held order sits in `triage-digest` beside the wake ledger, rides the same seat's next real order as a `HELD FOR YOUR NEXT ORDER` section, and is delivered alone by the work-tick once its oldest item is 60 minutes old (a quiet tick with a due item is no longer quiet). It enters the wake ledger only when delivered. A worker's or reviewer's order, a chairman-bound one, a resumed one, a `--needs-decision` one and every order with no `cause` are never sent to the provider. Below the host's `triage.minConfidence`, or on any provider error, the order is delivered as before; every asked order leaves a `triage: { route, via, confidence }` line. With `provider: "none"` (the one-line revert), or no `triage` block, nothing is asked or written and delivery is byte-identical; orders held under an earlier setting still ride or flush. The route never labels, comments, edits or sends.
