@@ -2717,7 +2717,9 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
   try {
     const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
     if (result.claimed) {
-      recordHeldRow(mySession, issueNumber);
+      // #4387: only a CLAIM is a row the instance holds. A dispatch is an offer ("DISPATCHED (not started)") the worker may decline, and
+      // recording it would leave an entry no release removes, refusing the worker's later legitimate claim.
+      if (mode === "claim") recordHeldRow(mySession, issueNumber);
       const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt,
         replacedTip: (result as { replacedTip?: string }).replacedTip });
       if (result.statusMoved) {

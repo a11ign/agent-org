@@ -87,8 +87,8 @@ function makeFixture(): Fixture {
 
 const teardown = (fixture: Fixture) => rmSync(fixture.dir, { recursive: true, force: true, maxRetries: 5 });
 
-function claim(fixture: Fixture, session: string, row: number) {
-  return spawnSync(process.execPath, [...TSX_IMPORT, fixture.entry, "claim", String(row), `--session=${session}`], {
+function claim(fixture: Fixture, session: string, row: number, command = "claim") {
+  return spawnSync(process.execPath, [...TSX_IMPORT, fixture.entry, command, String(row), `--session=${session}`], {
     encoding: "utf8",
     env: { ...sandboxGitEnv(), ...fixture.env, HOME: fixture.dir, GH_STATE: join(fixture.dir, "gh-state.json"),
       PATH: `${fixture.dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#4387 drives the CLI" },
@@ -171,6 +171,22 @@ test("#4387: a registry that cannot be read or written does not stop the claim, 
     assert.equal(existsSync(fixture.registry), false, "nothing was half-written");
   } finally {
     chmodSync(dirname(fixture.registry), 0o755);
+    teardown(fixture);
+  }
+});
+
+test("#4387: a DISPATCH is not a claim -- dispatch, decline, then a later claim by the same spare is not refused", () => {
+  const fixture = makeFixture();
+  try {
+    writeFileSync(fixture.registry, `${JSON.stringify({ "worker-9": { spawnedAt: 1, rows: [] } })}\n`);
+    const dispatched = claim(fixture, "worker-9", FIRST, "dispatch");
+    assert.match(dispatched.stdout, /DISPATCHED/, `the dispatch lands; stdout ${dispatched.stdout} stderr ${dispatched.stderr}`);
+    assert.deepEqual(registered(fixture)["worker-9"].rows, [], "an offer the worker has not taken is not a row it holds");
+    release(fixture, "worker-9", FIRST); // the worker declines it
+    const later = claim(fixture, "worker-9", SECOND);
+    assert.doesNotMatch(later.stdout, /NOT CLAIMED/, `stdout ${later.stdout} stderr ${later.stderr}`);
+    assert.deepEqual(registered(fixture)["worker-9"].rows, [SECOND]);
+  } finally {
     teardown(fixture);
   }
 });
