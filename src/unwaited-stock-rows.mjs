@@ -7,7 +7,8 @@
 // A ROW IS UNWAITED WHEN ALL OF THESE HOLD, and each is a field a reader can see, never a sentence (`waiting-conditions.md`):
 //   - it is open and carries `backlog` or `parked`, and the label was applied MORE THAN 24 HOURS before the reading. The age is the timeline's `labeled`
 //     event, not `createdAt` and not `updatedAt`: a comment must not reset it, and a row filed `ready` and parked last week is not new.
-//   - no `answer:*` label, no OPEN native `blockedBy` edge (a closed one is a wait that ended), no READABLE `Waiting-for:` line, no `Waits-on-done-when:`
+//   - no `needs:chairman` or `meta` label (`STANDING_WAIT_LABELS`: a chairman wait the daily reminder moves, and a declared standing row; #4323),
+//     no `answer:*` label, no OPEN native `blockedBy` edge (a closed one is a wait that ended), no READABLE `Waiting-for:` line, no `Waits-on-done-when:`
 //     line, and no `Not-before:` still in the future (a past one is a wait that ended). `waitingOn` and `parseWaits` ARE those readers; nothing here re-spells them.
 //   - A `Waiting-for:` line is readable when `parseWaits` gives it a state other than `unreadable` (`manual` is one: a wait said out loud). A row parked on a
 //     SENTENCE ("ceo's dispatched run ... ends") has a field no one can ever clear, so it is counted, and `unwaitedLines` names it `unreadable wait` so the
@@ -20,11 +21,18 @@
 import { execFileSync } from "node:child_process";
 import { waitingOn } from "./waiting-condition.mjs";
 import { parseWaits, namedDoneWhens } from "./wait-condition.mjs";
-import { BACKLOG_LABEL } from "./project-vocabulary.mjs";
+import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.mjs";
 
 /** The `parked` state label; `project-vocabulary.mjs` declares `backlog` and `work-gate.mjs` (not a leaf) the other. */
 const PARKED_LABEL = "parked";
 const STOCK_LABELS = [BACKLOG_LABEL, PARKED_LABEL];
+
+/**
+ * LABELS THAT ARE THEIR OWN WAIT (#4323). `needs:chairman` is a wait that moves the row (`chairman-blocked` wakes `ceo` about it every UTC day); `meta` declares a
+ * standing row (the daily board report's issue) that has no condition to wait for and must stay `backlog` for the state-label audit. The exemption is the label a
+ * row carries, never a number list, so a new standing row needs no code change. Before it, the count had a floor of 2 and a genuinely forgotten third row hid.
+ */
+const STANDING_WAIT_LABELS = [NEEDS_CHAIRMAN_LABEL, "meta"];
 
 /** How long a stock label may stand before a row with no wait is called unwaited (`ceo`, #4055 item 5). */
 export const UNWAITED_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -47,13 +55,14 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 const labelNames = (/** @type {StockRow} */ row) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
 
 /**
- * Whether anything declares a wait that can end. `waitingOn` is the reader for an OPEN `blockedBy` edge, a FUTURE `Not-before:` (a past one is none) and an
+ * Whether anything declares a wait that can end, or the row is a standing one. `waitingOn` is the reader for an OPEN `blockedBy` edge, a FUTURE `Not-before:` (a past one is none) and an
  * `answer:*` label; the two lines are `parseWaits`'s `Waiting-for:` and `namedDoneWhens`'s `Waits-on-done-when:`, both read outside code fences. An
  * `unreadable` `Waiting-for:` is `parseWaits` KEEPING a sentence as a wait that says nothing, so it is not one here (#4237).
  * @param {StockRow} row @param {number} now @returns {boolean}
  */
 function waits(row, now) {
-  return waitingOn({ ...row, blockedBy: row.blockedBy ?? undefined }, new Date(now).toISOString().slice(0, 10), now) !== null
+  return labelNames(row).some((l) => STANDING_WAIT_LABELS.includes(l))
+    || waitingOn({ ...row, blockedBy: row.blockedBy ?? undefined }, new Date(now).toISOString().slice(0, 10), now) !== null
     || parseWaits(row.body).some((wait) => wait.state !== "unreadable")
     || namedDoneWhens(String(row.body ?? "")).length > 0;
 }
