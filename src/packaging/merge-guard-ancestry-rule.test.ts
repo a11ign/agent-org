@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ancestryReason } from "../merge-guard/ancestry-rule.mjs";
+import { ancestryReason } from "../merge-guard/ancestry-rule.ts";
 
 test("behindBy: 0 raises no reason -- the common, up-to-date case", () => {
   assert.deepEqual(ancestryReason(0), []);

@@ -4,10 +4,10 @@
  * `packages/agent-org/src/row-claim/waiting-language-rule.mjs` for the full account: a warning, never a
  * refusal, printed by `row-file.ts` alongside `directoryRegionWarning` and `unrecognisedRegionWarning`.
  */
-import { declareWalkScope } from "../lib/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { waitingLanguageWarning } from "../row-claim/waiting-language-rule.mjs";
+import { waitingLanguageWarning } from "../row-claim/waiting-language-rule.ts";
 
 // #929: THIS GUARD READS ONLY `packages/agent-org`, so a diff that cannot reach it need not run this file.
 // #2619 (child 3d of #69): `.agent-org` joins the scope -- `waiting-condition.ts` now imports

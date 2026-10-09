@@ -21,7 +21,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { TSX_IMPORT } from "../tsx-import.ts";
 import { toolNodeModules } from "./tool-node-modules.ts";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
@@ -44,11 +44,11 @@ test.after(() => {
   for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A `tool` that is only a `src/bin.mjs`: it says which checkout it is and exits with 2 for `unknown-command`, as the real one does. */
+/** A `tool` that is only a `src/bin.ts`: it says which checkout it is and exits with 2 for `unknown-command`, as the real one does. */
 function stubTool(name: string): string {
   const tool = join(scratch(), name);
   mkdirSync(join(tool, "src"), { recursive: true });
-  writeFileSync(join(tool, "src/bin.mjs"),
+  writeFileSync(join(tool, "src/bin.ts"),
     `const [name, ...rest] = process.argv.slice(2);\nprocess.stdout.write(JSON.stringify({ tool: ${JSON.stringify(name)}, name, rest }) + "\\n");\n`
     + `process.exit(name === "unknown-command" ? ${UNKNOWN_COMMAND_EXIT} : 0);\n`);
   return tool;
@@ -184,7 +184,7 @@ function projectWithLinkedWorktree() {
   // `bin.mjs` resolves `tsx` beside itself, so a copy of the tool needs the `node_modules` an install would have given it.
   symlinkSync(toolNodeModules(), join(installed, "node_modules"));
   symlinkSync(toolNodeModules(), join(standalone, "node_modules"));
-  return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.mjs") };
+  return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.ts") };
 }
 
 /** What the command resolved when run from the linked worktree, one line per node process that got as far as asking; `env` is added to a clean one. */

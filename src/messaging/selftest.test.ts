@@ -16,11 +16,11 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACKNOWLEDGEMENT, FALLBACK_RECIPIENT, PASSED_SEAT_ABSENT, RECIPIENT } from "./converse.mjs";
-import { readLedgerLines } from "./ledger.mjs";
+import { ACKNOWLEDGEMENT, FALLBACK_RECIPIENT, PASSED_SEAT_ABSENT, RECIPIENT } from "./converse.ts";
+import { readLedgerLines } from "./ledger.ts";
 import { measure } from "./measure.ts";
-import { defaultLedgerPath } from "./state.mjs";
-import { RETRY_AFTER_MS, TAKEN_WITHIN_MS, createRecorder, judge, judgeWaiting, main, readState, selftestDue, selftestPaths, sendSelftest, tickSelftest, touchesMessaging, worthAChild } from "./selftest.mjs";
+import { defaultLedgerPath } from "./state.ts";
+import { RETRY_AFTER_MS, TAKEN_WITHIN_MS, createRecorder, judge, judgeWaiting, main, readState, selftestDue, selftestPaths, sendSelftest, tickSelftest, touchesMessaging, worthAChild } from "./selftest.ts";
 
 const START = Date.parse("2026-10-05T10:00:00Z");
 const DEEP = 10;
@@ -47,7 +47,7 @@ const attributed = (/** @type {string} */ text: string, /** @type {string | null
 function fakePort({ lies = false }: { lies?: boolean; } = {}) {
   /** @type {{ label: string, text: string }[]} */
   const typed: { label: string; text: string; }[] = [];
-  const port = /** @type {import("./converse.mjs").QueuePort} */ (/** @type {unknown} */ ({
+  const port = /** @type {import("./converse.ts").QueuePort} */ (/** @type {unknown} */ ({
     EXIT, NOT_QUEUED_PREFIX, run: () => "", STANCE: { DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" }, attributed, handoffId,
     readHandoffs: (/** @type {string} */ path: string) => entries(path),
     promptOrQueue(/** @type {Record<string, any>} */ { label, text, path, agents, sender }: Record<string, any>) {
@@ -237,7 +237,7 @@ describe("done-when 3: it never reaches the chat, and its line is not a message"
   });
 
   test("the source imports no provider and never calls fetch (the positive control is that it DOES import the converse module it drives)", () => {
-    const source = readFileSync(fileURLToPath(new URL("./selftest.mjs", import.meta.url)), "utf8").split("\n").filter((line) => !/^\s*(\/\/|\/?\*)/.test(line)).join("\n");
+    const source = readFileSync(fileURLToPath(new URL("./selftest.ts", import.meta.url)), "utf8").split("\n").filter((line) => !/^\s*(\/\/|\/?\*)/.test(line)).join("\n");
     assert.match(source, /from "\.\/converse\.mjs"/);
     assert.doesNotMatch(source, /providers\/|\bfetch\s*\(|telegram/i);
   });
@@ -265,10 +265,10 @@ describe("done-when 4: the trigger is a pure function", () => {
   const base = { lastPassed: "v0.49.1", current: "v0.49.2", changedFiles: /** @type {string[] | null} */ ([]), pending: false, lastAttemptAt: /** @type {number | null} */ (null), now: START };
 
   test("tag unchanged: no run", () => {
-    assert.equal(selftestDue({ ...base, current: "v0.49.1", changedFiles: ["src/messaging/converse.mjs"] }).run, false);
+    assert.equal(selftestDue({ ...base, current: "v0.49.1", changedFiles: ["src/messaging/converse.ts"] }).run, false);
   });
   test("tag moved with a messaging change: run", () => {
-    for (const file of ["src/messaging/converse.mjs", "src/prompt-session.ts", "src/wake.ts", "src/herdr-agents.ts", "src/project-roles.ts"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
+    for (const file of ["src/messaging/converse.ts", "src/prompt-session.ts", "src/wake.ts", "src/herdr-agents.ts", "src/project-roles.ts"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
   });
   test("tag moved with none, or with only a messaging TEST: no run", () => {
     assert.equal(selftestDue({ ...base, changedFiles: ["src/work-gate.ts", "README.md"] }).run, false);
@@ -286,19 +286,19 @@ describe("done-when 4: the trigger is a pure function", () => {
     assert.equal(selftestDue({ ...base, lastPassed: null, pending: true }).run, false);
   });
   test("a failed run is not a pass, and is retried once the back-off has passed", () => {
-    const failed = { ...base, changedFiles: ["src/messaging/converse.mjs"], lastAttemptAt: START };
+    const failed = { ...base, changedFiles: ["src/messaging/converse.ts"], lastAttemptAt: START };
     assert.equal(selftestDue({ ...failed, now: START + RETRY_AFTER_MS - 1 }).run, false);
     assert.equal(selftestDue({ ...failed, now: START + RETRY_AFTER_MS }).run, true);
   });
   test("the path list: positive control for the matcher, and what it deliberately leaves out", () => {
-    assert.ok(touchesMessaging(["src/messaging/listen.mjs"]));
+    assert.ok(touchesMessaging(["src/messaging/listen.ts"]));
     assert.ok(!touchesMessaging(["src/work-gate.ts", "docs/messaging.md", "src/messaging/listen.test.ts"]));
     assert.ok(!touchesMessaging(["src/messaging", "src/wake.ts.bak", "lib/src/wake.ts", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
   });
 });
 
 describe("the tick's call: records a PASS only, retries a red, settles a queued entry on a later tick", () => {
-  const changed = () => ["src/messaging/converse.mjs"];
+  const changed = () => ["src/messaging/converse.ts"];
 
   test("first run on an idle seat passes and records the version; the next tick on the same tag is a no-op that says why", async () => {
     const h = harness({ roster: IDLE });
@@ -444,7 +444,7 @@ describe("a quiet tick starts no process and asks no model", () => {
 
   test("a release that changed no messaging path is remembered as decided, so the NEXT tick spawns nothing either", async () => {
     const h = harness({ roster: IDLE });
-    await tickSelftest({ ...h.deps, current: "v0.9.0", changedFiles: () => ["src/messaging/converse.mjs"] });
+    await tickSelftest({ ...h.deps, current: "v0.9.0", changedFiles: () => ["src/messaging/converse.ts"] });
     const quiet = await tickSelftest({ ...h.deps, current: "v1.0.0", changedFiles: () => ["README.md"] });
     assert.match(quiet.lines[0], /touches no messaging path/);
     const state = readState(selftestPaths(h.home).state);
@@ -466,7 +466,7 @@ describe("a quiet tick starts no process and asks no model", () => {
 // `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.ts` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
 // its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
 // `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
-const ENTRY = fileURLToPath(new URL("./selftest.mjs", import.meta.url));
+const ENTRY = fileURLToPath(new URL("./selftest.ts", import.meta.url));
 const UNSETTLED_TOP_LEVEL_AWAIT = 13;
 
 describe("the entry run as a process, which is how the tick starts it", () => {

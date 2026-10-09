@@ -48,8 +48,8 @@ import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsText
 import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "./region-paths.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file.ts";
-import { leakRefusalReason } from "./lib/leak-patterns.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { leakRefusalReason } from "./lib/leak-patterns.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO } from "./project-identity.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { launchGate } from "./board-snapshot-scope.ts";

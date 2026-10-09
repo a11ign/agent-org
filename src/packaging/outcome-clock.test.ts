@@ -26,7 +26,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "outcome-clock-project-"));
@@ -45,7 +45,7 @@ const orgHealth = await import("../org-health.ts");
 const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS, overdueReading, orgHealthTick } = orgHealth;
 const { stallReasonOf, STALL_REASON } = await import("../work-gate.ts");
 const { WAIT_FIELDS } = await import("../idle-claimant.ts");
-const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.mjs");
+const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
@@ -64,7 +64,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const label = (...names: string[]) => names.map((name) => ({ name }));
 const BOT = { login: "a11ign-ai-workers" };
 
-type Moves = import("../work-gate/claim-stall-tick.mjs").ClaimMoves;
+type Moves = import("../work-gate/claim-stall-tick.ts").ClaimMoves;
 type HoldersIn = { moves: Map<number, Moves> | null; agents: { label: string; status: string }[] | null };
 type Order = { session: string; cause: string; subject: string; discriminator: string; prompt: string };
 type Items = ReturnType<typeof overdueFacts>["items"];

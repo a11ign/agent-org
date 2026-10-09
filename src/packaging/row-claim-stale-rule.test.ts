@@ -10,8 +10,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
-  from "../row-claim/stale-rule-guard.mjs";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+  from "../row-claim/stale-rule-guard.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 /**
  * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is
@@ -143,7 +143,7 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
 test("#1014: the rule-file list is DERIVED from row-claim's own import closure, not typed", () => {
   const derived = ruleFiles(resolve(TOOL_ROOT, "src/row-claim.ts"), REPO);
   assert.ok(derived.includes(at("src/row-claim.ts")), "the entry itself");
-  assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.mjs")),
+  assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.ts")),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
     `expected the rule modules beside row-claim.ts, got ${derived.length}: ${derived.join(", ")}`);
@@ -199,11 +199,11 @@ function importFresh(path: string, query: string) {
 async function guardInTool(prefix: string) {
   const { root, commit } = syntheticRepo();
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  for (const rel of ["src/row-claim/stale-rule-guard.mjs", "src/lib/local-import-closure.mjs", "src/lib/git-env.mjs"]) commit(`${prefix}${rel}`, source(rel));
+  for (const rel of ["src/row-claim/stale-rule-guard.ts", "src/lib/local-import-closure.ts", "src/lib/git-env.ts"]) commit(`${prefix}${rel}`, source(rel));
   commit(`${prefix}src/row-claim/own-pr-health-rule.mjs`, "export const inBuildReason = () => null;\n");
   const base = commit(`${prefix}src/row-claim.ts`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n');
   setRef(root, "refs/remotes/origin/main", base);
-  const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.mjs"), `fixture=${encodeURIComponent(root)}`);
+  const guard = await importFresh(join(root, prefix, "src/row-claim/stale-rule-guard.ts"), `fixture=${encodeURIComponent(root)}`);
   return { root, commit, base, guard, rule: `${prefix}src/row-claim/own-pr-health-rule.mjs` };
 }
 
@@ -296,19 +296,19 @@ async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
   const { root, commit } = syntheticRepo();
   setRef(root, "refs/remotes/origin/main", commit("package.json", "{}\n"));
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  const files = { "src/row-claim/stale-rule-guard.mjs": source("src/row-claim/stale-rule-guard.mjs"),
-    "src/lib/local-import-closure.mjs": source("src/lib/local-import-closure.mjs"), "src/lib/git-env.mjs": source("src/lib/git-env.mjs"),
-    "src/row-claim/own-pr-health-rule.mjs": "export const inBuildReason = () => null;\n",
+  const files = { "src/row-claim/stale-rule-guard.ts": source("src/row-claim/stale-rule-guard.ts"),
+    "src/lib/local-import-closure.ts": source("src/lib/local-import-closure.ts"), "src/lib/git-env.ts": source("src/lib/git-env.ts"),
+    "src/row-claim/own-pr-health-rule.ts": "export const inBuildReason = () => null;\n",
     "src/row-claim.ts": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n' };
   for (const [rel, text] of Object.entries(files)) {
     mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
     writeFileSync(join(root, dir, rel), text);
   }
-  const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.mjs"), `installed=${encodeURIComponent(root)}`);
+  const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.ts"), `installed=${encodeURIComponent(root)}`);
   return { root, guard };
 }
 
-const RULE = "src/row-claim/own-pr-health-rule.mjs";
+const RULE = "src/row-claim/own-pr-health-rule.ts";
 
 test("#3188: the installed layout names the install and never answers 'matches no tracked file'", async () => {
   const { root, guard } = await guardInstalled();

@@ -12,14 +12,14 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
-import { secretFileProblem } from "./secret.mjs";
-import { MilestonesRefusal, readMilestonesFile } from "./sources/milestones.mjs";
+import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
+import { secretFileProblem } from "./secret.ts";
+import { MilestonesRefusal, readMilestonesFile } from "./sources/milestones.ts";
 
 type Verdict = { exitCode: number; lines: string[] };
 
-/** @param {import("./config.mjs").MessagingOn} config @param {{ uid?: number, exists?: (path: string) => boolean }} deps @returns {{ failed: boolean, lines: string[] }} */
-function judgeFiles(config: import("./config.mjs").MessagingOn, { uid, exists = existsSync }: { uid?: number; exists?: (path: string) => boolean; }): { failed: boolean; lines: string[]; } {
+/** @param {import("./config.ts").MessagingOn} config @param {{ uid?: number, exists?: (path: string) => boolean }} deps @returns {{ failed: boolean, lines: string[] }} */
+function judgeFiles(config: import("./config.ts").MessagingOn, { uid, exists = existsSync }: { uid?: number; exists?: (path: string) => boolean; }): { failed: boolean; lines: string[]; } {
   const token = secretFileProblem(config.tokenFile, { uid });
   const lines = [token === null ? `token file: ok (${config.tokenFile}, mode 0600, owned by the running user)` : `token file: REFUSED -- ${token}`];
   if (!exists(config.chairmanFile)) {

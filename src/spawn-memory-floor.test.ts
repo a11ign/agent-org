@@ -21,7 +21,7 @@ import { join } from "node:path";
 import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
 } from "./spawn-memory-floor.ts";
-import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
+import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.ts";
 import { deliver } from "./wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 

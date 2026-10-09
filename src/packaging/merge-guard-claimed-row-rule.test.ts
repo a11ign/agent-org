@@ -7,8 +7,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   closingClaimReasons, claimedCloseCoveredBy, applyAllowClaimedClose,
-} from "../merge-guard/claimed-row-rule.mjs";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+} from "../merge-guard/claimed-row-rule.ts";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 const CLOSES_CLAIMED = [{ number: 237, title: "example row", labels: ["in-progress", "session:worker-judge", "started"] }];
 

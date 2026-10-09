@@ -9,12 +9,12 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.ts";
 import { parseLedger } from "../wakes-per-row.ts";
-import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf, TraceEvent, TraceEvent } from "./store.mjs";
-import { aggregate, weekStart } from "./aggregate.mjs";
-import { ACTION, wakeCache } from "./wake-cache.mjs";
-import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, meteredGhApi, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
+import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf, TraceEvent, TraceEvent } from "./store.ts";
+import { aggregate, weekStart } from "./aggregate.ts";
+import { ACTION, wakeCache } from "./wake-cache.ts";
+import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, meteredGhApi, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { readValidators, saveValidators } from "./publish.mjs";
+import { readValidators, saveValidators } from "./publish.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso: string) => Date.parse(iso);

@@ -13,10 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { PROVENANCE } from "./answers.mjs";
+import { PROVENANCE } from "./answers.ts";
 import { createCorrector, REROUTE_TO, VERBS, WITHDRAW_REASONS } from "./correct.ts";
-import { createLedger } from "./ledger.mjs";
-import { latestBrief, requestEvent } from "./sources/requests.mjs";
+import { createLedger } from "./ledger.ts";
+import { latestBrief, requestEvent } from "./sources/requests.ts";
 
 const NOW = Date.parse("2026-10-04T15:00:00Z");
 const REPO = "a11ign/a11ign";
@@ -35,8 +35,8 @@ let nextCase = 0;
 /** @param {string} text @returns {string} */
 const sha256Of = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
-/** @returns {import("./record.mjs").Ledger} a ledger holding message 45 and its receipt, in its own file, with the clock at NOW */
-function ledgerWithMessage(): import("./record.mjs").Ledger {
+/** @returns {import("./record.ts").Ledger} a ledger holding message 45 and its receipt, in its own file, with the clock at NOW */
+function ledgerWithMessage(): import("./record.ts").Ledger {
   const ledger = createLedger({ path: join(scratch, `ledger-${nextCase += 1}.jsonl`), now: () => NOW });
   ledger.append({ direction: "in", updateId: 11, verdict: "forward", reason: null, kind: "message", userId: 7, chatId: 7, chatType: "private", length: WORDS.length, sha256: sha256Of(WORDS) });
   ledger.append({ direction: "in", origin: "converse", updateId: 11, messageRef: REF, verdict: "queued", handoff: "handoff/liaison/x", ackRef: "46", error: null });
@@ -73,13 +73,13 @@ function fakeGithub({ labels = [NEEDS, "backlog"], failOnce = [] }: { labels?: s
   };
 }
 
-/** @param {{ledger?: import("./record.mjs").Ledger, github?: ReturnType<typeof fakeGithub>}} [ports] */
-function corrector({ ledger = ledgerWithMessage(), github = fakeGithub() }: { ledger?: import("./record.mjs").Ledger; github?: ReturnType<typeof fakeGithub>; } = {}) {
+/** @param {{ledger?: import("./record.ts").Ledger, github?: ReturnType<typeof fakeGithub>}} [ports] */
+function corrector({ ledger = ledgerWithMessage(), github = fakeGithub() }: { ledger?: import("./record.ts").Ledger; github?: ReturnType<typeof fakeGithub>; } = {}) {
   return { ledger, github, correct: createCorrector({ ledger, github, now: () => NOW, rerouteLabel: REROUTE_LABEL }).correct };
 }
 
-/** @param {import("./record.mjs").Ledger} ledger @param {string} verb */
-const linesOf = (ledger: import("./record.mjs").Ledger, verb: string) => ledger.read().filter((line) => line.direction === verb);
+/** @param {import("./record.ts").Ledger} ledger @param {string} verb */
+const linesOf = (ledger: import("./record.ts").Ledger, verb: string) => ledger.read().filter((line) => line.direction === verb);
 
 describe("chairman:correct", () => {
   test("withdraw removes the label, comments with the reason and his words, and writes a `withdraw` ledger line with the reason", async () => {

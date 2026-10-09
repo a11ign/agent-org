@@ -16,14 +16,14 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
-import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.mjs";
-import { ciPermissionEvents, observeIncidents } from "./incidents.mjs";
+import { createLedger } from "../ledger.ts";
+import { HOST_SOURCES, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.ts";
+import { COMPLETION_FILE, writeCompletion } from "../../lib/tick-completion.ts";
+import { ciPermissionEvents, observeIncidents } from "./incidents.ts";
 import {
   SYSTEMD_PROPERTIES, createReaders, readCiRuns, readEpisodeStart, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
-} from "./readers.mjs";
-import { observeStalls } from "./stall.mjs";
+} from "./readers.ts";
+import { observeStalls } from "./stall.ts";
 
 const REPO = "example/project";
 const MINUTE = 60_000;

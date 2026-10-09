@@ -12,11 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.mjs";
-import { actionData, createInbound, parseButtonData } from "./inbound.mjs";
-import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.mjs";
-import { FORME_STEP, verifyApproval } from "./session-queue.mjs";
-import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.mjs";
+import { ACTION_LABELS, answerComment, buttonData, createAnswers, requestActions, SNOOZE_MS, snoozedUntil, STEPS } from "./answers.ts";
+import { actionData, createInbound, parseButtonData } from "./inbound.ts";
+import { createLedger, deliveryLine, foldLedger, readLedgerLines, STATUS } from "./ledger.ts";
+import { FORME_STEP, verifyApproval } from "./session-queue.ts";
+import { NEEDS_CHAIRMAN, parseChairmanOptions } from "./sources/requests.ts";
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The label the done-when names. In production the wiring builds it from the vocabulary's answer prefix; here it is spelled out so the order is pinned against the literal. */

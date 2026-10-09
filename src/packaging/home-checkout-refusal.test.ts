@@ -195,7 +195,7 @@ test("POSITIVE CONTROLS: the same unit with the variable in the unit file, or in
 
 test("the leak scan's patterns import in a tree that holds no project and no project-config: `gate` scans BEFORE any project exists", () => {
   const dir = scratch();
-  copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.mjs", import.meta.url)), join(dir, "generic-leak-patterns.mjs"));
+  copyFileSync(fileURLToPath(new URL("../lib/generic-leak-patterns.ts", import.meta.url)), join(dir, "generic-leak-patterns.mjs"));
   const env = { ...process.env };
   delete env[HOST_VARIABLE];
   const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { GENERIC_LEAK_PATTERNS } = await import(${JSON.stringify(join(dir, "generic-leak-patterns.mjs"))}); console.log(GENERIC_LEAK_PATTERNS.length);`],
@@ -205,7 +205,7 @@ test("the leak scan's patterns import in a tree that holds no project and no pro
 });
 
 test("`leak-patterns.mjs` still answers the same two patterns, so no importer of it changed", async () => {
-  const { GENERIC_LEAK_PATTERNS } = await import("../lib/leak-patterns.mjs");
-  const { GENERIC_LEAK_PATTERNS: own } = await import("../lib/generic-leak-patterns.mjs");
+  const { GENERIC_LEAK_PATTERNS } = await import("../lib/leak-patterns.ts");
+  const { GENERIC_LEAK_PATTERNS: own } = await import("../lib/generic-leak-patterns.ts");
   assert.equal(GENERIC_LEAK_PATTERNS, own);
 });

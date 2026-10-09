@@ -59,12 +59,12 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { disarmVerdict, armVerdict, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.ts";
 import { parseWaits, WAIT_MARKER } from "./wait-condition.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 
 const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, DISPLACED_NOT_HELD: 3 };
 

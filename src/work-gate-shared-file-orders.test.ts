@@ -12,29 +12,29 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sharedFileOrders } from "./work-gate/shared-file-orders.mjs";
-import { perPullRequestOrders } from "./work-gate/pr-orders.mjs";
+import { sharedFileOrders } from "./work-gate/shared-file-orders.ts";
+import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 
 type Order = { session: string, fallback?: string, cause: string, causeKey: string, prompt: string, subject: string };
 type Pr = { number: number, files: { path: string }[], changedFiles: number, labels: { name: string }[], body: string, comments: unknown[], repoKey?: string, repo?: string,
   headRefName: string };
 
 const CHANGESET = (name: string) => `.changeset/${name}.md`;
-const PR_148 = [CHANGESET("buttons-are-drawn"), "docs/messaging.md", "src/messaging/answers.mjs", "src/messaging/answers.test.ts", "src/messaging/converse.mjs",
-  "src/messaging/converse.test.ts", "src/messaging/core.mjs", "src/messaging/core.test.ts", "src/messaging/event.mjs", "src/messaging/inbound.mjs",
-  "src/messaging/inbound.test.ts", "src/messaging/listen.mjs", "src/messaging/listen.test.ts", "src/messaging/providers/telegram/poll.test.ts",
-  "src/messaging/providers/telegram/send.mjs", "src/messaging/providers/telegram/send.test.ts", "src/messaging/watch-buttons.test.ts", "src/messaging/watch.mjs"];
-const PR_149 = [CHANGESET("incident-says-what-is-being-done"), "docs/messaging.md", "src/messaging/sources/incidents.mjs", "src/messaging/sources/incidents.test.ts",
-  "src/messaging/sources/readers.mjs", "src/messaging/sources/readers.test.ts", "src/messaging/sources/stall.mjs", "src/messaging/sources/stall.test.ts", "src/messaging/watch.mjs"];
-const PR_150 = [CHANGESET("a-milestone-moving-is-told"), "src/messaging/check.ts", "src/messaging/config.mjs", "src/messaging/config.test.ts", "src/messaging/core.mjs",
-  "src/messaging/event.mjs", "src/messaging/sources/milestones.mjs", "src/messaging/sources/milestones.test.ts", "src/messaging/watch.mjs"];
-const PR_151 = [CHANGESET("host-runs-one-tool-version"), "src/host-config.ts", "src/host-units.ts", "src/lib/release-tag.mjs", "src/lib/tool-version.mjs",
+const PR_148 = [CHANGESET("buttons-are-drawn"), "docs/messaging.md", "src/messaging/answers.ts", "src/messaging/answers.test.ts", "src/messaging/converse.ts",
+  "src/messaging/converse.test.ts", "src/messaging/core.ts", "src/messaging/core.test.ts", "src/messaging/event.ts", "src/messaging/inbound.ts",
+  "src/messaging/inbound.test.ts", "src/messaging/listen.ts", "src/messaging/listen.test.ts", "src/messaging/providers/telegram/poll.test.ts",
+  "src/messaging/providers/telegram/send.ts", "src/messaging/providers/telegram/send.test.ts", "src/messaging/watch-buttons.test.ts", "src/messaging/watch.ts"];
+const PR_149 = [CHANGESET("incident-says-what-is-being-done"), "docs/messaging.md", "src/messaging/sources/incidents.ts", "src/messaging/sources/incidents.test.ts",
+  "src/messaging/sources/readers.ts", "src/messaging/sources/readers.test.ts", "src/messaging/sources/stall.ts", "src/messaging/sources/stall.test.ts", "src/messaging/watch.ts"];
+const PR_150 = [CHANGESET("a-milestone-moving-is-told"), "src/messaging/check.ts", "src/messaging/config.ts", "src/messaging/config.test.ts", "src/messaging/core.ts",
+  "src/messaging/event.ts", "src/messaging/sources/milestones.ts", "src/messaging/sources/milestones.test.ts", "src/messaging/watch.ts"];
+const PR_151 = [CHANGESET("host-runs-one-tool-version"), "src/host-config.ts", "src/host-units.ts", "src/lib/release-tag.ts", "src/lib/tool-version.ts",
   "src/packaging/host-tool-install.test.ts", "src/packaging/host-units.test.ts", "src/packaging/work-tick-crash-exit.test.ts", "src/update-tool.ts", "src/update-tool.test.ts",
   "src/work-tick.ts"];
 const PR_152 = [CHANGESET("deferred-order-is-a-stall"), "src/api-pool.ts", "src/org-health.ts", "src/packaging/deferred-order-is-a-stall.test.ts",
   "src/packaging/graphql-pool-health.test.ts", "src/packaging/ready-flip-on-green-checks.test.ts", "src/packaging/repeating-lines.test.ts",
-  "src/packaging/wake-busy-seat-deferral.test.ts", "src/packaging/wake-capacity-deferral.test.ts", "src/wake.ts", "src/work-gate.ts", "src/work-gate/org-health.mjs",
-  "src/work-gate/pr-orders.mjs"];
+  "src/packaging/wake-busy-seat-deferral.test.ts", "src/packaging/wake-capacity-deferral.test.ts", "src/wake.ts", "src/work-gate.ts", "src/work-gate/org-health.ts",
+  "src/work-gate/pr-orders.ts"];
 
 const prOf = (number: number, paths: string[], over: Partial<Pr> & { session?: string | null } = {}): Pr => {
   const { session = `worker-${number}`, ...rest } = over;
@@ -115,7 +115,7 @@ test("(5) the same fixture next tick is the same `causeKey`; a file the later pu
   assert.deepEqual(ordersOf(INCIDENT()).map((o) => o.causeKey), first, "sent once");
   assert.equal(new Set(first).size, first.length);
   const grown = INCIDENT();
-  grown[1] = prOf(149, [...PR_149, "src/messaging/core.mjs"], { session: "worker-3419" });
+  grown[1] = prOf(149, [...PR_149, "src/messaging/core.ts"], { session: "worker-3419" });
   const [key149, key150] = ordersOf(grown).map((o) => o.causeKey);
   assert.notEqual(key149, first[0], "#149 now also shares core.mjs with #148");
   assert.notEqual(key150, first[1], "and #150 now shares core.mjs with #149 as well");

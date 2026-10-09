@@ -69,12 +69,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { changedFiles } from "./lib/changed-files.mjs";
-import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.mjs";
-import { toolImports } from "./lib/installed-tool-imports.mjs";
-import { resolveTypescript } from "./lib/resolve-typescript.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { changedFiles } from "./lib/changed-files.ts";
+import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.ts";
+import { toolImports } from "./lib/installed-tool-imports.ts";
+import { resolveTypescript } from "./lib/resolve-typescript.ts";
 import { defectClassReport } from "./defect-class-line.ts"; // #4123
 import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "./acceptance-file.ts"; // ADR 0044
 import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
@@ -2209,7 +2209,7 @@ export function agentOrgCommand(tokens: string[]): string | null {
 }
 
 /**
- * A command name -> the program under the tool's `src/` that runs it: `src/commands.mjs`'s `COMMANDS` (#3068).
+ * A command name -> the program under the tool's `src/` that runs it: `src/commands.ts`'s `COMMANDS` (#3068).
  */
 export type CommandTable = Record<string, string>;
 
@@ -2218,7 +2218,7 @@ export type CommandTable = Record<string, string>;
 const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
- * The tool's command table: `COMMANDS` exported by `./commands.mjs`, which a11ign/a11ign#3068 adds. NULL while
+ * The tool's command table: `COMMANDS` exported by `./commands.ts`, which a11ign/a11ign#3068 adds. NULL while
  * that file does not exist -- the one state this reads as "no table" -- and a THROW when it exists without a
  * `COMMANDS` object, because a table this cannot read would resolve every `agent-org <command>` to nothing,
  * which is the silent weakening this exists to prevent. Read with `require`, which loads an ES module
@@ -2228,7 +2228,7 @@ const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 function commandTable(): CommandTable | null {
   let loaded;
   try {
-    loaded = createRequire(import.meta.url)("./commands.mjs");
+    loaded = createRequire(import.meta.url)("./commands.ts");
   } catch (cause) {
     const absent = (cause as { code?: string, message?: string }).code === "MODULE_NOT_FOUND"
       && String((cause as Error).message).includes("commands.mjs");
@@ -2236,7 +2236,7 @@ function commandTable(): CommandTable | null {
     throw cause;
   }
   if (loaded === null || typeof loaded.COMMANDS !== "object" || loaded.COMMANDS === null) {
-    throw new Error("src/commands.mjs exists but exports no `COMMANDS` object (command name -> program file under "
+    throw new Error("src/commands.ts exists but exports no `COMMANDS` object (command name -> program file under "
       + "src/), which is what the acceptance classifier reads `agent-org <command>` through (a11ign/a11ign#3063)");
   }
   return loaded.COMMANDS;

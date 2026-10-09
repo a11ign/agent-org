@@ -13,7 +13,7 @@
  * (b) The same installed tool, run from a directory with no declaration, REFUSES naming `.agent-org/project.json` and the directory it looked
  *     in. It is the positive control for (a): the refusal exists, so the pass is not vacuous.
  * One table says which LAYOUT answers what (monorepo, the tool's own checkout, installed), and `$AGENT_ORG_HOST` wins in all three.
- * The installed directory is read for what a project gets: `src/bin.mjs`, `host/`, `LICENSE`, and no test file.
+ * The installed directory is read for what a project gets: `src/bin.ts`, `host/`, `LICENSE`, and no test file.
  *
  * THE PROBE COMMAND IS `worktrees:prune`, NOT `row-file --help` (the row's wording): `row-file` refuses without `--session=`, and every program
  * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.mjs`: "an ignored flag runs the default and reports success"), so no command
@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PNPM_TIMEOUT_MS = 120_000;
@@ -153,7 +153,7 @@ function runInstalled(cwd: string, ...args: string[]) {
 
 test("(a) the tool installs through `pnpm add -D` as a git dependency pinned by `#semver:`", () => {
   assert.equal(installed.added.status, 0, `${installed.added.stdout}\n${installed.added.stderr}`);
-  assert.ok(existsSync(binOf(installed.project)), "the installed package has no src/bin.mjs");
+  assert.ok(existsSync(binOf(installed.project)), "the installed package has no src/bin.ts");
 });
 
 test("(a) a command runs from the installed tool with no NODE_PATH and no AGENT_ORG_HOST, serving the repository it is run in", () => {
@@ -200,9 +200,9 @@ test("(c) `agent-org no-such-command` from the installed tool REFUSES and lists 
   assert.ok(run.stderr.includes("  row-file\n"), run.stderr);
 });
 
-test("what a project gets: src/bin.mjs, host/, LICENSE, README.md and no test file, and why none is needed at run time", () => {
+test("what a project gets: src/bin.ts, host/, LICENSE, README.md and no test file, and why none is needed at run time", () => {
   const dir = toolDir(installed.project);
-  for (const entry of ["src/bin.mjs", "src/commands.mjs", "host", "LICENSE", "README.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
+  for (const entry of ["src/bin.ts", "src/commands.ts", "host", "LICENSE", "README.md", "package.json"]) assert.ok(existsSync(join(dir, entry)), `${entry} is not installed`);
   const tests = (readdirSync(dir, { recursive: true }) as string[]).filter((path) => /\.test\.(ts|mjs)$/.test(path));
   assert.deepEqual(tests, [], "a test file was installed: they read the project's tree and run in this repository's CI, so a project has no use for them");
   assert.ok(existsSync(join(dir, "src")) && readdirSync(join(dir, "src")).length > MIN_INSTALLED_SRC_ENTRIES, "the installed src/ is nearly empty: the positive control for the line above");

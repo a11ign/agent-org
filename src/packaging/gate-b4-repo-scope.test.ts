@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { scopesOf, readLanes, scopeTick, readOtherScopes, pullRequestsOfOthers, unreadLanes } from "../work-gate.ts";
-import { fileOverlapReason, lookupOpenPrFiles } from "../row-claim/file-overlap-rule.mjs";
+import { fileOverlapReason, lookupOpenPrFiles } from "../row-claim/file-overlap-rule.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 

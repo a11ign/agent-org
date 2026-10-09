@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, Request, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
+import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, Request, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.ts";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const stamp = (n: number) => new Date(T0 + n * 1000).toISOString();
@@ -284,7 +284,7 @@ test("the command refuses a flag it does not know and names --by-command as one 
   try {
     mkdirSync(join(root, "p"));
     writeFileSync(join(root, "p", "s.jsonl"), SHELL);
-    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [...TSX_IMPORT, new URL("./growth.mjs", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
+    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [...TSX_IMPORT, new URL("./growth.ts", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
     const split = run("--by-command");
     assert.equal(split.status, 0, split.stderr);
     assert.match(split.stdout, /\| git status \| 2 \|/);

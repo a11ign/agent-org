@@ -32,7 +32,7 @@ import {
 } from "./wake.ts";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
 import { parityOwner } from "./review-attribution.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";

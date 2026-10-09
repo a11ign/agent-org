@@ -21,8 +21,8 @@
 
 import { pathToFileURL } from "node:url";
 
-import { alreadyDone, attribution, carryOut, checkMessage, finished, quoted, readRowOrRefuse, runCommand, stepsDone } from "./record.mjs";
-import { NEEDS_CHAIRMAN, requestEvent, requestKey } from "./sources/requests.mjs";
+import { alreadyDone, attribution, carryOut, checkMessage, finished, quoted, readRowOrRefuse, runCommand, stepsDone } from "./record.ts";
+import { NEEDS_CHAIRMAN, requestEvent, requestKey } from "./sources/requests.ts";
 
 /** The closed set. Pinned by the test: a fourth is a change of what the liaison may do. */
 export const VERBS = Object.freeze(["withdraw", "reroute", "re-ask"]);
@@ -31,11 +31,11 @@ export const WITHDRAW_REASONS = Object.freeze({ stale: "stale", "wrongly-labelle
 /** The session `reroute` hands the row to. A constant and not an argument: the verb's whole meaning is that this one owns a wrong label, scope or done-when. */
 export const REROUTE_TO = "product-manager";
 
-type Outcome = import("./record.mjs").Outcome;
-type RowRef = import("./answers.mjs").RowRef;
+type Outcome = import("./record.ts").Outcome;
+type RowRef = import("./answers.ts").RowRef;
 /** What a plan is built from. */
 type Said = { ref: string; at: string; words: string; text: string; reason: string | undefined; row: RowRef };
-type Plan = { steps: (github: import("./answers.mjs").GithubWriter) => [string, () => Promise<void>][]; extra: Record<string, unknown> };
+type Plan = { steps: (github: import("./answers.ts").GithubWriter) => [string, () => Promise<void>][]; extra: Record<string, unknown> };
 
 /** @param {string} verb @param {Said} said @param {string[]} lines @returns {string} an attribution, a sentence of what is being done, then his words quoted */
 function commentOf(verb: string, { ref, at, words }: Said, lines: string[]): string {
@@ -78,11 +78,11 @@ function briefProblem({ row, brief, now }: { row: RowRef; brief: string; now: nu
 }
 
 /**
- * @param {{ledger: import("./record.mjs").Ledger, github: import("./answers.mjs").GithubWriter, now: () => number, rerouteLabel: string}} ports
+ * @param {{ledger: import("./record.ts").Ledger, github: import("./answers.ts").GithubWriter, now: () => number, rerouteLabel: string}} ports
  *   `rerouteLabel` is the label that wakes the product manager: the vocabulary's answer prefix and `REROUTE_TO`, an INPUT and not a literal here, as `answers.mjs`'s
  *   `answerLabel` is, because `project-vocabulary.test.ts` refuses a copy in code.
  */
-export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger: import("./record.mjs").Ledger; github: import("./answers.mjs").GithubWriter; now: () => number; rerouteLabel: string; }) {
+export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger: import("./record.ts").Ledger; github: import("./answers.ts").GithubWriter; now: () => number; rerouteLabel: string; }) {
   /** @param {{as: string, reason?: string}} verb @returns {string | null} why the verb cannot be carried out at all, before the ledger or the row is read */
   function verbProblem({ as, reason }: { as: string; reason?: string; }): string | null {
     if (!VERBS.includes(as)) return `${JSON.stringify(as)} is not one of ${VERBS.join(", ")}; those are the only corrections, and nothing was written`;

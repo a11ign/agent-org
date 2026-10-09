@@ -28,14 +28,14 @@ import {
   claimRecordComment, claimRow, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
   implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
 } from "./row-claim.ts";
-import { unknownFlags } from "./lib/cli-flags.mjs";
+import { unknownFlags } from "./lib/cli-flags.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 

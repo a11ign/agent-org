@@ -33,7 +33,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { stripComments } from "../lib/local-import-closure.mjs";
+import { stripComments } from "../lib/local-import-closure.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import {
@@ -44,12 +44,12 @@ import {
 } from "../project-vocabulary.ts";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
 import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.ts";
-import { laneReason } from "../row-claim/runner-rule.mjs";
+import { laneReason } from "../row-claim/runner-rule.ts";
 import { resourcePatternsFrom } from "../acceptance-commands.ts";
-import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
+import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";
 import {
   IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,
-} from "../messaging/sources/summary.mjs";
+} from "../messaging/sources/summary.ts";
 
 // A mutation reaches into fields the fixture's own type would have to pretend are optional and mistyped,
 // which is the point of it -- the same tradeoff `project-config.test.ts` accepts for the identical reason.

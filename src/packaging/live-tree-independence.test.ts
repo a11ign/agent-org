@@ -25,7 +25,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const run = promisify(execFile);
 

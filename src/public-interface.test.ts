@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-import { COMMANDS } from "./commands.mjs";
+import { COMMANDS } from "./commands.ts";
 
 /** subpath -> the names a project's callers import from it (counted in a11ign/a11ign on origin/main, 2026-10-09). */
 const DECLARED_EXPORTS: Readonly<Record<string, readonly string[]>> = {

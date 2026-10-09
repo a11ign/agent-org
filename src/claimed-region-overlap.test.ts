@@ -20,7 +20,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (#3233's shape, `packaging/row-claim-file-overlap-rule.test.ts`): the host file is set FIRST and
 // the tool imported AFTER it, so the acceptance command as written -- no `$AGENT_ORG_HOST` -- runs, and a project changing its declaration
@@ -42,7 +42,7 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { NO_CODE_LEFT_LABEL, claimedRegionOverlapReason, claimedRegionsOf, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.mjs");
+const { NO_CODE_LEFT_LABEL, claimedRegionOverlapReason, claimedRegionsOf, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.ts");
 const { declaredRegionFiles } = await import("./region-paths.ts");
 const { reportB4, sessionEligibilityReason } = await import("./row-claim.ts");
 const { partitionUnclaimed } = await import("./work-gate.ts");
@@ -52,21 +52,21 @@ const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };
 
 /** #3414's Region, as filed (measured 2026-10-04 off the row's body). */
 const REGION_3414 = [
-  "agent-org:src/messaging/sources/milestones.mjs", "agent-org:src/messaging/sources/milestones.test.ts",
-  "agent-org:src/messaging/config.mjs", "agent-org:src/messaging/config.test.ts", "agent-org:src/messaging/check.ts",
-  "agent-org:src/messaging/watch.mjs", "agent-org:src/messaging/event.mjs", "agent-org:src/messaging/core.mjs",
+  "agent-org:src/messaging/sources/milestones.ts", "agent-org:src/messaging/sources/milestones.test.ts",
+  "agent-org:src/messaging/config.ts", "agent-org:src/messaging/config.test.ts", "agent-org:src/messaging/check.ts",
+  "agent-org:src/messaging/watch.ts", "agent-org:src/messaging/event.ts", "agent-org:src/messaging/core.ts",
 ];
 /** #3423's Region, as filed: 17 entries. */
 const REGION_3423 = [
-  "agent-org:src/messaging/providers/telegram/send.mjs", "agent-org:src/messaging/providers/telegram/send.test.ts",
-  "agent-org:src/messaging/answers.mjs", "agent-org:src/messaging/answers.test.ts", "agent-org:src/messaging/inbound.mjs",
-  "agent-org:src/messaging/inbound.test.ts", "agent-org:src/messaging/watch.mjs", "agent-org:src/messaging/event.mjs",
-  "agent-org:src/messaging/core.mjs", "agent-org:src/messaging/core.test.ts", "agent-org:src/messaging/listen.mjs",
-  "agent-org:src/messaging/listen.test.ts", "agent-org:src/messaging/converse.mjs", "agent-org:src/messaging/converse.test.ts",
+  "agent-org:src/messaging/providers/telegram/send.ts", "agent-org:src/messaging/providers/telegram/send.test.ts",
+  "agent-org:src/messaging/answers.ts", "agent-org:src/messaging/answers.test.ts", "agent-org:src/messaging/inbound.ts",
+  "agent-org:src/messaging/inbound.test.ts", "agent-org:src/messaging/watch.ts", "agent-org:src/messaging/event.ts",
+  "agent-org:src/messaging/core.ts", "agent-org:src/messaging/core.test.ts", "agent-org:src/messaging/listen.ts",
+  "agent-org:src/messaging/listen.test.ts", "agent-org:src/messaging/converse.ts", "agent-org:src/messaging/converse.test.ts",
   "agent-org:src/messaging/providers/telegram/poll.test.ts", "agent-org:src/messaging/watch-buttons.test.ts",
   "agent-org:docs/messaging.md",
 ];
-const SHARED = ["agent-org:src/messaging/core.mjs", "agent-org:src/messaging/event.mjs", "agent-org:src/messaging/watch.mjs"];
+const SHARED = ["agent-org:src/messaging/core.ts", "agent-org:src/messaging/event.ts", "agent-org:src/messaging/watch.ts"];
 
 const claimed3423 = { number: 3423, files: REGION_3423, blockedBy: [] as number[] };
 
@@ -245,8 +245,8 @@ test("(8) `agent-org:` compares only with `agent-org:`, a bare entry only with b
 });
 
 test("(8) a directory entry meets every entry under it, and the refusal names the more specific of the two", () => {
-  const reason = claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/messaging/core.mjs"] }], { rowNumber: 1 });
-  assert.deepEqual(namedIn(reason), ["agent-org:src/messaging/core.mjs"]);
+  const reason = claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/messaging/core.ts"] }], { rowNumber: 1 });
+  assert.deepEqual(namedIn(reason), ["agent-org:src/messaging/core.ts"]);
   assert.equal(claimedRegionOverlapReason(["agent-org:src/messaging/"], [{ number: 7, files: ["agent-org:src/other.mjs"] }], { rowNumber: 1 }), null);
 });
 
@@ -294,7 +294,7 @@ const NARROWING_3418 = "**Narrowed by `product-manager` 2026-10-04T18:45Z: done-
 const BODY_3418 = (fence: string[]) => `## Region\n\n\`\`\`\n${fence.join("\n")}\n\`\`\`\n\n${NARROWING_3418}\n\n`
   + "The repository is **`a11ign/agent-org`**; paths are relative to its root.\n";
 const ROOT = { rootFiles: new Set(["package.json"]) };
-const WATCH_LIST = "agent-org:src/messaging/watch-list.mjs";
+const WATCH_LIST = "agent-org:src/messaging/watch-list.ts";
 const holder = (number: number, body: string, labels = ["in-progress"]) =>
   ({ number, labels: labels.map((name) => ({ name })), body, blockedBy: { nodes: [] } });
 const shelvedBy = (ready: unknown, openRows: unknown[], prFiles: Parameters<typeof partitionUnclaimed>[1] = []) =>

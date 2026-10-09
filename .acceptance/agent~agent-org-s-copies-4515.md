@@ -1,4 +1,4 @@
-The copy headers of `src/lib/product-home.mjs` and `src/lib/fixture-symbols.ts` named `scripts/*.mjs` originals the core renamed to `.ts` (a11ign/a11ign#4274), so `readDeclaredCopies` read nothing and `copyDriftReading` answered `unknown` for them (a11ign/a11ign#4515).
+The copy headers of `src/lib/product-home.ts` and `src/lib/fixture-symbols.ts` named `scripts/*.mjs` originals the core renamed to `.ts` (a11ign/a11ign#4274), so `readDeclaredCopies` read nothing and `copyDriftReading` answered `unknown` for them (a11ign/a11ign#4515).
 
 - Both headers now name the `.ts` original, with `at d9ea0c438`, the core commit that renamed them.
 - `fixture-symbols.ts`: the original gained the same two type annotations the copy carried, so the copy is now identical to it (`diff` empty after the header). Header: `CHANGED FROM THE ORIGINAL: NOTHING`.
@@ -7,7 +7,7 @@ The copy headers of `src/lib/product-home.mjs` and `src/lib/fixture-symbols.ts` 
 
 Acceptance:
 ```bash
-bash -c '! grep -q "COPIED FROM .scripts/product-home.mjs." src/lib/product-home.mjs && grep -q "COPIED FROM .scripts/product-home.ts. at" src/lib/product-home.mjs'
+bash -c '! grep -q "COPIED FROM .scripts/product-home.mjs." src/lib/product-home.ts && grep -q "COPIED FROM .scripts/product-home.ts. at" src/lib/product-home.ts'
 bash -c '! grep -q "COPIED FROM .scripts/fixture-symbols.mjs." src/lib/fixture-symbols.ts && grep -q "COPIED FROM .scripts/fixture-symbols.ts. at" src/lib/fixture-symbols.ts'
 ```
 

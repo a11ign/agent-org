@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WAIT_STATES, parseWaits, conditionHolds, doneWhenCount, namedDoneWhens, umbrellaEdge, waitItemOf, releaseReferencesOf } from "../wait-condition.ts";
-import { readReleaseFacts, remoteTagExists } from "../work-gate/held-on-satisfied-orders.mjs";
+import { readReleaseFacts, remoteTagExists } from "../work-gate/held-on-satisfied-orders.ts";
 import { blockedByNumbers, blockedByRefusal } from "../row-file.ts";
 import { newUmbrellaEdges, UMBRELLA_EDGE_REFUSED_FROM } from "../ready-label-audit.ts";
 

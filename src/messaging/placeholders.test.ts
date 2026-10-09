@@ -14,11 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.mjs";
+import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.ts";
 import { createFakeProvider } from "./fake-provider.ts";
-import { createLedger } from "./ledger.mjs";
-import { PLACEHOLDER_NAMES, createGhReaders, parsePlaceholders } from "./placeholders.mjs";
-import { createReply } from "./reply.mjs";
+import { createLedger } from "./ledger.ts";
+import { PLACEHOLDER_NAMES, createGhReaders, parsePlaceholders } from "./placeholders.ts";
+import { createReply } from "./reply.ts";
 
 const NOW = Date.parse("2026-10-04T14:05:30Z");
 const STAMP = "as of 14:05Z";
@@ -36,8 +36,8 @@ function unreadable(name: string): never {
   throw new Error(`${name} could not be read`);
 }
 
-/** Fixture readers for the kinds this row is not about, so only the new ones vary. @param {Partial<import("./placeholders.mjs").Readers>} overrides @returns {import("./placeholders.mjs").Readers} */
-function fixtureReaders(overrides: Partial<import("./placeholders.mjs").Readers>): import("./placeholders.mjs").Readers {
+/** Fixture readers for the kinds this row is not about, so only the new ones vary. @param {Partial<import("./placeholders.ts").Readers>} overrides @returns {import("./placeholders.ts").Readers} */
+function fixtureReaders(overrides: Partial<import("./placeholders.ts").Readers>): import("./placeholders.ts").Readers {
   return {
     issue: async (number) => ({ number, state: "open", labels: [] }),
     pr: async (number) => ({ number, state: "open", review: "none" }),
@@ -54,8 +54,8 @@ function fixtureReaders(overrides: Partial<import("./placeholders.mjs").Readers>
   };
 }
 
-/** @param {import("./placeholders.mjs").Readers} readers */
-function replyOver(readers: import("./placeholders.mjs").Readers) {
+/** @param {import("./placeholders.ts").Readers} readers */
+function replyOver(readers: import("./placeholders.ts").Readers) {
   const provider = createFakeProvider();
   const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });
   return { provider, reply: createReply({ send: (message) => provider.send(message), ledger, readers, now: () => NOW }) };

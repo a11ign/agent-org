@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { classifyText, REASON, REPLIES, VERDICT } from "./classify.mjs";
+import { classifyText, REASON, REPLIES, VERDICT } from "./classify.ts";
 
 const GITHUB_TOKEN = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
 const PRIVATE_KEY_HEADER = ["-----BEGIN ", "OPENSSH PRIVATE", " KEY-----"].join("");

@@ -16,7 +16,7 @@ import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "nod
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readAgents, absentSeats } from "./herdr-agents.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { stateEntryPath } from "./host-config.ts";

@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { headTipMismatchReason } from "../merge-guard/head-tip-rule.mjs";
+import { headTipMismatchReason } from "../merge-guard/head-tip-rule.ts";
 
 test("branchTip === headRefOid raises no reason -- the common case", () => {
   assert.deepEqual(headTipMismatchReason({ headRefOid: "d5c2436601abcdef" }, "d5c2436601abcdef"), []);

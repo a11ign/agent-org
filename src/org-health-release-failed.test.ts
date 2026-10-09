@@ -28,7 +28,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { SIGNALS, releaseFailedReading, readReleaseRuns, newestReleaseVerdict, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.ts");
 
-const { orgHealthNow } = await import("./work-gate/org-health.mjs");
+const { orgHealthNow } = await import("./work-gate/org-health.ts");
 const { GH_READS } = await import("./work-gate.ts");
 
 const SIGNAL = "release-run-failed";

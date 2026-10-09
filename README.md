@@ -12,7 +12,7 @@ pnpm exec agent-org <command> [args]
 ```
 
 `agent-org` with no command, or a name that is not a command, refuses and lists the commands. There is no default command. A command is the
-name a project's `package.json` script used (`row-file`, `pr:open`, `board:settle`), and `src/commands.mjs` is the table.
+name a project's `package.json` script used (`row-file`, `pr:open`, `board:settle`), and `src/commands.ts` is the table.
 
 ## The project is the repository you run it in
 

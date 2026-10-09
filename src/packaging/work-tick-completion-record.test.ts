@@ -19,9 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT } from "../work-tick.ts";
-import { COMPLETION_FILE, completionPath, readCompletion, writeCompletion } from "../lib/tick-completion.mjs";
-import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/incidents.mjs";
-import { TICK_INTERVAL_MS } from "../messaging/sources/stall.mjs";
+import { COMPLETION_FILE, completionPath, readCompletion, writeCompletion } from "../lib/tick-completion.ts";
+import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/incidents.ts";
+import { TICK_INTERVAL_MS } from "../messaging/sources/stall.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");

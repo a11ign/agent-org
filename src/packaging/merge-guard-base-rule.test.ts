@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseReason } from "../merge-guard/base-rule.mjs";
+import { baseReason } from "../merge-guard/base-rule.ts";
 
 test("a PR based on main raises no reason -- the common case must stay silent", () => {
   assert.deepEqual(baseReason({ baseRefName: "main" }), []);

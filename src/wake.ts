@@ -40,8 +40,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.ts` and `org-watch.ts` state at their own imports.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
-import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
@@ -60,7 +60,7 @@ import { roleBriefPath } from "./project-roles.ts";
 // re-export of `waiting-condition.ts`'s own field, so it is not re-imported here.
 import { SESSION_PREFIX, READY_LABEL } from "./project-vocabulary.ts";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
-  from "./row-claim/own-pr-health-rule.mjs";
+  from "./row-claim/own-pr-health-rule.ts";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
   from "./prune-worktrees.ts";
 import { worktreeOwner } from "./worktree-owner.ts";
@@ -71,13 +71,13 @@ import { spawnMemoryGate } from "./spawn-memory-floor.ts";
 import { SPARE_FAMILIES, familyNumber } from "./arm-pr.ts";
 // THE CLAIM'S OWN CHECKS, called rather than restated (#2324): a spawn is refused for the reasons the claim
 // would refuse the row, and a copy of either rule here would go stale the next time the rule changed.
-import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by-edge-rule.mjs";
-import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
+import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by-edge-rule.ts";
+import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 // #2470: THIS FILE NOW SENDS A BODY TO GITHUB (the release comment), so it reaches the leak guard like every other tracker writer (#1053).
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.ts` and this file both import it and neither imports the other's
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
@@ -89,8 +89,8 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
 import { readAgents, listingIsComplete, absentSeats } from "./herdr-agents.ts";
 import { persistentRoles, persistentEntries } from "./project-roles.ts";
-import { liveToolVersion } from "./lib/tool-version.mjs";
-import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.mjs"; // #3540: the question of whether to start the self-test at all
+import { liveToolVersion } from "./lib/tool-version.ts";
+import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.ts"; // #3540: the question of whether to start the self-test at all
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.ts";
 export { readAgents, listingIsComplete };
 
@@ -487,10 +487,10 @@ export function relaneTarget(order: { session: string; causeKey: string; prompt:
  * built for one would report the other as eligible (`worker-tooling` was refused for holding a row in
  * build, `worker-judge` for a review).
  *
- * @param {import("./row-claim/own-pr-health-rule.mjs").RowFacts[]} rows every row the session holds
+ * @param {import("./row-claim/own-pr-health-rule.ts").RowFacts[]} rows every row the session holds
  * @returns {string | null}
  */
-export function b2Verdict(rows: import("./row-claim/own-pr-health-rule.mjs").RowFacts[]): string | null {
+export function b2Verdict(rows: import("./row-claim/own-pr-health-rule.ts").RowFacts[]): string | null {
   if (inBuildReason(rows) === null) return null;
   const building = rows.find(isInBuild);
   if (building) return `holds #${building.number} in build`;
@@ -6149,7 +6149,7 @@ const SELFTEST_STEP_TIMEOUT_MS = 120_000;
  * @param {{ spawn?: typeof spawnSync, program?: string, queueFile?: string, now?: number, ask?: () => ReturnType<typeof worthAChild> }} [deps] `ask` is the question, injectable for a test
  * @returns {string[]} one line per thing worth a journal read; `[]` when the self-test had nothing to say
  */
-export function checkChairmanPath({ spawn = spawnSync, program = fileURLToPath(new URL("./messaging/selftest.mjs", import.meta.url)), queueFile = handoffQueuePath(ledgerPathFrom([])), now = Date.now(),
+export function checkChairmanPath({ spawn = spawnSync, program = fileURLToPath(new URL("./messaging/selftest.ts", import.meta.url)), queueFile = handoffQueuePath(ledgerPathFrom([])), now = Date.now(),
   ask = () => worthAChild({ state: readSelftestState(selftestPaths(homedir()).state), current: liveToolVersion(), now }) }: { spawn?: typeof spawnSync; program?: string; queueFile?: string; now?: number; ask?: () => ReturnType<typeof worthAChild>; } = {}): string[] {
   // A QUIET TICK STARTS NO PROCESS (a tick that does nothing is pinned at one `node` by `work-tick-cost.test.ts`): the question is answered from the state file and the tag.
   let asked: ReturnType<typeof worthAChild>;

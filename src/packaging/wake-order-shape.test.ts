@@ -18,7 +18,7 @@ import { addressed, resumePrompt, ENGINEER_BRIEF } from "../wake.ts";
 import { sessionOf } from "../token-audit.ts";
 import { CALM_FINISH_PARAGRAPH } from "../worker-profile.ts";
 import { idleNudgePrompt, WAIT_FIELDS } from "../idle-claimant.ts";
-import { staleWaitOrders } from "../work-gate/org-health.mjs";
+import { staleWaitOrders } from "../work-gate/org-health.ts";
 import { primaryStaleOrders, blockedReferentOrders, answerOrders, blockerClearedOrders, unclaimedBlockerClearedOrders, claimedRowAmendedOrders,
   finishedEpicOrders, rowBranchOrders, incompleteRowOrders, diskHeadroomOrders, decide } from "../work-gate.ts";
 
@@ -185,8 +185,8 @@ test("#3444 (5) POSITIVE CONTROL: the scan finds a date in an order that has one
 });
 
 /** THE ROW'S OWN ENUMERATION, run over the source (done-when 2): a builder the fixtures above cannot reach is still counted here. */
-const SITE_FILES = ["../work-gate.ts", "../idle-claimant.ts", "../claim-stall.ts", "../wake.ts", "../work-gate/org-health.mjs", "../work-gate/pr-orders.mjs",
-  "../work-gate/lab-job-orders.mjs", "../work-gate/pr-owners.mjs"];
+const SITE_FILES = ["../work-gate.ts", "../idle-claimant.ts", "../claim-stall.ts", "../wake.ts", "../work-gate/org-health.ts", "../work-gate/pr-orders.ts",
+  "../work-gate/lab-job-orders.ts", "../work-gate/pr-owners.ts"];
 const SITE = /^\s*\+ [`"].*20\d\d-\d\d-\d\d|prompt: [`"].*20\d\d-\d\d-\d\d/;
 const sitesIn = (text: string) => text.split("\n").filter((line) => SITE.test(line) && !line.includes("YYYY"));
 const sourceOf = (file: string) => { try { return readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8"); } catch { return null; } };

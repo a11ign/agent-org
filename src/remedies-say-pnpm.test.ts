@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pnpmDrift } from "./host-pnpm.ts";
-import { stripComments } from "./lib/local-import-closure.mjs";
+import { stripComments } from "./lib/local-import-closure.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../", import.meta.url));
 

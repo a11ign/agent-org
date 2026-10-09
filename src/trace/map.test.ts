@@ -9,11 +9,11 @@
 //   203  week B                  nothing in the store but its merge: counted as unread, in no edge
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { aggregate } from "./aggregate.mjs";
-import { buildMap, LOOPS, MAP_DEFINITIONS, PHASES, processMap, renderMap } from "./map.mjs";
-import type { MapFilter } from "./map.mjs";
-import { repriceEvents } from "./store.mjs";
-import type { TraceEvent } from "./store.mjs";
+import { aggregate } from "./aggregate.ts";
+import { buildMap, LOOPS, MAP_DEFINITIONS, PHASES, processMap, renderMap } from "./map.ts";
+import type { MapFilter } from "./map.ts";
+import { repriceEvents } from "./store.ts";
+import type { TraceEvent } from "./store.ts";
 import type { PullRequest } from "../wakes-per-row.ts";
 
 const ROW_REPO = "a11ign/a11ign";

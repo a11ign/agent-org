@@ -1,6 +1,6 @@
 // no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs `pr-hold.ts` puts a fake `gh` first on its PATH.
 /**
- * `src/wait-condition.ts`'s `liftableHolds` and `src/work-gate/org-health.mjs`'s `liftResolvedHolds`, #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of
+ * `src/wait-condition.ts`'s `liftableHolds` and `src/work-gate/org-health.ts`'s `liftResolvedHolds`, #3364: THE GATE LIFTS A HOLD WHOSE `Waiting-for: merged|closed` IS TRUE, instead of
  * waking a busy session to remove one label.
  *
  * THE INCIDENT (retro 2026-10-04): on 2026-10-03 `staleWaitOrders` woke a session eight times to remove one `hold:*` label from a pull request whose blocker had closed, and the
@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WAIT_FIELDS, WAIT_MARKER, waitItemOf, staleWaits, liftableHolds } from "../wait-condition.ts";
 import { decide, withPrOwners, staleWaitOrders, waitTickFacts, orgHealthNow } from "../work-gate.ts";
-import { liftResolvedHolds } from "../work-gate/org-health.mjs";
+import { liftResolvedHolds } from "../work-gate/org-health.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-03T16:00:00Z");

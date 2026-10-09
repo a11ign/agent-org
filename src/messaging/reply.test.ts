@@ -15,9 +15,9 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "./fake-provider.ts";
-import { createLedger, deliveredTimestamps, foldLedger, readLedgerLines } from "./ledger.mjs";
-import { MASK, QUOTE_LIMIT, createGhReaders, describeAge, parsePlaceholders } from "./placeholders.mjs";
-import { createReply, prepareReply } from "./reply.mjs";
+import { createLedger, deliveredTimestamps, foldLedger, readLedgerLines } from "./ledger.ts";
+import { MASK, QUOTE_LIMIT, createGhReaders, describeAge, parsePlaceholders } from "./placeholders.ts";
+import { createReply, prepareReply } from "./reply.ts";
 
 const NOW = Date.parse("2026-10-02T14:05:30Z");
 const STAMP = "as of 14:05Z";
@@ -31,9 +31,9 @@ let nextLedger = 0;
 
 /**
  * Fixture readers that count their calls. `overrides` replace a reader whole, so a case can make one throw or return nothing.
- * @param {Partial<import("./placeholders.mjs").Readers>} [overrides]
+ * @param {Partial<import("./placeholders.ts").Readers>} [overrides]
  */
-function fixtureReaders(overrides: Partial<import("./placeholders.mjs").Readers> = {}) {
+function fixtureReaders(overrides: Partial<import("./placeholders.ts").Readers> = {}) {
   /** @type {Record<string, number>} */
   const calls: Record<string, number> = {};
   const counted = (/** @type {string} */ name: string, /** @type {Function} */ read: Function) => async (/** @type {any[]} */ ...args: any[]) => {
@@ -41,7 +41,7 @@ function fixtureReaders(overrides: Partial<import("./placeholders.mjs").Readers>
     return read(...args);
   };
   // Deliberately partial: fleet, gate and release exist only where a case passes them in `overrides`.
-  const readers = /** @type {import("./placeholders.mjs").Readers} */ ({
+  const readers = /** @type {import("./placeholders.ts").Readers} */ ({
     issue: counted("issue", async (/** @type {number} */ number: number) => ({ number, state: "open", labels: ["ready", "lane:any", "in-progress"] })),
     pr: counted("pr", async (/** @type {number} */ number: number) => ({ number, state: "merged", review: "APPROVED" })),
     run: counted("run", async () => ({ conclusion: "failure" })),
@@ -54,8 +54,8 @@ function fixtureReaders(overrides: Partial<import("./placeholders.mjs").Readers>
   return { readers, calls };
 }
 
-/** @param {Partial<import("./placeholders.mjs").Readers>} [overrides] @param {{maxText?: number}} [options] */
-function harness(overrides: Partial<import("./placeholders.mjs").Readers> = {}, { maxText }: { maxText?: number; } = {}) {
+/** @param {Partial<import("./placeholders.ts").Readers>} [overrides] @param {{maxText?: number}} [options] */
+function harness(overrides: Partial<import("./placeholders.ts").Readers> = {}, { maxText }: { maxText?: number; } = {}) {
   const provider = createFakeProvider();
   const ledger = createLedger({ path: join(scratch, `ledger-${nextLedger += 1}.jsonl`), now: () => NOW });
   const { readers, calls } = fixtureReaders(overrides);

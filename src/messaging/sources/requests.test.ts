@@ -12,12 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createMessenger } from "../core.mjs";
+import { createMessenger } from "../core.ts";
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger, foldLedger, readLedgerLines } from "../ledger.mjs";
-import { READ_METHODS, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.mjs";
-import { defaultLedgerPath } from "../state.mjs";
-import { observeRequests, parseChairmanOptions, parseRequestKey, readRequests, requestKey } from "./requests.mjs";
+import { createLedger, foldLedger, readLedgerLines } from "../ledger.ts";
+import { READ_METHODS, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.ts";
+import { defaultLedgerPath } from "../state.ts";
+import { observeRequests, parseChairmanOptions, parseRequestKey, readRequests, requestKey } from "./requests.ts";
 
 const REPO = "a11ign/a11ign";
 const START = Date.parse("2026-10-02T09:00:00Z");

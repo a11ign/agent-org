@@ -65,28 +65,28 @@ import { realpathSync } from "node:fs";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
-import { reasonKind } from "./merge-guard/reason-kind.mjs";
+import { reasonKind } from "./merge-guard/reason-kind.ts";
 import { gh, lookup, lookupRequiredContexts, lookupBranchTip, lookupCheckRuns, lookupClosingIssues }
-  from "./merge-guard/lookups.mjs";
-import { baseReason } from "./merge-guard/base-rule.mjs";
-import { headTipMismatchReason } from "./merge-guard/head-tip-rule.mjs";
-import { SATISFIED, checkReasons } from "./merge-guard/checks-rule.mjs";
-import { stalenessReason } from "./merge-guard/staleness-rule.mjs";
-import { ancestryReason } from "./merge-guard/ancestry-rule.mjs";
+  from "./merge-guard/lookups.ts";
+import { baseReason } from "./merge-guard/base-rule.ts";
+import { headTipMismatchReason } from "./merge-guard/head-tip-rule.ts";
+import { SATISFIED, checkReasons } from "./merge-guard/checks-rule.ts";
+import { stalenessReason } from "./merge-guard/staleness-rule.ts";
+import { ancestryReason } from "./merge-guard/ancestry-rule.ts";
 import {
   closingClaimReasons, claimedCloseCoveredBy, applyAllowClaimedClose,
-} from "./merge-guard/claimed-row-rule.mjs";
-import { prHoldReasons } from "./merge-guard/pr-hold-rule.mjs";
+} from "./merge-guard/claimed-row-rule.ts";
+import { prHoldReasons } from "./merge-guard/pr-hold-rule.ts";
 import { holdersOf, HOLD_PREFIX } from "./pr-hold-state.ts";
-import { racesAnArmedMerge, lookupArmedPrStatus } from "./merge-guard/armed-race-rule.mjs";
+import { racesAnArmedMerge, lookupArmedPrStatus } from "./merge-guard/armed-race-rule.ts";
 import {
   appendJsonl, gitCommonDir, verdictLogPath, agreementLogPath, recordVerdict, latestVerdictFor,
   realOutcomeFor, reconcile,
-} from "./merge-guard/reconciliation.mjs";
+} from "./merge-guard/reconciliation.ts";
 
 // RE-EXPORTED so every existing importer keeps working unchanged -- see the header above for who reads
 // which. Each name is now DEFINED in its own rule/shared module; this is the one place all of them are

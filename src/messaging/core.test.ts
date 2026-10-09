@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { composeDigest, composeText, createMessenger, planNotification, resolveConfig } from "./core.mjs";
+import { composeDigest, composeText, createMessenger, planNotification, resolveConfig } from "./core.ts";
 import { createFakeProvider } from "./fake-provider.ts";
-import { createLedger, describeError, readLedgerLines, redact } from "./ledger.mjs";
+import { createLedger, describeError, readLedgerLines, redact } from "./ledger.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

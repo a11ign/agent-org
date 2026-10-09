@@ -13,9 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { readLedgerLines } from "./ledger.mjs";
-import { defaultLedgerPath } from "./state.mjs";
-import { main } from "./watch.mjs";
+import { readLedgerLines } from "./ledger.ts";
+import { defaultLedgerPath } from "./state.ts";
+import { main } from "./watch.ts";
 
 const REPO = "a11ign/a11ign";
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";

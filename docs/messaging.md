@@ -212,10 +212,10 @@ Nothing in this row sends a message to anyone.
 
 | File | What it is |
 |---|---|
-| `src/messaging/event.mjs` | `normalizeEvent`: the one door an event comes in through; throws a `TypeError` naming the field. |
-| `src/messaging/core.mjs` | `createMessenger({ provider, ledger, now, config }).tick(events)`; the pure `planNotification`; `composeText`, `composeDigest`. |
-| `src/messaging/ledger.mjs` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
-| `src/messaging/rate-limit.mjs` | The token bucket and the hourly cap, on an injected clock. |
+| `src/messaging/event.ts` | `normalizeEvent`: the one door an event comes in through; throws a `TypeError` naming the field. |
+| `src/messaging/core.ts` | `createMessenger({ provider, ledger, now, config }).tick(events)`; the pure `planNotification`; `composeText`, `composeDigest`. |
+| `src/messaging/ledger.ts` | The delivery log, `redact`, `describeError`, and `foldLedger`, which rebuilds the core's memory from the log. |
+| `src/messaging/rate-limit.ts` | The token bucket and the hourly cap, on an injected clock. |
 | `src/messaging/provider-contract.ts` | `runProviderConformance(provider)`. |
 | `src/messaging/fake-provider.ts` | The in-memory provider that passes it, and records what it was given. |
 
@@ -352,14 +352,14 @@ The core's kind `release` has no hold-down, never reminds, is not silent and is 
 
 ## Stage 2, the inbound core (row 7 of 13)
 
-`src/messaging/inbound.mjs` and `src/messaging/classify.mjs`: **who may speak through the chat, and what becomes of what they say.**
+`src/messaging/inbound.ts` and `src/messaging/classify.ts`: **who may speak through the chat, and what becomes of what they say.**
 Still no provider and no listener (rows 8-10): the functions take an update, shaped like Telegram's `getUpdates` entry, and
 return what the caller must do. Nothing here fetches, sends, deletes or forwards.
 
 | File | What it is |
 |---|---|
-| `src/messaging/inbound.mjs` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
-| `src/messaging/classify.mjs` | `classifyText(text)` -> `forward`, `drop` (a definite secret), `withhold` (one token shaped like a pasted secret; the chairman may resend it with "not a secret") or `refuse` (a deletion, or spending), with a one-line `reply`. |
+| `src/messaging/inbound.ts` | `acceptUpdate(update, { chairman })` (identity); `createInbound({ ledger, chairman }).handle(update)` (identity, classifier, dedupe, ledger); `isAccepted(value)`. |
+| `src/messaging/classify.ts` | `classifyText(text)` -> `forward`, `drop` (a definite secret), `withhold` (one token shaped like a pasted secret; the chairman may resend it with "not a secret") or `refuse` (a deletion, or spending), with a one-line `reply`. |
 
 ### The threat model of the inbound path
 

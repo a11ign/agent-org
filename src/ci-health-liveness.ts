@@ -51,7 +51,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 

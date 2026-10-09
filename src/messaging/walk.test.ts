@@ -12,13 +12,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { createAnswers } from "./answers.mjs";
-import { actionData, createInbound } from "./inbound.mjs";
-import { createForwarder } from "./listen.mjs";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { walkPosition } from "./walk.mjs";
-import { NEEDS_CHAIRMAN, observeRequests, parseSteps, readWalk, requestEvent } from "./sources/requests.mjs";
-import { runWatch } from "./watch.mjs";
+import { createAnswers } from "./answers.ts";
+import { actionData, createInbound } from "./inbound.ts";
+import { createForwarder } from "./listen.ts";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { walkPosition } from "./walk.ts";
+import { NEEDS_CHAIRMAN, observeRequests, parseSteps, readWalk, requestEvent } from "./sources/requests.ts";
+import { runWatch } from "./watch.ts";
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 const REPO = "a11ign/a11ign";

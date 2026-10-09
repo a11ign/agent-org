@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prHoldReasons } from "../merge-guard/pr-hold-rule.mjs";
+import { prHoldReasons } from "../merge-guard/pr-hold-rule.ts";
 
 const pr = { number: 258 };
 

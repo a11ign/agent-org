@@ -17,9 +17,9 @@ import { after, describe, test } from "node:test";
 
 import { RECIPIENT, main, namesWhatClearsIt, orderText } from "./ask-ceo.ts";
 import { VERBS } from "./correct.ts";
-import { createLedger, describeError, readLedgerLines } from "./ledger.mjs";
-import { EXIT } from "./record.mjs";
-import { defaultLedgerPath } from "./state.mjs";
+import { createLedger, describeError, readLedgerLines } from "./ledger.ts";
+import { EXIT } from "./record.ts";
+import { defaultLedgerPath } from "./state.ts";
 
 const NOW = Date.parse("2026-10-04T15:00:00Z");
 const REPO = "a11ign/a11ign";

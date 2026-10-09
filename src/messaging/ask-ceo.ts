@@ -23,8 +23,8 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { pnpmCliInvocation } from "../lib/npm-cli-executable.mjs";
-import { checkMessage, runCommand } from "./record.mjs";
+import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
+import { checkMessage, runCommand } from "./record.ts";
 
 /** The only session a ruling is asked of. Changing it is changing what the liaison may ask, and the test pins it. */
 export const RECIPIENT = "ceo";
@@ -35,8 +35,8 @@ const PROMPT_EXIT = Object.freeze({ delivered: 0, refused: 1, queued: 2 });
 /** The kinds of wait whose condition is about a row and can be read: `manual` and `unreadable` say nothing that would end. */
 const READABLE_WAITS = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
 
-type Outcome = import("./record.mjs").Outcome;
-type RowRef = import("./answers.mjs").RowRef;
+type Outcome = import("./record.ts").Outcome;
+type RowRef = import("./answers.ts").RowRef;
 /** One run of `pnpm run prompt:session`. */
 type Invocation = { args: string[]; input: string; cwd: string; env: Record<string, string | undefined> };
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
@@ -71,10 +71,10 @@ function outcomeOf(ran: Ran): Outcome {
 }
 
 /**
- * @param {{ledger: import("./record.mjs").Ledger, parseWaits: ParseWaits, run: (invocation: Invocation) => Ran, cwd: string, env: Record<string, string | undefined>}} ports
+ * @param {{ledger: import("./record.ts").Ledger, parseWaits: ParseWaits, run: (invocation: Invocation) => Ran, cwd: string, env: Record<string, string | undefined>}} ports
  *   `run` is the command's one effect; a test passes one that records what it was given.
  */
-export function createAsker({ ledger, parseWaits, run, cwd, env }: { ledger: import("./record.mjs").Ledger; parseWaits: ParseWaits; run: (invocation: Invocation) => Ran; cwd: string; env: Record<string, string | undefined>; }) {
+export function createAsker({ ledger, parseWaits, run, cwd, env }: { ledger: import("./record.ts").Ledger; parseWaits: ParseWaits; run: (invocation: Invocation) => Ran; cwd: string; env: Record<string, string | undefined>; }) {
   return {
     /**
      * @param {{row: RowRef, ref: string, text: string}} question `text` is the liaison's own question

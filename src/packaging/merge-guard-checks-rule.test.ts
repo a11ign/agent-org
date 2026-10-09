@@ -7,14 +7,14 @@ import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.mjs";
+import { checkReasons, newestPerName, SATISFIED } from "../merge-guard/checks-rule.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 // THE TOOL'S OWN ROOT, not `HOME_CHECKOUT`: that is the PROJECT's checkout (the product's tree), which holds no
 // `src/` of this tool's and, in a worktree with no host declaration, does not resolve at all (#3953). Every
@@ -144,7 +144,7 @@ test("#902 MUTATION TARGET: the fix is in the RULE, and `lookupCheckRuns` must c
   // The ordering key has to arrive. `checkReasons` grouping by newest is inert if its caller drops `id`,
   // which is what this file's own subject did until #902 -- a rule that cannot apply, not a rule that is
   // wrong. Asserted against the source, because no unit test of `checkReasons` can see its caller.
-  const source = readFileSync(new URL("../merge-guard/lookups.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../merge-guard/lookups.ts", import.meta.url), "utf8");
   const mapper = /check-runs[\s\S]*?\.map\(([\s\S]*?)\)\);/.exec(source)?.[1] ?? "";
   assert.match(mapper, /\bid: run\.id\b/,
     "lookupCheckRuns no longer carries `id`, so newest-per-name has no ordering key and silently reverts");

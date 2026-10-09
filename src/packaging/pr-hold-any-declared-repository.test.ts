@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.ts";
 import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
-import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.mjs";
+import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.ts";
 
 const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";

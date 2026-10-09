@@ -23,7 +23,7 @@
 import { execFileSync } from "node:child_process";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 /** @type {Map<string, string[]>} one answer per checkout: the question is about a repository, so the answer is keyed by it. */
 const topLevelCache: Map<string, string[]> = new Map();

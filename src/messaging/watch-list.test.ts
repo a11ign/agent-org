@@ -12,12 +12,12 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { createFakeProvider } from "./fake-provider.ts";
-import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.mjs";
-import { createLedger } from "./ledger.mjs";
-import { parsePlaceholders, readPlaceholders } from "./placeholders.mjs";
-import { defaultLedgerPath } from "./state.mjs";
-import { WATCHED, runWatch } from "./watch.mjs";
-import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.mjs";
+import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.ts";
+import { createLedger } from "./ledger.ts";
+import { parsePlaceholders, readPlaceholders } from "./placeholders.ts";
+import { defaultLedgerPath } from "./state.ts";
+import { WATCHED, runWatch } from "./watch.ts";
+import { createWatchList, createWatchReaders, foldWatches, hostFiles, main } from "./watch-list.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves

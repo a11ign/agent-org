@@ -16,7 +16,7 @@ import { buildReport, renderReport, compareReadings, cachedDora, DORA_CACHE_FILE
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMMANDS } from "../commands.mjs";
+import { COMMANDS } from "../commands.ts";
 import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-config.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

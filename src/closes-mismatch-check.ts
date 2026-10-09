@@ -57,8 +57,8 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { REPO } from "./project-identity.ts";
-import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.mjs";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
 // resolved -- immediately followed by `#<number>`. Used only to LOCATE the phrase in the body for a

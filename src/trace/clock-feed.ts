@@ -10,7 +10,7 @@
 //
 // WHAT THE STORE DOES NOT HOLD, so what this cannot say: a reopen (`GITHUB_KINDS` has no `reopened`), so an item that was closed and opened again reads as stopped.
 // The clock only runs on OPEN items, so that gap never reaches a comparison, and it is named here because a reader of a closed item's figure would meet it.
-import { eventsForRow } from "./store.mjs";
+import { eventsForRow } from "./store.ts";
 
 /**
  * `bornAt` is when the row was FILED or the pull request OPENED; `since` is when the outcome clock starts (the same instant for a pull request, the newest claim for a
@@ -22,23 +22,23 @@ export type ClockSubject = { repo: string; kind: "pr" | "row"; number: number };
 /**
  * The store's github records of ONE item, in the order GitHub wrote them. The id prefix names the repository: `eventsForRow` finds a number in any repository, and a
  * row and a pull request of another repository with the same number would otherwise date this one.
- * @param {import("./store.mjs").TraceEvent[]} events @param {ClockSubject} subject
- * @returns {import("./store.mjs").TraceEvent[]}
+ * @param {import("./store.ts").TraceEvent[]} events @param {ClockSubject} subject
+ * @returns {import("./store.ts").TraceEvent[]}
  */
-function recordsOf(events: import("./store.mjs").TraceEvent[], { repo, kind, number }: ClockSubject): import("./store.mjs").TraceEvent[] {
+function recordsOf(events: import("./store.ts").TraceEvent[], { repo, kind, number }: ClockSubject): import("./store.ts").TraceEvent[] {
   const ofItem = eventsForRow(events, kind === "pr" ? { rows: [], prs: [number] } : { rows: [number], prs: [] });
   return ofItem.filter((event) => event.source === "github" && event.id.startsWith(`gh:${repo}#${number}:`));
 }
 
-/** When the row was filed or the pull request opened. @param {import("./store.mjs").TraceEvent[]} records @returns {number | null} */
-const bornOf = (records: import("./store.mjs").TraceEvent[]): number | null => records.find((event) => event.kind === "filed" || event.kind === "opened")?.at ?? null;
+/** When the row was filed or the pull request opened. @param {import("./store.ts").TraceEvent[]} records @returns {number | null} */
+const bornOf = (records: import("./store.ts").TraceEvent[]): number | null => records.find((event) => event.kind === "filed" || event.kind === "opened")?.at ?? null;
 
 /**
  * When the clock starts. A pull request's is when it was OPENED. A row's is its NEWEST claim record, as the clock's own `claimRecordOf` reads it: a newest record that
  * is a RELEASE is no claim, so the row has no age (`null`) and is not read as young.
- * @param {import("./store.mjs").TraceEvent[]} records @param {"pr" | "row"} kind @returns {number | null}
+ * @param {import("./store.ts").TraceEvent[]} records @param {"pr" | "row"} kind @returns {number | null}
  */
-function startOf(records: import("./store.mjs").TraceEvent[], kind: "pr" | "row"): number | null {
+function startOf(records: import("./store.ts").TraceEvent[], kind: "pr" | "row"): number | null {
   if (kind === "pr") return bornOf(records);
   const newest = records.filter((event) => event.kind === "claimed" || event.kind === "released").at(-1);
   return newest?.kind === "claimed" ? newest.at : null;
@@ -47,20 +47,20 @@ function startOf(records: import("./store.mjs").TraceEvent[], kind: "pr" | "row"
 /**
  * When a merge or a close stopped it: a merge if there was one, else the newest close. A comment, a label, a push and a hold are not in this answer, which is the
  * clock's own rule: only a merge or a close stops it.
- * @param {import("./store.mjs").TraceEvent[]} records @returns {number | null}
+ * @param {import("./store.ts").TraceEvent[]} records @returns {number | null}
  */
-function stopOf(records: import("./store.mjs").TraceEvent[]): number | null {
+function stopOf(records: import("./store.ts").TraceEvent[]): number | null {
   const merged = records.find((event) => event.kind === "merged");
   return merged?.at ?? records.filter((event) => event.kind === "closed").at(-1)?.at ?? null;
 }
 
 /**
  * THE CLOCK OF ONE ROW OR PULL REQUEST, from the store's records alone.
- * @param {import("./store.mjs").TraceEvent[]} events the store's events (`readStore`), any number of items
+ * @param {import("./store.ts").TraceEvent[]} events the store's events (`readStore`), any number of items
  * @param {ClockSubject} subject
  * @returns {RowClock}
  */
-export function clockFeedOf(events: import("./store.mjs").TraceEvent[], subject: ClockSubject): RowClock {
+export function clockFeedOf(events: import("./store.ts").TraceEvent[], subject: ClockSubject): RowClock {
   const records = recordsOf(events, subject);
   return { bornAt: bornOf(records), since: startOf(records, subject.kind), stoppedAt: stopOf(records) };
 }

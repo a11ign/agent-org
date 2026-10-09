@@ -990,7 +990,7 @@ export function readDora({ repositories, now, readers = githubReaders }: { repos
 }
 
 async function main() {
-  const { refuseUnknownFlags, flagValue } = await import("./lib/cli-flags.mjs");
+  const { refuseUnknownFlags, flagValue } = await import("./lib/cli-flags.ts");
   refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "agent-org dora" });
   const nowFlag = flagValue(process.argv, "now");
   const now = nowFlag === undefined ? Date.now() : Date.parse(nowFlag);

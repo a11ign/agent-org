@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.mjs";
+import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
 
 const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");
@@ -178,7 +178,7 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
 
 // ---- a11ign/a11ign#4183: the scorer, over the FROZEN #4074 fixture and fake predictions. No model, no `gh`, no store, no sampler.
 import { readFileSync } from "node:fs";
-import { BAR, loadLabels, renderPrompt, renderScore, scoreTriage } from "./triage-sample.mjs";
+import { BAR, loadLabels, renderPrompt, renderScore, scoreTriage } from "./triage-sample.ts";
 
 const { rows: SHEET, definitions: DEFINITIONS } = loadLabels();
 const UNREADABLE = [3, 44, 45, 57, 88, 98];

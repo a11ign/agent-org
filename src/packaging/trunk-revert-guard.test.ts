@@ -35,7 +35,7 @@ import { dirname, join } from "node:path";
 // #2154: the repository goes through the #2158 helper, so a full `/tmp` reports the HOST as the cause
 // instead of a bare `Disk quota exceeded` from inside `git`.
 import { buildSandbox } from "../lib/sandbox-exhaustion.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../trunk-revert-guard.ts";

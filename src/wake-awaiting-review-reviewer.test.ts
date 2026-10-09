@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { perPullRequestOrders, reviewBlockedOrders } from "./work-gate/pr-orders.mjs";
+import { perPullRequestOrders, reviewBlockedOrders } from "./work-gate/pr-orders.ts";
 import { reviewBlocked, reviewStateOf, REVIEW_STATE } from "./work-gate.ts";
 import { deliver } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";

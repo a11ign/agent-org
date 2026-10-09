@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { claimWithWorktree, claimLineFor, worktreeTargetReason } from "../row-claim.ts";
 
 const ROW = 9;

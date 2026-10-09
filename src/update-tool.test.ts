@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { restartLongRunning, updateTool } from "./update-tool.ts";
-import { liveToolVersion, toolVersionLine } from "./lib/tool-version.mjs";
+import { liveToolVersion, toolVersionLine } from "./lib/tool-version.ts";
 import { sandboxGitEnv, withGitSandbox } from "./lib/git-sandbox.ts";
 
 /** A primary checkout as `isPrimaryWorktree` reads one (a real `.git` directory), holding nothing else: git itself is the fake. */
@@ -172,7 +172,7 @@ test("#3443 (7): a release commit that is NOT an ancestor of the branch, tagged,
 });
 
 test("#3443: the listener's journal opens with the agent-org version it loaded, and a project with no `messaging` key still prints its OFF line after it", () => {
-  const listener = fileURLToPath(new URL("./messaging/listen.mjs", import.meta.url));
+  const listener = fileURLToPath(new URL("./messaging/listen.ts", import.meta.url));
   const ran = spawnSync(process.execPath, [...TSX_IMPORT, listener], { encoding: "utf8", cwd: PROJECT_ROOT, env: { ...process.env, HOME: realpathSync(tmpdir()) } });
   assert.equal(ran.status, 0, `${ran.stdout}${ran.stderr}`);
   const [first, second] = ran.stdout.split("\n");

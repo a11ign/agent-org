@@ -2,8 +2,8 @@
 // no-token: gh -- every event is a fixture; `waterfall` is a pure function and calls nothing
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventsOfTranscript, ToolRead, Tokens } from "./store.mjs";
-import { BETWEEN, duration, Phase, PHASES, renderWaterfall, Spend, Repeat, waterfall } from "./waterfall.mjs";
+import { eventsOfTranscript, ToolRead, Tokens } from "./store.ts";
+import { BETWEEN, duration, Phase, PHASES, renderWaterfall, Spend, Repeat, waterfall } from "./waterfall.ts";
 
 const REPO_ROW = 9001;
 const PR = 9100;
@@ -126,7 +126,7 @@ const LONG_TOOL_TRANSCRIPT = [
 test("TOOL (#3669): a long tool call is a WAITING source named from the turn's own `toolMs`, and the same turns without the field print it as unexplained", () => {
   const { events: fromTranscript } = eventsOfTranscript({ text: LONG_TOOL_TRANSCRIPT, file: "w.jsonl", ledger: [], rowRepo: "a11ign/a11ign" });
   const row = [rowEvent("filed", "09:50:00"), rowEvent("claimed", "10:00:00", { claimant: "worker-9001" }), ghRecord("opened", "10:07:00")];
-  const build = (events: { id: string; kind: "turn"|"wake"|"compaction"|"gh_call"|"deferral"|import("./github-events.mjs").GithubKind; source: "transcript"|"wake-ledger"|"github"|"gh-ledger"|"deferral-log"; at: number; session: string; row: number|null; pr: number|null; repo: string|null; cause: string|null; causeKey: string|null; wakeId: string|null; model?: string; tokens?: Tokens; costUsd?: number|null; toolRead?: ToolRead|null; transcript?: string; wallClockMs?: number|null; deliveryLagMs?: number|null; bytes?: number; sidechain?: boolean; harness?: "codex"; rows?: number[]; prs?: number[]; touchedRows?: number[]; touchedPrs?: number[]; actor?: string|null; seq?: number; claimant?: string; name?: string; state?: string|null; status?: string; headSha?: string; mergeSha?: string; startedAt?: number; completedAt?: number|null; how?: "delivered"|"gone"; outcome?: "merged"|"unmerged"; account?: string; resource?: string; cost?: number|null; exit?: number; command?: string; workspace?: string; script?: string; sessionId?: string; keyedBy?: "session"|"time"|null; unkeyed?: "script"|"no-turn"; }[]) => phaseOf(waterfall({ events: [...row, ...events], now: NOW }), "build");
+  const build = (events: { id: string; kind: "turn"|"wake"|"compaction"|"gh_call"|"deferral"|import("./github-events.ts").GithubKind; source: "transcript"|"wake-ledger"|"github"|"gh-ledger"|"deferral-log"; at: number; session: string; row: number|null; pr: number|null; repo: string|null; cause: string|null; causeKey: string|null; wakeId: string|null; model?: string; tokens?: Tokens; costUsd?: number|null; toolRead?: ToolRead|null; transcript?: string; wallClockMs?: number|null; deliveryLagMs?: number|null; bytes?: number; sidechain?: boolean; harness?: "codex"; rows?: number[]; prs?: number[]; touchedRows?: number[]; touchedPrs?: number[]; actor?: string|null; seq?: number; claimant?: string; name?: string; state?: string|null; status?: string; headSha?: string; mergeSha?: string; startedAt?: number; completedAt?: number|null; how?: "delivered"|"gone"; outcome?: "merged"|"unmerged"; account?: string; resource?: string; cost?: number|null; exit?: number; command?: string; workspace?: string; script?: string; sessionId?: string; keyedBy?: "session"|"time"|null; unkeyed?: "script"|"no-turn"; }[]) => phaseOf(waterfall({ events: [...row, ...events], now: NOW }), "build");
   const named = build(fromTranscript);
   assert.deepEqual(fromTranscript.filter((event) => event.kind === "turn").map((event) => event.toolMs), [null, 6 * MINUTE], "POSITIVE CONTROL: the fixture's second turn follows the 6-minute call");
   assert.deepEqual(named.waits.map((wait: { source: any; ms: any; }) => [wait.source, wait.ms]), [["tool", 6 * MINUTE]]);

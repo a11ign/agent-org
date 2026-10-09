@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.ts";
-import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.mjs";
+import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.ts";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
 const TODAY = "2026-10-11";
@@ -28,8 +28,8 @@ const tickRow = (number: number, more: Record<string, any> = {}) => ({ number, t
 function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }: { rows: any[]; live?: Record<number, { labels?: string[]; body?: string; state?: string; blockedBy?: any; }>; merged?: Record<number, { number: number; mergedAt: string; }>; refuse?: Record<number, string>; fail?: string[]; }) {
   /** @type {string[]} */
   const calls: string[] = [];
-  /** @type {import("./ready-when-unblocked.mjs").ReadyIo} */
-  const io: import("./ready-when-unblocked.mjs").ReadyIo = {
+  /** @type {import("./ready-when-unblocked.ts").ReadyIo} */
+  const io: import("./ready-when-unblocked.ts").ReadyIo = {
     read: (n) => {
       calls.push(`read ${n}`);
       if (fail.includes("read")) throw new Error(`HTTP 502 on read #${n}`);

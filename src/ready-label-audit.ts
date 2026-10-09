@@ -44,7 +44,7 @@ import { join } from "node:path";
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { proseBlockers } from "./waiting-condition.ts";
 import { umbrellaEdge } from "./wait-condition.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.ts";
@@ -54,7 +54,7 @@ import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.ts";
 // the three states it is instead.
 import { fetchClosedRowEvents, unattributableClosedRows, reportableUnattributable, attributionFor,
   fetchClosingPullRequest, PROVENANCE_REQUIRED_FROM } from "./claim-provenance.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 // `CLAIM_LABEL` from the module the CLAIM PATH itself writes, never the string "in-progress" retyped
 // here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
 // a second spelling of the label is how that disagreement gets to happen again silently.
@@ -69,7 +69,7 @@ import { labelsToStrip } from "./close-rows-for-merged-pr.ts";
 // check below exists because two copies of one fact disagreed, so it must not add a third.
 import { OUT_OF_RELEASE_LABEL } from "./board-data.ts";
 // #2190: the rule the CLAIM path refuses by, CALLED here and never re-derived -- see `unclaimableReadyRows`.
-import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
+import { REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason } from "./row-claim/template-fields-rule.ts";
 // #2619 (child 3d of #69): the remaining vocabulary this file names -- `backlog` is not a claim-lifecycle
 // label (`claim-labels.ts`'s header says it holds exactly four), `blocked` is a mutex label nobody claims,
 // and `session:`/`Out of release` are read elsewhere too, so all four come from the one field module.

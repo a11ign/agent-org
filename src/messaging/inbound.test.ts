@@ -16,9 +16,9 @@ import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { register } from "tsx/esm/api";
 
-import { createLedger, readLedgerLines } from "./ledger.mjs";
-import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.mjs";
-import { parseChairmanOptions } from "./sources/requests.mjs";
+import { createLedger, readLedgerLines } from "./ledger.ts";
+import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.ts";
+import { parseChairmanOptions } from "./sources/requests.ts";
 
 // The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
 // `listen.test.mjs` makes, because the Acceptance of this row runs the two files in separate processes and only that one set it.

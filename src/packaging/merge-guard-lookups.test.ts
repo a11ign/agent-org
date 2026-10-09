@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lookupBranchTip, lookup, lookupRequiredContexts } from "../merge-guard/lookups.mjs";
+import { lookupBranchTip, lookup, lookupRequiredContexts } from "../merge-guard/lookups.ts";
 
 test("lookupBranchTip reads the real tip of a real branch in this repo", () => {
   const tip = lookupBranchTip("main");

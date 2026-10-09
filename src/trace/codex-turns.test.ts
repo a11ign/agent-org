@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { eventsOfCodexSession } from "./codex-turns.mjs";
-import { eventsForRow, readStore } from "./store.mjs";
-import { ingestTranscripts } from "./trace.mjs";
+import { eventsOfCodexSession } from "./codex-turns.ts";
+import { eventsForRow, readStore } from "./store.ts";
+import { ingestTranscripts } from "./trace.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";

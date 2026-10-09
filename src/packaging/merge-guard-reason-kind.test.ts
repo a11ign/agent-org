@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reasonKind } from "../merge-guard/reason-kind.mjs";
+import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 test("reasonKind classifies every reason shape the rule modules actually produce", () => {
   // A reason this cannot classify is worth knowing about immediately, not discovering later in a log

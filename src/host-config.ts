@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA } from "./project-config.ts";
-import { LATEST, isToolVersion } from "./lib/release-tag.mjs";
+import { LATEST, isToolVersion } from "./lib/release-tag.ts";
 
 export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 /** Where the host's declaration is, relative to a checkout, when `$AGENT_ORG_HOST` does not say. */

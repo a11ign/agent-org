@@ -24,7 +24,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { SIGNALS, teamAccessReading, readTeamAccess, parseTeamListing, orgHealthReadings } = await import("../org-health.ts");
-const { orgHealthNow } = await import("../work-gate/org-health.mjs");
+const { orgHealthNow } = await import("../work-gate/org-health.ts");
 
 const DECLARED = ["a11ign/a11ign", "a11ign/agent-org", "a11ign/screenreader-worker"];
 const listing = (rows: Record<string, string>) => Object.entries(rows).map(([repo, level]) => ({ repo, level }));

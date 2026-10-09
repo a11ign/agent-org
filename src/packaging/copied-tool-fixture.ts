@@ -10,7 +10,7 @@
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localImports } from "../lib/local-import-closure.mjs";
+import { localImports } from "../lib/local-import-closure.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 
 /** This checkout: the tool is its own tree, so `src/packaging` up two is a place the tool owns, not a project file. */

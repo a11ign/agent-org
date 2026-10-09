@@ -36,14 +36,14 @@ import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync,
   renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { LATEST } from "./lib/release-tag.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { LATEST } from "./lib/release-tag.ts";
 import { installPendingFindings } from "./update-tool.ts";
-import { localImports, stripComments } from "./lib/local-import-closure.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.mjs";
+import { localImports, stripComments } from "./lib/local-import-closure.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.ts";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.ts";
-import { COMMANDS, FIXED_ARGS } from "./commands.mjs";
+import { COMMANDS, FIXED_ARGS } from "./commands.ts";
 import { pnpmDrift } from "./host-pnpm.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
@@ -99,7 +99,7 @@ export const TOOL_ENTRIES = Object.freeze([
   "agent-org",
   // a11ign/a11ign#3627: the weekly token-efficiency report's pair and the script it runs, beside the board dispatcher's and shaped like them.
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
-  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.mjs`, which decides whether a head has moved; the timer is only a clock.
+  // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.ts`, which decides whether a head has moved; the timer is only a clock.
   "trace-publish.service.in", "trace-publish.timer.in",
   // a11ign/a11ign#3849: the /tmp fixture janitor's pair, and the user-level tmpfiles rule that ages the private tmp root out (not a unit: `installTmpfiles` copies it).
   "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
@@ -370,20 +370,20 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   ],
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/publish.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/publish\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/publish.ts"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own
-  // (`messaging:listen` -> `src/messaging/listen.mjs`, `messaging:watch` -> `src/messaging/watch.mjs`), run directly, which is the form `worktree-prune` has.
+  // (`messaging:listen` -> `src/messaging/listen.ts`, `messaging:watch` -> `src/messaging/watch.ts`), run directly, which is the form `worktree-prune` has.
   "chairman-listen.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/listen.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:listen$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/listen.ts"],
   ],
   "chairman-watch.service.in": [
-    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/watch.mjs"],
+    [/^ExecStart=%h\/\.local\/bin\/pnpm run messaging:watch$/m, "ExecStart=/usr/bin/node --import tsx src/messaging/watch.ts"],
   ],
   // THE OTEL RECEIVER (a11ign/a11ign#4071): run from the tool's checkout, like the trace pages' script.
   "otel-receiver.service.in": [
-    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/otel-receiver.mjs"],
+    [/^ExecStart=\/usr\/bin\/node --import tsx packages\/agent-org\/src\/trace\/otel-receiver\.mjs$/m, "ExecStart=/usr/bin/node --import tsx src/trace/otel-receiver.ts"],
   ],
   // THE DRAINED KERNEL REBOOT (a11ign/a11ign#4053): run from the tool's checkout, like the receiver above.
   "kernel-reboot.service.in": [

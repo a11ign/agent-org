@@ -7,7 +7,7 @@
 // already there, a row that no finding names). The flagged case is the control for every "nothing" below: the same tick, the same comment, a label when the fact is absent.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boardTruthNow } from "../work-gate/org-health.mjs";
+import { boardTruthNow } from "../work-gate/org-health.ts";
 
 const AT = Date.parse("2026-10-08T10:22:00Z");
 const NOW = Date.parse("2026-10-08T12:00:00Z");

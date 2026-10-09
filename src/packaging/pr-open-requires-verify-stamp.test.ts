@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { EXIT_NOTHING_SENT, main } from "../pr-open.ts";
 import { decide, performActions } from "../work-gate.ts";

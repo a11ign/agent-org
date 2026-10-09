@@ -21,8 +21,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { planInvocation } from "../bin.mjs";
-import { COMMANDS, FIXED_ARGS, INTERNAL } from "../commands.mjs";
+import { planInvocation } from "../bin.ts";
+import { COMMANDS, FIXED_ARGS, INTERNAL } from "../commands.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const BIN = join(SRC, "bin.mjs");

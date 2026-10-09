@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { countingGh, eventsOfCheckRuns, eventsOfTimeline, GITHUB_KINDS, readGithubEvents } from "./github-events.mjs";
-import { appendEvents, eventsForRow, readStore, TraceEvent } from "./store.mjs";
+import { countingGh, eventsOfCheckRuns, eventsOfTimeline, GITHUB_KINDS, readGithubEvents } from "./github-events.ts";
+import { appendEvents, eventsForRow, readStore, TraceEvent } from "./store.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const REPO = "a11ign/a11ign";

@@ -31,8 +31,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { changedFiles } from "../lib/changed-files.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
+import { changedFiles } from "../lib/changed-files.ts";
 import { snapshotDirFor } from "../board-snapshot-scope.ts";
 
 // Two trees: the PROJECT's checkout, which the fixtures copy from, and the TOOL's own `src`, which is what is scanned and copied.

@@ -10,10 +10,10 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger, topCallers } from "../gh-ledger.ts";
-import { emptyState } from "./ingest-state.mjs";
-import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyed, summarize } from "./gh-calls.mjs";
-import { appendToStore, openStore } from "./store.mjs";
-import type { TraceEvent } from "./store.mjs";
+import { emptyState } from "./ingest-state.ts";
+import { callsOfLedgerText, ghCallLines, ghIngestLines, ingestGhCalls, keyed, summarize } from "./gh-calls.ts";
+import { appendToStore, openStore } from "./store.ts";
+import type { TraceEvent } from "./store.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const at = (iso: string): number => Date.parse(iso);

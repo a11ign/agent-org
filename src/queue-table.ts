@@ -39,10 +39,10 @@ import { loadavg } from "node:os";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { behindByCount } from "./queue-stalled.ts";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { newestPerName } from "./newest-check-run.ts";
 import { holdersOf } from "./pr-hold-state.ts";
 import { brokenChecks } from "./red-pr.ts";

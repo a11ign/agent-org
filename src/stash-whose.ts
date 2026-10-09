@@ -33,8 +33,8 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 const EXIT = { DONE: 0, CANNOT_ASK: 2 };
 

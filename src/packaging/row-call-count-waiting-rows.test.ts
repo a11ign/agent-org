@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate.ts";
-import { readWaitClearedAt, rowDeclaresWait } from "../work-gate/row-call-count-orders.mjs";
+import { readWaitClearedAt, rowDeclaresWait } from "../work-gate/row-call-count-orders.ts";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 
 const SESSION = "orchestrator";

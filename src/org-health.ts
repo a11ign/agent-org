@@ -55,7 +55,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { spenderPhrase } from "./gh-ledger.ts";
 // A LEAF (`claim-labels.ts` imports nothing), so the label is read from where it is declared, as `repeating-lines.ts` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
@@ -68,7 +68,7 @@ import { brokenChecks } from "./red-pr.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, PARKED_LABEL, STALE_WAIT_GRACE_MINUTES, isItemWait, namedDoneWhens, parseWaits, pastGrace } from "./wait-condition.ts";
 import { holdersOf } from "./pr-hold-state.ts";
-import { declaredClosedRows } from "./row-claim/file-overlap-rule.mjs";
+import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
@@ -226,7 +226,7 @@ const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIG
  */
 export type Reading = { signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null, discriminator?: string, prompt?: string };
 
-export type ToolAgreement = import("./lib/tool-version-agreement.mjs").Agreement;
+export type ToolAgreement = import("./lib/tool-version-agreement.ts").Agreement;
 
 /** @param {number} ms @returns {string} the UTC hour a time falls in, `2026-10-01T07`: the discriminator's resolution */
 const hourOf = (ms: number): string => new Date(ms).toISOString().slice(0, 13);
@@ -876,7 +876,7 @@ export function toolVersionReading({ agreement }: { agreement: { result: ToolAgr
  */
 export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...TSX_IMPORT, ...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
   try {
-    const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.mjs"), "--json"]));
+    const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.ts"), "--json"]));
     return parsed.asked === false ? undefined : parsed;
   } catch {
     return null;
@@ -1548,7 +1548,7 @@ const REMEDY = (Object.freeze({
     + "request is closed or merged is the second (`reviewer teardown` ends those by itself when it can see them). A trust prompt on a clone is the "
     + "reviewer's own codex config to edit, not a tick's.",
   [SIGNALS.TOOL_VERSION]: "Each runner named has run an older `agent-org` than the newest release for longer than one release cycle (the tick's interval, the tag lag and one more tick), so \"the org runs the latest\" "
-    + "is not true of it. READ `node src/lib/tool-version-agreement.mjs` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
+    + "is not true of it. READ `node src/lib/tool-version-agreement.ts` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
     + "the newest tag: read the tick's first journal line and why it did not. A `worktree` runner resolves a COPY of the dependency through its `node_modules`: until the removal row (#3534) merges it is the pin, "
     + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
   [SIGNALS.NODE_CANNOT_STRIP]: "Each `node` named cannot strip types (`process.features.typescript` is not `strip` or `transform`, or the binary could not be run), so any unit or script that runs a `.ts` "

@@ -30,7 +30,7 @@ import { realpathSync, readFileSync } from "node:fs";
 import { LANE_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { extractRegionSection } from "./region-paths.ts";
 import { extractAcceptanceSection } from "./acceptance-commands.ts";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { PROFILES } from "./cause-declaration.ts";
 
 /** The effort levels the `claude` CLI accepts. A value outside this set is a typo, not a preference. */

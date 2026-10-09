@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BASELINE_FILE, checkMjsRatchet, findBaselineRoot, isScriptSource, type Baseline } from "@a11ign/toolchain/mjs-ratchet";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
 
 const HERE = fileURLToPath(import.meta.url);
@@ -74,7 +74,7 @@ test("the ratchet RUNS: the baseline sits at the repository root and the tree it
   const result = checkMjsRatchet({ from: JUDGED });
   assert.ok(result.count > 0, "the check counted no file at all");
   assert.ok(result.baselineCount > 0, "the committed baseline lists no file at all");
-  assert.ok(scriptFilesIn(root).some((path) => path === "src/lib/git-env.mjs"), "the listing no longer finds a source file that is known to be there");
+  assert.ok(scriptFilesIn(root).some((path) => path === "src/lib/git-env.ts"), "the listing no longer finds a source file that is known to be there");
 });
 
 test("a baseline with one name removed FAILS and names the file", () => {
@@ -106,9 +106,9 @@ test("a tree that holds FEWER files than the baseline passes and says the baseli
 test("an exception with no `why` FAILS", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
   const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "a tool that reads only this name" }] } });
+  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.ts", why: "a tool that reads only this name" }] } });
   assert.doesNotMatch(withWhy.message, /has no `why`/, "an exception with a reason is not refused for lacking one");
-  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.mjs", why: "" }] } });
+  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/lib/git-env.ts", why: "" }] } });
   assert.equal(withoutWhy.ok, false);
   assert.match(withoutWhy.message, /has no `why`/);
 });

@@ -12,12 +12,12 @@
 // acceptance command as filed. No test here calls `gh`: every test passes a literal string body straight
 // into `missingTemplateFields`/`templateFieldsReason`, both pure functions over that string and
 // `REQUIRED_FIELDS` (a plain constant), so reaching `gh` is not part of what this file tests.
-import { declareWalkScope } from "../lib/walk-scope.mjs";
+import { declareWalkScope } from "../lib/walk-scope.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   REQUIRED_FIELDS, missingTemplateFields, templateFieldsReason,
-} from "../row-claim/template-fields-rule.mjs";
+} from "../row-claim/template-fields-rule.ts";
 
 // #929: THIS GUARD READS ONLY `packages/agent-org`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull

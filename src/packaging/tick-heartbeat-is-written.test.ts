@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABLE, heartbeatCommentBody, writeHeartbeat } from "../work-tick.ts";
-import { completionPath, readCompletion } from "../lib/tick-completion.mjs";
+import { completionPath, readCompletion } from "../lib/tick-completion.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");

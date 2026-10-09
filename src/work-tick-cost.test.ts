@@ -16,12 +16,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.ts";
-import { CENSUS_ENV, currentCensusPhase, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { CENSUS_ENV, currentCensusPhase, describeSpawn, summariseCensus } from "./lib/spawn-census.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readElsewherePrs } from "./work-gate.ts";
 import { claimRow } from "./row-claim.ts";
 import { instanceCacheRead } from "./wake.ts";
-import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
+import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
@@ -291,7 +291,7 @@ test("#3566 slice 7: a REAL in-process spawn is recorded with the phase set when
   try {
     const census = join(dir, "census.jsonl");
     const driver = join(dir, "driver.mjs");
-    const module = new URL("./lib/spawn-census.mjs", import.meta.url).href;
+    const module = new URL("./lib/spawn-census.ts", import.meta.url).href;
     writeFileSync(driver, `import { spawnSync } from "node:child_process";\nimport { installSpawnCensus, setCensusPhase } from ${JSON.stringify(module)};\n`
       + `installSpawnCensus(${JSON.stringify(census)});\nsetCensusPhase("tearDownSpares");\nspawnSync("git", ["--version"]);\nsetCensusPhase(undefined);\nspawnSync("git", ["--version"]);\n`);
     const ran = spawnSync(process.execPath, [...TSX_IMPORT, driver], { env: sandboxGitEnv({}), encoding: "utf8" });

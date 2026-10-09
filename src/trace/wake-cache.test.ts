@@ -6,7 +6,7 @@
 // window action. A second seat (`orchestrator`) has turns that name no transcript, so what a wake did to its window cannot be told and must print `not derivable`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION, DEFINITIONS, GAP, isCold, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.mjs";
+import { ACTION, DEFINITIONS, GAP, isCold, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.ts";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const minute = (n: number) => T0 + n * 60_000;

@@ -27,7 +27,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { readNodeStrips, renderedUnits, unitNodeBinaries, nodeOnPath, SESSION_PATH_CALLER } = await import("./node-strips-types.ts");
 const { SIGNALS, nodeCannotStripReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
-const { orgHealthNow } = await import("./work-gate/org-health.mjs");
+const { orgHealthNow } = await import("./work-gate/org-health.ts");
 
 const SIGNAL = "node-cannot-strip";
 const NOW = Date.parse("2026-10-09T12:00:00Z");

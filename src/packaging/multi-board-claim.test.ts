@@ -20,7 +20,7 @@ import {
 } from "../row-claim.ts";
 import {
   declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
-} from "../row-claim/file-overlap-rule.mjs";
+} from "../row-claim/file-overlap-rule.ts";
 import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
 import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands.ts";
 import { checkBody, checkRegion, main } from "../pr-open.ts";

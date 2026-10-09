@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
   HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
 import { spawnInvocation, spawnClaimer } from "../wake.ts";
-import { repriceEvents, type TraceEvent } from "../trace/store.mjs";
+import { repriceEvents, type TraceEvent } from "../trace/store.ts";
 import { measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "haiku-tier-"));

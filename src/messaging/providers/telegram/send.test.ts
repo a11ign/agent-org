@@ -11,8 +11,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runProviderConformance } from "../../provider-contract.ts";
-import { createSecret } from "../../secret.mjs";
-import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.mjs";
+import { createSecret } from "../../secret.ts";
+import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.ts";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAT_ID = 4242;

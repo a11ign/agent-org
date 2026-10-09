@@ -1,7 +1,7 @@
 [Unit]
 # THE TRACE PAGES, REGENERATED -- a11ign/a11ign#3515 (the last slice of #3494; chairman, 2026-10-04: "regenerates both pages after each merge into a directory ... served privately over Tailscale").
 #
-# `src/trace/publish.mjs` reads the head of `main` in every code repository the project declares and regenerates the process map and the swimlanes of the rows closed most recently
+# `src/trace/publish.ts` reads the head of `main` in every code repository the project declares and regenerates the process map and the swimlanes of the rows closed most recently
 # ONLY WHEN a head has moved since its last stamped publication or the stamp is an hour old. A tick that finds neither does nothing and exits 0, so a ten-minute clock is not a
 # regeneration loop. A failure to render or to write exits non-zero, so the unit shows FAILED and is never a green one over an empty directory. The directory it writes is
 # `~/.cache/a11ign/trace-pages`; PUBLISHING it is `tailscale serve` (a host act, `ceo`'s, named on the row and not performed by this unit): nothing here opens a port.

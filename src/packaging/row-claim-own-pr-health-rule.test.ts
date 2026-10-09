@@ -26,7 +26,7 @@ import {
   deliveredRowsDeclaredBy, lookupDeliveringPr, lookupHeldRows,
   unansweredRefusal, disputeAtHead, lookupOpenPrReviewHealth, escalateDisputeToCeo, OPEN_PR_LIMIT,
   authorCommitsSinceRefusal,
-} from "../row-claim/own-pr-health-rule.mjs";
+} from "../row-claim/own-pr-health-rule.ts";
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
 const inBuild = { number: 989, declaresPaths: true, subIssues: 0, closingPr: undefined };

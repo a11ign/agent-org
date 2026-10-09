@@ -1292,7 +1292,7 @@ test("#2724 singleNodeInvocation: a non-`node` executable resolves to nothing --
 // #3063: the monorepo runs the tool through its `bin` (`agent-org <command>`, #3068/#3069), not `node <file>`. The
 // bin spawns nothing itself, so a script resolved to it would be charged for nothing: `npm run board:settle` would
 // read `runnable` against a job with no token. The command -> program mapping is the tool's command table
-// (`src/commands.mjs`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
+// (`src/commands.ts`, #3068, not built yet), so these cases hand the resolver a table of THE SHAPE IT READS.
 const TABLE = { "board:settle": "settle-closed-rows.ts", "messaging:listen": "messaging/listen.mjs",
   "escapes": "../package.json.mjs", "no-file": "notes.txt" };
 const COMMAND_BODY = "agent-org board:settle";

@@ -39,7 +39,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.mjs";
+import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { fileRefusalReason, createIssue } from "../row-file.ts";
 import { checkBody } from "../pr-open.ts";

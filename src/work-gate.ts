@@ -35,7 +35,7 @@ import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync, writ
 import { dirname, join } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `org-watch.ts` and `build-packages.mjs` state at their own imports.
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { verdictAmong, patchIdOfDiff, evidenceHeads, refusalHeads, refusalLiftedAt } from "./review-verdict.ts";
 // `verdictAmong` lives in review-verdict.ts (#3030), so a test of the verdict reader need not import this file and its token.
@@ -49,7 +49,7 @@ import { reviewerInstance, subjectIdentity, subjectMention, subjectRef } from ".
 // counts as a path" is not allowed to exist. Both are leaf-shaped and relative, so the gate keeps the
 // property its own header states -- it runs before any `pnpm install` or build.
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "./region-paths.ts";
-import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.mjs";
+import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows, fileOverlapReason } from "./row-claim/file-overlap-rule.ts";
 // #1959: THE ONE READER OF `docs/lane-ownership.json`, imported rather than re-parsed -- a lane's `paths`
 // and `except` are `ceo`'s to move, and a second copy here would drift the way #939's nine spellings did.
 // Leaf-shaped and relative, so the gate keeps the property its own header states.
@@ -58,10 +58,10 @@ import { loadLanes, inLane } from "./lane-ownership.ts";
 // already exercised through `row-claim.ts`'s own refusal; a second copy here is the drift that row's
 // filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
 // either, so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
-import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.mjs";
+import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.ts";
 // #2791: THE RULE `row-claim.ts` REFUSES A CLAIM ON, imported unchanged as `row-file` already does -- a second
 // copy of "which sections must a row state" is the drift this whole family of imports exists to prevent.
-import { missingTemplateFields } from "./row-claim/template-fields-rule.mjs";
+import { missingTemplateFields } from "./row-claim/template-fields-rule.ts";
 // #2823: THE CLOSES RULE `closes-mismatch-check.ts` PASSES A PULL REQUEST ON, imported and not retyped -- the gate and the
 // CI step must call the same condition "repo-wide", or a PR the check passes with a warning is one the gate never reports.
 import { isRepoWideResolutionFault, recentClosesSiblings } from "./closes-mismatch-check.ts";
@@ -69,7 +69,7 @@ import { extractClosesDeclaration } from "./acceptance-commands.ts";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records
 // the 2026-09-06 incident where an inherited `GIT_DIR` landed fifteen commits in the wrong checkout).
 // This tick runs under systemd, where the environment is not the one a person typed.
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.ts` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.
@@ -105,7 +105,7 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 // #3390: the first line of the comment `answers.mjs` writes when the chairman answers, so a half-finished answer can be recognised by what it says.
-import { PROVENANCE as CHAIRMAN_ANSWER_PROVENANCE } from "./messaging/answers.mjs";
+import { PROVENANCE as CHAIRMAN_ANSWER_PROVENANCE } from "./messaging/answers.ts";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL, BLOCKED_LABEL,
@@ -128,40 +128,40 @@ import { worktreeOwner } from "./worktree-owner.ts";
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
-  stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr, hungCheckOf } from "./work-gate/pr-orders.mjs";
+  stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr, hungCheckOf } from "./work-gate/pr-orders.ts";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
-  awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.mjs";
-import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.mjs";
+  awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.ts";
+import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.ts";
 // #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.mjs`, which imports the shared reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.mjs";
-import { quietOrgHealth } from "./work-gate/org-health-suppression.mjs"; // #4065
+import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.ts";
+import { quietOrgHealth } from "./work-gate/org-health-suppression.ts"; // #4065
 import { unparkingWaits } from "./unpark-satisfied.ts"; // #4050: a parked row whose every condition is true is un-parked where the tick reads the waits
-import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.mjs"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
+import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.ts"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
 // #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
-import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.mjs";
+import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.ts";
 // #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { withPrOwners, withScopedPrOwners, resolverDefectsOf, resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "./work-gate/pr-owners.mjs";
-import type { ResolverDefect } from "./work-gate/pr-owners.mjs";
+import { withPrOwners, withScopedPrOwners, resolverDefectsOf, resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "./work-gate/pr-owners.ts";
+import type { ResolverDefect } from "./work-gate/pr-owners.ts";
 // #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.mjs";
+import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.ts";
 // #2898: THE CLAIM-STALL TICK lives in `work-gate/claim-stall-tick.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { stallOrdersOrNone, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.mjs";
+import { stallOrdersOrNone, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
 import { readAgents, listingIsComplete } from "./herdr-agents.ts";
 // #3883: THE STRIP A CLOSED ROW'S CLAIM LABELS TAKE, from the leaf both it and `close-rows-for-merged-pr.ts` import -- never a second copy of the label list.
 import { stripClaimLabelsVia } from "./claim-label-strip.ts";
 import { familyNumber } from "./arm-pr.ts";
-export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.mjs";
+export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
 export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
-  rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.mjs";
-export { withClosingRowOwners, withNamedOwners, withPrOwners, withScopedPrOwners, withEndedLabels, resolverDefectOf, resolverDefectsOf } from "./work-gate/pr-owners.mjs";
+  rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.ts";
+export { withClosingRowOwners, withNamedOwners, withPrOwners, withScopedPrOwners, withEndedLabels, resolverDefectOf, resolverDefectsOf } from "./work-gate/pr-owners.ts";
 export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, stalledPrFacts,
   MAX_WAIT_READS, refFactOf, readWaitRef, readWaitFacts, readRefFacts, waitTickFacts, staleWaitOrders,
-  rulingOrdersNow, orgHealthNow } from "./work-gate/org-health.mjs";
+  rulingOrdersNow, orgHealthNow } from "./work-gate/org-health.ts";
 
 /**
  * FOUR STATES, AND THE POLARITY IS DELIBERATE.
@@ -2837,7 +2837,7 @@ export function holderWaitingOn(row: any, today: string, nowMs: number) {
  * @param {any[]} rows every open row
  * @param {string} [today]
  * @param {number} [nowMs] the clock a timestamped hold is read against, injected so a test moves time
- * @param {{openPrs?: any[], closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null}} [reads]
+ * @param {{openPrs?: any[], closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null}} [reads]
  *   the reads this cause takes BEYOND `rows` itself, bundled so a 5th positional parameter does not join `nowMs` (`max-params`).
  *   `openPrs` is `readPrs`'s open pull requests. OMITTED MEANS "NOT ASKED", and the cause then behaves
  *   exactly as before #2161: it fails toward telling the holder, never toward silence.
@@ -2848,7 +2848,7 @@ export function holderWaitingOn(row: any, today: string, nowMs: number) {
  * @returns {{ orders: {session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string}[],
  *   drops: BlockerClearedDrop[], log: string[] }} `drops` are the orders NOT emitted and why; `log` is every line the tick prints about them
  */
-export function blockerClearedReading(rows: any[], today: string = todayIso(), nowMs: number = Date.now(), { openPrs = [], closings = null, claimFacts }: { openPrs?: any[]; closings?: Map<number, number> | null; claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null; } = {}): {
+export function blockerClearedReading(rows: any[], today: string = todayIso(), nowMs: number = Date.now(), { openPrs = [], closings = null, claimFacts }: { openPrs?: any[]; closings?: Map<number, number> | null; claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null; } = {}): {
     orders: { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[];
     drops: BlockerClearedDrop[]; log: string[];
 } {
@@ -2918,10 +2918,10 @@ const isoOf = (ms: number): string => new Date(ms).toISOString();
  * In the order asked: (1) the claim post-dates the clearing, which the claim itself refused to be made before; (2) a pull request of the claim's own
  * (`ownsPr`, in ANY tracked repository) is open and not held (#2493: a held PR is a declared wait, whose owner must hear the last edge close) or merged since the
  * claim; (3) the holder commented, committed or pushed AFTER the clearing. A holder who claimed before and has done none of that (#1908) is not here.
- * @param {import("./work-gate/claim-stall-tick.mjs").ClaimMoves} moves @param {number} clearedAtMs @param {number} nowMs
+ * @param {import("./work-gate/claim-stall-tick.ts").ClaimMoves} moves @param {number} clearedAtMs @param {number} nowMs
  * @returns {{ reason: BlockerClearedDropReason, at: number } | null}
  */
-function whyNotNeeded(moves: import("./work-gate/claim-stall-tick.mjs").ClaimMoves, clearedAtMs: number, nowMs: number): { reason: BlockerClearedDropReason; at: number; } | null {
+function whyNotNeeded(moves: import("./work-gate/claim-stall-tick.ts").ClaimMoves, clearedAtMs: number, nowMs: number): { reason: BlockerClearedDropReason; at: number; } | null {
   if (moves.claimedAt >= clearedAtMs) return { reason: "claimed-after-clearing", at: moves.claimedAt };
   const opened = moves.openPrs.filter((pr) => holdersOf(labelsOf(pr)).length === 0).map((pr) => Date.parse(String(pr.createdAt)));
   const acts = [...opened.map((at) => (Number.isFinite(at) ? at : nowMs)), ...(moves.mergedAt === null ? [] : [moves.mergedAt])];
@@ -2934,10 +2934,10 @@ function whyNotNeeded(moves: import("./work-gate/claim-stall-tick.mjs").ClaimMov
  * The read that was REFUSED, as a phrase, or `null` when every read the drop needs was made. FAILING TOWARD TELLING THE HOLDER: a refusal drops nothing, because
  * an order that should not have gone costs a wake and a drop that should not have happened strands a row (this function's own header).
  * A blocker ABSENT from a map that was read is a refusal only when the map carries no `closedNoLaterThan` (#3706): with one, the absent blocker is bounded, not unread.
- * @param {{ row: any, cleared: number[], closings: Closings | null, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} reads
+ * @param {{ row: any, cleared: number[], closings: Closings | null, claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null }} reads
  * @returns {string | null}
  */
-function refusedRead({ row, cleared, closings, claimFacts }: { row: any; cleared: number[]; closings: Closings | null; claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null; }): string | null {
+function refusedRead({ row, cleared, closings, claimFacts }: { row: any; cleared: number[]; closings: Closings | null; claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null; }): string | null {
   if (claimFacts === null) return "the claim-stall tick read no claim";
   if (closings === null) return "the closing times were not read";
   if (closings.size === 0) return "the closing list was empty, so no bound exists for any blocker";
@@ -2966,19 +2966,19 @@ function newestClosing(cleared: number[], closings: Closings): { at: number; bou
 /**
  * `blockerClearedReading`'s drop for ONE row about to be ordered, with the lines to print. `claimFacts` undefined is a caller that did not ask: no drop, no line.
  * @param {{ row: any, cleared: number[], causeKey: string, closings: Closings | null, nowMs: number,
- *   claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null }} args
+ *   claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null }} args
  * @returns {{ drop: BlockerClearedDrop | null, log: string[] }}
  */
 function staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs }: {
         row: any; cleared: number[]; causeKey: string; closings: Closings | null; nowMs: number;
-        claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null;
+        claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null;
     }): { drop: BlockerClearedDrop | null; log: string[]; } {
   if (claimFacts === undefined) return { drop: null, log: [] };
   const refused = refusedRead({ row, cleared, closings, claimFacts });
   if (refused !== null || closings === null || claimFacts === null) {
     return { drop: null, log: [`blocker-cleared ${subjectMention(row)}: order KEPT -- ${refused}, so nothing was checked against it\n`] };
   }
-  const moves = (claimFacts.moves.get(Number(row.number)) as import("./work-gate/claim-stall-tick.mjs").ClaimMoves);
+  const moves = (claimFacts.moves.get(Number(row.number)) as import("./work-gate/claim-stall-tick.ts").ClaimMoves);
   const { at: clearedAtMs, boundedBy } = newestClosing(cleared, closings);
   const closed = boundedBy === null ? `blockers closed ${isoOf(clearedAtMs)}`
     : `#${boundedBy.blocker} is absent from the closing list and closed no later than ${isoOf(boundedBy.at)}, the oldest listed updatedAt`;
@@ -6484,12 +6484,12 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  *           branchPrs?: {branch: string, number: number, state: string}[] | null,
  *           hostDrift?: {unit: string, problem: string, detail: string}[] | null,
  *           primaryDrift?: import("./update-primary.ts").PrimaryDrift | null,
- *           closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null, trunkRed?: ReturnType<typeof readTrunkRed>,
+ *           closings?: Map<number, number> | null, claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null, trunkRed?: ReturnType<typeof readTrunkRed>,
  *           baseTip?: {sha: string, date: string} | null,
  *           claimStalls?: import("./claim-stall.ts").StallOrder[], offBoard?: BoardFacts[] | null,
  *           callCountSignals?: { row: number, session: string, calls: number }[],
  *           bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>, answerGiven?: ReturnType<typeof answerGivenOrders>,
- *           labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null,
+ *           labJobs?: import("./work-gate/lab-job-orders.ts").LabJobRecord[] | null,
  *           claimRefusals?: Record<string, { reason: string, ticks: number }>,
  *           engineerStarts?: { at: number, kind: string }[], projectDeclaration?: Parameters<typeof productRegionsOf>[0], shareLog?: (line: string) => void, shareMemory?: { stateDir: string, now?: number } }} state
  *        `engineerStarts` and `projectDeclaration` (#3820) are the last engineer starts and the declaration that says which rows are product; the engineer pool is
@@ -6573,12 +6573,12 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
         branchPrs?: { branch: string; number: number; state: string; }[] | null;
         hostDrift?: { unit: string; problem: string; detail: string; }[] | null;
         primaryDrift?: import("./update-primary.ts").PrimaryDrift | null;
-        closings?: Map<number, number> | null; claimFacts?: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null; trunkRed?: ReturnType<typeof readTrunkRed>;
+        closings?: Map<number, number> | null; claimFacts?: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null; trunkRed?: ReturnType<typeof readTrunkRed>;
         baseTip?: { sha: string; date: string; } | null;
         claimStalls?: import("./claim-stall.ts").StallOrder[]; offBoard?: BoardFacts[] | null;
         callCountSignals?: { row: number; session: string; calls: number; }[];
         bareAnswerLabels?: ReturnType<typeof bareAnswerLabelOrders>; answerGiven?: ReturnType<typeof answerGivenOrders>;
-        labJobs?: import("./work-gate/lab-job-orders.mjs").LabJobRecord[] | null;
+        labJobs?: import("./work-gate/lab-job-orders.ts").LabJobRecord[] | null;
         claimRefusals?: Record<string, { reason: string; ticks: number; }>;
         engineerStarts?: { at: number; kind: string; }[]; projectDeclaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; };
         offerHierarchy?: OfferHierarchy;
@@ -7701,10 +7701,10 @@ function reportClearingDrops({ openRows, prs, closings, claimFacts }: Parameters
  * `claim-stalled`. `claimFacts` stays `undefined` when the tick never reported one, which `blockerClearedReading` reads as "not asked".
  * @param {Parameters<typeof claimStallsNow>[0]} rows @param {Parameters<typeof claimStallsNow>[1]} claimedComments @param {Parameters<typeof claimStallsNow>[2]} prs
  * @param {ReturnType<typeof readOtherScopes>} otherScopes the other repositories' lanes, already read this tick (#3566): their open lists are not asked again
- * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined }}
+ * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined }}
  */
-function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claimedComments: Parameters<typeof claimStallsNow>[1], prs: Parameters<typeof claimStallsNow>[2], otherScopes: ReturnType<typeof readOtherScopes>): { claimStalls: ReturnType<typeof claimStallsNow>; claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined; } {
-  let claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined;
+function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claimedComments: Parameters<typeof claimStallsNow>[1], prs: Parameters<typeof claimStallsNow>[2], otherScopes: ReturnType<typeof readOtherScopes>): { claimStalls: ReturnType<typeof claimStallsNow>; claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined; } {
+  let claimFacts: import("./work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined;
   const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; },
     elsewhere: () => readElsewherePrs(undefined, undefined, otherScopes) });
   return { claimStalls, claimFacts };

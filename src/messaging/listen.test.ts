@@ -23,17 +23,17 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.mjs");
-const { createConverse, notReached } = await import("./converse.mjs");
-const { createInbound } = await import("./inbound.mjs");
-const { createLedger, readLedgerLines } = await import("./ledger.mjs");
+const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.ts");
+const { createConverse, notReached } = await import("./converse.ts");
+const { createInbound } = await import("./inbound.ts");
+const { createLedger, readLedgerLines } = await import("./ledger.ts");
 const { createFakeProvider } = await import("./fake-provider.ts");
-const { createOffsetStore, runListener } = await import("./providers/telegram/poll.mjs");
+const { createOffsetStore, runListener } = await import("./providers/telegram/poll.ts");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
 const REQUEST_MESSAGE = 501;
-const SOURCE = readFileSync(fileURLToPath(new URL("./listen.mjs", import.meta.url)), "utf8");
+const SOURCE = readFileSync(fileURLToPath(new URL("./listen.ts", import.meta.url)), "utf8");
 const UNIT = readFileSync(fileURLToPath(new URL("../../host/chairman-listen.service.in", import.meta.url)), "utf8");
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-listen-"));

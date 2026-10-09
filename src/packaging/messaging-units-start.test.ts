@@ -73,7 +73,7 @@ function scratchHost(): Scratch {
   return { home, project, hostFile };
 }
 
-const { localImports } = await import("../lib/local-import-closure.mjs");
+const { localImports } = await import("../lib/local-import-closure.ts");
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -137,8 +137,8 @@ function startUnit(unit: string, home: string): Started {
 
 /** What each unit does when it starts for a project with messaging off: the next real step after the declaration is read. */
 const UNITS = [
-  { name: "chairman-listen", entry: "src/messaging/listen.mjs", stdout: /messaging: OFF/ },
-  { name: "chairman-watch", entry: "src/messaging/watch.mjs", stdout: /^$/ },
+  { name: "chairman-listen", entry: "src/messaging/listen.ts", stdout: /messaging: OFF/ },
+  { name: "chairman-watch", entry: "src/messaging/watch.ts", stdout: /^$/ },
 ];
 
 /** The tool's own files this entry imports, so a copy of the tool can run it (the files; `preFixTool` adds `node_modules` for the loader). */

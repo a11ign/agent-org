@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
 //
@@ -41,7 +41,7 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
+const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { declaredRegionFiles } = await import("../region-paths.ts");
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */

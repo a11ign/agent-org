@@ -13,11 +13,11 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
-import { classifyText } from "./classify.mjs";
-import { createLedger } from "./ledger.mjs";
+import { classifyText } from "./classify.ts";
+import { createLedger } from "./ledger.ts";
 import { formatReport, measure } from "./measure.ts";
-import { ASK_FIELDS, createSessionQueue, defaultQueuePath, EXIT, FORME_STEP, main, readAsks, statusLine } from "./session-queue.mjs";
-import { defaultLedgerPath } from "./state.mjs";
+import { ASK_FIELDS, createSessionQueue, defaultQueuePath, EXIT, FORME_STEP, main, readAsks, statusLine } from "./session-queue.ts";
+import { defaultLedgerPath } from "./state.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-session-queue-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -259,7 +259,7 @@ describe("(7) no executor: nothing under src/messaging/ that touches the queue f
     mkdirSync(fixture, { recursive: true });
     copyFileSync(join(MESSAGING, "session-queue.mjs"), join(fixture, "session-queue.mjs"));
     assert.deepEqual(scan(fixture), { touching: ["session-queue.mjs"], executors: [] }, "without the fixture the copy passes, so the next failure is the fixture's");
-    writeFileSync(join(fixture, "executor.mjs"), 'import { execFile } from "node:child_process";\nimport { readAsks } from "./session-queue.mjs";\nfor (const ask of readAsks(p)) execFile("claude", ["-p", ask.what]);\n');
+    writeFileSync(join(fixture, "executor.mjs"), 'import { execFile } from "node:child_process";\nimport { readAsks } from "./session-queue.ts";\nfor (const ask of readAsks(p)) execFile("claude", ["-p", ask.what]);\n');
     assert.deepEqual(scan(fixture).executors, ["executor.mjs"]);
   });
 

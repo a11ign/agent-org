@@ -67,29 +67,29 @@ import { fileURLToPath } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.ts";
 import { gitCommonDir, appendJsonl } from "./merge-guard.ts";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
-import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.mjs";
+import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.ts";
 import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file
 import { readJsonObject, writeJsonObject } from "./claim-stall.ts";
-import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.mjs";
-import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.mjs";
-import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.mjs";
-import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.mjs";
-import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.mjs";
-import { staleRuleReason } from "./row-claim/stale-rule-guard.mjs";
+import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.ts";
+import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";
+import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.ts";
+import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
+import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
+import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
 // `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
 // it may not re-derive it: "both parse a trailing `-<n>` out of an `ls-remote` listing, and #2014's
 // `rowBranchesOnOrigin` is the tested spelling". The FAILURE POLICY stayed here -- see `rowBranchesOnOrigin`
 // below, which still throws -- because the gate's is deliberately different.
-import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.ts";
 import { claimRefusal, recordRemoval } from "./worktree-removal.ts";
 
@@ -100,7 +100,7 @@ import { CLAIM_LABEL, STARTED_LABEL, CLAIM_RECORD_MARKER, STATE_LABELS, stateLab
 import { BLOCKED_LABEL, BACKLOG_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { worktreeOwner, stampWorktree, OWNER_FILE } from "./worktree-owner.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
-import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
+import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 
 // #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.ts and re-exported
 // here, not declared in this file -- see claim-labels.ts's own header for why. Every existing

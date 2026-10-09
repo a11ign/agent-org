@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   blockedByEdgeReason, lookupBlockedByEdge,
-} from "../row-claim/blocked-by-edge-rule.mjs";
+} from "../row-claim/blocked-by-edge-rule.ts";
 
 // --- blockedByEdgeReason: THE VERDICT, PURE ---
 

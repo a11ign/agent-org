@@ -29,7 +29,7 @@ import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSy
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands, humanLoginOnHost, HUMAN_LOGIN_ON_HOST,
@@ -2821,8 +2821,8 @@ test("#3443 (6): the chairman listener and watcher render `node <tool>/src/...` 
   const units = readUnitsDeclaration();
   const checkout = PROJECT_ROOT;
   for (const [template, script, pnpmLine] of [
-    ["chairman-listen.service.in", "src/messaging/listen.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:listen"],
-    ["chairman-watch.service.in", "src/messaging/watch.mjs", "ExecStart=%h/.local/bin/pnpm run messaging:watch"],
+    ["chairman-listen.service.in", "src/messaging/listen.ts", "ExecStart=%h/.local/bin/pnpm run messaging:listen"],
+    ["chairman-watch.service.in", "src/messaging/watch.ts", "ExecStart=%h/.local/bin/pnpm run messaging:watch"],
   ] as const) {
     const unit = renderedName(template, units.prefix);
     const plain = shippedUnitText(unit, { host: plainHost3443() }) ?? "";

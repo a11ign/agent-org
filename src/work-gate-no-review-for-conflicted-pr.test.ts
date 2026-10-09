@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { perPullRequestOrders, stallReasonOf } from "./work-gate/pr-orders.mjs";
+import { perPullRequestOrders, stallReasonOf } from "./work-gate/pr-orders.ts";
 import { reviewableHead, reviewWait, withPatchIds } from "./work-gate.ts";
 
 type Order = { session: string, cause: string, causeKey: string, discriminator: string, prompt: string };

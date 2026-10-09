@@ -29,7 +29,7 @@ import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_sh
 import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.ts";
 import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
 import { homeHostConfig } from "../host-config.ts";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));

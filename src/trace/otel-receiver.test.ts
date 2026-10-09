@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createReceiver, eventsOfOtlpLogs, LOOPBACK, parseArgs, UNATTRIBUTED } from "./otel-receiver.mjs";
+import { createReceiver, eventsOfOtlpLogs, LOOPBACK, parseArgs, UNATTRIBUTED } from "./otel-receiver.ts";
 import { Server,IncomingMessage,ServerResponse } from "http";
 import { URL } from "url";
 

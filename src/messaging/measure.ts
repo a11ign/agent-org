@@ -25,8 +25,8 @@ import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { describeError, readLedgerLines } from "./ledger.mjs";
-import { defaultLedgerPath } from "./state.mjs";
+import { describeError, readLedgerLines } from "./ledger.ts";
+import { defaultLedgerPath } from "./state.ts";
 
 export const EXIT = Object.freeze({ ok: 0, refused: 2 });
 const DEFAULT_WINDOW_HOURS = 24;

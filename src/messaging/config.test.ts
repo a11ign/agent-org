@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { DEFAULT_SUMMARY, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.mjs";
+import { DEFAULT_SUMMARY, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.ts";
 import { runMessagingCheck } from "./check.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-config-"));

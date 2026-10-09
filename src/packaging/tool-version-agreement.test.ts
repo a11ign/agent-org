@@ -25,7 +25,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const lib = await import("../lib/tool-version-agreement.mjs");
+const lib = await import("../lib/tool-version-agreement.ts");
 const { SIGNALS, toolVersionReading, readToolAgreement } = await import("../org-health.ts");
 const { agreement, agreementReport, releaseCycleMs, shippedReleaseCycleMs, readWorktree, readLastCiRun, memoFile, mainDeclaresAgentOrg, RESOLVER_LINE, lockedCommit } = lib;
 

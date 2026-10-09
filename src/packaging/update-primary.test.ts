@@ -9,11 +9,11 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.ts";
-import { changedFiles } from "../lib/changed-files.mjs";
+import { changedFiles } from "../lib/changed-files.ts";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.ts";
 

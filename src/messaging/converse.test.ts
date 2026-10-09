@@ -24,10 +24,10 @@ import { dirname, join, relative } from "node:path";
 import { after, describe, test, test as skippableTest } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, FALLBACK_RECIPIENT, PASSED_REFUSED, PASSED_SEAT_ABSENT, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.mjs";
+import { ACKNOWLEDGEMENT, CHAIRMAN_SENDER, FALLBACK_RECIPIENT, PASSED_REFUSED, PASSED_SEAT_ABSENT, RECIPIENT, SOURCE_LINE, buttonOrderText, createConverse, notReached, provenanceText } from "./converse.ts";
 import { createFakeProvider } from "./fake-provider.ts";
-import { createInbound } from "./inbound.mjs";
-import { createLedger, readLedgerLines } from "./ledger.mjs";
+import { createInbound } from "./inbound.ts";
+import { createLedger, readLedgerLines } from "./ledger.ts";
 
 // Where this host keeps the project declaration the real queue reads at import. Set BEFORE the first import of it, once, for this process.
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
@@ -136,7 +136,7 @@ function chairmanUpdate(id: number, more: Record<string, any> = {}) {
 function recordingQueue(queue: Record<string, any> | undefined, events = /** @type {string[]} */ ([])) {
   let words = "";
   if (!queue) return { port: undefined, words: () => words };
-  const port = /** @type {import("./converse.mjs").QueuePort} */ ({
+  const port = /** @type {import("./converse.ts").QueuePort} */ ({
     ...queue,
     promptOrQueue(/** @type {Record<string, any>} */ order: Record<string, any>) {
       events.push("dispatch");

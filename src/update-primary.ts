@@ -12,13 +12,13 @@
 // `pre-commit`/`post-checkout` already use, imported rather than restated.
 import { execFileSync } from "node:child_process";
 import { isPrimaryWorktree } from "./prune-worktrees.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { pathToFileURL } from "node:url";
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs";
-import { changedFiles } from "./lib/changed-files.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts";
+import { changedFiles } from "./lib/changed-files.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
 /** The checkout `primary:update` moves: the PROJECT's (`HOME_CHECKOUT`), which is the tool's own `src` up three only when `$AGENT_ORG_HOST` is unset (#2879). */

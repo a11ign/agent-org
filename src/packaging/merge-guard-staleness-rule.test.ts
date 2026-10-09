@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stalenessReason } from "../merge-guard/staleness-rule.mjs";
+import { stalenessReason } from "../merge-guard/staleness-rule.ts";
 
 const MAIN_TIP = "2026-09-07T00:41:07Z";
 const AFTER = "2026-09-07T00:45:35Z";

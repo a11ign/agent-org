@@ -21,7 +21,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 export const PROJECT_DECLARATION_PATH = ".agent-org/project.json";
 /** The only `schema` this reader understands. An unknown one REFUSES: it is the one version coupling (ADR 0040, decision 3). */

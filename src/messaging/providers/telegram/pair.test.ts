@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { createSecret } from "../../secret.mjs";
-import { PAIRING_TTL_MS, REFUSAL, createPairingSession, generateCode, runPairing, writeChairmanFile } from "./pair.mjs";
+import { createSecret } from "../../secret.ts";
+import { PAIRING_TTL_MS, REFUSAL, createPairingSession, generateCode, runPairing, writeChairmanFile } from "./pair.ts";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CODE = "K7M2QX9P4A";

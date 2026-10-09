@@ -36,9 +36,9 @@ import { existsSync, readFileSync, readdirSync} from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO, ROOT, gh, git, REPORTED_KINDS } from "./board-data.ts";
 import { editionDay } from "./board-discussion.ts";
 

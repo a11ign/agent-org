@@ -86,7 +86,7 @@ function withHost(release: (sandbox: GitSandbox) => void, fn: (host: Host) => vo
       const installedDir = join(scratch, "units");
       const binDir = join(scratch, "bin");
       write(join(installedDir, UNIT), unitNaming(tool, "src/work-tick.mjs"));
-      write(join(binDir, "agent-org"), launcherNaming(tool, "src/bin.mjs"));
+      write(join(binDir, "agent-org"), launcherNaming(tool, "src/bin.ts"));
       fn({ tool, installedDir, binDir, git, sandbox });
     } finally {
       rmSync(scratch, { recursive: true, force: true });
@@ -99,7 +99,7 @@ const renameTickPrograms = ({ run }: GitSandbox) => {
   for (const file of ["work-tick", "update-tool", "update-primary"]) run(["mv", join("src", `${file}.mjs`), join("src", `${file}.ts`)]);
 };
 
-const renameBin = ({ run }: GitSandbox) => run(["mv", "src/bin.mjs", "src/bin.ts"]);
+const renameBin = ({ run }: GitSandbox) => run(["mv", "src/bin.ts", "src/bin.ts"]);
 
 /** What `host-units.ts` adds to `hostUnitDrift` (and the gate reads from `--json`), for the tool and the units this case laid out. */
 const findingsOf = (host: Host) => installPendingFindings({
@@ -108,7 +108,7 @@ const findingsOf = (host: Host) => installPendingFindings({
 
 const lostBy = (host: Host) => (tag: string) => programsLostByMove({
   tag, root: host.tool, run: host.git,
-  holders: [{ holder: UNIT, text: unitNaming(host.tool, "src/work-tick.mjs") }, { holder: LAUNCHER, text: launcherNaming(host.tool, "src/bin.mjs") }],
+  holders: [{ holder: UNIT, text: unitNaming(host.tool, "src/work-tick.mjs") }, { holder: LAUNCHER, text: launcherNaming(host.tool, "src/bin.ts") }],
 });
 
 const head = (host: Host) => host.git(["rev-parse", "HEAD"]).trim();
@@ -149,7 +149,7 @@ test("#4392 (3) after the install -- the holders name programs the release HAS -
     write(join(host.installedDir, UNIT), unitNaming(host.tool, "src/work-tick.ts").replaceAll("update-tool.mjs", "update-tool.ts").replaceAll("update-primary.mjs", "update-primary.ts"));
     assert.deepEqual(findingsOf(host), [], "the finding clears by itself once the install has run");
     const installed = [{ holder: UNIT, text: unitNaming(host.tool, "src/work-tick.ts").replaceAll("update-tool.mjs", "update-tool.ts").replaceAll("update-primary.mjs", "update-primary.ts") },
-      { holder: LAUNCHER, text: launcherNaming(host.tool, "src/bin.mjs") }];
+      { holder: LAUNCHER, text: launcherNaming(host.tool, "src/bin.ts") }];
     const said = updateTool(host.tool, host.git, "latest", (tag) => programsLostByMove({ tag, root: host.tool, run: host.git, holders: installed }));
     assert.match(said, /^agent-org v1\.0\.1 \(/);
     assert.notEqual(head(host), before);
@@ -181,7 +181,7 @@ test("#4392 (5) what is NOT lost: a program already absent, an untracked loader,
 test("#4392: `programsNamedBy` reads the Exec lines and the launcher's exec, resolved against the unit's last WorkingDirectory", () => {
   const unit = "[Service]\nWorkingDirectory=/t\nWorkingDirectory=/t/sub\nExecStart=/usr/bin/node --import tsx src/a.ts --flag=b.mjs\n# ExecStart=src/commented.ts\n";
   assert.deepEqual(programsNamedBy(unit, "/t"), ["sub/src/a.ts", "sub/b.mjs"]);
-  assert.deepEqual(programsNamedBy(launcherNaming("/t", "src/bin.mjs"), "/t"), ["src/bin.mjs"]);
+  assert.deepEqual(programsNamedBy(launcherNaming("/t", "src/bin.ts"), "/t"), ["src/bin.ts"]);
   assert.deepEqual(programsNamedBy("[Service]\nExecStart=/usr/bin/node src/a.ts\n", "/t"), [], "no WorkingDirectory: a relative path names nothing under the checkout");
 });
 

@@ -20,7 +20,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "outcome-clock-feed-project-"));
@@ -123,7 +123,7 @@ test("A CLAIMED ROW IS CLOCKED WHILE A PR IS TOO: the one order names both, the 
 
 test("THE CLEANUP: nothing in `src` reads a head commit for the clock any more (`readHeadCommittedAt` and its `GH_READS` entry are deleted, not left beside it)", async () => {
   const gateModule = await import("../work-gate.ts");
-  const orgHealthModule = await import("../work-gate/org-health.mjs");
+  const orgHealthModule = await import("../work-gate/org-health.ts");
   assert.equal("readHeadCommittedAt" in gateModule, false);
   assert.equal("readHeadCommittedAt" in orgHealthModule, false);
   assert.equal("conditionalOnQuietStalledPr" in gateModule.GH_READS, false);

@@ -20,9 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { clockFeedOf, openMsOf } from "./clock-feed.ts";
-import { readGithubEvents } from "./github-events.mjs";
+import { readGithubEvents } from "./github-events.ts";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "clock-feed-project-"));
@@ -38,7 +38,7 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 process.chdir(PROJECT);
 
 const { overdueReading } = await import("../org-health.ts");
-const { overdueFacts } = await import("../work-gate/org-health.mjs");
+const { overdueFacts } = await import("../work-gate/org-health.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
 const { mergedStats, median } = await import("../org-retro.ts");
 const { agedBacklogOrders } = await import("../work-gate.ts");

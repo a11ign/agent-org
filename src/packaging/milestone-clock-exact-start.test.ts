@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow, readMilestoneMoves } from "../work-gate/org-health.mjs";
+import { orgHealthNow, readMilestoneMoves } from "../work-gate/org-health.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");

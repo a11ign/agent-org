@@ -13,14 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { buttonData, createAnswers } from "./answers.mjs";
-import { createGithubWriter } from "./github-writer.mjs";
-import { createInbound } from "./inbound.mjs";
-import { createLedger, deliveryLine, STATUS } from "./ledger.mjs";
-import { createConverse } from "./converse.mjs";
-import { createForwarder } from "./listen.mjs";
-import { runListener } from "./providers/telegram/poll.mjs";
-import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.mjs";
+import { buttonData, createAnswers } from "./answers.ts";
+import { createGithubWriter } from "./github-writer.ts";
+import { createInbound } from "./inbound.ts";
+import { createLedger, deliveryLine, STATUS } from "./ledger.ts";
+import { createConverse } from "./converse.ts";
+import { createForwarder } from "./listen.ts";
+import { runListener } from "./providers/telegram/poll.ts";
+import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.ts";
 
 const REPO = "a11ign/a11ign";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });

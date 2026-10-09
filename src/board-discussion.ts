@@ -19,7 +19,7 @@
 //   node --import tsx packages/agent-org/src/board-discussion.ts --exists     the workflow's republish precondition
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO } from "./board-data.ts";
 
 export const EDITION_CATEGORY_SLUG = "board-editions";

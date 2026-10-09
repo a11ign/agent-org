@@ -20,7 +20,7 @@ import { absentSeats } from "../herdr-agents.ts";
 import { persistentRoles, roleBriefPath } from "../project-roles.ts";
 import { startAbsentSeats, SEAT_START_FLAGS, seatFirstPrompt } from "../wake.ts";
 import { persistentSeatDrift, persistentSeatNotes, driftReport } from "../host-units.ts";
-import { RECIPIENT } from "../messaging/converse.mjs";
+import { RECIPIENT } from "../messaging/converse.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const scratch = tmpDirForFile("seat-3539-");

@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { boardTruthAudit, QUESTIONS } from "./board-truth-audit.ts";
 import { PARKED_LABEL } from "./work-gate.ts";
 import { MUTEX_LABELS } from "./ready-label-audit.ts";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import * as unpark from "./unpark-satisfied.ts";
 import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, githubIo, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.ts";
 

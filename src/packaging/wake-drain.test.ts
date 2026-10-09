@@ -14,7 +14,7 @@ import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.mjs";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { startedPanes } from "./started-pane.ts";
 
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, NOT A11IGN'S CHECKOUT ---
@@ -46,7 +46,7 @@ const { copyToolAndProject, importClosure, toolFile } = await import("./copied-t
 const { deliver: settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT,
   activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
   CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.ts");
-const { drainReason } = await import("../row-claim/runner-rule.mjs");
+const { drainReason } = await import("../row-claim/runner-rule.ts");
 const { claimRow } = await import("../row-claim.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};

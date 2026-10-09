@@ -24,8 +24,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 const README_REL = ".agent-org/roles/README.md";
 const MEMORY_INDEX_REL = ".agent-org/roles/memory/MEMORY.md";

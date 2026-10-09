@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { POOL_LOW_FRACTION, SIGNALS, poolLowReading, orgHealthReadings, orgHealthOrders } from "../org-health.ts";
 import { poolFromRateLimitField } from "../api-pool.ts";
 import { ROW_OFF_BOARD_QUERY, readRowsOffBoard, decide } from "../work-gate.ts";
-import { orgHealthNow } from "../work-gate/org-health.mjs";
+import { orgHealthNow } from "../work-gate/org-health.ts";
 
 const RESET = "2026-10-04T12:57:14Z";
 const pool = (remaining: number, over: Record<string, unknown> = {}) => ({ account: "a11ign-ai-leads", resource: "graphql", remaining, limit: 5000, resetAt: RESET, ...over });

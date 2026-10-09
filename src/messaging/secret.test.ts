@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { after, describe, test } from "node:test";
 
-import { SecretFileRefusal, createSecret, readSecretFile, redactingFetch, secretFileProblem } from "./secret.mjs";
+import { SecretFileRefusal, createSecret, readSecretFile, redactingFetch, secretFileProblem } from "./secret.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-secret-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));

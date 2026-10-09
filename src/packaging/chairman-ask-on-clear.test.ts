@@ -16,9 +16,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chairmanAskOrders, chairmanAskRefusal, askOf, withoutDeclaration, MARKER, postedBrief } from "../work-gate/chairman-ask-orders.mjs";
+import { chairmanAskOrders, chairmanAskRefusal, askOf, withoutDeclaration, MARKER, postedBrief } from "../work-gate/chairman-ask-orders.ts";
 import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-condition.ts";
-import { requestEvent } from "../messaging/sources/requests.mjs";
+import { requestEvent } from "../messaging/sources/requests.ts";
 import { readFileSync } from "node:fs";
 
 const NOW = Date.parse("2026-10-07T21:00:00Z");

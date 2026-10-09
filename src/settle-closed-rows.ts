@@ -42,7 +42,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { settleBoardRows, settleClosedStatus, boardReadRefusal, shortReadRefusal,
   closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal } from "./settle-closed-status.ts";
 // The repository this pass reads, from the one place that names it.

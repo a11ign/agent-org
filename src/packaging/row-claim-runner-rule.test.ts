@@ -13,7 +13,7 @@
 // assertions).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runnerReason, laneReason } from "../row-claim/runner-rule.mjs";
+import { runnerReason, laneReason } from "../row-claim/runner-rule.ts";
 import { decideClaim } from "../row-claim.ts";
 import { ROUTED_TO } from "../work-gate.ts";
 

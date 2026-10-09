@@ -41,13 +41,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { PARKED_LABEL, conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.ts";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
 import { ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { REPO } from "./project-identity.ts";
-import { templateFieldsReason } from "./row-claim/template-fields-rule.mjs";
+import { templateFieldsReason } from "./row-claim/template-fields-rule.ts";
 
 /** The label `work-gate.ts` exports as `PARKED_LABEL`; restated because that file imports this one. `unpark-satisfied.test.ts` pins the two equal. */
 export const PARKED = "parked";

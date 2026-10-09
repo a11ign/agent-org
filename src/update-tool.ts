@@ -37,7 +37,7 @@
 // A MOVE THAT WOULD DELETE A PROGRAM AN INSTALLED UNIT RUNS IS HELD, NOT MADE (a11ign/a11ign#4392). On 2026-10-09 agent-org#435 renamed `work-tick.mjs` and `update-tool.mjs`;
 // this command moved the checkout under the INSTALLED `a11ign-work-tick.service`, which still named them, and the tick crashed (exit 70). The tick is the only thing that
 // wakes `orchestrator`, whose job is to run `host:install`, so the break kept the one session that could mend it asleep. The programs are read off the installed units
-// and the installed `agent-org` launcher (a copy that `exec`s `src/bin.mjs`: a rename of THAT breaks the command for every agent, not one unit); a tracked file at HEAD
+// and the installed `agent-org` launcher (a copy that `exec`s `src/bin.ts`: a rename of THAT breaks the command for every agent, not one unit); a tracked file at HEAD
 // that the release tag does not have is "lost by the move". With any lost the checkout STAYS, `host-units.ts` reports `host-install-pending` for the holders (the
 // gate's `hostDriftOrders` wakes `orchestrator` with their names), and once the install has rewritten them to name programs the tag HAS the same check passes and the
 // checkout advances. A program already missing at HEAD is not "lost": the move cannot make it worse, and holding for it would hold for ever.
@@ -48,9 +48,9 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
-import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.mjs";
-import { gitIn } from "./lib/tool-version.mjs";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.ts";
+import { gitIn } from "./lib/tool-version.ts";
 import { isPrimaryWorktree } from "./prune-worktrees.ts";
 
 /** The directory this file is in, real-pathed: the tool is reached through a symlink on some hosts, and git resolves the real one. */

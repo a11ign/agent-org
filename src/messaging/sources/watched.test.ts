@@ -12,12 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { normalizeEvent } from "../event.mjs";
+import { normalizeEvent } from "../event.ts";
 import { createFakeProvider } from "../fake-provider.ts";
-import { createLedger } from "../ledger.mjs";
-import { WATCHED, runWatch } from "../watch.mjs";
-import { activeWatches, createWatchList } from "../watch-list.mjs";
-import { observeWatched } from "./watched.mjs";
+import { createLedger } from "../ledger.ts";
+import { WATCHED, runWatch } from "../watch.ts";
+import { activeWatches, createWatchList } from "../watch-list.ts";
+import { observeWatched } from "./watched.ts";
 
 // THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
 // between ticks, answering as the placeholder vocabulary's `Readers`, and a ledger that already holds the chairman's message.

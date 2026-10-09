@@ -21,7 +21,7 @@ import { deliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerR
   endFinishedSpares, readSpareCycles, consecutiveClean, registerSpawn, sparePathsFrom, rowOfOrder, isSpareRole }
   from "../wake.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.ts";
-import { laneReason, runnerReason } from "../row-claim/runner-rule.mjs";
+import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";
 import { startedPanes } from "./started-pane.ts";
 

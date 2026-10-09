@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   recordVerdict, latestVerdictFor, realOutcomeFor, reconcile,
-} from "../merge-guard/reconciliation.mjs";
+} from "../merge-guard/reconciliation.ts";
 
 function withTempLogDir(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "merge-guard-log-"));

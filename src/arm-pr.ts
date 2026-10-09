@@ -16,7 +16,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { armabilityOf } from "./pr-hold-state.ts";
 import { authorshipVerdict } from "./lane-ownership.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";

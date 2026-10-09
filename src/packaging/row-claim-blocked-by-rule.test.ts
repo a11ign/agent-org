@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import {
   MEASUREMENT_MARKER, parseBlockedByFlag, findMeasurementComment, lookupOwnPrComments,
   lookupIssueOpenState, resolveBlockedByOverride, blockedByExceptionNote,
-} from "../row-claim/blocked-by-rule.mjs";
+} from "../row-claim/blocked-by-rule.ts";
 
 // --- parseBlockedByFlag: pure ---
 
