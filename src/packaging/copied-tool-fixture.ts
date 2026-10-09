@@ -11,7 +11,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.mjs";
-import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 
 /** This checkout: the tool is its own tree, so `src/packaging` up two is a place the tool owns, not a project file. */
 export const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -47,6 +47,8 @@ function copyInto(target: string, source: string): void {
  */
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
   for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
+  // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under tsx.
+  writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of PROJECT_FILES) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
   const hostSource = process.env[HOST_ENV] ?? join(HOME_CHECKOUT, ".agent-org/host.json");
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };

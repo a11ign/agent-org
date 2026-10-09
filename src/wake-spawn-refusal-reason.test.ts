@@ -1,6 +1,6 @@
 // no-token: gh -- every `herdr` and `git` call here is an injected seam; the one real process is `node`, run to produce a genuine `execFileSync` failure
 /**
- * `packages/agent-org/src/wake.mjs`, #3032: A `herdr agent start` THAT HERDR REFUSES IS REFUSED WITH HERDR'S REASON.
+ * `packages/agent-org/src/wake.ts`, #3032: A `herdr agent start` THAT HERDR REFUSES IS REFUSED WITH HERDR'S REASON.
  *
  * Measured 2026-10-02: `reviewer-agent-org-18` was retried for an hour and the journal printed, 28 times, the
  * `herdr ... agent start` command line and "the workspace it opened was closed". That text is `firstLine(err)`, and
@@ -12,10 +12,11 @@
  * control below pins that the fixture HAS the argv echo first, so the assertions that the refusal does not carry it
  * could not pass on a fixture that never had one.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { deliver } from "./wake.mjs";
+import { deliver } from "./wake.ts";
 
 const REASON = "unknown model \"gpt-5.6-luna\" for kind codex";
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -25,7 +26,7 @@ const ROSTER: string[] = [];
 function failedCommand(stderr: string, argv: string[] = ["--session", "org", "agent", "start"]) {
   try {
     // The reason travels in the ENVIRONMENT, so it is not in the argv Node echoes -- as herdr's is not.
-    execFileSync(process.execPath, ["-e", "process.stderr.write(process.env.REASON); process.exit(3)", "--", ...argv],
+    execFileSync(process.execPath, [...TSX_IMPORT, "-e", "process.stderr.write(process.env.REASON); process.exit(3)", "--", ...argv],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, REASON: stderr } });
   } catch (err) {
     return err as Error & { stderr: string };

@@ -24,11 +24,11 @@
  * A pull request of a different repository never overlaps on a path name (`repoKey`).
  */
 import { createHash } from "node:crypto";
-import { subjectMention, subjectRef } from "../review-attribution.mjs";
-import { holdersOf } from "../pr-hold-state.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
-import { waitItemOf, declaredWaitsOf } from "../wait-condition.mjs";
-import { labelsOf } from "../work-gate.mjs";
+import { subjectMention, subjectRef } from "../review-attribution.ts";
+import { holdersOf } from "../pr-hold-state.ts";
+import { SESSION_PREFIX } from "../project-vocabulary.ts";
+import { waitItemOf, declaredWaitsOf } from "../wait-condition.ts";
+import { labelsOf } from "../work-gate.ts";
 import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.mjs";
 
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */

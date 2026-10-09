@@ -119,9 +119,9 @@ export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger:
 /** What each verb is called once it is done, in the words of its comment's first line. */
 const VERB_DONE = Object.freeze({ withdraw: "Withdrawn", reroute: "Rerouted", "re-ask": "Re-asked" } as Record<string, string>);
 
-/** @returns {Promise<string>} the label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.mjs` does `host-config.mjs`, so this file loads outside a configured host */
+/** @returns {Promise<string>} the label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.mjs` does `host-config.ts`, so this file loads outside a configured host */
 async function vocabularyRerouteLabel(): Promise<string> {
-  const { ANSWER_PREFIX } = await import("../project-vocabulary.mjs");
+  const { ANSWER_PREFIX } = await import("../project-vocabulary.ts");
   return `${ANSWER_PREFIX}${REROUTE_TO}`;
 }
 

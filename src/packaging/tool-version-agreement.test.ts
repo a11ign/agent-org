@@ -6,6 +6,7 @@
  *
  * Numbers refer to the row's Acceptance list.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, cpSync, readFileSync } from "node:fs";
@@ -25,7 +26,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const lib = await import("../lib/tool-version-agreement.mjs");
-const { SIGNALS, toolVersionReading, readToolAgreement } = await import("../org-health.mjs");
+const { SIGNALS, toolVersionReading, readToolAgreement } = await import("../org-health.ts");
 const { agreement, agreementReport, releaseCycleMs, shippedReleaseCycleMs, readWorktree, readLastCiRun, memoFile, mainDeclaresAgentOrg, RESOLVER_LINE, lockedCommit } = lib;
 
 const MINUTE = 60_000;
@@ -144,12 +145,12 @@ test("(6) host:check and org-health print the same reading for the same facts --
   assert.equal(reading.discriminator, `${SIGNALS.TOOL_VERSION}@v0.22.0`);
   for (const runner of ["tool checkout /host/agent-org", "/home/agent/repos/wt-1127"]) assert.ok(reading.detail.includes(runner), `the tick names ${runner}`);
 
-  // host:check's finding is `agreementReport` of the SAME result. `host-units.mjs` is run in a CHILD (it calls `git log --all`, so importing it would derive a `history` requirement, #2174).
+  // host:check's finding is `agreementReport` of the SAME result. `host-units.ts` is run in a CHILD (it calls `git log --all`, so importing it would derive a `history` requirement, #2174).
   const script = join(SCRATCH, "findings.mjs");
   writeFileSync(script, `const { toolVersionFindings, toolVersionNotes } = await import(process.argv[2]);
 const reading = JSON.parse(process.argv[3]);
 process.stdout.write(JSON.stringify({ findings: toolVersionFindings(reading), notes: toolVersionNotes(reading) }));`);
-  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [script, pathToFileURL(fileURLToPath(new URL("../host-units.mjs", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
+  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [...TSX_IMPORT, script, pathToFileURL(fileURLToPath(new URL("../host-units.ts", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
     { env: { AGENT_ORG_HOST: HOST_FILE }, encoding: "utf8", timeout: 60_000 }).stdout);
   const host = asHost(result);
   assert.equal(host.findings.length, 1);

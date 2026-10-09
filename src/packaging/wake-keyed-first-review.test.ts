@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `wake.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#3264)
 /**
  * #3264: A KEYED REPOSITORY'S FIRST REVIEW CANNOT FOLLOW THE TICK'S OWN REMEDY, and a second host act the tick never names stands behind it.
  *
@@ -36,9 +36,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { homeProjectDeclaration } = await import("../project-config.mjs");
-const { scopesOf, readLanes, scopeTick } = await import("../work-gate.mjs");
-const { deliver, linkKeyedDependencies } = await import("../wake.mjs");
+const { homeProjectDeclaration } = await import("../project-config.ts");
+const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
+const { deliver, linkKeyedDependencies } = await import("../wake.ts");
 
 // --- (1) THE DEPENDENCY REMEDY ----------------------------------------------------------------------------------------------------
 

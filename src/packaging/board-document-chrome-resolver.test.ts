@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolveChromeBinary } from "../board-document.mjs";
+import { resolveChromeBinary } from "../board-document.ts";
 
-const SCRIPT = fileURLToPath(new URL("../board-document.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../board-document.ts", import.meta.url));
 
 /**
  * #280: `board-report.yml` had never once succeeded, on any route -- the publish step hardcoded
@@ -101,7 +101,7 @@ test("main()'s PDF path actually CALLS resolveChromeBinary(), rather than hardco
   const code = readFileSync(SCRIPT, "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   const chromeAssignment = code.match(/\bchrome\s*=\s*([^;]+);/);
-  assert.ok(chromeAssignment, "no `chrome = ...` assignment found in board-document.mjs -- the call site "
+  assert.ok(chromeAssignment, "no `chrome = ...` assignment found in board-document.ts -- the call site "
     + "moved or was renamed, and this scan needs updating rather than silently examining nothing");
   assert.match(chromeAssignment[1], /resolveChromeBinary\(\)/,
     `the call site assigns \`chrome = ${chromeAssignment[1].trim()}\`, not the resolver's return value -- `

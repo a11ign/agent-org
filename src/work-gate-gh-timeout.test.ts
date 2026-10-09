@@ -8,7 +8,7 @@
  *       names the subcommand in one line. Without the bound the same call is still sleeping when the test gives up on it.
  *   (2) the other lanes' reads are intact: a reader whose `gh` hung answers `null`, and the next call, to a `gh` that answers, is read as ever.
  *   (3) the cut is not a way of silencing a fast `gh`: an answer inside the bound is returned, and a refusal that is not a timeout is rethrown unannounced.
- *   (4) the bound is the named constant, and it is the one `wake.mjs`'s `defaultGh` cuts at.
+ *   (4) the bound is the named constant, and it is the one `wake.ts`'s `defaultGh` cuts at.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,7 +16,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate.mjs";
+import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate.ts";
 
 const BOUND_MS = 400;
 const HUNG_FOR_S = 60;
@@ -81,9 +81,9 @@ test("(3) the cut does not silence a `gh` that answers, and a refusal that is no
   });
 });
 
-test("(4) the bound is the named constant, the one `wake.mjs`'s `defaultGh` cuts a `gh` at", () => {
-  const wake = readFileSync(fileURLToPath(new URL("./wake.mjs", import.meta.url)), "utf8");
+test("(4) the bound is the named constant, the one `wake.ts`'s `defaultGh` cuts a `gh` at", () => {
+  const wake = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
   const wakeBound = /const defaultGh = [^;]*?timeout: (\d[\d_]*)/s.exec(wake)?.[1];
-  assert.ok(wakeBound !== undefined, "positive control: `defaultGh`'s bound was found in wake.mjs");
+  assert.ok(wakeBound !== undefined, "positive control: `defaultGh`'s bound was found in wake.ts");
   assert.equal(GH_READ_TIMEOUT_MS, Number(wakeBound.replaceAll("_", "")));
 });

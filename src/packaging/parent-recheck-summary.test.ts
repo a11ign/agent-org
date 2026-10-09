@@ -8,11 +8,12 @@
  *
  * `summarizeTestLog` fixes the confirmed defect: it reads the TAP summary (`# fail N`) and the individual
  * `not ok <n>` lines, wherever they sit in the log, and reports `unknown` -- never `fail` -- when it
- * cannot actually name a failing subtest. `trunk-red.mjs`'s own `attributionOf` already treats a
+ * cannot actually name a failing subtest. `trunk-red.ts`'s own `attributionOf` already treats a
  * `recheck` that is not literally `"pass"` or `"fail"` as `unknown` (its own answer), so `unknown` was
  * already the safe answer this function needed to be ABLE to give; it just could not, because `tail -40`
  * never told it "I don't know", it told it "fail" with the wrong evidence attached.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -20,11 +21,11 @@ import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { summarizeTestLog } from "../parent-recheck-summary.mjs";
+import { summarizeTestLog } from "../parent-recheck-summary.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 // The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
-const CLI = fileURLToPath(new URL("../parent-recheck-summary.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../parent-recheck-summary.ts", import.meta.url));
 
 /**
  * A REALISTIC node:test TAP log shape: a failure near the TOP (this is the whole point -- #718's own
@@ -107,7 +108,7 @@ function withTempLog(content: string, fn: (path: string) => void) {
 
 test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHECK_RESULT=fail", () => {
   withTempLog(tapLogWithEarlyFailure(), (logPath) => {
-    const out = execFileSync("node", [realpathSync(CLI), logPath],
+    const out = execFileSync("node", [...TSX_IMPORT, realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^# fail 1$/m);
     assert.match(out, /not ok 7 - the summary states WHEN it was written/);
@@ -117,7 +118,7 @@ test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHE
 
 test("CLI: an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, never RECHECK_RESULT=fail", () => {
   withTempLog("a crash with no TAP shape at all\n", (logPath) => {
-    const out = execFileSync("node", [realpathSync(CLI), logPath],
+    const out = execFileSync("node", [...TSX_IMPORT, realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^UNKNOWN:/m);
     assert.match(out, /^RECHECK_RESULT=unknown$/m);

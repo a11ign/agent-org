@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
-// Resolved by path and NOT imported from `host-units.mjs`: that import would charge this file `History: full` (work-gate.test.ts, #2174). The tool-form test is in host-units.test.ts for that reason.
+// Resolved by path and NOT imported from `host-units.ts`: that import would charge this file `History: full` (work-gate.test.ts, #2174). The tool-form test is in host-units.test.ts for that reason.
 const SHIPPED_DIR = fileURLToPath(new URL("../../host/", import.meta.url));
 const SCRIPT = join(SHIPPED_DIR, "trace-weekly-post.sh");
 const COMMENT_LIMIT = 65_536; // GitHub's limit on a comment, in characters

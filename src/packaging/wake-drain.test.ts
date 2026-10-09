@@ -6,6 +6,7 @@
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the two ledgers -- is
  * injected or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, cpSync } from "node:fs";
@@ -27,10 +28,10 @@ after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
 const PROJECT = join(FIXTURE_DIR, "project");
 cpSync(fileURLToPath(new URL("./fixtures/wake-drain/project", import.meta.url)), PROJECT, { recursive: true });
 // The project is a REPOSITORY tracking `packages/`, because `trackedTopLevelDirs` asks git in the PROJECT's checkout (#3366): a Region path such as
-// `packages/agent-org/src/wake.mjs` below is read as a path only when its first directory is tracked THERE, and a directory that is no repository
+// `packages/agent-org/src/wake.ts` below is read as a path only when its first directory is tracked THERE, and a directory that is no repository
 // answers nothing, so the claim's Region lookup failed open and every "refused" test below spawned.
 mkdirSync(join(PROJECT, "packages/agent-org/src"), { recursive: true });
-writeFileSync(join(PROJECT, "packages/agent-org/src/wake.mjs"), "");
+writeFileSync(join(PROJECT, "packages/agent-org/src/wake.ts"), "");
 for (const args of [["init", "--quiet"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "fixture"]]) {
   execFileSync("git", args, { cwd: PROJECT, env: sandboxGitEnv(), stdio: "pipe" });
 }
@@ -40,13 +41,13 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: FIXTURE_DIR, binDir: 
   gh: { workers: join(FIXTURE_DIR, "workers"), leads: join(FIXTURE_DIR, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { homeProjectDeclaration } = await import("../project-config.mjs");
+const { homeProjectDeclaration } = await import("../project-config.ts");
 const { copyToolAndProject, importClosure, toolFile } = await import("./copied-tool-fixture.ts");
 const { deliver: settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT,
   activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
-  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.mjs");
+  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.ts");
 const { drainReason } = await import("../row-claim/runner-rule.mjs");
-const { claimRow } = await import("../row-claim.mjs");
+const { claimRow } = await import("../row-claim.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -55,7 +56,7 @@ const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settli
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const ALL_IDLE = agents(Object.fromEntries(STANDING.map((r) => [r, "idle"])));
 
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
@@ -237,8 +238,8 @@ test("#2324: an unreadable ledger line is a FAILED cycle, so it lifts the drain 
 // --- the precheck: no instance is created to be refused and sit idle ---
 
 /** A `gh` that answers the claim's three reads for row 2131: its blockedBy edge, its Region, and the open PRs. */
-function claimGh({ edge = "OPEN", prFiles = ["packages/agent-org/src/wake.mjs"] as string[] | null,
-  region = "packages/agent-org/src/wake.mjs" } = {}) {
+function claimGh({ edge = "OPEN", prFiles = ["packages/agent-org/src/wake.ts"] as string[] | null,
+  region = "packages/agent-org/src/wake.ts" } = {}) {
   const calls: string[] = [];
   const run = (args: string[]): string => {
     calls.push(args.slice(0, 2).join(" "));
@@ -289,7 +290,7 @@ test("#2324 (5): a Region that overlaps an open PR's files starts NO spawn, and 
   const { h, got } = SPAWNING(spawnClaimability({ run: gh.run }));
 
   assert.deepEqual(h.said("workspace create"), []);
-  assert.match(got.refused[0], /no spawn: #2131 would be refused at the claim by the file-overlap check \(B4\): overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
+  assert.match(got.refused[0], /no spawn: #2131 would be refused at the claim by the file-overlap check \(B4\): overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
 });
 
 test("#2324 (5) POSITIVE CONTROL: the same row against a PR touching OTHER files spawns", () => {
@@ -333,7 +334,7 @@ const args = process.argv.slice(2);
 const json = args[args.indexOf("--json") + 1];
 const send = (value) => process.stdout.write(JSON.stringify(value));
 if (args[0] === "issue" && json === "blockedBy") send({ blockedBy: { nodes: [] } });
-else if (args[0] === "issue" && json === "body") send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.mjs\\n\`\`\`\\n" });
+else if (args[0] === "issue" && json === "body") send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.ts\\n\`\`\`\\n" });
 else if (args[0] === "pr" && args[1] === "list") {
   const repo = args[args.indexOf("--repo") + 1];
   const giveUp = Date.now() + ${STUB_GIVE_UP_MS};
@@ -345,7 +346,7 @@ else if (args[0] === "pr" && args[1] === "list") {
   const answer = () => {
     stamp("end");
     if (repo === process.env.STUB_REFUSE) { process.stderr.write("gh: HTTP 502\\n"); process.exit(1); }
-    send([{ number: slow ? 2300 : 2301, changedFiles: 1, files: [{ path: "packages/agent-org/src/wake.mjs" }], body: "" }]);
+    send([{ number: slow ? 2300 : 2301, changedFiles: 1, files: [{ path: "packages/agent-org/src/wake.ts" }], body: "" }]);
   };
   stamp("start");
   until("start", others + 1, () => (slow ? until("end", others, answer) : answer()));
@@ -382,7 +383,7 @@ test("#3566 (9b): the wake's open-pull-request reads of every declared repositor
   // that waited for another to FINISH before it began is a give-up (15 s) later, which no tie can hide.
   assert.ok(Math.max(...starts) <= Math.min(...ends), `every read started before any finished (starts ${starts}, ends ${ends})`);
   // The first repository's read finishes LAST, so a merge in the order the reads finish would name #2301; the repositories' own order names #2300.
-  assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.mjs/);
+  assert.match(String(verdict), /overlaps #2300, which already touches: packages\/agent-org\/src\/wake\.ts/);
 });
 
 test("#3566 (9b): one refused repository still leaves the read INCONCLUSIVE with its own line, and the row is offered a spawn", () => {
@@ -435,10 +436,10 @@ test("#2324 (6): a non-empty ledger prints the run length, the last line and the
   assert.match(broken.stdout, /drain: LIFTED/);
 });
 
-const spawnCycles = (dir: string) => spawnSync(process.execPath, [WAKE_ENTRY, "--cycles", `--ledger=${join(dir, "wake-ledger")}`],
+const spawnCycles = (dir: string) => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, "--cycles", `--ledger=${join(dir, "wake-ledger")}`],
   { encoding: "utf8", env: { ...process.env, HOME: dir } });
 
-test("#2324 (6): THE COMMAND -- `wake.mjs --cycles` on an empty ledger exits non-zero, and reads the ledger the teardown writes", () => {
+test("#2324 (6): THE COMMAND -- `wake.ts --cycles` on an empty ledger exits non-zero, and reads the ledger the teardown writes", () => {
   const dir = mkdtempSync(join(tmpdir(), "wake-cycles-"));
   try {
     const empty = spawnCycles(dir);
@@ -458,7 +459,7 @@ test("#2324 (6): THE COMMAND -- `wake.mjs --cycles` on an empty ledger exits non
 
 // --- #2324: A DRAINED ROLE IS REFUSED A NEW ROW, WITH A REASON THAT NAMES THE DRAIN ---
 //
-// `wake.mjs` stops OFFERING the standing three new rows; this is the other half, because an engineer that finishes
+// `wake.ts` stops OFFERING the standing three new rows; this is the other half, because an engineer that finishes
 // a row and claims the next one itself keeps the history the design exists to drop. The fact arrives as `drained`
 // (what `activeDrain` returns), so the rule cannot disagree with the router about whether the drain is in force.
 
@@ -514,7 +515,7 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 });
 
 // THE WIRING, AS A PROCESS. `claimRow` takes `drained` from its caller, and the caller that matters is the CLI: an
-// injected seam is exactly what a deleted call goes around, so this drives `row-claim.mjs claim` itself with a `gh`
+// injected seam is exactly what a deleted call goes around, so this drives `row-claim.ts claim` itself with a `gh`
 // on PATH and a HOME with no ledger (an empty one keeps the drain in force). CI's plain clone is refused by the
 // launch gate, so the printed override is set -- its first users are exactly these tests.
 //
@@ -524,7 +525,7 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 // there. It would have gone red locally the day `main` moved a rule file, too. The copy is of the WORKING TREE
 // (so a mutation made there is the one under test), is its own one-commit repo, and its `origin/main` is that
 // commit -- a truthful "up to date", made in a directory nothing else reads.
-const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
+const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.ts", import.meta.url));
 const GH_READY_ROW = `#!/bin/sh
 case "$*" in
   *number,title,labels,state*) printf '%s' '{"number":2324,"title":"A row","state":"OPEN","labels":[{"name":"ready"}]}' ;;
@@ -584,7 +585,7 @@ function claimProcess(session: string, ledger: string | null) {
       writeFileSync(path, ledger);
     }
     const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
-    return spawnSync(process.execPath, [entry, "claim", "2324", `--session=${session}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, entry, "claim", "2324", `--session=${session}`], {
       encoding: "utf8",
       env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
     });
@@ -613,7 +614,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
   const dir = mkdtempSync(join(tmpdir(), "row-claim-drain-"));
   const objects = join(dir, "checkout/.git/objects");
   mkdirSync(objects, { recursive: true });
-  const writer = spawn(process.execPath, ["-e", GIT_WRITER, objects], { stdio: "ignore" });
+  const writer = spawn(process.execPath, [...TSX_IMPORT, "-e", GIT_WRITER, objects], { stdio: "ignore" });
   try {
     for (const deadline = Date.now() + 5000; readdirSync(objects).length === 0; ) {
       assert.ok(Date.now() < deadline, "the writer never started, so this control would prove nothing");

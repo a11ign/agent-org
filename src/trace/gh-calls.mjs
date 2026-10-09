@@ -1,6 +1,6 @@
 // @ts-check
 // a11ign/a11ign#3516 (slice of #3494): THE `gh` CALL LEDGER AS A SOURCE OF THE TRACE STORE. `host/gh` appends one TAB-separated line per call to `gh-calls.tsv` in the calling account's config
-// directory (#3466); `../gh-ledger.mjs` parses it and is imported here, never edited. Every call becomes ONE record, `source: "gh-ledger"`, so a row's trace can show the calls and the
+// directory (#3466); `../gh-ledger.ts` parses it and is imported here, never edited. Every call becomes ONE record, `source: "gh-ledger"`, so a row's trace can show the calls and the
 // GraphQL points beside its tokens and dollars. The ledger files are READ, never written.
 //
 // WHY THE STORE MUST READ IT, AND NOT ONLY WHEN A REPORT WANTS IT: the ledger is bounded (2 MiB, the newest half kept past it), so a call older than the bound is GONE. The ingest reads each
@@ -13,7 +13,7 @@
 // `toolWindows`, `keyCalls` and `viaShell`, is deleted. A line with no id is a unit or script outside any session, or was written before the wrapper named its session (the ledgers keep 2 MiB, so those age out); it is
 // `unkeyed: "script"` and is never joined by time: a unit's calls on whichever session happened to be waiting would be a guess, and a call must be a measurement or it is unkeyed.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { callerScript, parseLine } from "../gh-ledger.mjs";
+import { callerScript, parseLine } from "../gh-ledger.ts";
 import { fingerprint, HEAD_BYTES, planRead } from "./ingest-state.mjs";
 import { appendToStore } from "./store.mjs";
 
@@ -179,7 +179,7 @@ export function ingestGhCalls({ ledgers, store, state, now }) {
   return { report: { ...report, added, rekeyed: superseded }, state: { ...state, files } };
 }
 
-/** @param {TraceEvent} call a call's GraphQL points: what its response carried, else ONE for a call known (`graphql`) or inferred (`graphql?`) to spend that pool: the floor `../gh-ledger.mjs` reads it with */
+/** @param {TraceEvent} call a call's GraphQL points: what its response carried, else ONE for a call known (`graphql`) or inferred (`graphql?`) to spend that pool: the floor `../gh-ledger.ts` reads it with */
 const pointsOf = (call) => call.cost ?? (call.resource?.startsWith("graphql") ? 1 : 0);
 
 /**

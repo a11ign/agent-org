@@ -23,9 +23,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, copyFileSync, chmodSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ownerOf, stashLines } from "../stash-whose.mjs";
+import { ownerOf, stashLines } from "../stash-whose.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const HOOK = join(HOME_CHECKOUT, "scripts/git-hooks/reference-transaction");
 

@@ -19,7 +19,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readClosedAnswerRows, withoutEndedAnswerSessions, rowsOwingAnswers, answerOrders, GH_READS,
-  ANSWER_PREFIX } from "../work-gate.mjs";
+  ANSWER_PREFIX } from "../work-gate.ts";
 
 /** A row as `readClosedAnswerRows` returns it. */
 type Row = { number: number, state?: string, labels: { name: string }[] };

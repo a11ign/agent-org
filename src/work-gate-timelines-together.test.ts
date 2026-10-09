@@ -13,8 +13,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_ROW_ORDERS_PER_TICK, answerGivenOrders } from "./work-gate.mjs";
-import { ANSWER_GIVEN_WINDOW_MS } from "./waiting-condition.mjs";
+import { MAX_ROW_ORDERS_PER_TICK, answerGivenOrders } from "./work-gate.ts";
+import { ANSWER_GIVEN_WINDOW_MS } from "./waiting-condition.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };

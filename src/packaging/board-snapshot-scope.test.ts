@@ -1,8 +1,8 @@
 /**
- * #1275: THE SCOPED HALF OF A BOARD SNAPSHOT, TESTED WITHOUT `board-snapshot.mjs` -- which is this file's reason to
+ * #1275: THE SCOPED HALF OF A BOARD SNAPSHOT, TESTED WITHOUT `board-snapshot.ts` -- which is this file's reason to
  * exist. That script runs `gh`, so any test importing it needs a `token` CI's acceptance job does not have, and
  * #1275's first Acceptance command was refused for exactly that. This file imports the pure module, its pure consumer
- * (`settle-closed-status.mjs`) and the closure walk that refused; the first two tests hold that line.
+ * (`settle-closed-status.ts`) and the closure walk that refused; the first two tests hold that line.
  *
  * The three CAPTURED responses are what `TOUCHED_ITEM_QUERY` itself returned live on 2026-09-13 (gh 2.100.0),
  * verbatim. THE ASSERTIONS ARE ON THE REQUESTS, as #852's are: a snapshot's contents cannot show what reading it cost.
@@ -24,14 +24,14 @@ import {
   scopedStatusOf,
   withScopedSnapshot,
   writeScopedSnapshot,
-} from "../board-snapshot-scope.mjs";
-import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.mjs";
-import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.mjs";
+} from "../board-snapshot-scope.ts";
+import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.ts";
+import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.ts";
 
 // Resolved from this file, never a path typed from the project's root: the tool sits at `packages/agent-org/` in the project and at the
 // root of its own checkout, and a typed path that names no file makes `deriveClosureRequirements` answer `[]` -- a clean reading of nothing.
 const THIS_FILE = fileURLToPath(import.meta.url);
-const SNAPSHOT_SCRIPT = fileURLToPath(new URL("../board-snapshot.mjs", import.meta.url));
+const SNAPSHOT_SCRIPT = fileURLToPath(new URL("../board-snapshot.ts", import.meta.url));
 
 /**
  * Captured LIVE 2026-09-18 against the ORG board: #1452, on `a11ign/projects/1` at "Ready".
@@ -97,21 +97,21 @@ function contextOf(request: (args: string[]) => string, overrides: { at?: Date; 
   };
 }
 
-test("#1275: this file imports NOTHING from board-snapshot.mjs -- the import that refused the row's acceptance", () => {
+test("#1275: this file imports NOTHING from board-snapshot.ts -- the import that refused the row's acceptance", () => {
   // ceo's condition: not even a constant. Read from this file's own import statements, not from a list typed here.
   const source = readFileSync(new URL(import.meta.url), "utf8");
   const specifiers = [...source.matchAll(/^(?:import\s[^;]*?|\}\s*)from\s+"([^"]+)";/gm)].map((match) => match[1]);
-  assert.ok(specifiers.includes("../board-snapshot-scope.mjs"),
+  assert.ok(specifiers.includes("../board-snapshot-scope.ts"),
     "CONTROL: the reader finds this file's real imports, so an empty list cannot pass for a clean one");
-  assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.mjs$/.test(specifier)), []);
+  assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.ts$/.test(specifier)), []);
 });
 
-test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same walk still charges board-snapshot.mjs for its gh call", () => {
+test("#1275: this file's closure needs no token -- POSITIVE CONTROL: the same walk still charges board-snapshot.ts for its gh call", () => {
   assert.deepEqual(deriveClosureRequirements(THIS_FILE).map((hit) => closureRequirementMessage(hit)), [],
     "the acceptance job has no token, no fleet and no corpus");
   const snapshotScript = deriveClosureRequirements(SNAPSHOT_SCRIPT);
   assert.ok(snapshotScript.some((hit) => hit.requirement === "token" && hit.file === SNAPSHOT_SCRIPT),
-    "the walk that passes this file must still see the gh call left in board-snapshot.mjs, or passing proves "
+    "the walk that passes this file must still see the gh call left in board-snapshot.ts, or passing proves "
     + `nothing -- got ${JSON.stringify(snapshotScript)}`);
 });
 
@@ -223,7 +223,7 @@ test("#1275: a token that cannot read the Project is REFUSED, and the close path
   assert.match(message, /NOT_FOUND \(organization\.projectV2\): Could not resolve to a ProjectV2 with the number 999/,
     "GraphQL's own error, read off the failed process's stdout (#555)");
   assert.equal(refusalCause(`could not move #1275's Status to "Done" -- ${message}`), PROJECT_UNREADABLE,
-    "settle-closed-status.mjs's own classifier: #546's bridge reads this cause, and a scoped read must still produce it");
+    "settle-closed-status.ts's own classifier: #546's bridge reads this cause, and a scoped read must still produce it");
   assert.equal(refusalCause("could not move #1275's Status to \"Done\" -- board-snapshot: gh's response for #1275 "
     + "did not have the shape"), "other", "CONTROL: the classifier is not satisfied by any board-snapshot refusal");
 });

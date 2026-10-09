@@ -10,14 +10,14 @@
 // THE KEY is read by `readKey(path)` at call time, once per process, and lives only in the closure that builds the request header. It is never printed, logged or
 // returned; a key that cannot be read is recorded as the reason `triage-unavailable` and nothing else (not the error's text, which names the path).
 import { readFileSync } from "node:fs";
-import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.mjs";
+import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
 export const TRIAGE_UNAVAILABLE = "triage-unavailable";
 const QUESTION = "q";
 const TIMEOUT_MS = 10_000;
-/** The sampler prints this for an order whose ledger line is gone (`triage-sample.mjs`); it is no cause, like an absent one. */
+/** The sampler prints this for an order whose ledger line is gone (`triage-sample.ts`); it is no cause, like an absent one. */
 const NO_CAUSE = "(no cause)";
 
 /** The three labels of the #4074 fixture (`trace/triage-labels-4074.json`, `definitions`), which are Jev's `criteria`. */

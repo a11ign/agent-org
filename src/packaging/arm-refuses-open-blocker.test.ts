@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // Every `gh` call in this file is a fixture: `runArmPr`, `blockerVerdict` and `refusalBeforeArming` take an injected `run`, and the
-// sweep is driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.mjs` and `auto-arm-sweep.mjs` spawn
+// sweep is driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.ts` and `auto-arm-sweep.ts` spawn
 // `gh`) and false of every CALL.
 /**
  * #3544: A PULL REQUEST WHOSE CLOSING ROW HAS AN OPEN `blocked-by` EDGE IS NOT ARMED, and the refusal names the blocker.
@@ -17,6 +17,7 @@
  * arm #3507. The doors' tests below fail there on BEHAVIOUR (a merge call is made), the decider's on its absence; the run is
  * pasted on the row.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,8 +25,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as armPr from "../arm-pr.mjs";
-import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
+import * as armPr from "../arm-pr.ts";
+import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
 
 const { runArmPr, EXIT } = armPr;
 const REPO = "a11ign/a11ign";
@@ -230,7 +231,7 @@ test("#3544 sweep: `refusalBeforeArming` -- blocked is refused, a closed blocker
     "a body the sweep could not read");
 });
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 
 /** The real sweep over ONE open PR (#3507), a fake `gh` answering from its arguments. `rows` is the edge list per row, or "fail". */
 function driveSweep({ rows, body = BODY, existingComment = "" }: { rows: Record<number, unknown | "fail">; body?: string; existingComment?: string }) {
@@ -259,7 +260,7 @@ ${issueCases}
 esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
-    const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env,
+    const run = spawnSync(process.execPath, [...TSX_IMPORT, SWEEP], { encoding: "utf8", env: { ...process.env,
       GITHUB_REPOSITORY: REPO, [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, status: run.status, merged: calls.some((c) => c.startsWith("pr merge")),

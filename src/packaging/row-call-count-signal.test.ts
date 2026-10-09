@@ -1,10 +1,10 @@
 // no-token: gh -- this file imports only `claimedRowSession`/`rowCallCountSignals`/`rowCallCountOrders`/formatter
-// from `work-gate.mjs`, three pure functions that never call or spawn `gh`; `claudeTurns` from
-// `token-audit.mjs` and `CLAIM_RECORD_MARKER` from `claim-labels.mjs` are pure, leaf modules for the same
-// reason. The token charge belongs to the rest of `work-gate.mjs`'s exports, which this test never reaches.
+// from `work-gate.ts`, three pure functions that never call or spawn `gh`; `claudeTurns` from
+// `token-audit.ts` and `CLAIM_RECORD_MARKER` from `claim-labels.ts` are pure, leaf modules for the same
+// reason. The token charge belongs to the rest of `work-gate.ts`'s exports, which this test never reaches.
 // #2691: the chairman's token-efficiency reading (#928) asks for a LIVE signal, read from the transcripts
 // the org already writes, naming a claimed row whose session has passed ~100 calls -- a split CANDIDATE
-// for `product-manager`'s judgement, never an automatic split. The read reuses `token-audit.mjs`'s own
+// for `product-manager`'s judgement, never an automatic split. The read reuses `token-audit.ts`'s own
 // `claudeTurns`/`transcriptFiles`/`summarise` (the same three `split-baseline.mjs` already imports) rather
 // than a second transcript parser.
 // #2710: the count is now WINDOWED to calls made while a row was actually held -- from its own claim
@@ -17,10 +17,10 @@
 // nothing to check cannot pass (the emptiness's positive control).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeTurns } from "../token-audit.mjs";
+import { claudeTurns } from "../token-audit.ts";
 import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD,
-  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.mjs";
-import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
+  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.ts";
+import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 
 /** One usage line, with a unique `id` so `claudeTurns`'s dedup (`message.id`) counts it once. */
 function callLine(id: string, ts: string) {
@@ -43,8 +43,8 @@ const sameInstant = (n: number, ts = "2026-09-27T10:00:00Z") => Array.from({ len
 const rowFixture = (number: number, session: string) =>
   ({ number, labels: [{ name: "in-progress" }, { name: `session:${session}` }] });
 
-/** The claim-record comment `row-claim.mjs` posts on a claim, minimal but real enough for `claimRecordOf`
- * (`claim-stall.mjs`) to read: the marker, and "-- claimed by `<session>`" on the same body. */
+/** The claim-record comment `row-claim.ts` posts on a claim, minimal but real enough for `claimRecordOf`
+ * (`claim-stall.ts`) to read: the marker, and "-- claimed by `<session>`" on the same body. */
 const claimRecordComment = (session: string, at: string) =>
   ({ body: `${CLAIM_RECORD_MARKER}\n**Claim record** -- claimed by \`${session}\`.`, createdAt: at });
 

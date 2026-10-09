@@ -2,7 +2,7 @@
 // @ts-check
 // A GUARD THAT CANNOT STAND BEHIND ITS VERDICT SAYS SO -- #1014, ceo's ruling 2026-09-12.
 //
-// `row-claim.mjs` is POLICY code. When the policy changes by merge, every checkout that has not moved keeps
+// `row-claim.ts` is POLICY code. When the policy changes by merge, every checkout that has not moved keeps
 // enforcing the previous one -- silently, and with a confidently worded message naming a rule the org has
 // retired. Measured the night this was filed: run from the primary checkout at `e9d175c9`, a claim was
 // refused with
@@ -18,12 +18,12 @@
 // rule, and refusing there would make the tool unusable in every worktree cut before the last docs commit.
 // The refusal fires only when the diff touches the files the VERDICT is computed from.
 //
-// THE FILE LIST IS DERIVED, never typed: the local-import closure of `row-claim.mjs`, narrowed to the rule
+// THE FILE LIST IS DERIVED, never typed: the local-import closure of `row-claim.ts`, narrowed to the rule
 // modules beside it. A sixth rule module added tomorrow is covered without anyone remembering to list it,
 // which is the property a hand-typed list cannot have.
 //
 // A LEAF MODULE: its only import is `local-import-closure.mjs`, which imports nothing but `node:` builtins.
-// `row-claim.mjs` is reachable from a pre-install entry, so a package specifier here would die with
+// `row-claim.ts` is reachable from a pre-install entry, so a package specifier here would die with
 // ERR_MODULE_NOT_FOUND before `pnpm install` -- `pre-install-import-graph.test.ts` is what proves it.
 import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -50,7 +50,7 @@ const gitIn = (repoRoot) => (args) =>
  * DERIVED FROM THE ENTRY'S OWN PATH, never typed (#3041). This was the literal `packages/agent-org/src/row-claim/`, the monorepo's layout, and in the
  * standalone `agent-org` checkout (`src/row-claim/`) it named a directory that does not exist: the guard then asked git about a pathspec that
  * matches nothing and read "0 commits behind" off it, which is the other way to be wrong and the quieter one.
- * @param {string} entry absolute path to `row-claim.mjs`
+ * @param {string} entry absolute path to `row-claim.ts`
  * @param {string} repoRoot
  * @returns {string}
  */
@@ -78,10 +78,10 @@ export function workTreeOf(dir) {
  * The files this tool's VERDICT is computed from, repo-relative and sorted.
  *
  * Derived from `entry`'s own local-import closure and narrowed to the `row-claim/` directory beside it plus the entry
- * itself. Narrowed rather than taken whole because the closure reaches `merge-guard.mjs`,
- * `board-snapshot.mjs` and more -- real dependencies of the TOOL whose movement says nothing about whether
+ * itself. Narrowed rather than taken whole because the closure reaches `merge-guard.ts`,
+ * `board-snapshot.ts` and more -- real dependencies of the TOOL whose movement says nothing about whether
  * the RULE changed, and folding them in would turn this into the blanket refusal the row rules out.
- * @param {string} entry absolute path to `row-claim.mjs`
+ * @param {string} entry absolute path to `row-claim.ts`
  * @param {string} repoRoot
  * @param {{ imports?: (file: string) => string[] }} [deps] `imports` is injectable so a test can drive the
  *   case this function cannot survive on its own -- see `rulePathspec`.
@@ -110,8 +110,8 @@ export function ruleFiles(entry, repoRoot, deps) {
  * this guard exists for is the one tree whose file list cannot be trusted. Measured 2026-09-12 in a
  * throwaway worktree at `6dee44a4`, a main from before #1019 landed:
  *
- *     localImports("packages/agent-org/src/row-claim.mjs")  ->  0     (the pre-#1019 `stripComments` defect)
- *     ruleFiles(...)                         ->  ["packages/agent-org/src/row-claim.mjs"]
+ *     localImports("packages/agent-org/src/row-claim.ts")  ->  0     (the pre-#1019 `stripComments` defect)
+ *     ruleFiles(...)                         ->  ["packages/agent-org/src/row-claim.ts"]
  *
  * Five rule modules missing, and the error runs toward NOT refusing: had only `own-pr-health-rule.mjs`
  * moved, that checkout would have answered "up to date" with a retired rule in its hands -- this row's own
@@ -174,7 +174,7 @@ export function trackedFileCount({ repoRoot, files, run }) {
  *
  * pnpm installs a GitHub dependency at `node_modules/.pnpm/agent-org@https+++codeload.github.com+a11ign+agent-org+tar.gz+<sha>_<peers>/node_modules/agent-org/`,
  * and the module's real path is that one. The sha is the answer to "which pin is this", and no file inside the package carries it.
- * @param {string} entry absolute real path to `row-claim.mjs`
+ * @param {string} entry absolute real path to `row-claim.ts`
  * @returns {{ installed: boolean, sha: string | null, packageRoot: string | null }}
  */
 export function installedLayoutOf(entry) {
@@ -268,13 +268,13 @@ const cannotAskNothingTracked = (root, spec) => `CANNOT ASK whether this checkou
  */
 export function staleRuleReason({ repoRoot, entry, run, files, compare } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const installed = installedLayoutOf(entry ?? resolve(here, "..", "row-claim.mjs"));
+  const installed = installedLayoutOf(entry ?? resolve(here, "..", "row-claim.ts"));
   if (installed.installed && repoRoot === undefined && files === undefined) {
-    return installedStaleReason({ entry: entry ?? resolve(here, "..", "row-claim.mjs"), sha: installed.sha, packageRoot: /** @type {string} */ (installed.packageRoot), compare });
+    return installedStaleReason({ entry: entry ?? resolve(here, "..", "row-claim.ts"), sha: installed.sha, packageRoot: /** @type {string} */ (installed.packageRoot), compare });
   }
   const root = repoRoot ?? workTreeOf(here);
   if (root === null) return cannotAskNoTree(here);
-  const spec = files ?? rulePathspec(entry ?? resolve(here, "..", "row-claim.mjs"), root);
+  const spec = files ?? rulePathspec(entry ?? resolve(here, "..", "row-claim.ts"), root);
   // A PATHSPEC THAT MATCHES NO TRACKED FILE CANNOT SAY "UP TO DATE": `git rev-list HEAD..origin/main -- <nothing>` counts 0 and that zero is not a
   // reading of anything (#3041, the same conflation `commitsBehindOn` already refuses for a missing `origin/main`).
   if (spec.length === 0 || trackedFileCount({ repoRoot: root, files: spec, run }) === 0) return cannotAskNothingTracked(root, spec);

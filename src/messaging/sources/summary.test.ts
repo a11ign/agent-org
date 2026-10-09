@@ -44,7 +44,7 @@ function reader(overrides: Partial<Record<"issuesLabelled" | "mergedPullsSince" 
   const fresh = new Date(nowMs - 2 * HOUR).toISOString();
   const calls: { name: string; query: any; }[] = /** @type {any[]} */ ([]);
   const base = {
-    issuesLabelled: async (/** @type {any} */ query: any) => {
+    issuesLabelled: async (query: any) => {
       if (query.label === "needs:chairman") return rows(2);
       if (query.label === "ready") return rows(3);
       return [...rows(4, { updatedAt: stale }), ...rows(2, { updatedAt: fresh })];
@@ -54,7 +54,7 @@ function reader(overrides: Partial<Record<"issuesLabelled" | "mergedPullsSince" 
   };
   /** @type {Record<string, any>} */
   const merged: Record<string, any> = { ...base, ...overrides };
-  const wrapped = Object.fromEntries(Object.entries(merged).map(([name, fn]) => [name, async (/** @type {any} */ query: any) => { calls.push({ name, query }); return fn(query); }]));
+  const wrapped = Object.fromEntries(Object.entries(merged).map(([name, fn]) => [name, async (query: any) => { calls.push({ name, query }); return fn(query); }]));
   return { github: /** @type {any} */ (wrapped), calls };
 }
 

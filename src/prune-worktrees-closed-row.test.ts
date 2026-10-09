@@ -8,6 +8,7 @@
  *
  * Every tree is a real git worktree under one disposable base made here and removed in `after`; none of them can reach this checkout.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -48,15 +49,15 @@ const HOST = (() => {
 // The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const { pruneWorktrees, formatReport, CLOSED_ROW_RELEASE_AGE_MS, ACTIVITY_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS } =
-  await import("./prune-worktrees.mjs");
-const { stampWorktree } = await import("./worktree-owner.mjs");
-const { REMOVAL_LOG_ENV } = await import("./worktree-removal.mjs");
+  await import("./prune-worktrees.ts");
+const { stampWorktree } = await import("./worktree-owner.ts");
+const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 const { sandboxGitEnv } = await import("./lib/git-env.mjs");
 
 // #2782: every removal writes a line, and a fixture must not write the host's log.
 process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");
 
-const PRUNE_CLI = fileURLToPath(new URL("./prune-worktrees.mjs", import.meta.url));
+const PRUNE_CLI = fileURLToPath(new URL("./prune-worktrees.ts", import.meta.url));
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 const NOBODY_CLAIMS = () => ({ refused: false as const });
 const CLOSED = () => ({ closed: true as const });
@@ -209,7 +210,7 @@ test("#3850: THE CLI is the run -- `--apply` removes MAX_REMOVALS_PER_RUN, pause
     for (const file of ["index", "HEAD", "logs/HEAD"]) execFileSync("touch", ["-d", ago(2), join(gitdir, file)]);
   }
   const started = Date.now();
-  const stdout = execFileSync(process.execPath, [PRUNE_CLI, primary.root, "--apply"],
+  const stdout = execFileSync(process.execPath, [...TSX_IMPORT, PRUNE_CLI, primary.root, "--apply"],
     { env: { ...sandboxGitEnv(), AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const elapsed = Date.now() - started;
   assert.match(stdout, new RegExp(`^removed ${MAX_REMOVALS_PER_RUN} worktree\\(s\\):`));

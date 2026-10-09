@@ -9,11 +9,12 @@
 // no-token: gh
 //
 // #827. Every function this file exercises is PURE -- `holdDecision`, `armVerdict`,
-// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.mjs`'s
+// `disarmVerdict` and the `REARM_LABEL` constant all take fixtures and return verdicts. `pr-hold.ts`'s
 // `gh` helper is reached by the closure walk because it lives in the same module, never because these
 // tests call it: `takeHold` and `releaseHold`, the two functions that do, appear in this file only
 // inside an assertion message. The declaration is verified against the entry's own code, so a wrong one
 // is refused as its own state rather than trusted.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,8 +23,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { holdDecision } from "../pr-hold.mjs";
-import { armVerdict, disarmVerdict, REARM_LABEL } from "../pr-hold-state.mjs";
+import { holdDecision } from "../pr-hold.ts";
+import { armVerdict, disarmVerdict, REARM_LABEL } from "../pr-hold-state.ts";
 
 test("an unheld PR is taken, and says it was unheld", () => {
   const d = holdDecision({ holders: [], session: "worker-capture", steal: false });
@@ -209,7 +210,7 @@ test("CONTROL: the ordinary readings are untouched -- null is disarmed, non-null
 test("#822's two writes are verified the SAME WAY -- the source proves the marker is read back, not "
   + "trusted to `gh pr edit`'s exit code", () => {
   const src = readFileSync(
-    fileURLToPath(new URL("../pr-hold.mjs", import.meta.url)), "utf8");
+    fileURLToPath(new URL("../pr-hold.ts", import.meta.url)), "utf8");
   const marker = src.slice(src.indexOf("function markForRearm"));
   const body = marker.slice(0, marker.indexOf("\n}"));
   assert.match(body, /prLabels\(pr\.number, pr\.repo\)/,
@@ -230,9 +231,9 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
 // session's hold and then failed to add its own exited 1 -- REFUSED, "nothing done" -- measured at 8244cf0f.
 // The stub keeps the PR's labels in a state file, so each test reads what actually LANDED, not what was said. ---
 
-const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const EXECUTABLE = 0o755;
-// The exit code pr-hold.mjs header documents for DISPLACED_NOT_HELD.
+// The exit code pr-hold.ts header documents for DISPLACED_NOT_HELD.
 const DISPLACED_NOT_HELD_EXIT = 3;
 const PR = "9001";
 
@@ -281,14 +282,14 @@ process.exit(1);
 /** `repoLabels`, when given, is the set of labels the repository HAS: `pr edit --add-label` of any other answers "not found", as `gh` does. */
 type HoldStubState = { labels: string[], failAdd?: boolean, failRemoveOf?: string, repoLabels?: string[], failCreate?: boolean };
 
-/** Runs `pr-hold.mjs` for PR 9001 with the stub first on PATH and no token in the environment. */
+/** Runs `pr-hold.ts` for PR 9001 with the stub first on PATH and no token in the environment. */
 function withStubbedHold(state: HoldStubState, ...argv: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "pr-hold-1481-"));
   try {
     writeFileSync(join(dir, "state.json"), JSON.stringify(state));
     writeFileSync(join(dir, "gh"), STUB_GH);
     chmodSync(join(dir, "gh"), EXECUTABLE);
-    const r = spawnSync(process.execPath, [PR_HOLD_CLI, PR, ...argv],
+    const r = spawnSync(process.execPath, [...TSX_IMPORT, PR_HOLD_CLI, PR, ...argv],
       { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "",
         // Without the host's declaration the CLI refuses before it ever calls `gh`, so the stub's argv.log is never written: a tool checkout has no project beside it.
         ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) } });

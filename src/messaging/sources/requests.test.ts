@@ -210,7 +210,7 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
   test("the query asks for the comments, the label, and a limit", async () => {
     /** @type {any} */
     let asked: any;
-    await readRequests({ github: asPort({ issuesLabelled: async (/** @type {any} */ query: any) => { asked = query; return []; } }), repo: REPO, openKeys: [], now: START });
+    await readRequests({ github: asPort({ issuesLabelled: async (query: any) => { asked = query; return []; } }), repo: REPO, openKeys: [], now: START });
     assert.deepEqual(asked, { repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
   });
 
@@ -226,7 +226,7 @@ describe("a read that cannot be trusted is not a loss (the false-resolution haza
       const asked: unknown = /** @type {any[]} */ ([]);
       const github = {
         issuesLabelled: async () => [row(2623, { comments: cut })],
-        issueComments: async (/** @type {any} */ query: any) => { asked.push(query); return whole; },
+        issueComments: async (query: any) => { asked.push(query); return whole; },
       };
       const { events } = await readRequests({ github, repo: REPO, openKeys: [], now: START });
       assert.deepEqual(asked, [{ repo: REPO, number: 2623 }]);
@@ -472,7 +472,7 @@ describe("a request alert is a brief: it opens with what is happening, carries e
   test("a refusal reaches the watcher's record once per distinct reason, and a later brief that fixes it sends the alert", async () => {
     const bare = brief("**BRIEF for the chairman: x**", { lines: "" });
     let rows = [row(3228, { comments: [bare] })];
-    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (/** @type {any} */ query: any) => (query.label === "needs:chairman" ? rows : []) });
+    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (query: any) => (query.label === "needs:chairman" ? rows : []) });
     const w = watched({ github: fixture.github, startIso: "2026-10-02T05:00:00Z" });
     for (let pass = 0; pass < 3; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
     assert.equal(w.provider.sent.length, 0, "the summary is not due and the request is refused");
@@ -505,7 +505,7 @@ const LONDON = { at: "08:00", timezone: "Europe/London" };
 /** A reader that throws on EVERY name outside the three reads: the proof that a run is read-only is that nothing else is reachable. */
 function readOnlyFixture(/** @type {Record<string, (query: any) => Promise<any>>} */ reads: Record<string, (query: any) => Promise<any>>) {
   const touched: string[] = /** @type {string[]} */ ([]);
-  const target = Object.fromEntries(Object.entries(reads).map(([name, read]) => [name, async (/** @type {any} */ query: any) => { touched.push(name); return read(query); }]));
+  const target = Object.fromEntries(Object.entries(reads).map(([name, read]) => [name, async (query: any) => { touched.push(name); return read(query); }]));
   const github = new Proxy(target, {
     get(held, name) {
       if (typeof name === "string" && !READ_METHODS.includes(name)) throw new Error(`WRITE ATTEMPTED: github.${name} is not a read`);
@@ -516,7 +516,7 @@ function readOnlyFixture(/** @type {Record<string, (query: any) => Promise<any>>
 }
 
 const goodReads = () => ({
-  issuesLabelled: async (/** @type {any} */ query: any) => (query.label === "needs:chairman" ? [row(2885)] : []),
+  issuesLabelled: async (query: any) => (query.label === "needs:chairman" ? [row(2885)] : []),
   issueComments: async () => [],
   mergedPullsSince: async () => [],
   redPulls: async () => [],
@@ -646,7 +646,7 @@ describe("the red-PR read decides red through the one decider (#3014, #2956)", (
 
 describe("a source that fails is skipped for the tick, and the others run", () => {
   test("an unreadable label list resolves NOTHING and does not stop the summary; the failure is logged", async () => {
-    const broken = { ...goodReads(), issuesLabelled: async (/** @type {any} */ query: any) => { if (query.label === "needs:chairman") throw new Error("HTTP 502"); return []; } };
+    const broken = { ...goodReads(), issuesLabelled: async (query: any) => { if (query.label === "needs:chairman") throw new Error("HTTP 502"); return []; } };
     const w = watched({ github: readOnlyFixture(goodReads()).github });
     await w.pass();
     assert.equal(w.provider.sent.length, 2, "POSITIVE CONTROL: with the label list readable the request and the summary go");
@@ -661,7 +661,7 @@ describe("a source that fails is skipped for the tick, and the others run", () =
 
   test("a malformed options block is logged ONCE per distinct reason across many passes, and the request is sent once", async () => {
     const bad = brief("**BRIEF for the chairman: x**\n<!-- chairman-options: A first -->");
-    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (/** @type {any} */ query: any) => (query.label === "needs:chairman" ? [row(2885, { comments: [bad] })] : []) });
+    const fixture = readOnlyFixture({ ...goodReads(), issuesLabelled: async (query: any) => (query.label === "needs:chairman" ? [row(2885, { comments: [bad] })] : []) });
     const w = watched({ github: fixture.github, startIso: "2026-10-02T05:00:00Z" });
     for (let pass = 0; pass < 4; pass += 1) { await w.pass(); w.advance(5 * MINUTE); }
     assert.equal(w.provider.sent.length, 1);

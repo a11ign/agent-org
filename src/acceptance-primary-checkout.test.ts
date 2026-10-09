@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// The `pr:open` tests at the end import `pr-open.mjs` in a child process, whose `defaultGh` spawns `gh` -- a path none of them take: `checkBody` is handed
+// The `pr:open` tests at the end import `pr-open.ts` in a child process, whose `defaultGh` spawns `gh` -- a path none of them take: `checkBody` is handed
 // the body and an injected `run`. Proved, not just declared: with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that logs and exits 97, the file
 // passes and the log is never written (see the PR body).
 
@@ -13,6 +13,7 @@
  * `refused` is derived from the check, and `POPULATION` is asserted non-empty and of the size the transcript gives, so an emptiness
  * assertion has its positive control in this file (guards-and-assertions.md).
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -21,7 +22,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands.mjs";
+import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands.ts";
 
 const PRIMARY = "/home/agent/repos/a11y-witness";
 const OTHER_REPO = "/home/agent/repos/agent-org";
@@ -142,14 +143,14 @@ function underHost(script: (checkout: string) => string): { status: number | nul
     schema: 1, home: "/home/agent", binDir: "/home/agent/.local/bin", primary: "proj",
     projects: [{ id: "proj", checkout }], gh: { workers: "/home/agent/workers", leads: "/home/agent/leads", leadsHeader: [], leadsWorkspaces: [] },
   }));
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script(checkout)], {
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script(checkout)], {
     cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile },
   });
   return { status: run.status, out: `${run.stdout}${run.stderr}` };
 }
 
 test("the path is read from the host's declaration: a project checked out ELSEWHERE is protected, and a11y-witness's path is then just a path", () => {
-  const result = underHost((checkout) => `import { primaryCheckoutCdReason as r } from "./acceptance-commands.mjs";
+  const result = underHost((checkout) => `import { primaryCheckoutCdReason as r } from "./acceptance-commands.ts";
     const own = ${JSON.stringify(rowBody(["cd CHECKOUT && ls"]))}.replace("CHECKOUT", ${JSON.stringify(checkout)});
     const other = ${JSON.stringify(rowBody([FOUND_ON_4220[0]]))};
     console.log(JSON.stringify([r(own, "t") !== null, r(other, "t") !== null]));`);
@@ -158,10 +159,10 @@ test("the path is read from the host's declaration: a project checked out ELSEWH
 });
 
 // `pr-open`'s own `checkBody` is called here, in a child, with an injected `run` -- the entry point `pr:open` and the gate use, not the list under it, so
-// a `checkBody` that stops reaching the `acceptance` report fails this test. The import is dynamic and in the child: `pr-open.mjs`'s `defaultGh` spawns
+// a `checkBody` that stops reaching the `acceptance` report fails this test. The import is dynamic and in the child: `pr-open.ts`'s `defaultGh` spawns
 // `gh`, a path nothing here takes (the `// no-token: gh` line at the top).
 test("`pr-open`'s `checkBody` refuses an Acceptance that cds into the primary checkout before the command runs, naming the same remedy", () => {
-  const result = underHost((checkout) => `import { checkBody } from "./pr-open.mjs";
+  const result = underHost((checkout) => `import { checkBody } from "./pr-open.ts";
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nCloses: none -- test\\n";
     const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
@@ -174,7 +175,7 @@ test("`pr-open`'s `checkBody` refuses an Acceptance that cds into the primary ch
 });
 
 test("`pr-open`'s `checkBody` still lets a Hand-run-declared `cd` into the primary checkout through to the command", () => {
-  const result = underHost((checkout) => `import { checkBody } from "./pr-open.mjs";
+  const result = underHost((checkout) => `import { checkBody } from "./pr-open.ts";
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nHand-run: the host reads the primary checkout\\n\\nCloses: none -- test\\n";
     const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });

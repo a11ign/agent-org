@@ -60,11 +60,11 @@ import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
 import { createWatchReaders, hostFiles } from "./watch-list.mjs";
 import { walkPosition } from "./walk.mjs";
-import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { readAgents } from "../herdr-agents.mjs";
+import { readUnitsDeclaration, stateEntryPath } from "../host-config.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { readAgents } from "../herdr-agents.ts";
 import { completionPath } from "../lib/tick-completion.mjs";
-import { isBrokenRed } from "../red-pr.mjs";
+import { isBrokenRed } from "../red-pr.ts";
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
@@ -149,7 +149,7 @@ export function createGhReader({ run = runGh } = {}) {
       return pulls.filter((pull) => Date.parse(pull.mergedAt) >= sinceMs);
     },
     /**
-     * The chairman's red-PR count is `red-pr.mjs`'s `isBrokenRed` and nothing of this file's own (#3014, the sixth decider #2956 stopped): `labels`
+     * The chairman's red-PR count is `red-pr.ts`'s `isBrokenRed` and nothing of this file's own (#3014, the sixth decider #2956 stopped): `labels`
      * is fetched so a `hold:<session>` PR whose only red is the hold's own jobs is not reported as broken. A commit STATUS in `FAILURE`/`ERROR`
      * does not count here, as it counts nowhere else; this org posts none (`pr-review-verdict.sh` posts `success` whatever the verdict).
      * @param {{ repo: string, limit?: number }} query
@@ -475,8 +475,8 @@ function hostReaders({ root, home, now, err, github }) {
   return createReaders({
     github, repo: trackerRepo(root), stateDir: dirname(defaultLedgerPath(home)), fleetStatePath: join(root, FLEET_WATCH_STATE),
     unit: workTickUnit(root, err), now, systemctl: runSystemctl, readSeats: readAgents, log: err,
-    // Where the tick writes its record: beside the wake ledger, which with no `--ledger` (as the unit runs) is `wake.mjs`'s `ledgerPathFrom` default. NOT imported
-    // from `wake.mjs`: that module reads the project declaration at import, and a watcher that cannot import is the outage this row exists to see.
+    // Where the tick writes its record: beside the wake ledger, which with no `--ledger` (as the unit runs) is `wake.ts`'s `ledgerPathFrom` default. NOT imported
+    // from `wake.ts`: that module reads the project declaration at import, and a watcher that cannot import is the outage this row exists to see.
     completionPath: completionPath(stateEntryPath("wake-ledger")),
   });
 }

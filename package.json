@@ -14,11 +14,13 @@
   "engines": {
     "node": ">=22"
   },
+  "dependencies": {
+    "tsx": "^4.22.4"
+  },
   "devDependencies": {
     "@a11ign/toolchain": "^0.1.5",
     "@rstest/core": "^0.12.3",
     "@types/node": "^22.20.5",
-    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0"
   },
@@ -29,17 +31,17 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "rstest run --config scripts/rstest/rstest.config.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
-    "messaging:listen": "node src/messaging/listen.mjs",
-    "messaging:watch": "node src/messaging/watch.mjs",
-    "messaging:pair": "node src/messaging/providers/telegram/pair.mjs",
-    "ruling:record": "node src/ruling-record.mjs",
+    "messaging:listen": "node --import tsx src/messaging/listen.mjs",
+    "messaging:watch": "node --import tsx src/messaging/watch.mjs",
+    "messaging:pair": "node --import tsx src/messaging/providers/telegram/pair.mjs",
+    "ruling:record": "node --import tsx src/ruling-record.ts",
     "messaging:measure": "node --import tsx src/messaging/measure.ts",
-    "chairman:reply": "node src/messaging/reply-cli.mjs",
-    "chairman:record": "node src/messaging/record.mjs",
+    "chairman:reply": "node --import tsx src/messaging/reply-cli.mjs",
+    "chairman:record": "node --import tsx src/messaging/record.mjs",
     "chairman:correct": "node --import tsx src/messaging/correct.ts",
     "chairman:ask-ceo": "node --import tsx src/messaging/ask-ceo.ts",
-    "chairman:watch": "node src/messaging/watch-list.mjs",
-    "chairman:queue": "node src/messaging/session-queue.mjs"
+    "chairman:watch": "node --import tsx src/messaging/watch-list.mjs",
+    "chairman:queue": "node --import tsx src/messaging/session-queue.mjs"
   },
   "files": [
     "src",

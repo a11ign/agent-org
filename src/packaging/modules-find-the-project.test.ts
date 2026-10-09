@@ -5,12 +5,13 @@
 /**
  * #3074: THE THREE MODULES THAT ONCE COUNTED DIRECTORIES UP FROM `src` FIND THE PROJECT THROUGH `HOME_CHECKOUT`.
  *
- * `lib/product-home.mjs`, `lib/walk-scope.mjs` and `ready-label-audit.mjs` each reached a project file (the product's manifest, the tree a
+ * `lib/product-home.mjs`, `lib/walk-scope.mjs` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
  * declared scope is relative to, `docs/row-filing.md`) by `src` up three or four, which is `packages/agent-org/src`'s root in the monorepo and
  * the HOME directory in this repository. A test that reads the project the host file names cannot tell the two apart when the tool also sits
  * in that project, so each child here runs against a SCRATCH project, one whose files are the only ones carrying the marker below: a module
  * that resolved anything else would fail naming the file it read.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -18,8 +19,8 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, sym
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { hostConfigPath } from "../host-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { hostConfigPath } from "../host-config.ts";
 
 const MARKER = "https://scratch-project.example/marker";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +55,7 @@ function scratchProject(): { checkout: string; hostFile: string } {
 
 /** Runs `expression` (which may await an import of the module) in a child whose project is `hostFile`'s, and returns what it printed as JSON. */
 function inChild(hostFile: string, expression: string): unknown {
-  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `console.log(JSON.stringify(await (${expression})))`],
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `console.log(JSON.stringify(await (${expression})))`],
     { cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile } });
   assert.equal(result.status, 0, `the child died:\n${result.stderr}`);
   return JSON.parse(result.stdout);
@@ -72,13 +73,13 @@ test("walk-scope's REPO_ROOT is the PROJECT's checkout, the tree every declared 
 
 test("ready-label-audit reads the PROJECT's docs/row-filing.md, the guidance a filer reads", () => {
   const { hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/ready-label-audit.mjs`)}).then((m) => m.readRowFilingDoc())`), `${MARKER}\n`);
+  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/ready-label-audit.ts`)}).then((m) => m.readRowFilingDoc())`), `${MARKER}\n`);
 });
 
 test("POSITIVE CONTROL: a project that lacks the file makes the module FAIL naming it, so the three readings above are the project's and not a default", () => {
   const { checkout, hostFile } = scratchProject();
   rmSync(join(checkout, "packages/cli/package.json"));
-  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
     `(await import(${JSON.stringify(`${SRC}/lib/product-home.mjs`)})).productHome()`],
   { cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile } });
   assert.notEqual(result.status, 0, "productHome answered with the project's manifest gone");

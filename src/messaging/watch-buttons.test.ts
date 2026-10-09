@@ -48,7 +48,7 @@ function row(options: boolean): Record<string, unknown> {
 /** @param {Record<string, unknown>[]} rows @returns {any} a reader that only answers the label read the request source makes */
 function reader(rows: Record<string, unknown>[]): any {
   return {
-    issuesLabelled: async (/** @type {any} */ query: any) => (query.label === NEEDS_CHAIRMAN ? rows : []),
+    issuesLabelled: async (query: any) => (query.label === NEEDS_CHAIRMAN ? rows : []),
     issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [],
   };
 }
@@ -57,7 +57,7 @@ function reader(rows: Record<string, unknown>[]): any {
 function numericProvider() {
   const inner = createFakeProvider();
   let next = 500;
-  return { ...inner, async send(/** @type {any} */ message: any) { await inner.send(message); next += 1; return { messageRef: String(next), silent: false }; } };
+  return { ...inner, async send(message: any) { await inner.send(message); next += 1; return { messageRef: String(next), silent: false }; } };
 }
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-watch-buttons-"));
@@ -111,11 +111,11 @@ describe("a request carries its buttons to the provider", () => {
     const withOptions = watcher({ rows: [row(true)], provider: numericProvider() });
     await withOptions.pass();
     assert.deepEqual(withOptions.provider.sent[0].actions, requestActions([{ id: "A", label: "publish now" }, { id: "B", label: "hold" }]));
-    assert.deepEqual(withOptions.provider.sent[0].actions.map((/** @type {any} */ action: any) => action.data), ["ans:A", "ans:B", "act:explain", "act:later"]);
+    assert.deepEqual(withOptions.provider.sent[0].actions.map((action: any) => action.data), ["ans:A", "ans:B", "act:explain", "act:later"]);
 
     const without = watcher({ rows: [row(false)], provider: numericProvider() });
     await without.pass();
-    assert.deepEqual(without.provider.sent[0].actions.map((/** @type {any} */ action: any) => action.data), ["act:approve", "act:explain", "act:later"]);
+    assert.deepEqual(without.provider.sent[0].actions.map((action: any) => action.data), ["act:approve", "act:explain", "act:later"]);
   });
 
   test("a request that stopped asking becomes a cleared notice with no keyboard", async () => {

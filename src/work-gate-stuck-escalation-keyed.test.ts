@@ -15,8 +15,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, stuckRowOf, stuckSubjectOf, ESCALATION_LABEL, MAX_DELIVERIES } from "./wake.mjs";
-import { answerOrders, rowsOwingAnswers } from "./work-gate.mjs";
+import { escalateStuck, stuckRowOf, stuckSubjectOf, ESCALATION_LABEL, MAX_DELIVERIES } from "./wake.ts";
+import { answerOrders, rowsOwingAnswers } from "./work-gate.ts";
 
 const SHA = "0123abcd";
 const MERGED = `worker-3075/trunk-red/pr-agent-org#56/${SHA}`;

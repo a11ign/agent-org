@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { deadMansSwitch } from "../work-gate.mjs";
+import { deadMansSwitch } from "../work-gate.ts";
 
 type Agent = { label: string; status: string };
 type Order = { cause: string; discriminator: string; prompt: string; causeKey: string };
@@ -96,7 +96,7 @@ test("a refused open-rows read stays refused whatever the listing says (#1286)",
  * already read (`readOpenRowFollowUps`), so the fix adds no `herdr` spawn and no `gh` call per tick (#4205).
  */
 test("main hands the switch the listing the follow-ups already read, and makes no new herdr call for it", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   const call = [...source.matchAll(/deadMansSwitch\(\{[^}]*\}\)/g)].map(([text]) => text).find((c) => /agents:/.test(c)) ?? "";
   const name = call.match(/agents:\s*(\w+)/)?.[1] ?? "";
   assert.ok(name, "main must pass the listing into the switch");

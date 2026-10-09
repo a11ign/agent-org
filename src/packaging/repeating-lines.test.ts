@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `journalctl` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/repeating-lines.mjs` and its wiring in `work-gate.mjs`, #2848: A LOG LINE THAT REPEATS ABOUT A FAULT IS A DEFECT,
+ * `packages/agent-org/src/repeating-lines.ts` and its wiring in `work-gate.ts`, #2848: A LOG LINE THAT REPEATS ABOUT A FAULT IS A DEFECT,
  * AND THE GATE NOW COUNTS THEM.
  *
  * THE POSITIVE CONTROL IS THE TWO LINES THE ROW WAS FILED ABOUT -- `NOT RELEASED decline of N ...` and `UNDELIVERED claim release not done --
@@ -10,6 +10,7 @@
  * THE THRESHOLD IS WRITTEN OUT AS 30 AND 29 HERE, NEVER AS `REPEAT_TICKS` AND `REPEAT_TICKS - 1`: a test built from the constant moves with it, so
  * raising K by one would leave it green. The literal is what makes the row's mutation (K + 1, K - 1) go red.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
@@ -18,11 +19,11 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPEAT_TICKS, normaliseLine, parseTicks, parseAllowlist, loadAllowlist, repeatingLines, repeatingLineOrders,
-  repeatingLinesTick } from "../repeating-lines.mjs";
-import { refusalReport } from "../wake.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, AGED_BACKLOG_MS, agedBacklogOrders, decide, readPromotableRows } from "../work-gate.mjs";
+  repeatingLinesTick } from "../repeating-lines.ts";
+import { refusalReport } from "../wake.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, AGED_BACKLOG_MS, agedBacklogOrders, decide, readPromotableRows } from "../work-gate.ts";
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const TICK_MINUTES = 2;
 const HOUR_MS = 3_600_000;
@@ -183,7 +184,7 @@ test("a11ign/a11ign#3723: the gate's `github-status: operational` reading repeat
   }
 });
 
-// --- #3029: the lines `wake.mjs` writes for a refusal, run through the detector as the journal would hold them ------
+// --- #3029: the lines `wake.ts` writes for a refusal, run through the detector as the journal would hold them ------
 
 /** The stderr lines `finishTick` writes for these refusals at this wait, which is what the journal carries. */
 const refusalLines = (refused: string[], waitMinutes: number) => {
@@ -266,7 +267,7 @@ function gateWithJournal(journalText: string) {
     writeFileSync(join(dir, "journalctl"), `#!/bin/sh\ncat "${join(dir, "journal.txt")}"\n`);
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as { cause: string; session: string; prompt: string });
     return { ran, orders };
   } finally {

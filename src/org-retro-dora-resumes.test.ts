@@ -14,9 +14,9 @@ import { test } from "node:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.mjs";
-import { readRepository } from "./dora.mjs";
-import { parseProjectDeclaration } from "./project-config.mjs";
+import * as retro from "./org-retro.ts";
+import { readRepository } from "./dora.ts";
+import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 const FIRST = "a11ign/first";

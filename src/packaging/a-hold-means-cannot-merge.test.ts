@@ -8,7 +8,7 @@
  *
  * **Demonstrating that rather than citing it is what found the hole**, and there were three:
  *
- *   1. `auto-arm-sweep.mjs` refuses to ARM a held PR — and was the only place that did.
+ *   1. `auto-arm-sweep.ts` refuses to ARM a held PR — and was the only place that did.
  *   2. `auto-arm.yml`'s per-PR `arm` job gated on `draft == false && base.ref == 'main'` and nothing
  *      else, re-arming a held PR on its own next event.
  *   3. **Nothing disarmed.** `git grep "disable-auto"` over the tree was EMPTY, so an already-armed PR
@@ -24,7 +24,7 @@
  *
  * ## ASSERTING ON WIRING IS NOT ASSERTING ON BEHAVIOUR
  *
- * The first version of these tests checked that the workflow CALLS `arm-pr.mjs` and that `arm-pr.mjs`
+ * The first version of these tests checked that the workflow CALLS `arm-pr.ts` and that `arm-pr.ts`
  * MENTIONS the shared predicate. Both true, both passing, and `npm run mutate` reported
  * `THE GUARD DID NOT BITE` when the hold check inside that script was disabled — **the wiring was intact
  * and the predicate did nothing.**
@@ -47,7 +47,7 @@
 // #827. Every function here is called with FIXTURES and returns a verdict: `armabilityOf`, `holdersOf`,
 // `disarmVerdict`, `sweepDecision`, `armDecision`, and `mergeSafetyVerdict`, whose whole design is that
 // the facts are looked up by its caller and passed in -- `ciGateFacts` does the `gh` calls, and nothing
-// in this file invokes it. The closure walk reaches `gh` through `merge-guard.mjs`'s module graph rather
+// in this file invokes it. The closure walk reaches `gh` through `merge-guard.ts`'s module graph rather
 // than through anything these tests execute.
 //
 // The declaration is verified against the entry's own code, so if `mergeSafetyVerdict` ever starts doing
@@ -57,13 +57,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { mergeSafetyVerdict } from "../merge-guard.mjs";
+import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.ts";
+import { mergeSafetyVerdict } from "../merge-guard.ts";
 
 /** A head sha that matches its branch tip -- the clean #294 case, so these tests isolate the hold. */
 const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
-import { sweepDecision } from "../auto-arm-sweep.mjs";
-import { armDecision } from "../arm-pr.mjs";
+import { sweepDecision } from "../auto-arm-sweep.ts";
+import { armDecision } from "../arm-pr.ts";
 
 /** A file of the TOOL's own tree, `src` up one from here. */
 const readTool = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
@@ -106,9 +106,9 @@ test("ONE PREDICATE, TWO CALLERS -- the hole opened because `is this PR held` wa
   // Both readers agree by construction, because there is only one of them.
   assert.equal(sweepDecision({ labels: ["hold:x"], checkRunCount: 9 }).arm,
     armabilityOf({ labels: ["hold:x"] }).arm);
-  assert.match(readTool("auto-arm-sweep.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.match(readTool("arm-pr.mjs"), /from "\.\/pr-hold-state\.mjs"/);
-  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(readTool("auto-arm-sweep.mjs")),
+  assert.match(readTool("auto-arm-sweep.ts"), /from "\.\/pr-hold-state\.ts"/);
+  assert.match(readTool("arm-pr.ts"), /from "\.\/pr-hold-state\.ts"/);
+  assert.equal(/labels\.filter\(\(l\) => l\.startsWith\("session:"\)\)/.test(readTool("auto-arm-sweep.ts")),
     false, "the sweep must not carry its own copy of the predicate any more");
 });
 
@@ -135,7 +135,7 @@ test("UNREADABLE IS NOT UNHELD -- arm-pr refuses when it cannot read the labels,
  * held", and ceo's 12:2xZ ruling put an ownership label on every PR its author opened -- so on 2026-09-09
  * orchestrator hand-labelled twelve of their own PRs and every one of them was, to this predicate, HELD.
  * #725 was about to apply that label to every armed PR in the org. Holds moved to `hold:<name>`; rows
- * keep `session:`, and `row-claim.mjs` is deliberately unchanged.
+ * keep `session:`, and `row-claim.ts` is deliberately unchanged.
  */
 test("holdersOf reads `hold:` and NOT `session:` -- an ownership label is not a hold, which is the "
   + "collision this namespace exists to end", () => {

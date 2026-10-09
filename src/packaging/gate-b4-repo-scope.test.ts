@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `row-claim/file-overlap-rule.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#3095)
+// no-token: gh -- imports `work-gate.ts` and `row-claim/file-overlap-rule.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#3095)
 /**
  * #3095: THE GATE'S B4 PRE-FILTER COMPARES A ROW WITH THE OPEN PULL REQUESTS OF EVERY DECLARED CODE REPOSITORY, AS THE CLAIM DOES.
  *
@@ -16,10 +16,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { scopesOf, readLanes, scopeTick, readOtherScopes, pullRequestsOfOthers, unreadLanes } from "../work-gate.mjs";
+import { scopesOf, readLanes, scopeTick, readOtherScopes, pullRequestsOfOthers, unreadLanes } from "../work-gate.ts";
 import { fileOverlapReason, lookupOpenPrFiles } from "../row-claim/file-overlap-rule.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { declaredRegionFiles } from "../region-paths.ts";
 
 type Code = { key: string, repo: string };
 const DECLARED_CODE: readonly Code[] = homeProjectDeclaration().code;
@@ -155,7 +155,7 @@ test("DONE-WHEN 4: a declared repository whose pull-request list cannot be read 
 test("the PRIMARY's own tick (`main`, which `scopeTick` does not run) reads the same siblings, and reads each other scope ONCE", () => {
   // `main` calls `process.exit` and appends to the host's ledgers, so it cannot be run here; what a test CAN hold is that its one B4 line
   // is the composition `primaryTick` above makes, and that the lanes it read are the ones it ticks (no second `pr list` per repository: DONE-WHEN 3).
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("\nfunction main()"));
   assert.ok(main.length > 0, "POSITIVE CONTROL: `main` was found, so the two matches below are searches of it");
   assert.match(main, /comparablePrFiles\(\[\.\.\.openPrs, \.\.\.pullRequestsOfOthers\(otherScopes\)\]\)/, "main's B4 list holds the other repositories' pull requests");

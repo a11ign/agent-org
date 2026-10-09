@@ -37,11 +37,11 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { overdueReading } = await import("../org-health.mjs");
+const { overdueReading } = await import("../org-health.ts");
 const { overdueFacts } = await import("../work-gate/org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
-const { mergedStats, median } = await import("../org-retro.mjs");
-const { agedBacklogOrders } = await import("../work-gate.mjs");
+const { claimRecordComment } = await import("../row-claim.ts");
+const { mergedStats, median } = await import("../org-retro.ts");
+const { agedBacklogOrders } = await import("../work-gate.ts");
 
 const REPO = "a11ign/a11ign";
 const MINUTE_MS = 60_000;
@@ -177,7 +177,7 @@ test("a record of another repository with the same number dates nothing here, an
 
 // --- THE OTHER FIGURES IN #928'S READINGS THAT COUNT A ROW'S OR PULL REQUEST'S OWN TIME, joined the same way (the audit is in the pull request) ---------------------------
 
-test("#928's `median open-to-merge` (`org-retro.mjs` `mergedStats`) is the median of the store's wall-clock for the same pull requests", () => {
+test("#928's `median open-to-merge` (`org-retro.ts` `mergedStats`) is the median of the store's wall-clock for the same pull requests", () => {
   const mergedPrs = ITEMS.filter((i) => i.kind === "pr" && !open(i));
   const read = mergedStats(mergedPrs.map((i) => ({ number: i.number, createdAt: iso(i.createdAt), mergedAt: iso(i.closedAt) })), { since: ago(1000), until: NOW });
   assert.equal(read.count, 3, "POSITIVE CONTROL: three merged pull requests, so there is a median to compare");

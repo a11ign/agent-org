@@ -9,14 +9,14 @@
  * THE FIXTURE IS THE RECORDS THEMSELVES, read from `docs/board/reported/gates/` as `9d1d3114` committed them --
  * the 2026-09-07 `rules-real-pages` FAIL, the 2026-09-14 release-gate stage and standalone run, and the real
  * `promote` and capture-only entries. Variants are built from the release-gate record by the one change each
- * names. `board-gates.mjs` reads no file and starts no process, so this runs in CI's acceptance job.
+ * names. `board-gates.ts` reads no file and starts no process, so this runs in CI's acceptance job.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.ts";
 
 type Gate = { command: string; at: string; output: string; reportedBy?: string };
 const GATES = join(HOME_CHECKOUT, "docs/board/reported/gates");

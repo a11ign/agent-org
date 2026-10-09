@@ -1,6 +1,6 @@
 // no-token: gh -- every `gh` and `herdr` here is a stub on PATH or an injected seam; nothing imported reaches the real one
 /**
- * `packages/agent-org/src/wake.mjs`, #2401: ONE CODEX REVIEWER PER PULL REQUEST, addressed by herdr name.
+ * `packages/agent-org/src/wake.ts`, #2401: ONE CODEX REVIEWER PER PULL REQUEST, addressed by herdr name.
  *
  * Its own file, and not a block in `wake.test.ts`, for #2280's reason: that file reaches `gh`, so the token-less
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, git -- is an injected seam
@@ -13,6 +13,7 @@
  * and the engineer path -- `spawnableRole`, `SPAWN_CAUSES`, `registerSpawn`, the `spare-cycles` ledger -- reads
  * exactly as it did.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, symlinkSync, readdirSync,
@@ -21,18 +22,18 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "./project-config.mjs";
+import { HOME_CHECKOUT } from "./project-config.ts";
 import {
   deliver, route, spawnableRole, SPAWN_CAUSES,
   REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
   liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
   MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
   reviewCheckoutPath, withReviewCheckout, linkReviewDependencies,
-} from "./wake.mjs";
-import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
-import { parityOwner } from "./review-attribution.mjs";
+} from "./wake.ts";
+import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
+import { parityOwner } from "./review-attribution.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
+import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
@@ -41,7 +42,7 @@ process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("review-removal-log-"), "workt
 
 /**
  * The door's spelling as the INSTALLER writes it (`${A11Y_REVIEWER_BIN:-$HOME/reviewer/bin}/pr-review-verdict`), read from the script and not
- * restated and not imported from `wake.mjs`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
+ * restated and not imported from `wake.ts`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
  */
 const DOOR_SPELLING = (() => {
   const line = readFileSync(fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url)), "utf8").split("\n").find((l) => l.startsWith("dest="));
@@ -56,7 +57,7 @@ const agents = (spec: Record<string, string>) =>
 /** `engineerRoles()` since #2505: the three standing engineers are retired and the spares are a FAMILY, so no address is listed. */
 const ROSTER: string[] = [];
 const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so the stubs have to be runnable
-const TICK_ENTRY = fileURLToPath(new URL("./work-tick.mjs", import.meta.url));
+const TICK_ENTRY = fileURLToPath(new URL("./work-tick.ts", import.meta.url));
 
 /** The order the gate emits for PR `n`: addressed to `reviewer-<n>`, the name `parityOwner` returns. */
 const reviewOrder = (n: number, cause = "draft-awaiting-verdict") => ({
@@ -337,7 +338,7 @@ test("#2827 (done-when 1, 2): `removeReviewCheckout` WRITES THE REMOVAL LOG -- `
   prepareReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams });
   assert.equal(removeReviewCheckout({ pr: 7, session: "reviewer-7", ...co.seams, record }), null);
   assert.deepEqual(lines, ["removing", "removed"].map((event) => ({ event, path: `${REVIEW_ROOT}/reviewer-7`,
-    caller: "wake.mjs removeReviewCheckout", reason: "the reviewer instance reviewer-7 ended (#2401)" })));
+    caller: "wake.ts removeReviewCheckout", reason: "the reviewer instance reviewer-7 ended (#2401)" })));
   const at = (needle: string) => events.findIndex((event) => event.includes(needle));
   assert.ok(at("record removing") < at("worktree remove") && at("worktree remove") < at("record removed"),
     `the line is written BEFORE the delete and the outcome after it: ${events.join(" | ")}`);
@@ -370,7 +371,7 @@ test("#2827 (done-when 2): with NO seam, the default writes the line to the real
   assert.equal(removeReviewCheckout({ pr: 8, session: "reviewer-8", ...co.seams }), null);
   const written = removalLines(log).slice(before);
   assert.deepEqual(written.map((line) => [line.event, line.path, line.caller]),
-    [["removing", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"], ["removed", `${REVIEW_ROOT}/reviewer-8`, "wake.mjs removeReviewCheckout"]]);
+    [["removing", `${REVIEW_ROOT}/reviewer-8`, "wake.ts removeReviewCheckout"], ["removed", `${REVIEW_ROOT}/reviewer-8`, "wake.ts removeReviewCheckout"]]);
 });
 
 test("#2401 (7e): the checkout is REAL git, not only a fake -- fetched from `refs/pull/<n>/head`, re-pointed on a push, "
@@ -667,7 +668,7 @@ test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tic
 });
 
 test("#2498 (2b): the tick has exactly ONE way to open a reviewer's pane and ONE to start its agent -- and neither is a resume", () => {
-  const source = readFileSync(fileURLToPath(new URL("./wake.mjs", import.meta.url)), "utf8");
+  const source = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
   // Measured 2026-09-25: `herdr.service` restarted at 12:01:57Z and `reviewer-2485`'s live codex was `codex resume <uuid>` from 12:01:58Z, with four
   // `claude --resume` in the same two seconds: herdr's own restore, which keeps none of the `--env` given to `workspace create`. This file has no
   // path that resumes a PROCESS (its `resume` is a plain PROMPT to a pane that exists, #2470), so a pane with no `A11Y_REVIEWER_SESSION` is one
@@ -936,7 +937,7 @@ test("#2401 THE TICK: a QUIET gate still ends a finished reviewer instance, and 
     const tree = join(dir, "reviews", "reviewer-9001");
     mkdirSync(tree, { recursive: true });
     writeFileSync(reviewerPathsFrom(ledger).registry, JSON.stringify({ "reviewer-9001": { spawnedAt: T0 } }));
-    const ran = spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
 
     const calls = readFileSync(log, "utf8");
@@ -973,7 +974,7 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeGitStub(dir);
     const before = Date.now();
-    const ran = spawnSync(process.execPath, [TICK_ENTRY.replace("work-tick.mjs", "wake.mjs"), `--ledger=${ledger}`,
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY.replace("work-tick.ts", "wake.ts"), `--ledger=${ledger}`,
       "--roster=worker-4"], { input: `${JSON.stringify(reviewOrder(2398))}\n`, encoding: "utf8",
       // The memory gate (#2508) reads the HOST unless told a file: this test is about the registry, so it is handed an idle host.
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_MEMINFO_PATH: idleMeminfo(dir) } });

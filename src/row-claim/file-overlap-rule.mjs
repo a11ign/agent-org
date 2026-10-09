@@ -62,7 +62,7 @@
 // to the asking row, and the wait lived in a comment nothing reads. The exclusion needs BOTH facts (`ceo`, #2400
 // section 2), because either alone is a hole: a `hold:` label with no edge is a PR that may still merge when the
 // hold lifts, and an edge with no hold is a PR that `deliberateRefusals` will let merge first. See
-// `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.mjs`'s `blockedOnOpenPr`).
+// `isHeldPrWaitingOn`. The gate reads the same two facts (`work-gate.ts`'s `blockedOnOpenPr`).
 //
 // #2617 (child 3b of #69): B4 READS EVERY CODE REPOSITORY THE PROJECT DECLARES, NOT THE FIRST. "No two open pull requests touch the
 // same file" is a claim about the PROJECT's open work, and the project's work is in every repository `.agent-org/project.json`'s
@@ -72,13 +72,13 @@
 // as the pull request, because `#7` alone would name two different pull requests.
 // A REPOSITORY THAT CANNOT BE READ MAKES THE WHOLE READ `null`, which every caller already reads as INCONCLUSIVE and never as "no
 // overlap": a second repository that fails must not become a quiet pass on the strength of the first one answering. It says WHICH one.
-import { REPO } from "../project-identity.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.mjs";
+import { REPO } from "../project-identity.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
-import { holdersOf } from "../pr-hold-state.mjs";
-import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
+import { holdersOf } from "../pr-hold-state.ts";
+import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
 /** @type {(path: string) => boolean} */

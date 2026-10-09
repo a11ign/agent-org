@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // @ts-check
-import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.mjs";
-import { ROUTED_TO } from "../work-gate.mjs";
+import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.ts";
+import { ROUTED_TO } from "../work-gate.ts";
 // #2619 (child 3d of #69): the `lane:` prefix and the `lane:any` sentinel, moved to the project's
 // declared vocabulary.
-import { LANE_PREFIX } from "../project-vocabulary.mjs";
+import { LANE_PREFIX } from "../project-vocabulary.ts";
 
 // RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444.
 //
@@ -66,7 +66,7 @@ export function runnerReason(labels, mySession) {
  *     nobody can ever take.
  *
  * A FOURTH THING IT MUST NOT DO NOW -- #1828, ceo's ruling on #1817: refuse a member of a `fleet-gated`
- * row's ROUTED POOL for not being the exact name a `lane:` label spells. `row-file.mjs`'s
+ * row's ROUTED POOL for not being the exact name a `lane:` label spells. `row-file.ts`'s
  * `fleetOrLabAcceptance` force-adds `lane:orchestrator` to any row whose Acceptance reaches the fleet or
  * the lab, which is what refused every session but `orchestrator` here before this row -- correctly, for
  * everyone outside the pool, and wrongly for `worker-capture` once the ruling put it in the pool too.
@@ -107,11 +107,11 @@ export function laneReason(labels, mySession, deps) {
  * RULE: IS THE ASKING SESSION DRAINED? -- #2324 (`ceo`, #1950 ruling b).
  *
  * `sessions.json` marks the three standing engineers `drain` so that every NEW row goes through spawn and #1950's
- * 20 clean cycles build at full throughput. `wake.mjs`'s `route` stops OFFERING them rows, but a session that
+ * 20 clean cycles build at full throughput. `wake.ts`'s `route` stops OFFERING them rows, but a session that
  * finishes a row and claims the next one by hand keeps the accumulated history the design exists to drop -- the
  * chairman's own reading of `worker-4` -- so the offer alone is not the drain. This is the other half.
  *
- * THE FACT IS INJECTED, NOT READ HERE. `drained` is what `wake.mjs`'s `activeDrain` returns: the marked roles
+ * THE FACT IS INJECTED, NOT READ HERE. `drained` is what `wake.ts`'s `activeDrain` returns: the marked roles
  * while the newest cycle is clean and NONE once one failed, so this rule needs no ledger of its own and cannot
  * disagree with the router about whether the drain is in force. A spare or an undrained role is not named and
  * proceeds. Resuming a row the session already holds is not a new row and never reaches this

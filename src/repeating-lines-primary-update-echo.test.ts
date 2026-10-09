@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normaliseLine, parseTicks, loadAllowlist, repeatingLines } from "./repeating-lines.mjs";
+import { normaliseLine, parseTicks, loadAllowlist, repeatingLines } from "./repeating-lines.ts";
 
 const TICKS = 40;
 const TICK_MINUTES = 2;
@@ -36,6 +36,7 @@ test("the SHIPPED allowlist covers the tick's `primary:update` echo in BOTH runn
   assert.ok(allowed(NPM_ECHO), "the form npm printed until a11ign/a11ign#2974");
   assert.ok(allowed(PNPM_ECHO), "the form pnpm prints");
   assert.ok(allowed("> node packages/agent-org/src/update-primary.mjs"), "its second line");
+  assert.ok(allowed("> node --import tsx packages/agent-org/src/update-primary.ts"), "its second line once the script is TypeScript (a11ign/a11ign#4272)");
   assert.ok(allowed("> agent-org primary:update"), "its second line since a11ign/a11ign#3097's cut-over 4");
   assert.ok(!allowed("> agent-org release:gate"), "another agent-org command is not covered");
   assert.ok(!allowed("> a11ign-monorepo@0.0.0 release:gate /home/agent/repos/a11y-witness"), "another script is not covered");

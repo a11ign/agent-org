@@ -7,7 +7,7 @@
  * cannot express the fact, so the count is right about its labels and wrong about the work.
  *
  * THE CHECK IS "DOES THIS ROW'S SUBJECT EXIST ON `main` YET", not "is anyone else in these files", and
- * #186 is the case that forces the distinction: nobody is editing `board-summary-check.mjs`, and the row
+ * #186 is the case that forces the distinction: nobody is editing `board-summary-check.ts`, and the row
  * is unstartable anyway because `dirOnOriginMain` — the function it is entirely about — exists on one
  * unmerged branch and nowhere else. A region check alone scores that CLEAR.
  *
@@ -16,7 +16,7 @@
  */
 // no-token: gh
 //
-// #772: this file imports `row-reachability.mjs` for `startability`, `symbolOnMain` and
+// #772: this file imports `row-reachability.ts` for `startability`, `symbolOnMain` and
 // `refsCarryingSymbol`, and that module's line 53 spawns `gh` for the ISSUE fetch — a path none of these
 // tests take: every one of them drives git against a real local tree, or hands `startability` a facts
 // object built here. DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file
@@ -29,8 +29,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
-  heldRefsSummary } from "../row-reachability.mjs";
-import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../region-paths.mjs";
+  heldRefsSummary } from "../row-reachability.ts";
+import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../region-paths.ts";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -60,7 +60,7 @@ test("THE #186 CASE: the subject does not exist on main, and no region check wou
 test("a held region is reported but does NOT block — it is a merge cost, not a blocker", () => {
   // The half that stops this being deleted: a check that reports every row blocked is one nobody reads.
   const v = startability({
-    ...clear, heldRegions: [{ path: "packages/agent-org/src/row-claim.mjs", refs: ["origin/agent/x"] }],
+    ...clear, heldRegions: [{ path: "packages/agent-org/src/row-claim.ts", refs: ["origin/agent/x"] }],
   });
   assert.equal(v.code, 0, "contention is worth knowing and is not a reason to refuse the row");
   assert.match(v.lines.join("\n"), /REGION HELD/);
@@ -350,7 +350,7 @@ function skipsWithoutOriginMain(): boolean {
  * WHAT MAKES THE READ NON-CIRCULAR, AND MY FIRST ANSWER WAS WRONG. I wrote that this asks "a different
  * question", and it did -- through a BYTE-IDENTICAL invocation and filter:
  *
- *     the subject   git for-each-ref --format=%(refname:short) refs/remotes/origin   (row-reachability.mjs)
+ *     the subject   git for-each-ref --format=%(refname:short) refs/remotes/origin   (row-reachability.ts)
  *                     .filter(r => r && r !== "origin/main" && !r.startsWith("origin/HEAD"))
  *     the guard     the same command, the same filter
  *
@@ -542,7 +542,7 @@ test("#1566: BOTH halves ask the injected PR state, and `gh` is spawned only whe
  * of that tree, in this very file. The PR job's `origin/main` is the OLD one (this branch has not landed
  * yet), so a "guaranteed absent" assertion passed there -- and failed on `trunk-guard`, which runs AFTER
  * the merge, against the NEW `origin/main` that now contains this file. Same class of bug as #621's
- * self-reference guard in `acceptance-commands.mjs` (a check walking its own describing code), one file
+ * self-reference guard in `acceptance-commands.ts` (a check walking its own describing code), one file
  * over. `git grep` is comment-blind, unlike that file's `stripComments`-protected walk -- so even a
  * comment quoting the fixture symbol verbatim would self-match; this doc comment deliberately never
  * spells it out. Fixed the identical way `fingerprint()` fixes it there: concatenated below so the

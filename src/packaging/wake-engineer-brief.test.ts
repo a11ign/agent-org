@@ -15,8 +15,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { startedPanes } from "./started-pane.ts";
 
 const ROOT = HOME_CHECKOUT;

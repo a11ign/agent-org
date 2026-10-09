@@ -1,11 +1,11 @@
 [Unit]
-# ONE TICK OF THE SHADOW WINDOW -- #2867 (the split, child 5f of #69; ADR 0040, decision 5 (1)). `shadow-window.mjs` runs the CANDIDATE gate
+# ONE TICK OF THE SHADOW WINDOW -- #2867 (the split, child 5f of #69; ADR 0040, decision 5 (1)). `shadow-window.ts` runs the CANDIDATE gate
 # over what the live tick recorded and appends one line to a diff record; see its header. THIS UNIT IS A SEPARATE PAIR FROM
 # @@prefix@@work-tick.service, deliberately: nothing here names the live tick (no `After=`, `Requires=`, `PartOf=`, `OnFailure=`), so a failing
 # shadow run fails THIS service and the live tick's exit status is not an input to it. `shadow-window-arm.test.ts` pins both halves.
 #
 # DORMANT UNTIL ARMED. Installing this pair starts a run every two minutes that reads `<state>/shadow-window-open`, finds none and exits 0. The
-# window opens when `shadow-window.mjs --arm` creates that marker (T0), and ENDS ITSELF at 1,440 recorded ticks or T0 plus 52 hours: it appends a
+# window opens when `shadow-window.ts --arm` creates that marker (T0), and ENDS ITSELF at 1,440 recorded ticks or T0 plus 52 hours: it appends a
 # `stop` row, disables the timer and removes the marker. `ceo` sanctioned this arrangement on #2623 and NOT the cut-over, so nothing here touches
 # the live units, the host declaration or the monorepo gate.
 Description=a11ign: one tick of the shadow window -- run the candidate gate beside the live one and record the difference
@@ -57,7 +57,7 @@ Environment=NODE_OPTIONS=--max-old-space-size=512
 #
 # `--window-timer=` IS WHAT MAKES THIS A WINDOWED RUN: it names the timer the runner disables when the window ends, and without it the runner is the
 # bare #2846 tick with no marker, no count and no stop.
-ExecStart=/usr/bin/node packages/agent-org/src/shadow-window.mjs --window-timer=@@prefix@@shadow-window.timer --candidate=@@home@@/repos/agent-org/src/work-gate.mjs --copy-dir=@@home@@/.local/state/a11ign-shadow-window/state-copy --record=@@home@@/.local/state/a11ign-shadow-window/diff-record.jsonl
+ExecStart=/usr/bin/node --import tsx packages/agent-org/src/shadow-window.ts --window-timer=@@prefix@@shadow-window.timer --candidate=@@home@@/repos/agent-org/src/work-gate.ts --copy-dir=@@home@@/.local/state/a11ign-shadow-window/state-copy --record=@@home@@/.local/state/a11ign-shadow-window/diff-record.jsonl
 
 # NO `SuccessExitStatus=`, UNLIKE @@prefix@@work-tick.service, AND THAT IS THE POINT: the runner exits 2 when a path was refused or an input could not be
 # read, and for the live tick 2 is "a read was refused", an ordinary state; here it is a tick the window lost, so it must show as a FAILED run. The

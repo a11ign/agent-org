@@ -23,7 +23,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { agreement, readLastCiRun, memoFile, RESOLVER_LINE } = await import("../lib/tool-version-agreement.mjs");
-const { toolVersionReading } = await import("../org-health.mjs");
+const { toolVersionReading } = await import("../org-health.ts");
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

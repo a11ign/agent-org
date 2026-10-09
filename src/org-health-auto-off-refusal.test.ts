@@ -1,6 +1,6 @@
 // no-token: pure -- the reading is a function of values handed in; the one disk read (`readAutoOffRefusal`) is given a fake `read` or a temporary directory, and nothing here calls `gh`, ssh or the fleet.
 /**
- * `src/org-health.mjs`, #3853 (incident #3846, 2b): A FLEET WHOSE AUTO-OFF HAS REFUSED FOR OVER FIFTEEN MINUTES IS RAISED, because a safety refusal nobody reads is an outage.
+ * `src/org-health.ts`, #3853 (incident #3846, 2b): A FLEET WHOSE AUTO-OFF HAS REFUSED FOR OVER FIFTEEN MINUTES IS RAISED, because a safety refusal nobody reads is an outage.
  *
  * THE THRESHOLDS ARE WRITTEN OUT HERE (15 minutes, 5 minutes, 120 minutes), NEVER AS THE EXPORTS: a test built from the constant moves with it (`org-health.test.ts`'s rule). Every age is
  * built from `NOW` and a number of minutes, so a boundary is a boundary and not a coincidence of the clock.
@@ -39,7 +39,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 const {
   AUTO_OFF_MIRROR_PATH, AUTO_OFF_MIRROR_STALE_MINUTES, AUTO_OFF_RECORD_STALE_MINUTES, AUTO_OFF_REFUSAL_MINUTES, ORDER_STALL_MINUTES, SIGNALS, autoOffRefusalReading,
   orgHealthOrders, orgHealthReadings, orgHealthTick, parseAutoOffMirror, readAutoOffRefusal,
-} = await import("./org-health.mjs");
+} = await import("./org-health.ts");
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-06T17:00:00Z");

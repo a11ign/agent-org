@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { claimRow } from "./row-claim.mjs";
+import { claimRow } from "./row-claim.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -130,7 +130,7 @@ test("a batch that cannot START does not stop the claim: the creates run one at 
 });
 
 test("THE WIRING: the real batch is the default only when `run` is the real `gh`, and the creates take it from there", () => {
-  const source = readFileSync(resolve(here, "row-claim.mjs"), "utf8");
+  const source = readFileSync(resolve(here, "row-claim.ts"), "utf8");
   assert.match(source, /labelBatch = run === defaultRun \? runBatch : undefined/);
   const apply = source.slice(source.indexOf("\nfunction applyClaimLabels("), source.indexOf("\n/**", source.indexOf("\nfunction applyClaimLabels(")));
   assert.match(apply, /ensureLabelsExist\([^)]*batch: labelBatch/, "`applyClaimLabels` hands the batch to the creates");

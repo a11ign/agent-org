@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // Every `gh` call in this file is a fixture: `runArmPr` and `refusalBeforeArming` take an injected `run`, and the sweep is
-// driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.mjs` and `auto-arm-sweep.mjs`
+// driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.ts` and `auto-arm-sweep.ts`
 // spawn `gh`) and false of every CALL.
 /**
  * #3487: A PULL REQUEST THE MERGE QUEUE EJECTED FOR `failed_checks` IS NOT ARMED AGAIN WHILE ITS HEAD IS UNMOVED.
@@ -17,6 +17,7 @@
  * THE MUTANT is the tree before this row (`v0.14.0`, or `origin/main` at the branch point): every refusal case here arms
  * the ejected PR there, so this file goes red there. The run is pasted on the row.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,9 +25,9 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runArmPr, EXIT } from "../arm-pr.mjs";
-import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
-import { ejectionVerdict, queueEjectionOf } from "../pr-armed-state.mjs";
+import { runArmPr, EXIT } from "../arm-pr.ts";
+import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
+import { ejectionVerdict, queueEjectionOf } from "../pr-armed-state.ts";
 
 const COMMIT = { __typename: "PullRequestCommit" };
 const added = (createdAt: string) => ({ __typename: "AddedToMergeQueueEvent", createdAt });
@@ -144,7 +145,7 @@ test("#3487 sweep: `refusalBeforeArming` -- ejected is refused, a push since is 
   assert.equal(ask(() => { throw new Error("HTTP 502"); }).kind, "cannot-ask");
 });
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 
 /** The real sweep over ONE open PR (#3460), a fake `gh` answering from its arguments; `ejection` is the queue read, or "fail". */
 function driveSweep(ejection: unknown | "fail") {
@@ -164,7 +165,7 @@ case "$*" in
 esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
-    const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env,
+    const run = spawnSync(process.execPath, [...TSX_IMPORT, SWEEP], { encoding: "utf8", env: { ...process.env,
       GITHUB_REPOSITORY: REPO, [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, status: run.status, merged: calls.some((c) => c.startsWith("pr merge")) };

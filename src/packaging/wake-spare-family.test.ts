@@ -19,13 +19,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, deliver as settlingDeliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
   endFinishedSpares, readSpareCycles, consecutiveClean, route }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
-  from "../arm-pr.mjs";
+  from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.mjs";
-import { labelAfterCreate } from "../pr-open.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.mjs";
+import { labelAfterCreate } from "../pr-open.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
 import { startedPanes } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -97,7 +97,7 @@ test("#2403: no count appears -- twenty busy spares still spawn, and the `ceilin
   const spares = Array.from({ length: 20 }, (_, i) => `worker-${i + 4}`);
   const busy = agents(Object.fromEntries([...STANDING, ...spares].map((r) => [r, "working"])));
   assert.deepEqual(spawnableRole(ROW_ORDER, busy, REAL_ROSTER), { role: "worker-2403" });
-  const source = readFileSync(new URL("../wake.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../wake.ts", import.meta.url), "utf8");
   assert.ok(!/that is the\s*"?\s*\+?\s*"?ceiling/.test(source) && !source.includes("adding one is `ceo`'s"),
     "the refusal that called the roster's size the ceiling no longer exists");
   // The one refusal left is a roster that DECLARES no family, and it does not call anything a ceiling.

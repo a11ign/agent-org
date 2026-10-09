@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the fleet reading, the lab-job read and the log.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the fleet reading, the lab-job read and the log.
 /**
  * #3007 (found by #2980): `waiting.labJobs` IS READ, so a fleet idle with only a lab job waiting trips.
  *
@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow, fleetWaitingFacts, dispatchedLabJobsOrSay } from "../work-gate.mjs";
+import { orgHealthNow, fleetWaitingFacts, dispatchedLabJobsOrSay } from "../work-gate.ts";
 import { dispatchedJobNames, readDispatchedLabJobs } from "../work-gate/lab-job-orders.mjs";
 
 const HOUR_MS = 3_600_000;

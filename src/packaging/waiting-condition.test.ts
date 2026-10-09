@@ -7,9 +7,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, answerOwedBy, answersOwedBy, fleetWaitingOn,
   bareAnswerLabel, ANSWER_LABEL_GRACE_MS, answersGiven, ANSWER_GIVEN_WINDOW_MS }
-  from "../waiting-condition.mjs";
-import { bareAnswerLabelOrders, answerGivenOrders, decide, JUDGMENT_CAUSES, CAUSES, START_CAUSES } from "../work-gate.mjs";
-import { readLedger, JUDGMENT_TTL_MS } from "../wake.mjs";
+  from "../waiting-condition.ts";
+import { bareAnswerLabelOrders, answerGivenOrders, decide, JUDGMENT_CAUSES, CAUSES, START_CAUSES } from "../work-gate.ts";
+import { readLedger, JUDGMENT_TTL_MS } from "../wake.ts";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
   // THE WHOLE POINT. `orchestrator` wrote "blocked by #1772" in a comment at 16:39; #1772 closed at
@@ -86,7 +86,7 @@ test("today is the alphabet the field is written in", () => {
  *
  * `agent-practices.md` now says a waiting condition goes in a field rather than a sentence -- and that
  * instruction is itself a sentence, in a document nothing checks. This repository has proved twice that
- * it cannot keep such a rule by habit: `/clear` was one until `wake.mjs` mechanised it, and the
+ * it cannot keep such a rule by habit: `/clear` was one until `wake.ts` mechanised it, and the
  * author-prompt path then bypassed even that. A rule with no witness decays to the state it was written
  * to fix.
  */

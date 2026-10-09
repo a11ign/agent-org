@@ -1,7 +1,7 @@
 // no-token: lookupClosingIssues
 // #827. Every fact this file feeds a decider is INJECTED, and the three CLI tests run the script against a fake
 // `gh` first on PATH that answers from files, so nothing here reaches GitHub. The closure walk still finds
-// `lookups.mjs`'s `gh` through `closes-mismatch-check.mjs`'s import; reaching it live is not what is tested.
+// `lookups.mjs`'s `gh` through `closes-mismatch-check.ts`'s import; reaching it live is not what is tested.
 /**
  * #549: a PR body can declare `Closes: none` and still close two issues, and nothing compared what the
  * author DECLARED against what GitHub RESOLVED. Measured live, same day: #545 declared `none` and closed
@@ -11,6 +11,7 @@
  * INJECTED `resolved` array rather than a live `closingIssuesReferences` query -- the same "inject the
  * fact, never fetch it" shape every other `merge-guard/*-rule.test.ts` file already uses.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -20,8 +21,8 @@ import { join } from "node:path";
 import {
   closesMismatchReport, findClosingPhrase, isRepoWideResolutionFault, recentClosesSiblings, refusal,
   mismatchVerdict, REPO_WIDE_WARNING,
-} from "../closes-mismatch-check.mjs";
-import type { ClosesDeclaration } from "../acceptance-commands.mjs";
+} from "../closes-mismatch-check.ts";
+import type { ClosesDeclaration } from "../acceptance-commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "docs-only change" };
@@ -237,7 +238,7 @@ test("#2822 DONE-WHEN 2 POSITIVE CONTROLS: every other mismatch keeps exit 1 and
 
 // --- the whole CLI against a fake `gh`, so the exit code is read from a real process ---
 
-const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.mjs", import.meta.url));
+const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.ts", import.meta.url));
 
 function runCheck(ghAnswers: { own: number[]; open: unknown[] | "fail" }, body = "Closes #2810") {
   const dir = tmpDir("closes-check-");
@@ -255,7 +256,7 @@ esac
 `);
   chmodSync(fake, 0o755);
   // Resolved from this file, not the working directory: the tool sits at `packages/agent-org/` in the project and at the root of its own checkout.
-  const result = spawnSync(process.execPath, [CHECK_CLI, "2810"], {
+  const result = spawnSync(process.execPath, [...TSX_IMPORT, CHECK_CLI, "2810"], {
     encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PR_BODY: body },
   });
   return { status: result.status, out: result.stdout, // null when the check never asked: the sibling query is skipped unless this PR's own facts already fit

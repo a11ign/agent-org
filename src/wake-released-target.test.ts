@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver, deliverHandoffs, relaneTarget } from "./wake.mjs";
+import { deliver, deliverHandoffs, relaneTarget } from "./wake.ts";
 
 const NO_TRANSCRIPTS = "/nonexistent/a11y-3568-no-transcripts";
 const FAKE_HEAD = "d".repeat(40);

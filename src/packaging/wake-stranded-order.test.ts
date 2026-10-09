@@ -12,6 +12,7 @@
  *   MUST be resolved:  "an order to an ENDED session ..." (the drop) and "... is re-addressed ..."
  *   MUST NOT be:       "ABSENT IS NOT ENDED ..." (never started) and "A HERDR THAT DOES NOT ANSWER ..." (blind)
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
@@ -21,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, resolveEndedHandoffs, readHandoffs, handoffId, handoffBacklog, backlogReport, targetState,
   endedSessions, namedRefs, authorOf, holderOf, deliverHandoffs as settlingDeliverHandoffs, HANDOFF_STALE_MS, handoffQueuePath }
-  from "../wake.mjs";
+  from "../wake.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the
@@ -219,7 +220,7 @@ test("namedRefs, authorOf and holderOf read what an order says and what GitHub a
 
 // --- THE TICK ITSELF, RUN AS A PROCESS, because a seam is what a deleted call goes around ---
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 
 /** `herdr` listing these workspaces, or refusing outright for `null`. */
@@ -242,7 +243,7 @@ function tick(present: string[] | null, queued: object[], { teardown = true } = 
     }
     const before = readFileSync(queue, "utf8");
     // PATH is the stub's directory ALONE: no `gh` exists to be reached.
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: "", encoding: "utf8",
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
       env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST } });

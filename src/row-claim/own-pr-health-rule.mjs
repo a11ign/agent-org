@@ -140,24 +140,24 @@
 // That is why the dispute read goes through `reviews`, not `latestReviews`, and through that parser
 // rather than through `author`.
 
-// FOUND VIA `closedByPullRequestsReferences`, THE REVERSE OF `merge-guard.mjs`'s OWN `closingIssuesReferences`
+// FOUND VIA `closedByPullRequestsReferences`, THE REVERSE OF `merge-guard.ts`'s OWN `closingIssuesReferences`
 // -- not a `session:*` label on the PR (that label is a manual HOLD, applied by `pr:hold`, and most open
 // PRs never carry one) and not a branch-name convention (not every branch encodes its issue number). The
 // one fact this whole fleet can rely on is which issue a PR's own `Closes #N` resolves, because GitHub
 // computes it server-side. So: find the OTHER issues `mySession` currently holds (`in-progress` +
 // `session:<name>`, excluding the row being claimed right now), and ask GitHub which PR would close each.
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
-import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
+import { declaredRegionFiles, regionCovers } from "../region-paths.ts";
 // #2126: the reviewer NAME is parsed by the tree's own verdict parser, never a second reading of the
 // `, by <name>:` convention -- #1245/#1259 exist because six sessions each retyped one and two disagreed.
-import { headMatches, reviewVerdict } from "../review-verdict.mjs";
+import { headMatches, reviewVerdict } from "../review-verdict.ts";
 // #2126: `answer:<session>` is the org's own spelling for "somebody owes this row an answer", and
 // removing the label IS the act of answering -- so the escalation needs nothing else to remember it.
-import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.mjs";
+import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.ts";
 // #2619 (child 3d of #69): the claim-lifecycle label and the `session:` prefix `lookupOtherHeldIssues`
 // searches by, moved to the project's declared vocabulary.
-import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
+import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 
 // NO `git` SPAWN HERE, deliberately -- every lookup in this file goes through `gh` (issue/PR/GraphQL
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`
@@ -671,7 +671,7 @@ export function lookupOtherHeldIssues(mySession, excludeIssueNumber, { run = gh,
  * read, so this reports the PR's STATE and nothing about its colour.
  *
  * `closedByPullRequestsReferences` is resolved server-side by GitHub, never a `Closes #N` regex over a
- * PR body -- the same discipline `merge-guard.mjs`'s `lookupClosingIssues` already applies in reverse.
+ * PR body -- the same discipline `merge-guard.ts`'s `lookupClosingIssues` already applies in reverse.
  * `null` on a failed lookup; `{ number, state: "OPEN"/"MERGED"/"CLOSED" }` when a closing PR exists; an
  * issue with NO closing PR at all (nobody has opened one yet) is reported as `undefined`, distinct from a
  * failed lookup -- "nothing to check" and "could not ask" are different states, and `isInBuild` reads them
@@ -884,7 +884,7 @@ function everyNodeOf(page) {
  *
  * #2026: it also returns the declared paths THEMSELVES, not only whether there are any -- the delivery
  * clause has to ask whether a pull request changes one of them, and re-parsing the body a second time is
- * how two readings of one Region drift apart (`row-reachability.mjs` records that exact history).
+ * how two readings of one Region drift apart (`row-reachability.ts` records that exact history).
  *
  * @param {number} issueNumber
  * @param {{ run?: (args: string[]) => string, repo?: string }} [deps] `repo` is the tracker the row lives in

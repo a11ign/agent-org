@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { agentArgs, PROFILES, profileFor, PER_ROW_DISALLOWED_TOOLS, WORKER_SETTINGS_PATH, AUTOCOMPACT_WINDOW_TOKENS }
-  from "./worker-profile.mjs";
+  from "./worker-profile.ts";
 
 const CLAUDE = { kind: "claude", model: "sonnet", effort: "high" };
 const CAPS = { maxTurns: 40, maxBudgetUsd: 2.5 };
@@ -90,9 +90,9 @@ test("the flag is OFF by default: no profile carries it, and no cause turns it o
   }
 });
 
-// SELF: worker-profile.mjs itself spells `headless:` on purpose; every OTHER module that does is a caller turning the
+// SELF: worker-profile.ts itself spells `headless:` on purpose; every OTHER module that does is a caller turning the
 // form on, which is the row that follows this one and not this one. (This file is `.ts`, so the `.mjs` walk never meets it.)
-const SELF = new Set(["worker-profile.mjs"]);
+const SELF = new Set(["worker-profile.ts"]);
 const TURNS_IT_ON = /agentArgs\([^)]*headless\s*:/;
 
 function callersTurningItOn(files: { name: string; text: string }[]) {
@@ -101,7 +101,7 @@ function callersTurningItOn(files: { name: string; text: string }[]) {
 
 test("the flag is OFF by default: no module in src/ calls agentArgs with headless", () => {
   const dir = fileURLToPath(new URL(".", import.meta.url));
-  const files = readdirSync(dir).filter((n) => n.endsWith(".mjs"))
+  const files = readdirSync(dir).filter((n) => /\.(mjs|ts)$/.test(n) && !n.includes(".test."))
     .map((name) => ({ name, text: readFileSync(new URL(name, import.meta.url), "utf8") }));
   assert.ok(files.length > 50, "positive control: the scan read the src/ modules");
   assert.deepEqual(callersTurningItOn(files), []);

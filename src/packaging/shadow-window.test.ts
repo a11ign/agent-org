@@ -1,5 +1,5 @@
 /**
- * `shadow-window.mjs` is the runner for ADR 0040 decision 5 (1) (row #2846, child 5d of #69): ONE tick of the
+ * `shadow-window.ts` is the runner for ADR 0040 decision 5 (1) (row #2846, child 5d of #69): ONE tick of the
  * CANDIDATE gate over a COPY of the state, diffed against the orders the live tick RECORDED, appended to a diff
  * record. The live tick's recording is #2849's (`<stateDir>/shadow-reads/<tickUtcMs>.json` = `{ tick, args, orders }`);
  * these fixtures write that exact format into a real temp directory, and the candidate is a real module run as a real
@@ -9,6 +9,7 @@
  * recorded as a difference naming the dropped cause key, the identical candidate records an EMPTY difference over a
  * non-empty order list, and the symlink-to-live case is refused.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -17,10 +18,10 @@ import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, real
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { shadowTick, gapBetween, COPY_MARKER, READS_DIR } from "../shadow-window.mjs";
-import { encodeShadowValue } from "../shadow-reads.mjs";
+import { shadowTick, gapBetween, COPY_MARKER, READS_DIR } from "../shadow-window.ts";
+import { encodeShadowValue } from "../shadow-reads.ts";
 
-const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
+const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 
 /** The order `decide` makes for a row in these fixtures; the candidate fixtures below make the same one. */
 const orderFor = (row: string) => ({ causeKey: `row:${row}`, cause: "ready-row", session: "s", subject: row, discriminator: "d", prompt: "p" });
@@ -249,7 +250,7 @@ test("a non-empty directory the runner did not make is never emptied", () => {
 test("the command line records a tick, says QUIET when there is none, and exits 2 on a refusal", () => {
   withRig((r) => {
     writeTick(r.live, T1, ["a"]);
-    const argv = (copy: string) => [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${copy}`, `--record=${r.record}`, `--candidate=${r.candidate("identical")}`];
+    const argv = (copy: string) => [...TSX_IMPORT, RUNNER, `--live-dir=${r.live}`, `--copy-dir=${copy}`, `--record=${r.record}`, `--candidate=${r.candidate("identical")}`];
     const first = spawnSync(process.execPath, argv(r.copy), { encoding: "utf8" });
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /^RECORDED tick \d+ .*: 0 difference\(s\)/);

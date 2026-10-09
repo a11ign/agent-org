@@ -1,16 +1,16 @@
-// no-token: defaultGh -- `wake.mjs`'s only `execFileSync("gh", ...)` (the escalation half's runner,
+// no-token: defaultGh -- `wake.ts`'s only `execFileSync("gh", ...)` (the escalation half's runner,
 // `escalateStuck`'s default `run`) lives at a private, unexported binding this file never calls: every
 // seam here is handed an injected `run`, including the three subprocess ticks at the foot of this file,
 // whose stuck array is always empty so `escalateStuck` never iterates into it.
 /**
- * `packages/agent-org/src/wake.mjs` -- #912's remaining half: work-gate says there is work, this says who
+ * `packages/agent-org/src/wake.ts` -- #912's remaining half: work-gate says there is work, this says who
  * takes it.
  *
  * DRIVEN THROUGH INJECTED SEAMS, never a running org. Every export here takes its `run` or its reader as a
  * parameter, so these tests answer "given these agent states and these orders, who gets woken and what is
  * refused" -- which is this module's whole question. Standing up herdr to ask it would test herdr.
  *
- * WITH ONE DELIBERATE EXCEPTION, AT THE FOOT OF THIS FILE: three tests spawn `wake.mjs` as a process with
+ * WITH ONE DELIBERATE EXCEPTION, AT THE FOOT OF THIS FILE: three tests spawn `wake.ts` as a process with
  * a stub `herdr` on `PATH`. They exist because a seam is exactly what a DELETED CALL goes around -- a
  * reviewer removed the tick's only `backlogReport(handoffBacklog(...))` call and every test above stayed
  * green. Nothing there starts an agent either; the stub answers one question with one literal.
@@ -19,6 +19,7 @@
  * does not is the 2026-09-08 shape the lead-orchestrator brief records, where "every session went idle at
  * 20:52Z and nothing woke anyone for ten" hours.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
@@ -29,26 +30,26 @@ import { join, dirname } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver as settlingDeliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
-  from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+  from "../wake.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
-import { isLiveSession } from "../arm-pr.mjs";
-import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
+import { isLiveSession } from "../arm-pr.ts";
+import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.ts";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck, SETTLE_TEST_CLOCK_ENV, settleWaitMs }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs as settlingDeliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
-  from "../wake.mjs";
-import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.mjs";
+  from "../wake.ts";
+import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.ts";
 import { AUTOCOMPACT_WINDOW_TOKENS, PER_ROW_DISALLOWED_TOOLS, WORKER_SETTINGS_PATH }
-  from "../worker-profile.mjs";
-import { sparePathsFrom } from "../wake.mjs";
+  from "../worker-profile.ts";
+import { sparePathsFrom } from "../wake.ts";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { startedPanes } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -97,7 +98,7 @@ test("a session herdr does not know is REFUSED, never silently dropped", () => {
 
 /**
  * The engineer pool. `work-gate` addresses engineers collectively because whether a row is YOURS is
- * `row-claim.mjs`'s question; this only picks someone free to go and ask it.
+ * `row-claim.ts`'s question; this only picks someone free to go and ask it.
  */
 test("the engineers pool takes the first FREE engineer in roster order, deterministically", () => {
   const got = route("engineers",
@@ -461,9 +462,9 @@ test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE si
 });
 
 test("#2279: `wake` offers work to the file's roster by default, and `--roster` still overrides it", () => {
-  assert.deepEqual(rosterFrom(["node", "wake.mjs"]), REAL_ROSTER,
+  assert.deepEqual(rosterFrom(["node", "wake.ts"]), REAL_ROSTER,
     "the default was a typed list of the standing three, so a role added to the file was never offered work");
-  assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-judge, worker-4"]), ["worker-judge", "worker-4"]);
+  assert.deepEqual(rosterFrom(["node", "wake.ts", "--roster=worker-judge, worker-4"]), ["worker-judge", "worker-4"]);
 });
 
 test("#2279: the roster FOLLOWS THE FILE it is given -- names, order and role filter all come from it", () => {
@@ -483,8 +484,8 @@ test("#2279: the roster FOLLOWS THE FILE it is given -- names, order and role fi
     const expected = ["zed-spare", "alpha-engineer", "worker-judge"];
 
     assert.deepEqual(engineerRoles(path), expected, "file order, engineers only");
-    assert.deepEqual(rosterFrom(["node", "wake.mjs"], path), expected, "the default follows the file it is handed");
-    assert.deepEqual(rosterFrom(["node", "wake.mjs", "--roster=worker-4"], path), ["worker-4"],
+    assert.deepEqual(rosterFrom(["node", "wake.ts"], path), expected, "the default follows the file it is handed");
+    assert.deepEqual(rosterFrom(["node", "wake.ts", "--roster=worker-4"], path), ["worker-4"],
       "`--roster` still wins over the file");
     assert.notDeepEqual(expected, REAL_ROSTER, "the fixture differs from the real roster, or it proves nothing");
   } finally {
@@ -763,7 +764,7 @@ test("a cause below the limit is still delivered", () => {
 });
 
 /**
- * #2685: A CAUSE `work-gate.mjs` MARKED `outageNow` IS AT THE CAP FOR A REASON IT SHARES WITH EVERY OTHER
+ * #2685: A CAUSE `work-gate.ts` MARKED `outageNow` IS AT THE CAP FOR A REASON IT SHARES WITH EVERY OTHER
  * ONE MARKED THE SAME WAY THIS RUN -- so it is named in `outaged`, not `stuck`, and never reaches
  * `finishTick`'s call into `escalateStuck`, which would otherwise label its row `answer:ceo` on its own,
  * as if the cause were stuck for a reason unique to it.
@@ -1050,7 +1051,7 @@ test("the escalation line names someone OTHER than the recipient, for every sess
  * cannot stop a model reaching for a tool it has, and a session can meet a question genuinely worth
  * asking. What was missing is that asking made it disappear.
  *
- * `work-tick.mjs` calls this BEFORE its quiet exit, because a blocked session is most invisible exactly
+ * `work-tick.ts` calls this BEFORE its quiet exit, because a blocked session is most invisible exactly
  * when the queue is quiet: `afterGate` returns `deliver: false` on QUIET and `wake` never runs at all.
  */
 test("a session herdr calls `blocked` is named, so asking a human cannot be silent", () => {
@@ -1163,10 +1164,10 @@ test("a gh refusal is reported, never swallowed", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
-// HANDOFFS -- THE AUTHORED ORDERS `prompt-session.mjs` COULD NOT DELIVER (#1966).
+// HANDOFFS -- THE AUTHORED ORDERS `prompt-session.ts` COULD NOT DELIVER (#1966).
 //
 // `deliver` above has handled a busy target since #912: the order is simply not recorded, and the next
-// tick offers it again. `prompt-session.mjs` had no equivalent -- it printed `NOT PROMPTED` and exited,
+// tick offers it again. `prompt-session.ts` had no equivalent -- it printed `NOT PROMPTED` and exited,
 // and that was the end of the order. Measured 2026-09-22 on draft #1963: three refusals in 4m37s, no
 // trace on the row, the PR, the ledger or any log.
 //
@@ -1195,7 +1196,7 @@ test("an authored order's identity is its TARGET and its TEXT, and nothing else"
 
 test("the queue sits beside the ledger, under the SAME --ledger both halves are given", () => {
   // The author's command and the tick have to agree on one path or the order is written where nothing
-  // looks. One definition, used by `prompt-session.mjs`, `wake.mjs` and `work-tick.mjs`.
+  // looks. One definition, used by `prompt-session.ts`, `wake.ts` and `work-tick.ts`.
   assert.equal(handoffQueuePath("/var/x/wake-ledger"), `/var/x/${HANDOFF_QUEUE_FILE}`);
   assert.equal(ledgerPathFrom(["--ledger=/tmp/l"]), "/tmp/l");
   assert.match(String(ledgerPathFrom([])), /\/\.cache\/a11ign\/wake-ledger$/);
@@ -1286,7 +1287,7 @@ test("a delivered order tells its reader HOW LONG it waited", () => {
 test("DELIVERY APPENDS, so nothing a concurrent author wrote can be collateral of it", () => {
   // #2009's blocker, pinned at its cause rather than at its symptom. The first cut re-read the queue and
   // rewrote it without the delivered ids, and an author appending between that read and that write lost
-  // the append -- after `prompt-session.mjs` had already printed `QUEUED` and `DO NOT RETRY` to the only
+  // the append -- after `prompt-session.ts` had already printed `QUEUED` and `DO NOT RETRY` to the only
   // process holding a copy. A writer that only ever appends has no such window to lose anything in.
   const writes: { data: string; opts: unknown }[] = [];
   dropHandoffs("/q", [HANDOFF.id], { now: 5_000,
@@ -1631,7 +1632,7 @@ test("THE BUDGET COUNTS BYTES, AND AN EM DASH COSTS THREE OF THEM", () => {
 test("THE NAME IS SUBSTITUTED AFTER THE BUDGET, SO THE BUDGET HAS TO KNOW HOW WIDE IT IS", () => {
   // THE SECOND REVIEW BLOCKER ON #2125, PINNED. `chargeFor` moved the budget off the authored text and
   // onto the heading and the wrapper -- and `addressed` still does one more thing to the body before
-  // `execFileSync` sees it: it replaces every `<you>` with the target's name. `work-gate.mjs` writes
+  // `execFileSync` sees it: it replaces every `<you>` with the target's name. `work-gate.ts` writes
   // that placeholder into the row orders it queues, so this is the real corpus and not a contrivance.
   // `<you>` is five bytes; `worker-capture` is fourteen. Reproduced by the reviewer at `43f5e65e`:
   // 3,000 `engineers` orders repeating `<you>` 100 times were charged as 112 fitting and rendered
@@ -1818,7 +1819,7 @@ test("stale lines survive for what the delivery did NOT carry", () => {
 //
 // THE REVIEW BLOCKER THIS CLOSES (#2125 at `43f5e65e`): every assertion above drives `handoffBacklog`
 // and `backlogReport` directly, and the reviewer deleted the ONE call that joins them to the tick --
-// `wake.mjs`'s `for (const line of backlogReport(handoffBacklog(handoffs)))` -- and watched all 114
+// `wake.ts`'s `for (const line of backlogReport(handoffBacklog(handoffs)))` -- and watched all 114
 // tests stay green. Two functions that work and are never called is precisely the shape of the defect
 // #2102 is about: a fact the org could have printed and did not.
 //
@@ -1827,7 +1828,7 @@ test("stale lines survive for what the delivery did NOT carry", () => {
 // for the deletion. This file's own header says these tests never stand up a running org, and that
 // still holds: nothing here starts an agent, and the stub answers one question with one literal.
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755; // the tick invokes `herdr` as a command, so the stub has to be runnable
 
 /** herdr answering with one session in `status`, or refusing outright when `status` is null. */
@@ -1848,7 +1849,7 @@ function runTick({ queued, stdin = "", herdr = "working" as string | null }:
     writeFileSync(stub, herdrStub(herdr));
     chmodSync(stub, STUB_MODE);
     writeFileSync(handoffQueuePath(ledger), queued.map((h) => JSON.stringify(h)).join("\n") + "\n");
-    return spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: stdin, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
@@ -2058,8 +2059,8 @@ const FAILED_CYCLE = `${JSON.stringify({ role: "worker-4", row: 2131, at: 1, cle
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 
 /**
- * `wake.mjs` and its local-import closure, copied under `copyRoot` with a `sessions.json` that MARKS `worker-judge`
- * DRAINED. The real file marks nobody since #2505 retired the standing three, and `wake.mjs` reads the roster from
+ * `wake.ts` and its local-import closure, copied under `copyRoot` with a `sessions.json` that MARKS `worker-judge`
+ * DRAINED. The real file marks nobody since #2505 retired the standing three, and `wake.ts` reads the roster from
  * the project's checkout with no seam, so the drain's WIRING (`main` handing `deliver` the drain) can only be driven as a process
  * against a copy whose project is the copy. The roster is the real file plus the three standing engineers as they stood at `90b65b787`, before the
  * spare family -- the same fixture `wake-drain.test.ts` builds. Returns the copied entry and the environment that points it at the copy.
@@ -2089,7 +2090,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     chmodSync(join(dir, "herdr"), STUB_MODE);
     chmodSync(join(dir, "gh"), STUB_MODE);
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
-    const ran = spawnSync(process.execPath, [entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
       input: `${order}\n`, encoding: "utf8",
       env: { ...process.env, ...copyEnv, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
@@ -2144,11 +2145,11 @@ test("#3769 (1): the settle waits what it always did unless a test clock is set 
 });
 
 test("#3769 (2): in a PROCESS, the clock reaches the real blocking sleep: `clearContext` with no injected sleep returns at once", () => {
-  const wake = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+  const wake = fileURLToPath(new URL("../wake.ts", import.meta.url));
   const probe = `import(${JSON.stringify(wake)}).then(({ clearContext, CLEAR_SETTLE_MS }) => {`
     + " const at = Date.now(); const refused = clearContext(() => '', 'probe');"
     + " console.log(JSON.stringify({ refused, ms: Date.now() - at, real: CLEAR_SETTLE_MS })); });";
-  const ran = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8", env: { ...process.env, [SETTLE_TEST_CLOCK_ENV]: "0" } });
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "-e", probe], { encoding: "utf8", env: { ...process.env, [SETTLE_TEST_CLOCK_ENV]: "0" } });
   const { refused, ms, real } = JSON.parse(ran.stdout);
   assert.equal(refused, null, `the command landed; got ${ran.stderr}`);
   assert.ok(ms < real / 2, `with the clock at 0 the settle took ${ms} ms against a real ${real}`);

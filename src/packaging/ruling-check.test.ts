@@ -1,6 +1,6 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
 /**
- * `src/ruling-check.mjs`, `src/ruling-record.mjs` and their wiring in `work-gate.mjs`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
+ * `src/ruling-check.ts`, `src/ruling-record.ts` and their wiring in `work-gate.ts`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
  * RE-READS IT UNTIL IT DOES.
  *
  * THE INCIDENT, REPLAYED (the chairman, 2026-10-02): `ceo` ruled the freeze over at 06:50Z, and at 10:40Z three rows still carried a `Not-before: 2026-10-03T18:2x`
@@ -9,6 +9,7 @@
  *
  * MUTATION, run by hand and recorded on the row: `evaluateCheck` returning `pass` for a non-empty population turns the 06:50Z test red.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -16,12 +17,12 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, existsSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitItemOf } from "../wait-condition.mjs";
-import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.mjs";
-import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.mjs";
-import { rulingOrdersNow } from "../work-gate.mjs";
+import { waitItemOf } from "../wait-condition.ts";
+import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.ts";
+import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.ts";
+import { rulingOrdersNow } from "../work-gate.ts";
 
-const RECORD_CLI = fileURLToPath(new URL("../ruling-record.mjs", import.meta.url));
+const RECORD_CLI = fileURLToPath(new URL("../ruling-record.ts", import.meta.url));
 const ROW_CHECK = 'no-open-row-body-matches "Not-before: 2026-10-03T18:2"';
 const PR_CHECK = "no-open-pr-label hold:ceo";
 const RULED_AT = "2026-10-02T10:40:00Z";
@@ -206,11 +207,11 @@ test("#2997 THE GATE: a rulings.jsonl it cannot read is SAID (through `rulingOrd
 test("#2997 THE CLI: `--on 2988 --check ...` records; no check is refused with exit 1 and nothing written", () => scratch((home) => {
   const env = { PATH: process.env.PATH ?? "", HOME: home, ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) };
   const state = join(home, ".cache", "a11ign");
-  const refused = spawnSync(process.execPath, [RECORD_CLI, "--session=ceo", "--on", "2988"], { encoding: "utf8", env });
+  const refused = spawnSync(process.execPath, [...TSX_IMPORT, RECORD_CLI, "--session=ceo", "--on", "2988"], { encoding: "utf8", env });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /name the state/);
   assert.equal(existsSync(join(state, RULINGS_FILE)), false);
-  const out = execFileSync(process.execPath, [RECORD_CLI, "--session=ceo", "--on", "2988", "--check", PR_CHECK, "--check=closed #2867", "--at=2026-10-02T06:50:00Z"], { encoding: "utf8", env });
+  const out = execFileSync(process.execPath, [...TSX_IMPORT, RECORD_CLI, "--session=ceo", "--on", "2988", "--check", PR_CHECK, "--check=closed #2867", "--at=2026-10-02T06:50:00Z"], { encoding: "utf8", env });
   assert.match(out, /^RECORDED r2988-/);
   const [only] = readRulings(state).rulings;
   assert.deepEqual([only.on, only.by, only.checks, only.grace], [2988, "ceo", [PR_CHECK, "closed #2867"], 20]);

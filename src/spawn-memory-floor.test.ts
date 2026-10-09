@@ -1,6 +1,6 @@
 // no-token: gh -- every `herdr` here is an injected seam or a stub on PATH, the claim is a fake, and the memory reading is a fixture; nothing imported reaches the real `gh`, `herdr` or `/proc/meminfo`
 /**
- * `packages/agent-org/src/spawn-memory-floor.mjs`, #2508: THE SPAWNER HOLDS A NEW INSTANCE WHILE `MemAvailable` IS BELOW A FLOOR.
+ * `packages/agent-org/src/spawn-memory-floor.ts`, #2508: THE SPAWNER HOLDS A NEW INSTANCE WHILE `MemAvailable` IS BELOW A FLOOR.
  *
  * WHAT IS PINNED, in the row's own order: the pure decision (Done-when 1), the floor's value and that it says it is
  * CHOSEN (2), the hold BOTH ways with no pane and no claim behind it (3), an unreadable reading that neither holds nor
@@ -10,6 +10,7 @@
  * THE READING IS NEVER THE HOST'S: every test hands the gate a fixture, so a host that is short of memory today cannot
  * turn one of them red -- the property a test of a memory gate most needs.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
@@ -19,9 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
-} from "./spawn-memory-floor.mjs";
+} from "./spawn-memory-floor.ts";
 import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
-import { deliver } from "./wake.mjs";
+import { deliver } from "./wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
 const KB_PER_MB = 1024;
@@ -32,7 +33,7 @@ const RUNAWAY_KB = 351 * KB_PER_MB;
 const IDLE_HOST_KB = 23_830_268;
 const FLOOR_KB = SPAWN_MEMORY_FLOOR_KB;
 const STUB_MODE = 0o755;
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 
 /** The text `/proc/meminfo` carries around the one line that matters, as the kernel prints it. */
 const meminfo = (availableKb: number) =>
@@ -232,7 +233,7 @@ test("#2508 (reviewer): a NEW `reviewer-<n>` is held below the floor BEFORE its 
 
 // --- The wake ENTRY: the wiring in `main` is read, not assumed -----------------------------------------------
 
-/** Run `wake.mjs` with one order on stdin and `herdr`/`gh` as stubs; returns what the tick said and what herdr saw. */
+/** Run `wake.ts` with one order on stdin and `herdr`/`gh` as stubs; returns what the tick said and what herdr saw. */
 function tick(dir: string, meminfoText: string | null) {
   const log = join(dir, "herdr-calls");
   writeFileSync(join(dir, "herdr"), `#!/bin/sh\necho "$*" >> ${log}\ncase "$*" in\n  *'workspace list') printf '%s' '{"result":{"workspaces":[]}}' ;;\n`
@@ -249,7 +250,7 @@ function tick(dir: string, meminfoText: string | null) {
   } else {
     env[MEMINFO_ENV] = join(dir, "no-such-meminfo");
   }
-  const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${join(dir, "wts")}`],
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${join(dir, "wts")}`],
     { input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8", env });
   return { ran, calls: existsSync(log) ? readFileSync(log, "utf8") : "" };
 }

@@ -1,4 +1,4 @@
-// no-token: gh -- nothing here calls `gh`: the tree is read as text, and `host-pnpm.mjs` is handed a PATH and a project of fixtures
+// no-token: gh -- nothing here calls `gh`: the tree is read as text, and `host-pnpm.ts` is handed a PATH and a project of fixtures
 /**
  * THE TOOL'S OWN REMEDIES SAY pnpm (a11ign/a11ign#2896, row 9 of 10 of "Finish the move to pnpm", #57).
  *
@@ -25,7 +25,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { pnpmDrift } from "./host-pnpm.mjs";
+import { pnpmDrift } from "./host-pnpm.ts";
 import { stripComments } from "./lib/local-import-closure.mjs";
 
 const TOOL_ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -40,12 +40,12 @@ const COPY_HEADER = /^\/\/ COPIED FROM `/m;
 
 /** Where npm is the point, by file: how many lines, and why. The count is pinned, and so is every name. */
 const EXEMPT: Record<string, { lines: number; why: string }> = {
-  "src/acceptance-commands.mjs": { lines: 2, why: "recognisers: `npx agent-org <command>` is the consumer's spelling of the bin, and an acceptance still says `npx`/`npm`" },
-  "src/pr-open.mjs": { lines: 1, why: "recogniser: a `Mutation:` line written `npm run mutate` in an older PR body still runs" },
-  "src/row-file.mjs": { lines: 1, why: "recogniser: a body line that starts with `npm`/`npx` looks like a command, whichever manager it names" },
-  "src/host-units.mjs": { lines: 2, why: "recognisers: an installed unit that still says `npm`/`npx` is followed to its program, as `pnpm` is" },
-  "src/update-primary.mjs": { lines: 2, why: "records: names `npm ci` as the one command the primary must never run (it deletes `node_modules` from under every worktree)" },
-  "src/wake.mjs": { lines: 3, why: "records: #2376, a reviewer's `npx` died writing `~/.npm`; the sentence is about what npx did" },
+  "src/acceptance-commands.ts": { lines: 2, why: "recognisers: `npx agent-org <command>` is the consumer's spelling of the bin, and an acceptance still says `npx`/`npm`" },
+  "src/pr-open.ts": { lines: 1, why: "recogniser: a `Mutation:` line written `npm run mutate` in an older PR body still runs" },
+  "src/row-file.ts": { lines: 1, why: "recogniser: a body line that starts with `npm`/`npx` looks like a command, whichever manager it names" },
+  "src/host-units.ts": { lines: 2, why: "recognisers: an installed unit that still says `npm`/`npx` is followed to its program, as `pnpm` is" },
+  "src/update-primary.ts": { lines: 2, why: "records: names `npm ci` as the one command the primary must never run (it deletes `node_modules` from under every worktree)" },
+  "src/wake.ts": { lines: 3, why: "records: #2376, a reviewer's `npx` died writing `~/.npm`; the sentence is about what npx did" },
   "host/board-report.service.in": { lines: 2, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): comment lines, see the header" },
   "host/gh": { lines: 1, why: "digest-pinned wrapper bytes (`host-project-paths.test.ts`): a comment line, see the header" },
   "host/work-tick.service.in": { lines: 1, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): a comment line, see the header" },
@@ -98,10 +98,10 @@ test("the real source tree names no npm command outside the pinned exemptions, a
 });
 
 test("at least 50 printed remedies are found in the real tree, so a tree whose strings were lost is not an empty pass", () => {
-  const remedies = toolFiles().filter((path) => path.endsWith(".mjs"))
+  const remedies = toolFiles().filter((path) => /\.(mjs|ts)$/.test(path))
     .flatMap((path) => [...stripComments(read(path)).matchAll(/\bpnpm run [\w:-]+/g)].map((match) => `${path}: ${match[0]}`));
   assert.ok(remedies.length >= 50, `${remedies.length} printed \`pnpm run <script>\` commands found in code (comments stripped); the tree prints well over 50`);
-  assert.ok(remedies.some((remedy) => /work-gate\.mjs: pnpm run host:install/.test(remedy)), "and the sample includes the remedy the gate prints");
+  assert.ok(remedies.some((remedy) => /work-gate\.ts: pnpm run host:install/.test(remedy)), "and the sample includes the remedy the gate prints");
 });
 
 // --- host:check names a pnpm that is missing or does not match `packageManager` --------------------------------------------------------

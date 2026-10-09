@@ -62,7 +62,7 @@ function currentStreak(runs, isBad) {
 
 /**
  * `main` is red when the newest run that said `success` or `failure` said `failure`. A cancelled, skipped or still-running run says
- * nothing about `main` and is looked through (`trunk-red.mjs`'s rule, restated because a leaf cannot import it). No verdict at all is no
+ * nothing about `main` and is looked through (`trunk-red.ts`'s rule, restated because a leaf cannot import it). No verdict at all is no
  * event: there is nothing to say and nothing to clear.
  *
  * @param {Record<string, any>[]} runs the runs of `trunk.yml` on `main`, any order

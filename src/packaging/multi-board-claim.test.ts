@@ -14,16 +14,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseProjectDeclaration } from "../project-config.mjs";
+import { parseProjectDeclaration } from "../project-config.ts";
 import {
   b4Lines, claimNames, reportB4, sessionEligibilityReason, trackerClaimRefusal, trackerFor,
-} from "../row-claim.mjs";
+} from "../row-claim.ts";
 import {
   declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
 } from "../row-claim/file-overlap-rule.mjs";
-import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
-import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands.mjs";
-import { checkBody, checkRegion, main } from "../pr-open.mjs";
+import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
+import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands.ts";
+import { checkBody, checkRegion, main } from "../pr-open.ts";
 
 const FIRST = { key: "", repo: "a11ign/a11ign" };
 const SECOND = { key: "nvda-worker", repo: "a11ign/nvda-worker" };
@@ -38,7 +38,7 @@ const TWO_TRACKERS = declaration(
   [FIRST, { key: "agent-org", repo: "a11ign/agent-org" }],
 );
 
-/** A Region in the fenced shape `region-paths.mjs` reads, so the prefix goes through the real extractor. */
+/** A Region in the fenced shape `region-paths.ts` reads, so the prefix goes through the real extractor. */
 const regionBody = (...lines: string[]) => `## What it is\n\nx\n\n## Region\n\n\`\`\`\n${lines.join("\n")}\n\`\`\`\n\n## Acceptance\n\nx\n`;
 
 /** An open pull request as `gh pr list --json number,changedFiles,files,body,labels` answers. */
@@ -88,19 +88,19 @@ test("#2617 POSITIVE CONTROL: the SAME claim with only the first repository decl
 });
 
 test("#2617: the first repository's pull requests keep their number as their whole name -- a refusal there reads as it always did", () => {
-  const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.mjs"),
-    prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.mjs"])] } });
+  const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.ts"),
+    prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.ts"])] } });
   const reason = eligibility(fake, BOTH);
-  assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.mjs\./);
+  assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.ts\./);
 });
 
 // --- 2. a repository prefix is that key's path; a bare path is the first's -------------------------------------------------
 
 test("#2617 done-when 1b: `nvda-worker:src/x.ts` is read as the second repository's path and a bare path as the first's, by the real extractor", () => {
-  const entries = declaredRegionFiles(regionBody("nvda-worker:src/x.ts", "nvda-worker:src/lib/", "packages/agent-org/src/row-claim.mjs"),
+  const entries = declaredRegionFiles(regionBody("nvda-worker:src/x.ts", "nvda-worker:src/lib/", "packages/agent-org/src/row-claim.ts"),
     { rootFiles: NO_ROOT_FILES });
   const split = (entries ?? []).map(splitRegionEntry);
-  assert.deepEqual(split.filter((e) => e.key === "").map((e) => e.path), ["packages/agent-org/src/row-claim.mjs"], "a bare path is the first's");
+  assert.deepEqual(split.filter((e) => e.key === "").map((e) => e.path), ["packages/agent-org/src/row-claim.ts"], "a bare path is the first's");
   assert.deepEqual(split.filter((e) => e.key === "nvda-worker").map((e) => e.path).sort(), ["src/lib/", "src/x.ts"], "a prefixed one is that key's");
   assert.equal(entries?.length, 3, "all three declared -- an extractor that dropped the prefixed lines would leave one");
 });

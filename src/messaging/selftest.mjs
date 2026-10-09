@@ -12,7 +12,7 @@
 // appends to an array. A caller that hands `runSelftest` a provider (under any name) is ignored, and `selftest.test.mjs` shows it with a provider that fails on any send.
 // **IT NEVER TOUCHES THE CHAIRMAN'S LEDGER.** Its lines go to `selftest-ledger.jsonl` beside it, so `measure.mjs` (which reads `ledger.jsonl` only) never counts a check as a message.
 // **IT NEVER QUEUES ANYTHING ITSELF.** `converse.mjs` is the one file under `src/messaging/` that may name the queue (its scan test pins that), so the order goes through
-// `createConverse` and the queue port is `converse.mjs`'s own `realQueue`. A red result is delivered to `ceo` by the TICK STEP in `wake.mjs`, which owns the queue's writers.
+// `createConverse` and the queue port is `converse.mjs`'s own `realQueue`. A red result is delivered to `ceo` by the TICK STEP in `wake.ts`, which owns the queue's writers.
 //
 // THE FOUR STAGES, in the order a message meets them, and a red names the FIRST that failed:
 //   listen -- `createInbound(...).handle` said "forward" for an update shaped as the provider's;
@@ -51,7 +51,7 @@ export const SELFTEST_STATE_FILE = "selftest-state.json";
  * 12 release intervals v0.46.1 to v0.49.2, it changed in 3 and the narrower four paths in 2 (the 3 share one), so it costs one extra seat turn in about twelve releases.
  * A PATTERN AND NOT A LIST OF FILE NAMES, because `converse.test.mjs` scans this directory for any non-comment line that names the queue's modules, and this is data about a diff, not a path to a worker.
  */
-export const MESSAGING_PATH = /^src\/(messaging\/|(prompt-session|wake|herdr-agents|project-roles)\.mjs$)/;
+export const MESSAGING_PATH = /^src\/(messaging\/|(prompt-session|wake|herdr-agents|project-roles)\.ts$)/;
 const TEST_FILE = /\.test\.(mjs|ts)$/;
 
 /** Ids no real chairman has to share: the self-test pairs with nobody, it only has to match ITSELF. */
@@ -368,8 +368,8 @@ export async function main(argv, { home = homedir(), now = Date.now, out = conso
   }
 }
 
-// NO TOP-LEVEL `await` HERE (a11ign/a11ign#3701): `main` -> `tickSelftest` -> `realQueue()` does `import("../wake.mjs")`, and `wake.mjs` imports THIS file, so as the entry it is a module in a
-// cycle that is still evaluating. An `await` on `main` made `wake.mjs` wait for this file while this file waited for `wake.mjs`: Node drained the loop and exited 13 on every tick that had work.
+// NO TOP-LEVEL `await` HERE (a11ign/a11ign#3701): `main` -> `tickSelftest` -> `realQueue()` does `import("../wake.ts")`, and `wake.ts` imports THIS file, so as the entry it is a module in a
+// cycle that is still evaluating. An `await` on `main` made `wake.ts` wait for this file while this file waited for `wake.ts`: Node drained the loop and exited 13 on every tick that had work.
 // `main` catches everything it throws, so this `then` has no rejection to leave unhandled.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).then((code) => {

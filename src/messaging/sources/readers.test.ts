@@ -168,7 +168,7 @@ describe("readCiRuns", () => {
   test("gives every completed run its annotations, read only for a FAILED run and only from its FAILED jobs", async () => {
     const github = fakeGithub(routes([failedRun(3, "deploy"), trunkRun({ id: 2, name: "auto-arm" })]));
     const runs = await readCiRuns({ github, repo: REPO, stateDir: freshDirectory() });
-    assert.deepEqual(runs.map((run) => run.annotations.map((/** @type {any} */ note: any) => note.message)), [["Error: Resource not accessible by integration"], []]);
+    assert.deepEqual(runs.map((run) => run.annotations.map((note: any) => note.message)), [["Error: Resource not accessible by integration"], []]);
     assert.deepEqual(github.calls.map((path) => path.replace(/^repos\/example\/project\//, "")), [
       "actions/runs?status=completed&per_page=20", "actions/runs/3/jobs?per_page=100", "check-runs/5002/annotations?per_page=100",
     ]);
@@ -619,7 +619,7 @@ describe("what one run costs and what `main` does with the readers", () => {
   });
 
   test("runWatch without readers does not ask the host sources, and with them it does (and a missing reader is cannot-ask, not a crash)", async () => {
-    const ask = async (/** @type {any} */ readers: any) => {
+    const ask = async (readers: any) => {
       const logged: string[] = /** @type {string[]} */ ([]);
       const reads = { issuesLabelled: async () => [], issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [] };
       const ledger = createLedger({ path: join(freshDirectory(), "ledger.jsonl"), now: () => NOW });

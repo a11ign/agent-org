@@ -8,7 +8,7 @@
 //   1. **The `--message` ref must be an accepted inbound line** (`record.mjs`'s `checkMessage`, ref only): the liaison asks because the chairman said something, and a ref the
 //      ledger does not hold is a question about nothing. The question's words are the LIAISON'S, so they are not hashed against the chairman's.
 //   2. **THE TEXT MUST NAME WHAT CLEARS IT, AS DATA THE GATE READS.** A waiting condition is data, not a sentence: a ruling asked as prose stalls, because nothing in the org reads
-//      prose. The predicate is `clearingWait`: the text carries a `Waiting-for:` line that `parseWaits` (`wait-condition.mjs`, the parser the gate itself runs) reads as a
+//      prose. The predicate is `clearingWait`: the text carries a `Waiting-for:` line that `parseWaits` (`wait-condition.ts`, the parser the gate itself runs) reads as a
 //      condition on a row. So `Waiting-for: unlabelled answer:ceo #3490` passes (the label coming off row 3490 IS the answer) and `Waiting-for: soon`, `manual` and a bare `#3490` in a
 //      sentence do not. It reuses the grammar rather than defining a second one, so what passes here is, by construction, what `org-health`'s `wait-without-reason` would not flag.
 //
@@ -30,7 +30,7 @@ import { checkMessage, runCommand } from "./record.mjs";
 export const RECIPIENT = "ceo";
 /** What `prompt:session` is told, so the order is recorded as one that asks for an answer and is exempt from the deep-queue refusal. */
 const DECISION_FLAG = "--needs-decision";
-/** `prompt:session`'s own exit codes, as `prompt-session.mjs`'s `EXIT` names them: not imported, because importing it reads the host's declaration. */
+/** `prompt:session`'s own exit codes, as `prompt-session.ts`'s `EXIT` names them: not imported, because importing it reads the host's declaration. */
 const PROMPT_EXIT = Object.freeze({ delivered: 0, refused: 1, queued: 2 });
 /** The kinds of wait whose condition is about a row and can be read: `manual` and `unreadable` say nothing that would end. */
 const READABLE_WAITS = Object.freeze(["closed", "merged", "labelled", "unlabelled"]);
@@ -40,7 +40,7 @@ type RowRef = import("./answers.mjs").RowRef;
 /** One run of `pnpm run prompt:session`. */
 type Invocation = { args: string[]; input: string; cwd: string; env: Record<string, string | undefined> };
 type Ran = { status: number | null; stdout: string; stderr: string; error?: Error };
-/** `wait-condition.mjs`'s `parseWaits`. */
+/** `wait-condition.ts`'s `parseWaits`. */
 type ParseWaits = (text: string) => { state: string }[];
 
 /**
@@ -110,7 +110,7 @@ function runPnpm({ args, input, cwd, env }: Invocation): Ran {
 
 /** @returns {Promise<ParseWaits>} the gate's own parser: imported when asked, as `correct.mjs` does the vocabulary, so this file loads outside a configured host */
 async function gateParser(): Promise<ParseWaits> {
-  return (await import("../wait-condition.mjs")).parseWaits;
+  return (await import("../wait-condition.ts")).parseWaits;
 }
 
 /** @param {string[]} argv @param {Partial<Parameters<typeof runCommand>[0]["deps"]> & {parseWaits?: ParseWaits, run?: (invocation: Invocation) => Ran}} [deps] @returns {Promise<number>} the exit code */

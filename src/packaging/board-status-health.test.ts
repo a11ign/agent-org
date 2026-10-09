@@ -18,7 +18,7 @@
  * never `Status -> label`, so it reported clean while every row disagreed in the direction it did not
  * test. That is #1193's one-directional pin, six hours later, inside the thing watching for it.
  *
- * IMPORTS ONLY THE PURE MODULE, DELIBERATELY. `board-snapshot.mjs` is where this classifier's sibling
+ * IMPORTS ONLY THE PURE MODULE, DELIBERATELY. `board-snapshot.ts` is where this classifier's sibling
  * lives, and its closure carries a `token` -- so a test importing it would make this row's own
  * acceptance command refused in the job that runs acceptance commands. #1009 records that; the remedy
  * is placement, and `deriveClosureRequirements` on the new module returns `[]`.
@@ -26,7 +26,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { statusContradictions, statusCensus, vocabularyDrift, RESTING_STATUS, WRITTEN_STATUSES }
-  from "../board-status-health.mjs";
+  from "../board-status-health.ts";
 import { readFileSync } from "node:fs";
 
 /** The shape the real query returns, with the numbers this row measured. */
@@ -102,7 +102,7 @@ test("#1219: the Status vocabulary is INJECTED, so a renamed column fails loudly
  * tonight.
  */
 test("#1219: the board query REQUESTS state -- fixtures cannot witness what the query asks for", () => {
-  const source = readFileSync(new URL("../board-snapshot.mjs", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../board-snapshot.ts", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const selection = /content\s*\{[^}]*on Issue\s*\{([^}]*)\}/.exec(source);
   assert.ok(selection, "the Issue selection set moved or was renamed -- update this to find it, not to pass");
@@ -158,15 +158,15 @@ test("#1228: the third list is EMPTY rather than absent when there is nothing to
  */
 test("#1996: the resting status has exactly one copy, and the settle path spells no second one", () => {
   const src = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
-  const health = src("../board-status-health.mjs");
-  const settle = src("../settle-closed-status.mjs");
+  const health = src("../board-status-health.ts");
+  const settle = src("../settle-closed-status.ts");
   // DERIVED, not asserted from a list I typed: count the literal in the code rather than in the prose.
   const codeLines = (s: string) => s.split("\n").filter((l) => !/^\s*(\*|\/\/)/.test(l));
   assert.equal(codeLines(health).filter((l) => l.includes('"Done"')).length, 1,
-    'board-status-health.mjs must spell "Done" exactly once -- the RESTING_STATUS declaration. A second '
+    'board-status-health.ts must spell "Done" exactly once -- the RESTING_STATUS declaration. A second '
     + "copy is how the settle path and the classifier came to agree about a name the board did not have");
   assert.deepEqual(codeLines(settle).filter((l) => l.includes('"Done"')), [],
-    "and settle-closed-status.mjs must spell it NONE: it imports the name instead");
+    "and settle-closed-status.ts must spell it NONE: it imports the name instead");
   // The POSITIVE CONTROL for both counts above: the literal really is the one under test.
   assert.equal(RESTING_STATUS, "Done",
     "pinned as a literal on purpose -- asserting it equals itself would be the defect this row is about");
@@ -175,15 +175,15 @@ test("#1996: the resting status has exactly one copy, and the settle path spells
 test("#1996: WRITTEN_STATUSES is the set the writers actually send, derived from their source", () => {
   // The population comes from the writers, never from a list typed here: a fifth writer must fail this
   // rather than be silently uncovered by the drift check (#1157's habit, made mechanical where it can be).
-  const writers = ["row-claim.mjs", "row-file.mjs", "settle-closed-status.mjs"];
+  const writers = ["row-claim.ts", "row-file.ts", "settle-closed-status.ts"];
   const sent = new Set<string>();
   for (const w of writers) {
     const src = readFileSync(new URL(`../${w}`, import.meta.url), "utf8");
     for (const m of src.matchAll(/moveStatus\(\s*\w+\s*,\s*"([^"]+)"/g)) sent.add(m[1]);
   }
-  // `row-file.mjs` sends `boarding.status`, a variable, so its two names come from `boardingFor`'s own
+  // `row-file.ts` sends `boarding.status`, a variable, so its two names come from `boardingFor`'s own
   // return type -- the one place they are written down.
-  const rowFile = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  const rowFile = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
   for (const m of rowFile.matchAll(/status:\s*"(Backlog|Ready)"/g)) sent.add(m[1]);
   sent.add(RESTING_STATUS); // settle-closed-status sends the imported constant, not a literal.
   assert.deepEqual([...sent].sort(), [...WRITTEN_STATUSES].sort(),

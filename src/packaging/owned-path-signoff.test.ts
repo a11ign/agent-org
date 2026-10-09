@@ -21,8 +21,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const FACTS = {
   owned: ["packages/nvda-worker/", "packages/scorer/models/"],
@@ -64,7 +64,7 @@ test("NAMING A FACT WITHOUT A STATE IS REFUSED — this is the 'I checked' case"
 });
 
 test("a change touching NO owned path is green without a sign-off", () => {
-  const v = signoffVerdict({ changed: ["docs/README.md", "packages/agent-org/src/row-claim.mjs"], body: "", facts: FACTS });
+  const v = signoffVerdict({ changed: ["docs/README.md", "packages/agent-org/src/row-claim.ts"], body: "", facts: FACTS });
   assert.equal(v.code, 0, "the check must be silent on the ordinary case or it gets routed around");
 });
 

@@ -19,10 +19,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
   endFinishedSpares, readSpareCycles, consecutiveClean, registerSpawn, sparePathsFrom, rowOfOrder, isSpareRole }
-  from "../wake.mjs";
-import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.mjs";
+  from "../wake.ts";
+import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.mjs";
-import { labelAfterCreate } from "../pr-open.mjs";
+import { labelAfterCreate } from "../pr-open.ts";
 import { startedPanes } from "./started-pane.ts";
 
 const agents = (spec: Record<string, string>) =>

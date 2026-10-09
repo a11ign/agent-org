@@ -18,6 +18,7 @@
  * THE POSITIVE CONTROL OF EVERY "is not overdue" BELOW IS THE SAME FIXTURE ONE MILLISECOND OLDER: the shape is only worth being called clear because the same
  * state, aged by that millisecond, trips, through the same entry (`orgHealthTick`).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, cpSync } from "node:fs";
@@ -40,14 +41,14 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const orgHealth = await import("../org-health.mjs");
+const orgHealth = await import("../org-health.ts");
 const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS, overdueReading, orgHealthTick } = orgHealth;
-const { stallReasonOf, STALL_REASON } = await import("../work-gate.mjs");
-const { WAIT_FIELDS } = await import("../idle-claimant.mjs");
+const { stallReasonOf, STALL_REASON } = await import("../work-gate.ts");
+const { WAIT_FIELDS } = await import("../idle-claimant.ts");
 const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
+const { claimRecordComment } = await import("../row-claim.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-04T16:00:00Z");
@@ -81,7 +82,7 @@ function clock({ prs = [], rows = [], comments = [], holders }: { prs?: Record<s
   return { facts, orders: orders.filter((o) => o.subject === SIGNALS.OVERDUE) };
 }
 
-/** A claim record as the REAL writer words it (`row-claim.mjs`'s `claimRecordComment`), so the reader is tested against the writer and not a copy of it. */
+/** A claim record as the REAL writer words it (`row-claim.ts`'s `claimRecordComment`), so the reader is tested against the writer and not a copy of it. */
 const claimComment = (session: string, at: number) => ({ body: claimRecordComment({ session, branch: `agent/x-${session}`, worktree: `../wt-${session}`, nothing: null }),
   createdAt: iso(at), author: BOT });
 
@@ -428,7 +429,7 @@ test("THE GATE AS A PROCESS raises #149's shape -- a HELD PR with a fresh commen
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Order);
     const offered = orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE);
     assert.equal(offered.length, 1, ran.stderr);

@@ -1,6 +1,6 @@
-// no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3949)
+// no-token: gh -- `dora.ts` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#3949)
 /**
- * `src/dora.mjs`, a11ign/a11ign#3949: DORA READS THE TWO CHANNELS, AND PRINTS THE TARGETS BESIDE THE NUMBERS.
+ * `src/dora.ts`, a11ign/a11ign#3949: DORA READS THE TWO CHANNELS, AND PRINTS THE TARGETS BESIDE THE NUMBERS.
  *
  * A merge is published to `next`, and the fleet's verdict moves `latest` to it later. The registry's `time` map does not record when a dist-tag moved, so the
  * reading is the `Promoted to latest: <time>` line the promotion leaves in its GitHub Release's notes. This file pins each of the three things the row asked for:
@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DORA_METRICS, dora, doraNumbers, measureRepository, metricState, promotionRecordsFrom, promotionTimeFrom, renderDora } from "./dora.mjs";
+import { DORA_METRICS, dora, doraNumbers, measureRepository, metricState, promotionRecordsFrom, promotionTimeFrom, renderDora } from "./dora.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;

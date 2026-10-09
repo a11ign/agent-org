@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.mjs` and `wake.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
+// no-token: gh -- imports `work-gate.ts` and `wake.ts`, whose default readers spawn `gh`; every read here is handed an injected `run`, every per-tick read a stub, and `git` and `herdr` are fakes, so nothing is spawned (#2969)
 /**
  * #2969: A REPOSITORY THE ORG OPENS PULL REQUESTS IN, THAT THE GATE DOES NOT DECLARE, IS INVISIBLE TO EVERY PULL-REQUEST CAUSE.
  *
@@ -43,17 +43,17 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { homeProjectDeclaration } = await import("../project-config.mjs");
-const { scopesOf, readLanes, scopeTick } = await import("../work-gate.mjs");
+const { homeProjectDeclaration } = await import("../project-config.ts");
+const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
 const { ownerOfPr } = await import("../work-gate/pr-orders.mjs");
 const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
 const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
-  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.mjs");
+  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.ts");
 
 const SESSION = "reviewer-agent-org-6";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */
 const refusalOf = (answer: { clone: string } | { refusal: string }) => ("refusal" in answer ? answer.refusal : undefined);
-/** A host declaration `host-config.mjs` accepts, with `extra` laid over it: `reviewCloneOf` reads through that reader (#2991), so a bare `{ clones }` is no host file. */
+/** A host declaration `host-config.ts` accepts, with `extra` laid over it: `reviewCloneOf` reads through that reader (#2991), so a bare `{ clones }` is no host file. */
 const hostFile = (extra: Record<string, unknown>) => JSON.stringify({ schema: 1, home: "/h", binDir: "/h/bin", primary: "p",
   projects: [{ id: "p", checkout: "/h/p" }], gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] }, ...extra });
 

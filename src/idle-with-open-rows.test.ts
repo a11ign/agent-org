@@ -36,8 +36,8 @@ writeFileSync(join(SCRATCH, "fakebin", "gh"), `#!/bin/sh\necho "$@" >> "${GH_LOG
 chmodSync(join(SCRATCH, "fakebin", "gh"), 0o755);
 process.env.PATH = `${join(SCRATCH, "fakebin")}:${process.env.PATH}`;
 
-const { idleWithOpenRowsReading, idleLine, IDLE_REASONS } = await import("./idle-with-open-rows.mjs");
-const { SIGNALS, idleWithOpenRowsSignal, orgHealthReadings, orgHealthOrders } = await import("./org-health.mjs");
+const { idleWithOpenRowsReading, idleLine, IDLE_REASONS } = await import("./idle-with-open-rows.ts");
+const { SIGNALS, idleWithOpenRowsSignal, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
 const { orgHealthNow, engineerSeats } = await import("./work-gate/org-health.mjs");
 
 const NOW = Date.parse("2026-10-07T07:00:00Z");
@@ -181,7 +181,7 @@ test("the signal makes no call of its own: the recorded calls are the same wheth
   assert.equal(idle.orders.length, 1);
   assert.equal(busy.orders.length, 0);
   assert.equal(idle.calls.length, busy.calls.length, "the same number of recorded `gh` calls");
-  const source = readFileSync(fileURLToPath(new URL("./idle-with-open-rows.mjs", import.meta.url)), "utf8");
+  const source = readFileSync(fileURLToPath(new URL("./idle-with-open-rows.ts", import.meta.url)), "utf8");
   assert.doesNotMatch(source, /child_process|execFile|spawn|defaultRun/);
 });
 

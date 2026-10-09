@@ -10,12 +10,13 @@
 // POSITIVE CONTROLS, NAMED: case 2 (a title one word apart is filed and the tool did ask), case 3 (a closed row's title is filed) and case 7 (the
 // override files) are the non-empty population every refusal is read against; case 1 first FILES a row, so the second-run refusal is a refusal of a
 // twin that exists, not of every title.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.mjs";
+import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SESSION = "product-manager";
@@ -170,8 +171,8 @@ test("8. `--promote --allow-same-title` is refused, naming the flag, and nothing
 });
 
 test("9. the flag is in the tool's known-flag list: the unknown-flag refusal does not fire on it, and still fires on a near miss", () => {
-  const entry = join(HERE, "..", "row-file.mjs");
-  const run = (flag: string) => spawnSync(process.execPath, [entry, flag], { encoding: "utf8", env: process.env });
+  const entry = join(HERE, "..", "row-file.ts");
+  const run = (flag: string) => spawnSync(process.execPath, [...TSX_IMPORT, entry, flag], { encoding: "utf8", env: process.env });
   const known = run("--allow-same-title");
   assert.doesNotMatch(known.stderr, /unknown flag/, "the flag is known");
   // Not asserted: that the run reached the filing path. `launchGate` refuses from a plain clone (CI's checkout), and the unknown-flag guard runs BEFORE it,

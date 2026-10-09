@@ -1,7 +1,7 @@
 // @ts-check
-// module: the pull-request orders -- what `work-gate.mjs` says to a session about a PR's own state (#2542)
+// module: the pull-request orders -- what `work-gate.ts` says to a session about a PR's own state (#2542)
 //
-// MOVED OUT OF `work-gate.mjs`, NOT REWRITTEN (#2542, the first split of #928's lever 2a): `draftOrder`,
+// MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2542, the first split of #928's lever 2a): `draftOrder`,
 // `failingChecksOrder`, `settledVerdictOrder`, `requiredWhenNeeded`, `redOnlyFromAHold` and the order builders
 // for `pr-green-unarmed`, `pr-review-blocked`, `pr-merge-conflict` and `awaiting-evidence-stale`, with the
 // helpers only they use. Sixty-two of 417 merges edited that one file and B4 serialised them; a fix to one
@@ -10,33 +10,33 @@
 // THE BOUNDARY: an ORDER BUILDER lives here, and so does a helper whose only callers are in here. A function
 // that reads `gh` (`requiredCheckNames`, `readUnarmed`, `readCommitChain`), a helper a family that stayed behind
 // also uses (`labelsOf`, `sessionOf`, `checksSettledGreen`, `awaitingEvidence`), and the registries (`CAUSES`,
-// `decide`) stay in `work-gate.mjs` and are IMPORTED from it, never copied. That import is a cycle with the
+// `decide`) stay in `work-gate.ts` and are IMPORTED from it, never copied. That import is a cycle with the
 // entry point; it is safe only while NOTHING in this file reads an imported binding at load time, so a
 // top-level `const` here must never be computed from one (`AWAITING_EVIDENCE_QUIET_MS` stayed behind for
 // exactly that reason: it multiplies `HOUR_MS`).
 //
-// `work-gate.mjs` re-exports every name this file exports that it exported before, so a caller of the gate
+// `work-gate.ts` re-exports every name this file exports that it exported before, so a caller of the gate
 // is unchanged. Imports below are relative and leaf-shaped, the property the gate's own header states.
-import { newestPerName } from "../newest-check-run.mjs";
-import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.mjs";
+import { newestPerName } from "../newest-check-run.ts";
+import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.ts";
 import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
-import { armabilityOf } from "../pr-hold-state.mjs";
-import { isHeldRed } from "../red-pr.mjs";
+import { armabilityOf } from "../pr-hold-state.ts";
+import { isHeldRed } from "../red-pr.ts";
 import { sharedFileOrders } from "./shared-file-orders.mjs";
-import { REPO } from "../project-identity.mjs";
-import { VERIFY_STATE } from "../verify-stamp.mjs";
-import { equivalentHeads } from "../review-verdict.mjs";
+import { REPO } from "../project-identity.ts";
+import { VERIFY_STATE } from "../verify-stamp.ts";
+import { equivalentHeads } from "../review-verdict.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
-import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.mjs";
+import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
-  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
+  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.ts";
 
 /**
  * The verdict door as an order must spell it (#3316): `~/reviewer/bin` is on no PATH, so the bare name was `command not found`. Not
- * imported from `wake.mjs`, a far heavier module for one string; `reviewer-door-install.test.ts` pins both to the installer's default.
+ * imported from `wake.ts`, a far heavier module for one string; `reviewer-door-install.test.ts` pins both to the installer's default.
  */
 const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
 
@@ -97,7 +97,7 @@ function anyGreenDraft(prs) {
  * order would wake somebody about work that is not theirs. The `causeKey` carries the head, so a push that
  * did not clear the conflict is a new question and a push that did leaves the set.
  *
- * `arm-pr.mjs` IS NOT OFFERED and the prompt says so: `auto-arm-sweep.mjs` records that `gh pr merge
+ * `arm-pr.ts` IS NOT OFFERED and the prompt says so: `auto-arm-sweep.ts` records that `gh pr merge
  * --auto` "exits non-zero for a merged PR, an unmergeable one and a network fault alike", so the remedy
  * `pr-green-unarmed` hands over cannot succeed on this state.
  *
@@ -118,7 +118,7 @@ export function mergeConflictOrders(conflicted) {
 
 /**
  * One `pr-merge-conflict` order. THE WORDS THAT DIFFER BETWEEN THE TWO CALLERS ARE ARGUMENTS and the rest is one
- * text, so the rebase advice and the `arm-pr.mjs` warning cannot drift between the green-only order and the
+ * text, so the rebase advice and the `arm-pr.ts` warning cannot drift between the green-only order and the
  * total one (#2968).
  *
  * @param {any} pr
@@ -138,7 +138,7 @@ function conflictOrder(pr, { session, standing, ownership }) {
       + `${ownership} `
       + "Merge or rebase `main` into the branch, resolve the conflicts, re-run the gate and push.\n"
       + "DO NOT ARM IT: `gh pr merge --auto` exits non-zero for an unmergeable pull request, so "
-      + "`arm-pr.mjs` cannot succeed here. Until this is resolved it is also holding every Ready row "
+      + "`arm-pr.ts` cannot succeed here. Until this is resolved it is also holding every Ready row "
       + "that shares a file with it (B4) -- #2203 held six.",
     causeKey: `${session}/pr-merge-conflict/${ref}/${head8}`,
   };
@@ -276,9 +276,9 @@ export const STALL_REASONS_WITHOUT_A_CAUSE = Object.freeze([STALL_REASON.CONFLIC
 
 /**
  * The cause a stalled pull request's order is filed under. NO NEW CAUSE, on purpose: a cause is declared in
- * `cause-declaration.mjs` and pinned by name in several guards, so a `pr-stalled` cause is a separate change. Each
+ * `cause-declaration.ts` and pinned by name in several guards, so a `pr-stalled` cause is a separate change. Each
  * reason is filed under the cause that already owns that state, and wiring one into `decide` means checking that
- * cause's liveness reader (`wake.mjs`) still agrees the order is live.
+ * cause's liveness reader (`wake.ts`) still agrees the order is live.
  */
 const CAUSE_OF_STALL = Object.freeze({
   [STALL_REASON.RED]: "pr-checks-failing",
@@ -411,7 +411,7 @@ export function stalledPrOrders(prs, { required = null, reasons = null, nowMs = 
 /**
  * ONE ORDER NAMING EVERY GREEN, UNHELD, UNARMED PULL REQUEST -- #1969, and the report that did not exist.
  *
- * WHAT IT IS FOR. `queue-stalled.mjs` names every ARMED, green PR that cannot merge. Nothing named a
+ * WHAT IT IS FOR. `queue-stalled.ts` names every ARMED, green PR that cannot merge. Nothing named a
  * green, unheld, UNARMED one, and that is the exact state a refused arming credential produces: measured
  * 2026-09-22, #1958 and #1949 were approved, convinced, green on every job and `MERGEABLE` for 28
  * minutes with nothing in the repository able to arm either, because BOTH things that arm -- `arm` and
@@ -456,7 +456,7 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
     prompt: `${unarmed.length} pull request(s) are green on every required check, NOT held, and NOTHING `
       + `HAS ARMED THEM: ${unarmed.map((n) => subjectMention({ repoKey: scope.key, number: n })).join(", ")}.\n`
       + "This is the state a refused arming credential produces, and it is invisible everywhere else: "
-      + "`queue-stalled.mjs` names armed PRs that cannot merge, and a green unarmed one is the mirror "
+      + "`queue-stalled.ts` names armed PRs that cannot merge, and a green unarmed one is the mirror "
       + "nothing reported until #1969. It is read here with the HOST's identity, never the arming PAT, "
       + "so this order survives the outage it reports.\n"
       + "FIRST ASK WHETHER THE CREDENTIAL IS REFUSING, because one PR unarmed and all of them unarmed "
@@ -464,7 +464,7 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
       + "`SCOPE` line saying whether the refusal is about that one PR or repository-wide, and names the "
       + "minute the pool returns.\n"
       + "REPOSITORY-WIDE: nothing will arm anything until that minute. Arm these by hand with "
-      + "`node packages/agent-org/src/arm-pr.mjs --pr=<n> --repo=" + scope.repo + "` under an identity whose "
+      + "`node --import tsx packages/agent-org/src/arm-pr.ts --pr=<n> --repo=" + scope.repo + "` under an identity whose "
       + "pool is alive -- the workflow's own documented exception for a PR auto-arm never armed -- and "
       + "say on #1969 that it recurred, with the window.\n"
       + "ONE PR ONLY: it is likelier that PR never got an arming event (opened while conflicting, or "
@@ -480,7 +480,7 @@ export function greenUnarmedOrders(unarmed, scope = { key: "", repo: REPO }) {
  * #2084: ONE ORDER NAMING EVERY GREEN, UNHELD PULL REQUEST THAT GITHUB'S REVIEW REQUIREMENT IS HOLDING.
  *
  * THE BLIND SPOT, AND IT IS THE LAST ONE IN THIS FAMILY. `pr-checks-failing` names a red PR,
- * `pr-green-unarmed` names a green one nothing armed, and `queue-stalled.mjs` names an armed one that
+ * `pr-green-unarmed` names a green one nothing armed, and `queue-stalled.ts` names an armed one that
  * cannot merge -- and NONE of them can see a pull request that is green, unheld, armed, and refused by
  * GitHub's own `reviewDecision`. Measured 2026-09-23: #2049 sat in exactly that state for over seven hours
  * on a stale `CHANGES_REQUESTED` posted at a head the author had already fixed, and every org read
@@ -647,7 +647,7 @@ function refusedPrompt(b) {
 
 /**
  * The two jobs a `hold:` label turns red, and nothing else does: `deliberateRefusals` refuses a held pull
- * request on purpose (`merge-guard.mjs --ci-gate`, "IS HELD by ..."), and `gate` is red only because it
+ * request on purpose (`merge-guard.ts --ci-gate`, "IS HELD by ..."), and `gate` is red only because it
  * `needs` it. Named here rather than read off the job so the gate stays a script that runs before any build.
  */
 export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
@@ -658,11 +658,11 @@ export const HOLD_RED_JOBS = ["deliberateRefusals", "gate"];
  * `product-manager` to fix the cause went to the very session that had placed the hold 35 times, each answered "nothing to fix".
  * `MAX_DELIVERIES` then labelled the PR `needs:chairman`, and clearing the label did not hold: the order was still emitted, so the count
  * stayed at the cap and the breaker re-added it (`escalateStuck` reads only what `deliver` sees, so an order never emitted can never
- * escalate -- which is why the fix is here and not in `wake.mjs`).
+ * escalate -- which is why the fix is here and not in `wake.ts`).
  *
  * WHO PLACED THE HOLD DOES NOT MATTER (#2993). #2400's clause 1 ("a hold by anyone else is not an answer from the session being asked") was
  * written for a hold the ADDRESSEE placed. For a hold the addressee is the SUBJECT of it was wrong: the order asks "fix your build", nothing in
- * the build is broken, and #2990's owner was asked five times at one head, each answered "no fix needed". So the question is `red-pr.mjs`'s
+ * the build is broken, and #2990's owner was asked five times at one head, each answered "no fix needed". So the question is `red-pr.ts`'s
  * `isHeldRed`, the decider `org-health` already asks (#2956): at least one red check, every one of them the hold's own two jobs, and the PR
  * carries ANY `hold:*`. THE EXEMPTION ENDS WITH EITHER KEY: remove the hold or let a third job go red (a real `ts / run` failure under a
  * foreign hold still reaches its owner) and the order is emitted again, and the run of deliveries it earned while suppressed starts from
@@ -698,7 +698,7 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
 
 /**
  * WHO A PULL REQUEST BELONGS TO, BY A TOTAL FUNCTION (#2941): every pull request has exactly one answer, and the
- * last rung is a session that can act. A NEW NAME on purpose -- `work-gate.mjs`'s `ownerOf(row)` answers a
+ * last rung is a session that can act. A NEW NAME on purpose -- `work-gate.ts`'s `ownerOf(row)` answers a
  * different question (who a ROW is routed to).
  *
  * THE ORDER, and each rung reads a fact somebody else put on the PR object (`withPrOwners`), so this is pure:
@@ -825,7 +825,7 @@ function failingChecksOrder(pr, required = null, baseTip = null) {
 }
 
 /**
- * The words the FALLBACK is typed instead of the owner's (#3078): `wake.mjs` swaps this in for `prompt` only when the order is
+ * The words the FALLBACK is typed instead of the owner's (#3078): `wake.ts` swaps this in for `prompt` only when the order is
  * delivered to {@link DEAD_OWNER_FALLBACK}. The owner's `prompt` reads as though its addressee were alive and says "yours to fix",
  * which would send the fallback to fix code it does not own; so this one says the session is gone and what the receiver does.
  * @param {{pr: any, head8: string, session: string, conflicting: boolean}} facts
@@ -1035,7 +1035,7 @@ function unreviewedConvincedOrder(pr, found, heads) {
 
 /**
  * #3215: THE READY-FLIP THE GATE WITHHOLDS, TOLD TO THE AUTHOR AND NOT TO `product-manager`. A pull request is marked ready only on a
- * green verify stamp for its head and body (`verify-stamp.mjs`), and this is the draft that has everything else: settled green and a
+ * green verify stamp for its head and body (`verify-stamp.ts`), and this is the draft that has everything else: settled green and a
  * convinced verdict at this head from somebody who is not its author. It carries NO `action`, so `performActions` has no `gh pr ready`
  * to run, and it is addressed to `ownerOfPr` because the fix -- `pnpm run verify` in their own worktree -- is theirs, and
  * `product-manager` holds no worktree to run it in.
@@ -1251,8 +1251,8 @@ function draftOrder(pr, required = null, baseTip = null) {
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return null;
 
   // PULL REQUEST n IS `reviewer-<n>`'S (#2401; the odd/even split it replaced is retired). The name is
-  // herdr's, and `wake.mjs` starts the instance when none is live. The arithmetic lives in
-  // `review-attribution.mjs`, beside the reader that checks whether a posted review obeyed it -- a
+  // herdr's, and `wake.ts` starts the instance when none is live. The arithmetic lives in
+  // `review-attribution.ts`, beside the reader that checks whether a posted review obeyed it -- a
   // detector with its own copy would agree with a router that had drifted.
   const session = reviewerSeat(pr);
   return {

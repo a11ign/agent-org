@@ -5,7 +5,7 @@
  * -- a deleted path is EXPLAINED only when a non-merge commit unique to the branch actually touched it --
  * was verified against two real commits in the project's history before being written down here: `f2cdfaf3`
  * (the incident: a deletion no branch commit ever mentions) and `fc9b89d2` (#354, a deliberate
- * consolidation: a real commit, `ca922204`, names the deletion). See trunk-revert-guard.mjs's own header
+ * consolidation: a real commit, `ca922204`, names the deletion). See trunk-revert-guard.ts's own header
  * for why the more obvious instruments -- `git merge-tree` on the merge's own two parents, and GitHub's
  * `gh pr view --json files` -- both FAIL to distinguish the two, because the loss happened several commits
  * deep inside the branch's own internal main-sync history, not at the outermost merge.
@@ -18,13 +18,14 @@
 // no-token: gh
 //
 // #827. `trunkRedOrders` takes its facts as an argument and returns the order -- `readTrunkRed`, in
-// `trunk-red.mjs`, does the lookups -- and this file calls the first with a fixture. The closure walk reaches
+// `trunk-red.ts`, does the lookups -- and this file calls the first with a fixture. The closure walk reaches
 // `gh` through that module's graph rather than through anything these tests execute.
 //
 // The spawned script runs `git`, not `gh`.
 //
 // Verified against the entry's own code by #827's mechanism, so if `trunkRedOrders` ever starts doing its
 // own lookups this refuses rather than trusting the comment.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -37,11 +38,11 @@ import { buildSandbox } from "../lib/sandbox-exhaustion.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
-} from "../trunk-revert-guard.mjs";
-import { trunkRedOrders } from "../trunk-red.mjs";
+} from "../trunk-revert-guard.ts";
+import { trunkRedOrders } from "../trunk-red.ts";
 
 // The tool's own script, found from this file.
-const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.ts", import.meta.url));
 
 /** Run `git` in `cwd`, `GIT_*` scrubbed and identity passed per command, so nothing can write config anywhere. */
 function git(cwd: string, ...args: string[]): string {
@@ -108,7 +109,7 @@ function fixtureHistory(root: string): void {
 /**
  * A REPOSITORY OF ITS OWN WITH ITS OWN `origin`, BECAUSE THIS SCRIPT REALLY FETCHES.
  *
- * `trunk-revert-guard.mjs` runs `git fetch origin --quiet` before it looks at anything (unconditional, and
+ * `trunk-revert-guard.ts` runs `git fetch origin --quiet` before it looks at anything (unconditional, and
  * deliberately so -- worker-contracts' finding that the guard must not read a remote-tracking ref that a
  * checkout happens to have fetched an hour ago). Every spawn below used to pass the checkout running the
  * suite as `cwd`, so a test run in any worktree fetched into the SHARED primary `.git`, writing its
@@ -211,7 +212,7 @@ test("ACCEPTANCE (#411, criterion 2): the incident shape is REFUSED, naming the 
   + "paths no branch commit ever touched", () => {
   let out;
   try {
-    execFileSync("node", [SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
     assert.fail("expected the guard to refuse and exit non-zero");
   } catch (cause) {
     const err = cause as { status?: number, stderr?: string };
@@ -232,17 +233,17 @@ test("ACCEPTANCE (#411, criterion 2): the incident shape is REFUSED, naming the 
 
 test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (the #354 shape) is NOT refused -- the half "
   + "that decides whether this survives a week", () => {
-  const out = execFileSync("node", [SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8" });
+  const out = execFileSync("node", [...TSX_IMPORT, SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8" });
   assert.match(out, /PASS/);
   assert.match(out, /explained by a real commit/, "PASS because the deletion was explained, not because nothing was checked");
 });
 
 // --- the CLI, guarded like every other argv-reading script here ---
 
-test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignoring it", () => {
+test("trunk-revert-guard.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--merge=abc", "--bogus"],
       { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
@@ -253,10 +254,10 @@ test("trunk-revert-guard.mjs refuses an unknown flag rather than silently ignori
   assert.ok(threw);
 });
 
-test("trunk-revert-guard.mjs refuses to run without --merge", () => {
+test("trunk-revert-guard.ts refuses to run without --merge", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -278,7 +279,7 @@ test("C3 ACCEPTANCE, COMPOSED: the incident REFUSAL, once trunkGate fails on it,
   // and `throws` alone cannot see it. That is the whole defect in one line.
   let status: number | undefined;
   try {
-    execFileSync("node", [SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, INCIDENT_ARG], { cwd: FIXTURE, stdio: "pipe" });
   } catch (cause) {
     status = (cause as { status?: number }).status;
   }
@@ -306,7 +307,7 @@ test("C3 ACCEPTANCE, COMPOSED, POSITIVE CONTROL: an ordinary merge's PASS never 
   // The legitimate-deletion shape PASSES, so trunkGate's guard step succeeds and the job does not fail on this
   // step: there is no order to emit in this branch, which is the point -- the positive control for a wake is
   // "nobody is woken", not "a different, harmless order is computed".
-  const out = execFileSync("node", [SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
+  const out = execFileSync("node", [...TSX_IMPORT, SCRIPT, LEGIT_ARG], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
   assert.match(out, /PASS/);
 });
 

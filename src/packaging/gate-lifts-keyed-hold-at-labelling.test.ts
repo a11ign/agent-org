@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs the real
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the tick is handed a fake `run` and a fake `release`, and the one test that runs the real
 // release puts a fake `gh` first on its PATH.
 /**
  * #4189: A KEYED PULL REQUEST HELD AFTER ITS `Waiting-for: merged` WAS ALREADY TRUE IS LIFTED BY THE NEXT TICK, through the path the tick takes (`waitTickFacts`, then
@@ -13,9 +13,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { WAIT_MARKER } from "../wait-condition.mjs";
-import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "../work-gate.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
+import { WAIT_MARKER } from "../wait-condition.ts";
+import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "../work-gate.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T18:00:00Z");
@@ -29,10 +29,10 @@ const HELD = 401;
 
 type Release = { number: number; session: string; repoKey: string | undefined };
 
-/** The hold comment `pr-hold.mjs` writes, dated `at`, declaring `lines`. */
+/** The hold comment `pr-hold.ts` writes, dated `at`, declaring `lines`. */
 const marker = (at: number, lines: string[]) => ({ author: { login: "a11ign-ai-workers" }, createdAt: ISO(at), body: `${WAIT_MARKER}\nHeld by \`worker-4175\`.\n${lines.map((l) => `Waiting-for: ${l}`).join("\n")}` });
 
-/** A pull request of the keyed repository, as `tagged` (work-gate.mjs) leaves it: `repoKey` and `repo` on the raw item. */
+/** A pull request of the keyed repository, as `tagged` (work-gate.ts) leaves it: `repoKey` and `repo` on the raw item. */
 function keyedPr(labels: string[], waits: string[], { heldAt, extra = {} }: { heldAt: number; extra?: Record<string, unknown> }) {
   return { number: HELD, repoKey: KEY, repo: REPO, labels: labels.map((name) => ({ name })), body: "", comments: [marker(heldAt, waits)], updatedAt: ISO(heldAt), ...extra };
 }
@@ -55,7 +55,7 @@ function fakeRun(issues: Record<string, Issue>) {
 
 /**
  * One tick of `orgHealthNow`, with `release` recording what it was asked to release and answering `ok`. `keyed` is the declared repositories' open pull requests, which the gate hands
- * over as `keyedPrsRead` and never inside `prsRead`, the first repository's own list (work-gate.mjs `pullRequestsOfOthers`).
+ * over as `keyedPrsRead` and never inside `prsRead`, the first repository's own list (work-gate.ts `pullRequestsOfOthers`).
  */
 function tick({ prs = [], keyed = [] }: { prs?: Record<string, unknown>[]; keyed?: Record<string, unknown>[] }, issues: Record<string, Issue>, { ok = true }: { ok?: boolean } = {}) {
   const asked: Release[] = [];
@@ -136,7 +136,7 @@ test("a keyed lift that FAILS falls back to the order, so a silent skip cannot r
 });
 
 test("THE CALL SITE: the gate hands `orgHealthNow` the declared repositories' pull requests as `keyedPrsRead`, not merged into the first repository's `prsRead`", () => {
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(gate, /orgHealthNow\(\{ prsRead: prs, keyedPrsRead: pullRequestsOfOthers\(otherScopes\),/, "a call that omits it never reads a keyed hold: that is #4189");
   const health = readFileSync(new URL("../work-gate/org-health.mjs", import.meta.url), "utf8");
   assert.match(health, /readWaits\(\{ prsRead: prsRead === null \? null : \[\.\.\.prsRead, \.\.\.keyedPrsRead\], openRowsRead, now \}\)/, "and only the wait read sees them");

@@ -1,6 +1,6 @@
 // no-token: gh
 //
-// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.mjs` and `wake.mjs` are stubs
+// Nothing here reaches the network or a real `gh`. The tick under test runs from a temporary `src/` whose `work-gate.ts` and `wake.ts` are stubs
 // (the `wake` one records what it was handed), with the PATH pointed at an empty directory. ERASABLE TYPESCRIPT ONLY: node strips the types itself.
 
 /**
@@ -8,6 +8,7 @@
  * start marker it left. Neither is noise: the control comes first (a 60 s tick says nothing), then 181 s says it ONCE, then a dead tick's marker says it
  * once and is cleared.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -15,16 +16,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.mjs";
+import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.ts";
 import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_SLOW, TICK_SLOW_SECONDS, clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick,
-  readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.mjs";
+  readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
 const COST_PATH = "/state/agent-org/tick-cost.jsonl";
 const START = Date.parse("2026-10-04T21:40:04Z");
 
-/** A `tick-cost` line as `work-tick.mjs` writes it, with only what the health reading reads; `wallS` is the wall in seconds. */
+/** A `tick-cost` line as `work-tick.ts` writes it, with only what the health reading reads; `wallS` is the wall in seconds. */
 const costLine = (wallS: number, extra: Record<string, unknown> = {}) => ({
   at: START + wallS * 1000, wallMs: wallS * 1000, prestartMs: null, cpuMs: { self: 4000, children: 21_000 },
   phases: { startup: { wallMs: 900, cpuMs: 800 }, gate: { wallMs: wallS * 800, cpuMs: 15_000 }, wake: { wallMs: 700, cpuMs: 100 } }, ...extra,
@@ -78,7 +79,7 @@ test("#3567: the limit is overridable only by a positive number, and a bad one f
 
 /** A pid that belonged to a process that has ended. */
 function deadPid(): number {
-  const ran = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
   return Number(ran.stdout);
 }
 
@@ -158,12 +159,13 @@ test("#3567: delivery hands `wake` one JSON line per order, and a `wake` that re
 function tickIn(dir: string, gate = "process.exit(0);") {
   const src = join(dir, "src");
   mkdirSync(src);
-  const own = new Set(["work-tick.mjs", "work-gate.mjs", "wake.mjs"]);
+  writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
+  const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
   for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-  writeFileSync(join(src, "work-tick.mjs"), readFileSync(join(SRC, "work-tick.mjs"), "utf8"));
-  writeFileSync(join(src, "work-gate.mjs"), gate);
-  writeFileSync(join(src, "wake.mjs"),
-    `export * from ${JSON.stringify(join(SRC, "wake.mjs"))};\n`
+  writeFileSync(join(src, "work-tick.ts"), readFileSync(join(SRC, "work-tick.ts"), "utf8"));
+  writeFileSync(join(src, "work-gate.ts"), gate);
+  writeFileSync(join(src, "wake.ts"),
+    `export * from ${JSON.stringify(join(SRC, "wake.ts"))};\n`
     + `import { appendFileSync, readFileSync } from "node:fs";\nimport { fileURLToPath } from "node:url";\n`
     + `if (process.argv[1] === fileURLToPath(import.meta.url)) appendFileSync(${JSON.stringify(join(dir, "delivered.jsonl"))}, readFileSync(0, "utf8"));\n`);
   mkdirSync(join(dir, "empty"));
@@ -173,7 +175,7 @@ function tickIn(dir: string, gate = "process.exit(0);") {
     delete base.INVOCATION_ID;
     return base;
   };
-  const args = [`--import=${PRELOAD}`, join(src, "work-tick.mjs"), `--ledger=${ledger}`];
+  const args = [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
   return {
     marker: tickMarkerPath(ledger),
     run: (extra?: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { encoding: "utf8", cwd: dir, env: env(extra) }),
@@ -203,8 +205,9 @@ test("#3567, through the tick: a tick over the limit wakes ceo once, before it e
 }));
 
 test("#3567, through the tick: a tick SIGKILLed mid-run leaves its marker, and the NEXT tick reports it ONCE and the one after reports nothing", () => inDir((dir) => {
-  const tick = tickIn(dir, `setTimeout(() => process.exit(0), 3000);`);
-  const killed = tick.runUntilKilled(1200);
+  // The kill lands after the tsx loader has compiled the tick and written its marker: under a loaded suite that took over 1.2 s.
+  const tick = tickIn(dir, `setTimeout(() => process.exit(0), 8000);`);
+  const killed = tick.runUntilKilled(4000);
   assert.equal(killed.signal, "SIGKILL");
   assert.equal(existsSync(tick.marker), true, "a killed tick cannot clear its marker, and that is the whole signal");
   assert.deepEqual(tick.delivered(), [], "and it told nobody, which is why the next one must");

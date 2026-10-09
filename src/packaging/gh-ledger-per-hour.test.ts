@@ -1,20 +1,21 @@
 // no-token: gh -- the wrapper is RUN here, against a stub `gh-real` the test writes (`A11Y_GH_REAL`); no real `gh` starts and
 // nothing reaches the network or any account's config.
 //
-// #4148: THE INSTRUMENT THE GRAPHQL-HOUR READINGS USE. `gh-ledger.mjs --per-hour` buckets ONE account's ONE resource by UTC hour, keeps the points the responses
+// #4148: THE INSTRUMENT THE GRAPHQL-HOUR READINGS USE. `gh-ledger.ts --per-hour` buckets ONE account's ONE resource by UTC hour, keeps the points the responses
 // REPORTED apart from the one-point FLOOR, and an hourly rollup that `host/gh` writes as the 2 MiB trim drops lines keeps a reading for an hour the ledger no longer
 // holds. IT GUARDS THE INSTRUMENT, NOT THE SAVING: the saving is read off the live ledger, on the row.
 //
 // THE POSITIVE CONTROL for "the rollup survives the trim" is the ledger ALONE: after the trim it holds fewer lines than were written, so a rollup that counted nothing
 // would show up as a total short of what the wrapper was called.
 
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.mjs";
+import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.mjs` resolves the checkout it serves when it is imported, and with no
@@ -27,7 +28,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { poolLowReading } = await import("../org-health.mjs");
+const { poolLowReading } = await import("../org-health.ts");
 
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
@@ -35,7 +36,7 @@ const COST = 3;
 const COSTED_BODY = `{"data":{},"rateLimit":{"remaining":4990,"cost":${COST},"resetAt":"2026-10-08T15:00:00Z"}}`;
 
 /** One ledger line as `host/gh` writes it (nine fields); `cost` is the field a costed response fills. */
-const line = (time: string, { account = WORKERS, resource = "graphql", cost = "", command = "pr list", caller = "/usr/bin/node /x/src/work-gate.mjs" } = {}) =>
+const line = (time: string, { account = WORKERS, resource = "graphql", cost = "", command = "pr list", caller = "/usr/bin/node /x/src/work-gate.ts" } = {}) =>
   [time, account, resource, cost, "0", command, "-", caller, "-"].join("\t");
 
 test("#4148: --per-hour buckets one account's one resource by UTC hour, with the points READ apart from the floor", () => {
@@ -115,8 +116,8 @@ test("#4148: the CLI prints the per-hour reading from a ledger and its rollup", 
   const ledger = join(dir, "gh-calls.tsv");
   writeFileSync(ledger, `${line("2026-10-08T14:00:00Z")}\n`);
   writeFileSync(rollupPathOf(ledger), `2026-10-08T13\t${WORKERS}\tgraphql\t2026\t0\t2026\n`);
-  const cli = fileURLToPath(new URL("../gh-ledger.mjs", import.meta.url));
-  const r = spawnSync(process.execPath, [cli, ledger, "--per-hour", "--account", WORKERS, "--resource", "graphql"], { encoding: "utf8" });
+  const cli = fileURLToPath(new URL("../gh-ledger.ts", import.meta.url));
+  const r = spawnSync(process.execPath, [...TSX_IMPORT, cli, ledger, "--per-hour", "--account", WORKERS, "--resource", "graphql"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^2026-10-08T13Z +2026 calls +0 points read +2026 floor points$/m, "the 13:00Z baseline is reproduced from the rollup");
   assert.match(r.stdout, /^2026-10-08T14Z +1 calls/m);
@@ -126,32 +127,32 @@ const NOW = Date.parse("2026-10-08T15:30:00Z");
 
 test("#4148: topSpender names the script with the most points in the last hour, and says nothing for an hour with none", () => {
   const entries = parseLedger([
-    ...Array.from({ length: 5 }, (_, i) => line(`2026-10-08T15:0${i}:00Z`, { caller: "/usr/bin/node -e /* work-gate.mjs runBatch */ const { execFile }" })),
-    line("2026-10-08T15:10:00Z", { command: "issue list", caller: "/usr/bin/node /x/src/work-tick.mjs" }),
+    ...Array.from({ length: 5 }, (_, i) => line(`2026-10-08T15:0${i}:00Z`, { caller: "/usr/bin/node -e /* work-gate.ts runBatch */ const { execFile }" })),
+    line("2026-10-08T15:10:00Z", { command: "issue list", caller: "/usr/bin/node /x/src/work-tick.ts" }),
     line("2026-10-08T13:00:00Z", { caller: "/usr/bin/node /x/src/old.mjs" }), // outside the hour
     line("2026-10-08T15:11:00Z", { resource: "core" }), // another pool
   ].join("\n"));
   const top = topSpender(entries, { account: WORKERS, now: NOW });
-  assert.equal(top?.caller, "work-gate.mjs", "a `node -e` batch worker is named for its script, not left as /usr/bin/node");
+  assert.equal(top?.caller, "work-gate.ts", "a `node -e` batch worker is named for its script, not left as /usr/bin/node");
   assert.deepEqual([top?.points, top?.total], [5, 6]);
   assert.equal(topSpender(entries, { account: WORKERS, now: Date.parse("2026-10-09T15:30:00Z") }), null);
 });
 
 test("#4148: the gate's batch worker NAMES ITSELF to the ledger (the 852 calls that read /usr/bin/node)", () => {
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)), "utf8");
   const worker = gate.match(/const BATCH_WORKER = `([\s\S]*?)`;/)?.[1];
   assert.ok(worker, "POSITIVE CONTROL: the worker text was found");
   const cmdline = `/usr/bin/node -e ${worker.replace(/\s+/g, " ")}`.slice(0, 160); // the ledger keeps 160 characters of the caller
-  assert.equal(callerScript(cmdline), "work-gate.mjs");
+  assert.equal(callerScript(cmdline), "work-gate.ts");
   assert.equal(callerScript("/usr/bin/node -e const { execFile } = require(\"node:child_process\"); const one"), "/usr/bin/node", "the control: without the name it IS the unnamed caller");
 });
 
 test("#4148: api-pool-low names its spender, and says UNREADABLE rather than nothing when the ledger cannot be read", () => {
   const pools = [{ account: WORKERS, resource: "graphql", remaining: 100, limit: 5000, resetAt: "2026-10-08T16:00:00Z" }];
   const named = poolLowReading({ pools, spenderOf: (account) => spenderPhrase("/ledger", account, NOW, () => [
-    line("2026-10-08T15:01:00Z"), line("2026-10-08T15:02:00Z"), line("2026-10-08T15:03:00Z", { command: "issue list", caller: "/usr/bin/node /x/src/work-tick.mjs" })].join("\n")) });
+    line("2026-10-08T15:01:00Z"), line("2026-10-08T15:02:00Z"), line("2026-10-08T15:03:00Z", { command: "issue list", caller: "/usr/bin/node /x/src/work-tick.ts" })].join("\n")) });
   assert.equal(named.status, "tripped");
-  assert.match(named.detail, /Spender: a11ign-ai-workers's last hour \(3 floor points\): top caller work-gate\.mjs \[pr list\], 2 points \(67%\)/);
+  assert.match(named.detail, /Spender: a11ign-ai-workers's last hour \(3 floor points\): top caller work-gate\.ts \[pr list\], 2 points \(67%\)/);
   assert.match(named.detail, /20% of their limit/, "the 20%-per-account, real-header reading stays as built");
   const unread = poolLowReading({ pools, spenderOf: () => null });
   assert.match(unread.detail, /Spender: .*UNREADABLE/);

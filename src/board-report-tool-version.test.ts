@@ -1,10 +1,10 @@
 // no-token: REPO
-// This file imports board-report.mjs, whose closure reads REPO from board-data.mjs, which spawns `gh`. Nothing here calls it: `render` takes an
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Nothing here calls it: `render` takes an
 // injected fact set, instant and version reader, and `readToolVersionLine` an injected git, so no git runs and no clock is read (#3468).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { render, flowReadings, readToolVersionLine } from "./board-report.mjs";
+import { render, flowReadings, readToolVersionLine } from "./board-report.ts";
 
 const NOW = new Date("2026-10-04T12:00:00Z");
 const SINCE = "2026-10-03T00:00:00.000Z";

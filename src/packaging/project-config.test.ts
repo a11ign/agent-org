@@ -15,6 +15,7 @@
  * its reason, and a file that stops carrying it passes. Claims 1 and the constants test read a FIXTURE declaration, never the live one, which
  * gains a repository whenever the project does (a11ign#2990 landed between one pull request's green run and its queue run).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -29,7 +30,7 @@ import {
   SUPPORTED_SCHEMA,
   parseProjectDeclaration,
   readProjectDeclaration,
-} from "../project-config.mjs";
+} from "../project-config.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
@@ -67,7 +68,7 @@ function refusalOf(text: string): ProjectDeclarationRefusal {
 /** @param {string} text @param {string} field the field the refusal must name, and the message must repeat it */
 function assertRefusedFor(text: string, field: string): void {
   const refusal = refusalOf(text);
-  assert.equal(refusal.field, field, refusal.message);
+  assert.equal((refusal as any).field, field, refusal.message);
   assert.ok(refusal.message.includes(`\`${field}\``), `the message must name the field: ${refusal.message}`);
 }
 
@@ -107,9 +108,9 @@ test("a declaration shaped like a11ign's, read through the reader, gives exactly
 test("the constants every importer reads are the declaration's values, read at import from the project the host file names", () => {
   withFixtureProject(SECOND_PROJECT, ({ hostPath }) => {
     // A child process, because the constants are read ONCE at import from the process's own project: a different project is a different process.
-    const read = spawnSync(process.execPath, ["--input-type=module", "-e",
-      `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.mjs", import.meta.url).href)});`
-      + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.mjs", import.meta.url).href)});`
+    const read = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
+      `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.ts", import.meta.url).href)});`
+      + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.ts", import.meta.url).href)});`
       + "console.log(JSON.stringify({ REPO, PROJECT_OWNER, PROJECT_NUMBER }));"],
     { encoding: "utf8", env: { ...process.env, [HOST_ENV]: hostPath } });
     assert.equal(read.status, 0, read.stderr);
@@ -156,7 +157,7 @@ test("a missing declaration is REFUSED naming the file, never answered with a11i
       () => readProjectDeclaration(dir),
       (error: unknown) => {
         assert.ok(error instanceof ProjectDeclarationRefusal);
-        assert.equal(error.field, "(file)");
+        assert.equal((error as any).field, "(file)");
         assert.ok(error.message.includes(join(dir, PROJECT_DECLARATION_PATH)), error.message);
         assert.ok(!error.message.includes(A11IGN_LITERAL), error.message);
         return true;
@@ -234,7 +235,7 @@ test("a refusal for one field is not a refusal for another (each mutation fires 
     mutated((d) => (d.code[0].repo = "no-slash")),
     mutated((d) => (d.tracker[0].board.number = 0)),
     mutated((d) => (d.code[0].key = "k-1")),
-  ].map((text) => refusalOf(text).field);
+  ].map((text) => (refusalOf(text) as any).field);
   assert.deepEqual(fields, ["schema", "code[0].repo", "tracker[0].board.number", "code[0].key"]);
   assert.equal(new Set(fields).size, fields.length);
 });
@@ -277,8 +278,8 @@ function filesCarryingTheLiteral(srcDir: string): string[] {
 
 /** Each is a surface a later row of #69 moves (3f: units; 3e: the verdict script). A file that joins them is declared HERE, beside its reason. */
 const DECLARED_CARRIERS: Declaration[] = [
-  { name: "host-units.mjs", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
-  { name: "org-watch.mjs", reason: "a later row of #69 moves it" },
+  { name: "host-units.ts", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
+  { name: "org-watch.ts", reason: "a later row of #69 moves it" },
   { name: "reviewer/pr-review-verdict.sh", reason: "the verdict script; row 3e of #69 moves it" },
 ];
 

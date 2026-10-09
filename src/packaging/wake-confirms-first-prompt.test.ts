@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver, READY_BOUND_MS, SUBMIT_BOUND_MS, ENTER_BOUND_MS } from "../wake.mjs";
+import { deliver, READY_BOUND_MS, SUBMIT_BOUND_MS, ENTER_BOUND_MS } from "../wake.ts";
 
 const ORDER = {
   session: "engineers",

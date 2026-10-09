@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, performActions } from "../work-gate.mjs";
+import { decide, performActions } from "../work-gate.ts";
 import { requiredWhenNeeded } from "../work-gate/pr-orders.mjs";
 
 const HEAD = "a".repeat(40);

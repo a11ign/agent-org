@@ -13,8 +13,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "./project-config.mjs";
-import { labelAfterCreate, ownerOfPr, rowOwnerLabel, sendToGitHub } from "./pr-open.mjs";
+import { HOME_CHECKOUT } from "./project-config.ts";
+import { labelAfterCreate, ownerOfPr, rowOwnerLabel, sendToGitHub } from "./pr-open.ts";
 
 const BRIEF = join(HOME_CHECKOUT, ".agent-org/roles/engineer.md");
 

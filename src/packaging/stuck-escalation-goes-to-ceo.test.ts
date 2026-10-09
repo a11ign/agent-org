@@ -13,9 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, deliver, ESCALATION_LABEL, MAX_DELIVERIES } from "../wake.mjs";
-import { CHAIRMAN_LABEL, ANSWER_PREFIX, answerOrders, rowsOwingAnswers } from "../work-gate.mjs";
-import { trunkRedOrders } from "../trunk-red.mjs";
+import { escalateStuck, deliver, ESCALATION_LABEL, MAX_DELIVERIES } from "../wake.ts";
+import { CHAIRMAN_LABEL, ANSWER_PREFIX, answerOrders, rowsOwingAnswers } from "../work-gate.ts";
+import { trunkRedOrders } from "../trunk-red.ts";
 
 const CHAIRMAN_CALL = ["--add-label", "needs:chairman"];
 const CEO_CALL = ["--add-label", "answer:ceo"];

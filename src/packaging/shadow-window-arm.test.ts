@@ -16,6 +16,7 @@
  * record with one gap holds a gap row AND still counts every tick, the closure check names a file that differs and then stops complaining once it is
  * restored, and the same exit status 2 is a SUCCESS for the live unit and a FAILURE for the shadow one.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -24,13 +25,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.mjs";
-import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.mjs";
-import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.mjs";
-import { homeHostConfig } from "../host-config.mjs";
+import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.ts";
+import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.ts";
+import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
+import { homeHostConfig } from "../host-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
+const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));
 const MINUTE = 60_000;
 const TICK = 2 * MINUTE;
@@ -38,7 +39,7 @@ const T0 = Date.parse("2026-10-02T12:00:00Z");
 const TIMER = "a11ign-shadow-window.timer";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 /** The digest of the work-tick unit the host runs today, restated from `host-tool-install.test.ts` so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "d8491bba933fc01de08375aafc8a9666a18aac93ceb488e345f2e22929a9ede8"; // #2974: the pnpm line; the plain rendering, see `plainHost`
+const TODAYS_WORK_TICK_SHA = "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3"; // #2974: the pnpm line; the plain rendering, see `plainHost`
 /** a11ign's host with no `tool`, so the digest above is of the template whether or not the cut has set the key. */
 const plainHost = (() => {
   const plain: Record<string, unknown> = { ...homeHostConfig() };
@@ -124,7 +125,7 @@ test("the rendered service carries memory and CPU caps, the swap cap that makes 
   assert.match(service, /^Environment=NODE_COMPILE_CACHE=%h\/\.cache\/node-compile-cache$/m);
   const exec = /^ExecStart=(.*)$/m.exec(service)?.[1] ?? "";
   assert.match(exec, /--window-timer=a11ign-shadow-window\.timer\b/, "the runner is told which timer to disable");
-  assert.match(exec, /--candidate=\S+\/repos\/agent-org\/src\/work-gate\.mjs\b/, "the candidate is the #2866 clone's gate");
+  assert.match(exec, /--candidate=\S+\/repos\/agent-org\/src\/work-gate\.ts\b/, "the candidate is the #2866 clone's gate");
   const scratch = [/--copy-dir=(\S+)/, /--record=(\S+)/].map((flag) => flag.exec(exec)?.[1] ?? "");
   for (const path of scratch) {
     assert.match(path, /\.local\/state\/a11ign-shadow-window\//, `${path} is in the scratch area the runner owns`);
@@ -149,11 +150,11 @@ function rig(): Rig {
   const gate = `import { helper } from "./lib/helper.mjs";\nexport const decide = (args) => helper(${DECIDE})(args);\n`;
   for (const base of [join(root, "candidate"), join(root, "runner")]) {
     mkdirSync(join(base, "src", "lib"), { recursive: true });
-    writeFileSync(join(base, "src", "work-gate.mjs"), gate);
+    writeFileSync(join(base, "src", "work-gate.ts"), gate);
     writeFileSync(join(base, "src", "lib", "helper.mjs"), "export const helper = (decide) => decide;\n");
     writeFileSync(join(base, "src", "unrelated.mjs"), "export const x = 1;\n");
   }
-  return { root, live, copy: join(root, "copy"), record: join(root, "out", "diff.jsonl"), candidate: join(root, "candidate", "src", "work-gate.mjs"),
+  return { root, live, copy: join(root, "copy"), record: join(root, "out", "diff.jsonl"), candidate: join(root, "candidate", "src", "work-gate.ts"),
     tool: join(root, "runner"), stopped: [] };
 }
 
@@ -455,7 +456,7 @@ test("an ordinary windowed tick leaves the live directory's bytes alone, apart f
 
 /** The runner inherits `AGENT_ORG_HOST`: blanking it made the child resolve its project by counting directories up from `src`, which standalone is the home directory (#3098). */
 function cli(r: Rig, ...flags: string[]) {
-  return spawnSync(process.execPath, [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
+  return spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
     { encoding: "utf8" });
 }
 
@@ -483,15 +484,15 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     const git = (...args: string[]) => execFileSync("git", ["-C", tool, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { env: sandboxGitEnv(), encoding: "utf8" });
     git("init", "-q");
     git("commit", "-q", "--allow-empty", "-m", "snapshot");
-    const gate = join(tool, "src", "work-gate.mjs");
-    const armCli = () => spawnSync(process.execPath, [RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
+    const gate = join(tool, "src", "work-gate.ts");
+    const armCli = () => spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
       { encoding: "utf8" });
-    const shared = join(tool, "src", "host-config.mjs");
+    const shared = join(tool, "src", "host-config.ts");
     const original = readFileSync(shared, "utf8");
     writeFileSync(shared, `${original}\n// drifted\n`);
     const refused = armCli();
     assert.equal(refused.status, 2);
-    assert.match(refused.stderr, /does not correspond[^]*host-config\.mjs/, "the file that differs is named");
+    assert.match(refused.stderr, /does not correspond[^]*host-config\.ts/, "the file that differs is named");
     assert.equal(readWindowMarker(r.live), null);
     writeFileSync(shared, original);
     const armed = armCli();

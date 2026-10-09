@@ -11,6 +11,7 @@
  * cannot be read holds nothing, and the next reading with every component operational delivers what was held. Each assertion that something is
  * HELD also asserts the order exists without the incident, so none passes because the fixture never made an order.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -19,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   decide, holdForGithubIncident, githubIncidentOf, githubIncidentOrder, startGithubStatus, GITHUB_STATUS_TIMEOUT_MS,
-} from "./work-gate.mjs";
+} from "./work-gate.ts";
 
 type Incident = ReturnType<typeof githubIncidentOf>;
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string };
@@ -198,7 +199,7 @@ const SERVER = `const http = require("node:http");
 const [body, delay] = process.argv.slice(1);
 const server = http.createServer((_req, res) => setTimeout(() => res.end(body), Number(delay))).listen(0, "127.0.0.1", () => console.log(server.address().port));`;
 const serve = (body: string, delayMs = 0) => new Promise<{ url: string, stop: () => void }>((done) => {
-  const child = spawn(process.execPath, ["-e", SERVER, body, String(delayMs)], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, [...TSX_IMPORT, "-e", SERVER, body, String(delayMs)], { stdio: ["ignore", "pipe", "inherit"] });
   child.stdout.once("data", (port) => done({ url: `http://127.0.0.1:${String(port).trim()}/summary.json`, stop: () => child.kill() }));
 });
 
@@ -254,7 +255,7 @@ test("a reading left by an EARLIER tick is never this tick's: the file is matche
 });
 
 test("main starts the fetch before its first read, and settles it only after the orders are decided", () => {
-  const source = readFileSync(new URL("./work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./work-gate.ts", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("\nfunction main() {"));
   const started = main.indexOf("startGithubStatus(");
   assert.ok(started > 0, "main must start the fetch");

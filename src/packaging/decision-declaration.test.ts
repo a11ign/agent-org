@@ -1,11 +1,12 @@
 // no-token: clearContext -- nothing here clears a session or calls gh; every herdr/gh call is absent or injected
 // #2222 -- A SENDER DECLARES WHETHER AN ORDER ASKS FOR AN ANSWER; THE QUEUE RECORDS IT AND THE BUNDLE HEADER
-// LISTS IT. `prompt-session.mjs` writes the declaration, `wake.mjs` reads it.
+// LISTS IT. `prompt-session.ts` writes the declaration, `wake.ts` reads it.
 //
 // ITS OWN FILE, AND THE REASON IS THE ACCEPTANCE JOB'S CAPABILITY GATE (#2221): the acceptance job has no
 // `gh` token, and since #2221 reads a named test file's import closure, `wake.test.ts` and
-// `prompt-session.test.ts` are both refused there (`route` and `clearContext` reach wake.mjs's `gh` runner).
+// `prompt-session.test.ts` are both refused there (`route` and `clearContext` reach wake.ts's `gh` runner).
 // Nothing below calls either, so this file is the one the row's Acceptance can actually RUN.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,10 +15,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { queueOrLose, deepQueueRefusal, DEEP_QUEUE, DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG, STANCE,
-  parseStance, stanceNote, EXIT, attributed } from "../prompt-session.mjs";
+  parseStance, stanceNote, EXIT, attributed } from "../prompt-session.ts";
 import { handoffId, readHandoffs, queueHandoff, handoffOrder, handoffBacklog, backlogReport,
   handoffBatches, addressed, declaresDecision, decisionHeader, MAX_LISTED_DECISIONS, PROMPT_ARG_MAX,
-  HANDOFF_BATCH_BYTES } from "../wake.mjs";
+  HANDOFF_BATCH_BYTES } from "../wake.ts";
 
 const HANDOFF = { id: handoffId("reviewer", "Draft #1963"), session: "reviewer",
   prompt: "Draft #1963", queuedAt: 1_000 };
@@ -163,7 +164,7 @@ test("END TO END: the real command records --decision on the queue and strips it
   // that writes the entry we are reading back.
   inTempDir((dir) => {
     const run = (...args: string[]) => spawnSync(process.execPath,
-      [fileURLToPath(new URL("../prompt-session.mjs", import.meta.url)),
+      [...TSX_IMPORT, fileURLToPath(new URL("../prompt-session.ts", import.meta.url)),
         `--ledger=${join(dir, "wake-ledger")}`, ...args],
       { encoding: "utf8", env: { ...process.env, PATH: dir }, timeout: 30_000 });
     const asked = run("ceo", "Ratify", "64", "KiB?", DECISION_FLAG);

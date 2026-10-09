@@ -19,7 +19,7 @@
 // -- deliberately. That file's fail-open protects a session's ability to claim ANYTHING when `gh` is down;
 // this is the override path itself, and an override that can be reached by a failed lookup is an override
 // that fires on assertion alone, which is exactly what this row exists to prevent.
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 import { lookup } from "../merge-guard/lookups.mjs";
 
 /** The literal header a measurement comment must start its claim with -- a marker, not a sentence this
@@ -114,7 +114,7 @@ export function resolveBlockedByOverride(ownPr, blockedByFlagValue, { run, repo 
     return { ok: false,
       reason: "there is no PR of this session's own to attach a measurement comment to -- a row IN BUILD "
         + "has none, which is what puts it in build. `--blocked-by` cannot excuse it: finish that row, or "
-        + "`row-claim.mjs decline <n> --session=<name>` to give it back, then claim" };
+        + "`row-claim.ts decline <n> --session=<name>` to give it back, then claim" };
   }
   const comments = lookupOwnPrComments(ownPr.number, { run, repo });
   if (comments === null) {

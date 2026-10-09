@@ -11,11 +11,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimRecordComment } from "./row-claim.mjs";
-import { performRelease } from "./wake.mjs";
+import { claimRecordComment } from "./row-claim.ts";
+import { performRelease } from "./wake.ts";
+import { afterTsx } from "./tsx-import.ts";
 import {
   claimFactsFrom, readClaim, claimStalledOrders, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey,
-} from "./claim-stall.mjs";
+} from "./claim-stall.ts";
 
 const CLAIMED_AT = Date.parse("2026-10-04T10:37:40Z");
 const MERGED_AT = "2026-10-04T11:19:39Z";
@@ -71,7 +72,7 @@ function host(world: World = {}) {
 }
 
 const NO_AGENTS = null;
-const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall.mjs").MergedPr[] } = {}) => {
+const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall.ts").MergedPr[] } = {}) => {
   const h = host(world);
   const facts = claimFactsFrom({ row: 3390, session: "worker-3390", waiting: null, blockedBy: [], comments: [comment], openPrs: input.open ?? [],
     mergedPrs: [], elsewhere: { open: input.elsewhereOpen ?? [], merged: input.merged ?? [PR_134] }, repo: REPO, trackerRepo: "a11ign/a11ign", sessionRows: 1 }, h.io);
@@ -90,8 +91,9 @@ function releaseHost(world: World, { spare = true } = {}) {
     trace.push(args.includes("close") ? "close" : args.join(" "));
     return "";
   };
-  const exec = (_cmd: string, args: string[], opts: { cwd: string }) => {
-    if (/row-claim\.mjs$/.test(args[0] ?? "") && args[1] === "decline") {
+  const exec = (_cmd: string, rawArgs: string[], opts: { cwd: string }) => {
+    const args = afterTsx(rawArgs);
+    if (/row-claim\.ts$/.test(args[0] ?? "") && args[1] === "decline") {
       trace.push("decline");
       execs.push({ args, cwd: opts.cwd });
       return { status: 0, output: "DECLINED -- #3390 is unclaimed again and labelled `answer:product-manager` (NOT returned to `ready`)\n" };
@@ -193,7 +195,7 @@ test("#3453 (5) a clone that LISTED and holds no tree of the holder's is `none`;
 });
 
 test("#3453 (5) `host.json`'s clones: a declared key answers, an undeclared one and an unreadable file are REFUSALS naming the file", () => {
-  // A host declaration `host-config.mjs` accepts (`packaging/keyed-repo-review.test.ts`'s own shape): `cloneOfKey` reads through that reader.
+  // A host declaration `host-config.ts` accepts (`packaging/keyed-repo-review.test.ts`'s own shape): `cloneOfKey` reads through that reader.
   const file = (clones: object) => JSON.stringify({ schema: 1, home: "/h", binDir: "/h/bin", primary: "p", projects: [{ id: "p", checkout: "/h/p" }],
     gh: { workers: "/h/w", leads: "/h/l", leadsHeader: [], leadsWorkspaces: [] }, clones });
   const declared = cloneOfKey("agent-org", { path: "/h.json", read: (() => file({ "agent-org": CLONE })) as never });

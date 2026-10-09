@@ -1,4 +1,4 @@
-// no-token: gh -- reached only through fleet-gated-nightly.mjs's own import closure (`defaultGhRun`), never
+// no-token: gh -- reached only through fleet-gated-nightly.ts's own import closure (`defaultGhRun`), never
 // called here: every `performFiring` test below injects its own `ghRun`/`herdrRun` stub, so this file never
 // spawns a real `gh` or `herdr`.
 /**
@@ -7,7 +7,7 @@
  * refused `gh` call is `work-gate.test.ts`'s own rule (`readPrs`/`readReadyRows` never coerce a refusal
  * to an empty queue) applied to this firing's one read.
  *
- * `performFiring` below is `main`'s own orchestration, injectable exactly as `work-gate.mjs`'s
+ * `performFiring` below is `main`'s own orchestration, injectable exactly as `work-gate.ts`'s
  * `performActions` is (PR #1844, reviewer-2 at `c8f4499f`): before this, only the pure helpers
  * (`examinedComment`, `wakeText`, `fleetGatedRows`) were under test, and `main` itself was not -- proved
  * by swapping the real #914 comment for a print and showing the acceptance command still passed. This is
@@ -18,9 +18,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { fleetGatedRows, examinedComment, wakeText, performFiring as settlingPerformFiring, STANDING_ROW, SESSION }
-  from "../fleet-gated-nightly.mjs";
-import { FLEET_GATED_SELECTOR } from "../work-gate.mjs";
-import { PROMPT_REFUSED_PREFIX } from "../prompt-session.mjs";
+  from "../fleet-gated-nightly.ts";
+import { FLEET_GATED_SELECTOR } from "../work-gate.ts";
+import { PROMPT_REFUSED_PREFIX } from "../prompt-session.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const performFiring: typeof settlingPerformFiring = (deps) => settlingPerformFiring({ ...deps, sleep: noSettle });

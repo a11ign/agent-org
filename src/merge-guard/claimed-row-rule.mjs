@@ -10,7 +10,7 @@
 // time.
 //
 // So this rule asks GitHub what a PR would close (`closingIssuesReferences` -- resolved server-side, never
-// a `Closes #N` regex over the PR body, see `lookups.mjs`) and reuses `row-claim.mjs`'s own claim
+// a `Closes #N` regex over the PR body, see `lookups.mjs`) and reuses `row-claim.ts`'s own claim
 // predicate, `decideClaim`, rather than re-deriving "is this row somebody else's" a second time.
 // `decideClaim` already draws the one line this needs: resuming your OWN claimed row is not a collision,
 // which is why `session` exists here -- the identity of whoever is running this check, compared against
@@ -37,14 +37,14 @@
 // sessions, read fresh off GitHub the same way `session` is. A name that does not match any actual
 // claimant on the row being closed leaves that reason refused -- turning "I confirmed" from an honor
 // system into a claim this tool can verify against the same labels `decideClaim` already reads.
-import { claimStatus, decideClaim } from "../row-claim.mjs";
+import { claimStatus, decideClaim } from "../row-claim.ts";
 import { reasonKind } from "./reason-kind.mjs";
 
-// `--allow-claimed-close=<name>`'s OWN argv PARSING stays in `merge-guard.mjs`, not here, deliberately.
+// `--allow-claimed-close=<name>`'s OWN argv PARSING stays in `merge-guard.ts`, not here, deliberately.
 // This file reads only the already-extracted VALUE (a plain string or null) -- never `process.argv`
 // itself -- so it is a pure function of facts, the same discipline every other rule module follows, and
 // so it does not become a second CLI entry point `cli-flags.test.ts`'s argv-reading census has to track.
-// `merge-guard.mjs` already reads argv and already calls `refuseUnknownFlags` for the whole command.
+// `merge-guard.ts` already reads argv and already calls `refuseUnknownFlags` for the whole command.
 
 /**
  * @param {{number: number, title?: string, labels: string[]}[]} closes

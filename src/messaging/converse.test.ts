@@ -8,10 +8,10 @@
 // lost, and he is told that and asked to send it again. The tests that pinned the old rule ("... and ceo is NOT the fallback", "the queue's own words, verbatim") are
 // rewritten below, not deleted: each now pins what replaced it.
 //
-// **TWO QUEUES, SAID OUT LOUD.** `prompt-session.mjs` reads the project's declaration when it is imported, so it cannot load in a bare checkout of
+// **TWO QUEUES, SAID OUT LOUD.** `prompt-session.ts` reads the project's declaration when it is imported, so it cannot load in a bare checkout of
 // this repository. The module under test loads the REAL queue on first use; this file therefore runs every behavioural case against
 //   * `fake`: a port that writes the same entry shape and prints the same kind of refusal, always available, and
-//   * `real`: `prompt-session.mjs`'s own `promptOrQueue` (and its `queueOrLose`) over a real queue file and a recording herdr, run when the host's declaration can be found (`AGENT_ORG_HOST`, else
+//   * `real`: `prompt-session.ts`'s own `promptOrQueue` (and its `queueOrLose`) over a real queue file and a recording herdr, run when the host's declaration can be found (`AGENT_ORG_HOST`, else
 //     the primary checkout's `host.json` where this host keeps it). When it cannot load, the `real` cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 //     and the "real queue loaded" test below says which of the two this run was: a skip that fires always would be a check that never runs.
 // The fixtures that look like secrets are not needed here: the classifier is `inbound.mjs`'s and `inbound.test.mjs`'s.
@@ -49,7 +49,7 @@ let nextDir = 0;
 /** @returns {Promise<{ port: any } | { reason: string }>} the real queue's pieces, or why it would not load here */
 async function loadReal(): Promise<{ port: any; } | { reason: string; }> {
   try {
-    const [session, wake] = await Promise.all([import("../prompt-session.mjs"), import("../wake.mjs")]);
+    const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake.ts")]);
     return { port: { session, wake } };
   } catch (error) {
     return { reason: `the real queue cannot load here: ${String(/** @type {Error} */ (error).message).split("\n")[0]}` };
@@ -142,7 +142,7 @@ function recordingQueue(queue: Record<string, any> | undefined, events = /** @ty
       events.push("dispatch");
       const original = process.stderr.write;
       words = "";
-      process.stderr.write = /** @type {any} */ ((/** @type {any} */ chunk: any) => { words += String(chunk); return true; });
+      process.stderr.write = /** @type {any} */ ((chunk: any) => { words += String(chunk); return true; });
       try {
         return queue.promptOrQueue(order);
       } finally {
@@ -168,7 +168,7 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   /** What happened, in order: `send` for each message to the chairman, `dispatch` for each call to `promptOrQueue`. The ack-before-write assertions read it. */
   const events: string[]|undefined = /** @type {string[]} */ ([]);
   const said = recordingQueue(queue, events);
-  const tellChairman = send ?? ((/** @type {any} */ message: any) => provider.send(message));
+  const tellChairman = send ?? ((message: any) => provider.send(message));
   const converse = createConverse({ chairman: CHAIRMAN, queuePath, ledger, send: (message) => { events.push(`send: ${message.text}`); return tellChairman(message); }, agents: () => roster, now: () => clock.at, queue: said.port });
   /** @param {unknown} update @returns {any} the accepted value `handle` minted for it */
   const accept = (update: unknown): any => {
@@ -538,7 +538,7 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
 
 describe("fake queue port", () => cases(fakeQueue, "fake", false));
 
-describe("real queue (prompt-session.mjs)", () => {
+describe("real queue (prompt-session.ts)", () => {
   const { session, wake } = "port" in real ? real.port : { session: null, wake: null };
   // The real `promptOrQueue` over a herdr that RECORDS (`recordingHerdr`) and no settle or checkout of its own: nothing here prompts a session.
   const port = session && wake ? { promptOrQueue: session.promptOrQueue, run: recordingHerdr, NOT_QUEUED_PREFIX: session.NOT_QUEUED_PREFIX, attributed: session.attributed, EXIT: session.EXIT, STANCE: session.STANCE,
@@ -570,7 +570,7 @@ describe("the queue file, when the listener names none", () => {
 
 const MESSAGING = fileURLToPath(new URL(".", import.meta.url));
 /** What reaches an order to a session: the queue's writers and the two modules that own them. `herdr ... agent prompt` is the direct path. */
-const QUEUE_CALLERS = /\b(queueOrLose|queueHandoff|promptOrQueue|clearThenPrompt)\b|prompt-session\.mjs|\/wake\.mjs|["']agent["']\s*,\s*["']prompt["']/;
+const QUEUE_CALLERS = /\b(queueOrLose|queueHandoff|promptOrQueue|clearThenPrompt)\b|prompt-session\.ts|\/wake\.ts|["']agent["']\s*,\s*["']prompt["']/;
 
 /** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.mjs` under `dir`, as paths relative to `base` (`dir` itself unless a caller walks a subdirectory) */
 function sourceFiles(dir: string, base: string = dir): string[] {
@@ -597,7 +597,7 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
   test("the scan finds the caller it is meant to find (its positive control), and the matcher notices each way to queue", () => {
     assert.ok(sourceFiles(MESSAGING).length > 10, "the walk reached the messaging sources");
     assert.ok(callers.includes("converse.mjs"), "converse.mjs is the caller the scan exists to bound");
-    for (const sample of ["queueHandoff(path, { session: 'worker-1' })", "queueOrLose({})", "promptOrQueue(x)", "import './prompt-session.mjs'", "run(['agent', 'prompt', 'worker-1'])"]) {
+    for (const sample of ["queueHandoff(path, { session: 'worker-1' })", "queueOrLose({})", "promptOrQueue(x)", "import './prompt-session.ts'", "run(['agent', 'prompt', 'worker-1'])"]) {
       assert.ok(QUEUE_CALLERS.test(sample), `the matcher notices ${sample}`);
     }
   });
@@ -611,7 +611,7 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
     mkdirSync(fixture, { recursive: true });
     copyFileSync(join(MESSAGING, "converse.mjs"), join(fixture, "converse.mjs"));
     assert.deepEqual(queueCallersIn(fixture), ["converse.mjs"], "without the second caller the copy passes, so the next failure is the fixture's");
-    writeFileSync(join(fixture, "second-caller.mjs"), 'import { queueOrLose } from "../prompt-session.mjs";\nqueueOrLose({ label: "ceo", text: "x" });\n');
+    writeFileSync(join(fixture, "second-caller.mjs"), 'import { queueOrLose } from "../prompt-session.ts";\nqueueOrLose({ label: "ceo", text: "x" });\n');
     assert.deepEqual(queueCallersIn(fixture), ["converse.mjs", "second-caller.mjs"]);
     assert.notDeepEqual(queueCallersIn(fixture), ["converse.mjs"], "the assertion above would fail on this directory");
   });
@@ -634,7 +634,7 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
 });
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-// DONE-WHEN 4: `resolveSender`, over every workspace id a fixture holds, never yields the chairman's sender. Needs the real `prompt-session.mjs`.
+// DONE-WHEN 4: `resolveSender`, over every workspace id a fixture holds, never yields the chairman's sender. Needs the real `prompt-session.ts`.
 
 describe("done-when 4: resolveSender never yields the chairman sender", () => {
   const test = (/** @type {string} */ name: string, /** @type {() => void | Promise<void>} */ body: () => void | Promise<void>) => skippableTest(name, { skip: skipReason }, body);

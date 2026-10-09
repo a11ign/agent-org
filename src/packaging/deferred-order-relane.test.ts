@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver, relaneTarget, relaneFacts, refusalReport } from "../wake.mjs";
-import { decide } from "../work-gate.mjs";
+import { deliver as settlingDeliver, relaneTarget, relaneFacts, refusalReport } from "../wake.ts";
+import { decide } from "../work-gate.ts";
 
 const MINUTE = 60_000;
 const T0 = 1_000_000_000_000;

@@ -29,9 +29,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, recheckFromAnnotations,
   trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE }
-  from "../trunk-red.mjs";
-import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.mjs";
-import { routeWithFallback } from "../wake.mjs";
+  from "../trunk-red.ts";
+import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.ts";
+import { routeWithFallback } from "../wake.ts";
 
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -295,9 +295,9 @@ const DELETED_SCRIPT = ["trunk-revert", ".mjs"].join("");
 
 test("the revert script is GONE from the tool, and the guard that reverts nothing is still there", () => {
   assert.ok(!existsSync(path.join(TOOL_SRC, DELETED_SCRIPT)));
-  assert.ok(existsSync(path.join(TOOL_SRC, "trunk-revert-guard.mjs")),
+  assert.ok(existsSync(path.join(TOOL_SRC, "trunk-revert-guard.ts")),
     "despite the name it reverts nothing: it checks a push did not silently UNDO work already on main (#411)");
-  assert.ok(existsSync(path.join(TOOL_SRC, "parent-recheck-summary.mjs")));
+  assert.ok(existsSync(path.join(TOOL_SRC, "parent-recheck-summary.ts")));
 });
 
 test("no order a session can be handed tells it to revert -- only to NOT revert", () => {

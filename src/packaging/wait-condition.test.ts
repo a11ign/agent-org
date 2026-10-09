@@ -1,6 +1,6 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run`, `orgHealthNow` the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run`, `orgHealthNow` the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
 /**
- * `packages/agent-org/src/wait-condition.mjs` and its wiring, #2996: A DECLARED WAIT NAMES THE CONDITION IT WAITS FOR, AND THE TICK RE-READS IT.
+ * `packages/agent-org/src/wait-condition.ts` and its wiring, #2996: A DECLARED WAIT NAMES THE CONDITION IT WAITS FOR, AND THE TICK RE-READS IT.
  *
  * THE INCIDENT, REPLAYED (the chairman, 2026-10-02): the freeze ended at 06:50Z and four hours later `hold:ceo` was still on #2988/#2990 while twelve sessions
  * sat idle, because `holdersOf` and `NOT_STARTABLE` read a declared wait as proof of health. The positive control is that PR: `hold:ceo`, `Waiting-for: closed #2867`,
@@ -13,6 +13,7 @@
  * control, the exemption's trip, the end-to-end tick, the truth table and the per-kind cases that need a true condition -- and `the SAME fixture ... OPEN` stays green; ALWAYS TRUE turns
  * 10 red, the "unresolved is excused" ones among them. Each direction breaks the tests that assert its own half and no wiring test that does not read a condition.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -20,12 +21,12 @@ import { fileURLToPath } from "node:url";
 import {
   WAIT_FIELDS, WAIT_STATES, WAIT_MARKER, MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, parseWaits, conditionHolds, waitItemOf, waitFieldsOf, staleWaits, bareWaits,
   manualWaits, setterOf,
-} from "../wait-condition.mjs";
-import { holdReasonOf, holdExcused } from "../pr-hold-state.mjs";
-import { SIGNALS, redPrReading, staleWaitReading, waitWithoutReasonReading, orgHealthReadings, orgHealthOrders } from "../org-health.mjs";
-import { decide, withPrOwners, redPrFacts, staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate.mjs";
+} from "../wait-condition.ts";
+import { holdReasonOf, holdExcused } from "../pr-hold-state.ts";
+import { SIGNALS, redPrReading, staleWaitReading, waitWithoutReasonReading, orgHealthReadings, orgHealthOrders } from "../org-health.ts";
+import { decide, withPrOwners, redPrFacts, staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate.ts";
 
-const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T11:00:00Z");
@@ -171,7 +172,7 @@ test("a hold with NO reason is excused only while the PR is younger than 4 h qui
   assert.equal(redReadingFor(quiet(5), open2867).status, "tripped");
 });
 
-test("THE DEFECT, KEPT AS A CONTROL: with no `holdStands` the label alone excuses, which is what red-pr.mjs did before #2996 and what org-retro and queue-table still ask", () => {
+test("THE DEFECT, KEPT AS A CONTROL: with no `holdStands` the label alone excuses, which is what red-pr.ts did before #2996 and what org-retro and queue-table still ask", () => {
   const pr = heldPr([marker("Waiting-for: closed #2867", NOW - 8 * HOUR_MS)]);
   const prs = withPrOwners([pr] as never, ROWS as never, () => null);
   assert.deepEqual(redPrFacts(prs, decide({ prs, readyRows: [], openRows: ROWS } as never)), []);
@@ -338,9 +339,9 @@ test("refFactOf: merged_at tells a merge from a close, and a state it does not k
 // --- pr:hold --until ---------------------------------------------------------------------------------------------------------
 
 test("pr:hold refuses an --until outside the grammar BEFORE it reads or writes anything", () => {
-  const run = spawnSync("node", [HOLD_ENTRY, "2988", "--session=ceo", "--until=soon"], { encoding: "utf8", timeout: 20_000 });
+  const run = spawnSync("node", [...TSX_IMPORT, HOLD_ENTRY, "2988", "--session=ceo", "--until=soon"], { encoding: "utf8", timeout: 20_000 });
   assert.equal(run.status, 2, run.stderr);
   assert.match(run.stderr, /REFUSING --until="soon": it is not a condition the gate can read/);
-  const unknownFlag = spawnSync("node", [HOLD_ENTRY, "2988", "--session=ceo", "--untill=closed #1"], { encoding: "utf8", timeout: 20_000 });
+  const unknownFlag = spawnSync("node", [...TSX_IMPORT, HOLD_ENTRY, "2988", "--session=ceo", "--untill=closed #1"], { encoding: "utf8", timeout: 20_000 });
   assert.notEqual(unknownFlag.status, 0, "a mistyped flag is still refused as unknown");
 });

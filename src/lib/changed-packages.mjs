@@ -47,7 +47,7 @@ import { changedFiles } from "./changed-files.mjs";
 // not need `node_modules` — the file is plain JS, so importing straight from `src` costs nothing.
 import { refuseUnknownFlags } from "./cli-flags.mjs";
 
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 // The PROJECT's checkout, which `$AGENT_ORG_HOST` names; the tool's own `src/lib` up three is `packages/`, one level short of any checkout.
 const REPO = HOME_CHECKOUT;

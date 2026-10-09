@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, withClosingRowOwners } from "./work-gate.mjs";
+import { decide, withClosingRowOwners } from "./work-gate.ts";
 
 type Fixture = Record<string, unknown>;
 

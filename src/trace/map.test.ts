@@ -14,7 +14,7 @@ import { buildMap, LOOPS, MAP_DEFINITIONS, PHASES, processMap, renderMap } from 
 import type { MapFilter } from "./map.mjs";
 import { repriceEvents } from "./store.mjs";
 import type { TraceEvent } from "./store.mjs";
-import type { PullRequest } from "../wakes-per-row.mjs";
+import type { PullRequest } from "../wakes-per-row.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso: string): number => Date.parse(iso);

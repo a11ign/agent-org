@@ -1,4 +1,4 @@
-// no-token: gh -- imports `wake.mjs`, whose default readers spawn `gh`; nothing here calls one, and the only process run is a `pnpm` shim on a scratch PATH (#3386)
+// no-token: gh -- imports `wake.ts`, whose default readers spawn `gh`; nothing here calls one, and the only process run is a `pnpm` shim on a scratch PATH (#3386)
 /**
  * #3386: A KEYED CLONE'S `node_modules` GOES STALE ON A DEPENDENCY CHANGE, AND #3264'S REMEDY CANNOT BE CARRIED OUT OVER IT.
  *
@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// `wake.mjs` takes its project from `$AGENT_ORG_HOST` AT IMPORT (#3233), so a recorded host is set FIRST and the tool imported after it.
+// `wake.ts` takes its project from `$AGENT_ORG_HOST` AT IMPORT (#3233), so a recorded host is set FIRST and the tool imported after it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "wake-keyed-stale-deps-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const PROJECT = join(SCRATCH, "project");
@@ -32,7 +32,7 @@ const HOST_FILE = join(SCRATCH, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { linkKeyedDependencies } = await import("../wake.mjs");
+const { linkKeyedDependencies } = await import("../wake.ts");
 
 const DECLARED = { eslint: "9.0.0", tsx: "4.0.0" };
 let made = 0;

@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.mjs` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the exact-start read, the fleet reading, the lab-job read, the waits and the log, and `readMilestoneMoves` is handed a `run` of its own.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the exact-start read, the fleet reading, the lab-job read, the waits and the log, and `readMilestoneMoves` is handed a `run` of its own.
 /**
  * THE PRIMARY MILESTONE'S CLOCK STARTS AT THE REAL LAST MOVE (#4295, part of #4231). #4231 started it at the last merge the tick already holds, a proxy that is later than the
  * milestone's own last move whenever anything else merged (silent) and EARLIER than it when a claim was released or a pull request closed with no merge (a false alarm to `ceo`).

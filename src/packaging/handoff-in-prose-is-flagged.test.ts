@@ -7,7 +7,7 @@
 // The flagged cases are the controls for every "not flagged" below: the same audit, the same comment, flagged when the fact is absent.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PROSE_QUESTIONS, boardTruthAudit, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.mjs";
+import { PROSE_QUESTIONS, boardTruthAudit, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.ts";
 
 const MINUTE = 60_000;
 const AT = Date.parse("2026-10-08T10:22:00Z");
@@ -79,7 +79,7 @@ test("a comment that merely quotes the phrase inside a fenced block is NOT flagg
 });
 
 test("only org accounts, only the last 24 hours, and not a comment younger than the 15 minutes the author has", () => {
-  const audit = (/** @type {any} */ c: any) => boardTruthAudit({ now: NOW, openRows: [{ number: 4090, labels: ["ready"], comments: [c] }], closedRows: [], mergedPrs: [], liveSessions: [],
+  const audit = (c: any) => boardTruthAudit({ now: NOW, openRows: [{ number: 4090, labels: ["ready"], comments: [c] }], closedRows: [], mergedPrs: [], liveSessions: [],
     waitFacts: { items: {} }, proseEvidence: { rows: [], labelEvents: [] } }).findings.length;
   assert.equal(audit(comment(COMMENT_4090, "DanBeckDev")), 0, "a person's comment is not an org session's");
   assert.equal(audit({ ...comment(COMMENT_4090), createdAt: new Date(NOW - 25 * 60 * MINUTE).toISOString() }), 0, "older than a day");

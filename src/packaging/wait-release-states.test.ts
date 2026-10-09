@@ -1,4 +1,4 @@
-// no-token: gh -- importing `row-file.mjs` and `ready-label-audit.mjs` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` a fake `run`
+// no-token: gh -- importing `row-file.ts` and `ready-label-audit.ts` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` a fake `run`
 /**
  * #4005: A WAIT NAMES THE CONDITION, NOT AN UMBRELLA ROW. The release states (`published <pkg>@<dist-tag>`, `<pkg> latest = next`, `tagged <tag>`) are read from the registry or
  * the remote, a failed read is an unknown, and `row-file` and the audit refuse an edge onto a row of several done-whens that names none of them.
@@ -8,10 +8,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WAIT_STATES, parseWaits, conditionHolds, doneWhenCount, namedDoneWhens, umbrellaEdge, waitItemOf, releaseReferencesOf } from "../wait-condition.mjs";
+import { WAIT_STATES, parseWaits, conditionHolds, doneWhenCount, namedDoneWhens, umbrellaEdge, waitItemOf, releaseReferencesOf } from "../wait-condition.ts";
 import { readReleaseFacts, remoteTagExists } from "../work-gate/held-on-satisfied-orders.mjs";
-import { blockedByNumbers, blockedByRefusal } from "../row-file.mjs";
-import { newUmbrellaEdges, UMBRELLA_EDGE_REFUSED_FROM } from "../ready-label-audit.mjs";
+import { blockedByNumbers, blockedByRefusal } from "../row-file.ts";
+import { newUmbrellaEdges, UMBRELLA_EDGE_REFUSED_FROM } from "../ready-label-audit.ts";
 
 const wait = (text: string) => parseWaits(`Waiting-for: ${text}`)[0];
 const facts = (releases?: Record<string, Record<string, string> | boolean>) => ({ items: {}, ...(releases && { releases }) });

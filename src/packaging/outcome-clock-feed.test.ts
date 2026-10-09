@@ -2,7 +2,7 @@
 /**
  * THE ROW CLOCK IS FED (#3486, slice 2). `outcome-clock.test.ts` proves the clock on facts handed to it; THIS file proves the tick hands it the facts. The
  * gate's `orgHealthNow({ ... })` call used to omit `claimedComments`, so production clocked PRs and was silent about every claimed row -- and every test of the
- * clock still passed, because each of them called the clock directly. So these tests run THE GATE (`work-gate.mjs` as a process), whose own `orgHealthNow`
+ * clock still passed, because each of them called the clock directly. So these tests run THE GATE (`work-gate.ts` as a process), whose own `orgHealthNow`
  * call is the thing under test, against a stub `gh` that answers the three reads the row clock depends on: the open PRs, the open rows, and the claimed rows'
  * comments.
  *
@@ -12,6 +12,7 @@
  * POSITIVE CONTROL: "a claimed row past the bound is named" is the non-empty case that "just under is not named" and "nothing is claimed" are read against, and
  * the first is RED against the call as it stood (the mutation is in the PR).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, cpSync } from "node:fs";
@@ -34,10 +35,10 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { SIGNALS } = await import("../org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
+const { SIGNALS } = await import("../org-health.ts");
+const { claimRecordComment } = await import("../row-claim.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const OVER_ROW_BOUND_MS = 137 * MINUTE_MS;
@@ -71,7 +72,7 @@ function gate({ prs = [], rows = [], claimed = [] }: { prs?: Record<string, unkn
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Order);
     return { clock: orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE), stderr: ran.stderr };
   } finally {
@@ -121,7 +122,7 @@ test("A CLAIMED ROW IS CLOCKED WHILE A PR IS TOO: the one order names both, the 
 });
 
 test("THE CLEANUP: nothing in `src` reads a head commit for the clock any more (`readHeadCommittedAt` and its `GH_READS` entry are deleted, not left beside it)", async () => {
-  const gateModule = await import("../work-gate.mjs");
+  const gateModule = await import("../work-gate.ts");
   const orgHealthModule = await import("../work-gate/org-health.mjs");
   assert.equal("readHeadCommittedAt" in gateModule, false);
   assert.equal("readHeadCommittedAt" in orgHealthModule, false);

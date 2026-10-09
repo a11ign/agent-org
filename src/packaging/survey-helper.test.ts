@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` task here runs through an INJECTED `run`; survey.mjs's own default `run`
+// no-token: gh -- every `gh` task here runs through an INJECTED `run`; survey.ts's own default `run`
 // (which really would spawn `gh`) is exercised only by tasks of kind `grep`/`read`, which reach `git`, in a
 // throwaway repository this test creates and deletes.
 /**
@@ -11,6 +11,7 @@
  * call/subprocess count -- the CLI-level test below counts real process spawns on both sides of that claim
  * rather than asserting it in prose.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -19,11 +20,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { survey, render, DEFAULT_READ_LIMIT } from "../survey.mjs";
+import { survey, render, DEFAULT_READ_LIMIT } from "../survey.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 // The tool's own CLI, found from this file and not through the project's checkout, where `packages/agent-org` is the old frozen copy.
-const SURVEY_CLI = fileURLToPath(new URL("../survey.mjs", import.meta.url));
+const SURVEY_CLI = fileURLToPath(new URL("../survey.ts", import.meta.url));
 
 /**
  * A real, throwaway git WORKING TREE -- `git grep` (no `--cached`) reads the working tree, so nothing here
@@ -49,8 +50,8 @@ const FILES = {
 };
 
 /**
- * A `run` explicitly INJECTED wherever a test wants survey.mjs's real `git` spawn -- never a bare omission
- * that falls through to survey.mjs's own default. #1401's live-default-seams guard cannot tell "this call
+ * A `run` explicitly INJECTED wherever a test wants survey.ts's real `git` spawn -- never a bare omission
+ * that falls through to survey.ts's own default. #1401's live-default-seams guard cannot tell "this call
  * doesn't need gh" from "this call forgot to inject", so every call site here passes one explicitly.
  */
 const execRun = (cmd: string, args: string[], opts: Parameters<typeof execFileSync>[2]): string =>
@@ -156,7 +157,7 @@ test("#2690: ONE `survey` CLI call answers what several separate CLI calls would
 
     let batchedSpawns = 0;
     batchedSpawns += 1;
-    const batched = spawnSync(process.execPath, [SURVEY_CLI, `--tasks=${tasksFile}`, `--repo=${root}`], { encoding: "utf8" });
+    const batched = spawnSync(process.execPath, [...TSX_IMPORT, SURVEY_CLI, `--tasks=${tasksFile}`, `--repo=${root}`], { encoding: "utf8" });
     assert.equal(batched.status, 0, batched.stderr);
     assert.match(batched.stdout, /TARGET here/);
     assert.match(batched.stdout, /1\tline 1/);
@@ -168,7 +169,7 @@ test("#2690: ONE `survey` CLI call answers what several separate CLI calls would
     unbatchedSpawns += 1;
     const r1 = spawnSync("git", ["grep", "-n", "-e", "TARGET", "--", "a.txt"], { cwd: root, encoding: "utf8" });
     unbatchedSpawns += 1;
-    const r2 = spawnSync(process.execPath, ["-e",
+    const r2 = spawnSync(process.execPath, [...TSX_IMPORT, "-e",
       `process.stdout.write(require("fs").readFileSync(${JSON.stringify(join(root, "b.txt"))}, "utf8").split("\\n").slice(0, 2).join("\\n"))`],
       { encoding: "utf8" });
     unbatchedSpawns += 1;

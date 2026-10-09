@@ -2,7 +2,7 @@
 // no-token: gh -- nothing here calls `gh`; every dependency is injected
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseHostConfig } from "./host-config.mjs";
+import { parseHostConfig } from "./host-config.ts";
 import { freshState, triageOrder } from "./triage-provider.ts";
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";

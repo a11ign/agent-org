@@ -22,7 +22,7 @@
 //
 // WHAT THE STORE DOES NOT SAY, and the waterfall does not guess: whether a pull request was opened as a draft when its `opened` record has `draft: null` or no `draft` (written before
 // the field, or the pull object was not read: a pull request with no `ready_for_review` then reads as a verify phase that says it does not know); and the push time of a head (`head_moved.at` is the COMMIT's date).
-import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
+import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 
 /** @typedef {import("./store.mjs").TraceEvent} TraceEvent
  * @typedef {[number, number]} Span from and to, in ms
