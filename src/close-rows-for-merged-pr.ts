@@ -93,7 +93,7 @@ import { settleClosedStatus, unsettledVerdict } from "./settle-closed-status.ts"
 import { moveProjectStatus } from "./row-claim.ts";
 import { scopedStatus } from "./board-snapshot.ts";
 import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 // RELATIVE, never `@a11y-witness/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
 // nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
 // not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.ts` imports only
@@ -120,6 +120,8 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
 // carries above.
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+// #4641: a closed build row whose Done-when named a live reading gets its verify row filed in the same turn.
+import { fileVerifyRow, verifyMarker, type BuildRow, type VerifyEffects, type VerifyOutcome } from "./verify-row.ts";
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 
@@ -715,6 +717,87 @@ function announceBodyPlan(number: string, { basis, declared, unreadable }: { bas
 }
 
 /**
+ * #4641: THE LIVE EFFECTS OF THE VERIFY ROW, named in one place for the reason `liveClosureEffects` gives. Each is the platform's own act
+ * (`gh issue create`, `--add-blocked-by`, the sub-issues API); boarding is `row-file --board=`, which refuses a row with no Region, and that refusal is returned, not hidden.
+ * @param {string} repo
+ * @returns {VerifyEffects}
+ */
+export function liveVerifyEffects(repo: string): VerifyEffects {
+  const idOf = (n: number) => gh(["api", `repos/${repo}/issues/${n}`, "--jq", ".id"]);
+  return {
+    findExisting: (build) => {
+      const found: { number: number; title: string; body: string; }[] = JSON.parse(gh(["issue", "list", "--repo", repo, "--state", "all", "--limit", "50",
+        "--search", `"Verify ${build.title}" in:title`, "--json", "number,title,body"]));
+      return found.find((row) => row.body.includes(verifyMarker(build.number)))?.number ?? null;
+    },
+    create: (plan) => {
+      const labels = plan.labels.flatMap((label) => ["--label", label]);
+      const milestone = plan.milestone === null ? [] : ["--milestone", plan.milestone];
+      const url = gh(["issue", "create", "--repo", repo, "--title", plan.title, "--body", plan.body, ...labels, ...milestone]);
+      const made = /\/issues\/(\d+)\s*$/.exec(url);
+      if (!made) throw new Error(`gh issue create answered no issue URL: ${url}`);
+      return Number(made[1]);
+    },
+    blockBy: (child, build) => { gh(["issue", "edit", String(child), "--repo", repo, "--add-blocked-by", String(build)]); },
+    addSubIssue: (child, parent) => { gh(["api", "-X", "POST", `repos/${repo}/issues/${parent}/sub_issues`, "-F", `sub_issue_id=${idOf(child)}`]); },
+    board: (child) => {
+      try {
+        execFileSync(process.execPath, [fileURLToPath(new URL("./row-file.ts", import.meta.url)), `--board=${child}`], { encoding: "utf8", stdio: "pipe" });
+        return null;
+      } catch (cause) {
+        const said = (cause as { stderr?: string; stdout?: string; message: string; });
+        return (said.stderr || said.stdout || said.message).trim().split("\n")[0];
+      }
+    },
+  };
+}
+
+/** #4641: READS ONE CLOSED ROW AS A BUILD ROW -- title, Done-when body, labels, milestone and the epic above it. `null` when it cannot be read ("could not read" is not "no reading"). */
+export function liveReadBuildRow(n: number, repo: string): BuildRow | null {
+  const [owner, name] = repo.split("/");
+  const query = `{repository(owner:"${owner}",name:"${name}"){issue(number:${n}){number title body labels(first:30){nodes{name}} milestone{title} parent{number}}}}`;
+  try {
+    const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
+    if (issue === null) return null;
+    return { number: issue.number, title: issue.title, body: issue.body ?? "", labels: (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name),
+      milestone: issue.milestone?.title ?? null, parent: issue.parent?.number ?? null };
+  } catch (cause) {
+    console.log(`VERIFY-ROW: could not read #${n} -- ${cause instanceof Error ? cause.message : cause}`);
+    return null;
+  }
+}
+
+/** #4641: THE LINE EACH OUTCOME PRINTS. `none` prints nothing (most rows name no live reading), and a link that failed is named beside the row it was filed. */
+export function verifyOutcomeLine(n: number, outcome: VerifyOutcome): string | null {
+  if (outcome.kind === "none") return null;
+  if (outcome.kind === "already") return `VERIFY-ROW: #${n} already has verify row #${outcome.number} -- none filed.`;
+  if (outcome.kind === "failed") return `VERIFY-ROW: #${n} NOT FILED -- ${outcome.reason}.`;
+  const problems = outcome.problems.length ? ` BUT ${outcome.problems.join("; ")}` : "";
+  return `VERIFY-ROW: #${n} verify row #${outcome.number} FILED (Not-before ${outcome.plan.notBefore})${problems}.`;
+}
+
+/**
+ * #4641: FILES THE VERIFY ROW OF EVERY ROW THIS RUN CLOSED (or found closed by this merge), and returns the rows with a live reading whose verify row could not be filed, so the exit says so --
+ * a lost verify row is a build the epic never learns the reading of. A row that cannot be READ is named `NOT CHECKED` and does not fail the job: most rows name no reading, and a read
+ * hiccup must not turn every merge red. The job is idempotent, so its re-run files what failed.
+ * @param {number[]} closed @param {{ prNumber: string, mergedAt: string }} ctx
+ * @param {{ read: (n: number) => BuildRow | null, effects: VerifyEffects, say: (line: string) => void }} deps
+ * @returns {number[]}
+ */
+export function fileVerifyRowsFor(closed: number[], ctx: { prNumber: string; mergedAt: string; }, deps: { read: (n: number) => BuildRow | null; effects: VerifyEffects; say: (line: string) => void; }): number[] {
+  const lost: number[] = [];
+  for (const n of closed) {
+    const build = deps.read(n);
+    if (build === null) { deps.say(`VERIFY-ROW: #${n} NOT CHECKED -- the row could not be read, so whether it names a live reading is unknown.`); continue; }
+    const outcome = fileVerifyRow(build, { pr: prName(ctx.prNumber), mergedAt: ctx.mergedAt }, deps.effects);
+    const line = verifyOutcomeLine(n, outcome);
+    if (line !== null) deps.say(line);
+    if (outcome.kind === "failed") lost.push(n);
+  }
+  return lost;
+}
+
+/**
  * #1443: every exit AFTER "before sweep" has printed pairs with an "after sweep" reading first, so the
  * job log always carries a before/after PAIR rather than a "before" with no matching "after" on whichever
  * path this run happened to take.
@@ -811,10 +894,15 @@ function main() {
   }
   announceBodyPlan(number, { basis, declared, unreadable });
 
-  const { code, lines } = closeRowsExit(applyClosurePlan(plan, { prNumber: prRef, sha, repo: REPO, basis }, liveClosureEffects()),
-    "CLOSE-ROWS");
+  const result = applyClosurePlan(plan, { prNumber: prRef, sha, repo: REPO, basis }, liveClosureEffects());
+  const { code, lines } = closeRowsExit(result, "CLOSE-ROWS");
   for (const line of lines) console.error(line);
-  exitAfterSweep(code);
+  // #4641: the verify row of each build row that left the open population at this merge, filed in the same turn.
+  const closedHere = [...plan.close, ...plan.already].map((row) => row.number).filter((n) => !result.failed.includes(n));
+  const lost = prMergedAt === null ? [] : fileVerifyRowsFor(closedHere, { prNumber: prRef, mergedAt: prMergedAt },
+    { read: (n) => liveReadBuildRow(n, REPO), effects: liveVerifyEffects(REPO), say: (line) => console.log(line) });
+  if (lost.length) console.error(`CLOSE-ROWS: no verify row for ${lost.length} closed build row(s): ${lost.map((n) => `#${n}`).join(" ")} -- the job is idempotent, so a re-run files it.`);
+  exitAfterSweep(code === EXIT.DONE && lost.length ? EXIT.COULD_NOT_CLOSE : code);
 }
 
 // The entry guard `merge-guard.ts` uses: a bare `file://` + argv[1] comparison misreads a path with a
