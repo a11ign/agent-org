@@ -33,7 +33,14 @@ import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLi
 import { claudeTurns, codexTurns, transcriptFiles } from "./token-audit.ts";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
-import { FAILURE_LEDGER_FILE, parseFailureLedger, type FailureEntry } from "./failure-ledger.ts";
+import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures, type FailureEntry } from "./failure-ledger.ts";
+// THE IDLE-CLAIM INCIDENTS (#4642): the pure detector, and the two things its live read borrows -- the gate's idle memory and the herdr listing.
+import { IDLE_CLAIM_INCIDENT_MINUTES, idleClaimIncidents, incidentEvents, incidentSummary, type IdleClaim, type IdleClaimIncident } from "./idle-claim-incident.ts";
+import { IDLE_CLAIMANT_MS, type Agent, type IdlePr } from "./idle-claimant.ts";
+import { readJsonObject, STALL_STATE_FILE, type StallState } from "./claim-stall.ts";
+import { readAgents } from "./herdr-agents.ts";
+import { newestPerName } from "./newest-check-run.ts";
+import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { correctionsPerDay, correctionsLine } from "./found-by-chairman.ts";
 // THE TOP BLOCKER (#4602): the gate's per-tick record of rows shelved behind each holder, summed over the window by its own leaf.
 import { BLOCKING_FILE, parseRecord as parseBlockingRecord, topBlocker, type TopBlocker } from "./blocking-impact.ts";
@@ -304,6 +311,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
  * `blockingRecord` absent or `null` is a record nobody read or that could not be parsed: the top-blocker line says `unknown`, never "nothing was shelved".
  * `failureLedger` absent or `null` is a ledger nobody read or that could not be read (a line that does not parse included): the corrections line says `unknown`, never `0`.
  * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
+ * `idleClaims` absent or `null` is a read nobody made or that was refused (no listing, no open-PR list): `unknown`, never 0 (#4642).
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
  * `merged` is the PRIMARY repository's list alone, the count's definition before #3593, and `mergedRepositories` is every declared one: absent is a project read
  * the old way (the total IS `merged`), `null` is a declaration that could not be read.
@@ -312,7 +320,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
 export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
-        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null;
+        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
@@ -332,6 +340,7 @@ export function buildReport(reads: {
     corrections: correctionsPerDay(parsedFailureLedger(reads.failureLedger), new Date(now)),
     unwaited: reads.unwaited ?? null,
     blocking: topBlockerOf(reads.blockingRecord, now),
+    idleClaims: incidentSummary(reads.idleClaims),
     dora: reads.dora,
   };
   // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
@@ -603,6 +612,16 @@ function blockingLines(blocking: ReturnType<typeof buildReport>["blocking"]): st
 }
 
 /**
+ * THE CLAIMS THAT WERE NOT FINISHING (#4642, class `row-not-finishable`): the count and the first three refs. `null` is a population nobody could read.
+ * @param {ReturnType<typeof incidentSummary>} summary @returns {string[]}
+ */
+function idleClaimLines(summary: ReturnType<typeof incidentSummary>): string[] {
+  if (summary === null) return [`- Claims idle past ${IDLE_CLAIM_INCIDENT_MINUTES} minutes with no open PR or nothing pending on it: ${UNKNOWN} (the claim memory, the herdr listing or the open-PR list could not be read)`];
+  const first = summary.count === 0 ? "" : `; first: ${summary.first.join(", ")}`;
+  return [`- Claims idle past ${IDLE_CLAIM_INCIDENT_MINUTES} minutes with no open PR or nothing pending on it: ${summary.count}${first}`];
+}
+
+/**
  * The report as the text `ceo` is handed and posts on #928.
  * @param {ReturnType<typeof buildReport>} report @returns {string}
  */
@@ -610,7 +629,7 @@ export function renderReport(report: ReturnType<typeof buildReport>): string {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...idleClaimLines(report.idleClaims), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -799,9 +818,44 @@ function readJournal(unit: string): string | null {
   }
 }
 
+const PR_RUNNING_STATUSES = ["IN_PROGRESS", "QUEUED", "PENDING"];
+
+/** The gate's `checksPending` (`withChecksPending`): a check of the NEWEST run per name is still running. Restated, because this file is a leaf and `work-gate.ts` imports it. */
+function checksPendingOf(pr: { statusCheckRollup?: { status?: string }[] }): boolean {
+  return newestPerName((pr.statusCheckRollup ?? []) as any).some((c: any) => PR_RUNNING_STATUSES.includes(String(c?.status ?? "").toUpperCase()));
+}
+
+/**
+ * WHEN A HOLDER'S IDLE RUN BEGAN, from what the gate remembers of it (`claim-stalls.json`, written every tick by `nextStallState`): an `idle-watch` entry carries `idleSince`; an
+ * idle NUDGE carries only `nudgedAt`, sent when the run reached `IDLE_CLAIMANT_MS`, so the start is that long before it -- an ESTIMATE, and the short side (the run was at least that long).
+ * Anything else (a stall nudge, a vacating row, no entry) is not an idle run, so `null`, which the detector reads as CANNOT TELL.
+ */
+function idleSinceOf(entry: StallState[string]): number | null {
+  if (typeof entry.idleSince === "number") return entry.idleSince;
+  return entry.idle === true && typeof entry.nudgedAt === "number" ? entry.nudgedAt - IDLE_CLAIMANT_MS : null;
+}
+
+/**
+ * THE LIVE READ OF THE IDLE-CLAIM INCIDENTS (#4642): `null` when the open-PR list or the herdr listing could not be read (`unknown` in the report, never 0).
+ * THE CLAIMS ARE THE GATE'S MEMORY, so a holder with a declared row wait is not among them (the gate drops its memory the tick it reads a wait; at most one tick stale).
+ * A PULL REQUEST IS ATTRIBUTED TO A HOLDER BY ITS `session:` LABEL, as the gate does, so a session holding two rows credits its pull request to both: a quiet row of that
+ * session can be hidden, never invented. The pure decision is `idle-claim-incident.ts`'s.
+ * @param {{ now: number, stateDir: string, openPrs: any[] | null, agents: Agent[] | null }} reads
+ */
+export function readIdleClaims({ now, stateDir, openPrs, agents }: { now: number; stateDir: string; openPrs: any[] | null; agents: Agent[] | null; }): IdleClaimIncident[] | null {
+  if (openPrs === null || agents === null) return null;
+  const memory = readJsonObject(join(stateDir, STALL_STATE_FILE)) as StallState;
+  const prsOf = (session: string): IdlePr[] => openPrs
+    .filter((pr) => (pr.labels ?? []).some((l: any) => (typeof l === "string" ? l : l?.name) === `${SESSION_PREFIX}${session}`))
+    .map((pr) => ({ number: pr.number, labels: pr.labels, reviewDecision: pr.reviewDecision, checksPending: checksPendingOf(pr) }));
+  const claims: IdleClaim[] = Object.entries(memory).map(([row, entry]) => ({ row: Number(row), session: entry.session, idleSince: idleSinceOf(entry), prs: prsOf(entry.session) }));
+  return idleClaimIncidents({ claims, agents, now });
+}
+
 /**
  * Every read the report wants, once. `stateDir` holds the wake ledger. THE HAND-FIX COUNT IS NOT A FILE IN IT: `hand-fix-ledger.ts` derives
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
+ * THE IDLE-CLAIM READ (#4642) is {@link readIdleClaims}: the gate's own idle memory, the herdr listing (`readAgentListing` is its seam) and the open-PR list already read here.
  * THE DORA READ IS THE DECLARATION'S (`dora.ts`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
  *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
@@ -811,16 +865,19 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
   readMergedRepositories = (at) => readMerged({ declaration: homeProjectDeclaration(), since: at - WINDOW_MS }),
   readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
   readUnwaited = (at) => unwaitedStockRows({ reader: ghTrackerReader(homeProjectDeclaration().repo), now: at }),
-  readDoraReport = readDeclaredDora }: {
+  readDoraReport = readDeclaredDora, readAgentListing = () => readAgents() }: {
         now: number; stateDir: string; unit?: string; readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>;
         readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
+        readAgentListing?: () => Agent[] | null;
     }) {
   const since = now - WINDOW_MS;
   const mergedRepositories = attemptDora(() => readMergedRepositories(now));
+  const openPrs = ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup,reviewDecision"]);
   return {
     merged: mergedRepositories?.[0]?.prs ?? null,
     mergedRepositories,
-    openPrs: ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup"]),
+    openPrs,
+    idleClaims: readIdleClaims({ now, stateDir, openPrs, agents: readAgentListing() }),
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
     failureLedger: readText(`${stateDir}/${FAILURE_LEDGER_FILE}`),
@@ -888,6 +945,8 @@ export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(
     }
     const report = buildReport(inputs, now);
     const text = renderReport(report);
+    // `recordFailures` never throws and skips an event already logged, so an episode the daily pass sees on two dates is one line (#4642).
+    recordFailures({ logPath: join(stateDir, FAILURE_LEDGER_FILE), events: incidentEvents(inputs.idleClaims ?? []), now, report: (line) => log(`${line}\n`) });
     keepReading(record, { stateDir, date, numbers: report.numbers, mergedRepositories: report.mergedRepositories?.map((r) => r.repo) }, log);
     return [retrospectiveOrder(date, text)];
   } catch (err: any) {
