@@ -1,0 +1,11 @@
+Every declared copy in `src/lib/` names an original that exists on a11ign `main`, and `copyDriftReading` over the 19 declared copies says `clear` instead of `unknown`. Twelve of the row's thirteen were already pointed at the `.ts` originals by agent-org#511 and #523, so what remained of the row, re-taken at agent-org `e620e4c`, was `cli-flags.ts` (still naming `packages/worker-fleet/src/cli-flags.ts`, which left the workspace in a11ign#3504) and the allowance counts of seven copies that then read `tripped`: `ci-changed`, `isolation-gate`, `test-memory-cap`, `tree-wide-guard`, `walk-scope`, `walk-scope-discovery`, `worktree-resolution`. Those seven differ from their originals in annotations and one renamed path only (the originals now annotate in JSDoc where the copies were converted to TypeScript syntax), so each header's SHA is the original's last commit and its count is the reader's own measured ceiling.
+
+Evidence (all measured on this branch against a11ign `origin/main` `cefa57bc3`): `readDeclaredCopies` reads 19 pairs and 0 unreadable originals, and `copyDriftReading` returns `{"signal":"copies-drifted","status":"clear","detail":""}`. Before this change the same call returned `tripped` for those seven copies (counts 143/71/32/13/24/67/1 against headers naming 100/3/1/10/0/3/0). `org-health-fleet-and-copies.test.ts` 18/18 pass. The full suite shows 33 failures in 11 files, none touching the copies; five of those files (`mjs-ratchet`, `pr-template-acceptance`, `wake-engineer-brief`, `public-claim`, `board-truth-audit`) fail identically, 6 of 89, on an unmodified checkout, and the rest read GitHub (HTTP 502). The command below is the control: at agent-org `origin/main` it prints `UNREADABLE src/lib/cli-flags.ts -> packages/worker-fleet/src/cli-flags.ts` and exits 1.
+
+Acceptance: `bash -c 'bad=0; for f in src/lib/*.ts; do p=$(sed -n 1,3p $f | grep -oE "COPIED FROM [^ ]+" | head -1 | sed "s/COPIED FROM //" | tr -d "\140"); [ -z "$p" ] && continue; git -C ~/repos/role-product-manager cat-file -e origin/main:$p 2>/dev/null || { echo "UNREADABLE $f -> $p"; bad=1; }; done; exit $bad'`
+
+Closes a11ign/a11ign#4582
+
+platform: n/a (header text in declared copies)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -1,9 +1,10 @@
-// COPIED FROM `packages/guards/src/isolation-gate.ts` at d8d9a02fc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/isolation-gate.ts` at f3b5c5f59 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 71 NAMED LINES:
 // - its import of cli-flags.ts, now the tool's own copy beside it
 // - its import of npm-cli-executable.ts, now the tool's own copy beside it
 // - `REPO_ROOT`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#3830)
+// - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 71 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
 // command: prove a published package installs and works standalone, by actually installing and running it
 // Can a consumer install this package and use it? Answered by doing it.
