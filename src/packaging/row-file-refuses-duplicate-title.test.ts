@@ -24,6 +24,8 @@ const BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
   + "## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
 const RELEASE = ["--milestone", "CI reset"];
+/** The duplicate-title read's own `--limit` (100). #4601's blast-radius read also lists issues, with another limit, so this test counts its own by it. */
+const DUPLICATE_READ_LIMIT = "100";
 
 type Row = { number: number; title: string; state: "OPEN" | "CLOSED" };
 
@@ -53,7 +55,7 @@ function tracker(rows: Row[], { outage = false } = {}) {
     fetchBoardStatus: () => "Backlog", fetchLabels: () => ({ number: 0, title: "", labels: ["backlog", "lane:any"] }),
     moveStatus: () => ({ moved: true as const }),
   };
-  return { deps, calls, creates: () => creates, listCalls: () => calls.filter((a) => a[0] === "issue" && a[1] === "list") };
+  return { deps, calls, creates: () => creates, listCalls: () => calls.filter((a) => a[0] === "issue" && a[1] === "list" && a.includes(DUPLICATE_READ_LIMIT)) };
 }
 
 const file = (title: string, extra: string[] = []) => ["--title", title, "--body", BODY, `--session=${SESSION}`, ...RELEASE, ...extra];

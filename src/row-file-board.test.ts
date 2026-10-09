@@ -324,7 +324,8 @@ test("#4078 ACCEPTANCE: an ORG row (a Region of only agent-org paths) is filed i
   assert.ok(!argv.some((a) => a.startsWith("--tracker")), "our own flag never reaches gh");
   assert.match(r.out, /^https:\/\/github\.com\/a11ign\/agent-org\/issues\/900\n$/);
   assert.deepEqual(r.gh.edits.map((e) => e[e.indexOf("--repo") + 1]), [ORG_TRACKER.repo]);
-  const everyRepoNamed = r.gh.calls.flatMap((a) => (a.includes("--repo") ? [a[a.indexOf("--repo") + 1]] : []));
+  // #4601: the blast-radius check READS both trackers' open rows and every code repository's pull requests, so only the calls that WRITE count here.
+  const everyRepoNamed = r.gh.calls.filter((a) => !["list", "view"].includes(a[1])).flatMap((a) => (a.includes("--repo") ? [a[a.indexOf("--repo") + 1]] : []));
   assert.ok(everyRepoNamed.length > 0 && everyRepoNamed.every((repo) => repo === ORG_TRACKER.repo), `repositories named: ${everyRepoNamed}`);
 });
 
