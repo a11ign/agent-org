@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
 import { holdersOf } from "../pr-hold-state.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
+import { isAcceptancePath } from "../acceptance-file.ts";
 import { waitItemOf, declaredWaitsOf } from "../wait-condition.ts";
 import { labelsOf } from "../work-gate.ts";
 import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.mjs";
@@ -34,7 +35,7 @@ import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.mjs";
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */
 const NO_OWNER_SESSION = "product-manager";
 /** Changeset files are excluded on both sides, as B4 excludes them (`file-overlap-rule.mjs`): every pull request adds its own, and a shared NAME is no shared change. */
-const isChangeset = (/** @type {string} */ path) => path.startsWith(".changeset/");
+const isChangeset = (/** @type {string} */ path) => path.startsWith(".changeset/") || isAcceptancePath(path); // ADR 0044: each pull request adds its own `.acceptance/` file
 const HASH_LENGTH = 10;
 
 /**

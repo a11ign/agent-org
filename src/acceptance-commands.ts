@@ -76,6 +76,7 @@ import { localImports, importedNamesFor, stripComments } from "./lib/local-impor
 import { toolImports } from "./lib/installed-tool-imports.mjs";
 import { resolveTypescript } from "./lib/resolve-typescript.mjs";
 import { defectClassReport } from "./defect-class-line.ts"; // #4123
+import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "./acceptance-file.ts"; // ADR 0044
 import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
@@ -3560,7 +3561,11 @@ export function testFilesAmong(paths: string[]): string[] {
   return paths.filter((path) => TEST_FILE_PATTERN.test(path));
 }
 
-export type DiffReading = { ok: true, files: string[] } | { ok: false, why: string };
+/**
+ * `added` is the subset the pull request ADDS (git's `A`, not `M` or `C`): the only files CI reads an Acceptance from (ADR 0044). A caller that
+ * predates it leaves it off and reads the body, the fallback; an UNREADABLE diff is the `ok: false` arm, which says so.
+ */
+export type DiffReading = { ok: true, files: string[], added?: string[] } | { ok: false, why: string };
 
 /**
  * THE VERDICT for `Mutation:`. Four outcomes, and a MISSING record is no longer one that fails (a11ign/a11ign#3282, decided
@@ -3705,7 +3710,8 @@ export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): Diff
     if (parentCount() < MERGE_PARENTS) return { ok: false, why: "HEAD is not a merge commit" };
     // Through the one reader of "which paths changed" (#939): with renames detected a moved test file
     // lists only where it WENT. `--no-renames` reads a move as delete + add, and the add is what ACMR keeps.
-    return { ok: true, files: changedFiles(["--diff-filter=ACMR", "HEAD^1", "HEAD"], { repoRoot: cwd }) };
+    const files = changedFiles(["--diff-filter=ACMR", "HEAD^1", "HEAD"], { repoRoot: cwd });
+    return { ok: true, files, added: changedFiles(["--diff-filter=A", "HEAD^1", "HEAD"], { repoRoot: cwd }) };
   } catch (error) {
     return { ok: false, why: `git said: ${(error as Error).message.split("\n")[0]}` };
   }
@@ -3758,7 +3764,9 @@ export function wholeSuiteNote(commands: string[]): string[] {
 /**
  * `rowLabels` is the caller's reader of a row's labels (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.ts` prints as NOT CHECKED
  */
-export type BodyReportInput = { body: string, run: (command: string) => number, diff: DiffReading, rowLabels?: (row: { repo: string | null, number: number }) => string[] };
+export type BodyReportInput = { body: string, run: (command: string) => number, diff: DiffReading, rowLabels?: (row: { repo: string | null, number: number }) => string[],
+  /** ADR 0044: where the `Acceptance:` family is read from. Absent, it is resolved from `diff.added` and `readFile`, so no caller has to. */
+  acceptance?: AcceptanceSource, readFile?: (path: string) => string };
 export type BodyReport = { name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } };
 
 /**
@@ -3773,20 +3781,46 @@ export type BodyReport = { name: string, report: (input: BodyReportInput) => { o
  * @type {BodyReport[]}
  */
 export const CI_BODY_REPORTS: BodyReport[] = [
-  { name: "acceptance", report: ({ body, run }) => {
+  { name: "acceptance", report: (input) => {
+    const source = acceptanceSourceOf(input);
+    const named = sourceLine(source);
+    const text = sectionsTextOf(source);
+    // Two files are refused as two `Acceptance:` headers in one body are, and nothing is run from either.
+    if (text === null) return { ok: false, lines: [`ACCEPTANCE: DUPLICATE -- ${named}; a pull request adds ONE acceptance file`] };
     // #4322: BEFORE the command runs, because running it is the harm on the host -- it would read the primary checkout.
-    const primary = primaryCheckoutCdReason(body, "ACCEPTANCE");
-    if (primary) return { ok: false, lines: [primary] };
-    const report = acceptanceReport(body, run);
-    const declared = extractAcceptanceSection(body);
+    const primary = primaryCheckoutCdReason(text, "ACCEPTANCE");
+    if (primary) return { ok: false, lines: [named, primary] };
+    const report = acceptanceReport(text, input.run);
+    const declared = extractAcceptanceSection(text);
     const notes = declared.kind === "commands" ? wholeSuiteNote(declared.commands) : [];
-    return { ok: report.ok, lines: [...report.lines, ...notes] };
+    return { ok: report.ok, lines: [named, ...report.lines, ...notes] };
   } },
   { name: "closes", report: ({ body }) => oneLine(closesDeclarationReport(body)) },
   { name: "class", report: ({ body, rowLabels }) => oneLine(defectClassReport({ body, rows: closedRowsOf(body), rowLabels })) },
-  { name: "mutation", report: ({ body, diff }) => oneLine(mutationRecordReport({ body, diff })) },
+  { name: "mutation", report: (input) => oneLine(mutationRecordReport({ body: sectionsTextOf(acceptanceSourceOf(input)) ?? input.body, diff: input.diff })) },
   { name: "measured", report: ({ body }) => oneLine(measuredSectionReport(body)) },
 ];
+
+/**
+ * ADR 0044: THE SOURCE THE `Acceptance:` FAMILY IS READ FROM, resolved once per input. The file the pull request ADDS under `.acceptance/` when
+ * it adds one, else the body. A caller that resolved it already (`checkBody` does, to leak-check the file's text) hands it in.
+ * @param {BodyReportInput} input
+ * @returns {AcceptanceSource}
+ */
+export function acceptanceSourceOf({ body, diff, acceptance, readFile = (path) => readFileSync(path, "utf8") }: BodyReportInput): AcceptanceSource {
+  if (acceptance !== undefined) return acceptance;
+  return resolveAcceptanceSource({ body, added: diff.ok ? (diff.added ?? []) : undefined, read: readFile });
+}
+
+/**
+ * The same, for a caller that holds only the body: the public entry for the workflow's own reads of the sections (`hasFullHistoryDeclaration`),
+ * which must come from the same text the commands do. Reads the checkout at `cwd`.
+ * @param {string} body @param {string} [cwd]
+ * @returns {AcceptanceSource}
+ */
+export function acceptanceSourceOfThisPullRequest(body: string, cwd: string = process.cwd()): AcceptanceSource {
+  return acceptanceSourceOf({ body, run: () => 0, diff: changedFilesOfThisPullRequest(cwd), readFile: (path) => readFileSync(join(cwd, path), "utf8") });
+}
 
 /**
  * #4123: the rows the body's `Closes` names, none for `Closes: none`, missing or malformed (the `closes` report refuses those itself).
@@ -3830,7 +3864,9 @@ function oneLine({ ok, line }: { ok: boolean; line: string; }) {
  * @returns {{ ok: boolean, lines: string[] }}
  */
 export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] = CI_BODY_REPORTS): { ok: boolean; lines: string[]; } {
-  const results = reports.map(({ report }) => report(input));
+  // Resolved once, so the file is read once and every report that reads the `Acceptance:` family reads the same text.
+  const resolved = { ...input, acceptance: acceptanceSourceOf(input) };
+  const results = reports.map(({ report }) => report(resolved));
   return { ok: results.every((result) => result.ok), lines: results.flatMap((result) => result.lines) };
 }
 

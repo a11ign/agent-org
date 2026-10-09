@@ -169,7 +169,7 @@ test("#2417: exemption is by path, not by resemblance -- a neighbouring lockfile
 // --- done-when 4: the exempt set is a named constant, and the measured occurrences replay -----------------------
 
 test("#2417 done-when 4: the exempt set is ONE named constant and every entry carries a reason", () => {
-  assert.equal(REGION_EXEMPT.length, 3, "the lockfile, generated output and changesets the ruling names");
+  assert.equal(REGION_EXEMPT.length, 4, "the lockfile, generated output and changesets the ruling names, and each pull request's own `.acceptance/` file (ADR 0044)");
   for (const { entry, reason } of REGION_EXEMPT) {
     assert.ok(entry.length > 0 && reason.length > 20, `\`${entry}\` states why it is exempt`);
   }

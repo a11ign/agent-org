@@ -42,8 +42,9 @@
 import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports }
+import { acceptanceSourceOf, closesReferences, extractAcceptanceSection, extractClosesDeclaration, extractMutationSection, runCiBodyReports }
   from "./acceptance-commands.ts";
+import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "./region-paths.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file.ts";
@@ -112,22 +113,25 @@ export function acceptanceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * none gets `UNCHECKED`, which is loud and not a refusal, exactly as CI treats a diff it could not read.
  * @param {string} body
  * #4123: `rowLabels` is the reader of a closed row's labels, for the `Class:` line a defect row's pull request owes; a caller with none gets
- * `CLASS: NOT CHECKED`, printed.
+ * `CLASS: NOT CHECKED`, printed. ADR 0044: `readFile` reads the acceptance file the diff adds, from the head's tree (the working directory, by default).
  * @param {{ run?: (command: string) => number, diff?: import("./acceptance-commands.ts").DiffReading,
  *   rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"] }} [deps]
  * @returns {{ ok: boolean, lines: string[] }}
  */
-export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels }: {
+export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels, readFile }: {
     run?: (command: string) => number; diff?: import("./acceptance-commands.ts").DiffReading;
-    rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"];
+    rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
 } = {}): { ok: boolean; lines: string[]; } {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
   // anything from first. The same `allLeaksIn` predicate the tree-wide guards already drive, never
   // restated.
-  const leak = leakRefusalReason(body);
+  // ADR 0044: and the file's text too -- it is what gets run when the pull request adds one, so it is the text a leak must not hide in.
+  const input = { body, run, diff, rowLabels, readFile };
+  const acceptance = acceptanceSourceOf(input);
+  const leak = leakRefusalReason(body) ?? leakRefusalReason(sectionsTextOf(acceptance) ?? "");
   if (leak) return { ok: false, lines: [leak] };
-  return runCiBodyReports({ body, run, diff, rowLabels });
+  return runCiBodyReports({ ...input, acceptance });
 }
 
 /**
@@ -143,6 +147,9 @@ export const REGION_EXEMPT = [
   { entry: "docs/commands.md",
     reason: "generated from the CLIs' own flags and tracked on purpose (#478); `generated-paths.test.ts` names it the "
       + "one tracked generated file" },
+  { entry: ACCEPTANCE_DIR,
+    reason: "each pull request adds its own acceptance file, named for its branch (ADR 0044), so a Region that listed it would be "
+      + "padding and a refusal over it a false one" },
   { entry: ".changeset/",
     reason: "a PR that changes a package carries a changeset, which its row cannot declare before it is written" },
 ];
@@ -379,7 +386,8 @@ export function localDiffReading(rest: string[], git: (args: string[]) => string
   const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
   try {
     const files = git(["diff", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z", `${base}...HEAD`]);
-    return { ok: true, files: files.split("\0").filter(Boolean) };
+    const added = git(["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", `${base}...HEAD`]);
+    return { ok: true, files: files.split("\0").filter(Boolean), added: added.split("\0").filter(Boolean) };
   } catch (error) {
     return { ok: false, why: `git said: ${messageOf(error).split("\n")[0]}` };
   }
@@ -778,6 +786,36 @@ function printMutationReport(body: string, runMutation: (command: string) => num
 }
 
 /**
+ * ADR 0044: A PULL REQUEST ADDS ITS ACCEPTANCE FILE, AND `pr-open` IS WHERE THE AUTHOR LEARNS IT IS MISSING. CI reads the Acceptance from the file
+ * the pull request adds under `.acceptance/`; a diff that adds none would fall back to the body, the path being retired, so it is refused here
+ * with the file's exact name. WHEN THE BODY ALREADY CARRIES AN `Acceptance:` it WRITES that file, because the file's grammar is the body's own:
+ * the same parser reads either, so the text moves unchanged and nothing is re-derived. It does not commit: the file must be in the head
+ * the reviewer reads, and committing for the author is a decision about their history. An unreadable diff is not accused (`checkBody` says
+ * `UNCHECKED` for it), and `null` is "go on". OFF when no `write` is wired, which is every direct caller of `main` and none of the shipped CLI
+ * (the entry block passes `writeAcceptanceFile`, as `regionStep` is placed): a test's `git` seam answers one list for every diff, and a refusal
+ * inside `main` would have refused the forty tests that never named a file.
+ * @param {string} body @param {string[]} rest
+ * @param {{ git?: (args: string[]) => string, write?: (path: string, text: string) => void, err: (line: string) => void }} io
+ * @returns {number | null}
+ */
+function acceptanceFileStep(body: string, rest: string[], { git, write, err }: {
+    git?: (args: string[]) => string; write?: (path: string, text: string) => void; err: (line: string) => void;
+  }): number | null {
+  if (!write) return null;
+  const diff = localDiffReading(rest, git);
+  if (!diff.ok || (diff.added ?? []).some(isAcceptancePath)) return null;
+  const path = acceptanceFileForBranch(flagAfter(rest, "--head") ?? (git ?? defaultGit)(["rev-parse", "--abbrev-ref", "HEAD"]).trim());
+  const declared = extractAcceptanceSection(body).kind;
+  const carries = declared === "commands" || declared === "none";
+  if (carries) write(path, body);
+  err(`pr-open: REFUSED -- the diff adds no file under ${ACCEPTANCE_DIR}, and CI reads the Acceptance from the file a pull request adds `
+    + `(ADR 0044). ${carries ? `Wrote ${path} from the body's own sections; \`git add\` it, commit and push, then run pr-open again`
+      : `Create ${path} with the \`Acceptance:\` section (and \`Refutation\`/\`Mutation\` if you have them), commit and push, then run pr-open again`}. `
+    + "`Closes` stays in the body. Nothing was sent.\n");
+  return EXIT_NOTHING_SENT;
+}
+
+/**
  * #2417: `checkRegion` in `main`'s terms: prints its note, or its refusal, and returns the exit code only for a refusal.
  * OFF when no `rowBody` is wired, which is every direct caller of `main` and none of the shipped CLI: the entry block
  * passes the real reader (#1352's `launchGate` is placed the same way, and `pr-open-region.test.ts` pins the wiring).
@@ -832,21 +870,21 @@ function verifyStampStep(mode: string, rest: string[], body: string, { verifySta
  *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
  *           rowLabels?: (number: number, repo: string) => string[], labelExists?: (name: string) => boolean,
  *           code?: readonly { key: string, repo: string }[], login?: () => string, lanes?: {lanes: import("./lane-ownership.ts").Lane[]} | null,
- *           verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading,
- *           out?: (line: string) => void, err?: (line: string) => void }} [deps]
+ *           verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading, write?: (path: string, text: string) => void,
+ *           readFile?: (path: string) => string, out?: (line: string) => void, err?: (line: string) => void }} [deps]
  * @returns {number}
  */
 export function main(argv: string[] = process.argv.slice(2),
   { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rowLabels, labelExists, rootFiles, code, login, lanes,
-    verifyStamp, out = writeOut, err = writeErr }: {
+    verifyStamp, write, readFile, out = writeOut, err = writeErr }: {
           run?: (args: string[]) => void; git?: (args: string[]) => string;
           prHead?: (repo: string, number: string) => { ref: string; oid: string; } | null;
           runAcceptance?: (command: string) => number; runMutation?: (command: string) => number;
           owner?: () => string | null; rowBody?: (number: number, repo?: string) => string; rootFiles?: Set<string>;
           rowLabels?: (number: number, repo: string) => string[]; labelExists?: (name: string) => boolean;
           code?: readonly { key: string; repo: string; }[]; login?: () => string; lanes?: { lanes: import("./lane-ownership.ts").Lane[]; } | null;
-          verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading;
-          out?: (line: string) => void; err?: (line: string) => void;
+          verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading; write?: (path: string, text: string) => void;
+          readFile?: (path: string) => string; out?: (line: string) => void; err?: (line: string) => void;
       } = {}): number {
   const [mode, ...rest] = argv;
   if (mode !== "create" && mode !== "edit") {
@@ -868,10 +906,12 @@ export function main(argv: string[] = process.argv.slice(2),
     err(`${headRefused}\n`);
     return EXIT_NOTHING_SENT;
   }
+  const noFile = acceptanceFileStep(body, rest, { git, write, err });
+  if (noFile !== null) return noFile;
   // #2417: before checkBody for the same reason, and before anything is sent.
   const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, out, err });
   if (outsideRegion !== null) return outsideRegion;
-  const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git),
+  const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git), readFile,
     rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)) }); // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
@@ -1133,6 +1173,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
     process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
-      rowLabels: defaultRowLabels, labelExists: defaultLabelExists });
+      rowLabels: defaultRowLabels, labelExists: defaultLabelExists, write: writeAcceptanceFile });
   }
 }

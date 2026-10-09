@@ -79,10 +79,12 @@ import { gh, lookup } from "../merge-guard/lookups.mjs";
 import { holdersOf } from "../pr-hold-state.ts";
 import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
+import { isAcceptancePath } from "../acceptance-file.ts";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
 /** @type {(path: string) => boolean} */
-const isChangeset = (path) => path.startsWith(".changeset/");
+// ADR 0044: and each pull request's own `.acceptance/` file, for the same reason -- a shared directory is no shared change.
+const isChangeset = (path) => path.startsWith(".changeset/") || isAcceptancePath(path);
 
 /** #2617: the tracker the project's own rows live in -- the first entry, which the empty key names (ADR 0040, decision 2). */
 const primaryTrackerRepo = () => homeProjectDeclaration().tracker[0].repo;

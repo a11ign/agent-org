@@ -3532,7 +3532,8 @@ test("#2305: the diff is the PR's OWN files -- HEAD^1..HEAD of the merge commit,
   withGitSandbox(({ dir, run, commit }) => {
     mergedPullRequest(dir, run, commit);
     const reading = changedFilesOfThisPullRequest(dir);
-    assert.deepEqual(reading, { ok: true, files: ["src/x.mjs", "src/x.test.ts"] },
+    // `added` is ADR 0044's: the same own-files diff narrowed to additions, which is where the acceptance file is looked for.
+    assert.deepEqual(reading, { ok: true, files: ["src/x.mjs", "src/x.test.ts"], added: ["src/x.mjs", "src/x.test.ts"] },
       "base-moved-on.test.ts landed on the base and is not this PR's to answer for");
   });
 });
