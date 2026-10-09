@@ -46,3 +46,23 @@ test("CONTROL: a claim-release note naming the session is allowed, and a claim n
   assert.equal(answerLabelRefusal({ state: "OPEN", lastComment: { body: claimRecordComment({ session: "worker-1", released: true }) }, session: "worker-1" }), null);
   assert.match(String(answerLabelRefusal({ state: "OPEN", lastComment: { body: claimRecordComment({ session: "worker-1" }) }, session: "worker-1" })), /asks nothing/);
 });
+
+// THE REPLAY: a question raised once is not raised again on the next edition day, even when its owner cleared the label without commenting.
+const asked = { body: "`orchestrator`: does the lab corpus carry protocol 21 captures?", createdAt: "2026-10-09T10:00:00Z" };
+const raisedAs = (labelledAt: string[], lastComment: { body: string; createdAt?: string } = asked) => answerLabelRefusal({ state: "OPEN", lastComment, session: "orchestrator", labelledAt });
+
+test("a label already given AFTER the newest comment is not given again", () => {
+  assert.match(String(raisedAs(["2026-10-09T10:05:00Z"])), /already labelled after the newest comment/);
+  assert.match(String(raisedAs(["2026-10-09T10:00:00Z"])), /already labelled/, "the same second counts as after: the label answered this comment");
+});
+
+test("CONTROL: a label given BEFORE the newest comment does not stop a new question, and no earlier label is the ordinary case", () => {
+  assert.equal(raisedAs(["2026-10-09T09:00:00Z"]), null);
+  assert.equal(raisedAs([]), null);
+  assert.equal(answerLabelRefusal({ state: "OPEN", lastComment: asked, session: "orchestrator" }), null);
+});
+
+test("an earlier label that cannot be compared with the newest comment is a refusal, never an allowance", () => {
+  assert.match(String(raisedAs(["not a time"])), /cannot be compared/);
+  assert.match(String(raisedAs(["2026-10-09T09:00:00Z"], { body: asked.body })), /cannot be compared/);
+});

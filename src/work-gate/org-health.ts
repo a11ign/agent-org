@@ -21,6 +21,7 @@ import { claimRecordOf } from "../claim-stall.ts";
 import { idleClaimantReading } from "../idle-claimant.ts";
 import { familyNumber } from "../arm-pr.ts";
 import { readAgents } from "../herdr-agents.ts";
+import { answerLabelRefusal } from "../answer-label-guard.ts";
 import { boardTruthAudit, readBoardFacts, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.ts";
 import { editionDay } from "../board-discussion.ts";
 import { idleWithOpenRowsReading, IDLE_REASONS } from "../idle-with-open-rows.ts";
@@ -609,11 +610,35 @@ export function boardRowsOf(openRowsRead: any[], claimedComments: any[] | null |
 }
 
 /**
+ * #4679: WHAT THE GUARD NEEDS OF A ROW, read where the label is written. `readProseFacts` rows carry no state and only the org accounts' comments of the last day, so the row's own state and its
+ * NEWEST comment (by anyone) are read here: two REST calls (the issue, then the comments page holding the last one), spending the core pool, for each row that is about to be labelled.
+ * `null` is a row that could not be read, which is unknown and never "open with a question".
+ */
+function readLabelFacts({ run, repo, number }: { run: (args: string[]) => string; repo: string; number: number; }): { state: string; lastComment: { body: string; createdAt: string; } | null; } | null {
+  try {
+    const { state, comments } = JSON.parse(run(["api", `repos/${repo}/issues/${number}`, "--jq", "{state: .state, comments: .comments}"]));
+    if (typeof state !== "string" || !Number.isInteger(comments)) return null;
+    if (comments === 0) return { state, lastComment: null };
+    const page = JSON.parse(run(["api", `repos/${repo}/issues/${number}/comments?per_page=1&page=${comments}`, "--jq", ".[0] | {body: .body, createdAt: .created_at}"]));
+    return typeof page?.body === "string" ? { state, lastComment: { body: page.body, createdAt: page.createdAt } } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The times `answer:<session>` was added to the row, from the `labeled` events `readProseFacts` already read for every row holding a handoff. */
+const labelledAtOf = (prose: { proseEvidence?: { labelEvents: { number: number; label: string; createdAt: string; }[]; } | null; }, number: number, session: string): string[] =>
+  (prose.proseEvidence?.labelEvents ?? []).filter((e) => e.number === number && e.label === `${ANSWER_PREFIX}${session}`).map((e) => e.createdAt);
+
+/**
  * #4250: THE FLAG SENDS THE ORDER. A handoff written as a sentence (`handoff-in-prose`) or a reading with no `Defect-row:` line moves nobody from a table read once a day, so each finding's
  * row gets `answer:<route>` (`proseAudit` raises exactly those two questions; the session the comment's first words name, else the row's owner), ONCE per row and route however many comments name it. This wraps `readProseFacts` because
  * `postDaysTable` calls it exactly once per edition day, after its ask finds the table absent: a second tick that finds the table posted reads no comments and labels nothing. THE LABEL GOES
  * BEFORE THE TABLE and `POST /issues/{n}/labels` is idempotent (and creates a label that does not exist yet, which `--add-label` refuses), so a table that fails to post is retried
  * without a second label. An unreadable comment list is `null` and labels nothing, as it posts no table. One label that is refused is said on `log` and the rest still go.
+ * #4679: EVERY LABEL ASKS `answerLabelRefusal` FIRST. The comment read covers ALL rows of the last day, closed ones included, and `followedUp` counts only the same author's label within 15
+ * minutes, so each edition day re-raised handoffs already answered and cleared: 56 `answer:` labels on closed and answered rows at 2026-10-09T23:00Z, each waking its owner with nothing to answer.
+ * A closed row, a row whose newest comment asks that session nothing, a row already labelled since its newest comment, and a row that could not be read are each said on `log` and not labelled.
  */
 function readProseAndOrder({ repo, log }: { repo: string; log: (line: string) => void; }): typeof readProseFacts {
   return (input) => {
@@ -622,6 +647,9 @@ function readProseAndOrder({ repo, log }: { repo: string; log: (line: string) =>
     const audited = proseAudit(prose);
     const owed = new Map(audited.findings.map((f) => [`${f.number} ${f.route}`, f]));
     for (const { number, route } of owed.values()) {
+      const facts = readLabelFacts({ run: input.run, repo, number });
+      const refusal = facts === null ? "the row's state and newest comment could not be read" : answerLabelRefusal({ ...facts, session: route, labelledAt: labelledAtOf(prose, number, route) });
+      if (refusal !== null) { log(`board-truth: ${ANSWER_PREFIX}${route} was not added to #${number}: ${refusal}`); continue; }
       try {
         input.run(["api", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${ANSWER_PREFIX}${route}`]);
       } catch (error) {
