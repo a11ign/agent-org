@@ -15,7 +15,7 @@ import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS
 
 const T0 = Date.parse("2026-10-09T00:00:00Z");
 const HOUR = 3_600_000;
-const dirs = /** @type {string[]} */ ([]);
+const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 /** @param {string} cls @param {string} key @param {string} [session] */
@@ -26,7 +26,7 @@ const other = (session = "ceo") => ({ session, cause: "pr-green", subject: "x", 
 function harness() {
   const dir = mkdtempSync(join(tmpdir(), "org-health-suppression-"));
   dirs.push(dir);
-  const said = /** @type {string[]} */ ([]);
+  const said: string[] = [];
   const paths = suppressionPaths(dir);
   const tick = (/** @type {any[]} */ orders: any[], /** @type {number} */ now: number) => quietOrgHealth(orders, { now, dir, log: (line) => said.push(line) });
   const logLines = () => (existsSync(paths.log) ? readFileSync(paths.log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
@@ -126,7 +126,7 @@ test("a class in no table is delivered (a new detector is loud), and the failure
   const { tick } = harness();
   assert.equal(tick([order("a-detector-nobody-declared", "x")], T0).length, 1);
   assert.equal(tick([order("a-detector-nobody-declared", "x")], T0 + 1000).length, 0, "it is quieted like a page class once seen");
-  const said = /** @type {string[]} */ ([]);
+  const said: string[] = [];
   const blocked = mkdtempSync(join(tmpdir(), "org-health-suppression-"));
   dirs.push(blocked);
   mkdirSync(join(blocked, "org-health-suppression.json"));
@@ -181,14 +181,14 @@ function sourcesUnder(dir: string): string[] {
 /** Every `org-health/<class>` a source spells as a literal causeKey: the three order sources that do not go through `SIGNALS`. */
 const literalClasses = () => {
   const src = fileURLToPath(new URL("..", import.meta.url));
-  const found = new Set(/** @type {string[]} */ ([]));
+  const found = new Set<string>();
   for (const file of sourcesUnder(src)) for (const m of readFileSync(file, "utf8").matchAll(/org-health\/([a-z][a-z-]*[a-z])(?=[@/:`"'$])/g)) found.add(m[1]);
   return found;
 };
 
 test("EVERY class an org-health order can carry is declared in the table, so a new detector cannot page (or stay silent) by accident", () => {
   const declared = new Set(Object.keys(ORG_HEALTH_CLASSES));
-  const wanted = new Map([...Object.values(SIGNALS).map((c) => [c, "SIGNALS"]), ...OBSERVED_CLASSES.map((c) => [c, "the trace store's 18"]), ...[...literalClasses()].map((c) => [c, "a literal causeKey"])]);
+  const wanted = new Map<string, string>([...Object.values(SIGNALS).map((c): [string, string] => [c, "SIGNALS"]), ...OBSERVED_CLASSES.map((c): [string, string] => [c, "the trace store's 18"]), ...[...literalClasses()].map((c): [string, string] => [c, "a literal causeKey"])]);
   assert.deepEqual([...wanted].filter(([cls]) => !declared.has(cls)), [], "a class missing from ORG_HEALTH_CLASSES");
   for (const [cls, rule] of Object.entries(ORG_HEALTH_CLASSES)) assert.ok(rule.severity === "page" || (rule.severity === "digest" && rule.bound > 0), `${cls} has a severity`);
 });

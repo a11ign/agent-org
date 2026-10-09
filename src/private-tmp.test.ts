@@ -43,10 +43,10 @@ function findRstest(from: string): string {
 const RSTEST = findRstest(REPO);
 
 // The real config is read only when it is there: ci.yml's `agentOrg` job lays the tool out WITHOUT `scripts/` (a11ign/a11ign#3872), so a static import
-// of it would fail this whole file at load, and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
-const CONFIG_PATH = join(REPO, "scripts", "rstest", "rstest.config.mjs");
+// of it would fail this whole file at load (and `tsx` is imported only where the config exists, because plain `node` cannot load a `.ts`), and under `tsx --test` (what `pnpm run verify` runs) the file's other tests are still worth running.
+const CONFIG_PATH = join(REPO, "scripts", "rstest", "rstest.config.ts");
 const config: { globalSetup?: string[]; setupFiles?: string[] } | undefined = existsSync(CONFIG_PATH)
-  ? (await import(pathToFileURL(CONFIG_PATH).href)).default
+  ? (await (await import("tsx/esm/api")).tsImport(pathToFileURL(CONFIG_PATH).href, import.meta.url)).default
   : undefined;
 
 // `os.tmpdir()` is already this file's private directory when the suite runs under its own config, which is what the LIVE test below asserts.
@@ -199,7 +199,7 @@ function liveSkipReason(input: { config: unknown; env: NodeJS.ProcessEnv }): str
 test("liveSkipReason skips for an absent config and for an unset run root, and names each reason; it does NOT skip when both are present", () => {
   const present = { config: {}, env: { [RUN_ROOT_ENV]: "/run-x" } };
   assert.equal(liveSkipReason(present), undefined, "positive control: the LIVE test runs when the config is wired and the run root is published");
-  assert.match(liveSkipReason({ ...present, config: undefined }) ?? "", /scripts\/rstest\/rstest\.config\.mjs is not laid out/);
+  assert.match(liveSkipReason({ ...present, config: undefined }) ?? "", /scripts\/rstest\/rstest\.config\.ts is not laid out/);
   assert.match(liveSkipReason({ ...present, env: {} }) ?? "", new RegExp(`${RUN_ROOT_ENV} is unset`));
   assert.match(liveSkipReason({ ...present, env: { [RUN_ROOT_ENV]: "" } }) ?? "", /is unset/, "an empty value is unset");
 });

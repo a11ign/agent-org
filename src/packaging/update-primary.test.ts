@@ -46,7 +46,7 @@ test("#749 updatePrimary BUILDS after the fast-forward -- the source moves and d
     // for everything, so it finds the branch already at the target and stops there. The order that
     // matters is unchanged: the build runs AFTER the checkout.
     // The verbs come from the SAME list `primary-checkout-guard.test.ts` asserts in full -- see
-    // `update-primary-argv.mjs` for why that is one constant rather than two.
+    // `update-primary-argv.ts` for why that is one constant rather than two.
     assert.deepEqual(order, [...UPDATE_PRIMARY_VERBS],
       "and it runs AFTER the checkout -- building the tree you are about to move is building the wrong tree");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -141,7 +141,7 @@ test("CONTROL: a `main` already at the target writes nothing -- no ref update, n
 });
 
 /**
- * THE COPY MUST NOT COME BACK. Both argv assertions now read `update-primary-argv.mjs`; nothing stops a
+ * THE COPY MUST NOT COME BACK. Both argv assertions now read `update-primary-argv.ts`; nothing stops a
  * future edit from inlining the list again, and inlining it is exactly what produced the merge-blocking
  * red on 2026-09-09 — one file updated, the other found by CI.
  *

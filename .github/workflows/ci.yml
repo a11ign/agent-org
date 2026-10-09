@@ -124,7 +124,7 @@ jobs:
           # `comm` needs its inputs in the order `sort` made, and the two disagree about punctuation in a UTF-8 locale: byte order for both.
           export LC_ALL=C
           rstest=node_modules/.bin/rstest
-          config=packages/agent-org/scripts/rstest/rstest.config.mjs # in-project
+          config=packages/agent-org/scripts/rstest/rstest.config.ts # in-project
           # NO_COLOR: with CI set rstest colours the list even into a pipe (the path's directory dim, the name cyan), and an escape code in front of `src/` matches nothing.
           listed=$(NO_COLOR=1 $rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
           ondisk=$(cd packages/agent-org && find src -name '*.test.ts' -o -name '*.test.mjs' | sort) # in-project
@@ -137,7 +137,7 @@ jobs:
           # The copy above has no `.git`, so a pinned population cannot read its base from where it sits. This is the checkout it was copied from, and the one place
           # that names it (`TOOL_REPO_ENV` in `lib/pin-ratchet.mjs`); without it the pins are judged STRICTLY, every entry declared and nothing grandfathered.
           AGENT_ORG_TOOL_REPO: ${{ github.workspace }}
-        run: node_modules/.bin/rstest run --config packages/agent-org/scripts/rstest/rstest.config.mjs --trace # in-project
+        run: node_modules/.bin/rstest run --config packages/agent-org/scripts/rstest/rstest.config.ts --trace # in-project
       # A CACHE THAT IS NEVER WRITTEN RESTORES NOTHING AND STILL READS GREEN (a11ign/a11ign#1319): the build cache is on, so the directory must now hold files, or the HIT or MISS line above describes
       # a cache that does not exist.
       - name: rstest build cache must hold files after the tests

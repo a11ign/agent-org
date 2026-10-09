@@ -288,7 +288,7 @@ test("updatePrimary in the primary calls fetch, then checkout --detach origin/ma
     const run = (args: string[]) => { calls.push(args); return "abc123\n"; };
     const sha = updatePrimary(sandbox.dir, run, () => {});
     assert.equal(sha, "abc123");
-    // THE LIST IS OWNED BY `update-primary-argv.mjs`, not written here. It was written in two files, and
+    // THE LIST IS OWNED BY `update-primary-argv.ts`, not written here. It was written in two files, and
     // when `moveLocalMain` added a fourth call the other one was updated and this was found by CI.
     assert.deepEqual(calls, UPDATE_PRIMARY_ARGV.map((argv) => [...argv]),
       "fetch, read HEAD, detach at origin/main, read the result, then ask where the shared `main` is -- "
