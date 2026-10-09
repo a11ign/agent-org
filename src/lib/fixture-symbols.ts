@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// COPIED FROM `scripts/fixture-symbols.mjs` at 24d448b0b (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/fixture-symbols.ts` at d9ea0c438 (#2623, child 5 of #69; ADR 0040, decision 4; the original was renamed from `.mjs` by a11ign/a11ign#4274, a11ign/a11ign#4515): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 2 NAMED LINES: both are TYPE ANNOTATIONS added by the `js-to-ts` sweep (agent-org#431, #4269) -- the `fixtureSymbol` signature (`...parts: string[]): string`) and the `ABSENT_FIXTURE_SYMBOLS` declaration (`Readonly<Record<string, string>>`); the original stays plain JS.
+// CHANGED FROM THE ORIGINAL: NOTHING. The two type annotations this copy carried (the `fixtureSymbol` signature and the `ABSENT_FIXTURE_SYMBOLS` declaration, added by the `js-to-ts` sweep, agent-org#431, #4269) are now the original's own, since the core renamed it to `.ts` (a11ign/a11ign#4274).
 // ==== end of copy header ====
 // @ts-check
 // THE SYMBOLS A TEST DECLARES ABSENT, IN ONE PLACE -- #1038.
