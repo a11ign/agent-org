@@ -119,7 +119,7 @@ test("#4182 through deliver: the typed order ends as addressed says, and the arm
       assert.equal(typed.endsWith(ROUND_TRIPS_PARAGRAPH), tripsArmOf(row) === TRIPS_ARM.BATCHED, name);
       const path = join(dir, "claim-orders");
       const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
-      assert.deepEqual(lines, [{ kind: "arm", at: AT, session: `worker-${row}`, row, arm: armOf(row), tripsArm: tripsArmOf(row) }], name);
+      assert.deepEqual(lines, [{ kind: "arm", at: AT, session: `worker-${row}`, row, arm: armOf(row), tripsArm: tripsArmOf(row), model: "sonnet" }], name);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

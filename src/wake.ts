@@ -43,6 +43,7 @@ import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts"; // #3386: a bar
 import { blastTail, readBlockingRecord } from "./blast-tail.ts";
 import type { BlockingRecord } from "./blocking-impact.ts";
 import { routeEngineer, type Routed } from "./engineer-route.ts";
+import { ESCALATION_KIND, ESCALATION_USE, claimFacts, escalationLogLine, escalationNote, haikuStarts, shouldEscalate, transcriptCounts } from "./engineer-escalation.ts";
 import { decisionLogPathFrom, decisionSwitchesPath } from "./decision-provider.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
@@ -84,7 +85,7 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // half. What is performed here is the part that needs a pane, a process or a row: the release, the resume, the re-send.
 import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS,
   readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, readJsonObject, INTERRUPTED_TEXT,
-  INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions, CONTINUATION_CAUSES, MAX_CONTINUATIONS }
+  INTERRUPTED_SETTLE_MS, THRASH_TEXT, mergedPrMention, openPrMentions, CONTINUATION_CAUSES, MAX_CONTINUATIONS, claimRecordOf }
   from "./claim-stall.ts";
 // THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.ts` can read it
 // too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
@@ -914,7 +915,7 @@ function whyNoSpawn(order: { causeKey: string; startFresh?: boolean; }, { memory
  *   `claimer` claims the row for the role about to start -- see {@link spawnClaimer}. With none, the pane opens
  *   in herdr's default directory and nothing is claimed (the pre-#2405 spawn, kept for a caller that has no claim)
  */
-function spawnWorker(order: { session: string; causeKey: string; cause?: string; title?: string; replaces?: { branch: string; }[]; }, agents: { label: string; status: string; }[], roster: string[], { run = defaultRun, env = spawnEnvironment(), drained = [],
+function spawnWorker(order: { session: string; causeKey: string; cause?: string; title?: string; replaces?: { branch: string; }[]; as?: string; }, agents: { label: string; status: string; }[], roster: string[], { run = defaultRun, env = spawnEnvironment(), drained = [],
   claimable, claimer, memory }: {
         run?: (args: string[]) => string; env?: Record<string, string>; drained?: readonly string[];
         claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer;
@@ -923,7 +924,8 @@ function spawnWorker(order: { session: string; causeKey: string; cause?: string;
     label: string; workspace: string; profile: { kind: string; model: string; effort: string; };
     claimed?: ClaimedRow;
 } | { refusal: string; } {
-  const role = spawnableRole(order, agents, roster, drained);
+  // `as` (#4630) is a RESTART: the address is the ended worker's own, which no roster pick may change, and the claim is its existing one (see {@link restartWorker}).
+  const role = order.as === undefined ? spawnableRole(order, agents, roster, drained) : { role: order.as };
   if ("refusal" in role) return role;
   // AFTER THE ROLE AND BEFORE THE PANE: a pane is the first thing this opens, and "no instance is created to be
   // refused and sit idle" (#2324) means the answer is known before it exists.
@@ -4625,17 +4627,32 @@ export function compactContext(run: (args: string[]) => string, label: string, s
  * @param [reader] the file reads, a seam so a test can count them
  */
 export function instanceCacheRead(label: string, root: string = join(process.env.HOME ?? "", ".claude", "projects"), reader: { readText: (file: string) => string; readHead: (file: string) => string; } = TRANSCRIPT_READER): number | null {
-  // NEWEST FIRST, STOPPING AT THE FIRST FILE THAT NAMES THE SESSION, is "the most recently written transcript naming it wins" without reading
-  // the rest (a11ign/a11ign#3566, slice 6): this read every transcript on the host, 3.3 GB, parsed whole, once per order delivered -- 22 s of
-  // CPU measured for ONE call, and the largest part of a waking tick's `wake` phase. A tie in mtime keeps the first in directory order, as `>` did.
+  return newestTranscriptRead(label, root, reader, (text) => claudeTurns(text, UNATTRIBUTED).filter((t) => t.session === label).at(-1)?.cacheRead ?? null);
+}
+
+/**
+ * #4630: THE SAME NEWEST TRANSCRIPT, READ FOR HOW MANY TURNS AND COMPACTIONS A SESSION HAS HAD ({@link transcriptCounts}); `null` when no transcript names it. A count a
+ * transcript could not give is `null` inside the answer, never zero: the escalation treats a figure it could not read as one that has not reached its cap.
+ */
+export function instanceCounts(label: string, root: string = join(process.env.HOME ?? "", ".claude", "projects"), reader: { readText: (file: string) => string; readHead: (file: string) => string; } = TRANSCRIPT_READER): { turns: number | null; compactions: number | null; } | null {
+  return newestTranscriptRead(label, root, reader, transcriptCounts);
+}
+
+/**
+ * THE LOOP BOTH READS SHARE: NEWEST FIRST, STOPPING AT THE FIRST FILE THAT NAMES THE SESSION, is "the most recently written transcript naming it wins" without reading
+ * the rest (a11ign/a11ign#3566, slice 6): this read every transcript on the host, 3.3 GB, parsed whole, once per order delivered -- 22 s of
+ * CPU measured for ONE call, and the largest part of a waking tick's `wake` phase. A tie in mtime keeps the first in directory order, as `>` did.
+ * A file that names the session and for which `pick` has no answer falls through to the next, exactly as the cache read always did.
+ */
+function newestTranscriptRead<T>(label: string, root: string, reader: { readText: (file: string) => string; readHead: (file: string) => string; }, pick: (text: string) => T | null): T | null {
   for (const { file } of newestFirst(transcriptFiles(root))) {
     if (namesAnotherSession(file, label, reader)) continue;
     let text;
     try { text = reader.readText(file); } catch { continue; }
     // `claudeTurns` stamps every turn with this one session, so a file that is another's has none to find: skip its parse (a head that said nothing).
     if ((sessionOf(text) ?? UNATTRIBUTED) !== label) continue;
-    const last = claudeTurns(text, UNATTRIBUTED).filter((t) => t.session === label).at(-1);
-    if (last) return last.cacheRead;
+    const found = pick(text);
+    if (found !== null) return found;
   }
   return null;
 }
@@ -5261,7 +5278,7 @@ function continuationNote(continuation: { number: number; escalated: boolean; } 
  * arms (`arm`, the calm A/B's, and `tripsArm`, the round-trips A/B's, #4182), so the 2 by 2 is read from one record.
  */
 function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, target, continuation, at }: {
-        gateOrder: { session: string; cause?: string; causeKey: string; }; target: { label: string; profile?: object; claimed?: ClaimedRow; };
+        gateOrder: { session: string; cause?: string; causeKey: string; }; target: { label: string; profile?: { model?: string; }; claimed?: ClaimedRow; };
         continuation: { claim: string; number: number; } | null; at: number;
     }) {
   if (claimOrders === undefined) return;
@@ -5271,8 +5288,9 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
       session: gateOrder.session, to: target.label, causeKey: gateOrder.causeKey });
   }
   if (target.profile !== undefined && target.claimed !== undefined) {
+    // `model` (#4630) is what the worker STARTED on, so the escalation reads it from the record and never from the row's label, which a restart does not change.
     claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, arm: armOf(target.claimed.row),
-      tripsArm: tripsArmOf(target.claimed.row) });
+      tripsArm: tripsArmOf(target.claimed.row), model: target.profile.model });
   }
 }
 
@@ -6069,7 +6087,9 @@ export type LaunchFacts = { exists?: (path: string) => boolean, worktreesDir?: s
 /**
  * A row claimed for a spawn, and where. `adopted` (#2470) says the worktree was a RELEASED holder's, with its work still in it.
  */
-export type ClaimedRow = { row: number, branch: string, worktree: string, launchDir: string, adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean } };
+export type ClaimedRow = { row: number, branch: string, worktree: string, launchDir: string, adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean },
+  /** #4630: this start REPLACES a Haiku worker that was ended for `reason`; its brief says so. The claim is the existing one. */
+  restart?: { from: string, reason: string } };
 
 /** The claim a spawn makes before it has a pane, and the release for a spawn that fails after it. */
 export type SpawnClaimer = { claim: (order: { causeKey: string, title?: string, replaces?: { branch: string }[] }, role: string, env: Record<string, string>) => ClaimedRow | { refusal: string }, release: (claimed: ClaimedRow, role: string, env: Record<string, string>) => string,
@@ -6357,7 +6377,7 @@ export function spawnedPrompt(order: { title?: string; }, claimed: ClaimedRow): 
   return `Row #${claimed.row}${order.title ? `: ${order.title}` : ""} has been claimed for you, and you are in its `
     + `worktree \`${claimed.worktree}\` on branch \`${claimed.branch}\`. Build it here: read the row, then do the work `
     + "in this directory. The claim was made before your process started, as your own session, so there is nothing "
-    + `left to claim.${adoptedNote(claimed)}`;
+    + `left to claim.${adoptedNote(claimed)}${claimed.restart === undefined ? "" : `\n\n${escalationNote({ session: claimed.restart.from, reason: claimed.restart.reason })}`}`;
 }
 
 /**
@@ -7357,6 +7377,158 @@ function performReleases<O extends { causeKey: string, release?: import("./claim
   return { orders: orders.filter((o) => o.release === undefined), failed, goneSeats };
 }
 
+// --- #4630: A HAIKU START THAT IS NOT COPING RESTARTS ON SONNET ----------------------------------------------------------
+//
+// THE DECISION IS `engineer-escalation.ts`'s AND PURE; THIS PERFORMS IT, because ending a process and starting one is this file's. It sits BETWEEN the releases and the
+// delivery: a release changes who holds what, and everything after reads that. THE CLAIM IS NEVER RELEASED: the worker's own workspace is closed, the row keeps its
+// `session:` label, its branch and its worktree, and a new process is started under the SAME address in that worktree through {@link spawnWorker} (the existing spawn path,
+// with `as` naming the address and a claimer that hands back the claim that is already made). Nothing is re-won, so no `row-claim` decline or claim is run.
+
+/** One Haiku worker that has reached a cap, and the sentence the brief and the row comment carry. */
+export type Escalation = { row: number; session: string; reason: string };
+
+/**
+ * WHICH OF THE LIVE HAIKU STARTS HAVE REACHED A CAP, from the claim-orders record and a read of each one's transcript. Pure given those reads: `counts` is the seam
+ * ({@link instanceCounts}), `null` meaning no transcript names the session -- a figure that could not be read, which never escalates.
+ */
+export function escalationsNow(recordText: string, live: readonly string[], counts: (label: string) => { turns: number | null; compactions: number | null; } | null): Escalation[] {
+  const found: Escalation[] = [];
+  for (const { session, row } of haikuStarts(recordText, live)) {
+    const facts = claimFacts(recordText, row);
+    const read = counts(session);
+    const verdict = shouldEscalate({ model: facts.model, ciFailures: facts.ciFailures, turns: read?.turns ?? null, compactions: read?.compactions ?? null, escalated: facts.escalated });
+    if (verdict.action === "escalate") found.push({ row, session, reason: verdict.reason });
+  }
+  return found;
+}
+
+/** What {@link performEscalations} needs from the host, every one a seam so the whole of it is tested without one. */
+export type EscalationDeps = {
+  run: (args: string[]) => string; gh: (args: string[]) => string; post: (args: string[]) => string; ledgerPath: string; worktreesDir: string;
+  env?: Record<string, string>; now?: () => number; sleep?: (ms: number) => void; launch?: LaunchFacts; warn?: (line: string) => void;
+};
+
+/**
+ * THE ESCALATION'S TWO RECORDS, written once the Haiku process is gone and BEFORE anything can fail after it: the `escalation` line in the claim-orders record (what makes
+ * this once per row, and what routes any later start of the row to Sonnet), and the decision log's `model-escalation` line, `via: none` because nothing was asked of a
+ * provider. A log that cannot be written says so and does not stop the restart, as `decision-provider.ts` does.
+ */
+function recordTierEscalation({ row, session, reason }: Escalation, { ledgerPath, now = Date.now, warn = (line) => process.stderr.write(`${line}\n`) }: Pick<EscalationDeps, "ledgerPath" | "now" | "warn">) {
+  const at = now();
+  appendFileSync(claimOrdersPath(ledgerPath), `${JSON.stringify({ kind: ESCALATION_KIND, at, row, session, reason })}\n`);
+  try {
+    const log = decisionLogPathFrom(ledgerPath);
+    mkdirSync(dirname(log), { recursive: true });
+    appendFileSync(log, `${JSON.stringify(escalationLogLine({ row, reason, at }))}\n`);
+  } catch (err) {
+    warn(`escalation: the decision log could not be written for #${row} (${firstLine(err)})`);
+  }
+}
+
+/** The row's title and where its claim put the branch and the worktree, or `null` when the row or its claim record cannot be read. */
+function escalatedClaim(row: number, gh: (args: string[]) => string): { title: string; branch: string; worktree: string; } | null {
+  try {
+    const read = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO, "--json", "title,comments"]));
+    const record = claimRecordOf(Array.isArray(read.comments) ? read.comments : []);
+    return record?.branch && record.worktree ? { title: String(read.title ?? ""), branch: record.branch, worktree: record.worktree } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * END ONE HAIKU WORKER AND START ITS REPLACEMENT, in the same worktree, under the same address, with the reason in its brief. The order of the steps is the point:
+ * the workspace is closed FIRST and a refusal there writes nothing (retried next tick, the escalation still unspent); then the record, so that a restart that fails
+ * AFTER it leaves a row the gate's ordinary release-and-respawn brings back on Sonnet ({@link escalatedRoutes}) and not on Haiku again.
+ *
+ * @returns the line the tick prints, and whether a process now runs under the label (only then is the label working)
+ */
+function restartOnSonnet(escalation: Escalation, deps: EscalationDeps): { line: string; restarted: boolean; } {
+  const { row, session, reason } = escalation;
+  const { run, gh, post, env = spawnEnvironment(), worktreesDir, launch, sleep, ledgerPath, now = Date.now } = deps;
+  const id = workspaceIdOf(run, session);
+  const stopped = (line: string) => ({ line, restarted: false });
+  if (id === null) return stopped(`NOT ESCALATED #${row}: \`${session}\` has no single workspace to end -- retried next tick`);
+  try {
+    run(["--session", "org", "workspace", "close", id]);
+  } catch (err) {
+    return stopped(`NOT ESCALATED #${row}: \`${session}\` (${id}) could not be closed (${firstLine(err)}) -- retried next tick`);
+  }
+  recordTierEscalation(escalation, deps);
+  const claim = escalatedClaim(row, gh);
+  const said = `\`${session}\` started #${row} on Haiku and ${reason}: restarted on Sonnet/high (#4630), the claim, branch and worktree unchanged.`;
+  try {
+    post(["issue", "comment", String(row), "--repo", REPO, "--body", `${said} Decision log: \`use: ${ESCALATION_USE}\`, \`via: none\`.`]);
+  } catch (err) {
+    deps.warn?.(`escalation: the row comment on #${row} could not be posted (${firstLine(err)})`);
+  }
+  if (claim === null) return stopped(`ESCALATED #${row}: ${said} NOT RESTARTED -- the claim record is unreadable, so the gate's release-and-respawn starts it on Sonnet`);
+  const claimed: ClaimedRow = { row, branch: claim.branch, worktree: claim.worktree, launchDir: join(worktreesDir, `role-${session}`), restart: { from: session, reason } };
+  const claimer: SpawnClaimer = { claim: () => claimed, release: () => "", tier: () => null };
+  const order = { session: "engineers", causeKey: `engineers/ready-row-unclaimed/${row}`, cause: SPAWN_CAUSES[0], title: claim.title, as: session, prompt: "" };
+  const spawn = spawnWorker(order, [], [], { run, env, claimer });
+  if ("refusal" in spawn) return stopped(`ESCALATED #${row}: ${said} NOT RESTARTED -- ${spawn.refusal}; the gate's release-and-respawn starts it on Sonnet`);
+  const failure = promptTarget(order, { label: spawn.label, profile: spawn.profile, claimed: spawn.claimed, workspace: spawn.workspace },
+    { run, sleep, launch, context: CONTEXT_ACTION.CLEARED, claimer, env, orderId: wakeIdOf(session, now()) });
+  return { line: failure === null ? `ESCALATED #${row}: ${said}` : `ESCALATED #${row}: ${said} NOT PROMPTED -- ${failure}`, restarted: true };
+}
+
+/**
+ * THE ESCALATIONS THIS TICK OWES, PERFORMED. Reads the claim-orders record and the live labels, asks {@link escalationsNow}, and restarts each ({@link restartOnSonnet}).
+ * One failed restart is a line and not a throw: the escalation is the cheaper half of the tier and must never take the tick's deliveries with it.
+ *
+ * @returns one line per escalation, and the labels it restarted: they are working NOW, so no order of this tick is routed to them
+ */
+export function performEscalations(live: readonly string[], deps: EscalationDeps & { counts?: (label: string) => { turns: number | null; compactions: number | null; } | null; }): { lines: string[]; busied: string[]; } {
+  const lines: string[] = [];
+  const busied: string[] = [];
+  let recordText: string;
+  try {
+    recordText = claimOrdersText(deps.ledgerPath);
+  } catch (err) {
+    return { lines: [`escalation: the claim-orders record could not be read (${firstLine(err)}) -- nothing is escalated this tick`], busied };
+  }
+  for (const escalation of escalationsNow(recordText, live, deps.counts ?? ((label) => instanceCounts(label)))) {
+    try {
+      const { line, restarted } = restartOnSonnet(escalation, deps);
+      lines.push(line);
+      if (restarted) busied.push(escalation.session);
+    } catch (err) {
+      lines.push(`NOT ESCALATED #${escalation.row}: ${firstLine(err)} -- retried next tick`);
+    }
+  }
+  return { lines, busied };
+}
+
+/** The claim-orders record's text; an absent file is an empty record and any other failure propagates. */
+function claimOrdersText(ledgerPath: string): string {
+  try {
+    return String(readFileSync(claimOrdersPath(ledgerPath), "utf8"));
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return "";
+    throw err;
+  }
+}
+
+/**
+ * #4630: THE ROWS WHOSE LATER START MUST BE SONNET, from the record: every row with an `escalation` line. Layered over the tick's routes so that the gate's own respawn of an
+ * escalated row (a restart that failed, or a worker that ended later) does not read the row's `tier:haiku` label and start Haiku again -- the label is KEPT, on purpose.
+ */
+export function escalatedRoutes(recordText: string, routes: ReadonlyMap<number, Routed>): Map<number, Routed> {
+  const layered = new Map(routes);
+  for (const line of recordText.split("\n").filter(Boolean)) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.kind === ESCALATION_KIND && Number.isInteger(entry.row)) {
+        layered.set(entry.row, { route: "sonnet/high", via: "override", why: `escalated off Haiku (#4630): ${entry.reason ?? "a cap was reached"}`, profile: null });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return layered;
+}
+
 /**
  * The cause keys a restart or an interruption VOIDED in the last wake window: their re-send is a RESUME (a plain prompt, no `/clear`), because
  * the session still has the context the clear would wipe (#2470, done-when 11b). Read from the ledger, where the VOIDED line is the record.
@@ -7573,6 +7745,9 @@ async function main() {
   const agents = readAgents();
   if (agents === null) exitCannotAsk(gateOrders.length, handoffs);
   const { orders, failed: releasesNotDone, goneSeats: released } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
+  // #4630: A HAIKU START THAT HAS NOT COPED IS RESTARTED ON SONNET before anything is delivered, and what it restarted is working NOW (`free` below).
+  const escalated = performEscalations(agents.map((a) => a.label), { run: defaultRun, gh: defaultGh, post: guardedGh, ledgerPath, worktreesDir: hostLayout.worktreesDir, launch: hostLayout });
+  for (const line of escalated.lines) process.stdout.write(`${line}\n`);
 
   const queued = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
   // #3562: AN FYI NEVER WAKES A LEAD SEAT. It is held until the seat's next real order and rides in it, and one past the bound is dropped here, before it
@@ -7593,7 +7768,7 @@ async function main() {
   // STALE MEANS STILL WAITING, so it is asked AFTER the delivery and against what the delivery carried.
   for (const line of staleReport(waiting, handed.ids)) process.stderr.write(line);
   // A session this tick just woke is working NOW, so the gate's own orders must not be routed to it.
-  const free = agents.map((a) => (handed.busied.has(a.label) ? { ...a, status: "working" } : a));
+  const free = agents.map((a) => (handed.busied.has(a.label) || escalated.busied.includes(a.label) ? { ...a, status: "working" } : a));
 
   const delivered = readLedger(ledgerPath, readFileSync, Date.now(), new Set(JUDGMENT_CAUSES));
   const voided = recentlyVoidedKeys(ledgerPath, Date.now() - WAKE_TTL_MS);
@@ -7628,7 +7803,7 @@ async function main() {
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, routes), launch: hostLayout,
+    memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, escalatedRoutes(claimOrdersText(ledgerPath), routes)), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
