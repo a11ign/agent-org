@@ -40,7 +40,7 @@ import { createHash } from "node:crypto";
 // `work-gate.ts` and `org-watch.ts` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.mjs"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
-import { profileFor, agentArgs, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
+import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
   from "./work-gate.ts";
@@ -584,11 +584,13 @@ export function spentSeen(rows: readonly number[]) {
  * @param {string} name the worker's herdr name
  * @param {string} pane an existing pane at an interactive shell prompt
  * @param {{model?: string, effort?: string}} [override]
+ * @param {TierProfile | null} [tier] the Haiku profile of a `tier:haiku` row (a11ign/a11ign#4382), which replaces the cause's profile; the cause must still HAVE one
  * @returns {{args: string[], profile: {kind: string, model: string, effort: string}} | {refusal: string}}
  */
-export function spawnInvocation(order: { cause: string; }, name: string, pane: string, override: { model?: string; effort?: string; } = {}): { args: string[]; profile: { kind: string; model: string; effort: string; }; } | { refusal: string; } {
-  const profile = profileFor(order.cause, override);
-  if ("refusal" in profile) return { refusal: `cannot choose a worker for this order: ${profile.refusal}` };
+export function spawnInvocation(order: { cause: string; }, name: string, pane: string, override: { model?: string; effort?: string; } = {}, tier: TierProfile | null = null): { args: string[]; profile: { kind: string; model: string; effort: string; }; } | { refusal: string; } {
+  const base = profileFor(order.cause, override);
+  if ("refusal" in base) return { refusal: `cannot choose a worker for this order: ${base.refusal}` };
+  const profile = tier ?? base;
   return {
     profile,
     // `--` separates herdr's own flags from the agent's, so everything after it reaches `claude`.
@@ -971,7 +973,8 @@ function spawnWorker(order: { session: string; causeKey: string; cause?: string;
   if ("refusal" in pane) return { refusal: unwound(pane.refusal) };
   // `spawnableRole` has already refused anything whose cause is not in `SPAWN_CAUSES`, so by here the
   // cause is one of those strings -- narrowed for the type rather than re-checked.
-  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, role.role, pane.pane);
+  const tier = claimed === undefined ? null : claimer?.tier?.(claimed) ?? null;
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, role.role, pane.pane, {}, tier);
   if ("refusal" in invocation) return { refusal: unwound(invocation.refusal, pane.workspace) };
   try {
     run(invocation.args);
@@ -6336,7 +6339,9 @@ export type LaunchFacts = { exists?: (path: string) => boolean, worktreesDir?: s
 export type ClaimedRow = { row: number, branch: string, worktree: string, launchDir: string, adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean } };
 
 /** The claim a spawn makes before it has a pane, and the release for a spawn that fails after it. */
-export type SpawnClaimer = { claim: (order: { causeKey: string, title?: string, replaces?: { branch: string }[] }, role: string, env: Record<string, string>) => ClaimedRow | { refusal: string }, release: (claimed: ClaimedRow, role: string, env: Record<string, string>) => string, };
+export type SpawnClaimer = { claim: (order: { causeKey: string, title?: string, replaces?: { branch: string }[] }, role: string, env: Record<string, string>) => ClaimedRow | { refusal: string }, release: (claimed: ClaimedRow, role: string, env: Record<string, string>) => string,
+  /** The Haiku profile for the claimed row, or `null` for the ordinary one (a11ign/a11ign#4382). Absent on a claimer that does not tier. */
+  tier?: (claimed: ClaimedRow) => TierProfile | null, };
 
 /**
  * One process run, without `execFileSync`'s throw: the status decides what a claim MEANS (a refusal and a claim that landed and then failed are different exits), so it is read, not caught.
@@ -6434,9 +6439,10 @@ function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, str
  * @returns {SpawnClaimer}
  */
 export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
-  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {} }: {
+  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {}, readRow = readRowForTier, switchPath }: {
         exec?: Exec; exists?: (path: string) => boolean; worktreesDir?: string; primary?: string;
         settle?: (role: string) => void; kept?: (row: number) => KeptClaim | null; forget?: (row: number) => void;
+        readRow?: (row: number) => { labels: string[]; body: string }; switchPath?: string;
     } = {}): SpawnClaimer {
   return {
     claim(order, role, env) {
@@ -6459,7 +6465,29 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       return { refusal: `the claim of #${row} as ${role} did not hold (${why})${undone}` };
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
+    tier: (claimed) => tierOfRow(claimed.row, { readRow, switchPath }),
   };
+}
+
+/**
+ * THE HAIKU PROFILE OF A CLAIMED ROW (a11ign/a11ign#4382), or `null` for the ordinary one. A row that CANNOT BE READ gets the ordinary profile and the log says so: the trial
+ * never blocks a spawn, because the claim has already landed and a refused spawn here would release a row over a spend experiment.
+ * @param {number} row @param {{ readRow: (row: number) => {labels: string[], body: string}, switchPath?: string }} deps
+ */
+function tierOfRow(row: number, { readRow, switchPath }: { readRow: (row: number) => { labels: string[]; body: string }; switchPath?: string }): TierProfile | null {
+  const log = (line: string) => { process.stderr.write(`${line}\n`); };
+  try {
+    return haikuTierProfile({ number: row, ...readRow(row) }, { switchPath, log });
+  } catch (err) {
+    log(`wake: could not read #${row} for the tier:haiku check (${firstLine(err)}) -- the ordinary profile.`);
+    return null;
+  }
+}
+
+/** The labels and body of a row, one `gh` read; THROWS when it fails, and {@link tierOfRow} says so. */
+function readRowForTier(row: number): { labels: string[]; body: string } {
+  const read = JSON.parse(defaultGh(["issue", "view", String(row), "--repo", REPO, "--json", "labels,body"]));
+  return { labels: (read.labels as { name: string }[]).map((l) => l.name), body: String(read.body ?? "") };
 }
 
 /**
