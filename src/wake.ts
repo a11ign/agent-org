@@ -42,6 +42,8 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { blastTail, readBlockingRecord } from "./blast-tail.ts";
 import type { BlockingRecord } from "./blocking-impact.ts";
+import { routeEngineer, type Routed } from "./engineer-route.ts";
+import { decisionLogPathFrom, decisionSwitchesPath } from "./decision-provider.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
@@ -6057,10 +6059,10 @@ function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, str
  *   nothing -- and `forget` drops the record once it has
  */
 export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
-  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {}, readRow = readRowForTier, switchPath }: {
+  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {}, readRow = readRowForTier, switchPath, routes }: {
         exec?: Exec; exists?: (path: string) => boolean; worktreesDir?: string; primary?: string;
         settle?: (role: string) => void; kept?: (row: number) => KeptClaim | null; forget?: (row: number) => void;
-        readRow?: (row: number) => { labels: string[]; body: string }; switchPath?: string;
+        readRow?: (row: number) => RowForTier; switchPath?: string; routes?: ReadonlyMap<number, Routed>;
     } = {}): SpawnClaimer {
   return {
     claim(order, role, env) {
@@ -6083,16 +6085,22 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       return { refusal: `the claim of #${row} as ${role} did not hold (${why})${undone}` };
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
-    tier: (claimed) => tierOfRow(claimed.row, { readRow, switchPath }),
+    tier: (claimed) => tierOfRow(claimed.row, { readRow, switchPath, routes }),
   };
 }
 
 /**
- * THE HAIKU PROFILE OF A CLAIMED ROW (a11ign/a11ign#4382), or `null` for the ordinary one. A row that CANNOT BE READ gets the ordinary profile and the log says so: the trial
- * never blocks a spawn, because the claim has already landed and a refused spawn here would release a row over a spend experiment.
+ * THE PROFILE OF A CLAIMED ROW, or `null` for the ordinary one. A route the tick already resolved for the row (#4629: the provider is asynchronous and the spawn is not, so the
+ * tick asks BEFORE it delivers) decides; with none, the `tier:haiku` label alone does (a11ign/a11ign#4382). A row that CANNOT BE READ gets the ordinary profile and the log says so:
+ * the trial never blocks a spawn, because the claim has already landed and a refused spawn here would release a row over a spend experiment.
  */
-function tierOfRow(row: number, { readRow, switchPath }: { readRow: (row: number) => { labels: string[]; body: string }; switchPath?: string }): TierProfile | null {
+function tierOfRow(row: number, { readRow, switchPath, routes }: { readRow: (row: number) => RowForTier; switchPath?: string; routes?: ReadonlyMap<number, Routed> }): TierProfile | null {
   const log = (line: string) => { process.stderr.write(`${line}\n`); };
+  const routed = routes?.get(row);
+  if (routed !== undefined) {
+    log(`wake: #${row} routed ${routed.route} via ${routed.via} (${routed.why}).`);
+    return routed.profile;
+  }
   try {
     return haikuTierProfile({ number: row, ...readRow(row) }, { switchPath, log });
   } catch (err) {
@@ -6101,10 +6109,36 @@ function tierOfRow(row: number, { readRow, switchPath }: { readRow: (row: number
   }
 }
 
-/** The labels and body of a row, one `gh` read; THROWS when it fails, and {@link tierOfRow} says so. */
-function readRowForTier(row: number): { labels: string[]; body: string } {
-  const read = JSON.parse(defaultGh(["issue", "view", String(row), "--repo", REPO, "--json", "labels,body"]));
-  return { labels: (read.labels as { name: string }[]).map((l) => l.name), body: String(read.body ?? "") };
+type RowForTier = { labels: string[]; body: string; title?: string };
+
+/** The title, labels and body of a row, one `gh` read; THROWS when it fails, and {@link tierOfRow} says so. */
+function readRowForTier(row: number): RowForTier {
+  const read = JSON.parse(defaultGh(["issue", "view", String(row), "--repo", REPO, "--json", "labels,body,title"]));
+  return { labels: (read.labels as { name: string }[]).map((l) => l.name), body: String(read.body ?? ""), title: String(read.title ?? "") };
+}
+
+/** How many of the tick's start orders are routed ahead: a tick starts one engineer (`MAX_SPAWNS_PER_TICK`) and a chairman row may start more, so this is not the whole shelf. */
+export const ROUTE_AHEAD = 3;
+
+/**
+ * #4629: THE ROUTE OF EACH ROW THE TICK MAY START, resolved BEFORE the (synchronous) delivery, keyed by row. A row that cannot be read or routed is simply absent, and then
+ * {@link tierOfRow} does what it did before. Never throws: the route lowers cost and must not cost a start.
+ */
+export async function routesForStarts(orders: readonly { causeKey: string }[], { host, ledgerPath, readRow = readRowForTier, route = routeEngineer, projectDir = PRIMARY_CHECKOUT, switchPath }: {
+  host: Parameters<typeof routeEngineer>[1]["host"]; ledgerPath: string; readRow?: (row: number) => RowForTier; route?: typeof routeEngineer; projectDir?: string; switchPath?: string;
+}): Promise<Map<number, Routed>> {
+  const rows = orders.map(rowOfOrder).filter((row): row is number => row !== null).slice(0, ROUTE_AHEAD);
+  const deps = { host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), haikuSwitchPath: switchPath };
+  const found = await Promise.all(rows.map(async (number) => {
+    try {
+      const { labels, body, title = "" } = readRow(number);
+      return [number, await route({ number, title, labels, body }, deps)] as const;
+    } catch (err) {
+      process.stderr.write(`wake: could not route #${number} (${firstLine(err)}) -- the ordinary profile.\n`);
+      return null;
+    }
+  }));
+  return new Map(found.filter((entry) => entry !== null));
 }
 
 /**
@@ -7234,9 +7268,9 @@ export function recentlyVoidedKeys(ledgerPath: string, since: number): Set<strin
 /**
  * The spawner's claim, wired to the host: a worktree a release KEPT for the row is adopted, not refused (#2470), and forgotten once claimed.
  */
-function claimerFor(spares: ReturnType<typeof sparePathsFrom>, ledgerPath: string, hostLayout: ReturnType<typeof layoutUnder>) {
+function claimerFor(spares: ReturnType<typeof sparePathsFrom>, ledgerPath: string, hostLayout: ReturnType<typeof layoutUnder>, routes: ReadonlyMap<number, Routed>) {
   const keptPath = keptClaimsPath(ledgerPath);
-  return spawnClaimer({ ...hostLayout, settle: (role) => { settleAbsentInstance(spares, role); },
+  return spawnClaimer({ ...hostLayout, routes, settle: (role) => { settleAbsentInstance(spares, role); },
     kept: (row) => readKeptClaims(keptPath)[row] ?? null,
     forget: (row) => { const all = readKeptClaims(keptPath); delete all[row]; writeKeptClaims(keptPath, all); } });
 }
@@ -7481,16 +7515,27 @@ async function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
+  const routes = await routesForStarts(todo, { host: hostOrEmpty(), ledgerPath });
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
   const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     goneSeats: handed.goneSeats,
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
     registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
-    memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout), launch: hostLayout,
+    memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, routes), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
+}
+
+/** The host declaration, or an empty one that declares no provider: a host that cannot be read asks nobody, and every order and every start goes as before. */
+function hostOrEmpty(): Parameters<typeof routeOrders>[1]["host"] {
+  try {
+    return homeHostConfig();
+  } catch (err) {
+    process.stderr.write(`triage: the host declaration could not be read, so no provider is asked and every order is delivered as before (${firstLine(err)})\n`);
+    return {};
+  }
 }
 
 /**
@@ -7501,13 +7546,7 @@ async function main() {
 async function routedTodo({ candidates, own, heldFyis, digestFile }: {
   candidates: { session: string; causeKey: string; prompt: string; resume?: boolean }[]; own: ReadonlySet<string>; heldFyis: Parameters<typeof ridingGateOrders>[1]; digestFile: string;
 }) {
-  let host: Parameters<typeof routeOrders>[1]["host"] = {};
-  try {
-    host = homeHostConfig();
-  } catch (err) {
-    process.stderr.write(`triage: the host declaration could not be read, so every order is delivered as before (${firstLine(err)})\n`);
-  }
-  const routed = await routeOrders(candidates, { host, digestPath: digestFile, exclude: own });
+  const routed = await routeOrders(candidates, { host: hostOrEmpty(), digestPath: digestFile, exclude: own });
   const { orders, rides } = ridingGateOrders(routed.deliver, heldFyis);
   const now = Date.now();
   const pending = readDigest(digestFile);
