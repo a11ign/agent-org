@@ -1,6 +1,6 @@
-// COPIED FROM `packages/guards/src/sandbox-exhaustion.mjs` at 24d448b0b (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/sandbox-exhaustion.ts` at 24d448b0b (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 15 NAMED LINES: all are TYPE ANNOTATIONS added by the `js-to-ts` sweep (agent-org#431, #4269), and the original stays plain JS. `Readonly<Record<string, string>>` on the tables `EXHAUSTION_CODES` and `CAPACITY_PHRASES` (2); the parameter and return types of `exhaustionCause`, `describeSandboxExhaustion`, `sandboxExhaustionError`, `withSandbox`, `buildSandbox`, `freeSpace`, `existingAncestor`, `humanBytes`, `asText` and `firstLine` (10); and three `as {...}` casts that replace the original's JSDoc `/** @type {...} */` casts (3), one of them on the line after `exhaustionCause`'s signature, the other two in `describeSandboxExhaustion` and `freeSpace`.
+// CHANGED FROM THE ORIGINAL, ONE LINE: the original is itself TypeScript since a11ign/a11ign#4273, carrying the same annotations the `js-to-ts` sweep added to this copy (agent-org#431, #4269), so the one line left is the `failure` cast in `exhaustionCause`, which the original writes `((error ?? {}) as { code?: unknown, message?: unknown, stderr?: unknown })` and this copy writes without the outer parentheses and with `;` between the members (the formatter's choice here).
 // ==== end of copy header ====
 // @ts-check
 /**
