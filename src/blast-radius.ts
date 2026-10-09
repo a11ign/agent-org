@@ -52,7 +52,7 @@ export function declaresSweep(body: string): boolean {
 /** An open row, as `gh issue list --json number,labels,body` returns it. */
 export type OpenRow = { number: number; labels?: { name: string; }[]; body?: string | null; repo?: string; };
 /** An open pull request in the shape `lookupOpenPrFiles` returns, narrowed to what the count reads. */
-export type OpenPr = { number: number; files: string[]; closes?: number[]; repo?: string; repoKey?: string; };
+export type OpenPr = { number: number; files: string[]; changedFiles?: number; closes?: number[]; repo?: string; repoKey?: string; };
 
 /**
  * THE THREE READS, each `null` when it could not be made -- INCONCLUSIVE, never "nothing there".
@@ -126,6 +126,12 @@ function overlappingPrs(mine: string[], prs: OpenPr[], countedRows: ReadonlySet<
     .filter((pr) => !(pr.closes ?? []).some((row) => countedRows.has(row)));
 }
 
+/**
+ * A pull request whose file list came back SHORTER than GitHub's own `changedFiles` was not read in full: `lookupOpenPrFiles` keeps the short
+ * list when paging the rest fails (#1419), so a Region covering a missing file would measure as no overlap. That is unknown, never small.
+ */
+const isTruncated = (pr: OpenPr) => pr.changedFiles !== undefined && pr.files.length < pr.changedFiles;
+
 const rowName = (row: OpenRow) => (row.repo === undefined ? `#${row.number}` : `#${row.number} in ${row.repo}`);
 const prName = (pr: OpenPr) => (pr.repo === undefined ? `PR #${pr.number}` : `PR #${pr.number} in ${pr.repo}`);
 
@@ -144,7 +150,7 @@ export function measureBlastRadius(body: string, reads: BlastReads): BlastRadius
   const countedRows = overlappingRows(entries, rows ?? []);
   const countedNumbers = new Set(countedRows.filter((r) => r.repo === undefined).map((r) => r.number));
   const overlaps = [...countedRows.map(rowName), ...overlappingPrs(entries, prs ?? [], countedNumbers).map(prName)];
-  return { files: files.size, filesComplete: complete, overlaps, overlapsComplete: rows !== null && prs !== null };
+  return { files: files.size, filesComplete: complete, overlaps, overlapsComplete: rows !== null && prs !== null && !prs.some(isTruncated) };
 }
 
 const listed = (names: string[]) => (names.length <= NAMED_OVERLAPS ? names : [...names.slice(0, NAMED_OVERLAPS), `and ${names.length - NAMED_OVERLAPS} more`]).join(", ");

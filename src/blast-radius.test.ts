@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, measureBlastRadius,
+  BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, ghBlastReads, measureBlastRadius,
   type BlastReads, type OpenPr, type OpenRow,
 } from "./blast-radius.ts";
 import { createIssue } from "./row-file.ts";
@@ -150,6 +150,32 @@ test("a read that FAILED is unknown, never small: it warns, an over-limit number
   assert.match(overlapOnly.refusal ?? "", /overlaps at least 6 open row\(s\)/, "pull requests unread, rows already over: the floor is the refusal");
   assert.equal(overlapOnly.warning, null);
   assert.equal(blastRadiusVerdict({ files: 0, filesComplete: false, overlaps: [], overlapsComplete: false }, true).refusal, null);
+});
+
+test("a pull request whose file list is SHORT of changedFiles is an unread pull request: the overlap is incomplete, never clean", () => {
+  const region = regionOf("agent-org:src/missing.ts");
+  const inOrg = { repo: "a11ign/agent-org", repoKey: "agent-org" };
+  const short = reads({ prs: [pr(9, ["src/other.ts"], { changedFiles: 2, ...inOrg })] });
+  assert.equal(measureBlastRadius(region, short.stub).overlapsComplete, false, "2 changed, 1 listed: the missing file may be the Region's");
+  assert.match(blastRadiusGate(region, short.stub).warning ?? "", /did NOT complete: .*UNREADABLE/);
+  const whole = reads({ prs: [pr(9, ["src/other.ts", "src/missing.ts"], { changedFiles: 2, ...inOrg })] });
+  assert.deepEqual(measureBlastRadius(region, whole.stub), { files: 1, filesComplete: true, overlaps: ["PR #9 in a11ign/agent-org"], overlapsComplete: true }, "POSITIVE CONTROL: the same PR listed in full is read, and overlaps");
+  const over = reads({ rows: Array.from({ length: 6 }, (_, i) => row(i + 1, "agent-org:src/missing.ts")), prs: short.stub.openPrs() });
+  assert.match(blastRadiusGate(region, over.stub).refusal ?? "", /REFUSING/, "an over-limit floor still refuses beside a short PR");
+});
+
+test("THROUGH ghBlastReads: a pull request listing 1 of 2 files whose pagination throws is incomplete (the reviewer's reproduction)", () => {
+  const run = (_cmd: string, args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ number: 9, changedFiles: 2, files: [{ path: "src/other.ts" }], body: "", labels: [], headRefName: "x" }]);
+    if (args[0] === "issue") return "[]";
+    if (args[0] === "api" && args.some((a) => a.includes("/pulls/9/files"))) throw new Error("pagination down");
+    return "";
+  };
+  const declaration = { tracker: [{ key: "", repo: "a11ign/a11ign" }], code: [{ key: "", repo: "a11ign/agent-org" }] };
+  const gateReads = ghBlastReads(run, declaration);
+  const prs = gateReads.openPrs();
+  assert.equal(prs?.length, 1);
+  assert.equal(measureBlastRadius(regionOf("agent-org:src/missing.ts"), { ...gateReads, treeFiles: () => ["src/missing.ts"] }).overlapsComplete, false);
 });
 
 test("blastRadiusVerdict is pure over the reading: at each threshold files, one over refuses", () => {

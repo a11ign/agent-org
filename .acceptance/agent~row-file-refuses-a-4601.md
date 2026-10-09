@@ -7,7 +7,7 @@ npx rstest run --config scripts/rstest/rstest.config.* src/blast-radius.test.ts
 
 The row's command is `cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/blast-radius.test.ts`. The primary checkout carries the new test only after the merge, so before it that command runs no file; the command above is the same one run in the PR's own tree (`pr-open` runs it in the working tree). `AGENT_ORG_HOST` is set to a11y-witness's `.agent-org/host.json`, which the run needs. Printed:
 ```
-VERDICT pass: 16 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
+VERDICT pass: 18 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
 ```
 
 Mutation:
@@ -18,9 +18,10 @@ Mutation:
   - overlap check always fires: 6 of 16 fail, including the 20-file control.
   - `Sweep:` never declared: 2 of 16 fail (the sweep test and the wiring test). Always declared: 9 of 16 fail.
   - the gate not wired in `createIssue` (`if (blast.refusal)` made `if (false)`): 1 of 16 fails, the wiring test, and no pure test.
+  - (rework, reviewer at `96f399bc`) truncation ignored (`!prs.some(isTruncated)` dropped from `overlapsComplete`): 2 of 18 fail, the short-PR test and the `ghBlastReads` reproduction; restored byte-identical (`diff` empty).
   Mutants overlap in the tests they break, since several tests exercise one threshold; the two the row asks about (never, always) each break their own threshold's test.
 
-Suite: the whole `agent-org` suite at `origin/main` (`e620e4c`) and on this branch, both with `AGENT_ORG_HOST` set as above: `33 of 7577 tests failed in 408 files` before and `33 of 7593 tests failed in 409 files` after (the 16 are this row's). The 20 distinct failing test names are the same set in both (`comm -3` of the two is empty), so none is new; they fail on `origin/main` too in this environment.
+Suite: the whole `agent-org` suite at `origin/main` (`e620e4c`) and on this branch, both with `AGENT_ORG_HOST` set as above: `33 of 7577 tests failed in 408 files` before and `33 of 7593 tests failed in 409 files` after (the 16 are this row's; the rework adds 2 more). The 20 distinct failing test names are the same set in both (`comm -3` of the two is empty), so none is new; they fail on `origin/main` too in this environment.
 
 Done-when 2, run for real from this worktree (`node src/row-file.ts ... --label out-of-release --tracker=agent-org`), body Region `agent-org:src/`:
 ```
