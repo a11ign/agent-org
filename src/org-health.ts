@@ -74,7 +74,7 @@ import { homeProjectDeclaration } from "./project-config.ts";
 // A LEAF too (#3943): the pure reading of "no engineer holds a row, and which open rows are not being built, and why".
 import { IDLE_REASONS, idleLine } from "./idle-with-open-rows.ts";
 import { repoVerdict } from "./release-behind-main.ts";
-import { CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, CLASS_LABEL_PREFIX, groupByClass } from "./class-repeat.ts";
+import { CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, CLASS_LABEL_PREFIX, groupByClass, newestOccurrence, occurrencesOf } from "./class-repeat.ts";
 
 /** No PR merged for this long, with work that could merge, is the idle org the chairman found. See the table above. */
 export const NO_MERGE_HOURS = 3;
@@ -1350,35 +1350,63 @@ export function classRepeatReadings({ now, classRepeat }: { now: number; classRe
   const signal = SIGNALS.CLASS_REPEAT;
   if (classRepeat === null) return [unknown(signal, "the closed rows labelled class:<id> could not be read, so no class is known to be free of a repeat")];
   if ("unreadable" in classRepeat) return [unknown(signal, `${classRepeat.unreadable}, so no class is known to be free of a repeat`)];
-  const groups = groupByClass(classRepeat.index, classRepeat.rows);
+  const ledger = classRepeat.ledger;
+  const groups = groupByClass(classRepeat.index, classRepeat.rows, Array.isArray(ledger) ? ledger : []);
+  const ledgerGap = ledger === undefined || Array.isArray(ledger) ? [] : [unknown(signal, `${ledger.unreadable}, so no event kind is known to be free of a repeat`)];
   const undated = groups.flatMap((g) => g.rows).filter((row) => row.closedAt === null);
-  if (undated.length > 0) return [unknown(signal, `closed row(s) ${[...new Set(undated.map((r) => `#${r.number}`))].join(", ")} carry a class label and no close time, so their order cannot be read`)];
+  if (undated.length > 0) return [unknown(signal, `closed row(s) ${[...new Set(undated.map((r) => `#${r.number}`))].join(", ")} carry a class label and no close time, so their order cannot be read`), ...ledgerGap];
   const strangers = groups.filter((g) => g.entry === null);
-  const tripped = groups.filter((g) => g.entry !== null && g.rows.length >= 2 && now - (g.rows[0].closedAt as number) <= CLASS_REPEAT_WINDOW_MS);
+  const fresh = groups.filter((g) => g.entry !== null && occurrencesOf(g) >= 2 && now - (newestOccurrence(g).at as number) <= CLASS_REPEAT_WINDOW_MS);
+  const covered = fresh.filter((g) => rowCovering(classRepeat, g) !== null);
+  const tripped = fresh.filter((g) => !covered.includes(g));
   const counts = classCountsText(groups);
   const strangerText = strangers.map((g) => `\`${CLASS_LABEL_PREFIX}${g.id}\` on ${rowsText(g.rows)}`).join("; ");
   const unknownClass = `unknown class (in no way a class, tripping nothing): ${strangerText} (not in ${FAILURE_CLASSES_PATH}: fix the label or add the class)`;
-  if (tripped.length > 0) return tripped.map((g) => classRepeatTripped(signal, g, [counts, ...(strangers.length > 0 ? [unknownClass] : [])].join("; ")));
-  if (strangers.length > 0) return [unknown(signal, unknownClass)];
-  return [clear(signal)];
+  const beside = [counts, ...(strangers.length > 0 ? [unknownClass] : [])].join("; ");
+  if (tripped.length > 0) return [...tripped.map((g) => classRepeatTripped(signal, g, beside, classRepeat.filings?.[g.id])), ...ledgerGap];
+  if (strangers.length > 0) return [unknown(signal, unknownClass), ...ledgerGap];
+  if (covered.length > 0) return [{ ...clear(signal), detail: covered.map((g) => `class \`${g.id}\` repeated and was filed as ${rowCovering(classRepeat, g)}`).join("; ") }, ...ledgerGap];
+  return [clear(signal), ...ledgerGap];
+}
+
+/** The row a repeating group's class was already filed as, when that row covers the group's NEWEST occurrence (a later occurrence is a new offer, not covered); else `null`. */
+function rowCovering(classRepeat: { filings?: Record<string, import("./class-repeat.ts").Filing> }, group: import("./class-repeat.ts").ClassGroup): string | null {
+  const filing = classRepeat.filings?.[group.id];
+  return filing !== undefined && "filed" in filing && filing.covers === newestOccurrence(group).key ? filing.filed : null;
 }
 
 /** @param {import("./class-repeat.ts").ClassRow[]} rows @returns {string} */
 const rowsText = (rows: import("./class-repeat.ts").ClassRow[]): string => rows.map((r) => `#${r.number}`).join(", ");
 
-/** @param {import("./class-repeat.ts").ClassGroup[]} groups @returns {string} every class read with its instance count, the most first */
-function classCountsText(groups: import("./class-repeat.ts").ClassGroup[]): string {
-  const counted = groups.filter((g) => g.entry !== null).sort((a, b) => b.rows.length - a.rows.length || a.id.localeCompare(b.id));
-  return `instances per class, most first: ${counted.map((g) => `${g.id} ${g.rows.length}`).join(", ")}`;
+/** @param {import("./class-repeat.ts").ClassGroup} group @returns {string} what the group holds: its closed rows, and its failure-ledger refs when it has any */
+function occurrencesText(group: import("./class-repeat.ts").ClassGroup): string {
+  if (group.events.length === 0) return `${group.rows.length} closed rows, ${rowsText(group.rows)}, newest first`;
+  const rows = group.rows.length === 0 ? "" : `${group.rows.length} closed rows ${rowsText(group.rows)}, newest first; `;
+  return `${occurrencesOf(group)} occurrences (${rows}${group.events.length} failure-ledger refs: ${group.events.join(", ")})`;
 }
 
-/** @param {string} signal @param {import("./class-repeat.ts").ClassGroup} group @param {string} beside @returns {Reading} */
-function classRepeatTripped(signal: string, group: import("./class-repeat.ts").ClassGroup, beside: string): Reading {
+/** @param {import("./class-repeat.ts").ClassGroup[]} groups @returns {string} every class read with its instance count, the most first */
+function classCountsText(groups: import("./class-repeat.ts").ClassGroup[]): string {
+  const counted = groups.filter((g) => g.entry !== null).sort((a, b) => occurrencesOf(b) - occurrencesOf(a) || a.id.localeCompare(b.id));
+  return `instances per class, most first: ${counted.map((g) => `${g.id} ${occurrencesOf(g)}`).join(", ")}`;
+}
+
+/** What the class row said about this offer: it was refused (and why, so `ceo` knows nothing was filed), or it exists for an EARLIER occurrence. Empty when nothing was tried. */
+function filingText(filing: import("./class-repeat.ts").Filing | undefined): string {
+  if (filing === undefined) return "";
+  return "refused" in filing
+    ? `THE CLASS ROW WAS NOT FILED: \`row-file\` refused (${filing.refused}), so nobody has it. `
+    : `A class row, ${filing.filed}, was filed for an earlier occurrence and does not cover this one. `;
+}
+
+/** @param {string} signal @param {import("./class-repeat.ts").ClassGroup} group @param {string} beside @param {import("./class-repeat.ts").Filing} [filing] @returns {Reading} */
+function classRepeatTripped(signal: string, group: import("./class-repeat.ts").ClassGroup, beside: string, filing?: import("./class-repeat.ts").Filing): Reading {
   const entry = (group.entry as import("./class-repeat.ts").FailureClass);
   const guard = entry.guard ?? `NONE IN FORCE (${entry.guardNote ?? "the index says nothing more"}), so the first thing to fix is that there is no guard`;
-  return { signal, status: "tripped", firstTrippedAt: group.rows[0].closedAt, discriminator: `${signal}/${group.id}@${group.rows[0].number}`,
-    detail: `THE GUARD FAILED: class \`${group.id}\` (${entry.name}) has ${group.rows.length} closed rows, ${rowsText(group.rows)}, newest first, and a second closed row under one class is a repeat. `
-      + `Its guard: ${guard}. ${beside}` };
+  const { at, key } = newestOccurrence(group);
+  return { signal, status: "tripped", firstTrippedAt: at, discriminator: `${signal}/${group.id}@${key}`,
+    detail: `THE GUARD FAILED: class \`${group.id}\` (${entry.name}) has ${occurrencesText(group)}, and a second occurrence under one class is a repeat. `
+      + `Its guard: ${guard}. ${filingText(filing)}${beside}` };
 }
 
 /**
