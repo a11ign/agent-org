@@ -698,7 +698,7 @@ export function boardTruthNow({ openRowsRead, claimedComments, waitFacts, now },
   const read = readBoardFacts(repo, { run, agents, now, openRows, waitFacts });
   const audit = boardTruthAudit(commentsComplete ? read : { ...read, liveSessions: null });
   try {
-    post({ audit, day: editionDay(new Date(now)), repo, run, readProse: readProseAndOrder({ repo, log }) });
+    post({ audit, day: editionDay(new Date(now)), repo, run, now, readProse: readProseAndOrder({ repo, log }) });
   } catch (error) {
     log(`board-truth: the day's table was not posted (${error instanceof Error ? error.message.split("\n")[0] : error}); the next tick asks again`);
   }
