@@ -2139,7 +2139,7 @@ export function primaryStaleOrders(drift: import("./update-primary.ts").PrimaryD
  * @template {{cause: string, prompt: string}} T
  * @param {T[]} orders @param {import("./update-primary.ts").PrimaryDrift | null | undefined} drift @returns {T[]}
  */
-export function withStalePrimaryNotice<T>(orders: T[], drift: import("./update-primary.ts").PrimaryDrift | null | undefined): T[] {
+export function withStalePrimaryNotice<T extends { cause?: string; prompt: string }>(orders: T[], drift: import("./update-primary.ts").PrimaryDrift | null | undefined): T[] {
   if (!drift || drift.behind === 0) return orders;
   const notice = `[THIS GATE IS RUNNING FROM A STALE PRIMARY: ${drift.sha.slice(0, 9)}, ${drift.behind} commit(s) behind origin/main ${drift.originSha.slice(0, 9)}. `
     + "What this order asks may already be superseded on main; check before acting.]\n";
@@ -2287,7 +2287,7 @@ export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSy
   for (const file of ["spare-instances.json", REVIEWER_REGISTRY_FILE]) {
     const text = evidenceText(`${dir}/${file}`, read);
     const registry = text === "" ? {} : JSON.parse(text);
-    for (const [label, started] of Object.entries(registry ?? {})) {
+    for (const [label, started] of Object.entries(registry ?? {}) as [string, any][]) {
       if (Number(started?.spawnedAt) >= (ended.get(label) ?? Infinity)) ended.delete(label);
     }
   }
@@ -3730,7 +3730,7 @@ export function withChecksPending(prs: any[]) {
  * @param {readonly { scope: Scope, read: { prs: any[] | null } }[]} [known] @param {typeof runBatch} [batch]
  * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
  */
-export function readElsewherePrs(scopes: readonly Scope[] = scopesOf([homeProjectDeclaration()]), run: (args: string[], repo?: string) => string = defaultRun, known: readonly { scope: Scope; read: { prs: any[] | null; }; }[] = [], batch: typeof runBatch = run === defaultRun ? runBatch : undefined): { open: any[] | null; merged: any[] | null; } | undefined {
+export function readElsewherePrs(scopes: readonly Scope[] = scopesOf([homeProjectDeclaration()]), run: (args: string[], repo?: string) => string = defaultRun, known: readonly { scope: Scope; read: { prs: any[] | null; }; }[] = [], batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { open: any[] | null; merged: any[] | null; } | undefined {
   const lanes: { open: any[] | null; merged: any[] | null; }[] = readWithFirstWaveTogether((through) => scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
     const repo = (scope.code as ScopeRepository).repo;
     const aimed = (args: string[]) => through(args, repo);
@@ -7266,7 +7266,7 @@ function trackerReadings({ allOpen }: { allOpen: any[]; }) {
  * @param {(args: string[], repo?: string) => string} [run] @param {typeof runBatch} [batch] the default is `runBatch` for `gh` itself and none for a `run` handed in
  * @returns {{ scope: Scope, read: ReturnType<typeof readLanes> }[]}
  */
-export function readOtherScopes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch = run === defaultRun ? runBatch : undefined): { scope: Scope; read: ReturnType<typeof readLanes>; }[] {
+export function readOtherScopes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { scope: Scope; read: ReturnType<typeof readLanes>; }[] {
   const scopes = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
   return readWithFirstWaveTogether((aimed) => scopes.map((scope) => ({ scope, read: readLanes(scope, aimed) })), run, batch);
 }

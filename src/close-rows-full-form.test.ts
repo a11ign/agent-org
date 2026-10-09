@@ -106,7 +106,7 @@ test("done-when 2, POSITIVE CONTROL: the short form in a pull request of another
 // ---- done-when 3: the row closer settles a row GitHub closed natively -------------------------------------------------------------------
 
 /** A `gh` that answers the closer's one pull-request read and records every other call. */
-function runCloser({ rowState }) {
+function runCloser({ rowState }: { rowState: any }) {
   const dir = tmpDir("close-rows-full-form-");
   const calls = join(dir, "calls.log");
   const pr = { merged: true, baseRefName: "main", mergedAt: "2026-10-02T14:00:00Z", headRefName: "agent/x-2995", body: "Closes a11ign/a11ign#2995",

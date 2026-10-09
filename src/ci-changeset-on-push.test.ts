@@ -43,7 +43,7 @@ function fill(text: string, values: Record<string, string>) {
 /** Run `gate`'s script on `event` with the given results; `ok` is whether `gate` would be green. */
 function gate(event: any, results: any) {
   const step = ci.jobs.gate.steps.find((candidate: any) => candidate.run);
-  const values = { "github.event_name": event };
+  const values: Record<string, any> = { "github.event_name": event };
   for (const [job, result] of Object.entries(results)) values[`needs.${job}.result`] = result;
   const env = Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [key, fill((value as any), values)]));
   const ran = spawnSync("bash", ["-eo", "pipefail", "-c", fill(step.run, values)], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" });

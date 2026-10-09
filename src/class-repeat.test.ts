@@ -51,7 +51,7 @@ function tracker(issues: object[], { hostile = false, fail = "" }: { hostile?: b
 }
 
 /** @param {object[]} issues @param {object} [io] */
-const factOf = (issues: object[], { how = {}, index = INDEX, now = NOW }: object = {}) =>
+const factOf = (issues: object[], { how = {}, index = INDEX, now = NOW }: { how?: any; index?: any; now?: any } = {}) =>
   readClassRepeat(tracker(issues, how).run, REPO, { root: "/project", read: () => index, now });
 /** @param {object[]} issues @param {object} [io] */
 const readingsOf = (issues: object[], io: object = {}) => classRepeatReadings({ now: NOW, classRepeat: factOf(issues, io) });

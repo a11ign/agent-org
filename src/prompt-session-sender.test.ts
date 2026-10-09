@@ -20,7 +20,7 @@ if (!process.env.AGENT_ORG_HOST && existsSync(PROJECT_HOST)) {
 }
 const { senderName, resolveSender } = await import("./prompt-session.ts");
 
-const list = (...labels) => labels.map((label, i) => ({ workspace_id: `w${i + 1}`, label }));
+const list = (...labels: string[]) => labels.map((label, i) => ({ workspace_id: `w${i + 1}`, label }));
 const REAL = ["ceo", "worker-2909", "reviewer-3", "product-manager"];
 
 test("every real session label still resolves to itself (the positive control: a function returning null for all fails here)", () => {

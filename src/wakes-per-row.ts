@@ -165,7 +165,7 @@ function closingReferences(body: string): { repo: string | undefined; number: nu
  * @returns {number[]}
  */
 export function rowsClosedBy(body: string, rowRepo: string): number[] {
-  const rows = new Set();
+  const rows = new Set<number>();
   for (const ref of closingReferences(body)) if (!ref.repo || ref.repo === rowRepo) rows.add(ref.number);
   return [...rows];
 }

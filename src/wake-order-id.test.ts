@@ -65,7 +65,7 @@ test("#4068 the order id IS the wake id the ledger records for that delivery, an
   assert.equal(line.at, AT, "`deliver` hands the ledger writer the instant it named in the header");
   assert.equal(first.typed.match(/^\[order:(\S+) /)?.[1], wakeIdOf(SEAT, line.at), "the header's id is the wake id of that very instant");
   assert.equal(ledgerLine(line.at, line.key).split("\t")[0], String(AT), "and that instant is the ledger line's first field, the number `wake:<session>:<ms>` is made of");
-  const second = delivered(order(SEAT, { resume: true }), SEAT, { now: () => LATER });
+  const second = delivered(order(SEAT, { resume: true }), SEAT, { now: (() => LATER) as any });
   assert.notEqual(second.typed.match(/^\[order:(\S+) /)?.[1], first.typed.match(/^\[order:(\S+) /)?.[1], "CONTROL: a later delivery names a different id, so the match above is not a constant");
 });
 

@@ -26,13 +26,13 @@
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
 /** A trailing `-<digits>` is the row the branch was cut for. `null` when the name carries none. */
-export function rowNumberFromBranch(branch) {
+export function rowNumberFromBranch(branch: string) {
   const m = /-(\d+)$/.exec(branch);
   return m === null ? null : Number(m[1]);
 }
 
 /** The `session:<name>` label on a row, or null. A row may carry none -- that is a fact, not an error. */
-export function sessionFromLabels(labels = []) {
+export function sessionFromLabels(labels: string[] = []) {
   const found = labels.find((l) => l.startsWith(SESSION_PREFIX));
   return found === undefined ? null : found.slice(SESSION_PREFIX.length);
 }
@@ -58,7 +58,7 @@ export function sessionFromLabels(labels = []) {
 export function sessionFromTimeline(timeline: { event: string; label?: { name: string; }; }[] = []) {
   const claims = timeline.filter((e) => e.event === "labeled" && (e.label?.name ?? "").startsWith(SESSION_PREFIX));
   const last = claims[claims.length - 1];
-  return last === undefined ? null : last.label.name.slice(SESSION_PREFIX.length);
+  return last === undefined ? null : last.label!.name.slice(SESSION_PREFIX.length);
 }
 
 /** Roles that no longer run, so a branch carrying one has no owner who can answer for it today. */
@@ -143,7 +143,7 @@ export function branchFacts({ branch, ahead, lastCommit, row, timeline = [] }: {
  * @param {{ candidates: number, noOpenPR: number, merged: number, unmerged: number }} end
  */
 export function reconcile(start: { candidates: number; noOpenPR: number; merged: number; unmerged: number; }, end: { candidates: number; noOpenPR: number; merged: number; unmerged: number; }) {
-  const balanced = (c) => c.merged + c.unmerged === c.noOpenPR;
+  const balanced = (c: any) => c.merged + c.unmerged === c.noOpenPR;
   return {
     startBalanced: balanced(start),
     endBalanced: balanced(end),
@@ -171,16 +171,16 @@ export function groupByOwner(facts: ReturnType<typeof branchFacts>[]) {
   // rank, the biggest group first. Keying on the owner STRING was the defect: `lead (retired role)` sorted
   // among the live sessions, so 14 branches nobody can answer for came above 9 that somebody can.
   const RANK = { "row-label": 0, "claim-history": 0, "retired-role": 1, unknown: 2 };
-  const rankOf = (rows) => Math.min(...rows.map((r) => RANK[r.source] ?? RANK.unknown));
+  const rankOf = (rows: any[]) => Math.min(...rows.map((r) => (RANK as Record<string, number>)[r.source] ?? RANK.unknown));
   return [...groups.entries()]
     .sort((a, b) => rankOf(a[1]) - rankOf(b[1]) || b[1].length - a[1].length);
 }
 
 /** One markdown table per owner, every branch on its own line with all four facts. */
-export function renderInventory(facts) {
+export function renderInventory(facts: any) {
   const lines = [];
   for (const [owner, rows] of groupByOwner(facts)) {
-    const commits = rows.reduce((n, r) => n + r.ahead, 0);
+    const commits = rows.reduce((n: number, r: any) => n + r.ahead, 0);
     lines.push(`### ${owner} — ${rows.length} branch(es), ${commits} commit(s) on no other ref`, "",
       "| branch | commits | last commit | row | owner known from |", "|---|---|---|---|---|");
     for (const r of [...rows].sort((a, b) => b.ahead - a.ahead)) {

@@ -19,7 +19,7 @@ const bodyWith = (...lines: string[]) => `## Acceptance\n\nnode -e "process.exit
 const LABELS = { "a11ign/a11ign#4107": ["defect", "ready"], "a11ign/a11ign#4108": ["ready"] };
 /** The reader `pr-open` is handed: `(number, repo)`. */
 const rowLabels = (number: number, repo: string) => {
-  const labels = (LABELS[`${repo}#${number}`] as any);
+  const labels = (LABELS as Record<string, string[]>)[`${repo}#${number}`];
   if (!labels) throw new Error(`HTTP 403 reading ${repo}#${number}`);
   return labels;
 };
@@ -159,7 +159,7 @@ const FILING_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Accept
 const FILED_URL = "https://github.com/a11ign/a11ign/issues/900";
 
 /** `createIssue` with every seam a fake, returning what reached `gh issue create` and what was made. */
-function fileWith(extra: any, { labelsOnRow = null } = {}) {
+function fileWith(extra: any, { labelsOnRow = null as string[] | null } = {}) {
   const created: any[] = [];
   const ensured: any[] = [];
   const said: any[] = [];
@@ -175,7 +175,7 @@ function fileWith(extra: any, { labelsOnRow = null } = {}) {
       run: (_cmd, args) => (args[0] === "issue" && args[1] === "list" ? "[]" : args.includes("milestone") ? "CI reset" : args.includes("body") ? `${FILING_BODY}\n\nFiled-by: worker-1\n` : ""),
       fetchBoardStatus: () => "Backlog",
       fetchLabels: () => ({ number: 900, title: "a defect", labels: labelsOnRow ?? ["backlog", "lane:any", ...(withKind ? ["defect"] : [])] }),
-      moveStatus: () => ({ moved: true }), milestones: () => ["CI reset"], loadLanesConfig: () => ({ lanes: [] }),
+      moveStatus: () => ({ moved: true }), loadLanesConfig: () => ({ lanes: [] }),
       ensureLabels: (labels) => { if (created.length === 0) ensured.push(...labels); }, // only the labels made BEFORE `gh issue create`; the board and lane labels come after
     });
     return { code, created, ensured, said: said.join("") };

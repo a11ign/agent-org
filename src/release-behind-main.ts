@@ -228,7 +228,7 @@ export function readReleaseBehind({ gh, registry, repositories }: { gh: Gh; regi
 }
 
 /** @type {Registry} the npm registry's document for a package, with the HTTP status after it (no `-f`: it would make a 404 and a failed read the same exit status) */
-export function npmRegistryRead(npmPackage) {
+export function npmRegistryRead(npmPackage: string) {
   const url = `https://registry.npmjs.org/${npmPackage.replace("/", "%2f")}`;
   const answer = execFileSync("curl", ["-sS", "--max-time", String(REGISTRY_TIMEOUT_SECONDS), "-H", "Accept: application/json", "-w", "\n%{http_code}", url],
     { encoding: "utf8", maxBuffer: 1 << 28 });

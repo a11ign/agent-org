@@ -1206,7 +1206,7 @@ export function paneThrashed(text: string | null | undefined): boolean {
  *   windowMs?: number }} facts
  * @returns {D[]}
  */
-export function killedDeliveries<D>({ deliveries, at, until = at, moved, windowMs = RESTART_RESEND_WINDOW_MS }: {
+export function killedDeliveries<D extends { at: number; session: string }>({ deliveries, at, until = at, moved, windowMs = RESTART_RESEND_WINDOW_MS }: {
         deliveries: D[]; at: number; until?: number; moved: (session: string, from: number, to: number) => boolean;
         windowMs?: number;
     }): D[] {

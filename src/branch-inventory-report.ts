@@ -20,8 +20,8 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { branchFacts, renderInventory, rowNumberFromBranch, sessionFromLabels, reconcile }
   from "./branch-inventory.ts";
 
-const MAX_BUFFER: (cmd: string, args: string[]) => string = 64 * 1024 * 1024; // a paginated listing is megabytes; the 1 MB default is an ENOBUFS
-const defaultRun = (cmd, args) =>
+const MAX_BUFFER: number = 64 * 1024 * 1024; // a paginated listing is megabytes; the 1 MB default is an ENOBUFS
+const defaultRun = (cmd: string, args: string[]): string =>
   execFileSync(cmd, args,
     { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_BUFFER });
 
@@ -67,7 +67,7 @@ export function openPrHeads({ run = defaultRun } = {}) {
 }
 
 /** How many commits this branch carries that `origin/main` does not. */
-export function aheadOf(branch, { run = defaultRun } = {}) {
+export function aheadOf(branch: string, { run = defaultRun } = {}) {
   return Number(run("git", ["rev-list", "--count", `origin/main..origin/${branch}`]).trim());
 }
 
@@ -91,7 +91,7 @@ export function aheadOf(branch, { run = defaultRun } = {}) {
  */
 export function rowsFor(numbers: number[], { run = defaultRun } = {}) {
   const wanted = new Set(numbers);
-  const rows = new Map(numbers.map((n) => [n, null]));
+  const rows = new Map<number, any>(numbers.map((n) => [n, null]));
   // PROJECTED SERVER-SIDE-ISH WITH `--jq`, because the raw listing is megabytes of issue BODIES and
   // `execFileSync` met it as `spawnSync gh ENOBUFS` -- loudly, which is the only reason this is a fixed
   // bug rather than a silent truncation. Four fields per row, one JSON object per line.
@@ -113,7 +113,7 @@ export function rowsFor(numbers: number[], { run = defaultRun } = {}) {
  * it -- 64 of 93 branches read UNKNOWN before this was added. The `labeled` event survives every close.
  * One call per row that needs it, never for a row that already answers.
  */
-export function timelineFor(number, { run = defaultRun } = {}) {
+export function timelineFor(number: number, { run = defaultRun } = {}) {
   try {
     return JSON.parse(run("gh", ["api", `repos/${REPO}/issues/${number}/timeline`, "--paginate"]));
   } catch {
@@ -157,7 +157,7 @@ export function inventory({ run = defaultRun } = {}) {
     counts: end,
     reconciliation: reconcile(start, end),
     facts: unmerged.map((b) => branchFacts({ ...b,
-      row: rows.get(rowNumberFromBranch(b.branch)) ?? null,
+      row: rows.get(rowNumberFromBranch(b.branch)!) ?? null,
       timeline: timelines.get(rowNumberFromBranch(b.branch)) ?? [] })),
   };
 }

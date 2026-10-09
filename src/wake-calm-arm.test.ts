@@ -23,7 +23,7 @@ const CALM_ROW = 4046;
 const CONTROL_ROW = 4047;
 const FIRST_SENTENCE = "No one watches this session live.";
 
-const claimed = (row: any) => ({ row, branch: `agent/x-${row}`, worktree: `/home/agent/repos/wt-${row}` });
+const claimed = (row: any): any => ({ row, branch: `agent/x-${row}`, worktree: `/home/agent/repos/wt-${row}` });
 const readyOrder = (row: any) => ({ session: "engineers", cause: "ready-row-unclaimed", causeKey: `engineers/ready-row-unclaimed/${row}`,
   title: "A title", prompt: `Ready row #${row} is unclaimed.` });
 const occurrences = (text: any, needle: any) => text.split(needle).length - 1;

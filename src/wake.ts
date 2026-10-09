@@ -1560,7 +1560,7 @@ function removeStalePackageLinks(fs: LinkFs, to: string, wanted: Set<string>) {
  */
 function linkOnePackageModules(fs: LinkFs, where: { from: string; to: string; path: string; packagesDirs: string[]; treePackages: Map<string, string>; }) {
   ensureRealDir(fs, where.to);
-  const wanted = new Set();
+  const wanted = new Set<string>();
   for (const entry of fs.readdirSync(where.from).filter((name) => !name.startsWith("."))) {
     if (!entry.startsWith("@")) {
       if (linkPackageEntry(fs, where, entry)) wanted.add(entry);
@@ -2316,7 +2316,7 @@ export function tearDownReviewers(agents: { label: string; status: string; }[], 
  * @param {Set<string>} delivered
  * @returns {T[]}
  */
-export function undelivered<T>(orders: T[], delivered: Set<string>): T[] {
+export function undelivered<T extends {causeKey: string}>(orders: T[], delivered: Set<string>): T[] {
   const seen: Set<string> = new Set();
   return orders.filter((o) => {
     if (delivered.has(o.causeKey) || seen.has(o.causeKey)) return false;
@@ -2604,7 +2604,7 @@ export function nothingToDeliver(orders: readonly unknown[], handoffs: readonly 
  * @template {{queuedAt?: number}} T
  * @param {readonly T[]} handoffs @param {number} [now] @returns {T[]}
  */
-export function staleHandoffs<T>(handoffs: readonly T[], now: number = Date.now()): T[] {
+export function staleHandoffs<T extends {queuedAt?: number}>(handoffs: readonly T[], now: number = Date.now()): T[] {
   return handoffs.filter((h) => now - Number(h.queuedAt ?? 0) >= HANDOFF_STALE_MS);
 }
 
@@ -2655,7 +2655,7 @@ export function holdsAsFyi(handoff: { session: string; decision?: boolean; fyi?:
  * @param {{now?: number, isLead?: (label: string) => boolean}} [opts]
  * @returns {{deliver: T[], held: T[], expired: T[]}}
  */
-export function foldFyis<T>(handoffs: readonly T[], { now = Date.now(), isLead = isLeadSeat }: { now?: number; isLead?: (label: string) => boolean; } = {}): { deliver: T[]; held: T[]; expired: T[]; } {
+export function foldFyis<T extends {id: string, session: string, queuedAt?: number, decision?: boolean, fyi?: boolean, resume?: boolean}>(handoffs: readonly T[], { now = Date.now(), isLead = isLeadSeat }: { now?: number; isLead?: (label: string) => boolean; } = {}): { deliver: T[]; held: T[]; expired: T[]; } {
   const fyis = handoffs.filter((h) => holdsAsFyi(h, isLead));
   const real = handoffs.filter((h) => !fyis.includes(h));
   const expired = fyis.filter((h) => now - Number(h.queuedAt ?? 0) >= FYI_STALE_MS);
@@ -2719,7 +2719,7 @@ function fyiSection(fyis: readonly { prompt: string; queuedAt?: number; }[], now
  * @param {readonly O[]} orders @param {readonly F[]} held @param {number} [now]
  * @returns {{orders: O[], rides: Map<string, string[]>}}
  */
-export function ridingGateOrders<O, F>(orders: readonly O[], held: readonly F[], now: number = Date.now()): { orders: O[]; rides: Map<string, string[]>; } {
+export function ridingGateOrders<O extends {session: string, causeKey: string, prompt: string}, F extends {id: string, session: string, prompt: string, queuedAt?: number}>(orders: readonly O[], held: readonly F[], now: number = Date.now()): { orders: O[]; rides: Map<string, string[]>; } {
   const rides: Map<string, string[]> = new Map();
   const taken = new Set();
   const carrying = orders.map((order) => {
@@ -3375,7 +3375,7 @@ function chargeFor(h: { prompt: string; queuedAt?: number; decision?: boolean; }
  *   the default charges no expansion and is for a caller with no target -- see {@link chargeFor}
  * @returns {{take: T[], held: T[]}}
  */
-export function fitBatch<T>(handoffs: readonly T[], budget: number, now: number = Date.now(), labelBytes: number = YOU_PLACEHOLDER_BYTES): { take: T[]; held: T[]; } {
+export function fitBatch<T extends {prompt: string, queuedAt?: number}>(handoffs: readonly T[], budget: number, now: number = Date.now(), labelBytes: number = YOU_PLACEHOLDER_BYTES): { take: T[]; held: T[]; } {
   const queue = [...handoffs].sort(oldestFirst);
   const take: T[] = [];
   let used = BATCH_WRAPPER_BYTES;
@@ -3693,7 +3693,7 @@ export function readLedger(path: string, read: (p: any, enc: any) => any = readF
     throw err;
   }
   const times = deliveryTimes(raw);
-  const live = new Set();
+  const live = new Set<string>();
   for (const [key, list] of times) {
     // A JUDGMENT CAUSE GETS A LONGER WINDOW, NOT AN INFINITE ONE. Its answer is durable -- the
     // causeKey carries the state, so re-asking inside the window buys a model turn to reach a
@@ -7288,7 +7288,7 @@ export function sessionMoved(timestamps: (label: string) => number[] | null): (l
  *   `deliveries` is a thunk: it reads two ledgers, and is called only when a restart is fresh or a pane is interrupted
  * @returns {{ interrupted: string[], thrashed: string[], killed: D[], restartActed: number | null }}
  */
-export function recoverableWork<D>({ now, restartAt, actedRestart, agents, paneText, lastActive, deliveries, moved, resentAt }: {
+export function recoverableWork<D extends { session: string, at: number }>({ now, restartAt, actedRestart, agents, paneText, lastActive, deliveries, moved, resentAt }: {
         now: number; restartAt: number | null; actedRestart: number | null; agents: { label: string; status: string; }[];
         paneText: (label: string) => string | null; lastActive: (label: string) => number | null; deliveries: () => D[];
         moved: (session: string, from: number, to: number) => boolean; resentAt: Record<string, number>;
@@ -7623,7 +7623,7 @@ export function escalationMemory(ledgerPath: string, unavailable: (label: string
  * @returns {{ orders: O[], failed: string[], goneSeats: Map<string, string> }} the orders that remain, one line per release that did not land, and the seats
  *   whose workspace a release closed (#3568): herdr's listing was read BEFORE this, so it still shows them, and an order sent to one is refused `agent_not_found`
  */
-function performReleases<O>(orders: O[], agents: { label: string; status: string; }[], { ledgerPath, hostLayout }: { ledgerPath: string; hostLayout: { worktreesDir: string; primary: string; }; }): { orders: O[]; failed: string[]; goneSeats: Map<string, string>; } {
+function performReleases<O extends { causeKey: string, release?: import("./claim-stall.ts").ReleaseRequest }>(orders: O[], agents: { label: string; status: string; }[], { ledgerPath, hostLayout }: { ledgerPath: string; hostLayout: { worktreesDir: string; primary: string; }; }): { orders: O[]; failed: string[]; goneSeats: Map<string, string>; } {
   const requests = orders.flatMap((o) => (o.release === undefined ? [] : [o.release]));
   const goneSeats: Map<string, string> = new Map();
   const lines = performClaimReleases(requests, agents, { ledgerPath, host: hostLayout, goneSeats });
@@ -7641,7 +7641,7 @@ function performReleases<O>(orders: O[], agents: { label: string; status: string
  */
 export function recentlyVoidedKeys(ledgerPath: string, since: number): Set<string> {
   const raw = readTextOrNull(ledgerPath, readFileSync) ?? "";
-  const keys = new Set();
+  const keys = new Set<string>();
   for (const line of raw.split("\n")) {
     const fields = line.trim().split("\t");
     if (fields[1] === VOIDED && Number(fields[0]) >= since) keys.add(fields[2]);

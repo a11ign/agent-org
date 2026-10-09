@@ -33,6 +33,7 @@ const KNOWN_GROUPS = (new Set(Object.values(GROUPS)) as Set<string>);
 
 /** A refusal that names the cause it is about, so a caller (and a test) can tell which rule fired. */
 export class CauseDeclarationRefusal extends Error {
+  subject: string;
   /** @param {string} cause @param {string} reason @param {{ cause?: unknown }} [options] */
   constructor(cause: string, reason: string, options?: { cause?: unknown; }) {
     super(`cause "${cause}" REFUSED: ${reason}. Nothing is defaulted to another cause's group or profile.`, options);

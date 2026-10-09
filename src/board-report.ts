@@ -484,7 +484,7 @@ export function flowAges(d: any, L: string[]) {
   L.push("");
   L.push(`| group | under ${YOUNG_DAYS} days | ${YOUNG_DAYS} to ${AGING_DAYS} days | over ${AGING_DAYS} days |`);
   L.push("|---|---|---|---|");
-  for (const [name, a] of Object.entries(ages)) L.push(`| ${name} | ${a.young} | ${a.aging} | ${a.old} |`);
+  for (const [name, a] of Object.entries(ages) as [string, any][]) L.push(`| ${name} | ${a.young} | ${a.aging} | ${a.old} |`);
   L.push("");
 }
 
@@ -515,7 +515,7 @@ function jsonLines(raw: string) {
  * @template {{ number: number }} Row
  * @param {Row[]} openRows @param {Row[]} windowRows
  */
-export function mergeFlowRows<Row>(openRows: Row[], windowRows: Row[]) {
+export function mergeFlowRows<Row extends { number: number }>(openRows: Row[], windowRows: Row[]) {
   return [...new Map([...windowRows, ...openRows].map((r) => [r.number, r])).values()];
 }
 

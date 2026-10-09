@@ -102,12 +102,12 @@ export function commitLiveness({ sha, pulls, required, runs }: {
 }
 
 /** Every pull request GitHub associates with a commit, or `null` if the lookup failed. */
-function lookupAssociatedPulls(sha) {
+function lookupAssociatedPulls(sha: string) {
   return lookup(() => JSON.parse(gh(["api", `repos/${REPO}/commits/${sha}/pulls`]))
     .map((p: { number: number; head: { sha: string; }; }) => ({ number: p.number, headRefOid: p.head.sha })));
 }
 
-function facts(sha) {
+function facts(sha: string) {
   const pulls = lookupAssociatedPulls(sha);
   const required = lookupRequiredContexts();
   // The PR's own HEAD sha is what actually ran checks -- the merge/squash commit that landed on `main`

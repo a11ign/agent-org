@@ -35,7 +35,7 @@ function readerOf(rows: any, timelines: any) {
 }
 
 const TIMELINE_4122 = [{ event: "created", created_at: ago(30) }, labeled("backlog", ago(26)), labeled("lane:ceo", ago(26))];
-const reading = (rows: any, timelines = { 4122: TIMELINE_4122 }) => unwaitedStockRows({ reader: readerOf(rows, timelines), now: NOW });
+const reading = (rows: any, timelines: Record<number, any> = { 4122: TIMELINE_4122 }) => unwaitedStockRows({ reader: readerOf(rows, timelines), now: NOW });
 const numbersOf = (stock: any) => (stock.status === "read" ? stock.rows.map((r: any) => r.number) : stock);
 const withBody = (extra: any) => ({ ...ROW_4122, body: `${ROW_4122.body}\n${extra}\n` });
 const withLabel = (name: any) => ({ ...ROW_4122, labels: [...ROW_4122.labels, { name }] });
@@ -167,7 +167,7 @@ test("a reader that throws for one row's timeline makes the number unknown, and 
   const line = unwaitedLines(stock)[0];
   assert.match(line, /: unknown \(could not read the timeline of #20 \(HTTP 502\)\)$/);
   assert.doesNotMatch(line, /#4122/, "the row that read fine is not blamed");
-  assert.equal(NUMBERS.find((n) => n.id === "unwaitedStockRows").of({ unwaited: stock }), null, "unknown is null in the number, never 0");
+  assert.equal(NUMBERS.find((n) => n.id === "unwaitedStockRows")!.of({ unwaited: stock }), null, "unknown is null in the number, never 0");
 });
 
 test("a refused list, a missing edge field, a timeline with no labeled event and a full list are each unknown, and name themselves", () => {
@@ -198,7 +198,7 @@ test("the oldest row is named first, and several are all named", () => {
 
 test("NUMBERS carries the new id with a declared direction, and the retrospective's printed report holds the line", () => {
   const entry = NUMBERS.find((n) => n.id === "unwaitedStockRows");
-  assert.equal(entry.better, "lower");
+  assert.equal(entry!.better, "lower");
   assert.deepEqual(undeclaredDirections({ unwaitedStockRows: 1 }), []);
   const reads = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: null, unwaited: reading([ROW_4122]) };
   const report = buildReport(reads, NOW);

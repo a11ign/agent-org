@@ -126,7 +126,7 @@ export function reviewVerdict(body: string): {
 
 /** Whether this comment carries a real verdict at `head`. Extracted so `verdictAtHead` stays under the
  * complexity ceiling -- the loop was doing the finding and the judging in one function. */
-function verdictHereAt(comment, head) {
+function verdictHereAt(comment: any, head: string) {
   const parsed = reviewVerdict(comment?.body ?? "");
   if (parsed.verdict !== "convinced" && parsed.verdict !== "not-convinced") return null;
   return headMatches(parsed.head, head) ? parsed : null;
@@ -209,7 +209,7 @@ export function verdictAtHead({ comments, head, prAuthor = null }: { comments: {
     const parsed = verdictHereAt(c, head);
     if (!parsed) continue;
     return {
-      verdict: parsed.verdict,
+      verdict: parsed.verdict as "convinced" | "not-convinced" | null,
       by: parsed.author,
       // `null`, NOT `false`, when the opener named nobody -- see the header. This is the field callers get
       // wrong, so it is the one that refuses to guess.

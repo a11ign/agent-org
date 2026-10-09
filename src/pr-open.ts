@@ -635,7 +635,7 @@ function ensureLabel(name: string, { run, labelExists }: { run: (args: string[])
  * @returns {string | null}
  */
 export function rowOwnerLabel(body: string, rest: string[], rowLabels: (number: number, repo: string) => string[]): string | null {
-  const owners = new Set();
+  const owners = new Set<string>();
   for (const { repo, number } of rowsNamed(body, rest)) {
     for (const label of rowLabels(number, repo)) {
       if (label.startsWith(SESSION_PREFIX)) owners.add(label.slice(SESSION_PREFIX.length));

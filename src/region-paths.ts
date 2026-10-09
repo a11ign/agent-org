@@ -51,12 +51,12 @@ export function trackedTopLevelDirs({ checkout = HOME_CHECKOUT }: { checkout?: s
   const known = topLevelCache.get(checkout);
   if (known) return known;
   const out = execFileSync("git", ["ls-files"], { encoding: "utf8", cwd: checkout, env: sandboxGitEnv() });
-  const dirs = new Set();
+  const dirs = new Set<string>();
   for (const line of out.split("\n")) {
     const slash = line.indexOf("/");
     if (slash > 0) dirs.add(line.slice(0, slash));
   }
-  const sorted = [...dirs].sort();
+  const sorted = ([...dirs] as string[]).sort();
   topLevelCache.set(checkout, sorted);
   return sorted;
 }

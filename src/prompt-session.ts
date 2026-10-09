@@ -50,7 +50,7 @@ import { ANSWER_PREFIX } from "./project-vocabulary.ts";
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 
 /** herdr, one call, as `prompt:session` runs it. Exported so `converse.mjs` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
-export const defaultRun = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+export const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
 /**
  * PURE. Whether this session may be prompted at all, and why not when it may not.
@@ -620,7 +620,7 @@ export function promptOrQueue({ run, label, text, agents, path, stance, sender, 
     process.stderr.write(`${report}\n`);
     return EXIT.REFUSED;
   }
-  process.stdout.write(`PROMPTED ${label}, ${CONTEXT_WORDS[action]}\n`);
+  process.stdout.write(`PROMPTED ${label}, ${(CONTEXT_WORDS as Record<string, string>)[action]}\n`);
   return EXIT.OK;
 }
 
@@ -633,12 +633,12 @@ function main() {
     entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.mjs" });
   // NO FLAG IS PART OF THE PROMPT -- `parseStance` strips them, and its comment carries why.
   const parsed = parseStance(process.argv.slice(2));
-  if (parsed.refusal) {
+  if ("refusal" in parsed && parsed.refusal) {
     process.stderr.write(parsed.refusal);
     process.exit(EXIT.REFUSED);
   }
-  const { stance } = parsed;
-  const [label, ...rest] = parsed.rest;
+  const { stance, rest: operands } = parsed as { stance: Stance; rest: string[] };
+  const [label, ...rest] = operands;
   // STDIN IS THE DEFAULT FOR THE TEXT, because a prompt that names a PR contains backticks and quotes,
   // and passing that through a shell argument is how a `gh pr comment` in this repo once ran as command
   // substitution inside the very message it was quoting.

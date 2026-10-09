@@ -1026,7 +1026,7 @@ export const HUMAN_LOGIN_ON_HOST = "HUMAN LOGIN ON THE HOST";
  * @param {string} text @returns {Set<string>}
  */
 function ghLogins(text: string): Set<string> {
-  const logins = new Set();
+  const logins = new Set<string>();
   let usersIndent = -1;
   let childIndent = -1;
   for (const line of text.split("\n")) {
@@ -1099,7 +1099,7 @@ export function humanLoginOnHost(deps: { host?: HostConfig; readGhHosts?: typeof
  * @param {string} text @returns {Set<string>}
  */
 export function codexTrustedProjects(text: string): Set<string> {
-  const trusted = new Set();
+  const trusted = new Set<string>();
   let current = null;
   for (const line of text.split("\n")) {
     const header = /^\s*\[(.*)\]\s*(?:#.*)?$/.exec(line);

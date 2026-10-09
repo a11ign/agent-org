@@ -281,7 +281,7 @@ test("a pull request merged outside the window closes no row in it", () => {
 
 test("dailyMeans groups by UTC merge day", () => {
   const days = dailyMeans([
-    { mergedAt: at("2026-10-01T10:00:00Z"), wakes: 2 }, { mergedAt: at("2026-10-01T23:00:00Z"), wakes: 4 }, { mergedAt: at("2026-10-02T01:00:00Z"), wakes: 6 },
+    { mergedAt: at("2026-10-01T10:00:00Z"), wakes: 2 } as any, { mergedAt: at("2026-10-01T23:00:00Z"), wakes: 4 } as any, { mergedAt: at("2026-10-02T01:00:00Z"), wakes: 6 } as any,
   ]);
   assert.deepEqual(days, [{ day: "2026-10-01", rows: 2, mean: 3 }, { day: "2026-10-02", rows: 1, mean: 6 }]);
 });
@@ -342,7 +342,7 @@ test("readMergedPulls refuses a window the list cannot finish in its page limit,
 
 test("readMergedPulls lets any other failure through as it came, with no flag advice added to it", async () => {
   const broken = () => { throw new Error("gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded"); };
-  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
+  await assert.rejects(readMergedPulls("a11ign/a11ign", WINDOW, broken), (error: any) => error.message === "gh api repos/a11ign/a11ign/pulls: HTTP 403 rate limit exceeded");
 });
 
 /** The script run as a command, with `gh` replaced by a stub that runs `ghBody` and a `HOME` holding the empty sources it reads. */

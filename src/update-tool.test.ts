@@ -29,7 +29,7 @@ function withPrimaryDirectory(fn: any) {
 }
 
 /** A git that records every call and answers the three reads `updateTool` makes: the status, the tag list and HEAD. */
-function fakeGit({ tags, dirty = "" }) {
+function fakeGit({ tags, dirty = "" }: { tags: any; dirty?: string }) {
   const calls: any[] = [];
   const run = (args: any) => {
     calls.push(args);
@@ -106,8 +106,8 @@ test("#3443: the live version is READ off the checkout -- the newest release poi
 });
 
 test("#3443: a move restarts each long-running unit with `try-restart`; an uninstalled one is a line, and a failure is SAID and does not stop the rest", () => {
-  const lines = { log: [], error: [] };
-  const out = { log: (line: any) => lines.log.push((line as any)), error: (line: any) => lines.error.push((line as any)) };
+  const lines: { log: string[]; error: string[] } = { log: [], error: [] };
+  const out = { log: (line: any) => lines.log.push(line), error: (line: any) => lines.error.push(line) };
   const asked: any[] = [];
   const exec = (file: any, args: any) => {
     asked.push([file, ...args]);

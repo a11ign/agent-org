@@ -132,7 +132,7 @@ export function idleWithOpenRowsReading({ now, engineers, openRows, shelved = ne
  * @param {IdleFinding[]} findings @param {number} dateHeld
  */
 export function idleLine(findings: IdleFinding[], dateHeld: number) {
-  const groups = new Map();
+  const groups = new Map<string, IdleFinding[]>();
   for (const f of findings) groups.set(f.kind, [...(groups.get(f.kind) ?? []), f]);
   const ordered = [...groups.entries()].sort(([a, x], [b, y]) =>
     Number(b === IDLE_REASONS.READY_UNOFFERED) - Number(a === IDLE_REASONS.READY_UNOFFERED) || y.length - x.length || a.localeCompare(b));

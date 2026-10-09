@@ -49,7 +49,7 @@ function clockWith(agoMs: any, stateDir: any) {
 }
 
 /** `prepareContext` against a recording herdr; `commands` is what was typed to the window before the order. */
-function decide({ agoMs, tokens, stateBytes }) {
+function decide({ agoMs, tokens, stateBytes }: { agoMs: any; tokens: any; stateBytes: any }) {
   const calls: any[] = [];
   const run = (args: any) => { calls.push(args); return "{}"; };
   const result = prepareContext(run, LEAD, { sleep: () => {}, contextRoot: transcriptRoot(tokens), sessions: ROSTER,
@@ -132,7 +132,7 @@ test("a clock that names no state directory (a caller with no record) compacts, 
 test("the default state directory is `state/` beside the record directory, one file per label", () => {
   const ledgerDir = fresh("ledger");
   const clock = orderClockIn(join(ledgerDir, "last-order"));
-  assert.equal(clock.stateFile(LEAD), join(ledgerDir, "state", `${LEAD}.md`));
+  assert.equal(clock.stateFile!(LEAD), join(ledgerDir, "state", `${LEAD}.md`));
 });
 
 test("a DIRECTORY at the state file's path is not a state: compacted, and it says it is not a regular file", () => {

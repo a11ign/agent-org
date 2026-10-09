@@ -124,7 +124,7 @@ export function deletedPaths(p1: string, merge: string, git_ = git) {
  * @param {string[]} paths
  */
 export function branchTouchedPaths(p1: string, p2: string, paths: string[], git_ = git) {
-  const touched = new Set();
+  const touched = new Set<string>();
   for (const path of paths) {
     const log = git_(["log", "--no-merges", "--oneline", `${p1}..${p2}`, "--", path]);
     if (log.length > 0) touched.add(path);

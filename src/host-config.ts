@@ -45,6 +45,8 @@ export type UnitsDeclaration = { prefix: string, boardReportWorkflow: string, ow
 
 /** A refusal that names the field, so a test can tell WHICH rule fired. */
 export class HostConfigRefusal extends Error {
+  field: string;
+  source: string;
   /** @param {string} field @param {string} why @param {string} source @param {{ cause?: unknown }} [options] */
   constructor(field: string, why: string, source: string, options?: { cause?: unknown; }) {
     super(`${source}: \`${field}\` ${why}`, options);

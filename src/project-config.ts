@@ -47,6 +47,7 @@ export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: Cod
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
 export class ProjectDeclarationRefusal extends Error {
+  field: string;
   /** @param {string} field @param {string} reason @param {string} source @param {{ cause?: unknown }} [options] */
   constructor(field: string, reason: string, source: string, options?: { cause?: unknown; }) {
     super(`${source}: field \`${field}\` REFUSED: ${reason}. Nothing is defaulted to another project's value.`, options);

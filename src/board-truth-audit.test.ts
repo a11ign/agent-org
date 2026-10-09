@@ -99,7 +99,7 @@ test("(3) the freshness bound is the claim-stall's untold-release bound", () => 
 });
 
 test("(4) a parked row whose `Waiting-for:` is already true is found; one still waiting, and a `ready` row with the same line, are not", () => {
-  const waitFacts = (state: string) => ({ items: { "#50": { state, labels: [], resolvedAt: NOW, changedAt: NOW } } });
+  const waitFacts = (state: string): any => ({ items: { "#50": { state, labels: [], resolvedAt: NOW, changedAt: NOW } } });
   const parked = row(12, ["parked"], { body: "Waiting-for: closed #50" });
   assert.deepEqual(found({ openRows: [parked], waitFacts: waitFacts("closed") }, QUESTIONS.WAIT_TRUE), [12]);
   assert.deepEqual(found({ openRows: [parked], waitFacts: waitFacts("open") }, QUESTIONS.WAIT_TRUE), []);
@@ -397,8 +397,8 @@ test("the poster asks the record by the day's own heading, and posts nothing it 
   const quiet = (args: string[]) => { calls.push(args); return ""; };
   assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b", run: quiet }), "no-audit");
   assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b", run: quiet }), "unread", "a table carrying NOT READ would stand for the day");
-  assert.deepEqual(calls, [], "neither asked nor posted");
-  const refusedAsk = (args: string[]) => { calls.push((args as any)); throw new Error("HTTP 403"); };
+  assert.deepEqual(calls, [] as any[], "neither asked nor posted");
+  const refusedAsk = (args: string[]) => { calls.push(args); throw new Error("HTTP 403"); };
   assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run: refusedAsk }), /403/);
   assert.equal(calls.length, 1, "a record that could not be asked is not posted to: it might be there already");
 });
