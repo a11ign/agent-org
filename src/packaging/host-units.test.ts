@@ -39,7 +39,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.ts";
-import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.ts";
+import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
@@ -357,13 +357,60 @@ test("#2783: a session on the declared model is clean; one still on the OLD mode
       { name: "product-manager", cwd: "/home/agent/repos/a11y-witness", sessionId: "bbb" },
       { name: "worker-2783", cwd: "/home/agent/repos/wt-2783", sessionId: "ccc" },
     ];
-    const drift = sessionModelDrift({ sessions, projectsDir });
+    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels: () => [] });
     assert.deepEqual(drift.map((d) => d.unit), ["session product-manager"],
       "only the resumed one; the transcript directory is the cwd with `/` and `.` turned into `-`");
     assert.equal(drift[0].problem, "SESSION ON AN UNDECLARED MODEL");
     assert.match(drift[0].detail, /`claude-sonnet-5`/, "it names what it found");
     assert.match(drift[0].detail, /\/model <alias>/, "and the in-place remedy");
     assert.match(drift[0].detail, /cannot switch/, "and says it only reads");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+const tierRows = (labelled: Record<number, readonly string[] | null>) => (row: number) => labelled[row] ?? null;
+
+test("#4457: a worker on a tier:haiku row is expected on Haiku -- Haiku is clean, Sonnet is the finding naming the row and both ids", () => {
+  const projectsDir = sessionsDir({
+    "-wt-1/h.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-wt-2/s.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const sessions = [{ name: "worker-1", cwd: "/wt-1", sessionId: "h" },
+      { name: "worker-2", cwd: "/wt-2", sessionId: "s" }];
+    const rowLabels = tierRows({ 1: [HAIKU_TIER_LABEL], 2: [HAIKU_TIER_LABEL] });
+    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels });
+    assert.deepEqual(drift.map((d) => d.unit), ["session worker-2"], "Haiku on a Haiku row raises nothing; Sonnet on it does");
+    assert.match(drift[0].detail, /row #2/, "it names the row");
+    assert.match(drift[0].detail, /`claude-sonnet-5-5`/, "and what it found");
+    assert.match(drift[0].detail, new RegExp(`\`${HAIKU_MODEL_ID}\``), "and what the tier expects");
+    assert.doesNotMatch(drift[0].detail, /\/model <alias>/, "and does not send the reader to put a Haiku-tier worker on Sonnet");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#4457: Haiku on an UNLABELLED row is still the finding, and so is a row that cannot be read", () => {
+  const projectsDir = sessionsDir({
+    "-wt-3/a.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-wt-4/b.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-wt-5/c.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const sessions = [{ name: "worker-3", cwd: "/wt-3", sessionId: "a" }, { name: "worker-4", cwd: "/wt-4", sessionId: "b" },
+      { name: "worker-5", cwd: "/wt-5", sessionId: "c" }];
+    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels: tierRows({ 3: ["in-progress"], 4: null, 5: ["in-progress"] }) });
+    assert.deepEqual(drift.map((d) => d.unit), ["session worker-3", "session worker-4"],
+      "Haiku on a plain row and on an unreadable one are findings; Sonnet on a plain row is clean");
+    assert.match(drift[0].detail, /\/model <alias>/, "the plain-row finding keeps its remedy");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#4457: a session that is not a worker is never looked up, whatever the lookup would say", () => {
+  const projectsDir = sessionsDir({ "-x/ceo.jsonl": `${answered(HAIKU_MODEL_ID)}\n` });
+  try {
+    const asked: number[] = [];
+    const drift = sessionModelDrift({ sessions: [{ name: "ceo", cwd: "/x", sessionId: "ceo" }], projectsDir,
+      rowLabels: (row) => { asked.push(row); return [HAIKU_TIER_LABEL]; } });
+    assert.deepEqual(drift.map((d) => d.unit), ["session ceo"], "a standing seat on Haiku is drift");
+    assert.deepEqual(asked, [], "no row was read for it");
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
