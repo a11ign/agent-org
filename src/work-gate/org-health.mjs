@@ -489,7 +489,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
  * @param {{ prsRead: any[] | null, keyedPrsRead?: any[], readyRead: any[] | null, openRowsRead: any[] | null, claimedComments?: any[] | null, decideArgs: any, decided: any[], held?: { subject: string }[], pools?: import("../org-health.ts").PoolReading[] }} tick
  * @param {{ now?: number, lastMergedAt?: () => number | { at: number, repo: string } | null, readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>,
  *           log?: (line: string) => void, readCopies?: () => null, readLabJobs?: () => string[] | null, readWaits?: typeof waitTickFacts,
- *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.ts").readToolAgreement,
+ *           release?: typeof releaseHoldViaModule, readHolderAgents?: typeof readAgents, readToolAgreement?: typeof import("../org-health.ts").readToolAgreement, readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips,
  *           readMilestoneMoves?: typeof readMilestoneMoves,
  *           readReleaseRuns?: () => import("../org-health.ts").ReleaseRuns | null | undefined,
  *           readReleaseBehind?: () => import("../release-behind-main.ts").RepoFact[] | null | undefined,
@@ -502,7 +502,7 @@ const lastMerge = (read) => (read !== null && typeof read === "object" ? { lastM
 export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools },
   io = {}) {
   const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
-    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
+    readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined,
     readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
@@ -529,6 +529,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...(milestoneClock !== undefined && { milestoneClock }), // #4231: the same rows and PRs, and no call of its own
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
+    ...nodeStripsFact(readNodeStrips()), // #4390
     ...releaseRunsFact(readReleaseRuns()), // #4001
     ...releaseBehindFact(readReleaseBehind()), // #4128
     ...classRepeatFact(readClassRepeat()), // #4126
@@ -859,6 +860,9 @@ function withoutHeld(prs, held) {
  * @param {ReturnType<typeof import("../org-health.ts").readToolAgreement>} read @returns {{ toolAgreement?: { now: number, result: any } | null }}
  */
 const toolAgreementFact = (read) => (read === undefined ? {} : { toolAgreement: read });
+
+/** #4390: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. @param {import("../node-strips-types.ts").NodeStripFact | null | undefined} read */
+const nodeStripsFact = (read) => (read === undefined ? {} : { nodeStrips: read });
 
 /** #4001: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. @param {import("../org-health.ts").ReleaseRuns | null | undefined} read */
 const releaseRunsFact = (read) => (read === undefined ? {} : { releaseRuns: read });

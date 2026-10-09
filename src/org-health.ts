@@ -49,6 +49,7 @@
 //
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports this, and it runs before any `pnpm install`/build.
 import { TSX_IMPORT } from "./tsx-import.ts";
+import { canStrip, describeBad, type NodeStripFact } from "./node-strips-types.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -200,6 +201,7 @@ export const SIGNALS = Object.freeze({
   POOL_LOW: "api-pool-low",
   PANE_AT_PROMPT: "pane-stopped-at-a-prompt",
   TOOL_VERSION: "runner-behind-newest-release",
+  NODE_CANNOT_STRIP: "node-cannot-strip",
   TEAM_ACCESS: "team-access-drifted",
   AUTO_OFF_REFUSING: "fleet-auto-off-refusing",
   STATE_LABEL: "row-without-exactly-one-state",
@@ -802,6 +804,25 @@ export function readToolAgreement(run: (args: string[]) => string = (args) => ex
   }
 }
 
+/**
+ * SIGNAL (ADR 0043 Decision 8, a11ign/a11ign#4390): A `node` THE HOST RUNS CANNOT STRIP TYPES, so `node <file>.ts` would die there. The facts are `node-strips-types.ts`'s (the PATH `node` and every `node` a
+ * rendered unit names, asked once per run); THIS turns them into a reading. `fact` is `undefined` when the caller does not ask and `null` when the read was refused. A binary that could not be run is
+ * tripped, never clear: absence is not a pass. Keyed on the bad binaries, so the same breakage is one signal however many ticks see it and a different binary is a new one.
+ * @param {{ fact: NodeStripFact | null }} input @returns {Reading}
+ */
+export function nodeCannotStripReading({ fact }: { fact: NodeStripFact | null; }): Reading {
+  if (fact === null) return unknown(SIGNALS.NODE_CANNOT_STRIP, "the read of what each `node` prints for `process.features.typescript` did not return");
+  const bad = fact.readings.filter((reading) => !canStrip(reading));
+  if (bad.length === 0) {
+    return fact.unlisted === undefined ? clear(SIGNALS.NODE_CANNOT_STRIP)
+      : unknown(SIGNALS.NODE_CANNOT_STRIP, `the PATH \`node\` strips types, but the units' \`node\` binaries were not listed: ${fact.unlisted}`);
+  }
+  const named = bad.slice(0, MAX_NAMED).map(describeBad).join("; ");
+  const more = bad.length > MAX_NAMED ? `; and ${bad.length - MAX_NAMED} more` : "";
+  return { signal: SIGNALS.NODE_CANNOT_STRIP, status: "tripped", firstTrippedAt: null, discriminator: `${SIGNALS.NODE_CANNOT_STRIP}@${bad.map((reading) => reading.binary).sort().join(",")}`,
+    detail: `${bad.length} of ${fact.readings.length} \`node\` binaries cannot strip types: ${named}${more}` };
+}
+
 /** GitHub's `permissions` booleans on a team's repository, highest first: the team's level there is the first one that is true. */
 const TEAM_LEVELS = Object.freeze(["admin", "maintain", "push", "triage", "pull"]);
 /** One `full_name<TAB>admin<TAB>maintain<TAB>push<TAB>triage<TAB>pull` line per repository the team reaches. */
@@ -1320,7 +1341,7 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
  *           drift: { behind: number, ahead: number, dirty: string[] } | null, primarySince: number | null,
  *           fleet?: FleetCaptures | null, waiting?: FleetWaiting | null, copies?: CopyPair[] | null, overdue?: { items: OverdueCandidate[] | null, unread?: string[] },
  *           waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"], bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"], manual: number } | null,
- *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.ts").IdleRows, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
+ *           pools?: PoolReading[] | null, toolAgreement?: { result: ToolAgreement } | null, nodeStrips?: NodeStripFact | null, teamAccess?: TeamAccessFact, autoOff?: AutoOffFact, stateRows?: Parameters<typeof stateLabelReading>[0]["rows"], idle?: import("./idle-with-open-rows.ts").IdleRows, releaseRuns?: ReleaseRuns | null, releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null, boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"],
  *           classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null, milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null }} facts `milestoneClock` (#4231) is the primary milestone's rows and the pull requests that close them, `null` for a refused open-row read and OMITTED when the caller does not ask; `classRepeat` (#4126) is `readClassRepeat()`'s answer, `null` or `{ unreadable }` for a refused read and OMITTED when the caller does not ask; facts `boardTruth` (#4043) is `boardTruthAudit`'s answer over the rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `releaseRuns` (#4001) is `readReleaseRuns()`'s answer, `null` for a refused read and OMITTED when the caller does not ask; `idle` (#3943) is `idleWithOpenRowsReading`'s answer over the rows the tick already read, OMITTED when the caller does not ask; `stateRows` (#3942) is the open rows the tick already read, `null` for a refused read and OMITTED when the caller does not ask; `autoOff` (#3853) is `readAutoOffRefusal()`'s answer, which `orgHealthTick` reads itself when the caller gives none; `teamAccess` (#3634) is `readTeamAccess()`'s answer, OMITTED when the project declares none; `toolAgreement` (#3533) is `readToolAgreement()`'s answer, OMITTED when the caller does not ask; `pools` (#3448) is the API budgets the tick read, `null` when none was; the order-stall reading is the WAKER's and rides `orderStallOrders`
  * @returns {Reading[]}
  */
@@ -1330,7 +1351,7 @@ export function orgHealthReadings(facts: {
         drift: { behind: number; ahead: number; dirty: string[]; } | null; primarySince: number | null;
         fleet?: FleetCaptures | null; waiting?: FleetWaiting | null; copies?: CopyPair[] | null; overdue?: { items: OverdueCandidate[] | null; unread?: string[]; };
         waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"]; bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"]; manual: number; } | null;
-        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; releaseRuns?: ReleaseRuns | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
+        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; releaseRuns?: ReleaseRuns | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
     }): Reading[] {
   const readings = [noMergeReading(facts), redPrReading(facts), refusedRowReading(facts),
@@ -1344,6 +1365,7 @@ export function orgHealthReadings(facts: {
   }
   if (facts.pools !== undefined) readings.push(poolLowReading({ pools: facts.pools }));
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
+  if (facts.nodeStrips !== undefined) readings.push(nodeCannotStripReading({ fact: facts.nodeStrips }));
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows, now: facts.now }));
@@ -1397,6 +1419,9 @@ const REMEDY = (Object.freeze({
     + "is not true of it. READ `node src/lib/tool-version-agreement.mjs` (or `host:check`) in the tool checkout for the whole list. A `tool` runner is the work-tick's `update-tool`, which should have moved the checkout to "
     + "the newest tag: read the tick's first journal line and why it did not. A `worktree` runner resolves a COPY of the dependency through its `node_modules`: until the removal row (#3534) merges it is the pin, "
     + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
+  [SIGNALS.NODE_CANNOT_STRIP]: "Each `node` named cannot strip types (`process.features.typescript` is not `strip` or `transform`, or the binary could not be run), so any unit or script that runs a `.ts` "
+    + "file with it dies at start: ADR 0043 Decision 8 chose upstream Node 24 for exactly this. READ `/usr/bin/node -p process.features.typescript` (and the path named), then reinstall upstream Node 24 "
+    + "for the agent user (a11ign/a11ign#4388) or correct the `ExecStart` that names the wrong binary: a distro `nodejs +dfsg` package is the usual cause and it comes back with an apt upgrade. A host action for `orchestrator`.",
   [SIGNALS.TEAM_ACCESS]: "An org team holds a level on a repository that the project's declaration (`teamAccess.declaration` in `.agent-org/project.json`) does not give: `admin` anywhere it reaches, "
     + "or a level other than the declared one on a declared repository. DO NOT CHANGE THE TEAM'S LEVEL YOURSELF: it is an org-admin act, the chairman's. Read the declaration's own prose "
     + "for what the level should be, then put the repositories named on #928 and `" + ANSWER_PREFIX + "ceo` on the row that carries them, or open the pull request that declares the level if the declaration is the one that is wrong.",
