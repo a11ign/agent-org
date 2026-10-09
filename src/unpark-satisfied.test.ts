@@ -37,12 +37,9 @@ const openFact = { state: "open", labels: [], resolvedAt: null, changedAt: null 
  */
 function world({ rows, merged = {}, refuse = {}, fail = {} }: { rows: Record<number, string[]>; merged?: Record<number, { number: number; mergedAt: string; }>; refuse?: Record<number, string>; fail?: Record<string, number[]>; }) {
   const labels = Object.fromEntries(Object.entries(rows).map(([n, l]) => [n, [...l]]));
-  /** @type {string[]} */
   const calls: string[] = [];
-  /** @type {Record<number, string[]>} */
   const comments: Record<number, string[]> = {};
-  const maybeFail = (/** @type {string} */ call: string, /** @type {number} */ n: number) => { if (fail[call]?.includes(n)) throw new Error(`HTTP 502 on ${call} #${n}`); };
-  /** @type {import("./unpark-satisfied.ts").UnparkIo} */
+  const maybeFail = (call: string, n: number) => { if (fail[call]?.includes(n)) throw new Error(`HTTP 502 on ${call} #${n}`); };
   const io: import("./unpark-satisfied.ts").UnparkIo = {
     readLabels: (n) => { calls.push(`readLabels ${n}`); maybeFail("readLabels", n); return { labels: [...labels[n]], state: "OPEN" }; },
     setLabels: (n, set) => { calls.push(`setLabels ${n} ${set.join(",")}`); maybeFail("setLabels", n); labels[n] = [...set]; },
@@ -57,7 +54,7 @@ function world({ rows, merged = {}, refuse = {}, fail = {} }: { rows: Record<num
     comment: (n, body) => { calls.push(`comment ${n}`); maybeFail("comment", n); (comments[n] ??= []).push(body); },
   };
   /** @returns {any[]} the tick's rows as the world stands */
-  const tickRows = (/** @type {Record<number, Record<string, any>>} */ more: Record<number, Record<string, any>> = {}): any[] => Object.entries(labels).map(([n, l]) => tickRow(Number(n), l, more[Number(n)] ?? {}));
+  const tickRows = (more: Record<number, Record<string, any>> = {}): any[] => Object.entries(labels).map(([n, l]) => tickRow(Number(n), l, more[Number(n)] ?? {}));
   return { io, labels, calls, comments, tickRows };
 }
 
@@ -99,7 +96,7 @@ test("(3) one true condition and one false are untouched: EVERY condition, not a
     ["a passed date and an answer:<session> label", { body: `${COMPLETE}\nNot-before: ${PASSED}\n`, extra: "answer:ceo" }, {}],
     ["a closed Waiting-for and a hold label", { body: `${COMPLETE}\nWaiting-for: closed #50\n`, extra: "hold:ceo" }, { "#50": closedFact }],
   ];
-  for (const [name, more, items] of /** @type {[string, any, any][]} */ (cases)) {
+  for (const [name, more, items] of (cases as [string, any, any][])) {
     const labels = ["parked", ...(more.extra ? [more.extra] : [])];
     const w = world({ rows: { 12: labels } });
     const result = unparkSatisfied({ rows: [tickRow(12, labels, more)], facts: factsOf(items), now: NOW }, w.io);
@@ -202,7 +199,6 @@ test("the row changed under the tick: a fresh read that no longer says parked is
 test("the tick's seam: waits are read once, acted on, and returned unchanged; a refused read un-parks nothing", () => {
   const w = world({ rows: { 60: ["parked"] } });
   const rows = [tickRow(60, ["parked"], { body: `${COMPLETE}\nNot-before: ${PASSED}\n` })];
-  /** @type {string[]} */
   const said: string[] = [];
   const waits = { facts: factsOf({}), stale: [], bare: [], manual: 0, umbrella: [] };
   const wrapped = unparkingWaits(() => waits, { run: () => "", io: w.io, log: (line) => said.push(line) });
@@ -245,7 +241,7 @@ test("pin: the labels that block a ready row are the audit's own, one by one", (
 });
 
 test("the merged-closer read: only MERGED pull requests count, and a refused or malformed answer throws rather than reading as none", () => {
-  const answer = (/** @type {any} */ nodes: any) => () => JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
+  const answer = (nodes: any) => () => JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
   assert.deepEqual(mergedClosersOf(5, answer([{ number: 9, state: "MERGED", mergedAt: "2026-10-01T00:00:00Z" }, { number: 10, state: "OPEN", mergedAt: null }, { number: 11, state: "CLOSED", mergedAt: null }])),
     [{ number: 9, mergedAt: "2026-10-01T00:00:00Z" }]);
   assert.deepEqual(mergedClosersOf(5, answer([])), [], "none is a reading when the shape is right");
@@ -282,11 +278,10 @@ function fixture(): { root: string; primary: string; fakeBin: string; } {
  */
 function promoteFromPrimary(fx: { primary: string; fakeBin: string; }, deps?: { worktree?: () => any; }) {
   const was = { cwd: process.cwd(), path: process.env.PATH, write: process.stderr.write };
-  /** @type {string[]} */
   const logged: string[] = [];
   process.chdir(fx.primary);
   process.env.PATH = `${fx.fakeBin}:${was.path}`;
-  process.stderr.write = /** @type {any} */ ((/** @type {string} */ chunk: string) => { logged.push(String(chunk)); return true; });
+  process.stderr.write = (((chunk: string) => { logged.push(String(chunk)); return true; }) as any);
   try {
     const answer = githubIo(() => "", deps).promote(1);
     return { answer, logged: logged.join("") };
@@ -302,7 +297,7 @@ function promoteFromPrimary(fx: { primary: string; fakeBin: string; }, deps?: { 
 test("(#4202) CONTROL: row-file launched from a checkout whose .git is a directory is refused -- the guard stays, and the refusal is what the tick met", () => {
   const fx = fixture();
   try {
-    const ran = (() => { try { execFileSync(process.execPath, [new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String(/** @type {any} */ (error).stderr); } })();
+    const ran = (() => { try { execFileSync(process.execPath, [new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String((error as any).stderr); } })();
     assert.match(ran, /REFUSED -- launched from .*which is not a linked worktree: its \.git is a directory/, "the primary-checkout fixture is the real refused shape");
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
@@ -337,7 +332,7 @@ test("(#4202) the owned worktree is created once, reused, moved to HEAD, and a d
     mkdirSync(first.dir);
     writeFileSync(join(first.dir, "mine.txt"), "not yours\n");
     const refused = unpark.tickWorktree({ codeDir: fx.primary });
-    assert.match(/** @type {any} */ (refused).refusal, /exists and is not a worktree of/);
+    assert.match((refused as any).refusal, /exists and is not a worktree of/);
     assert.equal(readFileSync(join(first.dir, "mine.txt"), "utf8"), "not yours\n", "the foreign directory was left alone");
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });
@@ -347,8 +342,8 @@ test("(#4202) no tree to run from is a refusal the row is routed with, never a t
 });
 
 test("(#4202) PIN: every script the gate starts that carries a launch guard is run with a working directory of its own -- the list, from the source", () => {
-  const read = (/** @type {string} */ f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
-  const spawned = (/** @type {string} */ f: string) => [...read(f).matchAll(/new URL\("\.\/([a-z-]+\.mjs)", import\.meta\.url\)/g)].map((m) => m[1]);
+  const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
+  const spawned = (f: string) => [...read(f).matchAll(/new URL\("\.\/([a-z-]+\.mjs)", import\.meta\.url\)/g)].map((m) => m[1]);
   const children = [...new Set(["./work-gate.ts", "./unpark-satisfied.ts"].flatMap(spawned))].sort();
   const guarded = children.filter((c) => /\blaunchGate\(/.test(read(`./${c}`)));
   // The positive control: the scan finds the children (update-primary, host-units, row-file) and finds row-file guarded.

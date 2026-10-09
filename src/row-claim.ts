@@ -213,7 +213,7 @@ export function claimRecordFrom(comments: string[]): { branch: string | null; wo
   const records = comments.filter((c) => c.includes(CLAIM_RECORD_MARKER));
   const newest = records.at(-1);
   if (newest === undefined) return { branch: null, worktree: null, recorded: false };
-  const read = (/** @type {string} */ key: string) => {
+  const read = (key: string) => {
     const match = new RegExp(`^${key}\\s*(.+)$`, "m").exec(newest);
     return match ? match[1].trim() : null;
   };
@@ -262,9 +262,7 @@ export function claimedObjects({ labels, comments }: { labels: string[]; comment
   return { branch: labelled.branch, worktree: labelled.worktree };
 }
 
-/**
- * @typedef {{ number: number, title: string, labels: string[], state?: "OPEN" | "CLOSED" }} IssueClaim
- */
+export type IssueClaim = { number: number, title: string, labels: string[], state?: "OPEN" | "CLOSED" };
 
 /**
  * #709: `git worktree remove` (below) DESTROYS A DIRECTORY, and an unscrubbed spawn inherits any
@@ -291,7 +289,6 @@ const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string 
  * @returns {typeof defaultRun}
  */
 function readsOnce(run: typeof defaultRun): typeof defaultRun {
-  /** @type {Map<string, string>} */
   const answers: Map<string, string> = new Map();
   return (cmd, args) => {
     const isRowRead = cmd === "gh" && args[0] === "issue" && (args[1] === "view" || args[1] === "list");
@@ -320,7 +317,7 @@ function readsOnce(run: typeof defaultRun): typeof defaultRun {
  * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
  */
 export function ensureLabelsExist(labels: string[], { run = defaultRun, batch }: { run?: typeof defaultRun; batch?: typeof runBatch; } = {}) {
-  const create = (/** @type {string} */ label: string) => ["label", "create", label, "--repo", REPO, "--force"];
+  const create = (label: string) => ["label", "create", label, "--repo", REPO, "--force"];
   if (batch !== undefined && labels.length > 1 && createdTogether(labels.map(create), batch)) return;
   for (const label of labels) run("gh", create(label));
 }
@@ -362,16 +359,14 @@ function createdTogether(argvs: string[][], batch: typeof runBatch): boolean {
  * @returns {IssueClaim}
  */
 export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): IssueClaim {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["issue", "view", String(issueNumber), "--repo", repo,
       "--json", "number,title,labels,state"]);
   } catch (cause) {
     throw new Error(`row-claim: could not read issue #${issueNumber} from ${repo} -- refusing to guess `
-      + `whether it is claimed. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `whether it is claimed. ${(cause as Error).message}`, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -379,13 +374,13 @@ export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO
     throw new Error(`row-claim: gh's response for issue #${issueNumber} was not JSON -- refusing to `
       + `guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const obj = /** @type {{ number?: unknown, title?: unknown, labels?: unknown, state?: unknown }} */ (parsed);
+  const obj = (parsed as { number?: unknown, title?: unknown, labels?: unknown, state?: unknown });
   if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)) {
     throw new Error(`row-claim: gh's response for issue #${issueNumber} is missing number/title/labels -- `
       + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  const names = obj.labels.map((/** @type {unknown} */ l: unknown) => {
-    const name = /** @type {{ name?: unknown }} */ (l)?.name;
+  const names = obj.labels.map((l: unknown) => {
+    const name = (l as { name?: unknown })?.name;
     if (typeof name !== "string") {
       throw new Error(`row-claim: a label on issue #${issueNumber} has no name -- refusing to guess. `
         + `Got: ${JSON.stringify(l)}`);
@@ -413,16 +408,14 @@ export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO
  * @returns {string[]}
  */
 export function fetchClaimComments(issueNumber: number, { run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): string[] {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "comments"]);
   } catch (cause) {
     throw new Error(`row-claim: could not read issue #${issueNumber}'s comments from ${repo} -- refusing `
-      + `to guess what branch or worktree its claim recorded. ${/** @type {Error} */ (cause).message}`,
+      + `to guess what branch or worktree its claim recorded. ${(cause as Error).message}`,
     { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -430,13 +423,13 @@ export function fetchClaimComments(issueNumber: number, { run = defaultRun, repo
     throw new Error(`row-claim: gh's comment response for issue #${issueNumber} was not JSON -- refusing `
       + `to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const comments = /** @type {{ comments?: unknown }} */ (parsed)?.comments;
+  const comments = (parsed as { comments?: unknown })?.comments;
   if (!Array.isArray(comments)) {
     throw new Error(`row-claim: gh's response for issue #${issueNumber} carried no comments array -- `
       + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  return comments.map((/** @type {unknown} */ c: unknown) => {
-    const body = /** @type {{ body?: unknown }} */ (c)?.body;
+  return comments.map((c: unknown) => {
+    const body = (c as { body?: unknown })?.body;
     return typeof body === "string" ? body : "";
   });
 }
@@ -561,7 +554,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
       { run, log, excludeIssueNumber: issueNumber, touches: issueNumber });
     return { moved: true };
   } catch (error) {
-    const message = /** @type {Error} */ (error).message;
+    const message = (error as Error).message;
     // `gh`'s own wording, observed live against issue #393 (closed, never added to the Project): stable
     // enough to match on because it names the mechanism ("is not an item in project N"), not a paraphrase.
     const notOnBoard = /is not an item in project/.test(message);
@@ -638,7 +631,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
 export function sessionEligibilityReason(issueNumber: number, mySession: string, { run = defaultRun, repo = REPO, repos, adoptedBranch }: {
     run?: typeof defaultRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
 } = {}): string | null {
-  const ghRun = (/** @type {string[]} */ args: string[]) => run("gh", args);
+  const ghRun = (args: string[]) => run("gh", args);
 
   // #989: B2 asks whether a ROW is in build, not whether a PR is open. `null` from the lookup is
   // INCONCLUSIVE and returns no refusal, exactly as the PR-shaped version did -- a failed lookup must
@@ -714,7 +707,7 @@ function claimedRegionsVerdict(myFiles: string[], claimed: { number: number; fil
   const alreadyClaimed = claimed.some((row) => row.number === issueNumber);
   const competitors = alreadyClaimed ? claimed.filter((row) => row.number < issueNumber) : claimed;
   const edges = new Map(claimed.map((row) => [row.number, row.blockedBy]));
-  const blockersOf = (/** @type {number} */ n: number) => edges.get(n) ?? null;
+  const blockersOf = (n: number) => edges.get(n) ?? null;
   return claimedRegionOverlapReason(myFiles, competitors, { rowNumber: issueNumber, blockersOf, openPrs });
 }
 
@@ -830,7 +823,7 @@ export function withLandedWrites<T>(issueNumber: number, landed: string[], act: 
   } catch (cause) {
     if (landed.length === 0) throw cause;
     throw Object.assign(new Error(`row-claim: #${issueNumber} WAS WRITTEN before a later step failed -- `
-      + `landed: ${landed.join("; ")}. The step that failed: ${/** @type {Error} */ (cause).message}`, { cause }),
+      + `landed: ${landed.join("; ")}. The step that failed: ${(cause as Error).message}`, { cause }),
     { landed: [...landed] });
   }
 }
@@ -841,7 +834,7 @@ export function withLandedWrites<T>(issueNumber: number, landed: string[], act: 
  * @returns {string[] | null}
  */
 export function landedWritesOf(error: unknown): string[] | null {
-  const landed = /** @type {{ landed?: unknown } | null} */ (error)?.landed;
+  const landed = (error as { landed?: unknown } | null)?.landed;
   return Array.isArray(landed) ? landed : null;
 }
 
@@ -852,7 +845,7 @@ export function landedWritesOf(error: unknown): string[] | null {
  * @returns {{ exitCode: number, text: string }}
  */
 export function failureReport(error: unknown): { exitCode: number; text: string; } {
-  const message = /** @type {Error} */ (error).message;
+  const message = (error as Error).message;
   if (landedWritesOf(error) === null) return { exitCode: 2, text: `COULD NOT DETERMINE: ${message}` };
   return { exitCode: LANDED_WRITE_EXIT, text: `PARTIALLY WRITTEN (exit ${LANDED_WRITE_EXIT}, NOT "could not determine" `
     + `-- the row has changed): ${message}. Read the row by REST before retrying or editing it by hand.` };
@@ -975,7 +968,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // is not skipped on a resumed (`alreadyMine`) claim: a row dispatched before this check shipped, or by
   // a hand-claim (#673) that bypassed row-claim entirely, must still be caught the first time row-claim
   // itself acts on it, which may well be a "resume".
-  const ghRunForBody = (/** @type {string[]} */ args: string[]) => preWrite("gh", args);
+  const ghRunForBody = (args: string[]) => preWrite("gh", args);
   const body = lookupIssueBody(issueNumber, { run: ghRunForBody });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
@@ -1073,7 +1066,6 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   const { blockedByNote } = checked;
 
   const sessionLabel = `${SESSION_PREFIX}${mySession}`;
-  /** @type {string[]} */
   const landed: string[] = [];
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
   // `LANDED_WRITE_EXIT`. The checks above wrote nothing, so a throw from them still propagates as it did.
@@ -1173,7 +1165,7 @@ function reportReachability(issueNumber: number): { code: number | null; output:
     process.stdout.write(out);
     return { code: 0, output: out };
   } catch (error) {
-    const spawned = /** @type {{stdout?: string, stderr?: string, status?: number}} */ (error);
+    const spawned = (error as {stdout?: string, stderr?: string, status?: number});
     const output = `${spawned.stdout ?? ""}${spawned.stderr ?? ""}`;
     process.stdout.write(output);
     return { code: typeof spawned.status === "number" ? spawned.status : null, output };
@@ -1240,7 +1232,7 @@ export function claimRow(issueNumber: number, mySession: string, deps: {
 // (3d) and its board snapshot is bound to the first tracker's board (`board-snapshot-scope.mjs`), so a write would land on the wrong
 // board or half-apply. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
 
-/** @typedef {{ key: string, repo: string, board: { owner: string, number: number } }} Tracker */
+export type Tracker = { key: string, repo: string, board: { owner: string, number: number } };
 
 /**
  * The tracker a key names, or a refusal that lists what IS declared -- never a fallback to the first, which is how a row number in the
@@ -1333,7 +1325,7 @@ export function worktreeFlagsReason({ branch, worktree, adopt }: { branch?: stri
 
 /** @param {unknown} error @returns {number | null} */
 function exitStatusOf(error: unknown): number | null {
-  const status = /** @type {{ status?: unknown } | null} */ (error)?.status;
+  const status = (error as { status?: unknown } | null)?.status;
   return typeof status === "number" ? status : null;
 }
 
@@ -1350,7 +1342,7 @@ function gitRefExists(args: string[], absentStatus: number, what: string, run: t
   } catch (cause) {
     if (exitStatusOf(cause) === absentStatus) return false;
     throw new Error(`row-claim: could not ask git whether ${what} exists -- refusing to create it on a guess. `
-      + `${/** @type {Error} */ (cause).message}`, { cause });
+      + `${(cause as Error).message}`, { cause });
   }
 }
 
@@ -1388,7 +1380,7 @@ function localBranchTip(branch: string, run: typeof defaultRun): string | null {
   } catch (cause) {
     if (exitStatusOf(cause) === 1) return null;
     throw new Error(`row-claim: could not ask git whether branch ${branch} locally exists -- refusing to create it on a guess. `
-      + `${/** @type {Error} */ (cause).message}`, { cause });
+      + `${(cause as Error).message}`, { cause });
   }
 }
 
@@ -1404,7 +1396,7 @@ function mergedIntoMain(branch: string, run: typeof defaultRun): { merged: true;
     return { merged: true };
   } catch (cause) {
     if (exitStatusOf(cause) !== 1) {
-      return { merged: false, why: `NOT known to be merged into origin/main (git could not say: ${/** @type {Error} */ (cause).message.split("\n")[0]})` };
+      return { merged: false, why: `NOT known to be merged into origin/main (git could not say: ${(cause as Error).message.split("\n")[0]})` };
     }
   }
   try {
@@ -1422,12 +1414,11 @@ function mergedIntoMain(branch: string, run: typeof defaultRun): { merged: true;
  * @returns {{ held: false } | { held: true, path?: string, why: string }}
  */
 function worktreeHolding(branch: string, run: typeof defaultRun): { held: false; } | { held: true; path?: string; why: string; } {
-  /** @type {string} */
   let listing: string;
   try {
     listing = String(run("git", ["worktree", "list", "--porcelain"]));
   } catch (cause) {
-    return { held: true, why: `(git could not list the worktrees: ${/** @type {Error} */ (cause).message.split("\n")[0]})` };
+    return { held: true, why: `(git could not list the worktrees: ${(cause as Error).message.split("\n")[0]})` };
   }
   for (const entry of listing.split(/\n\n+/)) {
     const lines = entry.split("\n");
@@ -1454,7 +1445,7 @@ function branchOwnerText(branch: string, run: typeof defaultRun): string {
     if (claimRecordFrom(comments).branch === branch && session) return `row #${row}'s claim record names \`${session}\``;
     return `row #${row}'s newest claim record does not name this branch`;
   } catch (cause) {
-    return `row #${row}'s claim record could not be read: ${/** @type {Error} */ (cause).message}`;
+    return `row #${row}'s claim record could not be read: ${(cause as Error).message}`;
   }
 }
 
@@ -1469,13 +1460,12 @@ function branchOwnerText(branch: string, run: typeof defaultRun): string {
  * @returns {{ branch: string, head: string }[]}
  */
 function rowBranchesOnOrigin(issueNumber: number, run: typeof defaultRun): { branch: string; head: string; }[] {
-  /** @type {string} */
   let listing: string;
   try {
     listing = run("git", [...LS_REMOTE_ARGS]);
   } catch (cause) {
     throw new Error(`row-claim: could not ask origin which branches it holds for row #${issueNumber} -- refusing to `
-      + `claim on a guess. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `claim on a guess. ${(cause as Error).message}`, { cause });
   }
   return branchesForRow(listing, issueNumber);
 }
@@ -1612,7 +1602,7 @@ export function worktreeCleanliness({ worktree, branch }: { worktree: string; br
     }
     return { clean: true };
   } catch (cause) {
-    return { clean: false, why: `git could not answer (${/** @type {Error} */ (cause).message.split("\n")[0]}), and "could not ask" is not "clean"` };
+    return { clean: false, why: `git could not answer (${(cause as Error).message.split("\n")[0]}), and "could not ask" is not "clean"` };
   }
 }
 
@@ -1754,7 +1744,7 @@ function undoCreatedWorktree({ branch, worktree }: { branch: string; worktree: s
     return `the worktree ${worktree} and branch ${branch} it had just created were removed`;
   } catch (cause) {
     return `the worktree ${worktree} and branch ${branch} it had just created could NOT be removed: `
-      + `${/** @type {Error} */ (cause).message}`;
+      + `${(cause as Error).message}`;
   }
 }
 
@@ -1780,7 +1770,6 @@ export function claimWithWorktree(issueNumber: number, mySession: string, { bran
   const refusal = worktreeTargetReason({ branch, worktree, issueNumber, adopt, mySession }, { run, exists, owner });
   if (refusal) return { claimed: false, reason: refusal };
   if (adopt !== undefined) return adoptWorktree(issueNumber, mySession, { branch, worktree, adopt, run, stamp, claim, claimDeps });
-  /** @type {string[]} */
   const landed: string[] = [];
   return withLandedWrites(issueNumber, landed, () => {
     run("git", ["fetch", "--quiet", "origin"]);
@@ -1827,7 +1816,6 @@ function adoptWorktree(issueNumber: number, mySession: string, { branch, worktre
         branch: string; worktree: string; adopt: string; run: typeof defaultRun;
         stamp: (worktree: string, session: string) => void; claim: typeof claimRow; claimDeps: Parameters<typeof claimRow>[2];
     }): ReturnType<typeof claimRow> {
-  /** @type {string[]} */
   const landed: string[] = [];
   return withLandedWrites(issueNumber, landed, () => {
     stamp(worktree, mySession);
@@ -1897,16 +1885,16 @@ export function removeClaimedWorktree(worktreePath: string, { run = defaultRun, 
   try {
     record({ ...line, event: "removing" });
   } catch (cause) {
-    return { removed: false, reason: `the removal log could not be written, so ${worktreePath} was not removed (#2782): ${/** @type {Error} */ (cause).message}` };
+    return { removed: false, reason: `the removal log could not be written, so ${worktreePath} was not removed (#2782): ${(cause as Error).message}` };
   }
   try {
     run("git", ["worktree", "remove", worktreePath]);
     record({ ...line, event: "removed" });
     return { removed: true };
   } catch (error) {
-    record({ ...line, event: "failed", detail: /** @type {Error} */ (error).message });
+    record({ ...line, event: "failed", detail: (error as Error).message });
     return { removed: false,
-      reason: `git worktree remove failed -- ${/** @type {Error} */ (error).message}` };
+      reason: `git worktree remove failed -- ${(error as Error).message}` };
   }
 }
 
@@ -2092,7 +2080,6 @@ export function declineRow(issueNumber: number, mySession: string,
   // the count and the command that says when the fallback can go. Read AFTER the ownership check, so a
   // decline this session was never entitled to make costs no extra `gh` call.
   const recorded = claimedObjects({ labels: before.labels, comments: fetchComments(issueNumber, { run }) });
-  /** @type {string[]} */
   const landed: string[] = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
@@ -2221,12 +2208,11 @@ export function recordConflict(logPath: string, entry: { issueNumber: number; re
  * @returns {Record<string, any> | null}
  */
 export function latestCheckFor(logPath: string, issueNumber: number): Record<string, any> | null {
-  /** @type {string} */
   let text: string;
   try {
     text = readFileSync(logPath, "utf8");
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   const entries = text.split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -2247,7 +2233,7 @@ function recordCheckSafely(entry: Parameters<typeof recordCheck>[1]) {
     recordCheck(checkLogPath(), entry);
   } catch (error) {
     process.stderr.write(`row-claim: could not record this check to the log -- the answer above is still `
-      + `correct. ${/** @type {Error} */ (error).message}\n`);
+      + `correct. ${(error as Error).message}\n`);
   }
 }
 
@@ -2419,7 +2405,7 @@ export function reportB4(issueNumber: number, deps: {
     others?: (where?: { trackerRepo?: string; }) => { number: number; files: string[]; changedFiles: number; closes?: number[]; }[] | null;
     claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null;
 } = {}) {
-  const write = deps.write ?? ((/** @type {string} */ text: string) => process.stdout.write(text));
+  const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const mine = deps.mine ?? lookupMyRegionFiles;
   const others = deps.others ?? lookupOpenPrFiles;
   // NO EMPTINESS GUARD, because `b4Lines` is never empty -- and a dead guard reads as a live one. It was
@@ -2465,7 +2451,7 @@ function runStatus(issueNumber: number, trackerKey: string = "") {
   try {
     const { labels, title } = fetchLabels(issueNumber, { repo });
     // #771: same injected-`run` shape `writeRowLabels` already uses for the identical lookup.
-    const ghRunForBody = (/** @type {string[]} */ args: string[]) => defaultRun("gh", args);
+    const ghRunForBody = (args: string[]) => defaultRun("gh", args);
     const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
     // #987: the recorded branch/worktree now live in a comment, so `check` reads the thread too. Same
     // `claimedObjects` resolution `declineRow` uses, so the two can never disagree about which directory
@@ -2477,7 +2463,7 @@ function runStatus(issueNumber: number, trackerKey: string = "") {
     }
     renderStatus(issueNumber, title, claimStatus(labels), { body, recorded });
   } catch (error) {
-    process.stderr.write(`COULD NOT DETERMINE: ${/** @type {Error} */ (error).message}\n`);
+    process.stderr.write(`COULD NOT DETERMINE: ${(error as Error).message}\n`);
     process.exitCode = 2;
   }
 }
@@ -2564,7 +2550,7 @@ function drainedNow(): string[] {
   try {
     return activeDrain({ cycles: sparePathsFrom(ledgerPathFrom([])).cycles });
   } catch (error) {
-    process.stderr.write(`row-claim: could not read the drain (${String(/** @type {any} */ (error)?.message ?? error)
+    process.stderr.write(`row-claim: could not read the drain (${String((error as any)?.message ?? error)
       .split("\n")[0]}) -- claiming as though it were lifted (#2324).\n`);
     return [];
   }
@@ -2581,7 +2567,7 @@ function persistentNow(mySession: string): boolean {
   try {
     return isPersistentRole(mySession);
   } catch (error) {
-    process.stderr.write(`row-claim: could not read the roster's persistent seats (${String(/** @type {any} */ (error)?.message ?? error)
+    process.stderr.write(`row-claim: could not read the roster's persistent seats (${String((error as any)?.message ?? error)
       .split("\n")[0]}) -- claiming as though ${mySession} were not one (#3415).\n`);
     return false;
   }
@@ -2610,7 +2596,7 @@ function instanceNow(mySession: string, issueNumber: number): { spare: boolean; 
     }
     return { spare: true, rows: [...(registry[mySession]?.rows ?? []), ...(labelled ?? [])] };
   } catch (error) {
-    process.stderr.write(`row-claim: could not read the instance's rows (${String(/** @type {any} */ (error)?.message ?? error)
+    process.stderr.write(`row-claim: could not read the instance's rows (${String((error as any)?.message ?? error)
       .split("\n")[0]}) -- claiming as though it held none (#2407).\n`);
     return { spare: false, rows: [] };
   }
@@ -2702,7 +2688,7 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
     const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
     if (result.claimed) {
       const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt,
-        replacedTip: /** @type {{ replacedTip?: string }} */ (result).replacedTip });
+        replacedTip: (result as { replacedTip?: string }).replacedTip });
       if (result.statusMoved) {
         process.stdout.write(`${claimLine}\n`);
         process.exitCode = 0;
@@ -2834,7 +2820,7 @@ function runConflict(issueNumber: number, rest: string[]) {
     process.stdout.write(`RECORDED -- #${issueNumber} conflict logged ${against}\n`);
     process.exitCode = 0;
   } catch (error) {
-    process.stderr.write(`COULD NOT RECORD: ${/** @type {Error} */ (error).message}\n`);
+    process.stderr.write(`COULD NOT RECORD: ${(error as Error).message}\n`);
     process.exitCode = 2;
   }
 }

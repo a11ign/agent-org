@@ -48,10 +48,8 @@ import { BLOCKED_LABEL } from "./project-vocabulary.ts";
 
 const EXIT = { STARTABLE: 0, BLOCKED: 1, CANNOT_ASK: 2 };
 
-/** @type {(args: string[]) => string} */
 const git: (args: string[]) => string = (args): string => execFileSync("git", args,
   { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
-/** @type {(args: string[]) => string} */
 const gh: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // PATH extraction moved to `./region-paths.ts` (#462, B4) -- a leaf module with no further imports, so
@@ -69,7 +67,6 @@ const gh: (args: string[]) => string = (args): string => execFileSync("gh", args
  */
 const SYMBOL_IN_PROSE = /`([a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][A-Z0-9]+_[A-Z0-9_]+)`/g;
 
-/** @type {(values: string[]) => string[]} */
 const unique: (values: string[]) => string[] = (values): string[] => [...new Set(values)];
 
 /**
@@ -337,7 +334,6 @@ export function startability({ row, subjectsMissing, heldRegions, examined, bloc
  * "nobody is coming". So a ref MISSING from the map is not answered from the map; it falls through to
  * the authoritative per-ref query. Truncation then costs an extra call and never a wrong answer.
  */
-/** @type {Map<string, string[]> | undefined} */
 let prMap: Map<string, string[]> | undefined;
 function prStateMap() {
   if (prMap) return prMap;
@@ -345,7 +341,7 @@ function prStateMap() {
   try {
     for (const pr of JSON.parse(gh(["pr", "list", "--repo", REPO, "--state", "all",
       "--limit", "400", "--json", "number,state,headRefName"]))) {
-      const key = /** @type {{ headRefName: string }} */ (pr).headRefName;
+      const key = (pr as { headRefName: string }).headRefName;
       prMap.set(key, [...(prMap.get(key) ?? []), `PR #${pr.number} ${pr.state}`]);
     }
   } catch {
@@ -409,7 +405,7 @@ let originMainProved: boolean | null = null;
  * Throws so `main()`'s CANNOT_ASK path reports it, rather than every path reading as absent.
  * @param {{ run?: (args: string[]) => string }} [deps]
  */
-function assertOriginMainReadable({ run }: { run?: (args: string[]) => string; } = /** @type {{ run?: (args: string[]) => string }} */ ({})) {
+function assertOriginMainReadable({ run }: { run?: (args: string[]) => string; } = ({} as { run?: (args: string[]) => string })) {
   // THE MEMO IS FOR THE REAL GIT ONLY. A caller that injects `run` is asking about a different world, so
   // it must neither read the cache nor fill it -- the same discipline `rootFilesOnMain`'s `repoRoot` seam
   // keeps (#995). Without it the first real call in a process proves the ref and every later injected one
@@ -459,7 +455,7 @@ export function symbolOnMain(name: string, { run = git }: { run?: (args: string[
     run(["grep", "-q", "-F", "-e", name, "origin/main"]);
     return true;
   } catch (error) {
-    if (/** @type {{ status?: number }} */ (error).status === 1) return false;
+    if ((error as { status?: number }).status === 1) return false;
     throw error;
   }
 }
@@ -477,7 +473,6 @@ export function symbolOnMain(name: string, { run = git }: { run?: (args: string[
  * @param {{ run?: (args: string[]) => string }} [deps] (#1566) as `symbolOnMain`.
  */
 export function refsCarryingSymbol(symbol: string, refs: string[], { run = git }: { run?: (args: string[]) => string; } = {}) {
-  /** @type {string[]} */
   const carrying: string[] = [];
   for (const ref of refs) {
     try {
@@ -498,7 +493,7 @@ export function refsCarryingSymbol(symbol: string, refs: string[], { run = git }
       // `symbolOnMain`, THIRTY LINES ABOVE, ALREADY DRAWS THIS LINE -- exit 1 is git grep's own "no match",
       // a real no; anything else (128 for an unreadable revision) is a failure that must reach `main()`'s
       // CANNOT_ASK path. The rule was stated once in this file and not followed by its neighbour.
-      if (/** @type {{ status?: number }} */ (error).status === 1) continue;
+      if ((error as { status?: number }).status === 1) continue;
       throw error;
     }
   }
@@ -605,7 +600,6 @@ function heldRegionsFor({ present, refs, run, stateOf }: {
   //
   // A ref genuinely holds a path when it has changed that path since the merge base AND the result still
   // differs from `main`: its own work, not yet landed. Neither condition is sufficient; the pair is.
-  /** @type {{ path: string, refs: string[], openPrs: string[] }[]} */
   const heldRegions: { path: string; refs: string[]; openPrs: string[]; }[] = [];
   /** @param {string[]} range @param {string} path */
   const changed = (range: string[], path: string) => {
@@ -683,7 +677,7 @@ function facts(row: number) {
   // #35's schema migration" and carries the `blocked` label -- and neither its region nor its symbols say
   // so. Reading the LABEL is not the prose-parsing this tool refuses elsewhere: it is the same
   // authoritative record `row-claim` already trusts for `in-progress`.
-  const blockedLabel = (issue.labels ?? []).some((/** @type {any} */ l: any) => l?.name === BLOCKED_LABEL);
+  const blockedLabel = (issue.labels ?? []).some((l: any) => l?.name === BLOCKED_LABEL);
   // THE ROW'S OWN STATE, and it was in this query's reach the whole time. See `startability`.
   const state = typeof issue.state === "string" ? issue.state : null;
   const closedAt = typeof issue.closedAt === "string" ? issue.closedAt : null;

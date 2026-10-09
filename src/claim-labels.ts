@@ -99,7 +99,7 @@ export function stateLabelFindings(openRows: { number: number; state?: string; c
   return openRows.filter((row) => row.state !== "CLOSED").flatMap((row) => {
     const held = heldStatesOf(row);
     if (held.length === 1 || (held.length === 0 && isBeingFiled(row, now))) return [];
-    return [{ number: row.number, labels: held, kind: held.length === 0 ? /** @type {const} */ ("NONE") : /** @type {const} */ ("MANY") }];
+    return [{ number: row.number, labels: held, kind: held.length === 0 ? ("NONE" as const) : ("MANY" as const) }];
   });
 }
 

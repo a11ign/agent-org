@@ -27,9 +27,8 @@ export function readRulings(stateDir: string): { status: "none" | "read" | "unre
   try {
     text = readFileSync(join(stateDir, RULINGS_FILE), "utf8");
   } catch (cause) {
-    return { status: /** @type {any} */ (cause)?.code === "ENOENT" ? "none" : "unreadable", rulings: [] };
+    return { status: (cause as any)?.code === "ENOENT" ? "none" : "unreadable", rulings: [] };
   }
-  /** @type {Map<string, import("./ruling-check.ts").Ruling>} */
   const byId: Map<string, import("./ruling-check.ts").Ruling> = new Map();
   for (const line of text.split("\n").filter(Boolean)) {
     const entry = parseLine(line);
@@ -119,7 +118,7 @@ function postFirstLine({ stateDir, ruling, reading, now, comment, log }: { state
       + `\`${ruling.by}\` has been offered it; this is posted once.`);
     append(stateDir, { id: ruling.id, event: "offered", at: new Date(now).toISOString() });
   } catch (cause) {
-    log(`rulings: could not post on #${ruling.on} (${/** @type {Error} */ (cause).message.split("\n")[0]}); the next tick tries again`);
+    log(`rulings: could not post on #${ruling.on} (${(cause as Error).message.split("\n")[0]}); the next tick tries again`);
   }
 }
 

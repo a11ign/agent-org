@@ -38,7 +38,6 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 // matters most.
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 
-/** @type {(cmd: string, args: string[]) => string} */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string =>
   execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv(), maxBuffer: MAX_OUTPUT_BYTES });
 
@@ -75,11 +74,9 @@ const EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
 const EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
   + ' | { number: .issue.number, event: .event, label: .label.name, at: .created_at }';
 
-/**
- * @typedef {{ event: "labeled" | "unlabeled", label: string, at: string }} LabelEvent
- * @typedef {{ number: number, title: string, closedAt: string, stateReason?: string, events: LabelEvent[] }} ClosedRowEvents
- * @typedef {{ session: string, from: string, to: string | null }} Claim
- */
+export type LabelEvent = { event: "labeled" | "unlabeled", label: string, at: string };
+export type ClosedRowEvents = { number: number, title: string, closedAt: string, stateReason?: string, events: LabelEvent[] };
+export type Claim = { session: string, from: string, to: string | null };
 
 /**
  * Pure: the `session:<name>` claims a row's label history records, each with the window it was held for.
@@ -95,7 +92,6 @@ const EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
 export function claimsFromEvents(events: LabelEvent[]): Claim[] {
   const sorted = [...events].filter((e) => e.label.startsWith(SESSION_PREFIX))
     .sort((a, b) => a.at.localeCompare(b.at));
-  /** @type {Claim[]} */
   const claims: Claim[] = [];
   for (const { event, label, at } of sorted) {
     const session = label.slice(SESSION_PREFIX.length);
@@ -227,8 +223,7 @@ export function attributionFor(pr: ClosingPr | null): { verdict: "worker" | "wor
     + `(${pr.headRefName}), armed with ${pr.sessionLabels.join(", ")}` };
 }
 
-/** @typedef {{ number: number, headRefName: string, merged: boolean, createdAt: string,
- *   sessionLabels: string[] }} ClosingPr */
+export type ClosingPr = { number: number, headRefName: string, merged: boolean, createdAt: string, sessionLabels: string[] };
 
 /**
  * ONE row's closing pull request, read ONE ROW AT A TIME AND DELIBERATELY SO.
@@ -253,13 +248,12 @@ export function fetchClosingPullRequest(number: number, { run = defaultRun }: { 
   const query = `query{repository(owner:"${owner}",name:"${name}"){issue(number:${number}){`
     + "timelineItems(last:30,itemTypes:[CLOSED_EVENT]){nodes{... on ClosedEvent{closer{"
     + "... on PullRequest{number headRefName merged createdAt labels(first:50){nodes{name}}}}}}}}}}";
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
   } catch (cause) {
     throw new Error(`claim-provenance: could not read #${number}'s closing pull request -- refusing to `
-      + `report it as undeclared on a failed read. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `report it as undeclared on a failed read. ${(cause as Error).message}`, { cause });
   }
   return closingPrFromResponse(raw, number);
 }
@@ -271,7 +265,6 @@ export function fetchClosingPullRequest(number: number, { run = defaultRun }: { 
  * @returns {ClosingPr | null}
  */
 export function closingPrFromResponse(raw: string, number: number): ClosingPr | null {
-  /** @type {any} */
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -284,8 +277,8 @@ export function closingPrFromResponse(raw: string, number: number): ClosingPr | 
     throw new Error(`claim-provenance: #${number}'s closing-PR response had no timeline -- refusing to `
       + `guess. Got: ${JSON.stringify(parsed ?? null).slice(0, 200)}`);
   }
-  const pr = nodes.map((/** @type {any} */ n: any) => n?.closer)
-    .filter((/** @type {any} */ c: any) => typeof c?.number === "number").pop();
+  const pr = nodes.map((n: any) => n?.closer)
+    .filter((c: any) => typeof c?.number === "number").pop();
   if (!pr) return null;
   // `createdAt` IS THE ONE FIELD WHOSE ABSENCE WOULD LEAVE THE FINDING, so it throws where the others default.
   // A missing `merged` reads `false` and missing labels read `[]`, and both land in `undeclared` -- they fail
@@ -302,8 +295,8 @@ export function closingPrFromResponse(raw: string, number: number): ClosingPr | 
     headRefName: typeof pr.headRefName === "string" ? pr.headRefName : "an unrecorded branch",
     merged: pr.merged === true,
     createdAt: pr.createdAt,
-    sessionLabels: (pr.labels?.nodes ?? []).map((/** @type {any} */ l: any) => l?.name)
-      .filter((/** @type {unknown} */ n: unknown) => typeof n === "string" && n.startsWith(SESSION_PREFIX)),
+    sessionLabels: (pr.labels?.nodes ?? []).map((l: any) => l?.name)
+      .filter((n: unknown) => typeof n === "string" && n.startsWith(SESSION_PREFIX)),
   };
 }
 
@@ -330,10 +323,9 @@ export function parseEventLines(raw: string): unknown[] {
  * @returns {Map<number, LabelEvent[]>}
  */
 export function labelEventsByIssue(events: unknown[]): Map<number, LabelEvent[]> {
-  /** @type {Map<number, LabelEvent[]>} */
   const byNumber: Map<number, LabelEvent[]> = new Map();
   for (const raw of events) {
-    const e = /** @type {any} */ (raw);
+    const e = (raw as any);
     if (typeof e?.number !== "number" || typeof e?.label !== "string" || typeof e?.at !== "string"
         || (e?.event !== "labeled" && e?.event !== "unlabeled")) {
       throw new Error(`claim-provenance: a label event is missing its issue, label, kind or time -- `
@@ -354,7 +346,6 @@ export function labelEventsByIssue(events: unknown[]): Map<number, LabelEvent[]>
  * @returns {{ number: number, title: string, closedAt: string, stateReason?: string }[]}
  */
 export function parseClosedRows(raw: string, limit: number): { number: number; title: string; closedAt: string; stateReason?: string; }[] {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -370,8 +361,8 @@ export function parseClosedRows(raw: string, limit: number): { number: number; t
     throw new Error(`claim-provenance: gh returned exactly the requested limit (${limit}) of closed rows `
       + `-- indistinguishable from a truncated result. Raise CLOSED_ROW_LIMIT.`);
   }
-  return parsed.map((/** @type {unknown} */ entry: unknown) => {
-    const o = /** @type {any} */ (entry);
+  return parsed.map((entry: unknown) => {
+    const o = (entry as any);
     if (typeof o?.number !== "number" || typeof o?.title !== "string" || typeof o?.closedAt !== "string") {
       throw new Error(`claim-provenance: a closed row is missing number/title/closedAt -- refusing to `
         + `guess. Got: ${JSON.stringify(entry).slice(0, 200)}`);
@@ -431,7 +422,6 @@ export function claimsWithNoEvent(openIssues: { number: number; labels: string[]
  * @returns {ClosedRowEvents[]}
  */
 export function fetchClosedRowEvents({ run = defaultRun, openIssues }: { run?: typeof defaultRun; openIssues?: { number: number; labels: string[]; }[]; } = {}): ClosedRowEvents[] {
-  /** @type {string} */
   let listRaw: string;
   try {
     listRaw = run("gh", ["issue", "list", "--repo", REPO, "--state", "closed",
@@ -440,17 +430,16 @@ export function fetchClosedRowEvents({ run = defaultRun, openIssues }: { run?: t
       "--limit", String(CLOSED_ROW_LIMIT), "--json", "number,title,closedAt,stateReason"]);
   } catch (cause) {
     throw new Error(`claim-provenance: could not list closed rows from ${REPO} -- refusing to audit a `
-      + `population it could not read. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `population it could not read. ${(cause as Error).message}`, { cause });
   }
   const closed = parseClosedRows(listRaw, CLOSED_ROW_LIMIT);
 
-  /** @type {string} */
   let eventsRaw: string;
   try {
     eventsRaw = run("gh", ["api", "--paginate", EVENTS_PATH, "--jq", EVENTS_JQ]);
   } catch (cause) {
     throw new Error(`claim-provenance: could not read ${REPO}'s issue-event log -- refusing to report `
-      + `every closed row as unattributable on a failed read. ${/** @type {Error} */ (cause).message}`,
+      + `every closed row as unattributable on a failed read. ${(cause as Error).message}`,
     { cause });
   }
   const byNumber = labelEventsByIssue(parseEventLines(eventsRaw));

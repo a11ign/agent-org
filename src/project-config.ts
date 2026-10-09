@@ -31,14 +31,19 @@ const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const KEY_PATTERN = /^[a-z0-9-]*$/;
 const ENDS_IN_DIGITS = /-\d+$/;
 
+export type CodeRepository = { key: string, repo: string };
+export type Tracker = { key: string, repo: string, board: { owner: string, number: number } };
 /**
- * @typedef {{ key: string, repo: string }} CodeRepository
- * @typedef {{ key: string, repo: string, board: { owner: string, number: number } }} Tracker
- * @typedef {{ name: string, pattern: string }} LeakPattern one thing this project's public prose must never carry: the name a refusal quotes, and a regular expression's SOURCE (no slashes, no flags)
- * @typedef {{ kind: "npm", package: string } | { kind: "tag" }} DoraRelease where a repository's releases are read: a published npm version (the registry's `time` map), or a `v*` tag with a GitHub Release
- * @typedef {{ repo: string, release: DoraRelease, releasablePaths: string[] }} DoraRepository one repository the daily DORA reading covers (`dora.mjs`)
- * @typedef {{ schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number }} ProjectDeclaration
+ * one thing this project's public prose must never carry: the name a refusal quotes, and a regular expression's SOURCE (no slashes, no flags)
  */
+export type LeakPattern = { name: string, pattern: string };
+/**
+ * where a repository's releases are read: a published npm version (the registry's `time` map), or a `v*` tag with a GitHub Release
+ */
+export type DoraRelease = { kind: "npm", package: string } | { kind: "tag" };
+/** one repository the daily DORA reading covers (`dora.mjs`) */
+export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[] };
+export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], repo: string, boardOwner: string, boardNumber: number };
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
 export class ProjectDeclarationRefusal extends Error {
@@ -102,7 +107,6 @@ function readList<T>(declaration: Record<string, unknown>, listName: string, sou
   const list = requiredField(declaration, listName, "", source);
   if (!Array.isArray(list)) throw new ProjectDeclarationRefusal(listName, `it must be a list, not ${describe(list)}`, source);
   if (list.length === 0) throw new ProjectDeclarationRefusal(listName, "it is empty; a project has at least one", source);
-  /** @type {Set<string>} */
   const seen: Set<string> = new Set();
   return list.map((entry, index) => {
     const at = `${listName}[${index}]`;
@@ -200,7 +204,6 @@ function readDora(declaration: Record<string, unknown>, source: string): DoraRep
   if (!Object.hasOwn(declaration, "dora")) return [];
   const list = declaration.dora;
   if (!Array.isArray(list)) throw new ProjectDeclarationRefusal("dora", `it must be a list, not ${describe(list)}`, source);
-  /** @type {Set<string>} */
   const seen: Set<string> = new Set();
   return list.map((entry, index) => {
     const at = `dora[${index}]`;
@@ -221,7 +224,6 @@ function readDora(declaration: Record<string, unknown>, source: string): DoraRep
  * @returns {Readonly<ProjectDeclaration>}
  */
 export function parseProjectDeclaration(text: string, source: string = PROJECT_DECLARATION_PATH): Readonly<ProjectDeclaration> {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -254,7 +256,6 @@ export function parseProjectDeclaration(text: string, source: string = PROJECT_D
  */
 export function readProjectDeclaration(root: string): Readonly<ProjectDeclaration> {
   const path = join(root, PROJECT_DECLARATION_PATH);
-  /** @type {string} */
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -277,7 +278,6 @@ export const HOST_ENV = "AGENT_ORG_HOST";
  * @param {string} hostPath @returns {string}
  */
 function primaryCheckout(hostPath: string): string {
-  /** @type {unknown} */
   let host: unknown;
   try {
     host = JSON.parse(readFileSync(hostPath, "utf8"));
@@ -314,7 +314,7 @@ function gitToplevel(cwd: string): string | null {
   try {
     return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (cause) {
-    const notARepository = cause instanceof Error && /** @type {{ status?: number }} */ (cause).status === NOT_A_REPOSITORY_STATUS;
+    const notARepository = cause instanceof Error && (cause as { status?: number }).status === NOT_A_REPOSITORY_STATUS;
     if (notARepository) return null;
     throw new ProjectDeclarationRefusal("(cwd)", `\`git rev-parse --show-toplevel\` could not run in \`${cwd}\``, "the tool's checkout resolution", { cause });
   }
@@ -372,7 +372,6 @@ export function resolveHomeCheckout({
 /** The checkout this process serves, resolved once at import (see `resolveHomeCheckout`). */
 export const HOME_CHECKOUT = resolveHomeCheckout();
 
-/** @type {Readonly<ProjectDeclaration> | undefined} */
 let homeProject: Readonly<ProjectDeclaration> | undefined;
 
 /** The declaration of the project this tool is running in, read once. @returns {Readonly<ProjectDeclaration>} */

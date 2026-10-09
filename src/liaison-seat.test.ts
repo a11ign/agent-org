@@ -47,10 +47,9 @@ function transcriptRootFor(label: string, cacheRead: number) {
 
 /** A `run` recording every herdr call; `typed()` is what each session was sent, in order. */
 function recorder() {
-  /** @type {string[][]} */
   const calls: string[][] = [];
   return { calls,
-    run: (/** @type {string[]} */ args: string[]) => { calls.push(args); return "{}"; },
+    run: (args: string[]) => { calls.push(args); return "{}"; },
     typed: () => calls.filter((c) => c[2] === "agent" && c[3] === "prompt").map((c) => `${c[4]}: ${c[5]}`) };
 }
 
@@ -159,14 +158,14 @@ describe("the seat is never offered a row, and cannot claim one", () => {
   });
 
   test("(4) row-claim refuses it, naming `persistent`, before a single write", () => {
-    const calls = /** @type {string[][]} */ ([]);
-    const run = (/** @type {string} */ cmd: string, /** @type {string[]} */ args: string[]) => {
+    const calls = ([] as string[][]);
+    const run = (cmd: string, args: string[]) => {
       calls.push([cmd, ...args]);
       return JSON.stringify({ number: 3415, title: "t", state: "OPEN", labels: [{ name: "ready" }] });
     };
     const got = claimRow(3415, SEAT, { run, persistent: true });
     assert.equal(got.claimed, false);
-    assert.match(String(/** @type {any} */ (got).reason), /persistent/);
+    assert.match(String((got as any).reason), /persistent/);
     assert.deepEqual(calls.map((c) => c[1]), ["issue"], "one read of the row and nothing written");
   });
 

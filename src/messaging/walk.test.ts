@@ -132,7 +132,7 @@ async function harness({ body = BRIEF, readers }: { body?: string; readers?: any
       ledger: ledger(), github, chairman: CHAIRMAN, answerLabel: "answer:ceo", now, readers: readers === null ? undefined : (readers ?? fixture.readers),
       orders: { liaison: async ({ text }) => { orders.push(text); return { queued: true, say: "queued", handoff: "h-1" }; } },
     });
-    const send = (/** @type {any} */ message: any) => provider.send(message);
+    const send = (message: any) => provider.send(message);
     return {
       inbound: createInbound({ ledger: ledger(), chairman: CHAIRMAN }),
       forward: createForwarder({ answers, send, converse: (accepted) => { conversation.push(String(accepted.text)); }, log: () => {}, clearKeyboard: async (ref) => { cleared.push(ref); } }),

@@ -214,12 +214,11 @@ function main() {
     process.exitCode = 2;
     return;
   }
-  /** @type {any} */
   let draft: any;
   try {
     draft = JSON.parse(readFileSync(from, "utf8"));
   } catch (error) {
-    process.stderr.write(`board:record: ${from} is not JSON -- ${/** @type {Error} */ (error).message}\n`);
+    process.stderr.write(`board:record: ${from} is not JSON -- ${(error as Error).message}\n`);
     process.exitCode = 2;
     return;
   }

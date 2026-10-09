@@ -123,9 +123,8 @@ test("a rate limit (every gh call throws) reads CANNOT TELL, end to end through 
 });
 
 test("the reads ask GitHub for schedule runs and for comments since the slot, and the verdict follows their answers", () => {
-  /** @type {string[][]} */
   const calls: string[][] = [];
-  const gh = (/** @type {string[]} */ args: string[]) => {
+  const gh = (args: string[]) => {
     calls.push(args);
     const url = args.find((a) => a.startsWith("repos/")) ?? "";
     if (url.includes("/contents/")) return 'on:\n  schedule:\n    - cron: "43 6 * * 1"\n  workflow_dispatch:\n';
@@ -231,7 +230,7 @@ test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the proj
 const TWO_TRACKERS = { tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }], units: { ciHealthWorkflow: "ci-health.yml", ciHealthIssue: 928 } };
 
 /** A `gh` that answers per repository: `answers[repo]` is `"present"`, `"silent"` (no run), or `"refused"` (every call throws). A repository not listed has no workflow, as a tracker without one does. */
-const ghPerRepo = (/** @type {Record<string, string>} */ answers: Record<string, string>) => (/** @type {string[]} */ args: string[]) => {
+const ghPerRepo = (answers: Record<string, string>) => (args: string[]) => {
   const url = args.find((a) => a.startsWith("repos/")) ?? "";
   const mode = answers[url.split("/").slice(1, 3).join("/")];
   if (mode === undefined) throw new Error(`HTTP 404: Not Found (${url})`);
@@ -276,7 +275,7 @@ test("#4080: a lookup refused on the second tracker names that tracker, and the 
 });
 
 test("#4080: the exit is the most alarming reading: a finding, then CANNOT TELL, then NOT YET, and only all PRESENT is 0", () => {
-  const exit = (/** @type {string[]} */ ...verdicts: string[]) => everyTracker.exitFor(verdicts.map((verdict) => ({ ...read({}), verdict })));
+  const exit = (...verdicts: string[]) => everyTracker.exitFor(verdicts.map((verdict) => ({ ...read({}), verdict })));
   assert.equal(exit(VERDICT.PRESENT), 0);
   assert.equal(exit(VERDICT.PRESENT, VERDICT.NOT_YET), 3);
   assert.equal(exit(VERDICT.NOT_YET, VERDICT.CANNOT_TELL), 2);

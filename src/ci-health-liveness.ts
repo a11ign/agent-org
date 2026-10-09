@@ -72,9 +72,11 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 const DAYS_PER_WEEK = 7;
 const PAGE_SIZE = 100;
 
-/** @typedef {{ minute: number, hour: number, weekday: number }} Slot a cron slot in UTC; weekday 0 is Sunday */
-/** @typedef {{ id: number, event: string, created_at: string, conclusion?: string | null, status?: string | null }} Run */
-/** @typedef {{ repo: string, workflow: string, issue: number, key?: string }} Declared one tracker's repository to look in; `key` is the tracker's (#4080), absent for a flag-named one */
+/** a cron slot in UTC; weekday 0 is Sunday */
+export type Slot = { minute: number, hour: number, weekday: number };
+export type Run = { id: number, event: string, created_at: string, conclusion?: string | null, status?: string | null };
+/** one tracker's repository to look in; `key` is the tracker's (#4080), absent for a flag-named one */
+export type Declared = { repo: string, workflow: string, issue: number, key?: string };
 
 /** @param {Date} date @returns {string} `YYYY-MM-DD` in UTC */
 const dayOf = (date: Date): string => date.toISOString().slice(0, "YYYY-MM-DD".length);
@@ -98,7 +100,7 @@ export function slotFromWorkflow(workflowText: string): Slot | null {
   if (crons.length !== 1) return null;
   const fields = crons[0].trim().split(/\s+/);
   const [minute, hour, dayOfMonth, month, weekday] = fields;
-  const numeric = (/** @type {string} */ field: string) => /^\d{1,2}$/.test(field);
+  const numeric = (field: string) => /^\d{1,2}$/.test(field);
   if (fields.length !== 5 || dayOfMonth !== "*" || month !== "*" || ![minute, hour, weekday].every(numeric)) return null;
   const slot = { minute: Number(minute), hour: Number(hour), weekday: Number(weekday) % DAYS_PER_WEEK };
   return slot.minute < 60 && slot.hour < 24 && Number(weekday) <= DAYS_PER_WEEK ? slot : null;
@@ -114,9 +116,7 @@ export function latestSlot(now: Date, { minute, hour, weekday }: Slot): Date {
   throw new Error(`no ${weekday}-day slot found within a week of ${now.toISOString()}`);
 }
 
-/**
- * @typedef {{ verdict: string, slotAt: string | null, graceEndsAt: string | null, heading: string | null, runId: number | null, detail: string }} Reading
- */
+export type Reading = { verdict: string, slotAt: string | null, graceEndsAt: string | null, heading: string | null, runId: number | null, detail: string };
 
 /** @param {string[]} unread what could not be read, so the line says WHICH half is unknown @returns {Reading} */
 const cannotTell = (unread: string[]): Reading => ({ verdict: VERDICT.CANNOT_TELL, slotAt: null, graceEndsAt: null, heading: null, runId: null,
@@ -199,9 +199,8 @@ export function ciHealthOrders(reading: Reading, repo: string = ""): { session: 
 
 // ---- the reads -------------------------------------------------------------------------------------------
 
-/** @typedef {(args: string[]) => string} Gh */
+export type Gh = (args: string[]) => string;
 
-/** @type {Gh} */
 const defaultGh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * PAGE_SIZE * 1024 });
 
 /**
@@ -230,7 +229,7 @@ export function readFacts({ repo, workflow, issue }: Declared, now: Date, { gh =
   const runs = attempt("the workflow's `schedule` runs", () => JSON.parse(gh(["api",
     `repos/${repo}/actions/workflows/${workflow}/runs?event=schedule&per_page=${PAGE_SIZE}`])).workflow_runs);
   const comments = attempt("the report issue's comments", () => JSON.parse(gh(["api", "--paginate", "--slurp",
-    `repos/${repo}/issues/${issue}/comments?per_page=${PAGE_SIZE}${since ? `&since=${since}` : ""}`])).flat().map((/** @type {{ body: string }} */ c: { body: string; }) => c.body));
+    `repos/${repo}/issues/${issue}/comments?per_page=${PAGE_SIZE}${since ? `&since=${since}` : ""}`])).flat().map((c: { body: string; }) => c.body));
   return {
     slot, runs: runs.value, comments: comments.value, workflowState: meta.value?.state ?? null,
     unread: [meta, text, runs, comments].flatMap((r) => (r.why ? [r.why] : [])),
@@ -243,10 +242,8 @@ export function readFacts({ repo, workflow, issue }: Declared, now: Date, { gh =
  * @param {string} text the project's `.agent-org/project.json` @returns {{ declared: Declared[] } | { refusal: string }}
  */
 export function declarationFrom(text: string): { declared: Declared[]; } | { refusal: string; } {
-  /** @type {any} */
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { return { refusal: "the project declaration (it is not valid JSON)" }; }
-  /** @type {any[]} */
   const trackers: any[] = Array.isArray(parsed?.tracker) ? parsed.tracker : [];
   const { ciHealthWorkflow: workflow, ciHealthIssue: issue } = parsed?.units ?? {};
   if (trackers.length === 0 || trackers.some((tracker) => typeof tracker?.repo !== "string" || tracker.repo === "")) {
@@ -292,7 +289,7 @@ export function exitFor(readings: Reading[]): number {
   const code = { [VERDICT.PRESENT]: EXIT.PRESENT, [VERDICT.NOT_YET]: EXIT.NOT_YET, [VERDICT.SILENT]: EXIT.SILENT,
     [VERDICT.NO_COMMENT]: EXIT.NO_COMMENT, [VERDICT.CANNOT_TELL]: EXIT.CANNOT_TELL };
   const rank = [EXIT.PRESENT, EXIT.NOT_YET, EXIT.CANNOT_TELL, EXIT.SILENT];
-  return readings.map((reading) => code[/** @type {keyof typeof code} */ (reading.verdict)]).reduce((worst, next) => (rank.indexOf(next) > rank.indexOf(worst) ? next : worst), EXIT.PRESENT);
+  return readings.map((reading) => code[(reading.verdict as keyof typeof code)]).reduce((worst, next) => (rank.indexOf(next) > rank.indexOf(worst) ? next : worst), EXIT.PRESENT);
 }
 
 /** The project's declaration, from the host's primary project's checkout. @returns {{ declared: Declared[] } | { refusal: string }} */

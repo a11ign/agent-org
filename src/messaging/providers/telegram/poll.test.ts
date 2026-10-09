@@ -365,7 +365,7 @@ describe("what the listener does about what the core said", () => {
   test("a failed step is logged and the next one still runs", async () => {
     const telegram = fakeTelegram({ updates: [update(61, { text: PASSWORD_LINE })] });
     const original = /** @type {any} */ (telegram.fetch);
-    telegram.fetch = /** @type {typeof telegram.fetch} */ (async (/** @type {string} */ url: string, /** @type {any} */ init: any) => (url.endsWith("/deleteMessage")
+    telegram.fetch = /** @type {typeof telegram.fetch} */ (async (/** @type {string} */ url: string, init: any) => (url.endsWith("/deleteMessage")
       ? reply(400, { ok: false, error_code: 400, description: "message can't be deleted" }) : original(url, init)));
     const run = listener({ directory: freshDirectory(), telegram });
     await run.run();

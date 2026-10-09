@@ -239,7 +239,7 @@ export function summaryVerdict({ day, present, localText, remote }: {
     // morning it is due -- an over-length summary sits looking fine all night and refuses the edition at
     // 08:00, when nobody is awake to cut two words. Found by writing a 122-word summary and watching every
     // check pass. COUNTED ON THE REMOTE TEXT, because a local trim that was never pushed changes nothing.
-    const words = wordsIn(/** @type {string} */ (remote.text));
+    const words = wordsIn((remote.text as string));
     if (words > SUMMARY_WORDS) {
       return { code: EXIT.ACT_TONIGHT,
         message: `The summary for ${day} is ${words} words on origin/main, over the ${SUMMARY_WORDS}-word `
@@ -307,7 +307,7 @@ export function reportedDifferences(localText: string, remoteText: string): stri
       return { where, value: null, broken: `${where}: ${REPORTED} is not valid JSON (${String(error).slice(0, 80)})` };
     }
   });
-  const broken = parsed.filter((p) => p.broken).map((p) => /** @type {string} */ (p.broken));
+  const broken = parsed.filter((p) => p.broken).map((p) => (p.broken as string));
   // UNREADABLE IS ITS OWN ANSWER. Diffing against a parse failure would report every entry as differing,
   // which is a true statement that hides the one fact worth acting on.
   if (broken.length > 0) return broken;
@@ -315,7 +315,7 @@ export function reportedDifferences(localText: string, remoteText: string): stri
 }
 
 /** Identity field per array section, so a difference names an ENTRY a reader recognises. */
-const ARRAY_IDENTITY = /** @type {Record<string, string>} */ ({ gates: "command", achievements: "issue" });
+const ARRAY_IDENTITY = ({ gates: "command", achievements: "issue" } as Record<string, string>);
 
 /** Key order is not a value; this makes two spellings of one record compare equal.
  * @param {unknown} value */
@@ -332,8 +332,8 @@ const canonical = (value: unknown) => JSON.stringify(value, (_key, val) =>
 function indexEntries(section: string, items: unknown[]): Map<string, unknown> {
   const key = ARRAY_IDENTITY[section];
   /** @param {unknown} item */
-  const named = (item: unknown) => (key && item && typeof item === "object" && /** @type {any} */ (item)[key] !== undefined
-    ? String(/** @type {any} */ (item)[key]) : canonical(item));
+  const named = (item: unknown) => (key && item && typeof item === "object" && (item as any)[key] !== undefined
+    ? String((item as any)[key]) : canonical(item));
   return new Map(items.map((item) => [named(item), item]));
 }
 
@@ -345,7 +345,6 @@ function indexEntries(section: string, items: unknown[]): Map<string, unknown> {
 function arrayDifferences(section: string, localItems: unknown[], remoteItems: unknown[]) {
   const mine = indexEntries(section, localItems);
   const theirs = indexEntries(section, remoteItems);
-  /** @type {string[]} */
   const out: string[] = [];
   for (const [id, item] of mine) {
     if (!theirs.has(id)) out.push(`${section}[${id}] — in your tree, NOT on origin/main`);
@@ -362,7 +361,6 @@ function arrayDifferences(section: string, localItems: unknown[], remoteItems: u
  * @param {Record<string, unknown> | null} remote
  */
 function sectionDifferences(local: Record<string, unknown> | null, remote: Record<string, unknown> | null) {
-  /** @type {string[]} */
   const out: string[] = [];
   for (const key of [...new Set([...Object.keys(local ?? {}), ...Object.keys(remote ?? {})])]) {
     const mine = local?.[key];
@@ -501,7 +499,7 @@ export function statedWritingTime(text: string, now: Date | string): { stated: s
   const wall = londonWallMinutes(now);
   const month = monthName ? MONTH_NAMES.indexOf(monthName.toLowerCase()) : -1;
   if (month < 0) return { stated, driftMinutes: Math.abs((wall.minutes % MINUTES_PER_DAY) - statedOfDay) };
-  const statedIn = (/** @type {number} */ year: number) => Date.UTC(year, month, Number(day)) / MS_PER_MINUTE + statedOfDay;
+  const statedIn = (year: number) => Date.UTC(year, month, Number(day)) / MS_PER_MINUTE + statedOfDay;
   const statedAt = statedIn(wall.year) - wall.minutes > MINUTES_PER_DAY ? statedIn(wall.year - 1) : statedIn(wall.year);
   return { stated, driftMinutes: Math.abs(wall.minutes - statedAt) };
 }
@@ -545,7 +543,6 @@ function main() {
   refuseUnknownFlags(["--post", "--issue", "--day", "--reminder"],
     { entry: import.meta.url, command: "pnpm run board:summary-check" });
   const argv = process.argv.slice(2);
-  /** @type {(n: string) => string | undefined} */
   const flag: (n: string) => string | undefined = (n): string | undefined => argv.find((a) => a.startsWith(`${n}=`))?.split("=").slice(1).join("=");
 
   const day = flag("--day") ?? nextEditionDay();

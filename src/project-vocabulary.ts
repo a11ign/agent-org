@@ -19,15 +19,12 @@ export { CLAIM_LABEL, READY_LABEL, STARTED_LABEL, WAS_READY_LABEL };
 
 const SOURCE = ".agent-org/project.json";
 
-/**
- * @typedef {{ pattern: RegExp, reason: string, named: boolean }} ResourcePattern
- * @typedef {{ backlog: string, needsChairman: string, outOfRelease: string, blocked: string }} Labels
- * @typedef {{ lane: string, session: string, answer: string }} Prefixes
- * @typedef {{ roadToVersionOne: string, outOfRelease: string }} Milestones
- * @typedef {{ acceptance: string, closes: string, fleet: string }} TemplateFields
- * @typedef {{ labels: Labels, prefixes: Prefixes, milestones: Milestones, lanesFile: string,
- *   templateFields: TemplateFields, fleetQuestion: string, resources: ResourcePattern[] }} Vocabulary
- */
+export type ResourcePattern = { pattern: RegExp, reason: string, named: boolean };
+export type Labels = { backlog: string, needsChairman: string, outOfRelease: string, blocked: string };
+export type Prefixes = { lane: string, session: string, answer: string };
+export type Milestones = { roadToVersionOne: string, outOfRelease: string };
+export type TemplateFields = { acceptance: string, closes: string, fleet: string };
+export type Vocabulary = { labels: Labels, prefixes: Prefixes, milestones: Milestones, lanesFile: string, templateFields: TemplateFields, fleetQuestion: string, resources: ResourcePattern[] };
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -120,21 +117,18 @@ export function parseVocabulary(parsed: unknown): Readonly<Vocabulary> {
   });
 }
 
-/** @type {Readonly<Vocabulary> | undefined} */
 let cached: Readonly<Vocabulary> | undefined;
 
 /** The a11ign vocabulary, read once from `.agent-org/project.json` at `HOME_CHECKOUT`. @returns {Readonly<Vocabulary>} */
 export function homeVocabulary(): Readonly<Vocabulary> {
   if (cached === undefined) {
     const path = `${HOME_CHECKOUT}/${SOURCE}`;
-    /** @type {string} */
     let text: string;
     try {
       text = readFileSync(path, "utf8");
     } catch (cause) {
       throw new ProjectDeclarationRefusal("(file)", "the declaration cannot be read", path, { cause });
     }
-    /** @type {unknown} */
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);

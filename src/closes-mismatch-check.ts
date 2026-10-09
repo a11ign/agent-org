@@ -86,8 +86,9 @@ export function findClosingPhrase(body: string, number: number, repo: string | n
   return null;
 }
 
-/** @typedef {{ ok: true } | { ok: false, reasons: string[] } | { ok: null, reason: string }} MismatchReport */
-/** @typedef {number | { repo?: string, number: number }} ResolvedIssue a bare number is the PR's own repository's */
+export type MismatchReport = { ok: true } | { ok: false, reasons: string[] } | { ok: null, reason: string };
+/** a bare number is the PR's own repository's */
+export type ResolvedIssue = number | { repo?: string, number: number };
 
 /**
  * Pure. Compares what `declaration` DECLARED against what `resolved` GitHub actually RESOLVED, and
@@ -114,8 +115,8 @@ export function closesMismatchReport(declaration: import("./acceptance-commands.
   const declared = declaration.kind === "closes"
     ? closesReferences(declaration).map((ref) => ({ repo: ref.repo ?? prRepo, number: ref.number, bare: ref.repo === null })) : [];
   const got = resolved.map((issue) => (typeof issue === "number" ? { repo: prRepo, number: issue } : { repo: issue.repo ?? prRepo, number: issue.number }));
-  const named = (/** @type {{ repo: string, number: number }} */ ref: { repo: string; number: number; }) => (ref.repo === prRepo ? `#${ref.number}` : `${ref.repo}#${ref.number}`);
-  const sameRow = (/** @type {{ repo: string, number: number }} */ a: { repo: string; number: number; }) => (/** @type {{ repo: string, number: number }} */ b: { repo: string; number: number; }) => a.repo === b.repo && a.number === b.number;
+  const named = (ref: { repo: string; number: number; }) => (ref.repo === prRepo ? `#${ref.number}` : `${ref.repo}#${ref.number}`);
+  const sameRow = (a: { repo: string; number: number; }) => (b: { repo: string; number: number; }) => a.repo === b.repo && a.number === b.number;
   const declaredLabel = declared.length === 0 ? "none" : declared.map(named).join(", ");
 
   const accidentalClosures = got.filter((issue) => !declared.some(sameRow(issue)));
@@ -146,7 +147,7 @@ export function closesMismatchReport(declaration: import("./acceptance-commands.
   return { ok: false, reasons };
 }
 
-/** @typedef {{ number: number, resolved: number[] }} ClosesSibling */
+export type ClosesSibling = { number: number, resolved: number[] };
 
 /** How many recent other open-or-merged PRs declaring a `Closes` must ALL resolve nothing before the fault is called repo-wide. */
 export const REPO_WIDE_SIBLINGS = 3;

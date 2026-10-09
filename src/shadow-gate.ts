@@ -70,10 +70,8 @@ export function refuseLiveStateDir(dir: string, { liveStateDir = LIVE_STATE_DIR,
   }
 }
 
-/**
- * @typedef {{ causeKey: string, session?: string, cause?: string, subject?: string,
- *   discriminator?: string, prompt?: string }} Order the shape `work-gate.mjs`'s `decide()` returns.
- */
+/** the shape `work-gate.mjs`'s `decide()` returns. */
+export type Order = { causeKey: string, session?: string, cause?: string, subject?: string, discriminator?: string, prompt?: string };
 
 /**
  * Two order arrays for ONE tick, compared by `causeKey` -- the same identity `wake.mjs`'s `undelivered()`
@@ -87,7 +85,6 @@ export function diffOrders(liveOrders: Order[], candidateOrders: Order[]): { cau
   const live = new Map(liveOrders.map((order) => [order.causeKey, order]));
   const candidate = new Map(candidateOrders.map((order) => [order.causeKey, order]));
   const causeKeys = new Set([...live.keys(), ...candidate.keys()]);
-  /** @type {{ causeKey: string, live: Order | null, candidate: Order | null }[]} */
   const differences: { causeKey: string; live: Order | null; candidate: Order | null; }[] = [];
   for (const causeKey of causeKeys) {
     const liveOrder = live.get(causeKey) ?? null;
@@ -104,7 +101,6 @@ export function diffOrders(liveOrders: Order[], candidateOrders: Order[]): { cau
  * @param {string} dir @returns {Record<string, string>}
  */
 export function stateSnapshot(dir: string): Record<string, string> {
-  /** @type {Record<string, string>} */
   const snapshot: Record<string, string> = {};
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
@@ -114,9 +110,9 @@ export function stateSnapshot(dir: string): Record<string, string> {
 }
 
 /**
- * @typedef {(reads: unknown, stateDir: string) => Order[]} GateFn a live or candidate gate: the same
- *   reads the tick took, plus the (copy) state directory it may read its own local state from.
+ * a live or candidate gate: the same reads the tick took, plus the (copy) state directory it may read its own local state from.
  */
+export type GateFn = (reads: unknown, stateDir: string) => Order[];
 
 /**
  * The read-only mode: both gates fed the SAME reads and the SAME copy of the state directory for one

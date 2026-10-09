@@ -46,7 +46,7 @@ export const editionDay = (now: Date = new Date()): string => new Intl.DateTimeF
  * @param {string} day */
 export const editionTitle = (day: string) => `Board report — ${day}`;
 
-/** @typedef {(args: string[]) => string} Run */
+export type Run = (args: string[]) => string;
 
 const [OWNER, NAME] = REPO.split("/");
 
@@ -142,7 +142,7 @@ export function todaysEditionExists({ day, run = gh, warn = (line) => console.er
     return lookUpEdition({ day, run }).edition !== null;
   } catch (error) {
     warn("Could not ask whether today's edition exists, so answering YES (the answer that refuses): "
-      + String(/** @type {Error} */ (error)?.message ?? error));
+      + String((error as Error)?.message ?? error));
     return true;
   }
 }
@@ -164,7 +164,7 @@ function main() {
     // THE STATUS DISCRIMINATES. The republish step refuses on 1 and 2 alike, but "absent" and "could not
     // ask" send the reader to different places, so they are different codes as well as different words.
     console.error(`CANNOT ASK whether the ${day} board edition exists: `
-      + String(/** @type {Error} */ (error)?.message ?? error));
+      + String((error as Error)?.message ?? error));
     process.exit(EXIT_CANNOT_ASK);
   }
   if (!found.edition) {

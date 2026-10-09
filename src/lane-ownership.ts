@@ -21,13 +21,9 @@ import { LANES_FILE_PATH } from "./project-vocabulary.ts";
 const REPO = HOME_CHECKOUT;
 
 /**
- * `reviewOnly` is `ceo`'s 2026-09-18 ruling (`_claimVsAuthorRuling`) as data: the lane protects REVIEW, not
- * AUTHORSHIP, so a Region that touches only this lane is anybody's row (#3254) -- and the owner's own login is
- * the one that may not author the PR.
- *
- * @typedef {{lane: string, owner: string, branchPrefixes: string[], paths: string[], why: string,
- *   except?: string[], exceptWhy?: string, reviewOnly?: boolean}} Lane
+ * `reviewOnly` is `ceo`'s 2026-09-18 ruling (`_claimVsAuthorRuling`) as data: the lane protects REVIEW, not AUTHORSHIP, so a Region that touches only this lane is anybody's row (#3254) -- and the owner's own login is the one that may not author the PR.
  */
+export type Lane = {lane: string, owner: string, branchPrefixes: string[], paths: string[], why: string, except?: string[], exceptWhy?: string, reviewOnly?: boolean};
 
 /**
  * A lane's role-name owner, spelled as the GitHub login that authors that role's pull requests.
@@ -49,7 +45,7 @@ export function loadLanes(path = resolve(REPO, LANES_FILE_PATH)): { lanes: Lane[
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(parsed?.lanes) || parsed.lanes.length === 0) return null;
-    const wellFormed = parsed.lanes.every((/** @type {Lane} */ l: Lane) =>
+    const wellFormed = parsed.lanes.every((l: Lane) =>
       typeof l?.lane === "string" && typeof l?.owner === "string"
       && Array.isArray(l?.branchPrefixes) && Array.isArray(l?.paths));
     return wellFormed ? parsed : null;
@@ -103,7 +99,7 @@ export function reviewOnlyPathsIn(files: readonly string[], lanes: { lanes: Lane
  */
 export function ownsReviewOnlyLane(author: string | null | undefined, lanes: { lanes: Lane[]; } | null) {
   return Boolean(author) && Boolean(lanes?.lanes.some(
-    (lane) => lane.reviewOnly === true && /** @type {Record<string, string>} */ (ROLE_LOGIN)[lane.owner] === author));
+    (lane) => lane.reviewOnly === true && (ROLE_LOGIN as Record<string, string>)[lane.owner] === author));
 }
 
 /**
@@ -158,6 +154,6 @@ export function authorshipVerdict({ number, repo, author, run, lanes = loadLanes
     const why = laneAuthorshipRefusal({ author, files, lanes });
     return why === null ? { kind: "clear" } : { kind: "refused", why };
   } catch (cause) {
-    return { kind: "cannot-ask", why: `could not read #${number}'s changed files: ${/** @type {Error} */ (cause).message}` };
+    return { kind: "cannot-ask", why: `could not read #${number}'s changed files: ${(cause as Error).message}` };
   }
 }

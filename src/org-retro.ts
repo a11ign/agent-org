@@ -191,7 +191,6 @@ export function idleStats(lines: { at: number; message: string; }[]): { ticksWit
  * @returns {{ voided: number, byReason: Record<string, number> }}
  */
 export function releaseStats(lines: { at: number; message: string; }[]): { voided: number; byReason: Record<string, number>; } {
-  /** @type {Record<string, number>} */
   const byReason: Record<string, number> = {};
   for (const { message } of lines) {
     const match = RELEASE.exec(message);
@@ -228,7 +227,6 @@ export function ledgerEntries(text: string, { since, until }: { since: number; u
 export function ledgerStats(entries: { at: number; key: string; marker: string | null; }[]): { orgStalled: number; claimStalled: number; healthBySignal: Record<string, number>; } {
   let orgStalled = 0;
   let claimStalled = 0;
-  /** @type {Record<string, number>} */
   const healthBySignal: Record<string, number> = {};
   for (const { key, marker } of entries) {
     if (marker !== null) continue;
@@ -257,14 +255,13 @@ export function redPrStats(openPrs: { number: number; labels?: any[]; statusChec
     held: { number: number; holders: string[]; minutes: number | null; }[];
 } | null {
   if (openPrs === null) return null;
-  /** @type {{ number: number, minutes: number }[]} */
   const reds: { number: number; minutes: number; }[] = [];
   for (const pr of openPrs.filter(isBrokenRed)) {
     const minutes = minutesRed(brokenChecks(pr), now);
     if (minutes !== null) reds.push({ number: pr.number, minutes });
   }
   const held = openPrs.filter(isHeldRed).map((pr) => ({ number: pr.number, holders: holdsOn(pr), minutes: minutesRed(redChecksOf(pr), now) }));
-  const oldest = reds.reduce((top, red) => (top === null || red.minutes > top.minutes ? red : top), /** @type {typeof reds[number] | null} */ (null));
+  const oldest = reds.reduce((top, red) => (top === null || red.minutes > top.minutes ? red : top), (null as typeof reds[number] | null));
   return { count: reds.length, medianMinutes: median(reds.map((r) => r.minutes)), oldest, held };
 }
 
@@ -349,7 +346,7 @@ export const NUMBERS: readonly { id: string; label: string; better: "lower" | "h
   { id: "claimStalledWakes", label: "Claim-stalled wakes", better: "lower", of: (r) => r.stalls?.claimStalled ?? null },
   { id: "claimStallVoidings", label: "Claim-stall voidings", better: "lower", of: (r) => r.releases?.voided ?? null },
   { id: "orgHealthOffers", label: "org-health offers", better: "lower",
-    of: (r) => (r.stalls ? Object.values(/** @type {Record<string, number>} */ (r.stalls.healthBySignal)).reduce((sum, n) => sum + n, 0) : null) },
+    of: (r) => (r.stalls ? Object.values((r.stalls.healthBySignal as Record<string, number>)).reduce((sum, n) => sum + n, 0) : null) },
   { id: "redPrs", label: "Red PRs now", better: "lower", of: (r) => r.red?.count ?? null },
   { id: "tokensPerMergedPr", label: "Tokens per merged PR", better: "lower",
     of: (r) => (r.tokens && r.merged && r.merged.count > 0 ? Math.round(r.tokens.total / r.merged.count) : null) },
@@ -367,22 +364,23 @@ export function undeclaredDirections(numbers: Record<string, unknown>): string[]
   return Object.keys(numbers).filter((id) => !NUMBERS.some((n) => n.id === id));
 }
 
-/** @typedef {{ date: string, numbers: Record<string, number | null>, mergedRepositories?: string[] }} Reading `mergedRepositories` is the population PRs-merged counted (#3593); a reading without it counted the primary alone */
 /**
- * What the readings file said: `none` is a file that is absent or empty (a first day), `unreadable` is one that could not be read or holds no line
- * that parses, and the two NEVER share a verdict. `ioError` marks the unreadable that is the disk's, where appending could write a second line for a date.
- * @typedef {{ status: "none" | "read" | "unreadable", entries: Reading[], ioError: boolean, text: string }} Readings
+ * `mergedRepositories` is the population PRs-merged counted (#3593); a reading without it counted the primary alone
  */
+export type Reading = { date: string, numbers: Record<string, number | null>, mergedRepositories?: string[] };
+/**
+ * What the readings file said: `none` is a file that is absent or empty (a first day), `unreadable` is one that could not be read or holds no line that parses, and the two NEVER share a verdict. `ioError` marks the unreadable that is the disk's, where appending could write a second line for a date.
+ */
+export type Readings = { status: "none" | "read" | "unreadable", entries: Reading[], ioError: boolean, text: string };
 
 /** @param {unknown} value @returns {value is Reading} */
 function isReading(value: unknown): value is Reading {
-  const entry = /** @type {any} */ (value);
+  const entry = (value as any);
   return typeof entry?.date === "string" && /^\d{4}-\d\d-\d\d$/.test(entry.date) && typeof entry.numbers === "object" && entry.numbers !== null;
 }
 
 /** @param {string} text @returns {Readings} */
 export function parseReadings(text: string): Readings {
-  /** @type {Reading[]} */
   const entries: Reading[] = [];
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
@@ -399,7 +397,7 @@ export function parseReadings(text: string): Readings {
 export function readReadings(path: string): Readings {
   try {
     return parseReadings(readFileSync(path, "utf8"));
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     return err?.code === "ENOENT" ? { status: "none", entries: [], ioError: false, text: "" } : { status: "unreadable", entries: [], ioError: true, text: "" };
   }
 }
@@ -417,7 +415,10 @@ export function previousReading(readings: Readings | undefined, date: string): {
   return latest === undefined ? { status: "none" } : { status: "read", date: latest.date, numbers: latest.numbers, ...(latest.mergedRepositories && { mergedRepositories: latest.mergedRepositories }) };
 }
 
-/** @typedef {"better" | "worse" | "same" | "no baseline" | "unknown" | "undefined"} Verdict `undefined` is a metric with nothing to measure today (no regression opened), which is neither a failure to read nor a 0 */
+/**
+ * `undefined` is a metric with nothing to measure today (no regression opened), which is neither a failure to read nor a 0
+ */
+export type Verdict = "better" | "worse" | "same" | "no baseline" | "unknown" | "undefined";
 
 /**
  * `unknown` is a number or a previous file that could not be read; `no baseline` is a read that found nothing earlier. Neither is `same`, and
@@ -444,8 +445,8 @@ export function compareReadings(numbers: Record<string, number | null>, previous
   return Object.entries(numbers).map(([id, current]) => {
     const declared = NUMBERS.find((n) => n.id === id) ?? declarations.find((n) => n.id === id);
     const before = previous.status === "read" ? (previous.numbers[id] ?? null) : null;
-    const verdict = declared === undefined ? /** @type {const} */ ("undeclared")
-      : "undefinedToday" in declared && declared.undefinedToday ? /** @type {const} */ ("undefined") : verdictFor({ better: declared.better, previous, id, current });
+    const verdict = declared === undefined ? ("undeclared" as const)
+      : "undefinedToday" in declared && declared.undefinedToday ? ("undefined" as const) : verdictFor({ better: declared.better, previous, id, current });
     const delta = current !== null && before !== null ? current - before : null;
     return { id, label: declared?.label ?? id, current, previous: before, delta, verdict };
   });
@@ -695,7 +696,7 @@ function keptReadings(path: string, date: string): { now: number | null; reading
 }
 
 /** Written to a sibling and renamed, so a tick killed mid-write leaves the readings it had. A cache that cannot be written is a miss, never an error. */
-function keepReadings(/** @type {string} */ path: string, /** @type {object} */ content: object) {
+function keepReadings(path: string, content: object) {
   attemptDora(() => {
     writeFileSync(`${path}.tmp`, JSON.stringify(content));
     renameSync(`${path}.tmp`, path);
@@ -858,17 +859,17 @@ export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(
     const text = renderReport(report);
     keepReading(record, { stateDir, date, numbers: report.numbers, mergedRepositories: report.mergedRepositories?.map((r) => r.repo) }, log);
     return [retrospectiveOrder(date, text)];
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     log(`org-retro: could not build today's retrospective (${String(err?.message ?? err).split("\n")[0]}) -- no org-retrospective order this tick.\n`);
     return [];
   }
 }
 
 /** A reading that could not be kept must not stop the offer: the report is still true, and tomorrow's comparison says `no baseline` rather than guessing. */
-function keepReading(/** @type {typeof recordReading} */ record: typeof recordReading, /** @type {Parameters<typeof recordReading>[0]} */ reading: Parameters<typeof recordReading>[0], /** @type {(line: string) => void} */ log: (line: string) => void) {
+function keepReading(record: typeof recordReading, reading: Parameters<typeof recordReading>[0], log: (line: string) => void) {
   try {
     if (record(reading) === "not recorded") log(`org-retro: ${READINGS_FILE} could not be read, so today's reading was not recorded.\n`);
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     log(`org-retro: today's reading was not recorded (${String(err?.message ?? err).split("\n")[0]}).\n`);
   }
 }

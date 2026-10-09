@@ -62,11 +62,8 @@ function parseRoster(readmeSource: string) {
  */
 function firstMessages(readmeSource: string) {
   const lines = readmeSource.split("\n");
-  /** @type {Map<string, string>} */
   const messages: Map<string, string> = new Map(); // agent -> message text
-  /** @type {string | null} */
   let workerTemplate: string | null = null;
-  /** @type {string[]} */
   let workerNames: string[] = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -103,7 +100,6 @@ function firstMessages(readmeSource: string) {
  * @param {string} indexSource
  */
 function memoryEntries(indexSource: string) {
-  /** @type {{ title: string, hook: string }[]} */
   const entries: { title: string; hook: string; }[] = [];
   for (const line of indexSource.split("\n")) {
     const m = line.match(/^- \[([^\]]+)\]\([^)]+\) — (.+)$/);
@@ -169,7 +165,6 @@ function main() {
   refuseUnknownFlags(["--checkout", "--clone", "--repo-url", "--json", "--out-dir"],
     { entry: import.meta.url, command: "node packages/agent-org/src/reconstitution-drill.mjs" });
   const argv = process.argv.slice(2);
-  /** @type {(name: string) => string | undefined} */
   const flag: (name: string) => string | undefined = (name): string | undefined => argv.find((a) => a.startsWith(`${name}=`))?.split("=").slice(1).join("=");
   /** @param {string} name */
   const has = (name: string) => argv.includes(name);

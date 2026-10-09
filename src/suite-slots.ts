@@ -72,7 +72,7 @@ const LABEL_LIMIT = 120;
 const MS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const SIGNAL_EXIT_BASE = 128;
-const SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
+const SIGNALS = (["SIGINT", "SIGTERM", "SIGHUP"] as const);
 
 /**
  * What runs in place of the command, as `sh`: open the slot's lock file on fd 9 and take `flock` on it (`flock -n 9`, so a held slot is exit 200 and nothing else happens), record who
@@ -127,7 +127,7 @@ export function requiredTools(env: Record<string, string | undefined>): { flock:
     throw new SuiteSlotRefusal(`suite-slots: ${missing.join(" and ")} not found on PATH, so this suite is NOT being run: the host-wide limit on concurrent suites cannot be taken without `
       + "it, and running without the limit is the one outcome this refuses. Install util-linux (flock, ionice) and coreutils (nice), or run on a runner (`CI` set).");
   }
-  return /** @type {{ flock: string, nice: string, ionice: string }} */ (found);
+  return (found as { flock: string, nice: string, ionice: string });
 }
 
 /** @param {number | null} code @param {NodeJS.Signals | null} signal @returns {number} the shell's convention: the exit code, or 128 + the signal's number for a command a signal ended */
@@ -148,7 +148,7 @@ function alive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return /** @type {NodeJS.ErrnoException} */ (error).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -189,7 +189,7 @@ function tryOnce({ index, tools, dir, command, args, label, since, env, cwd, out
       if (!started) onStart();
       started = true;
     });
-    const forward = (/** @type {NodeJS.Signals} */ signal: NodeJS.Signals) => child.kill(signal);
+    const forward = (signal: NodeJS.Signals) => child.kill(signal);
     for (const signal of SIGNALS) process.on(signal, forward);
     const stopForwarding = () => { for (const signal of SIGNALS) process.off(signal, forward); };
     child.on("error", (cause) => { stopForwarding(); fail(new SuiteSlotRefusal(`suite-slots: could not start /bin/sh: ${cause.message}`)); });
@@ -226,7 +226,6 @@ export async function runUnderSlot({ command, args = [], env = process.env, cwd,
   mkdirSync(slotDir, { recursive: true, mode: SLOT_DIR_MODE });
   const named = oneLine(label ?? [command, ...args].join(" "));
   const began = now();
-  /** @type {number | null} */
   let reportedAt: number | null = null;
   for (;;) {
     for (let index = 0; index < slots; index += 1) {
@@ -253,7 +252,7 @@ function recordWait({ slotDir, index, waited, label, cwd, at, write }: { slotDir
   try {
     appendFileSync(join(slotDir, WAITS_LOG), line);
   } catch (cause) {
-    write(`suite-slots: could not record this wait in ${join(slotDir, WAITS_LOG)}: ${/** @type {Error} */ (cause).message}\n`);
+    write(`suite-slots: could not record this wait in ${join(slotDir, WAITS_LOG)}: ${(cause as Error).message}\n`);
   }
 }
 

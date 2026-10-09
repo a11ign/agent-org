@@ -66,18 +66,15 @@ const GIT_TIMEOUT_MS = 30_000;
 const NOT_BEFORE_LINE = /^[ \t]*#{0,6}[ \t]*Not-before:/im;
 
 /**
- * @typedef {{ text: string, since: number | null }} Condition
  * A condition the row declared and its time of becoming true, epoch ms; `null` when nothing dated it (a release fact carries no date of its own).
- * @typedef {{ verdict: "satisfied", conditions: Condition[] } | { verdict: "untouched", reason: string } | { verdict: "unread", reason: string }} Satisfaction
- * @typedef {{ labels: string[], state: string }} FreshRow
- * @typedef {{ readLabels: (number: number) => FreshRow, setLabels: (number: number, labels: string[]) => void,
- *            promote: (number: number) => { ok: true } | { ok: false, refusal: string },
- *            mergedClosers: (number: number) => { number: number, mergedAt: string }[],
- *            closedAt: (number: number) => number | null, comment: (number: number, body: string) => void }} UnparkIo
  */
+export type Condition = { text: string, since: number | null };
+export type Satisfaction = { verdict: "satisfied", conditions: Condition[] } | { verdict: "untouched", reason: string } | { verdict: "unread", reason: string };
+export type FreshRow = { labels: string[], state: string };
+export type UnparkIo = { readLabels: (number: number) => FreshRow, setLabels: (number: number, labels: string[]) => void, promote: (number: number) => { ok: true } | { ok: false, refusal: string }, mergedClosers: (number: number) => { number: number, mergedAt: string }[], closedAt: (number: number) => number | null, comment: (number: number, body: string) => void };
 
 /** @param {any} row @returns {string[]} */
-const labelsOf = (row: any): string[] => (row?.labels ?? []).map((/** @type {any} */ l: any) => String(l?.name ?? l));
+const labelsOf = (row: any): string[] => (row?.labels ?? []).map((l: any) => String(l?.name ?? l));
 
 /** @param {string} reason @returns {Satisfaction} */
 const untouched = (reason: string): Satisfaction => ({ verdict: "untouched", reason });
@@ -107,7 +104,7 @@ function notBeforeConditions(row: any, now: number): Condition[] {
 
 /** @param {any} row @param {(number: number) => number | null} closedAt @returns {Condition[]} every native `blockedBy` edge, all closed once `waitFieldsOf` found no open one */
 const edgeConditions = (row: any, closedAt: (number: number) => number | null): Condition[] => (row.blockedBy?.nodes ?? [])
-  .map((/** @type {any} */ node: any) => ({ text: `blockedBy #${node.number} (closed)`, since: closedAt(Number(node.number)) }));
+  .map((node: any) => ({ text: `blockedBy #${node.number} (closed)`, since: closedAt(Number(node.number)) }));
 
 /**
  * IS EVERY CONDITION THIS PARKED ROW DECLARES TRUE? Pure: the facts are the ones the tick read, and `closedAt` only dates an edge for the comment (an edge carries no close time).
@@ -158,10 +155,8 @@ export function commentFor({ to, conditions, why, now }: { to: string; condition
   return `${head}It does NOT pass the check a \`${READY_LABEL}\` row must pass: ${why}\n\nSo it is \`${BACKLOG_LABEL}\` with \`${ANSWER_PREFIX}${PRODUCT_MANAGER}\`, not offered half-formed. Fix that, then promote it (\`row-file --promote=<n>\`) and remove the answer label.`;
 }
 
-/**
- * @typedef {{ number: number, to: string, why: string | null }} Unparked
- * @typedef {{ unparked: Unparked[], unread: { number: number, reason: string }[], errors: { number: number, message: string }[] }} UnparkResult
- */
+export type Unparked = { number: number, to: string, why: string | null };
+export type UnparkResult = { unparked: Unparked[], unread: { number: number, reason: string }[], errors: { number: number, message: string }[] };
 
 /** @param {any} row @param {string[]} labels the row's tick object now says what the world does, so a later reader of the same list (the board audit) does not count it again */
 function reflect(row: any, labels: string[]) {
@@ -201,7 +196,6 @@ function transition(row: any, conditions: Condition[], io: UnparkIo, now: number
  * @param {{ rows: any[], facts: import("./wait-condition.ts").WaitFacts, now: number }} input @param {UnparkIo} io @returns {UnparkResult}
  */
 export function unparkSatisfied({ rows, facts, now }: { rows: any[]; facts: import("./wait-condition.ts").WaitFacts; now: number; }, io: UnparkIo): UnparkResult {
-  /** @type {UnparkResult} */
   const result: UnparkResult = { unparked: [], unread: [], errors: [] };
   for (const row of rows) {
     const number = Number(row.number);
@@ -233,7 +227,7 @@ export function githubIo(run: (args: string[]) => string, { worktree = tickWorkt
   return {
     readLabels: (number) => {
       const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state"]));
-      return { labels: (read.labels ?? []).map((/** @type {any} */ l: any) => String(l.name)), state: String(read.state) };
+      return { labels: (read.labels ?? []).map((l: any) => String(l.name)), state: String(read.state) };
     },
     setLabels: (number, labels) => { run(["api", "--method", "PUT", `repos/${REPO}/issues/${number}/labels`, ...labels.flatMap((l) => ["-f", `labels[]=${l}`])]); },
     promote: (number) => promoteViaModule(number, worktree),
@@ -262,15 +256,12 @@ export function mergedClosersOf(number: number, run: (args: string[]) => string)
   const query = `{ repository(owner: "${owner}", name: "${name}") { issue(number: ${number}) { closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } } } }`;
   const nodes = JSON.parse(run(["api", "graphql", "-f", `query=${query}`]))?.data?.repository?.issue?.closedByPullRequestsReferences?.nodes;
   if (!Array.isArray(nodes)) throw new Error(`the closing pull requests of #${number} could not be read (an answer with no \`nodes\`)`);
-  return nodes.filter((/** @type {any} */ n: any) => n?.state === "MERGED" && n?.mergedAt).map((/** @type {any} */ n: any) => ({ number: Number(n.number), mergedAt: String(n.mergedAt) }));
+  return nodes.filter((n: any) => n?.state === "MERGED" && n?.mergedAt).map((n: any) => ({ number: Number(n.number), mergedAt: String(n.mergedAt) }));
 }
 
-/**
- * @typedef {(args: string[], cwd: string) => { status: number | null, output: string }} GitExec
- * @typedef {{ dir: string } | { refusal: string }} TickWorktree
- */
+export type GitExec = (args: string[], cwd: string) => { status: number | null, output: string };
+export type TickWorktree = { dir: string } | { refusal: string };
 
-/** @type {GitExec} */
 const gitExec: GitExec = (args, cwd) => {
   const ran = spawnSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv(), timeout: GIT_TIMEOUT_MS });
   return { status: ran.status, output: `${ran.stdout ?? ""}${ran.stderr ?? ""}${ran.error?.message ?? ""}`.trim() };
@@ -330,7 +321,7 @@ export function unparkingWaits<T>(readWaits: (input: { prsRead: any[] | null; op
   return (input) => {
     const waits = readWaits(input);
     if (waits === null || !Array.isArray(input.openRowsRead)) return waits;
-    const { facts } = /** @type {{ facts: import("./wait-condition.ts").WaitFacts }} */ (/** @type {unknown} */ (waits));
+    const { facts } = ((waits as unknown) as { facts: import("./wait-condition.ts").WaitFacts });
     reportUnpark(unparkSatisfied({ rows: input.openRowsRead, facts, now: input.now }, io), log);
     return waits;
   };

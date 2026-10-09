@@ -122,9 +122,9 @@ export function mergeThreeWay({ base, main, branch }: { base: string; main: stri
         { encoding: "utf8", env: sandboxGitEnv() });
       return { merged, conflicts: 0 };
     } catch (error) {
-      const status = /** @type {{ status?: number, stdout?: string }} */ (error).status ?? GIT_ERROR_STATUS;
+      const status = (error as { status?: number, stdout?: string }).status ?? GIT_ERROR_STATUS;
       if (status >= GIT_ERROR_STATUS) throw error;
-      return { merged: /** @type {{ stdout: string }} */ (error).stdout, conflicts: status };
+      return { merged: (error as { stdout: string }).stdout, conflicts: status };
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

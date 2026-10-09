@@ -32,7 +32,6 @@ import { homeProjectDeclaration } from "./project-config.ts";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.ts";
 
 const argv = process.argv.slice(2);
-/** @type {(name: string) => string | undefined} */
 const flag: (name: string) => string | undefined = (name): string | undefined => argv.find((a) => a.startsWith(`${name}=`))?.split("=").slice(1).join("=");
 
 /** ONE FUNCTION PER SECTION, and not as a style preference.
@@ -136,7 +135,7 @@ export function authorship(d: any, L: string[]) {
   if (strays.length > 0) {
     L.push("## Commit authorship — a known defect, not a discovery");
     L.push(`${strays.length} commit${strays.length === 1 ? "" : "s"} in this window are authored by an `
-      + `address that is not the repository owner's: ${[...new Set(strays.map((/** @type {any} */ s: any) => s.email))].join(", ")}.`);
+      + `address that is not the repository owner's: ${[...new Set(strays.map((s: any) => s.email))].join(", ")}.`);
     L.push("");
     L.push("Cause, measured: a test spawned git with `cwd: tmpdir` but no sanitised `env`, and under the "
       + "pre-push hook `GIT_DIR` beats `cwd`, so it wrote its identity into the real config. **cwd is not "
@@ -296,7 +295,6 @@ function londonDay(iso: string | null | undefined): string | null {
  * 23-hour day (spring forward) can be skipped whole by a 24-hour step.
  * @param {number} now @returns {string[]} */
 function lastDays(now: number): string[] {
-  /** @type {string[]} */
   const days: string[] = [];
   for (let step = 0; days.length < FLOW_DAYS; step += 1) {
     const day = editionDay(new Date(now - step * (DAY_MS / 2)));
@@ -341,7 +339,6 @@ function nearestRank(sortedAscending: number[], p: number) {
  * @returns {{ waitsMs: number[], unmeasurable: number }}
  */
 export function readyToClaimWaits(byNumber: Map<number, import("./claim-provenance.ts").LabelEvent[]>, sinceMs: number): { waitsMs: number[]; unmeasurable: number; } {
-  /** @type {number[]} */
   const waitsMs: number[] = [];
   let unmeasurable = 0;
   for (const events of byNumber.values()) {
@@ -394,15 +391,15 @@ export function openRowAges(open: { createdAt?: string; labelNames: string[]; }[
 export function flowReadings({ rows, listLimit = FLOW_LIST_LIMIT, source, capped = rows.length >= listLimit, events, eventsError, now }: { rows: any[]; listLimit?: number; source?: string; capped?: boolean; events: Map<number, any[]> | null; eventsError?: string; now: number; }) {
   const sinceMs = now - FLOW_DAYS * DAY_MS;
   const open = rows.filter((r) => r.state === "OPEN")
-    .map((r) => ({ ...r, labelNames: r.labelNames ?? r.labels.map((/** @type {any} */ l: any) => l.name) }));
+    .map((r) => ({ ...r, labelNames: r.labelNames ?? r.labels.map((l: any) => l.name) }));
   const perDay = filedAndClosedPerDay(rows, now);
   // The repository's event log is ISSUES AND PULL REQUESTS together, and a PR carries `session:` labels of
   // its own. Only a row in the issue listing is a row that was ever claimed, so the log is cut to those.
   const issueNumbers = new Set(rows.map((r) => r.number));
   const rowEvents = events && new Map([...events].filter(([n]) => issueNumbers.has(n)));
   const latency = rowEvents === null
-    ? { status: /** @type {const} */ ("unread"), reason: eventsError ?? "the event log was not read" }
-    : { status: /** @type {const} */ ("read"), ...readyToClaimWaits(rowEvents, sinceMs) };
+    ? { status: ("unread" as const), reason: eventsError ?? "the event log was not read" }
+    : { status: ("read" as const), ...readyToClaimWaits(rowEvents, sinceMs) };
   const oldestListed = rows.map((r) => r.createdAt).filter(Boolean).sort()[0] ?? null;
   return { now, listed: rows.length, capped, listLimit, oldestListed, perDay, latency,
     source: source ?? `\`gh issue list --state all --limit ${listLimit}\``, ages: openRowAges(countable(open), now) };
@@ -433,8 +430,7 @@ function capNote({ oldestListed, perDay }: { oldestListed: string | null; perDay
 /** @param {any} d @param {string[]} L */
 export function flowPerDay(d: any, L: string[]) {
   const { perDay, listed, capped, source } = d.flow;
-  /** @type {(k: "filed" | "closed") => number} */
-  const total: (k: "filed" | "closed") => number = (k): number => perDay.reduce((/** @type {number} */ n: number, /** @type {any} */ x: any) => n + x[k], 0);
+  const total: (k: "filed" | "closed") => number = (k): number => perDay.reduce((n: number, x: any) => n + x[k], 0);
   L.push(`### Filed and closed per day — last ${FLOW_DAYS} London days, today partial`);
   L.push(`Read from ${source}, which returned **${listed}** rows. `
     + (capped ? capNote(d.flow) : "That listing is complete, so neither column is a floor for that reason.")
@@ -544,7 +540,7 @@ function readFlow(now: number) {
     return flowReadings({ ...read, events: labelEventsByIssue(parseEventLines(raw)), now });
   } catch (cause) {
     // Recorded in the edition itself, never swallowed: the other two readings do not depend on the log.
-    return flowReadings({ ...read, events: null, eventsError: `the label-event log could not be read (${/** @type {Error} */ (cause).message.split("\n")[0]})`, now });
+    return flowReadings({ ...read, events: null, eventsError: `the label-event log could not be read (${(cause as Error).message.split("\n")[0]})`, now });
   }
 }
 
@@ -563,10 +559,10 @@ function facts(since: string, sinceLabel: string) {
 
   const closed = closedSince(all, since);
   // Meta rows are containers, not work -- see `countable` in board-data.mjs, and section 6 prints the rule.
-  const open = countable(all.filter((/** @type {any} */ i: any) => i.state === "OPEN"));
-  const blockers = open.filter((/** @type {any} */ i: any) => i.milestone?.title === MILESTONE);
+  const open = countable(all.filter((i: any) => i.state === "OPEN"));
+  const blockers = open.filter((i: any) => i.milestone?.title === MILESTONE);
   const ready = readyRows(open);
-  const awaiting = open.filter((/** @type {any} */ i: any) => i.labelNames.includes("awaiting-merge"));
+  const awaiting = open.filter((i: any) => i.labelNames.includes("awaiting-merge"));
 
   return { since, sinceLabel, all, ms, merges, unpushed, strays, latestGate, gateIsFresh,
     fleetHours, closed, open, blockers, ready, awaiting, conflict, flow: readFlow(Date.now()),
@@ -590,10 +586,10 @@ export function readOtherTrackers({ trackers, since, run = gh }: { trackers: rea
   return trackers.filter((tracker) => tracker.repo !== REPO).map(({ key, repo }) => {
     try {
       const all = issues({ run, repo });
-      const open = countable(all.filter((/** @type {any} */ i: any) => i.state === "OPEN"));
+      const open = countable(all.filter((i: any) => i.state === "OPEN"));
       return { key, repo, open, ready: readyRows(open), closed: closedSince(all, since) };
     } catch (cause) {
-      return { key, repo, unread: /** @type {Error} */ (cause).message.split("\n")[0] };
+      return { key, repo, unread: (cause as Error).message.split("\n")[0] };
     }
   });
 }
@@ -612,7 +608,7 @@ export function otherTrackerSections(d: any, L: string[]) {
       continue;
     }
     L.push(`**Ready ${t.ready.length}** · **Open ${t.open.length}** · **Closed in this window ${t.closed.length}**`);
-    const link = (/** @type {any} */ r: any) => `- [${trackerRowName(t.key, r.number)}](${r.url}) ${r.title}`;
+    const link = (r: any) => `- [${trackerRowName(t.key, r.number)}](${r.url}) ${r.title}`;
     if (t.ready.length > 0) L.push("", "Ready:", ...t.ready.map(link));
     if (t.closed.length > 0) L.push("", "Closed:", ...t.closed.map(link));
   }
@@ -638,7 +634,7 @@ function toolVersionParagraph(readVersion: () => string): string {
     if (line) return line;
     throw new Error("the version reader answered nothing");
   } catch (err) {
-    return `agent-org version not read: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}`;
+    return `agent-org version not read: ${String((err as any)?.message ?? err).split("\n")[0]}`;
   }
 }
 

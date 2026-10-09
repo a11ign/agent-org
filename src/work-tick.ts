@@ -116,7 +116,7 @@ function queuedOrderCount(path: string): number {
     return readHandoffs(path).length;
   } catch (err) {
     process.stderr.write(`QUEUE UNREADABLE at ${path} `
-      + `(${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}). Any authored `
+      + `(${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}). Any authored `
       + "order in it is NOT being counted; a quiet gate will not deliver it until this file is fixed.\n");
     return 0;
   }
@@ -148,7 +148,7 @@ function readCpu(): { selfMs: number; childrenMs: number; } {
   return { selfMs: (user + system) / MICROSECONDS_PER_MS, childrenMs: childrenCpuMs() };
 }
 
-const round = (/** @type {number} */ ms: number) => Math.round(ms);
+const round = (ms: number) => Math.round(ms);
 
 /**
  * Times named steps of one tick, wall and CPU (children included), and reads the totals. Every source is a parameter so a test can run a tick of two
@@ -160,14 +160,13 @@ const round = (/** @type {number} */ ms: number) => Math.round(ms);
 export function createMeter({ clock = () => performance.now(), cpu = readCpu, uptimeMs = () => process.uptime() * MS_PER_SECOND,
   maxRssKb = () => process.resourceUsage().maxRSS }: { clock?: () => number; cpu?: () => { selfMs: number; childrenMs: number; }; uptimeMs?: () => number; maxRssKb?: () => number; } = {}) {
   const totalCpuMs = () => { const { selfMs, childrenMs } = cpu(); return selfMs + childrenMs; };
-  /** @type {Record<string, { wallMs: number, cpuMs?: number }>} */
   const phases: Record<string, { wallMs: number; cpuMs?: number; }> = { startup: { wallMs: round(uptimeMs()), cpuMs: round(totalCpuMs()) } };
   return {
     /** @template T @param {string} name @param {() => T} step @returns {T} */
     phase<T>(name: string, step: () => T): T {
       const [wallFrom, cpuFrom] = [clock(), totalCpuMs()];
       setCensusPhase(name);
-      /** @type {T} */ let result: T;
+      let result: T;
       try {
         result = step();
       } finally {
@@ -211,7 +210,7 @@ export function readUnitFacts({ env = process.env, readText = (path) => readFile
     const peakBytes = Number(readText(`/sys/fs/cgroup${cgroup}/memory.peak`));
     return { prestartMs: Number.isFinite(prestartMs) ? round(prestartMs) : null, cgroupPeakKb: Number.isFinite(peakBytes) ? round(peakBytes / KB) : null };
   } catch (error) {
-    process.stderr.write(`TICK COST: systemd's own figures could not be read (${String(/** @type {any} */ (error)?.message ?? error).split("\n")[0]}).\n`);
+    process.stderr.write(`TICK COST: systemd's own figures could not be read (${String((error as any)?.message ?? error).split("\n")[0]}).\n`);
     return unknown;
   }
 }
@@ -236,11 +235,9 @@ export function appendTickCost(path: string, line: object) {
 }
 
 /**
- * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the
- * two reports a tick makes about itself (`work-tick-health.mjs`).
- * @typedef {{ recordPath: string, costPath: string, censusPath: string, markerPath: string, wakeCommand: { node: string, args: string[] },
- *   meter: ReturnType<typeof createMeter>, wakes: number }} Run
+ * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the two reports a tick makes about itself (`work-tick-health.mjs`).
  */
+export type Run = { recordPath: string, costPath: string, censusPath: string, markerPath: string, wakeCommand: { node: string, args: string[] }, meter: ReturnType<typeof createMeter>, wakes: number };
 
 /**
  * THE CENSUS STARTS HERE, before the first spawn, and reaches every process the tick starts two ways: this process is patched in place (it runs the
@@ -280,7 +277,7 @@ function recordCost(exit: number, run: Run): ReturnType<typeof tickCostLine> | n
     appendTickCost(run.costPath, line);
     return line;
   } catch (err) {
-    process.stderr.write(`TICK COST NOT RECORDED at ${run.costPath}: ${String(/** @type {any} */ (err)?.message ?? err)}.\n`);
+    process.stderr.write(`TICK COST NOT RECORDED at ${run.costPath}: ${String((err as any)?.message ?? err)}.\n`);
     return null;
   } finally {
     rmSync(run.censusPath, { force: true });
@@ -302,7 +299,7 @@ function beginTickHealth(run: Run) {
     process.on("exit", () => clearOwnMarker(run.markerPath, process.pid));
     deliverTickOrders(killedTickOrders(killed, { foundAt: Date.now(), costPath: run.costPath }), run.wakeCommand);
   } catch (err) {
-    process.stderr.write(`TICK HEALTH NOT RECORDED at ${run.markerPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. A killed tick will not be reported.\n`);
+    process.stderr.write(`TICK HEALTH NOT RECORDED at ${run.markerPath}: ${String((err as any)?.message ?? err)}. A killed tick will not be reported.\n`);
   }
 }
 
@@ -335,7 +332,7 @@ function finish(code: number, run: Run): never {
       writeCompletion(run.recordPath, { at, exit: code });
       writeHeartbeat(at);
     } catch (err) {
-      process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String(/** @type {any} */ (err)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
+      process.stderr.write(`COMPLETION NOT RECORDED at ${run.recordPath}: ${String((err as any)?.message ?? err)}. incident:gate-crash will read this tick as not having completed.\n`);
     }
     reportIfSlow(recordCost(code, run), run);
   }
@@ -367,7 +364,7 @@ export function heartbeatCommentBody(at: number): string {
 
 /** @param {unknown} err @returns {string} what `gh` said, else the error's own message */
 function whatGhSaid(err: unknown): string {
-  return String(/** @type {any} */ (err)?.stderr ?? "").trim() || String(/** @type {any} */ (err)?.message ?? err);
+  return String((err as any)?.stderr ?? "").trim() || String((err as any)?.message ?? err);
 }
 
 /**
@@ -383,7 +380,6 @@ function whatGhSaid(err: unknown): string {
  * @param {() => readonly { repo: string }[]} [readTrackers] the declared trackers; a seam so a test needs no project declaration @returns {void}
  */
 export function writeHeartbeat(at: number, run: (file: string, args: string[], options: object) => unknown = execFileSync, readTrackers: () => readonly { repo: string; }[] = () => homeProjectDeclaration().tracker): void {
-  /** @type {readonly { repo: string }[]} */
   let trackers: readonly { repo: string; }[];
   try {
     trackers = readTrackers();

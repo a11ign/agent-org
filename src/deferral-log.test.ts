@@ -37,7 +37,7 @@ test("a key still deferred yields no line, and a key first deferred this tick yi
 });
 
 test("`delivered` is the ledger holding that key at or after the start; a delivery BEFORE the start, or of another key, is `gone`", () => {
-  const read = (/** @type {{ at: number, key: string }[]} */ deliveries: { at: number; key: string; }[]) => endedDeferrals({ previous: new Map([[KEY, T0]]), current: new Map(), deliveries: () => deliveries, now: T0 + MINUTE })[0].how;
+  const read = (deliveries: { at: number; key: string; }[]) => endedDeferrals({ previous: new Map([[KEY, T0]]), current: new Map(), deliveries: () => deliveries, now: T0 + MINUTE })[0].how;
   assert.equal(read([{ at: T0 + MINUTE, key: KEY }]), "delivered");
   assert.equal(read([{ at: T0, key: KEY }]), "delivered", "at the start counts: the order went out the tick it was first deferred, as a retry");
   assert.equal(read([{ at: T0 - 1, key: KEY }]), "gone", "an earlier delivery of the same key is the PREVIOUS span's");
@@ -54,11 +54,11 @@ test("the ledger is read only when something ended", () => {
 });
 
 /** One tick as the gate runs it: `deferralAges` over this tick's deferred keys, the ledger beside the file. */
-function tick(/** @type {string} */ dir: string, /** @type {string[]} */ keys: string[], /** @type {number} */ now: number) {
+function tick(dir: string, keys: string[], now: number) {
   return deferralAges(join(dir, "wake-deferred"), keys, now, { ledgerPath: join(dir, "wake-ledger") });
 }
 
-const logOf = (/** @type {string} */ dir: string) => { try { return readFileSync(join(dir, DEFERRAL_LOG_FILE), "utf8"); } catch (cause) { if (/** @type {any} */ (cause).code === "ENOENT") return ""; throw cause; } };
+const logOf = (dir: string) => { try { return readFileSync(join(dir, DEFERRAL_LOG_FILE), "utf8"); } catch (cause) { if ((cause as any).code === "ENOENT") return ""; throw cause; } };
 
 test("through the gate's own writer: a deferral is logged by the tick that ENDS it, once, with how it ended", () => {
   inTmp((dir) => {

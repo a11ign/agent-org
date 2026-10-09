@@ -65,8 +65,8 @@ import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRate
   from "./close-rows-for-merged-pr.ts";
 import { settleClosedStatus } from "./settle-closed-status.ts";
 
-/** @typedef {import("./settle-closed-status.ts").Refusal} Refusal */
-/** @typedef {import("./settle-closed-status.ts").SettleOutcome} SettleOutcome */
+export type Refusal = import("./settle-closed-status.ts").Refusal;
+export type SettleOutcome = import("./settle-closed-status.ts").SettleOutcome;
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 export const DEFAULT_WINDOW_MINUTES = 45;
@@ -99,7 +99,6 @@ export function mergedPrsInWindow(repo: string, windowMinutes: number, gh_: (arg
  * @returns {Refusal[]}
  */
 function settleAlreadyClosed(already: { number: number; labels: string[]; }[], repo: string, { strip, settle }: { strip: typeof stripClaimLabels; settle: (n: number) => SettleOutcome; }): Refusal[] {
-  /** @type {Refusal[]} */
   const unsettled: Refusal[] = [];
   for (const { number: n, labels } of already) {
     console.log(`SWEEP: #${n} ALREADY CLOSED -- left alone.`);
@@ -121,7 +120,7 @@ function settleAlreadyClosed(already: { number: number; labels: string[]; }[], r
  *   after this PR merged (#1877) -- all empty on success
  */
 export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = stripClaimLabels,
-  settle = (/** @type {number} */ n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS) }: {
+  settle = (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS) }: {
         gh_?: (args: string[]) => string; strip?: typeof stripClaimLabels;
         settle?: (n: number) => SettleOutcome;
     } = {}): { failed: number[]; unsettled: Refusal[]; skipped: number[]; } {
@@ -138,8 +137,6 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
       + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh_(["api", "graphql", "-f", `query=${query}`,
       "--jq", ".data.repository.pullRequest"]));
-    /** @type {{ number: number, state: string, labels: { nodes: { name: string }[] },
-     *   timelineItems: { nodes: { createdAt: string }[] } }[]} */
     const nodes: {
         number: number; state: string; labels: { nodes: { name: string; }[]; };
         timelineItems: { nodes: { createdAt: string; }[]; };

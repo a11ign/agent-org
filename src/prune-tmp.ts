@@ -162,13 +162,7 @@ export const REVIEW_PREFIXES = [
   "npm-cache-rv2-", "npm-cache-", "reviewer-source-", "review-base-", "rv2-", "rv-", "rv",
 ];
 
-/**
- * @typedef {{ family: "review", pr: number }
- *   | { family: "scratchpad", session: string, project: string }
- *   | { family: "fixture", prefix: string }
- *   | { family: "doomed" }
- *   | { family: "unknown" }} Family
- */
+export type Family = { family: "review", pr: number } | { family: "scratchpad", session: string, project: string } | { family: "fixture", prefix: string } | { family: "doomed" } | { family: "unknown" };
 
 /**
  * Which family a path BELONGS TO, read from its name alone -- pure, so the test can ask it about a
@@ -207,7 +201,6 @@ function reviewPullRequest(name: string): number | null {
   return null;
 }
 
-/** @type {(cmd: string, args: string[]) => string} */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8" });
 
 /**
@@ -233,7 +226,6 @@ const OPEN_PR_LIMIT = 300;
  * @returns {Set<number> | "unknown"}
  */
 export function openPullRequests({ run = defaultRun }: { run?: typeof defaultRun; } = {}): Set<number> | "unknown" {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(run("gh", ["pr", "list", "--state", "open", "--json", "number",
@@ -242,11 +234,11 @@ export function openPullRequests({ run = defaultRun }: { run?: typeof defaultRun
     return "unknown";
   }
   if (!Array.isArray(parsed) || parsed.length >= OPEN_PR_LIMIT) return "unknown";
-  const numbers = parsed.map((row) => /** @type {{ number?: unknown }} */ (row)?.number);
+  const numbers = parsed.map((row) => (row as { number?: unknown })?.number);
   // `typeof`, not `Number(...)`: a coercion turns `"2049"` and `null` into plausible numbers, and a
   // listing shaped differently from the one this function asked for is a listing it did not understand.
   return numbers.every((n) => typeof n === "number" && Number.isInteger(n))
-    ? new Set(/** @type {number[]} */ (numbers)) : "unknown";
+    ? new Set((numbers as number[])) : "unknown";
 }
 
 /**
@@ -260,14 +252,12 @@ export function openPullRequests({ run = defaultRun }: { run?: typeof defaultRun
  * @param {string} procRoot @returns {string[] | "unknown"}
  */
 export function processStrings(procRoot: string = "/proc"): string[] | "unknown" {
-  /** @type {string[]} */
   let pids: string[];
   try {
     pids = readdirSync(procRoot).filter((entry) => /^\d+$/.test(entry));
   } catch {
     return "unknown";
   }
-  /** @type {string[]} */
   const strings: string[] = [];
   for (const pid of pids) {
     const dir = join(procRoot, pid);
@@ -283,7 +273,6 @@ export function processStrings(procRoot: string = "/proc"): string[] | "unknown"
 /** Where every open fd of one process points. `[]` when the directory is gone or not ours.
  * @param {string} fdDir @returns {string[]} */
 function openFdTargets(fdDir: string): string[] {
-  /** @type {string[]} */
   const targets: string[] = [];
   let entries;
   try { entries = readdirSync(fdDir); } catch { return targets; }
@@ -311,7 +300,6 @@ function openFdTargets(fdDir: string): string[] {
  */
 export function heldEntries(entryPaths: string[], strings: string[] | "unknown"): Set<string> | "unknown" {
   if (strings === "unknown") return "unknown";
-  /** @type {Set<string>} */
   const held: Set<string> = new Set();
   for (const path of entryPaths) {
     // The boundary matters: `/tmp/rv-21` must not be held by a process naming `/tmp/rv-210`.
@@ -345,7 +333,6 @@ function boundedAt(text: string, path: string): boolean {
  * @param {string} path @returns {number | "unknown"}
  */
 export function newestMtimeMs(path: string): number | "unknown" {
-  /** @type {import("node:fs").Stats} */
   let top: import("node:fs").Stats;
   try { top = statSync(path); } catch { return "unknown"; }
   if (!top.isDirectory()) return top.mtimeMs;
@@ -364,14 +351,9 @@ function childPaths(dir: string): string[] {
   try { return readdirSync(dir).map((name) => join(dir, name)); } catch { return []; }
 }
 
-/**
- * @typedef {{ openPrs: Set<number> | "unknown", held: Set<string> | "unknown", selfSessions: Set<string>,
- *   now: number, windowMs?: number, fixtureWindowMs?: number, mtime?: (path: string) => number | "unknown" }} Authorities
- */
+export type Authorities = { openPrs: Set<number> | "unknown", held: Set<string> | "unknown", selfSessions: Set<string>, now: number, windowMs?: number, fixtureWindowMs?: number, mtime?: (path: string) => number | "unknown" };
 
-/**
- * @typedef {{ path: string, family: Family["family"], verdict: "remove" | "refuse", reason: string }} Verdict
- */
+export type Verdict = { path: string, family: Family["family"], verdict: "remove" | "refuse", reason: string };
 
 /**
  * THE CLASSIFIER: one path in, one verdict and one REASON out.
@@ -401,7 +383,7 @@ export function classifyEntry(absolutePath: string, tmpRoot: string, authorities
 }
 
 /** @param {string} path @param {Family["family"]} family @param {string} reason @returns {Verdict} */
-const refuse = (path: string, family: Family["family"], reason: string): Verdict => ({ path, family, verdict: /** @type {const} */ ("refuse"), reason });
+const refuse = (path: string, family: Family["family"], reason: string): Verdict => ({ path, family, verdict: ("refuse" as const), reason });
 
 /** `absolutePath` relative to `tmpRoot`, or `null` when it is not under it at all.
  * @param {string} absolutePath @param {string} tmpRoot @returns {string | null} */
@@ -452,7 +434,7 @@ function activityVerdict(path: string, family: Family, { now, windowMs = ACTIVIT
     return refuse(path, family.family, "its newest write time could not be read, so it is not known to be cold");
   }
   const ageMs = now - newest;
-  const hours = (/** @type {number} */ ms: number) => (ms / MS_PER_HOUR).toFixed(1);
+  const hours = (ms: number) => (ms / MS_PER_HOUR).toFixed(1);
   const window = family.family === "fixture" ? fixtureWindowMs : windowMs;
   if (ageMs < window) {
     // A fixed sentence for a fixture, so thousands of young ones tally as ONE reason in the report rather than thousands of lines.
@@ -535,11 +517,9 @@ export function selfSessions(env: NodeJS.ProcessEnv): Set<string> {
 }
 
 /**
- * @typedef {{ tmpEntries: number | "unknown", examined: number, candidates: number, removable: Verdict[], refused: Verdict[], removed: string[],
- *   partial: string[], failed: { path: string, reason: string }[] }} PruneReport
- * `tmpEntries` is how many entries the root held when the run began, read before any removal. `candidates` is every path the walk found and `examined` the ones this run looked at, so the difference is what the run's budget left
- * for the next one. `partial` is a tree whose removal began and was stopped at a leaf by the budget: it is neither removed nor failed.
+ * `tmpEntries` is how many entries the root held when the run began, read before any removal. `candidates` is every path the walk found and `examined` the ones this run looked at, so the difference is what the run's budget left for the next one. `partial` is a tree whose removal began and was stopped at a leaf by the budget: it is neither removed nor failed.
  */
+export type PruneReport = { tmpEntries: number | "unknown", examined: number, candidates: number, removable: Verdict[], refused: Verdict[], removed: string[], partial: string[], failed: { path: string, reason: string }[] };
 
 /** @type {(ms: number) => void} A synchronous sleep: the whole tool is synchronous, and the pause is the point of the run's shape. */
 const sleep: (ms: number) => void = (ms): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
@@ -572,25 +552,22 @@ export function pruneTmp(tmpRoot: string, deps: {
 } = {}): PruneReport {
   const { dryRun = true, now = Date.now(), windowMs, fixtureWindowMs, env = process.env, run, procRoot,
     maxRemovals = MAX_REMOVALS_PER_RUN, maxExamined = MAX_EXAMINED_PER_RUN, families } = deps;
-  const wanted = (/** @type {Family["family"]} */ family: Family["family"]) => families === undefined || families.includes(family);
+  const wanted = (family: Family["family"]) => families === undefined || families.includes(family);
   const topRead = topEntries(tmpRoot);
   const top = topRead ?? [];
   const queue = [...(wanted("doomed") ? doomedPaths(tmpRoot, top) : []),
     ...sweepablePaths(tmpRoot, top).filter((path) => wanted(familyOf(relativeUnder(path, tmpRoot) ?? "").family)),
     ...(wanted("fixture") ? fixturePaths(tmpRoot, top) : [])];
   const strings = processStrings(procRoot);
-  /** @type {Set<number> | "unknown" | undefined} */
   let openPrs: Set<number> | "unknown" | undefined;
   // The pull request list is read only when a review leftover is reached: a timer that sweeps fixtures must not spend the GraphQL pool every minute.
   const readOpenPrs = () => (openPrs ??= openPullRequests({ run }));
   const budget = { left: maxRemovals };
-  /** @type {PruneReport} */
   const report: PruneReport = { tmpEntries: topRead === null ? "unknown" : topRead.length, examined: 0, candidates: queue.length, removable: [], refused: [], removed: [], partial: [], failed: [] };
   for (const path of queue) {
     if (budget.left <= 0 || report.examined >= maxExamined) break;
     report.examined += 1;
     const family = familyOf(relativeUnder(path, tmpRoot) ?? "").family;
-    /** @type {Authorities} */
     const authorities: Authorities = { openPrs: family === "review" ? readOpenPrs() : new Set(), held: heldEntries([path], strings),
       selfSessions: selfSessions(env), now, windowMs, fixtureWindowMs };
     sweepOne(path, { tmpRoot, authorities, budget, report, deps });
@@ -650,7 +627,7 @@ function removeRecorded(path: string, tmpRoot: string, { remove, record, family 
   try {
     record({ ...line, event: "removing", owner: trees.map((tree) => `${tree}=${worktreeOwner(tree)}`).join(" ") || null });
   } catch (cause) {
-    return { failure: `the removal log could not be written, so nothing was removed (#2782): ${/** @type {Error} */ (cause).message}`,
+    return { failure: `the removal log could not be written, so nothing was removed (#2782): ${(cause as Error).message}`,
       finished: false, path };
   }
   const outcome = removeContained(path, tmpRoot, remove, family === "fixture");
@@ -698,7 +675,7 @@ function removeContained(path: string, tmpRoot: string, remove: ((path: string) 
     const finished = (remove ?? ((entry) => removeFromLeaves(entry, { left: Infinity }, () => {})))(target) !== false;
     return { failure: null, finished, path: target };
   } catch (error) {
-    return { failure: /** @type {Error} */ (error).message, finished: false, path: target };
+    return { failure: (error as Error).message, finished: false, path: target };
   }
 }
 
@@ -794,7 +771,6 @@ function reportBody(report: PruneReport, dryRun: boolean): string {
  */
 function refusalLines(refused: Verdict[]): string[] {
   const lines = [];
-  /** @type {Map<string, number>} */
   const tally: Map<string, number> = new Map();
   let printed = 0;
   for (const entry of refused) {
@@ -820,7 +796,7 @@ async function main() {
   const dryRun = !process.argv.includes("--apply");
   const tmpRoot = process.argv.find((a) => a.startsWith("--tmp="))?.slice("--tmp=".length) ?? "/tmp";
   if (!existsSync(tmpRoot)) throw new Error(`prune-tmp: ${tmpRoot} does not exist -- nothing was read or written`);
-  const families = process.argv.includes("--fixtures-only") ? /** @type {Family["family"][]} */ (["fixture", "doomed"]) : undefined;
+  const families = process.argv.includes("--fixtures-only") ? (["fixture", "doomed"] as Family["family"][]) : undefined;
   process.stdout.write(formatReport(pruneTmp(tmpRoot, { dryRun, families }), dryRun) + "\n");
 }
 

@@ -28,8 +28,10 @@ const DAYS_PER_WEEK = 7;
 const DAY_LENGTH = "YYYY-MM-DD".length;
 const COUNT_ID = "foundByChairman";
 
-/** @typedef {{ since: string, until: string }} Week `since` inclusive, `until` exclusive, both midnight UTC */
-/** @typedef {{ number: number, createdAt?: string, labelNames: string[] }} Row an issue as `board-data.mjs`'s `issues()` returns it */
+/** `since` inclusive, `until` exclusive, both midnight UTC */
+export type Week = { since: string, until: string };
+/** an issue as `board-data.mjs`'s `issues()` returns it */
+export type Row = { number: number, createdAt?: string, labelNames: string[] };
 
 /** @param {Date} date @returns {string} `YYYY-MM-DDT00:00:00Z` */
 const midnight = (date: Date): string => `${date.toISOString().slice(0, DAY_LENGTH)}T00:00:00Z`;
@@ -40,7 +42,7 @@ const midnight = (date: Date): string => `${date.toISOString().slice(0, DAY_LENG
  */
 export function weeksBefore(now: Date): { current: Week; previous: Week; } {
   const today = Date.parse(midnight(now));
-  const at = (/** @type {number} */ weeksBack: number) => midnight(new Date(today - weeksBack * DAYS_PER_WEEK * MS_PER_DAY));
+  const at = (weeksBack: number) => midnight(new Date(today - weeksBack * DAYS_PER_WEEK * MS_PER_DAY));
   return { current: { since: at(1), until: at(0) }, previous: { since: at(2), until: at(1) } };
 }
 

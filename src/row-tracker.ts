@@ -16,7 +16,7 @@ import { productRegionsOf, rowKind } from "./work-gate.ts";
  */
 export const ORG_TRACKER_REPO = "a11ign/agent-org";
 
-/** @typedef {import("./project-config.ts").Tracker} Tracker */
+export type Tracker = import("./project-config.ts").Tracker;
 
 /**
  * The tracker `entries` (a row's Region, as `declaredRegionFiles` reads it) belong in.

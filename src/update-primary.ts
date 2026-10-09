@@ -49,7 +49,6 @@ export const PRIMARY_CHECKOUT = HOME_CHECKOUT;
  * @param {(args: string[]) => string} run @param {string} sha
  */
 function moveLocalMain(run: (args: string[]) => string, sha: string) {
-  /** @type {string} */
   let before: string;
   try {
     before = run(["rev-parse", "refs/heads/main"]).trim();
@@ -125,9 +124,9 @@ changed: (range: string[], pathspec: string[]) => string[] = (range, pathspec) =
 }
 
 /**
- * @typedef {{sha: string, originSha: string, behind: number, ahead: number, dirty: string[]}} PrimaryDrift
- *   `dirty` is the TRACKED paths with uncommitted changes, `behind`/`ahead` the commits `origin/main` has that HEAD lacks and the reverse.
+ * `dirty` is the TRACKED paths with uncommitted changes, `behind`/`ahead` the commits `origin/main` has that HEAD lacks and the reverse.
  */
+export type PrimaryDrift = {sha: string, originSha: string, behind: number, ahead: number, dirty: string[]};
 
 /**
  * WHERE THE PRIMARY STANDS AGAINST `origin/main`, READ BY THE GATE EVERY TICK (#2781).
@@ -155,7 +154,7 @@ export function readPrimaryDrift(root: string = PRIMARY_CHECKOUT, run: (args: st
   try {
     const sha = run(["rev-parse", "HEAD"]).trim();
     const originSha = run(["rev-parse", "refs/remotes/origin/main"]).trim();
-    const count = (/** @type {string} */ range: string) => Number(run(["rev-list", "--count", range]).trim());
+    const count = (range: string) => Number(run(["rev-list", "--count", range]).trim());
     const behind = count(`${sha}..${originSha}`);
     const ahead = count(`${originSha}..${sha}`);
     const dirty = run(["status", "--porcelain", "--untracked-files=no"]).split("\n").filter(Boolean)
@@ -168,7 +167,7 @@ export function readPrimaryDrift(root: string = PRIMARY_CHECKOUT, run: (args: st
 
 /** @param {unknown} error @returns {string} the child's exit status, or `?` when it has none */
 function exitOf(error: unknown): string {
-  const status = /** @type {{ status?: number }} */ (error).status;
+  const status = (error as { status?: number }).status;
   return String(status ?? "?");
 }
 

@@ -21,12 +21,10 @@ import { HOME_CHECKOUT } from "./project-config.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { stateEntryPath } from "./host-config.ts";
 
-/**
- * @typedef {{ unit: string, problem: string, detail: string }} Finding
- * @typedef {{ at: number, from: string, to: string, row?: number, readBackAt?: number }} RebootRecord
- * @typedef {{ read: () => RebootRecord | null, write: (record: RebootRecord | null) => void }} RecordStore
- * @typedef {{ state: "newer" | "current" | "not-read", running?: string, installed?: string, why?: string }} KernelReading
- */
+export type Finding = { unit: string, problem: string, detail: string };
+export type RebootRecord = { at: number, from: string, to: string, row?: number, readBackAt?: number };
+export type RecordStore = { read: () => RebootRecord | null, write: (record: RebootRecord | null) => void };
+export type KernelReading = { state: "newer" | "current" | "not-read", running?: string, installed?: string, why?: string };
 
 /** The timer that starts a tick. STOPPED, never disabled: a boot starts it again, which is the whole point of stopping it. */
 export const TICK_TIMER = "a11ign-work-tick.timer";
@@ -114,7 +112,7 @@ export function recordStore(path: string = stateEntryPath("kernel-reboot.json"))
     read() {
       let text;
       try { text = readFileSync(path, "utf8"); } catch (cause) {
-        if (/** @type {NodeJS.ErrnoException} */ (cause).code === "ENOENT") return null;
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new Error(`${path} could not be read`, { cause });
       }
       try { return JSON.parse(text); } catch (cause) { throw new Error(`${path} is not JSON`, { cause }); }
@@ -190,7 +188,7 @@ export function runPrivileged(argv: string[], run: (argv: string[]) => string) {
  * @returns {string[]}
  */
 export function whatHolds({ agents, run, ignoreSeats = [], ignoreUnits = [] }: { agents: () => ReturnType<typeof readAgents>; run: (argv: string[]) => string; ignoreSeats?: string[]; ignoreUnits?: string[]; }): string[] {
-  const unexcused = (/** @type {string} */ unit: string) => unit && unit !== REBOOT_SERVICE && !ignoreUnits.includes(unit);
+  const unexcused = (unit: string) => unit && unit !== REBOOT_SERVICE && !ignoreUnits.includes(unit);
   const seats = agents();
   const held = seats === null ? ["NOT READ: herdr's workspace listing"]
     : seats.filter((a) => a.status === "working" && !ignoreSeats.includes(a.label)).map((a) => `seat ${a.label} is mid-turn`);
@@ -201,12 +199,8 @@ export function whatHolds({ agents, run, ignoreSeats = [], ignoreUnits = [] }: {
   } catch (cause) { return [...held, `NOT READ: the host jobs (${describe(cause)})`]; }
 }
 
-/**
- * @typedef {{ run: (argv: string[]) => string, uname: () => string, bootEntries: () => string[], agents: () => ReturnType<typeof readAgents>,
- *   store: RecordStore, now: () => number, sleep: (ms: number) => Promise<void>, ignoreSeats?: string[], ignoreUnits?: string[], row?: number }} RebootDeps
- * @typedef {{ outcome: "not-needed" | "not-read" | "refused-loop" | "timer-not-stopped" | "deferred" | "reboot-failed" | "rebooted", reading?: KernelReading,
- *   finding?: Finding, held?: string[], error?: string, timerRestartError?: string }} RebootResult
- */
+export type RebootDeps = { run: (argv: string[]) => string, uname: () => string, bootEntries: () => string[], agents: () => ReturnType<typeof readAgents>, store: RecordStore, now: () => number, sleep: (ms: number) => Promise<void>, ignoreSeats?: string[], ignoreUnits?: string[], row?: number };
+export type RebootResult = { outcome: "not-needed" | "not-read" | "refused-loop" | "timer-not-stopped" | "deferred" | "reboot-failed" | "rebooted", reading?: KernelReading, finding?: Finding, held?: string[], error?: string, timerRestartError?: string };
 
 /** Poll until nothing holds, or the bound passes. @param {RebootDeps} deps @returns {Promise<string[]>} what still held at the end (empty: drained) */
 async function waitUntilDrained(deps: RebootDeps): Promise<string[]> {
@@ -277,14 +271,11 @@ export function readBackOwed(record: RebootRecord | null, bootedAt: number): boo
   return record !== null && record.readBackAt === undefined && bootedAt >= record.at;
 }
 
-/**
- * @typedef {{ run: (argv: string[]) => string, uname: () => string, agents: () => ReturnType<typeof readAgents>, seats: () => string[], proc: (name: string) => string,
- *   tracePages: () => Promise<string> }} ReadBackDeps
- */
+export type ReadBackDeps = { run: (argv: string[]) => string, uname: () => string, agents: () => ReturnType<typeof readAgents>, seats: () => string[], proc: (name: string) => string, tracePages: () => Promise<string> };
 
 /** One line per thing #3846 read by hand, each `NOT READ` rather than missing when its read was refused. @param {ReadBackDeps} deps @returns {Promise<string[]>} */
 export async function readBack(deps: ReadBackDeps): Promise<string[]> {
-  const attempt = (/** @type {string} */ label: string, /** @type {() => string} */ read: () => string) => {
+  const attempt = (label: string, read: () => string) => {
     try { return `- ${label}: ${read()}`; } catch (cause) { return `- ${label}: NOT READ (${describe(cause)})`; }
   };
   const tick = () => {

@@ -209,7 +209,7 @@ export function promptWithContext(run: (args: string[]) => string, label: string
   const followUp = action !== CONTEXT_ACTION.CLEARED;
   try {
     run(["--session", "org", "agent", "prompt", label, deliveredText(label, text, sender, { followUp, context: action })]);
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     return { action, report: `${PROMPT_REFUSED_PREFIX}${String(err?.message ?? err).split("\n")[0].slice(0, 120)}` };
   }
   // THE TIME IS WRITTEN ONLY ONCE THE PROMPT LANDED (#3440): the next order's keep-or-clear reads it.
@@ -316,7 +316,7 @@ function appendOrder({ label, text, why, agents, path, stance, sender, fyi = fal
   } catch (err) {
     // THE ONE CASE WHERE AN ORDER REALLY IS LOST, so it is the loudest line this file can print.
     process.stderr.write(`NOT PROMPTED, AND NOT QUEUED: ${why}; and the queue at ${path} could not be `
-      + `written (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120)}). `
+      + `written (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}). `
       + "THIS ORDER IS LOST -- nothing else holds a copy. Send it again.\n");
     return { code: EXIT.REFUSED };
   }
@@ -375,7 +375,7 @@ export function queueDepth(label: string, path: string): {
   try {
     return { mine: handoffBacklog(readHandoffs(path)).find((b) => b.session === label) };
   } catch (err) {
-    return { unreadable: String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 120) };
+    return { unreadable: String((err as any)?.message ?? err).split("\n")[0].slice(0, 120) };
   }
 }
 
@@ -417,7 +417,7 @@ export const FYI_FLAG = "--fyi";
  * type it -- so one declaration does both jobs and there is no second way to say the same thing. */
 export const NEEDS_DECISION_FLAG = "--needs-decision";
 
-/** @typedef {"decision" | "fyi" | "undeclared" | "order"} Stance */
+export type Stance = "decision" | "fyi" | "undeclared" | "order";
 /**
  * `ORDER` (#3562) IS FOR A PROGRAMMATIC CALLER ONLY, with no flag: a real order that asks for no answer. It wakes its seat as a decision does, but it is
  * not exempt from the deep-queue refusal, which `converse.mjs` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
@@ -563,7 +563,7 @@ export function recordDirectDelivery(queuePath: string, { label, text, sender, c
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(line)}\n`);
     return true;
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     process.stderr.write(`the order to ${label} WAS delivered, but its record could not be written to ${path} `
       + `(${String(err?.message ?? err).split("\n")[0].slice(0, 120)}). Do not send it again.\n`);
     return false;

@@ -42,12 +42,11 @@ export const probePaths = (repo: string): string[] => [
 ];
 
 /** The name `host/gh` files a repository's entries under: `a11ign/agent-org` -> `a11ign_agent-org`; the empty slug is `default` (a call that names no repository). */
-export const slugOf = (/** @type {string} */ repo: string) => (repo === "" ? "default" : repo.replace(/[^A-Za-z0-9._-]/g, "_"));
+export const slugOf = (repo: string) => (repo === "" ? "default" : repo.replace(/[^A-Za-z0-9._-]/g, "_"));
 
-/**
- * @typedef {{ status: number | null, etag: string | null }} Answer what one probe said: the HTTP status (`null` when `gh` printed none) and the tag, `W/` removed
- * @typedef {(args: string[]) => { stdout: string, status: number | null }} GhRun
- */
+/** what one probe said: the HTTP status (`null` when `gh` printed none) and the tag, `W/` removed */
+export type Answer = { status: number | null, etag: string | null };
+export type GhRun = (args: string[]) => { stdout: string, status: number | null };
 
 /** @param {string} stdout @returns {Answer} the `-i` header block of a `gh api` answer */
 export function parseAnswer(stdout: string): Answer {
@@ -56,7 +55,6 @@ export function parseAnswer(stdout: string): Answer {
   return { status: status === null ? null : Number(status[1]), etag: etag === null ? null : etag[1] };
 }
 
-/** @type {GhRun} */
 const ghRun: GhRun = (args) => {
   const r = spawnSync("gh", args, { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
   return { stdout: r.stdout ?? "", status: r.status };
@@ -78,7 +76,10 @@ export function probeOnce({ path, held, run }: { path: string; held: string | un
   return { changed: true, etag: held, why: `unreadable (${answer.status ?? "no status"})` };
 }
 
-/** @typedef {{ tags: Record<string, string>, bumpedAt: number }} Held what is kept per repository: the tag each probe path last returned, and when its generation last moved */
+/**
+ * what is kept per repository: the tag each probe path last returned, and when its generation last moved
+ */
+export type Held = { tags: Record<string, string>, bumpedAt: number };
 
 /** @param {string} path @returns {Record<string, Held>} */
 function readTags(path: string): Record<string, Held> {

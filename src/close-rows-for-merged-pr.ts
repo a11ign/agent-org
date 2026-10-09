@@ -145,7 +145,7 @@ export function closeRowsExit({ failed, unsettled }: { failed: number[]; unsettl
   const lines = [];
   if (failed.length) lines.push(`${prefix}: could not close ${failed.length}: ${failed.join(" ")}`);
   const { degraded, other } = unsettledVerdict(unsettled);
-  const named = (/** @type {{ row: number }[]} */ refusals: { row: number; }[]) => refusals.map((r) => `#${r.row}`).join(" ");
+  const named = (refusals: { row: number; }[]) => refusals.map((r) => `#${r.row}`).join(" ");
   if (degraded) {
     lines.push(`${prefix}: DEGRADED -- closed, but Status NOT moved for ${unsettled.length}: ${named(unsettled)} `
       + "-- every refusal was project-unreadable (the token cannot read the Project, #546)");
@@ -198,7 +198,7 @@ export function closurePlan(issues: { number: number; state: string; labels?: st
     skip: { number: number; labels: string[]; }[]; none: boolean;
     owed: { number: number; session: string; }[];
 } {
-  const reopenedAfterMerge = (/** @type {{ reopenedAt?: string | null }} */ i: { reopenedAt?: string | null; }) => prMergedAt != null
+  const reopenedAfterMerge = (i: { reopenedAt?: string | null; }) => prMergedAt != null
     && i.reopenedAt != null && Date.parse(i.reopenedAt) > Date.parse(prMergedAt);
   const open = issues.filter((i) => i.state === "OPEN");
   const skip = open.filter(reopenedAfterMerge).map((i) => ({ number: i.number, labels: i.labels ?? [] }));
@@ -344,7 +344,7 @@ export function reportOrphanedRow({ branch, prNumber, sha, declaration }: { bran
   const rowNumber = rowNumberFromBranch(branch);
   if (rowNumber === null) return null;
   const report = orphanedRowReport({ row: lookupRow(rowNumber), prNumber, sha,
-    branch: /** @type {string} */ (branch), declaration });
+    branch: (branch as string), declaration });
   if (report === null) {
     console.log(`CLOSE-ROWS: branch \`${branch}\` names #${rowNumber}, which is not an open claimed row `
       + "-- nothing to report (#2036).");
@@ -433,8 +433,8 @@ export function owedNote(owedBy: string[]): string {
 }
 
 // #2995: a PR of ANOTHER repository arrives named `owner/repo#N`, and the row it closes is then named in the full form too (a bare `#N` reads as the row's own repository's).
-const prName = (/** @type {string} */ prNumber: string) => (prNumber.includes("#") ? prNumber : `#${prNumber}`);
-const rowName = (/** @type {number} */ n: number, /** @type {string} */ prNumber: string) => (prNumber.includes("#") ? `${REPO}#${n}` : `#${n}`);
+const prName = (prNumber: string) => (prNumber.includes("#") ? prNumber : `#${prNumber}`);
+const rowName = (n: number, prNumber: string) => (prNumber.includes("#") ? `${REPO}#${n}` : `#${n}`);
 
 /**
  * #2822: THE SENTENCE A CLOSING COMMENT OPENS WITH. A closure made from the body's declaration says so, and
@@ -506,13 +506,10 @@ export function stripClaimLabels(n: number, labels: string[], repo: string, logP
   stripClaimLabelsVia(n, labels, repo, { gh, say: (line) => console.log(line), logPrefix });
 }
 
-/**
- * @typedef {{ closeOne: typeof closeOneRow, strip: typeof stripClaimLabels,
- *   settle: (n: number) => import("./settle-closed-status.ts").SettleOutcome }} ClosureEffects
- */
+export type ClosureEffects = { closeOne: typeof closeOneRow, strip: typeof stripClaimLabels, settle: (n: number) => import("./settle-closed-status.ts").SettleOutcome };
 
 /** The effects `applyClosurePlan` performs, each of which reaches GitHub when live. */
-const CLOSURE_EFFECTS = /** @type {const} */ (["closeOne", "strip", "settle"]);
+const CLOSURE_EFFECTS = (["closeOne", "strip", "settle"] as const);
 
 /**
  * #1360: THE LIVE SETTLE DEPENDENCIES, DEFINED ONCE. The per-merge path (`liveClosureEffects` below) and the sweep
@@ -530,7 +527,7 @@ export const LIVE_SETTLE_DEPS = Object.freeze({ moveStatus: moveProjectStatus, c
 export function liveClosureEffects(): ClosureEffects {
   return {
     closeOne: closeOneRow, strip: stripClaimLabels,
-    settle: (/** @type {number} */ n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS),
+    settle: (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS),
   };
 }
 
@@ -551,7 +548,7 @@ export function liveOrphanEffects(repo: string): {
     lookupRow: (n) => {
       try {
         const row = JSON.parse(gh(["issue", "view", String(n), "--repo", repo, "--json", "number,state,labels"]));
-        return { number: row.number, state: row.state, labels: (row.labels ?? []).map((/** @type {{name:string}} */ l: { name: string; }) => l.name) };
+        return { number: row.number, state: row.state, labels: (row.labels ?? []).map((l: { name: string; }) => l.name) };
       } catch (cause) {
         console.log(`CLOSE-ROWS: could not read #${n} to report on it -- ${cause instanceof Error ? cause.message : cause}`);
         return null;
@@ -614,11 +611,10 @@ export function applyClosurePlan({ close, already, skip = [], owed = [], unreada
   }
   const { closeOne, strip, settle } = effects;
   // #1299: the settle answer is READ. A bare `settle(n)` let a run that moved no Status exit DONE.
-  /** @type {import("./settle-closed-status.ts").Refusal[]} */
   const unsettled: import("./settle-closed-status.ts").Refusal[] = [];
-  const record = (/** @type {number} */ n: number) => { unsettled.push(...settle(n).refused); };
-  const owedBy = (/** @type {number} */ n: number) => owed.filter((o) => o.number === n).map((o) => o.session);
-  const reportOwed = (/** @type {number} */ n: number) => {
+  const record = (n: number) => { unsettled.push(...settle(n).refused); };
+  const owedBy = (n: number) => owed.filter((o) => o.number === n).map((o) => o.session);
+  const reportOwed = (n: number) => {
     for (const session of owedBy(n)) {
       console.log(`CLOSE-ROWS: #${n} IS CLOSED STILL OWING AN ANSWER from ${session} -- \`${ANSWER_PREFIX}${session}\` `
         + "KEPT, and the gate keeps waking that session (#2202).");
@@ -643,7 +639,6 @@ export function applyClosurePlan({ close, already, skip = [], owed = [], unreada
   });
 
   // #2822: a declared row that could not be READ was never planned, and is a row that was not closed: named as such.
-  /** @type {number[]} */
   const failed: number[] = [...unreadable];
   for (const { number: n, labels } of close) {
     const closed = closeOne(n, { ...ctx, owedBy: owedBy(n) });
@@ -670,7 +665,7 @@ export function liveLookupDeclaredRow(n: number, repo: string): { number: number
   try {
     const issue = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.issue"]));
     if (issue === null) return null;
-    return { number: issue.number, state: issue.state, labels: (issue.labels?.nodes ?? []).map((/** @type {{name:string}} */ l: { name: string; }) => l.name),
+    return { number: issue.number, state: issue.state, labels: (issue.labels?.nodes ?? []).map((l: { name: string; }) => l.name),
       reopenedAt: issue.timelineItems?.nodes?.[0]?.createdAt ?? null };
   } catch (cause) {
     console.log(`CLOSE-ROWS: could not read declared #${n} -- ${cause instanceof Error ? cause.message : cause}`);
@@ -781,8 +776,6 @@ function main() {
       console.error(`CANNOT ASK: #${number} merged into \`${pr.baseRefName}\`, not \`main\` -- refusing.`);
       exitAfterSweep(EXIT.CANNOT_ASK);
     }
-    /** @type {{ number: number, state: string, repository?: { nameWithOwner: string }, labels: { nodes: { name: string }[] },
-     *   timelineItems: { nodes: { createdAt: string }[] } }[]} */
     const nodes: {
         number: number; state: string; repository?: { nameWithOwner: string; }; labels: { nodes: { name: string; }[]; };
         timelineItems: { nodes: { createdAt: string; }[]; };

@@ -47,8 +47,8 @@ function withFakeGh(fixture: Record<string, { open: { number: number; title: str
   process.env.PATH = `${dir}:${saved.PATH}`;
   process.env.FAKE_GH_FIXTURE = fixturePath;
   const captured = { out: "", err: "" };
-  process.stdout.write = /** @type {any} */ ((/** @type {string} */ text: string) => { captured.out += text; return true; });
-  process.stderr.write = /** @type {any} */ ((/** @type {string} */ text: string) => { captured.err += text; return true; });
+  process.stdout.write = (((text: string) => { captured.out += text; return true; }) as any);
+  process.stderr.write = (((text: string) => { captured.err += text; return true; }) as any);
   try {
     return { result: body(), ...captured };
   } finally {
@@ -66,7 +66,7 @@ const ONE = { tracker: [TWO.tracker[0]], code: [TWO.code[0]] };
 /** The two cheap checks: the open-issue mutex and the labelless-row check. Both read only the open list and the search index, which is all the fake answers. */
 const CHEAP = audit.CHECKS.filter(([what]) => what === "open issues" || what === "labelless rows");
 
-const row = (/** @type {number} */ number: number, /** @type {string[]} */ labels: string[], title = `row ${number}`) => ({ number, title, labels });
+const row = (number: number, labels: string[], title = `row ${number}`) => ({ number, title, labels });
 
 test("the control: the CHEAP population is two checks, so a test that selects it is not asserting over nothing", () => {
   assert.deepEqual(CHEAP.map(([what]) => what), ["open issues", "labelless rows"]);

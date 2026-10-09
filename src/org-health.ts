@@ -211,16 +211,14 @@ export const SIGNALS = Object.freeze({
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
-const FIRST_READERS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER }));
+const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER }) as Readonly<Record<string, string>>);
 
 /**
- * @typedef {{ signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null,
- *             discriminator?: string, prompt?: string }} Reading
- * `detail` is one line: for `unknown` it is WHY, for `tripped` the numbers. `firstTrippedAt` is epoch ms, or `null` when the
- * signal's own source carries no time.
+ * `detail` is one line: for `unknown` it is WHY, for `tripped` the numbers. `firstTrippedAt` is epoch ms, or `null` when the signal's own source carries no time.
  */
+export type Reading = { signal: string, status: "tripped" | "clear" | "unknown", detail: string, firstTrippedAt?: number | null, discriminator?: string, prompt?: string };
 
-/** @typedef {import("./lib/tool-version-agreement.mjs").Agreement} ToolAgreement */
+export type ToolAgreement = import("./lib/tool-version-agreement.mjs").Agreement;
 
 /** @param {number} ms @returns {string} the UTC hour a time falls in, `2026-10-01T07`: the discriminator's resolution */
 const hourOf = (ms: number): string => new Date(ms).toISOString().slice(0, 13);
@@ -266,11 +264,9 @@ export function noMergeReading({ now, lastMergedAt, lastMergedIn = null, work }:
 }
 
 /**
- * @typedef {{ number: number | string, owner: string | null, redSince: number | null, ownerCommentAts: number[] }} RedPr
- * One open PR whose required check has settled red. `owner` is `null` when NOBODY could be named (`ownerOfPr`'s last rung).
- * `redSince` is when the head's first failing check finished, `null` when no check carried a time. `ownerCommentAts` are the
- * times of comments from the account that opened the PR, all of them: the leaf asks which fall after the red began.
+ * One open PR whose required check has settled red. `owner` is `null` when NOBODY could be named (`ownerOfPr`'s last rung). `redSince` is when the head's first failing check finished, `null` when no check carried a time. `ownerCommentAts` are the times of comments from the account that opened the PR, all of them: the leaf asks which fall after the red began.
  */
+export type RedPr = { number: number | string, owner: string | null, redSince: number | null, ownerCommentAts: number[] };
 
 /**
  * WHEN DID THIS PULL REQUEST'S BREAKAGE BEGIN, or `null` when it has none to date (#2956). RED IS DECIDED ONCE, BY `red-pr.mjs`
@@ -311,14 +307,14 @@ function isUnattended(pr: RedPr, now: number) {
  */
 export function redPrReading({ now, redPrs }: { now: number; redPrs: RedPr[] | null; }): Reading {
   if (redPrs === null) return unknown(SIGNALS.RED_PR, "the open pull requests could not be read");
-  const tripped = redPrs.filter((pr) => isUnattended(pr, now)).sort((a, b) => /** @type {number} */ (a.redSince) - /** @type {number} */ (b.redSince));
+  const tripped = redPrs.filter((pr) => isUnattended(pr, now)).sort((a, b) => (a.redSince as number) - (b.redSince as number));
   if (tripped.length === 0) {
     const undated = redPrs.filter((pr) => pr.redSince === null);
     return undated.length === 0 ? clear(SIGNALS.RED_PR)
       : unknown(SIGNALS.RED_PR, `${undated.length} red PR(s) carried no check time, so how long they have been red is not known`);
   }
-  const first = /** @type {number} */ (tripped[0].redSince) + RED_PR_MINUTES * MS_PER_MINUTE;
-  const named = tripped.slice(0, MAX_NAMED).map((pr) => `#${pr.number} (red ${ageText(/** @type {number} */ (pr.redSince), now)}, `
+  const first = (tripped[0].redSince as number) + RED_PR_MINUTES * MS_PER_MINUTE;
+  const named = tripped.slice(0, MAX_NAMED).map((pr) => `#${pr.number} (red ${ageText((pr.redSince as number), now)}, `
     + `${pr.owner === null ? "NO OWNER" : `owner ${pr.owner}`})`);
   const more = tripped.length > MAX_NAMED ? `, and ${tripped.length - MAX_NAMED} more` : "";
   return { signal: SIGNALS.RED_PR, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.RED_PR}@${hourOf(first)}`,
@@ -366,11 +362,13 @@ export function primaryReading({ now, drift, since }: { now: number; drift: { be
 }
 
 /**
- * @typedef {{ captures24h: number, lastCaptureAt: number | null }} FleetCaptures
  * What the fleet did in the last `FLEET_IDLE_HOURS`: how many captures, and when the last one finished (`null` when none is known).
- * @typedef {{ rows: (number | string)[], labJobs: string[] }} FleetWaiting
+ */
+export type FleetCaptures = { captures24h: number, lastCaptureAt: number | null };
+/**
  * What is waiting for the fleet: open `fleet-gated` rows nothing else stops, and lab jobs queued for it.
  */
+export type FleetWaiting = { rows: (number | string)[], labJobs: string[] };
 
 /**
  * SIGNAL 5: THE FLEET HAS CAPTURED NOTHING FOR `FLEET_IDLE_HOURS` WHILE SOMETHING IS WAITING FOR IT (#2937).
@@ -397,19 +395,16 @@ export function fleetIdleReading({ now, fleet, waiting }: { now: number; fleet: 
   const last = fleet.lastCaptureAt;
   const first = last === null ? null : last + windowMs;
   const named = [...waiting.rows.slice(0, MAX_NAMED).map((row) => `#${row}`), ...waiting.labJobs.slice(0, MAX_NAMED)].join(", ");
-  const key = last === null ? [...waiting.rows, ...waiting.labJobs].sort().join(",") : hourOf(/** @type {number} */ (first));
+  const key = last === null ? [...waiting.rows, ...waiting.labJobs].sort().join(",") : hourOf((first as number));
   return { signal: SIGNALS.FLEET_IDLE, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.FLEET_IDLE}@${key}`,
     detail: `${fleet.captures24h} captures in the last ${FLEET_IDLE_HOURS} h; the last was `
       + `${last === null ? "never recorded" : `${isoOf(last)} (${ageText(last, now)} ago)`}; ${waits} thing(s) wait for the fleet: ${named}` };
 }
 
 /**
- * @typedef {{ kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null, boundMinutes?: number }} OverdueCandidate
- * One open item the outcome clock runs on. `since` is when it OPENED (epoch ms): a PR's `createdAt`, a row's newest claim record. It is `null` when
- * nothing dates it, which is an unknown and never an age. `reason` is the gate's own label for the state (`stallReasonOf` for a PR) and is DISPLAYED, never
- * a condition; `owner` is `null` when NOBODY could be named. `boundMinutes` is the item's OWN bound, set by the reader that measured one (an idle claimed
- * row's 80 minutes, #3569) and absent for every other item, which keeps its kind's.
+ * One open item the outcome clock runs on. `since` is when it OPENED (epoch ms): a PR's `createdAt`, a row's newest claim record. It is `null` when nothing dates it, which is an unknown and never an age. `reason` is the gate's own label for the state (`stallReasonOf` for a PR) and is DISPLAYED, never a condition; `owner` is `null` when NOBODY could be named. `boundMinutes` is the item's OWN bound, set by the reader that measured one (an idle claimed row's 80 minutes, #3569) and absent for every other item, which keeps its kind's.
  */
+export type OverdueCandidate = { kind: "pr" | "row", number: number | string, reason: string, owner: string | null, since: number | null, boundMinutes?: number };
 
 /** @param {number} minutes @returns {string} how long an item has been open: minutes under two hours, hours to one decimal after */
 const openFor = (minutes: number): string => (minutes >= HOURS_FROM_MINUTES ? `${hoursOf(minutes)} h` : `${minutes} min`);
@@ -432,7 +427,7 @@ const boundOf = (item: OverdueCandidate): number => item.boundMinutes ?? (item.k
  */
 export function overdueReading({ now, items, unread = [] }: { now: number; items: OverdueCandidate[] | null; unread?: string[]; }): Reading {
   if (items === null) return unknown(SIGNALS.OVERDUE, "the open pull requests could not be read");
-  const crossedAt = (/** @type {OverdueCandidate} */ item: OverdueCandidate) => /** @type {number} */ (item.since) + boundOf(item) * MS_PER_MINUTE;
+  const crossedAt = (item: OverdueCandidate) => (item.since as number) + boundOf(item) * MS_PER_MINUTE;
   const overdue = items.filter((item) => item.since !== null && now >= crossedAt(item)).sort((a, b) => crossedAt(a) - crossedAt(b));
   if (overdue.length === 0) {
     const undated = items.filter((item) => item.since === null).length;
@@ -441,7 +436,7 @@ export function overdueReading({ now, items, unread = [] }: { now: number; items
     return doubts.length === 0 ? clear(SIGNALS.OVERDUE) : unknown(SIGNALS.OVERDUE, doubts.join("; "));
   }
   const named = overdue.slice(0, MAX_NAMED).map((item) => `#${item.number} (${item.kind === "pr" ? "PR" : "row"}, ${item.reason}, open `
-    + `${openFor(Math.round((now - /** @type {number} */ (item.since)) / MS_PER_MINUTE))}, ${item.owner === null ? "NO OWNER" : `owner ${item.owner}`}`
+    + `${openFor(Math.round((now - (item.since as number)) / MS_PER_MINUTE))}, ${item.owner === null ? "NO OWNER" : `owner ${item.owner}`}`
     + `${item.boundMinutes === undefined ? "" : `, bound ${item.boundMinutes} min`})`);
   const more = overdue.length > MAX_NAMED ? `, and ${overdue.length - MAX_NAMED} more` : "";
   const key = overdue.map((item) => `${item.kind}#${item.number}:${item.reason}`).sort().join(",");
@@ -465,15 +460,15 @@ export function staleWaitReading({ now, stale }: {
     }): Reading {
   if (stale === null) return unknown(SIGNALS.STALE_WAIT, "the rows and pull requests carrying waits could not be read");
   const over = stale.filter((s) => s.resolvedAt !== null && pastGrace(s.resolvedAt, now))
-    .sort((a, b) => /** @type {number} */ (a.resolvedAt) - /** @type {number} */ (b.resolvedAt));
+    .sort((a, b) => (a.resolvedAt as number) - (b.resolvedAt as number));
   if (over.length === 0) {
     const undated = stale.filter((s) => s.resolvedAt === null);
     return undated.length === 0 ? clear(SIGNALS.STALE_WAIT)
       : unknown(SIGNALS.STALE_WAIT, `${undated.length} wait(s) have a true condition that nothing dated, so how long they have stood is not known`);
   }
-  const first = /** @type {number} */ (over[0].resolvedAt) + STALE_WAIT_GRACE_MINUTES * MS_PER_MINUTE;
+  const first = (over[0].resolvedAt as number) + STALE_WAIT_GRACE_MINUTES * MS_PER_MINUTE;
   const named = over.slice(0, MAX_NAMED).map((s) => `${s.item.repoKey ?? ""}#${s.item.number} (\`Waiting-for: ${s.wait.text}\` true for `
-    + `${ageText(/** @type {number} */ (s.resolvedAt), now)}, setter ${s.setter})`);
+    + `${ageText((s.resolvedAt as number), now)}, setter ${s.setter})`);
   const more = over.length > MAX_NAMED ? `, and ${over.length - MAX_NAMED} more` : "";
   const key = over.map((s) => `${s.item.repoKey ?? ""}#${s.item.number}:${s.wait.key}`).sort().join(",");
   return { signal: SIGNALS.STALE_WAIT, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.STALE_WAIT}@${key}`,
@@ -499,7 +494,7 @@ export function waitWithoutReasonReading({ now, bare, manual = 0 }: { now: numbe
       : unknown(SIGNALS.WAIT_WITHOUT_REASON, `${undated.length} wait(s) with no reason carried no activity time, so how long they have stood is not known`);
   }
   const named = quiet.slice(0, MAX_NAMED).map((b) => `${b.item.repoKey ?? ""}#${b.item.number} (${b.fields.join(", ")}, ${b.atOnce ? "no reason given" : "quiet "
-    + ageText(/** @type {number} */ (b.quietSince), now)})`);
+    + ageText((b.quietSince as number), now)})`);
   const more = quiet.length > MAX_NAMED ? `, and ${quiet.length - MAX_NAMED} more` : "";
   const key = quiet.map((b) => `${b.item.repoKey ?? ""}#${b.item.number}`).sort().join(",");
   return { signal: SIGNALS.WAIT_WITHOUT_REASON, status: "tripped", firstTrippedAt: quiet[0].trippedAt, discriminator: `${SIGNALS.WAIT_WITHOUT_REASON}@${key}`,
@@ -518,10 +513,9 @@ function bareTrippedAt({ quietSince, atOnce }: { quietSince: number | null; atOn
 }
 
 /**
- * @typedef {{ kind: "deferred" | "queue", name: string, since: number }} StalledOrder
- * One order that has not reached a seat: `deferred` is a derived order the waker refused because its seat is mid-turn, named by its causeKey and dated by the
- * tick that FIRST deferred it; `queue` is a standing seat's inbox, named by the seat and dated by its OLDEST authored order. `since` is epoch ms.
+ * One order that has not reached a seat: `deferred` is a derived order the waker refused because its seat is mid-turn, named by its causeKey and dated by the tick that FIRST deferred it; `queue` is a standing seat's inbox, named by the seat and dated by its OLDEST authored order. `since` is epoch ms.
  */
+export type StalledOrder = { kind: "deferred" | "queue", name: string, since: number };
 
 /**
  * SIGNAL 10: AN ORDER HAS WAITED ON A BUSY SESSION FOR OVER `ORDER_STALL_MINUTES` (#3448). A deferral is not a fault -- it is what the queue is for -- and a
@@ -546,10 +540,9 @@ export function orderStallReading({ now, stalled }: { now: number; stalled: Stal
 }
 
 /**
- * @typedef {{ session: string, pane: string, prompt: string, since: number }} PromptPane
- * One pane whose visible screen is an interactive prompt: the session it belongs to, herdr's pane id, WHICH prompt it is, and the tick that FIRST saw it
- * (`since`, epoch ms -- herdr stamps no time on a screen, so the waker keeps the first sighting).
+ * One pane whose visible screen is an interactive prompt: the session it belongs to, herdr's pane id, WHICH prompt it is, and the tick that FIRST saw it (`since`, epoch ms -- herdr stamps no time on a screen, so the waker keeps the first sighting).
  */
+export type PromptPane = { session: string, pane: string, prompt: string, since: number };
 
 /**
  * SIGNAL 12: A PANE HAS STOPPED AT AN INTERACTIVE PROMPT FOR OVER `PANE_PROMPT_MINUTES` (#3458). Codex's working-directory picker and a trust prompt wait for a
@@ -573,13 +566,13 @@ export function panePromptReading({ now, panes }: { now: number; panes: PromptPa
 }
 
 /**
- * @typedef {{ reason: string, detail: string, at: number, since: number | null }} AutoOffRefusal
- * The refusal `fleet-auto-off.mjs` keeps in its state file. `at` is the LAST tick that refused (rewritten every ten seconds) and `since` is the FIRST tick of the
- * unbroken run, `null` when the record carries none: a tick that proceeds, or has nothing to power off, writes `refusal: null`, which is what ends a run.
- * @typedef {{ unreadable: string } | { refusal: AutoOffRefusal | null, readAt: number }} AutoOffFact
- * What the mirror said, or WHY it could not be read. `readAt` is when `fleet-watch` read the record off the control plane (epoch ms), NOT when this tick ran.
- * `refusal: null` is a mirror that was read and records no refusal, which is not the same as `unreadable`.
+ * The refusal `fleet-auto-off.mjs` keeps in its state file. `at` is the LAST tick that refused (rewritten every ten seconds) and `since` is the FIRST tick of the unbroken run, `null` when the record carries none: a tick that proceeds, or has nothing to power off, writes `refusal: null`, which is what ends a run.
  */
+export type AutoOffRefusal = { reason: string, detail: string, at: number, since: number | null };
+/**
+ * What the mirror said, or WHY it could not be read. `readAt` is when `fleet-watch` read the record off the control plane (epoch ms), NOT when this tick ran. `refusal: null` is a mirror that was read and records no refusal, which is not the same as `unreadable`.
+ */
+export type AutoOffFact = { unreadable: string } | { refusal: AutoOffRefusal | null, readAt: number };
 
 /**
  * SIGNAL 15: `fleet-auto-off` HAS REFUSED TO POWER WORKERS OFF FOR OVER `AUTO_OFF_REFUSAL_MINUTES` (#3853). It is loud by design (it prints `refuse <reason>`, exits 1
@@ -631,7 +624,7 @@ export function parseAutoOffMirror(text: string | null, path: string): AutoOffFa
   try {
     mirror = JSON.parse(text);
   } catch (err) {
-    return { unreadable: `\`${path}\` is not JSON (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)})` };
+    return { unreadable: `\`${path}\` is not JSON (${String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)})` };
   }
   if (!isObject(mirror) || !isTime(mirror.readAt) || !isObject(mirror.record)) return { unreadable: `\`${path}\` is not \`{ readAt, record }\`` };
   const refusal = mirror.record.refusal ?? null;
@@ -655,10 +648,9 @@ export function readAutoOffRefusal({ root = DEFAULT_ROOT, read = (path) => readF
 }
 
 /**
- * @typedef {{ account: string | null, resource: string, remaining: number, limit: number, resetAt: string | null }} PoolReading
- * One API budget as a real call's answer gave it (`poolFromHeaders`, or a `rateLimit` field in a query the gate was sending anyway), NEVER `/rate_limit`, which
- * has reported a full pool during a total outage (#1967). `account` is the login the call ran as, `null` when the answer did not name one.
+ * One API budget as a real call's answer gave it (`poolFromHeaders`, or a `rateLimit` field in a query the gate was sending anyway), NEVER `/rate_limit`, which has reported a full pool during a total outage (#1967). `account` is the login the call ran as, `null` when the answer did not name one.
  */
+export type PoolReading = { account: string | null, resource: string, remaining: number, limit: number, resetAt: string | null };
 
 /**
  * SIGNAL 11: A POOL IS BELOW `POOL_LOW_FRACTION` OF ITS LIMIT (#3448). A session that meets an exhausted pool sleeps on the reset, and three standing seats did at
@@ -696,7 +688,7 @@ const ledgerSpender = (account: string): string | null => spenderPhrase(join(led
  * like a clean answer. @param {PoolReading[]} low @param {(account: string) => string | null} spenderOf
  */
 function spendersOf(low: PoolReading[], spenderOf: (account: string) => string | null) {
-  const accounts = [...new Set(low.filter((p) => p.resource === "graphql" && p.account !== null).map((p) => /** @type {string} */ (p.account)))];
+  const accounts = [...new Set(low.filter((p) => p.resource === "graphql" && p.account !== null).map((p) => (p.account as string)))];
   if (accounts.length === 0) return "";
   return `. Spender: ${accounts.map((a) => spenderOf(a) ?? `${a}'s call ledger could not be read, so the spender is UNREADABLE`).join("; ")}`;
 }
@@ -743,7 +735,7 @@ export function boardTruthReading({ audit, day = "today" }: { audit: { findings:
   }
   return { signal: SIGNALS.BOARD_TRUTH, status: "tripped", firstTrippedAt: null,
     discriminator: `${SIGNALS.BOARD_TRUTH}@${audit.findings.map((f) => `${f.number}${f.question}`).join(",")}`,
-    detail: `\n${boardTruthTable(/** @type {any} */ (audit), day)}\n` };
+    detail: `\n${boardTruthTable((audit as any), day)}\n` };
 }
 
 /**
@@ -767,10 +759,9 @@ export function idleWithOpenRowsSignal({ idle }: { idle: import("./idle-with-ope
 }
 
 /**
- * @typedef {{ original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string }} CopyPair
- * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it
- * changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
+ * One declared copy: where it came from and where it sits (both relative to the checkout), how many lines its own header says it changed (`null` when the header says none), the original's text (`null` when it could not be read) and the copy's text.
  */
+export type CopyPair = { original: string, copy: string, allowedLines: number | null, originalText: string | null, copyText: string };
 
 /**
  * SIGNAL (#3533): A RUNNER OF `agent-org` THAT IS NOT ON THE NEWEST RELEASE FOR LONGER THAN ONE RELEASE CYCLE, whichever of the three kinds it is (the tool checkout, a worktree's resolved
@@ -816,11 +807,10 @@ const TEAM_LEVELS = Object.freeze(["admin", "maintain", "push", "triage", "pull"
 const TEAM_LISTING_JQ = ".[]|[.full_name,.permissions.admin,.permissions.maintain,.permissions.push,.permissions.triage,.permissions.pull]|@tsv";
 const TEAM_PAGE_SIZE = 100;
 
-/**
- * @typedef {{ repo: string, level: string }} TeamRepository
- * @typedef {{ team: string, layer: string, declared: string[], reached: TeamRepository[] | null, why: string }} TeamAccess `reached` is `null` for a read that could not run, and `why` then says what GitHub answered
- * @typedef {{ teams: TeamAccess[] } | { unreadable: string }} TeamAccessFact
- */
+export type TeamRepository = { repo: string, level: string };
+/** `reached` is `null` for a read that could not run, and `why` then says what GitHub answered */
+export type TeamAccess = { team: string, layer: string, declared: string[], reached: TeamRepository[] | null, why: string };
+export type TeamAccessFact = { teams: TeamAccess[] } | { unreadable: string };
 
 /**
  * SIGNAL 14: AN ORG TEAM HOLDS A LEVEL THE PROJECT'S DECLARATION DOES NOT GIVE (a11ign/a11ign#3634, a class gap of #3587: `bots` held `admin` on
@@ -896,7 +886,7 @@ function readTeamDeclaration(root: string, read: (path: string) => string): { de
     }
     return teamDeclarationOf(JSON.parse(read(resolve(root, key.declaration))), key.declaration);
   } catch (err) {
-    return { unreadable: `the team declaration could not be read: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)} (CANNOT_TELL)` };
+    return { unreadable: `the team declaration could not be read: ${String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)} (CANNOT_TELL)` };
   }
 }
 
@@ -905,7 +895,7 @@ function teamDeclarationOf(file: any, where: string): ReturnType<typeof readTeam
   const declared = Object.keys(file?.repositories ?? {}).filter((k) => !k.startsWith("_"));
   const orgs = new Set(declared.map((repo) => repo.split("/")[0]));
   const teams = Object.entries(file?.teams ?? {}).filter(([k]) => !k.startsWith("_"))
-    .map(([team, level]) => ({ team, layer: /** @type {any} */ (level)?.layer }));
+    .map(([team, level]) => ({ team, layer: (level as any)?.layer }));
   if (orgs.size !== 1 || teams.some((t) => typeof t.layer !== "string")) {
     return { unreadable: `${where}: it must declare \`repositories\` of one org and each \`teams.<slug>.layer\` as a string (CANNOT_TELL)` };
   }
@@ -932,7 +922,7 @@ function readTeamRepositories(run: (args: string[]) => string, org: string, team
     const reached = parseTeamListing(run(["api", `orgs/${org}/teams/${team}/repos?per_page=${TEAM_PAGE_SIZE}`, "--paginate", "--jq", TEAM_LISTING_JQ]));
     return reached === null ? { reached, why: "GitHub answered a line that is not a repository's permissions" } : { reached, why: "" };
   } catch (err) {
-    return { reached: null, why: String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS) };
+    return { reached: null, why: String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS) };
   }
 }
 
@@ -1033,7 +1023,6 @@ export function readDeclaredCopies({ root = DEFAULT_ROOT, toolRoot = TOOL_ROOT, 
   } catch {
     return null; // an unlistable directory is not an empty one
   }
-  /** @type {CopyPair[]} */
   const pairs: CopyPair[] = [];
   for (const name of names) {
     const copy = `${COPIES_DIR}/${name}`;
@@ -1114,7 +1103,6 @@ export function readLastMergedAt(run: (args: string[]) => string, repo: string):
 export function readLatestMerge(run: (args: string[]) => string, repos: readonly string[]): { at: number; repo: string; } | null {
   const asked = repos.map((repo) => ({ repo, merge: askLastMerge(run, repo) }));
   if (asked.some(({ merge }) => merge === null)) return null;
-  /** @type {{ at: number, repo: string } | null} */
   let latest: { at: number; repo: string; } | null = null;
   for (const { repo, merge } of asked) {
     if (merge?.at != null && (latest === null || merge.at > latest.at)) latest = { at: merge.at, repo };
@@ -1128,11 +1116,12 @@ const RELEASE_JOBS_WINDOW = 100;
 /** The two conclusions that say whether a release happened. `cancelled`, `skipped`, `neutral` and a run still going say nothing, so they neither trip nor clear (#4001). */
 const RELEASE_VERDICTS = Object.freeze(["success", "failure"]);
 
+export type ReleaseRun = { id: number, event: string, status: string, conclusion: string | null, sha: string, createdAt: string, updatedAt: string, url: string };
+export type FailedJob = { name: string, steps: string[] };
 /**
- * @typedef {{ id: number, event: string, status: string, conclusion: string | null, sha: string, createdAt: string, updatedAt: string, url: string }} ReleaseRun
- * @typedef {{ name: string, steps: string[] }} FailedJob
- * @typedef {{ runs: ReleaseRun[], jobs?: FailedJob[] | null, pending?: string[] | null }} ReleaseRuns `jobs` and `pending` are read only when the newest verdict is a failure; `null` is a read that was refused
+ * `jobs` and `pending` are read only when the newest verdict is a failure; `null` is a read that was refused
  */
+export type ReleaseRuns = { runs: ReleaseRun[], jobs?: FailedJob[] | null, pending?: string[] | null };
 
 /** @param {ReleaseRun[]} runs @returns {ReleaseRun | undefined} the newest run that concluded `success` or `failure`: the one that says whether the last release happened */
 export function newestReleaseVerdict(runs: ReleaseRun[]): ReleaseRun | undefined {
@@ -1214,7 +1203,7 @@ export function releaseBehindReadings({ now, behind }: { now: number; behind: im
   if (behind === null) return [unknown(signal, "the dora repositories could not be listed, so no repository is known to be level with its releases")];
   const verdicts = behind.map((fact) => repoVerdict(fact, now));
   const tripped = verdicts.flatMap((v) => (v.verdict === "tripped"
-    ? [{ signal, status: /** @type {const} */ ("tripped"), firstTrippedAt: v.firstTrippedAt, discriminator: `${signal}@${v.discriminator}`, detail: v.detail }] : []));
+    ? [{ signal, status: ("tripped" as const), firstTrippedAt: v.firstTrippedAt, discriminator: `${signal}@${v.discriminator}`, detail: v.detail }] : []));
   const unread = verdicts.filter((v) => v.verdict === "unknown");
   const unreadReading = unread.length === 0 ? [] : [unknown(signal, `${unread.map((v) => v.detail).join("; ")}, so those repositories are not known to be level with their releases`)];
   return tripped.length === 0 && unread.length === 0 ? [{ ...clear(signal), detail: verdicts.map((v) => v.detail).join("; ") }] : [...tripped, ...unreadReading];
@@ -1240,7 +1229,7 @@ export function classRepeatReadings({ now, classRepeat }: { now: number; classRe
   const undated = groups.flatMap((g) => g.rows).filter((row) => row.closedAt === null);
   if (undated.length > 0) return [unknown(signal, `closed row(s) ${[...new Set(undated.map((r) => `#${r.number}`))].join(", ")} carry a class label and no close time, so their order cannot be read`)];
   const strangers = groups.filter((g) => g.entry === null);
-  const tripped = groups.filter((g) => g.entry !== null && g.rows.length >= 2 && now - /** @type {number} */ (g.rows[0].closedAt) <= CLASS_REPEAT_WINDOW_MS);
+  const tripped = groups.filter((g) => g.entry !== null && g.rows.length >= 2 && now - (g.rows[0].closedAt as number) <= CLASS_REPEAT_WINDOW_MS);
   const counts = classCountsText(groups);
   const strangerText = strangers.map((g) => `\`${CLASS_LABEL_PREFIX}${g.id}\` on ${rowsText(g.rows)}`).join("; ");
   const unknownClass = `unknown class (in no way a class, tripping nothing): ${strangerText} (not in ${FAILURE_CLASSES_PATH}: fix the label or add the class)`;
@@ -1260,7 +1249,7 @@ function classCountsText(groups: import("./class-repeat.ts").ClassGroup[]): stri
 
 /** @param {string} signal @param {import("./class-repeat.ts").ClassGroup} group @param {string} beside @returns {Reading} */
 function classRepeatTripped(signal: string, group: import("./class-repeat.ts").ClassGroup, beside: string): Reading {
-  const entry = /** @type {import("./class-repeat.ts").FailureClass} */ (group.entry);
+  const entry = (group.entry as import("./class-repeat.ts").FailureClass);
   const guard = entry.guard ?? `NONE IN FORCE (${entry.guardNote ?? "the index says nothing more"}), so the first thing to fix is that there is no guard`;
   return { signal, status: "tripped", firstTrippedAt: group.rows[0].closedAt, discriminator: `${signal}/${group.id}@${group.rows[0].number}`,
     detail: `THE GUARD FAILED: class \`${group.id}\` (${entry.name}) has ${group.rows.length} closed rows, ${rowsText(group.rows)}, newest first, and a second closed row under one class is a repeat. `
@@ -1268,12 +1257,13 @@ function classRepeatTripped(signal: string, group: import("./class-repeat.ts").C
 }
 
 /**
- * @typedef {{ number: number, createdAt: number | null, claimed: boolean, state: string, owes: string, epic?: boolean }} ClockRow
  * One OPEN row of the primary milestone. `state` is why nobody is building it (`parked`, `date-held`, `blocked by #7`, `ready, unclaimed` ...) and `owes` who owes its next move.
- * @typedef {{ primaries: { number: number, title: string }[], rows: ClockRow[], prsClose: number[] | null, endedAt: number | null }} MilestoneClockFact
- * `primaries` are the milestones marked `Primary: yes` that the open rows name, `rows` the open rows of the one primary (empty unless there is exactly one), `prsClose` the row
- * numbers open pull requests declare they close (`null`: the pull requests were not read), and `endedAt` when the last claim or pull request ended (`null`: not read).
  */
+export type ClockRow = { number: number, createdAt: number | null, claimed: boolean, state: string, owes: string, epic?: boolean };
+/**
+ * `primaries` are the milestones marked `Primary: yes` that the open rows name, `rows` the open rows of the one primary (empty unless there is exactly one), `prsClose` the row numbers open pull requests declare they close (`null`: the pull requests were not read), and `endedAt` when the last claim or pull request ended (`null`: not read).
+ */
+export type MilestoneClockFact = { primaries: { number: number, title: string }[], rows: ClockRow[], prsClose: number[] | null, endedAt: number | null };
 
 /**
  * SIGNAL: THE PRIMARY MILESTONE HAS OPEN ROWS AND NOTHING CLAIMED OR IN A PULL REQUEST FOR `MILESTONE_CLOCK_MINUTES` (#4231). The outcome clock runs on open PRs and CLAIMED
@@ -1303,7 +1293,7 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
   if (fact.rows.length === 0) return { signal, status: "clear", detail: `milestone ${primary.number} has no open row` };
   if (fact.rows.some((r) => r.claimed)) return clear(signal);
   if (fact.rows.some((r) => r.createdAt === null)) return unknown(signal, `a row of milestone ${primary.number} carries no creation time, so when it opened is not known`);
-  const rowsOpened = Math.max(...fact.rows.map((r) => /** @type {number} */ (r.createdAt)));
+  const rowsOpened = Math.max(...fact.rows.map((r) => (r.createdAt as number)));
   const bound = MILESTONE_CLOCK_MINUTES * MS_PER_MINUTE;
   if (now - rowsOpened < bound) return clear(signal);
   if (fact.endedAt === null) return unknown(signal, `milestone ${primary.number} has been unclaimed since its newest row opened, but when the last claim or pull request ended was not read`);
@@ -1312,7 +1302,7 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
   if (fact.prsClose === null) return unknown(signal, `milestone ${primary.number} looks idle, but the open pull requests could not be read`);
   const owned = new Set(fact.rows.map((r) => r.number));
   if (fact.prsClose.some((n) => owned.has(n))) return clear(signal);
-  const byAge = [...fact.rows].sort((a, b) => /** @type {number} */ (a.createdAt) - /** @type {number} */ (b.createdAt) || a.number - b.number);
+  const byAge = [...fact.rows].sort((a, b) => (a.createdAt as number) - (b.createdAt as number) || a.number - b.number);
   const oldest = byAge.find((row) => row.epic !== true) ?? byAge[0]; // an epic is a container, not the next move: named only when every open row is one
   const tripAt = since + bound;
   return { signal, status: "tripped", firstTrippedAt: tripAt, discriminator: `${signal}/${primary.number}@${oldest.number}`,
@@ -1366,7 +1356,7 @@ export function orgHealthReadings(facts: {
 }
 
 /** What a prompt says about each signal, in the chairman's words where they have them. */
-const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
+const REMEDY = (Object.freeze({
   [SIGNALS.NO_MERGE]: "Nothing is landing while something could. Find which link is stuck (a green PR with no approval, an engineer pool that "
     + "cannot claim, a queue ruleset, a stopped tick), then FIX IT or FILE IT `" + READY_LABEL + "` WITH AN OWNER in this turn.",
   [SIGNALS.RED_PR]: "A red PR was ordered to its owner on its first red and nothing came of it. Read why (`gh pr checks <n>`), then fix it, "
@@ -1447,7 +1437,7 @@ const REMEDY = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
   [SIGNALS.WAIT_WITHOUT_REASON]: "Each item named holds a wait (`hold:*`, `" + ANSWER_PREFIX + "*`, the blocked label or `parked`) that says nothing about what it waits for, and nothing "
     + "has moved on it for hours (a `parked` row with no reason is named at once: the park with no reason is the defect). A wait nobody can check is how the 2026-10-02 freeze stood four hours after it ended. Ask its setter what ends it and write "
     + "`Waiting-for: <closed|merged|labelled <label>|unlabelled <label>> <#n>` on it, or remove the wait.",
-}));
+}) as Readonly<Record<string, string>>);
 
 /** @param {string} signal @returns {string[]} who is ordered: the signal's first reader if it has one, then `ceo`, who takes every signal */
 const readersOf = (signal: string): string[] => [...(FIRST_READERS[signal] ? [FIRST_READERS[signal]] : []), OFFERED_TO];
@@ -1467,7 +1457,7 @@ export function orgHealthOrders(readings: Reading[]): { session: string; cause: 
       session,
       cause: "org-health",
       subject: r.signal,
-      discriminator: /** @type {string} */ (r.discriminator),
+      discriminator: (r.discriminator as string),
       prompt: `ORG HEALTH: \`${r.signal}\` HAS TRIPPED. ${r.detail}.${when}\n${REMEDY[r.signal]}\n`
         + "This is asked because the org fixes what it is told about and does not look (the chairman, 2026-10-01): leave the place "
         + "better than you found it, and say on #928 what you found and did. It holds for two hours unchanged and stops when the "
@@ -1505,7 +1495,7 @@ export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { 
     for (const r of readings) if (r.status === "unknown") log(`org-health: ${r.signal} UNKNOWN -- ${r.detail}; it is not read as clear.\n`);
     return orgHealthOrders(readings);
   } catch (err) {
-    log(`org-health: could not run (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)}) -- no order this tick.\n`);
+    log(`org-health: could not run (${String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)}) -- no order this tick.\n`);
     return [];
   }
 }

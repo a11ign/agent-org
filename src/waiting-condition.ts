@@ -108,7 +108,7 @@ export function answerOwedBy(row: { labels?: ({ name?: string; } | string)[]; })
 export function answersOwedBy(row: { labels?: ({ name?: string; } | string)[]; }): string[] {
   const sessions = [];
   for (const label of row?.labels ?? []) {
-    const name = String(/** @type {any} */ (label)?.name ?? label);
+    const name = String((label as any)?.name ?? label);
     if (!name.startsWith(ANSWER_PREFIX)) continue;
     const session = name.slice(ANSWER_PREFIX.length).trim();
     if (session) sessions.push(session);
@@ -544,7 +544,7 @@ export function proseBlockers(issues: { number?: number; body?: string; blockedB
     // A ROW THAT CARRIES `answer:<session>` HAS ALREADY DONE WHAT THIS CAUSE ASKS FOR, and nagging a
     // session that complied is how a smell becomes noise -- the same finding #1780 recorded when
     // `unfiledEpics` re-asked `product-manager` about an epic whose blocker it had just recorded.
-    if (answerOwedBy(/** @type {any} */ (issue)) !== null) continue;
+    if (answerOwedBy((issue as any)) !== null) continue;
     const m = /(?:blocked (?:by|on)|waiting (?:on|for))[^.\n]{0,80}/i.exec(String(issue?.body ?? ""));
     if (m) found.push({ number: Number(issue.number), quote: m[0].trim() });
   }

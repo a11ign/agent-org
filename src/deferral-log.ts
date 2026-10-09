@@ -14,7 +14,7 @@ import { dirname } from "node:path";
 /** The log's file name, beside `wake-deferred`. */
 export const DEFERRAL_LOG_FILE = "wake-deferral-log";
 
-/** @typedef {{ key: string, startMs: number, endMs: number, how: "delivered" | "gone" }} EndedDeferral */
+export type EndedDeferral = { key: string, startMs: number, endMs: number, how: "delivered" | "gone" };
 
 /**
  * The deferrals that ended between two readings of `wake-deferred`. PURE. `deliveries` is a thunk because the ledger is read only when something ended, which the quiet tick's common case never does.
@@ -25,7 +25,7 @@ export function endedDeferrals({ previous, current, deliveries, now }: { previou
   const ended = [...previous].filter(([key]) => !current.has(key));
   if (ended.length === 0) return [];
   const delivered = deliveries();
-  return ended.map(([key, startMs]) => ({ key, startMs, endMs: now, how: delivered.some((delivery) => delivery.key === key && delivery.at >= startMs) ? /** @type {const} */ ("delivered") : /** @type {const} */ ("gone") }));
+  return ended.map(([key, startMs]) => ({ key, startMs, endMs: now, how: delivered.some((delivery) => delivery.key === key && delivery.at >= startMs) ? ("delivered" as const) : ("gone" as const) }));
 }
 
 /** @param {EndedDeferral[]} ended @returns {string} */

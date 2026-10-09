@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homeHostConfig } from "./host-config.ts";
 
-/** @typedef {{ login: string | null, source: string }} DeclaredAccount */
+export type DeclaredAccount = { login: string | null, source: string };
 
 /**
  * The `user:` `gh auth login` writes into a config directory's `hosts.yml` for `github.com`, or `null`
@@ -65,7 +65,6 @@ import { homeHostConfig } from "./host-config.ts";
  * @returns {string | null}
  */
 function loginInConfigDir(configDir: string, read: typeof readFileSync): string | null {
-  /** @type {string} */
   let text: string;
   try {
     text = String(read(join(configDir, "hosts.yml"), "utf8"));
@@ -121,13 +120,12 @@ export function declaredGhAccount({ env = process.env, host, read = readFileSync
     env?: Record<string, string | undefined>; host?: import("./host-config.ts").HostConfig;
     read?: typeof readFileSync;
 } = {}): DeclaredAccount {
-  /** @type {import("./host-config.ts").HostConfig} */
   let resolvedHost: import("./host-config.ts").HostConfig;
   try {
     resolvedHost = host ?? homeHostConfig();
   } catch (cause) {
     return { login: null,
-      source: `UNKNOWN: the host declaration could not be read (${/** @type {Error} */ (cause).message})` };
+      source: `UNKNOWN: the host declaration could not be read (${(cause as Error).message})` };
   }
 
   // STEP 1: an explicit `GH_CONFIG_DIR` wins outright, exactly as `[ -z "$GH_CONFIG_DIR" ]` reads it --

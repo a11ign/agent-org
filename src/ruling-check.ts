@@ -19,16 +19,11 @@ const PR_LABEL = "no-open-pr-label";
 const ROW_LABEL = "no-open-row-label";
 const EXCEPT = /\s+except\s+((?:#\d+(?:\s+|$))+)$/;
 
-/**
- * @typedef {{ kind: "ref", text: string, wait: import("./wait-condition.ts").ReadableWait }
- *   | { kind: "row-body", text: string, pattern: RegExp }
- *   | { kind: "pr-label", text: string, label: string }
- *   | { kind: "row-label", text: string, label: string, except: number[] }} Check
- * @typedef {{ id: string, on: number, by: string, at: number, checks: string[], grace: number, resolved: boolean, offeredAt: number | null }} Ruling
- * @typedef {{ rows: import("./wait-condition.ts").WaitItem[] | null, prs: import("./wait-condition.ts").WaitItem[] | null,
- *   facts: import("./wait-condition.ts").WaitFacts }} World what the check is read against: `null` is a list the tick could not read
- * @typedef {{ verdict: "pass" | "fail" | "unknown", failing: string[] }} Reading
- */
+export type Check = { kind: "ref", text: string, wait: import("./wait-condition.ts").ReadableWait } | { kind: "row-body", text: string, pattern: RegExp } | { kind: "pr-label", text: string, label: string } | { kind: "row-label", text: string, label: string, except: number[] };
+export type Ruling = { id: string, on: number, by: string, at: number, checks: string[], grace: number, resolved: boolean, offeredAt: number | null };
+/** what the check is read against: `null` is a list the tick could not read */
+export type World = { rows: import("./wait-condition.ts").WaitItem[] | null, prs: import("./wait-condition.ts").WaitItem[] | null, facts: import("./wait-condition.ts").WaitFacts };
+export type Reading = { verdict: "pass" | "fail" | "unknown", failing: string[] };
 
 /**
  * ONE PREDICATE, PARSED, or the reason it is not in the vocabulary. The reason names the vocabulary, because a refusal that does not is a dead end.
@@ -59,7 +54,7 @@ function rowBodyCheck(text: string, argument: string): { ok: true; check: Check;
   try {
     return { ok: true, check: { kind: "row-body", text, pattern: new RegExp(source, "m") } };
   } catch (cause) {
-    return { ok: false, why: `\`${ROW_BODY}\`'s regex does not compile: ${/** @type {Error} */ (cause).message}` };
+    return { ok: false, why: `\`${ROW_BODY}\`'s regex does not compile: ${(cause as Error).message}` };
   }
 }
 
@@ -103,7 +98,7 @@ function offends(check: Exclude<Check, { kind: "ref"; }>, item: import("./wait-c
 export function evaluateChecks(checks: string[], world: World): Reading {
   const readings = checks.map((text) => {
     const parsed = parseCheck(text);
-    return parsed.ok ? evaluateCheck(parsed.check, world) : { verdict: /** @type {const} */ ("unknown"), failing: [] };
+    return parsed.ok ? evaluateCheck(parsed.check, world) : { verdict: ("unknown" as const), failing: [] };
   });
   const failing = readings.flatMap((r) => r.failing);
   if (readings.some((r) => r.verdict === "fail")) return { verdict: "fail", failing };

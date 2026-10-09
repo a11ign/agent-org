@@ -57,7 +57,7 @@ export function stampWorktree(worktree: string, session: string, { write = write
  * @param {string} worktree @param {{ exists?: typeof existsSync, read?: typeof readFileSync }} [deps]
  * @returns {string | null}
  */
-export function worktreeOwner(worktree: string, { exists = existsSync, read = (/** @type {string} */ p: string) => readFileSync(p, "utf8") }: { exists?: typeof existsSync; read?: typeof readFileSync; } = {}): string | null {
+export function worktreeOwner(worktree: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8") }: { exists?: typeof existsSync; read?: typeof readFileSync; } = {}): string | null {
   const path = join(worktree, OWNER_FILE);
   if (!exists(path)) return null;
   const owner = String(read(path)).trim();

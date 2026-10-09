@@ -33,15 +33,14 @@ import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { leakRefusalReason } from "./lib/leak-patterns.mjs";
 import { REPO } from "./project-identity.ts";
 
-/** @type {(args: string[]) => string} */
 const defaultRun: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
 
 /** THE REAL ENDPOINT. `issues/{issue}/comments/{id}` is not one, and asking for it returns a 404
  * DOCUMENT -- which is the whole incident. Built here so no call site spells it again. */
-export const commentPath = (/** @type {number} */ id: number) => `repos/${REPO}/issues/comments/${id}`;
+export const commentPath = (id: number) => `repos/${REPO}/issues/comments/${id}`;
 
 /** A body's identity, for compare-and-swap. Short because it is read by people in a refusal message. */
-export const digest = (/** @type {string} */ text: string) =>
+export const digest = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex").slice(0, 12);
 
 /**
@@ -54,7 +53,6 @@ export const digest = (/** @type {string} */ text: string) =>
  * @returns {string}
  */
 export function bodyOfCommentResponse(raw: string, id: number): string {
-  /** @type {any} */
   let parsed: any;
   try {
     parsed = JSON.parse(raw);
@@ -79,16 +77,15 @@ export function bodyOfCommentResponse(raw: string, id: number): string {
  * @returns {string}
  */
 export function readComment(id: number, { run = defaultRun }: { run?: typeof defaultRun; } = {}): string {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run(["api", commentPath(id)]);
   } catch (cause) {
     // `gh` wrote the error DOCUMENT to stdout before exiting non-zero. Surface it -- it names the cause --
     // but never return it, which is precisely what the incident did.
-    const stdout = /** @type {any} */ (cause)?.stdout;
+    const stdout = (cause as any)?.stdout;
     const detail = typeof stdout === "string" && stdout.length > 0
-      ? stdout.slice(0, 300) : /** @type {Error} */ (cause).message;
+      ? stdout.slice(0, 300) : (cause as Error).message;
     throw new Error(`tracker-comment: could not read comment ${id} -- refusing to treat the failure as a `
       + `body. ${detail}`, { cause });
   }
@@ -161,7 +158,7 @@ function main() {
     process.exitCode = 2;
     return;
   }
-  const flagOf = (/** @type {string} */ n: string) =>
+  const flagOf = (n: string) =>
     argv.find((a) => a.startsWith(`${n}=`))?.slice(n.length + 1);
 
   if (mode === "read") {

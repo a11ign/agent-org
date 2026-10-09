@@ -104,7 +104,7 @@ export function commitLiveness({ sha, pulls, required, runs }: {
 /** Every pull request GitHub associates with a commit, or `null` if the lookup failed. */
 function lookupAssociatedPulls(sha) {
   return lookup(() => JSON.parse(gh(["api", `repos/${REPO}/commits/${sha}/pulls`]))
-    .map((/** @type {{number: number, head: {sha: string}}} */ p: { number: number; head: { sha: string; }; }) => ({ number: p.number, headRefOid: p.head.sha })));
+    .map((p: { number: number; head: { sha: string; }; }) => ({ number: p.number, headRefOid: p.head.sha })));
 }
 
 function facts(sha) {

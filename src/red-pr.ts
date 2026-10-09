@@ -28,7 +28,7 @@ function nameOf(check: any): string {
 
 /** `gh --json labels` gives `{ name }` objects; the gate's own fixtures give strings. @param {any} pr @returns {string[]} */
 function labelNames(pr: any): string[] {
-  return (pr?.labels ?? []).map((/** @type {any} */ l: any) => String(l?.name ?? l));
+  return (pr?.labels ?? []).map((l: any) => String(l?.name ?? l));
 }
 
 /**
@@ -39,8 +39,8 @@ function labelNames(pr: any): string[] {
  */
 export function redChecks(pr: { statusCheckRollup?: any[]; }): { name: string; failedAt: number; }[] {
   return newestPerName(pr?.statusCheckRollup ?? [])
-    .filter((/** @type {any} */ c: any) => RED_CONCLUSIONS.has(c.conclusion ?? ""))
-    .map((/** @type {any} */ c: any) => ({ name: nameOf(c), failedAt: Date.parse(c.completedAt ?? "") }));
+    .filter((c: any) => RED_CONCLUSIONS.has(c.conclusion ?? ""))
+    .map((c: any) => ({ name: nameOf(c), failedAt: Date.parse(c.completedAt ?? "") }));
 }
 
 /**
@@ -93,6 +93,6 @@ export function holdsOn(pr: { labels?: any[]; }): string[] {
  */
 export function withoutHold(pr: { labels?: any[]; statusCheckRollup?: any[]; }) {
   return { ...pr,
-    labels: (pr.labels ?? []).filter((/** @type {any} */ l: any) => !holdersOf([String(l?.name ?? l)]).length),
-    statusCheckRollup: newestPerName(pr.statusCheckRollup ?? []).filter((/** @type {any} */ c: any) => !HOLD_OWN_JOBS.includes(nameOf(c))) };
+    labels: (pr.labels ?? []).filter((l: any) => !holdersOf([String(l?.name ?? l)]).length),
+    statusCheckRollup: newestPerName(pr.statusCheckRollup ?? []).filter((c: any) => !HOLD_OWN_JOBS.includes(nameOf(c))) };
 }

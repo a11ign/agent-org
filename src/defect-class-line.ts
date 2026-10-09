@@ -28,10 +28,8 @@ const CLASS_SHAPE = /^([a-z0-9]+(?:-[a-z0-9]+)*)\s+—\s+(\S.*?)\s*;\s*guard:\s*
 export const CLASS_FORMAT = "Class: <id> — <where else it can occur>; guard: <the detector, rule or row # that stops it everywhere>\n"
   + "  Class: none — <reason no class applies>";
 
-/**
- * @typedef {{ id: string, where: string, guard: string } | { id: "none", reason: string }} ClassDeclaration
- * @typedef {{ repo: string | null, number: number }} RowReference
- */
+export type ClassDeclaration = { id: string, where: string, guard: string } | { id: "none", reason: string };
+export type RowReference = { repo: string | null, number: number };
 
 /**
  * Every `Class:` line in a body. `malformed` keeps the lines that NAME the field and miss its shape, so a refusal can quote them and a
@@ -40,9 +38,7 @@ export const CLASS_FORMAT = "Class: <id> — <where else it can occur>; guard: <
  * @returns {{ declared: ClassDeclaration[], malformed: string[] }}
  */
 export function classLinesIn(body: string | null | undefined): { declared: ClassDeclaration[]; malformed: string[]; } {
-  /** @type {ClassDeclaration[]} */
   const declared: ClassDeclaration[] = [];
-  /** @type {string[]} */
   const malformed: string[] = [];
   for (const line of String(body ?? "").split(/\r\n|\r|\n/)) {
     const named = CLASS_LINE.exec(line);
@@ -87,15 +83,13 @@ function refusalLine(reading: { declared: ClassDeclaration[]; malformed: string[
  * @returns {{ defects: RowReference[], unreadable: { row: RowReference, why: string }[] }}
  */
 function readDefects(rows: RowReference[], rowLabels: (row: RowReference) => string[]): { defects: RowReference[]; unreadable: { row: RowReference; why: string; }[]; } {
-  /** @type {RowReference[]} */
   const defects: RowReference[] = [];
-  /** @type {{ row: RowReference, why: string }[]} */
   const unreadable: { row: RowReference; why: string; }[] = [];
   for (const row of rows) {
     try {
       if (rowLabels(row).some((label) => sameLabel(label, DEFECT_LABEL))) defects.push(row);
     } catch (error) {
-      unreadable.push({ row, why: String(/** @type {Error} */ (error)?.message ?? error).split("\n")[0] });
+      unreadable.push({ row, why: String((error as Error)?.message ?? error).split("\n")[0] });
     }
   }
   return { defects, unreadable };

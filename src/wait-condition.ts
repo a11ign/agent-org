@@ -84,25 +84,20 @@ export const WAIT_FIELDS = Object.freeze([
   { kind: "blockedBy", selfClears: true },
 ]);
 
+export type ReadableWait = { state: "closed" | "merged" | "labelled" | "unlabelled", label: string | null, repo: string | null, number: number, key: string, text: string };
+export type ManualWait = { state: "manual", text: string };
+export type UnreadableWait = { state: "unreadable", text: string };
+export type NpmWait = { state: "published" | "latest-next", pkg: string, distTag: string, floor?: string, key: string, text: string };
+export type TagWait = { state: "tagged", tag: string, key: string, text: string };
 /**
- * @typedef {{ state: "closed" | "merged" | "labelled" | "unlabelled", label: string | null, repo: string | null, number: number,
- *             key: string, text: string }} ReadableWait
- * @typedef {{ state: "manual", text: string }} ManualWait
- * @typedef {{ state: "unreadable", text: string }} UnreadableWait
- * @typedef {{ state: "published" | "latest-next", pkg: string, distTag: string, floor?: string, key: string, text: string }} NpmWait
- * @typedef {{ state: "tagged", tag: string, key: string, text: string }} TagWait
- * @typedef {ReadableWait | NpmWait | TagWait | ManualWait | UnreadableWait} Wait
- * `key` is how a reference is looked up in the facts: `#n` for this repository, `owner/repo#n` otherwise; `npm:<pkg>` for a package's
- * dist-tags and `tag:<tag>` for a tag of this repository's remote.
- *
- * @typedef {{ state: "open" | "closed" | "merged", labels: string[], resolvedAt: number | null, changedAt: number | null }} RefFact
- * @typedef {{ items: Record<string, RefFact>, releases?: Record<string, Record<string, string> | boolean> }} WaitFacts
- * What the gate read about each referenced item. `releases` is what it read about each release fact: a package's dist-tags (`npm:<pkg>`) or whether
- * a tag exists (`tag:<tag>`); a key ABSENT from it was not read, and that is an unknown, never "not published" and never "no tag". A reference ABSENT from `items` is one that could not be read, and that is an
- * unknown, never "closed". `resolvedAt` is when the item closed or merged and `changedAt` its last update of any kind: a label
- * condition is dated by the second, because the label changed no LATER than that and so the grace it earns is never too short.
- * `null` when nothing dated it.
+ * `key` is how a reference is looked up in the facts: `#n` for this repository, `owner/repo#n` otherwise; `npm:<pkg>` for a package's dist-tags and `tag:<tag>` for a tag of this repository's remote.
  */
+export type Wait = ReadableWait | NpmWait | TagWait | ManualWait | UnreadableWait;
+export type RefFact = { state: "open" | "closed" | "merged", labels: string[], resolvedAt: number | null, changedAt: number | null };
+/**
+ * What the gate read about each referenced item. `releases` is what it read about each release fact: a package's dist-tags (`npm:<pkg>`) or whether a tag exists (`tag:<tag>`); a key ABSENT from it was not read, and that is an unknown, never "not published" and never "no tag". A reference ABSENT from `items` is one that could not be read, and that is an unknown, never "closed". `resolvedAt` is when the item closed or merged and `changedAt` its last update of any kind: a label condition is dated by the second, because the label changed no LATER than that and so the grace it earns is never too short. `null` when nothing dated it.
+ */
+export type WaitFacts = { items: Record<string, RefFact>, releases?: Record<string, Record<string, string> | boolean> };
 
 const WAITING_FOR_LINE = /^[ \t]*#{0,6}[ \t]*Waiting-for:[ \t]*(.*?)[ \t]*$/;
 const REFERENCE = /^(?:([\w.-]+\/[\w.-]+))?#(\d+)$/;
@@ -155,8 +150,8 @@ function waitOf(value: string): Wait {
   const labelled = LABEL_STATE.exec(value);
   const ref = referenceOf(plain ? plain[2] : labelled ? labelled[3] : "");
   if (!ref) return { state: "unreadable", text: value };
-  if (plain) return { state: /** @type {"closed" | "merged"} */ (plain[1]), label: null, text: value, ...ref };
-  return { state: /** @type {"labelled" | "unlabelled"} */ (labelled?.[1]), label: labelled?.[2] ?? null, text: value, ...ref };
+  if (plain) return { state: (plain[1] as "closed" | "merged"), label: null, text: value, ...ref };
+  return { state: (labelled?.[1] as "labelled" | "unlabelled"), label: labelled?.[2] ?? null, text: value, ...ref };
 }
 
 /**
@@ -216,7 +211,7 @@ function releaseHolds(wait: NpmWait | TagWait, facts: WaitFacts): boolean | null
   const fact = facts.releases !== undefined && Object.hasOwn(facts.releases, wait.key) ? facts.releases[wait.key] : null;
   if (wait.state === "tagged") return typeof fact === "boolean" ? fact : null;
   if (fact === null || typeof fact !== "object") return null;
-  const version = (/** @type {string} */ tag: string) => (typeof fact[tag] === "string" && fact[tag] !== "" ? fact[tag] : null);
+  const version = (tag: string) => (typeof fact[tag] === "string" && fact[tag] !== "" ? fact[tag] : null);
   if (wait.state === "published") {
     const onTag = version(wait.distTag);
     return wait.floor === undefined || onTag === null ? onTag !== null : versionAtLeast(onTag, wait.floor);
@@ -225,24 +220,22 @@ function releaseHolds(wait: NpmWait | TagWait, facts: WaitFacts): boolean | null
 }
 
 /**
- * @typedef {{ kind: "pr" | "row", number: number, repoKey?: string, repo?: string, labels: string[], body: string,
- *             comments: { body: string, createdAt: number }[], openBlockers: number, blockers?: number[], updatedAt: number | null }} WaitItem
- * One open row or pull request as the wait readers see it. `blockers` are the numbers of the OPEN rows its native `blockedBy` edge names (#4005). `updatedAt` is epoch ms and the QUIET SINCE of the item, `null` when it
- * was not read. `repoKey` and `repo` are set for an item of a repository other than the first (`owner/repo`, as the gate tagged it).
+ * One open row or pull request as the wait readers see it. `blockers` are the numbers of the OPEN rows its native `blockedBy` edge names (#4005). `updatedAt` is epoch ms and the QUIET SINCE of the item, `null` when it was not read. `repoKey` and `repo` are set for an item of a repository other than the first (`owner/repo`, as the gate tagged it).
  */
+export type WaitItem = { kind: "pr" | "row", number: number, repoKey?: string, repo?: string, labels: string[], body: string, comments: { body: string, createdAt: number }[], openBlockers: number, blockers?: number[], updatedAt: number | null };
 
 /** @param {any} label @returns {string} `gh --json labels` gives `{ name }` objects; fixtures give strings */
 const labelName = (label: any): string => String(label?.name ?? label);
 
 /** @param {any} raw @returns {{ body: string, createdAt: number }[]} */
-const commentsOf = (raw: any): { body: string; createdAt: number; }[] => (raw?.comments ?? []).map((/** @type {any} */ c: any) => ({ body: String(c?.body ?? ""), createdAt: Date.parse(c?.createdAt ?? "") }));
+const commentsOf = (raw: any): { body: string; createdAt: number; }[] => (raw?.comments ?? []).map((c: any) => ({ body: String(c?.body ?? ""), createdAt: Date.parse(c?.createdAt ?? "") }));
 
 /** @param {any} raw @returns {number} the blockers GitHub still lists as open: a closed one is a condition that has cleared */
-const openBlockersOf = (raw: any): number => (raw?.blockedBy?.nodes ?? []).filter((/** @type {any} */ n: any) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN").length;
+const openBlockersOf = (raw: any): number => (raw?.blockedBy?.nodes ?? []).filter((n: any) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN").length;
 
 /** @param {any} raw @returns {number[]} the numbers of the open blockers, for a reader that must know WHICH row an edge names */
 const openBlockerNumbersOf = (raw: any): number[] => (raw?.blockedBy?.nodes ?? [])
-  .filter((/** @type {any} */ n: any) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN" && Number.isInteger(Number(n?.number))).map((/** @type {any} */ n: any) => Number(n.number));
+  .filter((n: any) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN" && Number.isInteger(Number(n?.number))).map((n: any) => Number(n.number));
 
 /**
  * A raw `gh` row or pull request, as a `WaitItem`.
@@ -265,9 +258,8 @@ export function waitItemOf(raw: any, kind: "pr" | "row"): WaitItem {
  * @returns {{ kind: string, label: string | null }[]}
  */
 export function waitFieldsOf(item: WaitItem, now: number): { kind: string; label: string | null; }[] {
-  /** @type {{ kind: string, label: string | null }[]} */
   const found: { kind: string; label: string | null; }[] = [];
-  const future = (/** @type {string | null} */ iso: string | null) => iso !== null && Date.parse(iso.length === 10 ? `${iso}T00:00:00Z` : iso) > now;
+  const future = (iso: string | null) => iso !== null && Date.parse(iso.length === 10 ? `${iso}T00:00:00Z` : iso) > now;
   if (future(notBeforeDate(item.body))) found.push({ kind: "Not-before", label: null });
   if (future(fleetHoldUntil(item.body))) found.push({ kind: "Fleet-hold-until", label: null });
   for (const label of item.labels) {
@@ -322,10 +314,8 @@ export function fieldsToRemove(item: WaitItem, wait: Wait, now: number): string[
   return [`the \`Waiting-for: ${wait.text}\` line (or the hold marker comment carrying it)`, ...labels];
 }
 
-/**
- * @typedef {{ item: WaitItem, wait: ReadableWait | NpmWait | TagWait, setter: string, remove: string[], resolvedAt: number | null }} StaleWait
- * A wait that stands although its condition is true.
- */
+/** A wait that stands although its condition is true. */
+export type StaleWait = { item: WaitItem, wait: ReadableWait | NpmWait | TagWait, setter: string, remove: string[], resolvedAt: number | null };
 
 /**
  * EVERY WAIT WHOSE CONDITION IS NOW TRUE WHILE THE WAIT STANDS. "Stands" is a wait FIELD still on the item: a `Waiting-for:` line
@@ -358,9 +348,9 @@ function resolvedAtOf(item: WaitItem, wait: Wait, facts: WaitFacts): number | nu
 const needsRemoving = (kind: string): boolean => WAIT_FIELDS.find((w) => w.kind === kind)?.selfClears === false;
 
 /**
- * @typedef {{ item: WaitItem, holders: string[], stale: StaleWait[] }} HoldLift
  * A pull request whose holds the gate may release: the sessions whose `hold:<session>` labels they are.
  */
+export type HoldLift = { item: WaitItem, holders: string[], stale: StaleWait[] };
 
 /**
  * #3364: THE STALE WAITS THE GATE ENDS ITSELF, AND THE ONES IT LEAVES TO A SESSION. A stale wait is lifted by the gate only when removing the
@@ -373,10 +363,8 @@ const needsRemoving = (kind: string): boolean => WAIT_FIELDS.find((w) => w.kind 
  * @returns {{ lifts: HoldLift[], remaining: StaleWait[] }}
  */
 export function liftableHolds(stale: StaleWait[], now: number, declared: ReadonlySet<string> = new Set()): { lifts: HoldLift[]; remaining: StaleWait[]; } {
-  /** @type {Map<WaitItem, StaleWait[]>} */
   const byItem: Map<WaitItem, StaleWait[]> = new Map();
   for (const entry of stale) byItem.set(entry.item, [...(byItem.get(entry.item) ?? []), entry]);
-  /** @type {HoldLift[]} */
   const lifts: HoldLift[] = [];
   for (const [item, group] of byItem) {
     const holders = gateLiftHolders(item, group, { now, declared });
@@ -396,10 +384,9 @@ function gateLiftHolders(item: WaitItem, group: StaleWait[], { now, declared }: 
 }
 
 /**
- * @typedef {{ item: WaitItem, fields: string[], quietSince: number | null, atOnce: boolean }} BareWait
- * An item carrying a wait that does not clear itself and no readable condition. `atOnce` is a `parked` row and nothing else holding it: a park with no reason is
- * the defect itself, so it is named without waiting out `MANUAL_WAIT_HOURS` (#4230).
+ * An item carrying a wait that does not clear itself and no readable condition. `atOnce` is a `parked` row and nothing else holding it: a park with no reason is the defect itself, so it is named without waiting out `MANUAL_WAIT_HOURS` (#4230).
  */
+export type BareWait = { item: WaitItem, fields: string[], quietSince: number | null, atOnce: boolean };
 
 /**
  * THE WAIT FIELDS THAT NEED A REASON, `parked` only when it stands alone without one. A park is excused by any other thing that says why the row is held: another wait field

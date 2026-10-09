@@ -12,10 +12,8 @@
 // exported lists (`CAUSES`, `JUDGMENT_CAUSES`, `START_CAUSES`, `PROFILES`), and `GROUPS`'s own docblock
 // there is where that reasoning lives.
 
-/**
- * @typedef {{ kind: "claude"|"codex", model: string, effort: string, why: string }} CauseProfile
- * @typedef {Readonly<{ cause: string, group: string, profile: Readonly<CauseProfile> }>} CauseDeclaration
- */
+export type CauseProfile = { kind: "claude"|"codex", model: string, effort: string, why: string };
+export type CauseDeclaration = Readonly<{ cause: string, group: string, profile: Readonly<CauseProfile> }>;
 
 /** The four groups a cause's membership in `CAUSES`/`JUDGMENT_CAUSES`/`START_CAUSES` is computed from. */
 export const GROUPS = Object.freeze({
@@ -31,7 +29,7 @@ export const GROUPS = Object.freeze({
 
 // Widened to `Set<string>`: `group` arrives as untrusted `string` (JSON, a plugin), and `.has` on the
 // literal-typed inference TS would otherwise give `Object.values(GROUPS)` refuses a plain string.
-const KNOWN_GROUPS = /** @type {Set<string>} */ (new Set(Object.values(GROUPS)));
+const KNOWN_GROUPS = (new Set(Object.values(GROUPS)) as Set<string>);
 
 /** A refusal that names the cause it is about, so a caller (and a test) can tell which rule fired. */
 export class CauseDeclarationRefusal extends Error {
@@ -73,7 +71,6 @@ export function declareCause(cause: string, group: string, profile: CauseProfile
  * @returns {Readonly<CauseDeclaration[]>}
  */
 export function declaredCauses(...lists: readonly (readonly CauseDeclaration[])[]): Readonly<CauseDeclaration[]> {
-  /** @type {Map<string, CauseDeclaration>} */
   const byName: Map<string, CauseDeclaration> = new Map();
   for (const list of lists) {
     for (const decl of list) {

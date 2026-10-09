@@ -9,10 +9,9 @@
 import { existsSync, readFileSync } from "node:fs";
 
 /**
- * @typedef {{time: string, account: string, resource: string, cost: number | null, status: number,
- *            command: string, workspace: string, caller: string, sessionId?: string}} LedgerEntry `sessionId` is the 9th field, the id of the session that made
- *            the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did
+ * `sessionId` is the 9th field, the id of the session that made the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did
  */
+export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string};
 
 const FIELDS = 8;
 const NO_SESSION = "-";
@@ -77,7 +76,6 @@ function points(e: LedgerEntry) {
  * @param {{account?: string, resource?: string, limit?: number}} [where]
  */
 export function topCallers(entries: LedgerEntry[], { account, resource, limit = DEFAULT_TOP }: { account?: string; resource?: string; limit?: number; } = {}) {
-  /** @type {Map<string, {caller: string, command: string, calls: number, points: number, measured: number, failed: number}>} */
   const byKey: Map<string, { caller: string; command: string; calls: number; points: number; measured: number; failed: number; }> = new Map();
   for (const e of entries) {
     if (account !== undefined && e.account !== account) continue;
@@ -117,11 +115,10 @@ export function renderReport(entries: LedgerEntry[], where: { account?: string; 
  */
 export const rollupPathOf = (ledgerPath: string) => `${ledgerPath}.hourly`;
 
-/** @typedef {{hour: string, account: string, resource: string, calls: number, read: number, floor: number}} HourRow */
+export type HourRow = {hour: string, account: string, resource: string, calls: number, read: number, floor: number};
 
 /** @param {string} text @returns {HourRow[]} a line that is not six fields with numbers is skipped, as a half ledger line is */
 export function parseRollup(text: string): HourRow[] {
-  /** @type {HourRow[]} */
   const rows: HourRow[] = [];
   for (const line of text.split("\n")) {
     const f = line.split("\t");
@@ -144,7 +141,6 @@ const hourRowOf = (e: LedgerEntry): HourRow => ({ hour: e.time.slice(0, HOUR_CHA
  * @returns {{hour: string, calls: number, read: number, floor: number}[]} oldest hour first
  */
 export function perHour(entries: LedgerEntry[], rollup: HourRow[], { account, resource }: { account?: string; resource?: string; } = {}): { hour: string; calls: number; read: number; floor: number; }[] {
-  /** @type {Map<string, {hour: string, calls: number, read: number, floor: number}>} */
   const byHour: Map<string, { hour: string; calls: number; read: number; floor: number; }> = new Map();
   for (const r of [...rollup, ...entries.map(hourRowOf)]) {
     if (account !== undefined && r.account !== account) continue;
@@ -200,7 +196,6 @@ export function spenderPhrase(ledgerPath: string, account: string, now: number =
 
 /** @param {string[]} argv */
 function cliOptions(argv: string[]) {
-  /** @type {{file?: string, account?: string, resource?: string, limit?: number, perHour?: boolean}} */
   const out: { file?: string; account?: string; resource?: string; limit?: number; perHour?: boolean; } = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--account") out.account = argv[++i];

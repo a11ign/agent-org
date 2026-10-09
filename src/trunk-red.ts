@@ -60,8 +60,8 @@ const BUILD_TEST_JOB = "trunkBuildTest / run";
 
 /**
  * WHAT TO READ TO KNOW WHETHER A REPOSITORY'S `main` IS RED (#3079). `recheckJob` is `null` where no workflow re-runs the suite at the parent.
- * @typedef {{ repo: string, repoKey: string, workflow: string, testJob: string, recheckJob: string | null, pushOnly: boolean }} TrunkSource
  */
+export type TrunkSource = { repo: string, repoKey: string, workflow: string, testJob: string, recheckJob: string | null, pushOnly: boolean };
 
 /** The primary project's: `trunk.yml` in `REPO`, read exactly as it always was. */
 export const PRIMARY_TRUNK = Object.freeze({ repo: REPO, repoKey: "", workflow: TRUNK_WORKFLOW, testJob: BUILD_TEST_JOB,
@@ -79,7 +79,7 @@ export function trunkOfCodeRepository(repoKey: string, repo: string): TrunkSourc
 /** The most parent failures the recheck records: an annotation is bounded, and a parent this broken is named by its first few. */
 export const MAX_RECORDED_PARENT_FAILURES = 30;
 
-const defaultRun = (/** @type {string[]} */ args: string[]) =>
+const defaultRun = (args: string[]) =>
   execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
 
 /**
@@ -104,7 +104,7 @@ export function newestVerdictRun(payload: {
   const runs = (payload?.workflow_runs ?? [])
     .filter((r) => r.status === "completed" && (r.conclusion === "success" || r.conclusion === "failure"))
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  return runs.length === 0 ? null : /** @type {any} */ (runs[0]);
+  return runs.length === 0 ? null : (runs[0] as any);
 }
 
 /**
@@ -120,7 +120,7 @@ export function recheckFromAnnotations(annotations: { message?: string; }[] | nu
     const m = /^RECHECK_RESULT=(pass|fail|unknown)$/m.exec(String(message ?? ""));
     if (!m) continue;
     const named = String(message).split("\n").filter((l) => /^not ok \d+/.test(l)).map(testIdentity);
-    return { result: /** @type {"pass" | "fail" | "unknown"} */ (m[1]), parentFailingTests: named.length > 0 ? named : null };
+    return { result: (m[1] as "pass" | "fail" | "unknown"), parentFailingTests: named.length > 0 ? named : null };
   }
   return { result: "unknown", parentFailingTests: null };
 }
@@ -202,7 +202,7 @@ export function readTrunkRed(run: (args: string[]) => string = defaultRun, sourc
   if (newest === null || newest.conclusion !== "failure") return null;
 
   const jobs = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]))?.jobs ?? [];
-  const failedJobs = jobs.filter((/** @type {any} */ j: any) => j.conclusion === "failure").map((/** @type {any} */ j: any) => String(j.name));
+  const failedJobs = jobs.filter((j: any) => j.conclusion === "failure").map((j: any) => String(j.name));
   const recheck = recheckOf(run, source, jobs);
   const failingTests = failedJobs.includes(source.testJob) ? readFailingTests(run, source, newest.id) : null;
   const facts = { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
@@ -247,8 +247,8 @@ function readFailingTests(run: (args: string[]) => string, source: TrunkSource, 
 function readOriginPr(run: (args: string[]) => string, repo: string, sha: string): { number: number; title: string; session: string | null; } | null {
   const pulls = tryParse(() => run(["api", `repos/${repo}/commits/${sha}/pulls`]));
   if (!Array.isArray(pulls) || pulls.length === 0) return null;
-  const labels = (pulls[0].labels ?? []).map((/** @type {{ name: string }} */ l: { name: string; }) => String(l.name));
-  const session = labels.find((/** @type {string} */ n: string) => n.startsWith(SESSION_PREFIX));
+  const labels = (pulls[0].labels ?? []).map((l: { name: string; }) => String(l.name));
+  const session = labels.find((n: string) => n.startsWith(SESSION_PREFIX));
   return { number: pulls[0].number, title: String(pulls[0].title ?? ""),
     session: session ? session.slice(SESSION_PREFIX.length) : null };
 }

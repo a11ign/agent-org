@@ -107,8 +107,8 @@ export function scheduledRunDays(workflowFile: string): string[] | null {
   try {
     return JSON.parse(gh(["run", "list", "--repo", REPO, "--workflow", workflowFile,
       "--json", "event,createdAt", "--limit", "100"]))
-      .filter((/** @type {{event: string}} */ r: { event: string; }) => r.event === "schedule")
-      .map((/** @type {{createdAt: string}} */ r: { createdAt: string; }) => editionDay(new Date(r.createdAt)));
+      .filter((r: { event: string; }) => r.event === "schedule")
+      .map((r: { createdAt: string; }) => editionDay(new Date(r.createdAt)));
   } catch {
     return null;
   }
@@ -287,7 +287,6 @@ export function hoursSincePreviousRun(run: (args: string[]) => string, now: Date
   // the 42 hours: a wrong answer is worse here than no answer, because `watchdogSilenceLine` explains it.
   const workflow = hostWorkflowFile(env);
   if (!workflow) return null;
-  /** @type {{ createdAt?: string }[]} */
   let runs: { createdAt?: string; }[];
   try {
     runs = JSON.parse(run(["run", "list", "--repo", REPO, "--workflow", workflow,
@@ -427,7 +426,7 @@ const summaryExists = (day: string) => existsSync(path.join(ROOT, "docs/board/su
 function commentBodies(issue: string) {
   try {
     return JSON.parse(gh(["issue", "view", issue, "--repo", REPO, "--json", "comments"]))
-      .comments.map((/** @type {{body: string}} */ c: { body: string; }) => c.body);
+      .comments.map((c: { body: string; }) => c.body);
   } catch {
     // CANNOT ASK IS NOT ALIVE, and this is the whole reason the third exit code exists. A swallowed API
     // failure returning "no comments found" would report the editions as STOPPED on a network blip -- and

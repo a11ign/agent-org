@@ -35,17 +35,12 @@ export const WATCHED_MOUNTS = Object.freeze(["/", "/tmp"]);
  */
 export const MIN_FREE_FRACTION = 0.10;
 
-/** @typedef {"bytes" | "inodes"} Resource */
+export type Resource = "bytes" | "inodes";
 
-/**
- * What one filesystem reported. `inodesTotal` is `null` for a filesystem with NO inode limit.
- * @typedef {{ mounts: string[], bytesFree: number, bytesTotal: number,
- *   inodesFree: number, inodesTotal: number | null }} FilesystemReading
- */
+/** What one filesystem reported. `inodesTotal` is `null` for a filesystem with NO inode limit. */
+export type FilesystemReading = { mounts: string[], bytesFree: number, bytesTotal: number, inodesFree: number, inodesTotal: number | null };
 
-/**
- * @typedef {{ mounts: string[], resource: Resource, free: number, total: number, fraction: number }} LowFinding
- */
+export type LowFinding = { mounts: string[], resource: Resource, free: number, total: number, fraction: number };
 
 /**
  * Read every watched mount ONCE PER FILESYSTEM. Two mounts with the same `st_dev` are one filesystem, and
@@ -65,9 +60,7 @@ export function readFilesystems({ mounts = WATCHED_MOUNTS, statfs = statfsSync,
             files: number; ffree: number;
         }; deviceOf?: (path: string) => number;
     } = {}): { readings: FilesystemReading[]; unreadable: { mount: string; reason: string; }[]; } {
-  /** @type {Map<number, FilesystemReading>} */
   const byDevice: Map<number, FilesystemReading> = new Map();
-  /** @type {{ mount: string, reason: string }[]} */
   const unreadable: { mount: string; reason: string; }[] = [];
   for (const mount of mounts) {
     try {
@@ -81,7 +74,7 @@ export function readFilesystems({ mounts = WATCHED_MOUNTS, statfs = statfsSync,
       byDevice.set(device, { mounts: [mount], bytesFree: s.bavail * s.bsize, bytesTotal: s.blocks * s.bsize,
         inodesFree: s.ffree, inodesTotal: s.files === 0 ? null : s.files });
     } catch (err) {
-      unreadable.push({ mount, reason: String(/** @type {any} */ (err)?.message ?? err).split("\n")[0] });
+      unreadable.push({ mount, reason: String((err as any)?.message ?? err).split("\n")[0] });
     }
   }
   return { readings: [...byDevice.values()], unreadable };
@@ -101,11 +94,10 @@ export function readFilesystems({ mounts = WATCHED_MOUNTS, statfs = statfsSync,
  * @returns {LowFinding[]}
  */
 export function lowResources(reading: FilesystemReading, minFraction: number = MIN_FREE_FRACTION): LowFinding[] {
-  /** @type {LowFinding[]} */
   const found: LowFinding[] = [];
-  for (const [resource, free, total] of /** @type {[Resource, number, number | null][]} */ ([
+  for (const [resource, free, total] of ([
     ["bytes", reading.bytesFree, reading.bytesTotal],
-    ["inodes", reading.inodesFree, reading.inodesTotal]])) {
+    ["inodes", reading.inodesFree, reading.inodesTotal]] as [Resource, number, number | null][])) {
     if (total === null || !Number.isFinite(free) || !Number.isFinite(total) || total <= 0) continue;
     const fraction = free / total;
     if (fraction < minFraction) found.push({ mounts: reading.mounts, resource, free, total, fraction });

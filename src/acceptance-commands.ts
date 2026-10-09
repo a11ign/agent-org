@@ -81,16 +81,17 @@ import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
 import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./project-vocabulary.ts";
 
-/** @typedef {{ verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string }} Classification */
-/** @typedef {{ kind: "missing" } | { kind: "none", reason: string } | { kind: "commands", commands: string[] } | { kind: "duplicate", occurrences: { line: number, text: string }[] }} Section */
-/** @typedef {{ repo: string | null, number: number }} ClosesReference one row a body names: `repo` is `owner/name`, or null for a bare `#N` (the PR's own repository's) */
-/** @typedef {{ kind: "missing" } | { kind: "malformed", detail: string } | { kind: "none", reason: string } | { kind: "closes", numbers: number[], references?: ClosesReference[] }} ClosesDeclaration */
+export type Classification = { verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string };
+export type Section = { kind: "missing" } | { kind: "none", reason: string } | { kind: "commands", commands: string[] } | { kind: "duplicate", occurrences: { line: number, text: string }[] };
+/** one row a body names: `repo` is `owner/name`, or null for a bare `#N` (the PR's own repository's) */
+export type ClosesReference = { repo: string | null, number: number };
+export type ClosesDeclaration = { kind: "missing" } | { kind: "malformed", detail: string } | { kind: "none", reason: string } | { kind: "closes", numbers: number[], references?: ClosesReference[] };
 // #621: `corpus` is OPTIONAL, deliberately -- every existing capabilities literal in this file's own test
 // suite (`NO_HISTORY`, `WITH_HISTORY`) predates it and names only three keys. `unmetRequirements`'s own
 // rule already reads an absent key as unmet, never as satisfied by default, so making the field optional
 // costs nothing: an object that never mentions `corpus` still answers "unmet" exactly as if it had named
 // `corpus: false`.
-/** @typedef {{ history: boolean, token: boolean, fleet: boolean, corpus?: boolean }} JobCapabilities */
+export type JobCapabilities = { history: boolean, token: boolean, fleet: boolean, corpus?: boolean };
 
 // `pnpm run fleet:*` and its siblings -- the resource ban every worker/agent role file below `ceo` and
 // `orchestrator` carries, verbatim, elsewhere in this repo. A GitHub-hosted runner is not one of the
@@ -374,13 +375,13 @@ const CHECK_SIGNALS_GATE = /\bcheck-signals(?:\.mjs\b|(?![-.\w/]))/;
 
 // `runs/` is gitignored -- a GitHub runner never has a corpus, so these read nothing and report cleanly.
 // CLAUDE.md: "A GATE THAT READS runs/ IS NOT YOURS TO REPORT."
-const CORPUS_PATTERNS = /** @type {[RegExp, string][]} */ ([
+const CORPUS_PATTERNS = ([
   [/\brules:gate\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\brules:coverage\b/, "reads runs/, which is gitignored and absent in CI"],
   [CHECK_SIGNALS_GATE, "reads runs/, which is gitignored and absent in CI"],
   [/\bcorpus:starvation\b/, "reads runs/, which is gitignored and absent in CI"],
   [/\bscorer:shortcuts\b/, "reads runs/, which is gitignored and absent in CI"],
-]);
+] as [RegExp, string][]);
 
 // #516: `pnpm run mutate` (`packages/guards/src/mutation-check.mjs`) AND `Refutation:` HAVE OPPOSITE EXIT CONVENTIONS.
 // `mutate`'s own contract (see that file's header) is exit 0 = the guard BITES -- the GOOD outcome.
@@ -444,7 +445,7 @@ const EXECUTE_BITS = 0o111;
  * @returns {boolean}
  */
 function commandExists(token: string): boolean {
-  const isExecutableFile = (/** @type {string} */ path: string) => {
+  const isExecutableFile = (path: string) => {
     try {
       return (statSync(path).mode & EXECUTE_BITS) !== 0;
     } catch {
@@ -467,7 +468,7 @@ function commandExists(token: string): boolean {
 // mechanism from `ts`/`trunkGate` would need its own, differently-true `token` value, not this one.
 // `history` is the one axis a PR itself controls, via `History: full` in the body (#497).
 const FULL_CAPABILITIES =
-  /** @type {JobCapabilities} */ ({ history: true, token: true, fleet: true, corpus: true });
+  ({ history: true, token: true, fleet: true, corpus: true } as JobCapabilities);
 
 // A bare line, deliberately -- `History: full` names nothing else the way `Acceptance:`/`Closes:` name a
 // command or an issue, so this needs no section parser, just a marker this PR's checkout should deepen
@@ -956,7 +957,6 @@ function reachableScope(codeOnly: string, fileName: string, imported: Set<string
  * @returns {Set<string>}
  */
 function referencedNames(ts: typeof import("typescript"), source: import("typescript").SourceFile, kept: Set<string> | null): Set<string> {
-  /** @type {Set<string>} */
   const names: Set<string> = new Set();
   for (const { identifiers, isGuard, functionName, isFunction } of topLevelStatements(ts, source)) {
     if (kept !== null && isGuard) continue;
@@ -966,12 +966,12 @@ function referencedNames(ts: typeof import("typescript"), source: import("typesc
   return names;
 }
 
+export type StatementFacts = { identifiers: string[], isGuard: boolean, functionName: string | null, isFunction: boolean };
 /**
  * (#3549) What `referencedNames` needs of each top-level statement, read off the tree ONCE per parse: `reachableScope` asks it again for every step of
  * its fixpoint, for every set of names an importer reaches, and re-walking the whole tree each time was the largest cost left in the scan. Keyed on
  * the parsed source itself, so a changed file (a new parse) can never read an old answer. Import and export declarations are not statements here:
  * they bind or list a name and run nothing.
- * @typedef {{ identifiers: string[], isGuard: boolean, functionName: string | null, isFunction: boolean }} StatementFacts
  * @type {WeakMap<import("typescript").SourceFile, StatementFacts[]>}
  */
 const statementFacts: WeakMap<import("typescript").SourceFile, StatementFacts[]> = new WeakMap();
@@ -980,11 +980,9 @@ const statementFacts: WeakMap<import("typescript").SourceFile, StatementFacts[]>
 function topLevelStatements(ts: typeof import("typescript"), source: import("typescript").SourceFile) {
   const held = statementFacts.get(source);
   if (held !== undefined) return held;
-  /** @type {StatementFacts[]} */
   const facts: StatementFacts[] = [];
   ts.forEachChild(source, (statement) => {
     if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) return;
-    /** @type {string[]} */
     const identifiers: string[] = [];
     /** @param {import("typescript").Node} node */
     const collect = (node: import("typescript").Node) => {
@@ -1022,11 +1020,10 @@ function isEntryGuard(ts: typeof import("typescript"), node: import("typescript"
  * @returns {string}
  */
 function blankUnkept(ts: typeof import("typescript"), source: import("typescript").SourceFile, codeOnly: string, kept: Set<string>): string {
-  /** @type {[number, number][]} */
   const bodies: [number, number][] = [];
   /** @param {import("typescript").Node} node */
   const visit = (node: import("typescript").Node) => {
-    const body = /** @type {{ body?: import("typescript").Node }} */ (node).body;
+    const body = (node as { body?: import("typescript").Node }).body;
     // A DECLARATION IS BLANKED WHOLE, SIGNATURE INCLUDED. `export function runsRoot() {` is top-level text
     // and matches a call-shaped pattern exactly as a real call does -- measured: blanking bodies alone left
     // the constant-only import charged at `dataset-paths.mjs:93`, the definition line. Nothing in a function
@@ -1075,7 +1072,7 @@ const DECLARED_SPAWNS = [...CHARGED_SPAWNS, "npmCliInvocation"];
 export const SPAWNS_GH = new RegExp(`(?:${CHARGED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])gh\\1`);
 
 const CLOSURE_REQUIREMENT_PATTERNS =
-  /** @type {[RegExp, "token" | "corpus" | "history"][]} */ ([
+  ([
     // A `gh` invocation (`SPAWNS_GH` above, the one copy gh-token-jobs.test.ts imports) or a direct read
     // of the token itself -- either means the file's operation needs a real GH_TOKEN to behave honestly.
     [SPAWNS_GH, "token"],
@@ -1089,7 +1086,7 @@ const CLOSURE_REQUIREMENT_PATTERNS =
     // pre-push-stale-base.test.ts) -- a file asking it needs a real answer, which only a full-history
     // checkout can honestly give it.
     [new RegExp(fingerprint("--is-shallow-repo", "sitory") + "\\b"), "history"],
-  ]);
+  ] as [RegExp, "token" | "corpus" | "history"][]);
 
 // #827: THE MIRROR OF `// writes:`, ON THE TEST FILE RATHER THAN THE FILE THAT CALLS THE RISKY FUNCTION --
 // `board-markdown.test.ts` and `board-achievement-retirement.test.ts` each import only `document` from
@@ -1164,8 +1161,7 @@ function lineNumberOf(text: string, index: number): number {
   return text.slice(0, index).split("\n").length;
 }
 
-/** @typedef {{ requirement: "token" | "corpus" | "history", file: string, line: number, chain: string[],
- *              wrongDeclaration?: boolean, malformedDeclaration?: boolean }} ClosureHit */
+export type ClosureHit = { requirement: "token" | "corpus" | "history", file: string, line: number, chain: string[], wrongDeclaration?: boolean, malformedDeclaration?: boolean };
 
 /**
  * #1636: the names of `bound` that reachable code actually uses -- or every bound name when there was no parser to say (`referenced === null`),
@@ -1177,6 +1173,10 @@ function keepReferenced(bound: string[], referenced: Set<string> | null): Set<st
 }
 
 /**
+ * `visited` is every file each entry's walk read: an entry's answer can only change if one of those did, which is what lets a caller reuse it.
+ */
+export type ClosureMemo = { sources: Map<string, { text: string, codeOnly: string }>, parsed: Map<string, import("typescript").SourceFile>, scopes: Map<string, { scope: string, referenced: Set<string> | null, matches: Map<number, RegExpExecArray | null> }>, edges: Map<string, { target: string, names: Set<string> }[]>, visited: Map<string, Set<string>> };
+/**
  * (#3549) WHAT ONE SCAN OF MANY ENTRIES SHARES. `deriveClosureRequirements` over a whole directory of tests walks the SAME modules once per entry, and
  * each visit read the file, stripped its comments, parsed it and blanked its bodies again: measured at 182 CPU-s for one pass over 190 files, nearly
  * all of it re-doing work on text it had already seen. A memo holds those results per FILE, for as long as the caller says the tree is not changing.
@@ -1184,10 +1184,6 @@ function keepReferenced(bound: string[], referenced: Set<string> | null): Set<st
  * IT IS PASSED, NEVER GLOBAL, and that is the whole safety argument: `acceptance-commands.test.ts` rewrites a fixture at the same path and asks
  * again, so a module-level cache would answer for the old text. A caller that omits it gets a fresh memo per call, which is what it always had.
  * `scopes` and `matches` are keyed by what decides them (the file, the names reached in it, whether it is the entry), not by the entry that asked.
- * @typedef {{ sources: Map<string, { text: string, codeOnly: string }>, parsed: Map<string, import("typescript").SourceFile>,
- *   scopes: Map<string, { scope: string, referenced: Set<string> | null, matches: Map<number, RegExpExecArray | null> }>,
- *   edges: Map<string, { target: string, names: Set<string> }[]>, visited: Map<string, Set<string>> }} ClosureMemo
- * `visited` is every file each entry's walk read: an entry's answer can only change if one of those did, which is what lets a caller reuse it.
  * @returns {ClosureMemo}
  */
 export function createClosureMemo(): ClosureMemo {
@@ -1291,7 +1287,6 @@ function isFile(path: string): boolean {
  * @returns {ClosureHit[]}
  */
 export function deriveClosureRequirements(entry: string, memo: ClosureMemo = createClosureMemo()): ClosureHit[] {
-  /** @type {Map<string, ClosureHit>} */
   const found: Map<string, ClosureHit> = new Map();
   // A VERIFIED WRITE-ONLY `corpus` HIT MARKS THE WHOLE CLOSURE EXEMPT, not just this one file's own match.
   // `runsRoot()` is not only called by a writer -- it is also DEFINED, in dataset-paths.mjs, and that
@@ -1470,7 +1465,7 @@ function noTokenRemedy(hit: { requirement: string; chain: string[]; wrongDeclara
  */
 export function unmetClosureRequirements(entry: string, capabilities: JobCapabilities): { requirement: string; message: string; }[] {
   return deriveClosureRequirements(entry)
-    .filter((hit) => /** @type {Record<string, boolean>} */ (capabilities)[hit.requirement] !== true)
+    .filter((hit) => (capabilities as Record<string, boolean>)[hit.requirement] !== true)
     .map((hit) => ({ requirement: hit.requirement, message: closureRequirementMessage(hit) }));
 }
 
@@ -1483,7 +1478,7 @@ export function unmetClosureRequirements(entry: string, capabilities: JobCapabil
  * @returns {string[]}
  */
 export function unmetRequirements(requirements: string[], capabilities: JobCapabilities): string[] {
-  return requirements.filter((req) => /** @type {Record<string, boolean>} */ (capabilities)[req] !== true);
+  return requirements.filter((req) => (capabilities as Record<string, boolean>)[req] !== true);
 }
 
 /**
@@ -1664,7 +1659,7 @@ function commandPathTokens(command: string): string[] {
   const named = withoutTrailingComment.split(/\s+/).filter(Boolean)
     .map((raw) => acceptancePathToken(raw))
     .filter((token) => token !== null);
-  return [...new Set(/** @type {string[]} */ (named))];
+  return [...new Set((named as string[]))];
 }
 
 /**
@@ -1704,7 +1699,6 @@ export function unresolvedAcceptancePaths(body: string, deps: { exists?: (path: 
   const { exists = existsSync, trackedDirs, regionEntries } = deps;
   const section = extractAcceptanceSection(body);
   if (section.kind !== "commands") return [];
-  /** @type {{ path: string, command: string }[]} */
   const absent: { path: string; command: string; }[] = [];
   for (const command of section.commands) {
     for (const path of acceptancePathTokens(command, trackedDirs ? { trackedDirs } : {})) {
@@ -1724,7 +1718,6 @@ export function unresolvedAcceptancePaths(body: string, deps: { exists?: (path: 
 
 // `git ls-files` once per process, like `trackedTopLevelDirs` in `region-paths.mjs` -- and, like that one,
 // read only when a check needs it. Kept here rather than exported from there: #2192's Region is this file.
-/** @type {string[] | null} */
 let trackedFilesCache: string[] | null = null;
 function trackedFiles() {
   trackedFilesCache ??= execFileSync("git", ["ls-files"], { encoding: "utf8", env: sandboxGitEnv() })
@@ -1905,12 +1898,11 @@ export function labFetchArtifacts(playbook: string): Record<string, string> {
       + "changed. Refusing to report an empty mapping, which would silently pass every row this check "
       + "exists to refuse.");
   }
-  const headerIndent = /** @type {RegExpMatchArray} */ (lines[start].match(/^\s*/))[0].length;
-  /** @type {Record<string, string>} */
+  const headerIndent = (lines[start].match(/^\s*/) as RegExpMatchArray)[0].length;
   const map: Record<string, string> = {};
   for (const line of lines.slice(start + 1)) {
     if (/^\s*(#.*)?$/.test(line)) continue;
-    const indent = /** @type {RegExpMatchArray} */ (line.match(/^\s*/))[0].length;
+    const indent = (line.match(/^\s*/) as RegExpMatchArray)[0].length;
     if (indent <= headerIndent) break;
     const entry = /^\s*([A-Za-z0-9_-]+):\s*(.+?)\s*$/.exec(line);
     if (entry) map[entry[1]] = entry[2].replace(/^(['"])(.*)\1$/, "$2");
@@ -1927,7 +1919,7 @@ function labPathPattern(labPath: string): RegExp {
   // character no path contains, and every such character is one a regex literal may not carry (`no-
   // control-regex`). Splitting leaves only real literal text to escape.
   const escaped = labPath.split(/\{\{[^}]*\}\}|\*/)
-    .map((/** @type {string} */ literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .map((literal: string) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("[A-Za-z0-9._+-]+");
   return new RegExp(`^${escaped}$`);
 }
@@ -1953,7 +1945,6 @@ function labFetchLocalPath(artifact: string, out: string, labPath: string): stri
  * @param {string[]} commands @returns {{ artifact: string, out: string, command: string }[]}
  */
 function labFetchesIn(commands: string[]): { artifact: string; out: string; command: string; }[] {
-  /** @type {{ artifact: string, out: string, command: string }[]} */
   const fetches: { artifact: string; out: string; command: string; }[] = [];
   for (const command of commands) {
     if (!/\blab:fetch\b/.test(command)) continue;
@@ -2001,7 +1992,6 @@ export function labFetchPathHits(body: string, deps: { playbook?: string; } = {}
   const fetches = labFetchesIn(section.commands);
   if (fetches.length === 0) return [];
   const artifacts = labFetchArtifacts(deps.playbook ?? readFileSync(LAB_FETCH_PLAYBOOK, "utf8"));
-  /** @type {{ artifact: string, labPath: string, localPath: string, command: string }[]} */
   const hits: { artifact: string; labPath: string; localPath: string; command: string; }[] = [];
   for (const { artifact, out } of fetches) {
     const labPath = artifacts[artifact];
@@ -2074,7 +2064,6 @@ export function handRunAcceptanceReason(body: string, tool: string): string | nu
     + "Otherwise name a command this job can run.";
 }
 
-/** @type {Map<string, string[]>} */
 const suiteFilesCache: Map<string, string[]> = new Map();
 
 /**
@@ -2220,8 +2209,8 @@ export function agentOrgCommand(tokens: string[]): string | null {
 
 /**
  * A command name -> the program under the tool's `src/` that runs it: `src/commands.mjs`'s `COMMANDS` (#3068).
- * @typedef {Record<string, string>} CommandTable
  */
+export type CommandTable = Record<string, string>;
 
 // The tool's own `src/`, where the table's programs live: this module sits in it, so the directory is known from
 // where the classifier is running rather than read from any declaration.
@@ -2240,8 +2229,8 @@ function commandTable(): CommandTable | null {
   try {
     loaded = createRequire(import.meta.url)("./commands.mjs");
   } catch (cause) {
-    const absent = /** @type {{ code?: string, message?: string }} */ (cause).code === "MODULE_NOT_FOUND"
-      && String(/** @type {Error} */ (cause).message).includes("commands.mjs");
+    const absent = (cause as { code?: string, message?: string }).code === "MODULE_NOT_FOUND"
+      && String((cause as Error).message).includes("commands.mjs");
     if (absent) return null;
     throw cause;
   }
@@ -2376,14 +2365,13 @@ function tsxTestFileArgs(command: string): string[] {
  * @returns {{ requirement: string, files: string[] }[]}
  */
 export function unmetCommandRequirements(command: string, capabilities: JobCapabilities): { requirement: string; files: string[]; }[] {
-  /** @type {Map<string, string[]>} */
   const byRequirement: Map<string, string[]> = new Map();
   for (const fileArg of testFilesRunBy(command)) {
     if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) continue;
     const text = readFileSync(fileArg, "utf8");
     for (const req of unmetRequirements(testFileRequirements(text), capabilities)) {
       if (!byRequirement.has(req)) byRequirement.set(req, []);
-      /** @type {string[]} */ (byRequirement.get(req)).push(fileArg);
+      (byRequirement.get(req) as string[]).push(fileArg);
     }
   }
   return [...byRequirement.entries()].map(([requirement, files]) => ({ requirement, files }));
@@ -2404,7 +2392,6 @@ export function unmetCommandRequirements(command: string, capabilities: JobCapab
  * @returns {{ requirement: string, message: string }[]}
  */
 export function unmetCommandClosureRequirements(command: string, capabilities: JobCapabilities, commands: CommandTable | null = commandTable()): { requirement: string; message: string; }[] {
-  /** @type {{ requirement: string, message: string }[]} */
   const out: { requirement: string; message: string; }[] = [];
   for (const fileArg of [...testFilesRunBy(command), ...operationalScriptEntries(command, commands)]) {
     if (/[*?[{]/.test(fileArg) || !isFile(fileArg)) continue;
@@ -2563,14 +2550,14 @@ export function classifyCommand(command: string,
  */
 function unparseableConstruct(command: string): string | null {
   const withoutTrailingComment = command.replace(/(?:^|\s)#.*$/, "");
-  for (const [pattern, name] of /** @type {[RegExp, string][]} */ ([
+  for (const [pattern, name] of ([
     [/\|\|/, "a `||`"],
     [/&&/, "an `&&`"],
     [/\|/, "a pipe"],
     [/\$\(|`/, "a subshell"],
     [/[<>]/, "a redirection"],
     [/;/, "a `;`"],
-  ])) if (pattern.test(withoutTrailingComment)) return name;
+  ] as [RegExp, string][])) if (pattern.test(withoutTrailingComment)) return name;
   return null;
 }
 
@@ -2899,7 +2886,6 @@ const WORD_ENDING_METACHARACTERS = new Set(["|", "&", ";", "(", ")", "<", ">", "
  * @returns {boolean}
  */
 export function endsInsideQuote(text: string): boolean {
-  /** @type {string | null} */
   let quote: string | null = null;
   // The start of the text is the start of a word; everything else is decided as the scan passes it.
   let atWordStart = true;
@@ -3425,7 +3411,7 @@ function runForReal(command: string): number {
     execSync(command, { stdio: "inherit", shell: "/bin/bash" });
     return 0;
   } catch (error) {
-    const status = /** @type {{ status?: number }} */ (error).status;
+    const status = (error as { status?: number }).status;
     return typeof status === "number" ? status : 1;
   }
 }
@@ -3574,7 +3560,7 @@ export function testFilesAmong(paths: string[]): string[] {
   return paths.filter((path) => TEST_FILE_PATTERN.test(path));
 }
 
-/** @typedef {{ ok: true, files: string[] } | { ok: false, why: string }} DiffReading */
+export type DiffReading = { ok: true, files: string[] } | { ok: false, why: string };
 
 /**
  * THE VERDICT for `Mutation:`. Four outcomes, and a MISSING record is no longer one that fails (a11ign/a11ign#3282, decided
@@ -3652,9 +3638,7 @@ function looksLikeCommand(line: string | undefined): boolean {
  */
 function measuredSections(body: string): string[][] {
   const lines = body.replace(/<!--[\s\S]*?-->/g, "").split(/\r\n|\r|\n/);
-  /** @type {string[][]} */
   const sections: string[][] = [];
-  /** @type {string[] | null} */
   let current: string[] | null = null;
   let inFence = false;
   for (const line of lines) {
@@ -3711,7 +3695,7 @@ export function measuredSectionReport(body: string | null | undefined): { ok: bo
  * @returns {DiffReading}
  */
 export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): DiffReading {
-  const git = (/** @type {string[]} */ ...args: string[]) =>
+  const git = (...args: string[]) =>
     execFileSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() });
   try {
     const parentCount = () => git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(/\s+/).length - 1;
@@ -3723,7 +3707,7 @@ export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): Diff
     // lists only where it WENT. `--no-renames` reads a move as delete + add, and the add is what ACMR keeps.
     return { ok: true, files: changedFiles(["--diff-filter=ACMR", "HEAD^1", "HEAD"], { repoRoot: cwd }) };
   } catch (error) {
-    return { ok: false, why: `git said: ${/** @type {Error} */ (error).message.split("\n")[0]}` };
+    return { ok: false, why: `git said: ${(error as Error).message.split("\n")[0]}` };
   }
 }
 
@@ -3772,11 +3756,10 @@ export function wholeSuiteNote(commands: string[]): string[] {
 }
 
 /**
- * @typedef {{ body: string, run: (command: string) => number, diff: DiffReading,
- *   rowLabels?: (row: { repo: string | null, number: number }) => string[] }} BodyReportInput `rowLabels` is the caller's reader of a row's labels
- *   (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.mjs` prints as NOT CHECKED
- * @typedef {{ name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } }} BodyReport
+ * `rowLabels` is the caller's reader of a row's labels (#4123); it throws when the read is refused and is absent where the caller cannot ask, which `defect-class-line.mjs` prints as NOT CHECKED
  */
+export type BodyReportInput = { body: string, run: (command: string) => number, diff: DiffReading, rowLabels?: (row: { repo: string | null, number: number }) => string[] };
+export type BodyReport = { name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } };
 
 /**
  * #3209: THE REPORTS CI'S ACCEPTANCE JOB RUNS OVER A PR BODY, AS ONE LIST. `main` below and `pr-open.mjs`'s

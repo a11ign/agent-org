@@ -20,7 +20,6 @@ import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { branchFacts, renderInventory, rowNumberFromBranch, sessionFromLabels, reconcile }
   from "./branch-inventory.ts";
 
-/** @type {(cmd: string, args: string[]) => string} */
 const MAX_BUFFER: (cmd: string, args: string[]) => string = 64 * 1024 * 1024; // a paginated listing is megabytes; the 1 MB default is an ENOBUFS
 const defaultRun = (cmd, args) =>
   execFileSync(cmd, args,

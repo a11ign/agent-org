@@ -42,17 +42,19 @@ export const ROW_LIST_LIMIT = 500;
 const READ_TIMEOUT_MS = 90 * 1000;
 const MAX_BUFFER = 64 * 1024 * 1024;
 
+/** an open issue as `gh issue list --json number,title,body,labels,blockedBy` returns it */
+export type StockRow = { number: number, title?: string, body?: string, labels?: ({ name?: string } | string)[], blockedBy?: { nodes?: { number?: number, state?: string }[] } | null };
+/** one raw timeline entry; only `labeled` ones are read */
+export type TimelineEvent = { event?: string, created_at?: string, label?: { name?: string } | null };
+/** THE SEAM: each member THROWS for a refused read */
+export type TrackerReader = { listRows: () => StockRow[], timeline: (number: number) => TimelineEvent[] };
 /**
- * @typedef {{ number: number, title?: string, body?: string, labels?: ({ name?: string } | string)[],
- *   blockedBy?: { nodes?: { number?: number, state?: string }[] } | null }} StockRow an open issue as `gh issue list --json number,title,body,labels,blockedBy` returns it
- * @typedef {{ event?: string, created_at?: string, label?: { name?: string } | null }} TimelineEvent one raw timeline entry; only `labeled` ones are read
- * @typedef {{ listRows: () => StockRow[], timeline: (number: number) => TimelineEvent[] }} TrackerReader THE SEAM: each member THROWS for a refused read
- * @typedef {{ number: number, title: string, state: string, since: number, unreadableWait: boolean }} UnwaitedRow `since` is when the stock label was applied;
- *   `unreadableWait` is whether a `Waiting-for:` line outside the grammar is what the row is parked on
- * @typedef {{ status: "read", count: number, rows: UnwaitedRow[] } | { status: "unknown", reads: string[] }} UnwaitedStock
+ * `since` is when the stock label was applied; `unreadableWait` is whether a `Waiting-for:` line outside the grammar is what the row is parked on
  */
+export type UnwaitedRow = { number: number, title: string, state: string, since: number, unreadableWait: boolean };
+export type UnwaitedStock = { status: "read", count: number, rows: UnwaitedRow[] } | { status: "unknown", reads: string[] };
 
-const labelNames = (/** @type {StockRow} */ row: StockRow) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
+const labelNames = (row: StockRow) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
 
 /**
  * Whether anything declares a wait that can end, or the row is a standing one. `waitingOn` is the reader for an OPEN `blockedBy` edge, a FUTURE `Not-before:` (a past one is none) and an
@@ -85,7 +87,7 @@ function stockLabelledAt(row: StockRow, events: TimelineEvent[]): number | null 
 }
 
 /** @param {unknown} err @returns {string} the first line, so a refusal is named and a stack is not printed */
-const firstLine = (err: unknown): string => String(/** @type {any} */ (err)?.message ?? err).split("\n")[0];
+const firstLine = (err: unknown): string => String((err as any)?.message ?? err).split("\n")[0];
 
 /**
  * Every unwaited stock row at `now`, or `unknown` naming each read that was refused. The cheap waits are asked first, so a timeline is read only for a
@@ -94,7 +96,6 @@ const firstLine = (err: unknown): string => String(/** @type {any} */ (err)?.mes
  * @returns {UnwaitedStock}
  */
 export function unwaitedStockRows({ reader, now }: { reader: TrackerReader; now: number; }): UnwaitedStock {
-  /** @type {StockRow[]} */
   let listed: StockRow[];
   try {
     listed = reader.listRows();
@@ -114,9 +115,7 @@ export function unwaitedStockRows({ reader, now }: { reader: TrackerReader; now:
  * @returns {UnwaitedStock}
  */
 function ageCandidates({ candidates, reader, now }: { candidates: StockRow[]; reader: TrackerReader; now: number; }): UnwaitedStock {
-  /** @type {UnwaitedRow[]} */
   const rows: UnwaitedRow[] = [];
-  /** @type {string[]} */
   const refused: string[] = [];
   for (const row of candidates) {
     const aged = ageOf(row, reader);

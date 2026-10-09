@@ -19,17 +19,16 @@ export const IDLE_REASONS = Object.freeze({
 });
 
 /** The state labels that are themselves the reason, each to the reason it names. */
-const REASON_OF_STATE = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
+const REASON_OF_STATE = (Object.freeze({
   backlog: IDLE_REASONS.BACKLOG, parked: IDLE_REASONS.PARKED, epic: IDLE_REASONS.EPIC, blocked: IDLE_REASONS.BLOCKED_LABEL,
-}));
+}) as Readonly<Record<string, string>>);
 
-/**
- * @typedef {{ number: number, state?: string, body?: string, labels?: (string | { name?: string })[], blockedBy?: { nodes?: { number?: number, state?: string }[] } }} OpenRow
- * @typedef {{ number: number, reason: string, kind: string }} IdleFinding `kind` is the closed key and `reason` its printed form, with the thing it names (`BLOCKED_BY #3920`)
- * @typedef {{ kind: "idle", findings: IdleFinding[], dateHeld: number } | { kind: "unread", why: string } | null} IdleRows
- */
+export type OpenRow = { number: number, state?: string, body?: string, labels?: (string | { name?: string })[], blockedBy?: { nodes?: { number?: number, state?: string }[] } };
+/** `kind` is the closed key and `reason` its printed form, with the thing it names (`BLOCKED_BY #3920`) */
+export type IdleFinding = { number: number, reason: string, kind: string };
+export type IdleRows = { kind: "idle", findings: IdleFinding[], dateHeld: number } | { kind: "unread", why: string } | null;
 
-const names = (/** @type {OpenRow} */ row: OpenRow) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
+const names = (row: OpenRow) => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
 
 /**
  * IS THIS OPEN ROW HELD BY AN ENGINEER? A `session:<engineer>` label, or a claim (`in-progress`) that names NO session at all: an unnamed holder is not

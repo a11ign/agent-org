@@ -47,14 +47,12 @@ export function parseRolesDir(parsed: unknown): string {
  */
 export function homeRolesDir(root: string = HOME_CHECKOUT): string {
   const path = `${root}/${SOURCE}`;
-  /** @type {string} */
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (cause) {
     throw new ProjectDeclarationRefusal("(file)", "the declaration cannot be read", path, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -98,6 +96,6 @@ export function persistentRoles(path: string | URL = roleBriefPath("sessions.jso
  * @returns {{ name: string, brief?: string }[]}
  */
 export function persistentEntries(path: string | URL = roleBriefPath("sessions.json").absolute): { name: string; brief?: string; }[] {
-  const { live } = /** @type {{ live: { name: string, persistent?: boolean, brief?: string }[] }} */ (JSON.parse(readFileSync(path, "utf8")));
+  const { live } = (JSON.parse(readFileSync(path, "utf8")) as { live: { name: string, persistent?: boolean, brief?: string }[] });
   return live.filter((s) => s.persistent === true).map(({ name, brief }) => ({ name, brief }));
 }

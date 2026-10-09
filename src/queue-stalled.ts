@@ -183,7 +183,7 @@ function runGitForReal(args: string[]) {
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
     return { status: 0, stdout };
   } catch (cause) {
-    const err = /** @type {{ status?: number, stdout?: string }} */ (cause);
+    const err = (cause as { status?: number, stdout?: string });
     return { status: err.status ?? 1, stdout: err.stdout ?? "" };
   }
 }
@@ -191,12 +191,8 @@ function runGitForReal(args: string[]) {
 /** @param {string[]} args */
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
-/**
- * @typedef {{ name?: string, conclusion?: string | null, completedAt?: string | null,
- *   startedAt?: string | null, detailsUrl?: string | null }} CheckRun
- * @typedef {{ number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null,
- *   statusCheckRollup?: CheckRun[], isDraft?: boolean }} QueuedPr
- */
+export type CheckRun = { name?: string, conclusion?: string | null, completedAt?: string | null, startedAt?: string | null, detailsUrl?: string | null };
+export type QueuedPr = { number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null, statusCheckRollup?: CheckRun[], isDraft?: boolean };
 
 /**
  * #1623: AN ARMED PR HELD BY A SUPERSEDING GATE THAT DID NOT SUCCEED, while an older run's gate at its head did.

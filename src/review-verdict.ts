@@ -150,13 +150,13 @@ function verdictHereAt(comment, head) {
  * @returns {{ body: string, id?: number | string }[]}
  */
 export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | null; }): { body: string; id?: number | string; }[] {
-  const timed = (/** @type {any} */ item: any, /** @type {string} */ field: string) =>
+  const timed = (item: any, field: string) =>
     ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id });
   const items = [
-    ...(pr?.comments ?? []).map((/** @type {any} */ c: any) => timed(c, "createdAt")),
-    ...(pr?.reviews ?? []).map((/** @type {any} */ r: any) => timed(r, "submittedAt")),
+    ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt")),
+    ...(pr?.reviews ?? []).map((r: any) => timed(r, "submittedAt")),
   ];
-  const key = (/** @type {{ at: number }} */ item: { at: number; }) => (Number.isFinite(item.at) ? item.at : -Infinity);
+  const key = (item: { at: number; }) => (Number.isFinite(item.at) ? item.at : -Infinity);
   return items
     .sort((a, b) => (key(a) === key(b) ? 0 : key(a) < key(b) ? -1 : 1))
     .map(({ body, id }) => ({ body, id }));
@@ -198,7 +198,7 @@ export function verdictAtHead({ comments, head, prAuthor = null }: { comments: {
     byIsAuthor: boolean | null; id: number | string | null; examined: number;
 } {
   const examined = comments?.length ?? 0;
-  const none = { verdict: /** @type {null} */ (null), by: null, byIsAuthor: /** @type {null} */ (null),
+  const none = { verdict: (null as null), by: null, byIsAuthor: (null as null),
     id: null, examined };
   if (!head || examined === 0) return none;
   // NEWEST WINS. `reviewer.md` settles a re-review by the LAST verdict at the head ("a PR you reviewed
@@ -268,7 +268,7 @@ export function refusalLifted({ refused, failingThen, failingNow }: { refused: b
 export function refusalLiftedAt(pr: any, oid: string | null | undefined): boolean {
   const checks = pr?.failingChecks ?? {};
   // BY PREFIX, as heads compare everywhere here: a verdict's `at <head8>` and a review's full oid are one commit, and the read was made at one of them.
-  const at = (/** @type {string | null | undefined} */ sha: string | null | undefined) => {
+  const at = (sha: string | null | undefined) => {
     const key = sha ? Object.keys(checks).find((k) => headMatches(k, sha)) : undefined;
     return key === undefined ? null : checks[key];
   };
@@ -287,7 +287,7 @@ export function refusalLiftedAt(pr: any, oid: string | null | undefined): boolea
 export function verdictAmong(pr: any, heads: string[]) {
   // #3030: comments AND review bodies, since the door posts the verdict as a review alone.
   const bearers = verdictBearers(pr);
-  const at = (/** @type {string} */ head: string) => verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
+  const at = (head: string) => verdictAtHead({ comments: bearers, head, prAuthor: pr.author?.login ?? null });
   let found = at(heads[0]);
   for (const head of heads.slice(1)) {
     if (found.verdict !== null) break;
@@ -305,7 +305,6 @@ export function verdictAmong(pr: any, heads: string[]) {
  */
 export function refusalHeads(pr: any): string[] {
   const bearers = verdictBearers(pr);
-  /** @type {string[]} */
   const found: string[] = [];
   for (const head of equivalentHeads(pr).slice(1)) {
     // ONE READ PER COMMIT: a review's full oid and a verdict's `at <head8>` are the same commit, and `evidenceHeads` keeps both spellings.
@@ -367,7 +366,7 @@ export const MAX_EVIDENCE_HEADS = 6;
  */
 export function evidenceHeads(pr: any): string[] {
   const head = String(pr?.headRefOid ?? "");
-  const reviewed = (pr?.reviews ?? []).map((/** @type {any} */ r: any) => String(r?.commit?.oid ?? ""));
+  const reviewed = (pr?.reviews ?? []).map((r: any) => String(r?.commit?.oid ?? ""));
   const stated = verdictBearers(pr).map((b) => reviewVerdict(b.body).head ?? "");
   const older = [...new Set([...reviewed, ...stated])].filter((oid) => oid !== "" && !headMatches(oid, head));
   return older.slice(-MAX_EVIDENCE_HEADS);

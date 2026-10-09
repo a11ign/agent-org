@@ -15,21 +15,9 @@
 // readers could silently disagree about what "exhausted" looks like.
 
 /**
- * How a budget line reads. A remaining count with no window is not a measurement -- 4000 left with fifty
- * minutes to go and 4000 left with two are different states -- so the reset is always beside it.
- *
- * `resource` and `resetAt` joined the shape for #2003. The gate's refusal has to name WHICH pool refused
- * and WHEN it comes back in absolute terms: a reader arriving at the journal an hour later cannot use
- * "in 52m", because the minutes were counted when the line was written, not when it is read.
- *
- * `resource` and `resetAt` are OPTIONAL, and that is not laxity. Every pool this module READS carries
- * both; a pool built by hand to exercise the rendering does not, and `renderBudget` has never needed
- * either. Optional says exactly that -- a reading always supplies them, a fixture need not -- and keeps
- * `queue-table.test.ts`'s eleven budget-line pins about the words they were written to protect.
- *
- * @typedef {{remaining: number, limit: number, used: number, resetInMinutes: number | null,
- *            resource?: string | null, resetAt?: string | null}} Pool
+ * How a budget line reads. A remaining count with no window is not a measurement -- 4000 left with fifty minutes to go and 4000 left with two are different states -- so the reset is always beside it. `resource` and `resetAt` joined the shape for #2003. The gate's refusal has to name WHICH pool refused and WHEN it comes back in absolute terms: a reader arriving at the journal an hour later cannot use "in 52m", because the minutes were counted when the line was written, not when it is read. `resource` and `resetAt` are OPTIONAL, and that is not laxity. Every pool this module READS carries both; a pool built by hand to exercise the rendering does not, and `renderBudget` has never needed either. Optional says exactly that -- a reading always supplies them, a fixture need not -- and keeps `queue-table.test.ts`'s eleven budget-line pins about the words they were written to protect.
  */
+export type Pool = {remaining: number, limit: number, used: number, resetInMinutes: number | null, resource?: string | null, resetAt?: string | null};
 
 /**
  * The GRAPHQL pool's own probe, and the cheapest one there is: one point, and the body names the account.
@@ -87,7 +75,7 @@ export function rawResponse(args: readonly string[], run: (args: string[]) => st
   try {
     return run([...args]) || null;
   } catch (error) {
-    return /** @type {{stdout?: string}} */ (error).stdout || null;
+    return (error as {stdout?: string}).stdout || null;
   }
 }
 

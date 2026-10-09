@@ -76,7 +76,7 @@ function runForReal(command: string): number {
     execSync(command, { stdio: "inherit", shell: "/bin/bash", env: acceptanceEnv(process.env) });
     return 0;
   } catch (error) {
-    const status = /** @type {{ status?: number }} */ (error).status;
+    const status = (error as { status?: number }).status;
     return typeof status === "number" ? status : 1;
   }
 }
@@ -159,9 +159,7 @@ const OUTSIDE_REGION_SHAPE = /^`?([^\s`]+)`?\s+—\s+(\S.*)$/;
  * @returns {{ declared: { path: string, reason: string }[], malformed: string[] }}
  */
 export function outsideRegionDeclarations(body: string): { declared: { path: string; reason: string; }[]; malformed: string[]; } {
-  /** @type {{ path: string, reason: string }[]} */
   const declared: { path: string; reason: string; }[] = [];
-  /** @type {string[]} */
   const malformed: string[] = [];
   for (const line of body.split(/\r\n|\r|\n/)) {
     const named = OUTSIDE_REGION_LINE.exec(line);
@@ -213,7 +211,7 @@ function regionRefusalText({ rows, outside, region, base, malformed }: { rows: s
  * @returns {string}
  */
 function regionPassLine({ rows, changed, standing, base }: { rows: string; changed: string[]; standing: string[]; base: string; }): string {
-  const count = (/** @type {string} */ kind: string) => standing.filter((s) => s === kind).length;
+  const count = (kind: string) => standing.filter((s) => s === kind).length;
   return `REGION: ${changed.length} changed path(s) against ${rows}'s Region (${base}...HEAD): ${count("inside")} inside, `
     + `${count("exempt")} exempt, ${count("declared")} cleared by an Outside-Region line.`;
 }
@@ -233,7 +231,6 @@ function regionPassLine({ rows, changed, standing, base }: { rows: string; chang
  * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: string }}
  */
 function readRegions(references: import("./acceptance-commands.ts").ClosesReference[], { rowBody, rootFiles, tree }: { rowBody: (number: number, repo?: string) => string; rootFiles?: Set<string>; tree: { key: string; repo: string | undefined; }; }): { kind: "region"; region: string[]; } | { kind: "unread"; why: string; } | { kind: "no-section"; row: string; } {
-  /** @type {Set<string>} */
   const union: Set<string> = new Set();
   for (const reference of references) {
     const name = referenceName(reference);
@@ -334,7 +331,6 @@ export function checkRegion(body: string, rest: string[], { git = defaultGit, ro
       + "Retry once GitHub answers. Nothing was sent to GitHub (#2417).", note: null };
   }
   const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
-  /** @type {string[]} */
   let changed: string[];
   try {
     changed = git(["diff", "--name-only", "--no-renames", "-z", `${base}...HEAD`]).split("\0").filter(Boolean);
@@ -549,7 +545,6 @@ export function sendToGitHub(mode: string, rest: string[],
   // gitdir file, the CLI run from outside the checkout -- replaced this message with a raw throw that
   // carries git's error and LOSES gh's cause entirely. Worse than the 24-line dump it replaced, which
   // at least contained the answer.
-  /** @type {(args: string[], fallback: string) => string} */
   const fact: (args: string[], fallback: string) => string = (args, fallback): string => { try { return git(args) || fallback; } catch { return fallback; } };
   const head = () => fact(["rev-parse", "--short", "HEAD"], "(unknown)");
   const head8 = () => fact(["rev-parse", "--short=8", "HEAD"], "(unknown)");
@@ -742,7 +737,7 @@ function defaultLabelExists(name: string): boolean {
     execFileSync("gh", ["api", `repos/{owner}/{repo}/labels/${encodeURIComponent(name)}`, "--silent"], { stdio: "pipe" });
     return true;
   } catch (error) {
-    if (/HTTP 404|Not Found/i.test(`${/** @type {{stderr?: unknown}} */ (error).stderr ?? ""}`)) return false;
+    if (/HTTP 404|Not Found/i.test(`${(error as {stderr?: unknown}).stderr ?? ""}`)) return false;
     throw error;
   }
 }
@@ -897,7 +892,6 @@ export function headTreeRefusal(mode: string, rest: string[], { git = defaultGit
   if (mode !== "create") return null;
   const head = flagAfter(rest, "--head");
   if (head === null) return null;
-  /** @type {(args: string[]) => string | null} */
   const read: (args: string[]) => string | null = (args): string | null => { try { return git(args) || null; } catch { return null; } };
   const nothingRan = "Nothing ran and nothing was sent (#1344).";
   const branch = read(["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -1008,7 +1002,6 @@ export function editTreeRefusal(mode: string, rest: string[], { git = defaultGit
     return `pr-open: REFUSED -- could not read PR #${selector}'s head from ${repo}, so this tree cannot be checked `
       + `against the head its Acceptance would test. ${nothingRan}`;
   }
-  /** @type {(args: string[]) => string | null} */
   const read: (args: string[]) => string | null = (args): string | null => { try { return git(args) || null; } catch { return null; } };
   const branch = read(["rev-parse", "--abbrev-ref", "HEAD"]);
   const local = read(["rev-parse", "HEAD"]);

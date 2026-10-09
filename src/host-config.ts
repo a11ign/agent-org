@@ -34,16 +34,14 @@ export const LONG_RUNNING_TEMPLATES = Object.freeze(["chairman-listen.service.in
 /** A template is this suffix on the shipped name; the rendered name is `<prefix><name>` without it. */
 export const TEMPLATE_SUFFIX = ".in";
 
+export type LeadsWorkspace = { id: string, role: string };
+export type GhDirectories = { workers: string, leads: string, leadsHeader: string[], leadsWorkspaces: LeadsWorkspace[] };
+export type HostProject = { id: string, checkout: string };
 /**
- * @typedef {{ id: string, role: string }} LeadsWorkspace
- * @typedef {{ workers: string, leads: string, leadsHeader: string[], leadsWorkspaces: LeadsWorkspace[] }} GhDirectories
- * @typedef {{ id: string, checkout: string }} HostProject
- * @typedef {{ schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories,
- *   tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>> }} HostConfig
- * `tool`, `stateDir` and `clones` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed
- * form, and a11ign's `host.json` is exactly that host until #2623 cuts over.
- * @typedef {{ prefix: string, boardReportWorkflow: string, own: string[] }} UnitsDeclaration
+ * `tool`, `stateDir` and `clones` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed form, and a11ign's `host.json` is exactly that host until #2623 cuts over.
  */
+export type HostConfig = { schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories, tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>> };
+export type UnitsDeclaration = { prefix: string, boardReportWorkflow: string, own: string[] };
 
 /** A refusal that names the field, so a test can tell WHICH rule fired. */
 export class HostConfigRefusal extends Error {
@@ -162,7 +160,6 @@ function readClones(host: Record<string, unknown>, source: string): Readonly<Rec
  * @returns {Readonly<HostConfig>}
  */
 export function parseHostConfig(text: string, source: string = HOST_DECLARATION_PATH): Readonly<HostConfig> {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -208,7 +205,7 @@ function readToolVersion(host: Record<string, unknown>, tool: string | undefined
   if (!isToolVersion(host.toolVersion)) {
     throw new HostConfigRefusal("toolVersion", `it must be "${LATEST}" or a release tag like "v0.7.8", not ${JSON.stringify(host.toolVersion)}`, source);
   }
-  return /** @type {string} */ (host.toolVersion);
+  return (host.toolVersion as string);
 }
 
 /** A path a unit line can carry as one argument: nothing systemd splits on, expands (`%`, `$`) or unquotes. */
@@ -246,7 +243,6 @@ export function hostConfigPath({ env = process.env, root = HOME_CHECKOUT }: { en
  * @returns {Readonly<HostConfig>}
  */
 export function readHostConfig(path: string = hostConfigPath(), read: (path: string, encoding: "utf8") => string = readFileSync): Readonly<HostConfig> {
-  /** @type {string} */
   let text: string;
   try {
     text = read(path, "utf8");
@@ -256,7 +252,6 @@ export function readHostConfig(path: string = hostConfigPath(), read: (path: str
   return parseHostConfig(text, path);
 }
 
-/** @type {Readonly<HostConfig> | undefined} */
 let homeHost: Readonly<HostConfig> | undefined;
 
 /** The host this tool is running on, read once. @returns {Readonly<HostConfig>} */
@@ -273,7 +268,6 @@ export function homeHostConfig(): Readonly<HostConfig> {
  * @returns {Readonly<UnitsDeclaration>}
  */
 export function parseUnitsDeclaration(text: string, source: string = PROJECT_DECLARATION_PATH): Readonly<UnitsDeclaration> {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -302,7 +296,6 @@ export function parseUnitsDeclaration(text: string, source: string = PROJECT_DEC
  */
 export function readUnitsDeclaration(root: string = HOME_CHECKOUT, read: (path: string, encoding: "utf8") => string = readFileSync): Readonly<UnitsDeclaration> {
   const path = join(root, PROJECT_DECLARATION_PATH);
-  /** @type {string} */
   let text: string;
   try {
     text = read(path, "utf8");
@@ -327,7 +320,6 @@ const NOT_A_COMMAND = /[\n\r%$;\\"'`|&<>]/;
  * @param {string} text @param {string} [source] @returns {string | null}
  */
 export function parseBeforeTick(text: string, source: string = PROJECT_DECLARATION_PATH): string | null {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -349,7 +341,6 @@ export function parseBeforeTick(text: string, source: string = PROJECT_DECLARATI
  */
 export function readBeforeTick(checkout: string, read: (path: string, encoding: "utf8") => string = readFileSync): string | null {
   const path = join(checkout, PROJECT_DECLARATION_PATH);
-  /** @type {string} */
   let text: string;
   try {
     text = read(path, "utf8");

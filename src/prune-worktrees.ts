@@ -113,13 +113,10 @@ const sleep: (ms: number) => void = (ms): void => { Atomics.wait(new Int32Array(
 /** What the removal log names as the asker: this file's own CLI, run hourly by `a11ign-worktree-prune.service`. */
 const CALLER = "prune-worktrees.mjs";
 
-/** @type {(cmd: string, args: string[], opts: { cwd: string }) => string} */
 const defaultRun: (cmd: string, args: string[], opts: { cwd: string; }) => string = (cmd, args, opts): string =>
   execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
 
-/**
- * @typedef {{ path: string, branch: string | null, detached: boolean }} WorktreeEntry
- */
+export type WorktreeEntry = { path: string, branch: string | null, detached: boolean };
 
 /**
  * Whether `worktreePath` shows GIT ACTIVITY within `windowMs` of `now` -- the mtime of its own PRIVATE
@@ -138,7 +135,6 @@ const defaultRun: (cmd: string, args: string[], opts: { cwd: string; }) => strin
  * @returns {boolean | "unknown"}
  */
 export function recentGitActivity(worktreePath: string, { run = defaultRun, now = Date.now(), windowMs = ACTIVITY_WINDOW_MS }: { run?: typeof defaultRun; now?: number; windowMs?: number; } = {}): boolean | "unknown" {
-  /** @type {string} */
   let gitDir: string;
   try {
     gitDir = run("git", ["rev-parse", "--absolute-git-dir"], { cwd: worktreePath }).trim();
@@ -196,13 +192,7 @@ export function isPrimaryWorktree(worktreePath: string): boolean {
   return lstatSync(gitPath).isDirectory();
 }
 
-/**
- * @typedef {{
- *   path: string, branch: string | null,
- *   merge: "merged" | "not-merged" | "unknown", workingTreeClean: boolean | "unknown", contentMerged: boolean,
- *   recentlyActive: boolean | "unknown", ignorable: string[],
- * }} WorktreeAssessment
- */
+export type WorktreeAssessment = { path: string, branch: string | null, merge: "merged" | "not-merged" | "unknown", workingTreeClean: boolean | "unknown", contentMerged: boolean, recentlyActive: boolean | "unknown", ignorable: string[], };
 
 /**
 /**
@@ -291,7 +281,7 @@ export function mergeStatus(repoRoot: string, branch: string, { run = defaultRun
     run("git", ["merge-base", "--is-ancestor", branch, "origin/main"], { cwd: repoRoot });
     return "merged";
   } catch (error) {
-    const status = /** @type {{ status?: number }} */ (error).status;
+    const status = (error as { status?: number }).status;
     return status === 1 ? "not-merged" : "unknown";
   }
 }
@@ -312,7 +302,7 @@ export function detachedMergeStatus(worktreePath: string, { run = defaultRun }: 
     run("git", ["merge-base", "--is-ancestor", "HEAD", "origin/main"], { cwd: worktreePath });
     return "merged";
   } catch (error) {
-    const status = /** @type {{ status?: number }} */ (error).status;
+    const status = (error as { status?: number }).status;
     return status === 1 ? "not-merged" : "unknown";
   }
 }
@@ -333,7 +323,6 @@ export function detachedMergeStatus(worktreePath: string, { run = defaultRun }: 
  * @returns {boolean}
  */
 export function isContentMerged(repoRoot: string, branch: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): boolean {
-  /** @type {string} */
   let out: string;
   try {
     out = run("git", ["cherry", "origin/main", branch], { cwd: repoRoot });
@@ -403,7 +392,7 @@ export function ignoredByAuthority(authorityPath: string, path: string, { run = 
     run("git", ["check-ignore", "-q", "--", path], { cwd: authorityPath });
     return true;
   } catch (error) {
-    const status = /** @type {{ status?: number }} */ (error).status;
+    const status = (error as { status?: number }).status;
     return status === 1 ? false : "unknown";
   }
 }
@@ -433,7 +422,6 @@ export function ignoredByAuthority(authorityPath: string, path: string, { run = 
  * @returns {{ clean: boolean | "unknown", ignorable: string[] }}
  */
 export function cleanliness(worktreePath: string, { run = defaultRun, ignoreAuthority = null }: { run?: typeof defaultRun; ignoreAuthority?: string | null; } = {}): { clean: boolean | "unknown"; ignorable: string[]; } {
-  /** @type {string} */
   let status: string;
   try {
     status = run("git", ["status", "--porcelain", "-z"], { cwd: worktreePath });
@@ -445,7 +433,6 @@ export function cleanliness(worktreePath: string, { run = defaultRun, ignoreAuth
   const untracked = entries.filter((entry) => entry.startsWith("?? ")).map((entry) => entry.slice(3));
   // A single tracked change, or no authority to ask, and the old answer stands unchanged.
   if (untracked.length !== entries.length || ignoreAuthority === null) return { clean: false, ignorable: [] };
-  /** @type {string[]} */
   const ignorable: string[] = [];
   for (const path of untracked) {
     const ignored = ignoredByAuthority(ignoreAuthority, path, { run });
@@ -522,7 +509,7 @@ function hashOrEmpty(hash: (file: string) => string, file: string, failures: str
   try {
     return hash(file);
   } catch (error) {
-    failures.push(`${file} (${/** @type {Error} */ (error).message})`);
+    failures.push(`${file} (${(error as Error).message})`);
     return "";
   }
 }
@@ -538,7 +525,7 @@ function listedRecords(worktreePath: string, list: (root: string) => string[]): 
   try {
     files = list(worktreePath);
   } catch (error) {
-    return { reason: `${dir} could not be listed (${/** @type {Error} */ (error).message}) -- refusing to remove ${worktreePath}` };
+    return { reason: `${dir} could not be listed (${(error as Error).message}) -- refusing to remove ${worktreePath}` };
   }
   if (files.length === 0 && existsSync(dir) && readdirSync(dir).length > 0) {
     return { reason: `${dir} is not empty but ZERO files were listed -- an empty listing of a non-empty directory `
@@ -563,7 +550,6 @@ export function unverifiedRecords(worktreePath: string, primaryPath: string | nu
     return { refused: true, reason: `${worktreePath} holds ${listed.length} ${RECORDS_DIR}/ file(s) and no primary `
       + "checkout could be found to verify them against -- refusing to remove it" };
   }
-  /** @type {string[]} */
   const failures: string[] = [];
   const verified = listed.filter((file) => {
     const here = hashOrEmpty(hash, join(worktreePath, file), failures);
@@ -730,20 +716,8 @@ export function heldByOwner(worktreePath: string, mainLine: Set<string> | null, 
     + "CLAIMED and has not finished with, not one whose work has landed. Refusing to remove it" };
 }
 
-/**
- * @typedef {{ path: string, branch: string | null, cleared?: string[] }} ReportedWorktree
- * @typedef {{
- *   removed: ReportedWorktree[],
- *   records: (ReportedWorktree & { reason: string })[],
- *   held: (ReportedWorktree & { reason: string })[],
- *   dirty: ReportedWorktree[],
- *   cherryPicked: ReportedWorktree[],
- *   inconclusive: ReportedWorktree[],
- *   active: ReportedWorktree[],
- *   skippedPrimary: string | null,
- *   unexamined: number,
- * }} PruneReport
- */
+export type ReportedWorktree = { path: string, branch: string | null, cleared?: string[] };
+export type PruneReport = { removed: ReportedWorktree[], records: (ReportedWorktree & { reason: string })[], held: (ReportedWorktree & { reason: string })[], dirty: ReportedWorktree[], cherryPicked: ReportedWorktree[], inconclusive: ReportedWorktree[], active: ReportedWorktree[], skippedPrimary: string | null, unexamined: number, };
 
 /**
  * The four facts `classify` needs about one non-primary worktree entry.
@@ -860,11 +834,7 @@ export function commitsNotOnMain(repoRoot: string, branch: string, { run = defau
  */
 const mergedTristate = (status: string): boolean | "unknown" => (status === "unknown" ? "unknown" : status === "merged");
 
-/**
- * @typedef {{ path: string, branch: string | null, files: number, insertions: number, deletions: number,
- *   onMain: boolean | "unknown", commitsAhead: number | "unknown", retiredSession: boolean
- * }} StrandedWorktree
- */
+export type StrandedWorktree = { path: string, branch: string | null, files: number, insertions: number, deletions: number, onMain: boolean | "unknown", commitsAhead: number | "unknown", retiredSession: boolean };
 
 /**
  * Every worktree holding uncommitted tracked work, with what a reader needs to dispose of it.
@@ -882,9 +852,7 @@ const mergedTristate = (status: string): boolean | "unknown" => (status === "unk
  */
 export function strandedWork(repoRoot: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): { examined: number; stranded: StrandedWorktree[]; unreadable: string[]; } {
   const entries = parseWorktreeList(run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot }));
-  /** @type {StrandedWorktree[]} */
   const stranded: StrandedWorktree[] = [];
-  /** @type {string[]} */
   const unreadable: string[] = [];
   // EXAMINED COUNTS WHAT WAS EXAMINED. `entries.length` included the primary checkout, which the loop
   // skips -- so the head line said 58 of a population of 57. worker-judge: the count was held as PRINTED
@@ -997,7 +965,7 @@ function removeAndRecord(reported: ReportedWorktree, ignorable: string[], { run,
     record({ ...line, event: cleared ? "removed" : "refused", detail: cleared ? undefined : "could not clear the ignored entries" });
     return cleared ? { done: true } : { done: false, logged: true };
   } catch (cause) {
-    record({ ...line, event: "failed", detail: /** @type {Error} */ (cause).message });
+    record({ ...line, event: "failed", detail: (cause as Error).message });
     throw cause;
   }
 }
@@ -1068,15 +1036,7 @@ function heldUnlessReleased(entry: WorktreeEntry, ctx: PruneContext): { refused:
   return row.closed ? { refused: false } : { refused: true, reason: `${held.reason}. ${row.reason}` };
 }
 
-/**
- * @typedef {{
- *   repoRoot: string, run: typeof defaultRun, now: number, dryRun: boolean, primaryPath: string | null,
- *   mainLine: Set<string> | null, report: PruneReport, hash?: (file: string) => string,
- *   rowsClosed: typeof rowsClosed, pause: () => void,
- *   remove: (path: string, deps: { run: typeof defaultRun }) => void,
- *   claim?: typeof claimRefusal, record?: typeof recordRemoval,
- * }} PruneContext
- */
+export type PruneContext = { repoRoot: string, run: typeof defaultRun, now: number, dryRun: boolean, primaryPath: string | null, mainLine: Set<string> | null, report: PruneReport, hash?: (file: string) => string, rowsClosed: typeof rowsClosed, pause: () => void, remove: (path: string, deps: { run: typeof defaultRun }) => void, claim?: typeof claimRefusal, record?: typeof recordRemoval, };
 
 /**
  * One non-primary tree: assess it, then put it in exactly one bucket of `ctx.report`, removing it when nothing refuses.
@@ -1142,12 +1102,10 @@ export function pruneWorktrees(repoRoot: string, deps: {
   const porcelain = run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
   const entries = parseWorktreeList(porcelain);
   const primaryPath = entries.find((entry) => isPrimaryWorktree(entry.path))?.path ?? null;
-  /** @type {PruneReport} */
   const report: PruneReport = {
     removed: [], records: [], held: [], dirty: [], cherryPicked: [], inconclusive: [], active: [],
     skippedPrimary: null, unexamined: 0,
   };
-  /** @type {PruneContext} */
   const ctx: PruneContext = {
     repoRoot, run, now, dryRun: deps.dryRun ?? false, primaryPath, report, hash: deps.hash, claim: deps.claim,
     record: deps.record, rowsClosed: deps.rowsClosed ?? rowsClosed, pause: () => pause(pauseMs),

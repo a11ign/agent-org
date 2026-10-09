@@ -40,7 +40,6 @@ function humanMb(bytes: number) {
 export function worktrees(repoRoot = REPO_ROOT) {
   const out = execFileSync("git", ["worktree", "list", "--porcelain"],
     { cwd: repoRoot, encoding: "utf8", env: sandboxGitEnv() });
-  /** @type {string[]} */
   const paths: string[] = [];
   for (const line of out.split("\n")) {
     if (line.startsWith("worktree ")) paths.push(line.slice("worktree ".length));
@@ -95,7 +94,9 @@ export function rootPrepareBuildsEverything(repoRoot: string) {
   return Boolean(build) && (prepare.includes("pnpm run build") || prepare.includes(build));
 }
 
-/** Which packages are imported by their BARE root specifier (`from "@a11ign/name"`, no subpath)
+export type WorkspacePackage = { dir: string, name: string, rootExportsDist: boolean };
+/**
+ * Which packages are imported by their BARE root specifier (`from "@a11ign/name"`, no subpath)
  * from source elsewhere in the repo -- that is the shape CLAUDE.md's own dist-resolution incident was
  * about, because a bare specifier resolves through the package's `exports`/`main` field, which for a
  * TypeScript package points into `dist/`. A SUBPATH specifier -- shaped like `@a11ign/lab/src/x.mjs`
@@ -103,14 +104,12 @@ export function rootPrepareBuildsEverything(repoRoot: string) {
  * to reach raw `.mjs` source with no build step at all (ADR 0031), so flagging it would be a false
  * positive -- checked against the real repo while building this, which is what found the false positives
  * a cruder "does the name appear" search produced first.
- * @typedef {{ dir: string, name: string, rootExportsDist: boolean }} WorkspacePackage
  * @param {string} repoRoot
  * @param {WorkspacePackage[]} packages
  */
 export function packagesImportedByName(repoRoot: string, packages: WorkspacePackage[]) {
   const bareQuoted = packages.map((p) => `from "${p.name}"`);
   const grepArgs = ["grep", "-l", "-F", ...bareQuoted.flatMap((pattern) => ["-e", pattern])];
-  /** @type {string[]} */
   let rgOut: string[];
   try {
     rgOut = execFileSync("git", grepArgs, { cwd: repoRoot, encoding: "utf8", env: sandboxGitEnv() })
@@ -118,7 +117,6 @@ export function packagesImportedByName(repoRoot: string, packages: WorkspacePack
   } catch {
     rgOut = []; // git grep exits 1 when nothing matches at all -- an empty result, not an error
   }
-  /** @type {Set<string>} */
   const needed: Set<string> = new Set();
   for (const p of packages) {
     const pattern = `from "${p.name}"`;
@@ -188,19 +186,17 @@ export const QUOTACTL_PY = [
   "    print(json.dumps({'hardKb': hard, 'softKb': soft, 'usedBytes': used}))",
 ].join("\n");
 
+export type UserQuota = { hardKb: number, softKb: number, usedBytes: number };
+export type QuotaReading = { mountOptions: string | null, quota: UserQuota | null, quotaError: string | null, dfFreeBytes: number | null };
 /**
  * What the host says about the quota on `path`, each part read separately so a part that could not be read is
  * `null` rather than a guess. `exec` is injectable: a test that shells out to the real `/tmp` reports whatever
  * the host happens to be that minute.
- * @typedef {{ hardKb: number, softKb: number, usedBytes: number }} UserQuota
- * @typedef {{ mountOptions: string | null, quota: UserQuota | null, quotaError: string | null,
- *   dfFreeBytes: number | null }} QuotaReading
  * @param {string} path
  * @param {typeof execFileSync} exec
  * @returns {QuotaReading}
  */
 export function readTmpQuota(path: string = TMP, exec: typeof execFileSync = execFileSync): QuotaReading {
-  /** @type {QuotaReading} */
   const reading: QuotaReading = { mountOptions: null, quota: null, quotaError: null, dfFreeBytes: null };
   try {
     reading.mountOptions = String(exec("findmnt", ["-no", "OPTIONS", "-T", path], { encoding: "utf8" })).trim();
@@ -238,7 +234,7 @@ function errorLine(cause: unknown) {
  * @returns {{ state: "EXHAUSTED" | "CONSTRAINED" | "OK" | "NOT MEASURABLE", detail: string }}
  */
 export function classifyTmpQuota(reading: QuotaReading): { state: "EXHAUSTED" | "CONSTRAINED" | "OK" | "NOT MEASURABLE"; detail: string; } {
-  const notMeasurable = (/** @type {string} */ why: string) => ({ state: /** @type {const} */ ("NOT MEASURABLE"), detail: why });
+  const notMeasurable = (why: string) => ({ state: ("NOT MEASURABLE" as const), detail: why });
   if (reading.mountOptions === null) return notMeasurable(reading.quotaError ?? "the mount options could not be read");
   if (!reading.mountOptions.split(",").includes("usrquota")) return notMeasurable("the mount declares no usrquota");
   if (reading.quota === null) return notMeasurable(reading.quotaError ?? "the quota could not be read");
@@ -280,7 +276,6 @@ function main() {
   const diskFreeKb = Number(diskFreeOut.trim().split(/\s+/)[3]);
   const trap = distTrapReport(REPO_ROOT);
 
-  /** @type {Array<[string, string, string]>} */
   const rows: Array<[string, string, string]> = [
     ["Worktrees registered", `${trees.length}`,
       "RULE: prune stale/fully-merged trees regularly; `git worktree remove` refuses a dirty tree by "

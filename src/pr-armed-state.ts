@@ -159,7 +159,6 @@ const QUEUE_EVENTS = ["AddedToMergeQueueEvent", "RemovedFromMergeQueueEvent"];
  * @returns {{ ejected: boolean, removedAt: string | null } | null}
  */
 export function queueEjectionOf(pr: { mergeQueueEntry?: unknown; timelineItems?: { nodes?: unknown; }; } | null): { ejected: boolean; removedAt: string | null; } | null {
-  /** @type {any} */
   const nodes: any = pr?.timelineItems?.nodes;
   if (!Array.isArray(nodes)) return null;
   const notEjected = { ejected: false, removedAt: null };
@@ -192,7 +191,7 @@ export function ejectionVerdict({ number, repo, run }: { number: string | number
   try {
     ejection = queueEjectionOf(JSON.parse(run(ejectionQueryArgs({ number, repo }))));
   } catch (cause) {
-    return { kind: "cannot-ask", why: `could not read #${number}'s merge-queue history: ${/** @type {Error} */ (cause).message}` };
+    return { kind: "cannot-ask", why: `could not read #${number}'s merge-queue history: ${(cause as Error).message}` };
   }
   if (ejection === null) return { kind: "cannot-ask", why: `the API did not return #${number}'s merge-queue history` };
   if (!ejection.ejected) return { kind: "clear" };

@@ -112,7 +112,7 @@ export function git(args: string[]) {
  */
 export function mergeState(since: string) {
   const log = git(["log", "main", "--merges", `--since=${since}`, "--format=%h\t%aI\t%s"]);
-  const merges = log ? log.split("\n").map((/** @type {string} */ l: string) => {
+  const merges = log ? log.split("\n").map((l: string) => {
     const [sha, at, ...rest] = l.split("\t");
     return { sha, at, subject: rest.join("\t") };
   }) : [];
@@ -177,7 +177,7 @@ function issueRow(node: any) {
     throw new Error(`#${node.number} carries ${node.labels.totalCount} labels and only ${node.labels.nodes.length} were read`);
   }
   const { labels, ...rest } = node;
-  return { ...rest, labels: labels.nodes, labelNames: labels.nodes.map((/** @type {any} */ l: any) => l.name) };
+  return { ...rest, labels: labels.nodes, labelNames: labels.nodes.map((l: any) => l.name) };
 }
 
 /** Every issue in the repository, open and closed, or a thrown refusal that names why it could not prove
@@ -185,7 +185,7 @@ function issueRow(node: any) {
  * @param {{run?: (args: string[]) => string, repo?: string}} [deps] `run` is the `gh` call; a test hands in recorded pages. `repo` (#4080) is the tracker
  * asked, `owner/name`: the edition reads every declared tracker, and left out it is `REPO`, the home tracker, exactly as before. */
 export function issues({ run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}) {
-  /** @type {any[]} */ const nodes: any[] = [];
+  const nodes: any[] = [];
   let after = null;
   let totalCount = 0;
   try {
@@ -199,7 +199,7 @@ export function issues({ run = gh, repo = REPO }: { run?: (args: string[]) => st
     }
   } catch (cause) {
     throw new Error(`board-data: the issue listing failed after ${nodes.length} rows, so it could not be proved `
-      + `complete and this document would report on part of the tracker: ${/** @type {Error} */ (cause).message}`, { cause });
+      + `complete and this document would report on part of the tracker: ${(cause as Error).message}`, { cause });
   }
   const numbers = new Set(nodes.map((n) => n.number));
   if (nodes.length !== totalCount || numbers.size !== nodes.length) {
@@ -242,7 +242,7 @@ export { OUT_OF_RELEASE_LABEL };
 
 /** @param {any[]} list */
 export function outOfRelease(list: any[]) {
-  return list.filter((/** @type {any} */ i: any) => labelsOf(i).includes(OUT_OF_RELEASE_LABEL));
+  return list.filter((i: any) => labelsOf(i).includes(OUT_OF_RELEASE_LABEL));
 }
 
 /** Open rows carrying NEITHER a milestone nor `out-of-release` -- the state the rule forbids.
@@ -253,12 +253,12 @@ export function outOfRelease(list: any[]) {
  * @param {any[]} list
  */
 export function unclassified(list: any[]) {
-  return list.filter((/** @type {any} */ i: any) => !i.milestone && !labelsOf(i).includes(OUT_OF_RELEASE_LABEL));
+  return list.filter((i: any) => !i.milestone && !labelsOf(i).includes(OUT_OF_RELEASE_LABEL));
 }
 
 /** @param {any} i */
 function labelsOf(i: any) {
-  return i.labelNames ?? i.labels?.map((/** @type {any} */ l: any) => l.name) ?? [];
+  return i.labelNames ?? i.labels?.map((l: any) => l.name) ?? [];
 }
 
 /**
@@ -286,12 +286,12 @@ export function readyRows(list: any[]) {
 /** The rows the document COUNTS. `issues()` stays complete -- a meta row still needs its state resolved.
  * @param {any[]} list */
 export function countable(list: any[]) {
-  return list.filter((i) => !(i.labelNames ?? i.labels?.map((/** @type {any} */ l: any) => l.name) ?? []).includes(META_LABEL));
+  return list.filter((i) => !(i.labelNames ?? i.labels?.map((l: any) => l.name) ?? []).includes(META_LABEL));
 }
 
 export function milestone() {
   const all = JSON.parse(gh(["api", `repos/${REPO}/milestones?state=all`]));
-  return all.find((/** @type {any} */ m: any) => m.title === MILESTONE) ?? null;
+  return all.find((m: any) => m.title === MILESTONE) ?? null;
 }
 
 /** The two numbers this report cannot compute, and how it refuses to invent them. */
@@ -346,7 +346,7 @@ export function reported() {
   const staleMs = (raw.staleAfterHours ?? 24) * HOURS_MS;
   /** @param {any} entry */
   const fresh = (entry: any) => Date.now() - Date.parse(entry.at) < staleMs;
-  const gates = (raw.gates ?? []).filter((/** @type {any} */ g: any) => g.at && Number.isFinite(Date.parse(g.at)));
+  const gates = (raw.gates ?? []).filter((g: any) => g.at && Number.isFinite(Date.parse(g.at)));
   // #429: THE VERDICT SLOT, not the newest of any kind -- see `latestVerdictGate`'s own header.
   const latest = latestVerdictGate(gates);
   // EVERY GATE, not just the newest. Section five recommended "buying nothing yet" while the record held
@@ -444,7 +444,6 @@ export function achievementsWhoseWorldMoved({ achievements, issueState, now = Da
         achievements: any[]; issueState: Record<string, { state: string; closedAt?: string | null; }>;
         now?: number; staleAfterHours?: number;
     }): { index: number; claim: string; why: string; }[] {
-  /** @type {{index: number, claim: string, why: string}[]} */
   const findings: { index: number; claim: string; why: string; }[] = [];
   achievements.forEach((entry, index) => {
     const claim = String(entry.boardClaim ?? entry.claim ?? "(no claim text)").slice(0, 90);
@@ -538,7 +537,7 @@ export function prsMerged(since: string, { run }: { run?: (args: string[]) => st
  * @param {{run?: (args: string[]) => string}} [deps]
  */
 export function prsClosedUnmerged(since: string, { run }: { run?: (args: string[]) => string; } = {}) {
-  return prsBy("closed", since, run).filter((/** @type {any} */ pr: any) => !pr.mergedAt);
+  return prsBy("closed", since, run).filter((pr: any) => !pr.mergedAt);
 }
 
 /**
@@ -569,7 +568,6 @@ export function mergeLifetimeMinutes(mergedPRs: any[]) {
  * @param {number} [limit]
  */
 export function hotspotFiles(prs: any[], limit: number = 5) {
-  /** @type {Map<string, Set<number>>} */
   const touchedBy: Map<string, Set<number>> = new Map();
   for (const pr of prs) {
     for (const file of pr.files ?? []) {
@@ -608,7 +606,6 @@ export function hotspotFiles(prs: any[], limit: number = 5) {
 export function mergedPRNeededReconciliation(pr: { number: number; mergeCommit?: { oid?: string; }; }): boolean | null {
   const sha = pr.mergeCommit?.oid;
   if (!sha) return null;
-  /** @type {string[]} */
   let parents: string[];
   try {
     parents = git(["show", "--no-patch", "--format=%P", sha]).split(/\s+/).filter(Boolean);
@@ -643,7 +640,7 @@ export function composeConflictMetrics(since: string, { run }: { run?: (args: st
   const lifetimeMinutes = mergeLifetimeMinutes(merged);
   const reconciliation = merged.map((pr) => mergedPRNeededReconciliation(pr));
   const population = new Map([...opened, ...merged, ...closedUnmerged]
-    .map((/** @type {any} */ pr: any) => [pr.number, pr]));
+    .map((pr: any) => [pr.number, pr]));
   return {
     since,
     method: "opened/merged/closed via `gh pr list --search <qualifier>:>=<since>` (created/merged/closed "
@@ -698,12 +695,12 @@ export function readSetIsNotMain() {
 export function collect(since: string) {
   const all = issues();
   // Counted rows only. `all` stays complete for state lookups; `open` is what the document reports.
-  const open = countable(all.filter((/** @type {any} */ i: any) => i.state === "OPEN"));
+  const open = countable(all.filter((i: any) => i.state === "OPEN"));
   return {
     since,
     all,
     open,
-    closed: all.filter((/** @type {any} */ i: any) => i.state === "CLOSED" && i.closedAt
+    closed: all.filter((i: any) => i.state === "CLOSED" && i.closedAt
       && Date.parse(i.closedAt) >= Date.parse(since)),
     milestones: JSON.parse(gh(["api", `repos/${REPO}/milestones?state=all`])),
     release: milestone(),

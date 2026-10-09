@@ -60,7 +60,7 @@ export const MERGE_GRACE_MS = 5 * 60 * 1000;
 
 export const NO_CODE_LEFT_LABEL = "no-code-left";
 /** Labels only a claimed row has: `started`, `session:*` (the strip list of `claim-label-strip.mjs`) and the holder's `no-code-left`. */
-const CLAIM_ONLY = (/** @type {string} */ label: string) => label === STARTED_LABEL || label === NO_CODE_LEFT_LABEL || label.startsWith(SESSION_PREFIX);
+const CLAIM_ONLY = (label: string) => label === STARTED_LABEL || label === NO_CODE_LEFT_LABEL || label.startsWith(SESSION_PREFIX);
 
 /** A claim record newer than this keeps a row claimed: the claim-stall's untold-release bound (4 h), pinned equal by the test. */
 export const CLAIM_FRESH_MS = 240 * 60 * 1000;
@@ -76,19 +76,24 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** The time an author has to turn a handoff sentence into a row or an `answer:` label (#4232); a comment younger than this is not judged yet. */
 export const HANDOFF_GRACE_MS = 15 * 60 * 1000;
 
+export type BoardRow = { number: number, title?: string, body?: string, state?: string, stateReason?: string, labels?: (string | { name?: string })[], comments?: RowComment[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string };
+/** `mergedAt` is absent when a read omitted it */
+export type MergedPr = { number: number, body?: string, mergedAt?: string | null };
+/** `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker */
+export type BoardFacts = { now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null, waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null };
 /**
- * @typedef {{ number: number, title?: string, body?: string, state?: string, stateReason?: string, labels?: (string | { name?: string })[],
- *             comments?: RowComment[], subIssuesSummary?: { total: number, completed: number } | null, createdAt?: string }} BoardRow
- * @typedef {{ number: number, body?: string, mergedAt?: string | null }} MergedPr `mergedAt` is absent when a read omitted it
- * @typedef {{ now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null,
- *             waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null }} BoardFacts `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker
- * @typedef {{ key: string, repo: string, codeRepo?: string }} DeclaredTracker `codeRepo` is the code repository of the same key, where the pull requests that close this tracker's rows are
- * @typedef {{ key: string, repo: string, facts: BoardFacts | null, why?: string }} OtherTracker `facts` is `null` when its open rows could not be read, and `why` says what the read said
- * @typedef {{ author?: { login?: string } | null, body?: string, createdAt?: string, url?: string }} RowComment
- * @typedef {{ rows: { author: string, createdAt: string, text?: string }[], labelEvents: { number: number, label: string, actor: string, createdAt: string }[] }} ProseEvidence the rows filed and the labels
- *             added in the last day, by whom and when (#4232); `undefined` on `BoardFacts` is a caller that does not ask, `null` is a read that failed
- * @typedef {{ question: string, number: number, field: string, detail: string, route: string, key?: string }} Finding `key` is the tracker's, absent for the first tracker's own rows (#4080)
+ * `codeRepo` is the code repository of the same key, where the pull requests that close this tracker's rows are
  */
+export type DeclaredTracker = { key: string, repo: string, codeRepo?: string };
+/** `facts` is `null` when its open rows could not be read, and `why` says what the read said */
+export type OtherTracker = { key: string, repo: string, facts: BoardFacts | null, why?: string };
+export type RowComment = { author?: { login?: string } | null, body?: string, createdAt?: string, url?: string };
+/**
+ * the rows filed and the labels added in the last day, by whom and when (#4232); `undefined` on `BoardFacts` is a caller that does not ask, `null` is a read that failed
+ */
+export type ProseEvidence = { rows: { author: string, createdAt: string, text?: string }[], labelEvents: { number: number, label: string, actor: string, createdAt: string }[] };
+/** `key` is the tracker's, absent for the first tracker's own rows (#4080) */
+export type Finding = { question: string, number: number, field: string, detail: string, route: string, key?: string };
 
 /** @param {BoardRow} row @returns {string[]} */
 const labelsOf = (row: BoardRow): string[] => (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l?.name)));
@@ -204,7 +209,7 @@ function waitsTrue(facts: BoardFacts): Finding[] {
 /** @param {BoardFacts} facts @returns {Finding[]} */
 function stateLabels({ openRows, now }: BoardFacts): Finding[] {
   const byNumber = new Map(openRows.map((row) => [row.number, row]));
-  return stateLabelFindings(openRows, { now }).map((f) => finding(/** @type {BoardRow} */ (byNumber.get(f.number)), QUESTIONS.STATE_LABEL, "labels",
+  return stateLabelFindings(openRows, { now }).map((f) => finding((byNumber.get(f.number) as BoardRow), QUESTIONS.STATE_LABEL, "labels",
     f.kind === "NONE" ? `carries none of ${STATE_LABELS.join(", ")}` : `carries ${f.labels.join(" and ")}: keep the one that is true`));
 }
 
@@ -324,7 +329,7 @@ function authorSessionOf(body: string, row: BoardRow) {
   return named ? named[1].toLowerCase() : ownerOf(row);
 }
 
-/** @typedef {{ row: BoardRow, comment: RowComment, author: string, at: number, text: string }} JudgedComment */
+export type JudgedComment = { row: BoardRow, comment: RowComment, author: string, at: number, text: string };
 /** The comments by org accounts in the last day, old enough that the author has had the grace (a younger one is not judged yet). @param {BoardFacts} facts @returns {JudgedComment[]} */
 function commentsToJudge({ openRows, now }: BoardFacts): JudgedComment[] {
   return openRows.flatMap((row) => (row.comments ?? []).flatMap((comment) => {
@@ -346,8 +351,8 @@ function handoffsIn(text: string): { phrase: string; session: string; }[] {
  * lane (`a11ign-ai-leads` is `ceo` and its peers), so "any row by the same author" cleared #4090's own comment live: `ceo` filed #4110 and #4111, unrelated, five minutes after it (measured 2026-10-08).
  * A row counts when its title or body cites `#<n>` of the row commented on; a filed row that does not is the author's to add the citation to. @param {JudgedComment} judged @param {string} session @param {ProseEvidence} evidence */
 function followedUp({ row, author, at }: JudgedComment, session: string, evidence: ProseEvidence) {
-  const within = (/** @type {string} */ when: string) => { const t = Date.parse(when) - at; return t >= 0 && t <= HANDOFF_GRACE_MS; };
-  const cites = (/** @type {string | undefined} */ text: string | undefined) => new RegExp(`#${row.number}(?!\\d)`).test(text ?? "");
+  const within = (when: string) => { const t = Date.parse(when) - at; return t >= 0 && t <= HANDOFF_GRACE_MS; };
+  const cites = (text: string | undefined) => new RegExp(`#${row.number}(?!\\d)`).test(text ?? "");
   return evidence.rows.some((filed) => filed.author === author && within(filed.createdAt) && cites(filed.text))
     || evidence.labelEvents.some((e) => e.number === row.number && e.actor === author && e.label === `${ANSWER_PREFIX}${session}` && within(e.createdAt));
 }
@@ -371,7 +376,6 @@ function readingsWithoutField(facts: BoardFacts): Finding[] {
     PROSE_QUESTIONS.READING_FIELD, "`Defect-row: #N` or `Defect-row: none -- <reason>` line", "a reading with no `Defect-row:` field, which the org cannot read as prose"));
 }
 
-/** @type {[string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean][]} */
 const PROSE_READERS: [string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean][] = [
   [PROSE_QUESTIONS.HANDOFF, handoffsInProse, (f) => f.proseEvidence !== null],
   [PROSE_QUESTIONS.READING_FIELD, readingsWithoutField, () => true],
@@ -414,7 +418,7 @@ export function boardTruthAudit(facts: BoardFacts): { findings: Finding[]; unrea
   const findings = [...own.findings, ...others.flatMap((o) => o.findings)];
   const unread = [...own.unread, ...others.flatMap((o) => o.unread)];
   const notAsked = others.flatMap((o) => o.notAsked);
-  const total = (/** @type {"filing" | "merging"} */ field: "filing" | "merging") => own[field] + others.reduce((sum, o) => sum + o[field], 0);
+  const total = (field: "filing" | "merging") => own[field] + others.reduce((sum, o) => sum + o[field], 0);
   return { findings, unread, filing: total("filing"), merging: total("merging"), ...(notAsked.length > 0 && { notAsked }) };
 }
 
@@ -429,7 +433,7 @@ function askAll(facts: BoardFacts): { findings: Finding[]; unread: string[]; fil
 function askOther({ key, facts, why }: OtherTracker): { findings: Finding[]; unread: string[]; filing: number; merging: number; notAsked: string[]; } {
   if (facts === null) return { findings: [], unread: [`${key}: the open rows (${why})`], filing: 0, merging: 0, notAsked: [] };
   const answered = askAll(facts);
-  const notWaits = (/** @type {string} */ question: string) => question !== QUESTIONS.WAIT_TRUE;
+  const notWaits = (question: string) => question !== QUESTIONS.WAIT_TRUE;
   return { findings: answered.findings.map((f) => ({ ...f, key })), unread: answered.unread.filter(notWaits).map((q) => `${key}: ${q}`), filing: answered.filing, merging: answered.merging,
     notAsked: answered.unread.filter((q) => !notWaits(q)).map((q) => `${key}: ${q}`) };
 }
@@ -473,8 +477,8 @@ const gh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf
  * @returns {BoardFacts} `openRows` is not guarded: a refused open-row read throws, because there is no board to read without it
  */
 export function readBoardFacts(repo: string, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null, trackers = declaredTrackers() }: { run?: (args: string[]) => string; agents?: typeof readAgents; now?: number; openRows?: BoardRow[]; waitFacts?: BoardFacts["waitFacts"]; trackers?: DeclaredTracker[]; } = {}): BoardFacts {
-  const json = (/** @type {string[]} */ args: string[]) => JSON.parse(run([...args, "--repo", repo]));
-  const orUnread = (/** @type {string[]} */ args: string[]) => { try { return json(args); } catch { return null; } };
+  const json = (args: string[]) => JSON.parse(run([...args, "--repo", repo]));
+  const orUnread = (args: string[]) => { try { return json(args); } catch { return null; } };
   const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);
   const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
   const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body,mergedAt"]);
@@ -493,7 +497,7 @@ export function readBoardFacts(repo: string, { run = gh, agents = readAgents, no
  * @param {{ repo: string, run: (args: string[]) => string, now: number }} input @returns {BoardFacts | null} facts for `proseAudit` alone: only `openRows` and `proseEvidence` mean anything
  */
 export function readProseFacts({ repo, run, now }: { repo: string; run: (args: string[]) => string; now: number; }): BoardFacts | null {
-  const lines = (/** @type {string[]} */ args: string[]) => run(["api", "--paginate", ...args]).split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
+  const lines = (args: string[]) => run(["api", "--paginate", ...args]).split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
   const since = new Date(now - DAY_MS).toISOString().replace(/\.\d+Z$/, "Z");
   try {
     const comments = lines([`repos/${repo}/issues/comments?since=${since}&per_page=100`, "--jq", `.[] | select(.user.login | startswith("a11ign-"))
@@ -526,9 +530,8 @@ function declaredTrackers(): DeclaredTracker[] {
  * @param {DeclaredTracker} tracker @param {{ run: (args: string[]) => string, now: number, liveSessions: string[] | null }} io @returns {OtherTracker}
  */
 function readOtherTracker({ key, repo, codeRepo }: DeclaredTracker, { run, now, liveSessions }: { run: (args: string[]) => string; now: number; liveSessions: string[] | null; }): OtherTracker {
-  const json = (/** @type {string} */ aimed: string, /** @type {string[]} */ args: string[]) => JSON.parse(run([...args, "--repo", aimed]));
-  const orUnread = (/** @type {string} */ aimed: string, /** @type {string[]} */ args: string[]) => { try { return json(aimed, args); } catch { return null; } };
-  /** @type {BoardRow[]} */
+  const json = (aimed: string, args: string[]) => JSON.parse(run([...args, "--repo", aimed]));
+  const orUnread = (aimed: string, args: string[]) => { try { return json(aimed, args); } catch { return null; } };
   let openRows: BoardRow[];
   try {
     openRows = json(repo, ["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);

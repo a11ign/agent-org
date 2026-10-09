@@ -48,16 +48,17 @@ const GH_TIMEOUT_MS = 120 * 1000;
 const SEARCH_PAGE = 100;
 const CLAIM_MARKER = "<!-- row-claim: claim record -->";
 
+export type Wake = { at: number, bytes: number, session: string | null };
+export type Transcript = { ok: true, file: string, session: string | null, wakes: Wake[], compactions: number } | { ok: false, file: string, session: string | null, reason: string };
+export type LedgerEntry = { at: number, key: string, session: string, cause: string };
+export type PullRequest = { repo: string, number: number, createdAt: string, mergedAt: string, body: string };
+/** a declared tracker (#4080): the key is `""` for the project's own, `agent-org` for the second */
+export type TrackerRef = { key: string, repo: string };
 /**
- * @typedef {{ at: number, bytes: number, session: string | null }} Wake
- * @typedef {{ ok: true, file: string, session: string | null, wakes: Wake[], compactions: number }
- *   | { ok: false, file: string, session: string | null, reason: string }} Transcript
- * @typedef {{ at: number, key: string, session: string, cause: string }} LedgerEntry
- * @typedef {{ repo: string, number: number, createdAt: string, mergedAt: string, body: string }} PullRequest
- * @typedef {{ key: string, repo: string }} TrackerRef a declared tracker (#4080): the key is `""` for the project's own, `agent-org` for the second
- * @typedef {number | string} RowRef a row of the project's own tracker is its bare number (every record written so far); a row of a keyed tracker is `key#n`
- * @typedef {{ session: string, rows: RowRef[], spawnedAt: number | null, endedAt: number | null }} Instance
+ * a row of the project's own tracker is its bare number (every record written so far); a row of a keyed tracker is `key#n`
  */
+export type RowRef = number | string;
+export type Instance = { session: string, rows: RowRef[], spawnedAt: number | null, endedAt: number | null };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Reading a transcript: what is a wake
@@ -78,7 +79,6 @@ export function isWake(record: any): boolean {
  * @returns {Transcript}
  */
 export function parseTranscript(text: string, file: string): Transcript {
-  /** @type {Wake[]} */
   const wakes: Wake[] = [];
   let compactions = 0;
   const lines = text.split("\n");
@@ -88,7 +88,7 @@ export function parseTranscript(text: string, file: string): Transcript {
     try {
       record = JSON.parse(line);
     } catch (cause) {
-      return { ok: false, file, session: sessionOfOrder(text), reason: `line ${index + 1} is not JSON (${/** @type {Error} */ (cause).message})` };
+      return { ok: false, file, session: sessionOfOrder(text), reason: `line ${index + 1} is not JSON (${(cause as Error).message})` };
     }
     if (record?.isCompactSummary === true) compactions += 1;
     if (!isWake(record)) continue;
@@ -110,7 +110,6 @@ export function parseTranscript(text: string, file: string): Transcript {
  * @returns {LedgerEntry[]}
  */
 export function parseLedger(text: string): LedgerEntry[] {
-  /** @type {LedgerEntry[]} */
   const entries: LedgerEntry[] = [];
   for (const line of text.split("\n")) {
     const [stamp, key, third] = line.split("\t");
@@ -150,7 +149,6 @@ export function matchLedger(wakes: Wake[], entries: LedgerEntry[]): { wakes: (Wa
  * @returns {{ repo: string | undefined, number: number }[]}
  */
 function closingReferences(body: string): { repo: string | undefined; number: number; }[] {
-  /** @type {{ repo: string | undefined, number: number }[]} */
   const found: { repo: string | undefined; number: number; }[] = [];
   for (const line of body.split("\n")) {
     const closing = /^\s*closes\b:?\s*(.*)$/i.exec(line);
@@ -190,7 +188,6 @@ const refOf = (entry: { key?: string; row: number; }) => rowRef(entry.key ?? "",
  */
 export function rowsClosedInTrackers(body: string, trackers: TrackerRef[]): { key: string; row: number; }[] {
   const own = trackers.find((tracker) => tracker.key === "");
-  /** @type {Map<RowRef, { key: string, row: number }>} */
   const rows: Map<RowRef, { key: string; row: number; }> = new Map();
   for (const ref of closingReferences(body)) {
     const tracker = ref.repo ? trackers.find((candidate) => candidate.repo === ref.repo) : own;
@@ -218,7 +215,6 @@ export function mergedRows(pulls: PullRequest[], window: { from: number; to: num
  * @param {TrackerRef[]} trackers
  */
 export function mergedTrackerRows(pulls: PullRequest[], window: { from: number; to: number; }, trackers: TrackerRef[]) {
-  /** @type {Map<RowRef, { row: number, key?: string, repo: string, pulls: number[], firstOpenedAt: number, lastOpenedAt: number, mergedAt: number }>} */
   const rows: Map<RowRef, { row: number; key?: string; repo: string; pulls: number[]; firstOpenedAt: number; lastOpenedAt: number; mergedAt: number; }> = new Map();
   for (const pull of pulls) {
     const mergedAt = Date.parse(pull.mergedAt);
@@ -281,13 +277,13 @@ export function workerRowFor(wake: Wake, instances: Instance[], claimedAt: Map<R
   return started.length > 0 ? { row: started[0].row } : { reason: "before-any-claim" };
 }
 
+export type MergedRow = { row: number, key?: string, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] };
+export type SessionWake = Wake & { cause: string, typedAt: number, session: string };
 /**
- * @typedef {{ row: number, key?: string, repo: string, firstOpenedAt: number, lastOpenedAt: number, mergedAt: number, pulls: number[] }} MergedRow
- * @typedef {Wake & { cause: string, typedAt: number, session: string }} SessionWake
- * @typedef {{ tracker: string, reason: string }} UnreadClaims a declared tracker whose claim records could not be read, and why: its rows fall back to "from the instance's start"
- * @typedef {{ row: number, key?: string, repo: string, measured: boolean, unmeasured?: string, wakes: number, workerWakes: number, reviewerWakes: number,
- *   afterOpened: number, afterMerged: number, stale: number, bytes: number, causes: Record<string, number>, mergedAt: number }} RowReading
+ * a declared tracker whose claim records could not be read, and why: its rows fall back to "from the instance's start"
  */
+export type UnreadClaims = { tracker: string, reason: string };
+export type RowReading = { row: number, key?: string, repo: string, measured: boolean, unmeasured?: string, wakes: number, workerWakes: number, reviewerWakes: number, afterOpened: number, afterMerged: number, stale: number, bytes: number, causes: Record<string, number>, mergedAt: number };
 
 /**
  * @param {{ window: { from: number, to: number }, pulls: PullRequest[], transcripts: Transcript[], ledger: LedgerEntry[], instances: Instance[],
@@ -304,7 +300,6 @@ export function measure(input: {
   const bySession = wakesBySession(transcripts, ledger);
   const claimants = new Map(rows.map((row) => [refOf(row), instances.filter((instance) => instance.rows.includes(refOf(row)))]));
   const readings = new Map(rows.map((row) => [refOf(row), emptyReading(row, claimants.get(refOf(row)) ?? [], bySession, transcripts)]));
-  /** @type {{ wake: SessionWake, reason: string }[]} */
   const remainder: { wake: SessionWake; reason: string; }[] = [];
   for (const [session, wakes] of bySession.wakes) {
     for (const wake of wakes) {
@@ -324,13 +319,11 @@ export function measure(input: {
 function wakesBySession(transcripts: Transcript[], ledger: LedgerEntry[]) {
   // A ledger line typed long before any wake this reading can see is old news, not a wake that went missing.
   const earliest = Math.min(...transcripts.flatMap((transcript) => (transcript.ok ? transcript.wakes.map((wake) => wake.at) : [])));
-  /** @type {Map<string, Wake[]>} */
   const raw: Map<string, Wake[]> = new Map();
   for (const transcript of transcripts) {
     if (!transcript.ok || !transcript.session) continue;
     raw.set(transcript.session, [...(raw.get(transcript.session) ?? []), ...transcript.wakes]);
   }
-  /** @type {Map<string, SessionWake[]>} */
   const wakes: Map<string, SessionWake[]> = new Map();
   let ledgerOnly = 0;
   for (const [session, list] of raw) {
@@ -367,7 +360,7 @@ function placeReviewer(wake: SessionWake, target: { repo: string; number: number
   const closing = rowsClosedInTrackers(pull.body, context.trackers).find((row) => context.rows.some((merged) => refOf(merged) === rowRef(row.key, row.row)));
   if (closing === undefined) return { reason: "reviewer-of-a-pull-request-closing-no-merged-row" };
   const inside = wake.at >= Date.parse(pull.createdAt) && wake.at <= Date.parse(pull.mergedAt);
-  return inside ? { row: rowRef(closing.key, closing.row), as: /** @type {const} */ ("reviewer") } : { reason: "reviewer-outside-its-pull-request-window" };
+  return inside ? { row: rowRef(closing.key, closing.row), as: ("reviewer" as const) } : { reason: "reviewer-outside-its-pull-request-window" };
 }
 
 /**
@@ -463,7 +456,6 @@ function report(input: {
 
 /** @param {string[]} items */
 function tally(items: string[]) {
-  /** @type {Record<string, number>} */
   const counts: Record<string, number> = {};
   for (const item of items) counts[item] = (counts[item] ?? 0) + 1;
   return counts;
@@ -475,13 +467,12 @@ function tally(items: string[]) {
  * @returns {{ day: string, rows: number, mean: number }[]}
  */
 export function dailyMeans(measured: RowReading[]): { day: string; rows: number; mean: number; }[] {
-  /** @type {Map<string, number[]>} */
   const days: Map<string, number[]> = new Map();
   for (const reading of measured) {
     const day = new Date(Math.floor(reading.mergedAt / MS_PER_DAY) * MS_PER_DAY).toISOString().slice(0, "YYYY-MM-DD".length);
     days.set(day, [...(days.get(day) ?? []), reading.wakes]);
   }
-  return [...days].sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({ day, rows: values.length, mean: /** @type {number} */ (mean(values)) }));
+  return [...days].sort(([a], [b]) => a.localeCompare(b)).map(([day, values]) => ({ day, rows: values.length, mean: (mean(values) as number) }));
 }
 
 /**
@@ -504,7 +495,7 @@ const fixed = (value: number | null) => (value === null ? "n/a" : value.toFixed(
 
 /** @param {ReturnType<typeof measure>} reading */
 export function renderReading(reading: ReturnType<typeof measure>) {
-  const iso = (/** @type {number} */ ms: number) => new Date(ms).toISOString();
+  const iso = (ms: number) => new Date(ms).toISOString();
   const lines = [
     "DEFINITIONS", ...DEFINITIONS.map((line) => `- ${line}`), "",
     `window by merge time: ${iso(reading.window.from)} .. ${iso(reading.window.to)}`,
@@ -574,9 +565,7 @@ export function readClaimedAt(row: number, rowRepo: string): number | null {
  * @returns {{ claimedAt: Map<RowRef, number | null>, unreadClaims: UnreadClaims[] }}
  */
 export function readClaims(rows: { row: number; key?: string; }[], trackers: TrackerRef[], read: (row: number, repo: string) => number | null = readClaimedAt): { claimedAt: Map<RowRef, number | null>; unreadClaims: UnreadClaims[]; } {
-  /** @type {Map<RowRef, number | null>} */
   const claimedAt: Map<RowRef, number | null> = new Map();
-  /** @type {Map<string, UnreadClaims>} */
   const unread: Map<string, UnreadClaims> = new Map();
   for (const entry of rows) {
     const tracker = trackers.find((candidate) => candidate.key === (entry.key ?? ""));
@@ -599,7 +588,6 @@ export function readClaims(rows: { row: number; key?: string; }[], trackers: Tra
  * @returns {Transcript[]}
  */
 export function readTranscripts(root: string, since: number): Transcript[] {
-  /** @type {Transcript[]} */
   const found: Transcript[] = [];
   for (const dir of readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
     for (const name of readdirSync(join(root, dir.name)).filter((file) => file.endsWith(".jsonl"))) {
@@ -616,7 +604,7 @@ function readOneTranscript(file: string): Transcript {
   try {
     return parseTranscript(readFileSync(file, "utf8"), file);
   } catch (cause) {
-    return { ok: false, file, session: null, reason: `could not be read (${/** @type {Error} */ (cause).message})` };
+    return { ok: false, file, session: null, reason: `could not be read (${(cause as Error).message})` };
   }
 }
 
@@ -626,7 +614,6 @@ function readOneTranscript(file: string): Transcript {
  * @returns {Instance[]} `rows` are what the org recorded: bare numbers of the project's own tracker today, and `key#n` for a keyed one the day it records them
  */
 export function readInstances(cache: string): Instance[] {
-  /** @type {Instance[]} */
   const instances: Instance[] = [];
   for (const line of readFileSync(join(cache, "spare-cycles"), "utf8").split("\n").filter(Boolean)) {
     const ended = JSON.parse(line);
@@ -634,7 +621,7 @@ export function readInstances(cache: string): Instance[] {
     instances.push({ session: ended.role, rows, spawnedAt: null, endedAt: ended.at });
   }
   const live = JSON.parse(readFileSync(join(cache, "spare-instances.json"), "utf8"));
-  for (const [session, instance] of Object.entries(/** @type {Record<string, { spawnedAt: number, rows: RowRef[] }>} */ (live))) {
+  for (const [session, instance] of Object.entries((live as Record<string, { spawnedAt: number, rows: RowRef[] }>))) {
     instances.push({ session, rows: instance.rows, spawnedAt: instance.spawnedAt, endedAt: null });
   }
   return instances;
@@ -652,7 +639,7 @@ export function countCodexRollouts(root: string, window: { from: number; to: num
     try {
       count += readdirSync(join(root, year, month, date)).filter((name) => name.startsWith("rollout-")).length;
     } catch (cause) {
-      if (/** @type {NodeJS.ErrnoException} */ (cause).code !== "ENOENT") throw cause;
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
     }
   }
   return count;
@@ -660,7 +647,6 @@ export function countCodexRollouts(root: string, window: { from: number; to: num
 
 /** @param {string[]} argv */
 export function parseArgs(argv: string[]) {
-  /** @type {Record<string, string>} */
   const flags: Record<string, string> = {};
   for (let index = 0; index < argv.length; index += 2) flags[argv[index].replace(/^--/, "")] = argv[index + 1];
   if (!flags.from || !flags.to) throw new Error("usage: wakes-per-row --from <ISO> --to <ISO> [--repos a/b,c/d] [--json 1]");
@@ -676,7 +662,7 @@ async function main() {
   const { homeProjectDeclaration } = await import("./project-config.ts");
   const declaration = homeProjectDeclaration();
   const trackers = declaration.tracker.map(({ key, repo }) => ({ key, repo }));
-  const rowRepo = /** @type {TrackerRef} */ (trackers.find((tracker) => tracker.key === "")).repo;
+  const rowRepo = (trackers.find((tracker) => tracker.key === "") as TrackerRef).repo;
   const repos = flagged ?? declaration.code.map((code) => code.repo);
   const cache = join(homedir(), ".cache", "a11ign");
   const pulls = (await Promise.all(repos.map((repo) => readMergedPulls(repo, window)))).flat();

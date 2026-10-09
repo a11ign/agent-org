@@ -224,8 +224,8 @@ export function buildRecord({ tickMs, tick, live, candidate, gapBefore, now, boo
     tick, tickMs, utc: new Date(tickMs).toISOString(), recordedAt: now.toISOString(), gapBefore,
     ...(bootId === undefined ? {} : { bootId }),
     live, candidate: candidate.orders, candidateExit: candidate.exit,
-    differences: answered ? diffOrders(live, /** @type {any[]} */ (candidate.orders)) : [candidateFailure(candidate)],
-    causes: { live: causesOf(live), candidate: answered ? causesOf(/** @type {any[]} */ (candidate.orders)) : null },
+    differences: answered ? diffOrders(live, (candidate.orders as any[])) : [candidateFailure(candidate)],
+    causes: { live: causesOf(live), candidate: answered ? causesOf((candidate.orders as any[])) : null },
   };
 }
 
@@ -291,7 +291,6 @@ export function readWindowMarker(liveDir: string): { t0: string; tEnd: string; h
   const path = join(liveDir, SHADOW_WINDOW_MARKER);
   if (!existsSync(path)) return null;
   const text = readFileSync(path, "utf8");
-  /** @type {any} */
   let marker: any;
   try {
     marker = JSON.parse(text);
@@ -375,12 +374,12 @@ function tickOrRecordRefusal({ bootId, t0Ms, ...job }: Parameters<typeof shadowT
   try {
     return shadowTick({ ...job, windowed: { bootId, t0Ms } });
   } catch (error) {
-    const cause = /** @type {Error} */ (error).message;
+    const cause = (error as Error).message;
     try {
       mkdirSync(dirname(job.recordPath), { recursive: true });
       appendRow(job.recordPath, { kind: "refused", at: (job.now ?? new Date()).toISOString(), cause });
     } catch (appendError) {
-      process.stderr.write(`could not record the refusal either: ${/** @type {Error} */ (appendError).message}\n`);
+      process.stderr.write(`could not record the refusal either: ${(appendError as Error).message}\n`);
     }
     throw error;
   }
@@ -509,7 +508,7 @@ async function main() {
     process.stdout.write(status === "QUIET" ? "QUIET: no tick newer than the record\n"
       : `RECORDED tick ${record?.tick} (${record?.utc}): ${record?.differences.length} difference(s)\n`);
   } catch (error) {
-    process.stderr.write(`${/** @type {Error} */ (error).message}\n`);
+    process.stderr.write(`${(error as Error).message}\n`);
     process.exit(EXIT.REFUSED);
   }
 }

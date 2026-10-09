@@ -96,8 +96,8 @@ describe("(2) a reader that fails REFUSES the send and names which", () => {
       const { reply, provider } = replyOver(fixtureReaders({ [reader]: () => unreadable(reader) }));
       const result = /** @type {any} */ (await reply.send(NAMED_FACTS));
       assert.equal(result.outcome, "refused");
-      assert.ok(result.problems.some((/** @type {any} */ problem: any) => problem.placeholder === placeholder && new RegExp(`${reader} could not be read`).test(problem.reason)));
-      assert.ok(result.problems.every((/** @type {any} */ problem: any) => NAMED_FACTS.includes(problem.placeholder)));
+      assert.ok(result.problems.some((problem: any) => problem.placeholder === placeholder && new RegExp(`${reader} could not be read`).test(problem.reason)));
+      assert.ok(result.problems.every((problem: any) => NAMED_FACTS.includes(problem.placeholder)));
       assert.deepEqual(provider.sent, []);
     });
   }
@@ -114,7 +114,7 @@ describe("(2) a reader that fails REFUSES the send and names which", () => {
     const { reply, provider } = replyOver(createGhReaders({ gh: async () => "{}", systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
     const result = /** @type {any} */ (await reply.send("{{fleet.workers-up}} {{gate.last-tick.age}}"));
     assert.equal(result.outcome, "refused");
-    assert.deepEqual(result.problems.map((/** @type {any} */ problem: any) => problem.placeholder), ["{{fleet.workers-up}}", "{{gate.last-tick.age}}"]);
+    assert.deepEqual(result.problems.map((problem: any) => problem.placeholder), ["{{fleet.workers-up}}", "{{gate.last-tick.age}}"]);
     assert.match(result.problems[0].reason, /named no fleet-watch state files/);
     assert.match(result.problems[1].reason, /named no work-tick completion record/);
     assert.deepEqual(provider.sent, []);

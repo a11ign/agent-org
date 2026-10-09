@@ -16,11 +16,11 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 export const RUNGS = Object.freeze(["branch", "row-suffix", "title", "session-label"]);
 
 /**
- * @typedef {{ row: number, branch: string | null, session: string, trackerRepo?: string, soleHolder?: boolean }} Claim `trackerRepo` is the home repository (`owner/repo`) the
- *   row lives in, which the title rung's reference names; without it that rung cannot match, and a rung that cannot be read is no match, never a guess. `soleHolder` is
- *   whether the session holds no other claimed row: only then does its label say WHICH row a pull request is for
- * @typedef {{ headRefName?: string, title?: string, labels?: ({ name?: string } | string)[] }} OwnablePr a `gh pr list --json` object, open or merged
+ * `trackerRepo` is the home repository (`owner/repo`) the row lives in, which the title rung's reference names; without it that rung cannot match, and a rung that cannot be read is no match, never a guess. `soleHolder` is whether the session holds no other claimed row: only then does its label say WHICH row a pull request is for
  */
+export type Claim = { row: number, branch: string | null, session: string, trackerRepo?: string, soleHolder?: boolean };
+/** a `gh pr list --json` object, open or merged */
+export type OwnablePr = { headRefName?: string, title?: string, labels?: ({ name?: string } | string)[] };
 
 /** A character that can sit inside a repository reference, so `x/a11ign#3390` is not read as `a11ign#3390`. */
 const REFERENCE_CHAR = /[\w./-]/;

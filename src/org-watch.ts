@@ -314,7 +314,6 @@ export function mainColour({ repo, workflow = "trunk", now = new Date(), run = d
     windows: { since: string; until: string | null; hours: number; open: boolean; }[];
     examined: number; pageBeginsMidRed: boolean; inFlight?: number;
 } {
-  /** @type {{ conclusion: string | null, created_at: string, databaseId?: number, id?: number }[]} */
   let runs: { conclusion: string | null; created_at: string; databaseId?: number; id?: number; }[];
   try {
     runs = JSON.parse(run(["api",
@@ -420,7 +419,6 @@ export function byConclusion(checks: { name?: string; conclusion?: string | null
   // NEWEST PER NAME FIRST is deliberately NOT done here: this takes the checks it is given, and the caller
   // that reads them from the API owns that narrowing. Two narrowings in one function is how a superseded
   // run came to be counted twice.
-  /** @type {Record<string, number>} */
   const counts: Record<string, number> = {};
   for (const check of checks) {
     counts[outcomeOf(check)] = (counts[outcomeOf(check)] ?? 0) + 1;
@@ -450,7 +448,7 @@ export function byConclusion(checks: { name?: string; conclusion?: string | null
  * @returns {string}
  */
 function outcomeOf({ conclusion, status }: { conclusion?: string | null; status?: string | null; }): string {
-  const present = (/** @type {string | null | undefined} */ value: string | null | undefined) =>
+  const present = (value: string | null | undefined) =>
     (typeof value === "string" && value.trim() !== "" ? value.trim().toLowerCase() : null);
   return present(conclusion) ?? present(status) ?? "unknown";
 }
@@ -497,7 +495,6 @@ export function redWindows(runs: { conclusion?: string | null; created_at: strin
     .filter((r) => r.conclusion === "failure" || r.conclusion === "success")
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   const windows = [];
-  /** @type {string | null} */
   let openedAt: string | null = null;
   for (const run of settled) {
     if (run.conclusion === "failure" && openedAt === null) openedAt = run.created_at;
@@ -627,7 +624,6 @@ export function queueReport(prs: { number: number; checks: { name: string; concl
       why: "the queue could not be read -- a refused `gh` call exits non-zero with empty output, so this "
         + "is NOT an empty queue and must not be reported as one (#1286)" };
   }
-  /** @type {Record<string, number>} */
   const counts: Record<string, number> = {};
   const failing = [];
   for (const pr of prs) {

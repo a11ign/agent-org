@@ -52,10 +52,8 @@ export function slowThresholdSeconds(env: NodeJS.ProcessEnv = process.env): numb
   return Number.isFinite(named) && named > 0 ? named : TICK_SLOW_SECONDS;
 }
 
-/**
- * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string }} TickOrder
- * @typedef {{ at: number, pid: number | null, unreadable: boolean }} Marker
- */
+export type TickOrder = { session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string };
+export type Marker = { at: number, pid: number | null, unreadable: boolean };
 
 // ---- THE START MARKER ------------------------------------------------------------------------------------------------------------------------
 
@@ -85,7 +83,7 @@ export function readMarker(path: string): Marker | null {
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   try {
@@ -103,7 +101,7 @@ function processAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return /** @type {NodeJS.ErrnoException} */ (error).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -120,7 +118,7 @@ export function readKilledTick(path: string, { alive = processAlive }: { alive?:
 
 // ---- THE TWO ORDERS --------------------------------------------------------------------------------------------------------------------------
 
-const seconds = (/** @type {number} */ ms: number) => (ms / MS_PER_SECOND).toFixed(WALL_DECIMALS);
+const seconds = (ms: number) => (ms / MS_PER_SECOND).toFixed(WALL_DECIMALS);
 
 /** @param {number} ms */
 const clock = (ms: number) => new Date(ms).toISOString();

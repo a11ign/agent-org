@@ -79,7 +79,7 @@ test("(2) the copied `Closes` parser reads every body as `declaredRowsFromBody` 
 });
 
 test("(3) a claim nobody holds is found; a live holder and a fresh claim record each keep it", () => {
-  const claimed = (/** @type {number} */ age: number) => row(11, ["in-progress", "session:worker-11"], { comments: [claimRecord(11, age)] });
+  const claimed = (age: number) => row(11, ["in-progress", "session:worker-11"], { comments: [claimRecord(11, age)] });
   assert.deepEqual(found({ openRows: [claimed(600)], liveSessions: ["ceo"] }, QUESTIONS.NO_CLAIMANT), [11]);
   assert.deepEqual(found({ openRows: [claimed(600)], liveSessions: ["ceo", "worker-11"] }, QUESTIONS.NO_CLAIMANT), []);
   assert.deepEqual(found({ openRows: [claimed(10)], liveSessions: ["ceo"] }, QUESTIONS.NO_CLAIMANT), []);
@@ -99,7 +99,7 @@ test("(3) the freshness bound is the claim-stall's untold-release bound", () => 
 });
 
 test("(4) a parked row whose `Waiting-for:` is already true is found; one still waiting, and a `ready` row with the same line, are not", () => {
-  const waitFacts = (/** @type {string} */ state: string) => ({ items: { "#50": { state, labels: [], resolvedAt: NOW, changedAt: NOW } } });
+  const waitFacts = (state: string) => ({ items: { "#50": { state, labels: [], resolvedAt: NOW, changedAt: NOW } } });
   const parked = row(12, ["parked"], { body: "Waiting-for: closed #50" });
   assert.deepEqual(found({ openRows: [parked], waitFacts: waitFacts("closed") }, QUESTIONS.WAIT_TRUE), [12]);
   assert.deepEqual(found({ openRows: [parked], waitFacts: waitFacts("open") }, QUESTIONS.WAIT_TRUE), []);
@@ -121,7 +121,7 @@ test("(5) a row with no state label and one with two are found; one with exactly
 
 test("#4116: an open row whose closing PR merged 1 minute ago is NOT found and is counted `merging`; merged 10 minutes ago it IS found (the control), and an unreadable merge time never hides it", () => {
   const at = (minutesAgo) => new Date(NOW - minutesAgo * MINUTE).toISOString();
-  const withPr = (/** @type {Record<string, any>} */ pr: Record<string, any>) => boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", ...pr }] }));
+  const withPr = (pr: Record<string, any>) => boardTruthAudit(facts({ openRows: [row(10, ["ready"])], mergedPrs: [{ number: 900, body: "Closes #10", ...pr }] }));
   const young = withPr({ mergedAt: at(1) });
   assert.deepEqual(young.findings, []);
   assert.equal(young.merging, 1);
@@ -163,7 +163,7 @@ test("#4116: the table says `N merging, not judged` beside the count only when N
 
 test("#4116: every merged-PR read asks for `mergedAt`, the first tracker's and the code repository's", () => {
   const asked = [];
-  const run = (/** @type {string[]} */ args: string[]) => { if (args[0] === "pr") asked.push(args); return "[]"; };
+  const run = (args: string[]) => { if (args[0] === "pr") asked.push(args); return "[]"; };
   const trackers = [{ key: "", repo: "a/b" }, { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" }];
   readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers });
   assert.deepEqual(asked.map((a) => a.at(-1)), ["a/b", "a/org-code"], "CONTROL: both merged-PR reads were made");
@@ -201,7 +201,7 @@ test("(6) a near-duplicate of a closed row, a near-duplicate of an older open ro
   assert.deepEqual(found({ openRows: [row(41, ["ready"], { title: "a wholly different title about fleet provisioning and nothing else" })], closedRows: [closed] }, QUESTIONS.DUPLICATE), []);
   assert.deepEqual(found({ openRows: [row(30, ["ready"], { title }), row(31, ["ready"], { title })] }, QUESTIONS.DUPLICATE), [31], "the later of two open twins, once");
   assert.deepEqual(found({ openRows: [row(42, ["ready"], { title: "short title", body: "x" }), row(43, ["ready"], { title: "short title" })] }, QUESTIONS.DUPLICATE), [], "a short title says too little to match on");
-  const superseded = (/** @type {string} */ reason: string) => ({ openRows: [row(44, ["backlog"], { body: "Superseded by #45" })], closedRows: [row(45, [], { state: "CLOSED", stateReason: reason, title: "x" })] });
+  const superseded = (reason: string) => ({ openRows: [row(44, ["backlog"], { body: "Superseded by #45" })], closedRows: [row(45, [], { state: "CLOSED", stateReason: reason, title: "x" })] });
   assert.deepEqual(found(superseded("COMPLETED"), QUESTIONS.DUPLICATE), [44]);
   assert.deepEqual(found(superseded("NOT_PLANNED"), QUESTIONS.DUPLICATE), []);
 });
@@ -226,7 +226,7 @@ test("sibling adoption rows naming different repositories are not near-duplicate
   const prose = row(4137, ["ready"], { title: adoptionTitle("x").replace("a11ign/x", "the repository") });
   assert.deepEqual(found({ openRows: [prose, row(4138, ["ready"], { title: adoptionTitle("lab") })] }, QUESTIONS.DUPLICATE), [4138]);
   // against a closed row: the same repository is the question, a different one is not
-  const lab = (/** @type {number} */ number: number, /** @type {string} */ repo: string) => row(number, ["ready"], { title: `Repair the ${repo} stability gate reading in a11ign/${repo} so that every corpus run is read once` });
+  const lab = (number: number, repo: string) => row(number, ["ready"], { title: `Repair the ${repo} stability gate reading in a11ign/${repo} so that every corpus run is read once` });
   const closed = { ...lab(50, "lab"), state: "CLOSED", stateReason: "COMPLETED" };
   assert.deepEqual(found({ openRows: [lab(51, "lab")], closedRows: [closed] }, QUESTIONS.DUPLICATE), [51]);
   assert.deepEqual(found({ openRows: [lab(51, "control")], closedRows: [{ ...closed, title: lab(50, "lab").title.replace("lab stability", "control stability") }] }, QUESTIONS.DUPLICATE), [], "a11ign/lab against a11ign/control");
@@ -264,9 +264,9 @@ test("org-health: a disagreeing board trips, keyed on its rows; an agreeing one 
 
 test("org-health: the reading is in the tick only when asked for, and its order goes to product-manager and ceo", () => {
   const base = { now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: [], drift: null, since: null };
-  const without = orgHealthReadings(/** @type {any} */ (base));
+  const without = orgHealthReadings((base as any));
   assert.ok(!without.some((r) => r.signal === SIGNALS.BOARD_TRUTH));
-  const asked = orgHealthReadings(/** @type {any} */ ({ ...base, boardTruth: boardTruthAudit(facts({ openRows: [row(13, [])] })) }));
+  const asked = orgHealthReadings(({ ...base, boardTruth: boardTruthAudit(facts({ openRows: [row(13, [])] })) } as any));
   assert.equal(asked.find((r) => r.signal === SIGNALS.BOARD_TRUTH)?.status, "tripped");
   const orders = orgHealthOrders(asked).filter((o) => o.subject === SIGNALS.BOARD_TRUTH);
   assert.deepEqual(orders.map((o) => o.session).sort(), ["ceo", "product-manager"]);
@@ -275,7 +275,7 @@ test("org-health: the reading is in the tick only when asked for, and its order 
 
 test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a partial herdr listing is UNREAD, and the open rows are read with the repo named", () => {
   const calls = [];
-  const run = (/** @type {string[]} */ args: string[]) => {
+  const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "list" && args.includes("closed")) throw new Error("HTTP 502");
     return JSON.stringify(args[0] === "pr" ? [{ number: 900, body: "Closes #10" }] : [{ number: 10, labels: [{ name: "ready" }] }]);
@@ -306,27 +306,27 @@ process.env.PATH = `${SCRATCH}:${process.env.PATH}`;
 function tick(openRowsRead: any[] | null, io: Record<string, any> = {}) {
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: openRowsRead ?? [], primaryDrift: null, claimRefusals: [] };
   const waits = { facts: { items: {} }, stale: [], bare: [], manual: [], umbrella: [] };
-  return orgHealthNow(/** @type {any} */ ({ prsRead: [], readyRead: [], openRowsRead, decideArgs, decided: [] }), /** @type {any} */ ({ now: NOW, lastMergedAt: () => NOW,
+  return orgHealthNow(({ prsRead: [], readyRead: [], openRowsRead, decideArgs, decided: [] } as any), ({ now: NOW, lastMergedAt: () => NOW,
     readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined, readWaits: () => waits,
-    readHolderAgents: () => null, ...io }));
+    readHolderAgents: () => null, ...io } as any));
 }
 /** @param {any[]} orders */
 const boardTruthOrders = (orders: any[]) => orders.filter((o) => o.subject === SIGNALS.BOARD_TRUTH);
-const wire = (/** @type {any} */ over: any = {}) => ({ repo: "a/b", run: () => "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
+const wire = (over: any = {}) => ({ repo: "a/b", run: () => "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
 /** The tick's row as `readOpenRows` returns it: labels are objects, and there is no `state` and no `comments`. */
-const tickRow = (/** @type {number} */ number: number, /** @type {string[]} */ labels: string[], /** @type {Record<string, any>} */ more: Record<string, any> = {}) => ({ number, title: `row ${number}`, body: "", labels: labels.map((name) => ({ name })), ...more });
+const tickRow = (number: number, labels: string[], more: Record<string, any> = {}) => ({ number, title: `row ${number}`, body: "", labels: labels.map((name) => ({ name })), ...more });
 
 test("tick: rows that disagree pass a boardTruth that trips, rows that agree pass one that is clear, a refused open-row read passes null (unknown), and a caller that does not ask gets none", () => {
-  const real = (/** @type {any} */ over: any = {}) => ({ readBoardTruth: (/** @type {any} */ input: any) => boardTruthNow(input, wire(over)) });
+  const real = (over: any = {}) => ({ readBoardTruth: (input: any) => boardTruthNow(input, wire(over)) });
   const trips = boardTruthOrders(tick([tickRow(13, ["lane:any"])], real()));
   assert.deepEqual(trips.map((o) => o.session).sort(), ["ceo", "product-manager"]);
   assert.match(trips[0].prompt, /#13/);
   assert.deepEqual(boardTruthOrders(tick([tickRow(10, ["ready"])], real())), [], "an agreeing board raises nothing");
-  const readings = (/** @type {any} */ rows: any, /** @type {any} */ io: any) => orgHealthReadings(/** @type {any} */ ({ now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: [], drift: null, since: null,
-    ...boardTruthFact({ openRowsRead: rows, waitFacts: null, now: NOW }, io) })).find((r) => r.signal === SIGNALS.BOARD_TRUTH);
-  const audit = (/** @type {any} */ input: any) => boardTruthNow(input, wire());
+  const readings = (rows: any, io: any) => orgHealthReadings(({ now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: [], drift: null, since: null,
+    ...boardTruthFact({ openRowsRead: rows, waitFacts: null, now: NOW }, io) } as any)).find((r) => r.signal === SIGNALS.BOARD_TRUTH);
+  const audit = (input: any) => boardTruthNow(input, wire());
   assert.equal(readings([tickRow(13, ["lane:any"])], audit)?.status, "tripped");
-  assert.equal(readings([tickRow(10, ["ready"])], (/** @type {any} */ input: any) => boardTruthNow({ ...input, waitFacts: { items: {} } }, wire()))?.status, "clear");
+  assert.equal(readings([tickRow(10, ["ready"])], (input: any) => boardTruthNow({ ...input, waitFacts: { items: {} } }, wire()))?.status, "clear");
   assert.equal(readings(null, () => { throw new Error("a refused read is not read"); })?.status, "unknown");
   assert.equal(readings(undefined, audit), undefined, "OMITTED when the caller does not ask");
   assert.equal(tick([tickRow(13, ["lane:any"])]).some((r) => r.signal === SIGNALS.BOARD_TRUTH), false, "the seam's default asks for nothing");
@@ -334,11 +334,11 @@ test("tick: rows that disagree pass a boardTruth that trips, rows that agree pas
 
 test("tick: the wait facts the gate built are PASSED, so wait-already-true is read and a wait already true is found", () => {
   const parked = tickRow(12, ["parked"], { body: "Waiting-for: closed #50" });
-  const viaTick = (/** @type {string} */ state: string) => boardTruthOrders(tick([parked], { readBoardTruth: (/** @type {any} */ input: any) => boardTruthNow(input, wire()),
+  const viaTick = (state: string) => boardTruthOrders(tick([parked], { readBoardTruth: (input: any) => boardTruthNow(input, wire()),
     readWaits: () => ({ facts: { items: { "#50": { state, labels: [] } } }, stale: [], bare: [], manual: [], umbrella: [] }) }));
   assert.match(viaTick("closed")[0].prompt, /#12 \| wait-already-true/, "the facts the tick's own wait pass built reach the audit");
   assert.deepEqual(viaTick("open"), [], "the twin: the wait is still true of the world");
-  const passed = (/** @type {any} */ waitFacts: any) => boardTruthNow({ openRowsRead: [parked], waitFacts, now: NOW }, wire());
+  const passed = (waitFacts: any) => boardTruthNow({ openRowsRead: [parked], waitFacts, now: NOW }, wire());
   assert.ok(passed(null).unread.includes(QUESTIONS.WAIT_TRUE));
   const closed = passed({ items: { "#50": { state: "closed", labels: [] } } });
   assert.ok(!closed.unread.includes(QUESTIONS.WAIT_TRUE));
@@ -349,13 +349,13 @@ test("tick: the wait facts the gate built are PASSED, so wait-already-true is re
 
 test("tick: the open rows are the tick's own (no second open-list read), and a claimed row is judged only when its comments came with the page", () => {
   const calls = [];
-  const run = (/** @type {string[]} */ args: string[]) => { calls.push(args); return "[]"; };
+  const run = (args: string[]) => { calls.push(args); return "[]"; };
   boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
   assert.ok(calls.length > 0 && calls.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
   const closedRead = calls.find((args) => args.includes("closed"));
   assert.ok(closedRead && !/body/.test(closedRead[closedRead.indexOf("--json") + 1]), "the closed rows ask for no body");
   const claimed = tickRow(11, ["in-progress", "session:worker-99"]);
-  const judged = (/** @type {any} */ page: any) => boardTruthNow({ openRowsRead: [claimed], claimedComments: page, waitFacts: null, now: NOW }, wire());
+  const judged = (page: any) => boardTruthNow({ openRowsRead: [claimed], claimedComments: page, waitFacts: null, now: NOW }, wire());
   assert.deepEqual(judged([{ number: 11, comments: [claimRecord(11, 600)] }]).findings.map((f) => f.number), [11], "a stale record and no live holder is found");
   assert.deepEqual(judged([{ number: 11, comments: [claimRecord(11, 5)] }]).findings, [], "the twin: a fresh record keeps the claim");
   assert.deepEqual(judged(null).findings, [], "no comments page is not a dead claim");
@@ -368,7 +368,7 @@ test("tick: the open rows are the tick's own (no second open-list read), and a c
 test("the poster: a table is posted once per edition day -- count first, `0 disagree` stated -- and a second tick, a restart or a second host posts nothing", () => {
   const posted = [];
   let onRecord = "";
-  const run = (/** @type {string[]} */ args: string[]) => {
+  const run = (args: string[]) => {
     if (args[0] === "api") return onRecord;
     posted.push(args);
     onRecord = "4242\n";
@@ -389,28 +389,28 @@ test("the poster: a table is posted once per edition day -- count first, `0 disa
 
 test("the poster asks the record by the day's own heading, and posts nothing it could not decide on", () => {
   const asked = [];
-  const run = (/** @type {string[]} */ args: string[]) => { asked.push(args); return ""; };
+  const run = (args: string[]) => { asked.push(args); return ""; };
   postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run });
   assert.match(asked[0].join(" "), /repos\/a\/b\/issues\/928\/comments\?per_page=100&since=2026-10-07T00:00:00Z/);
   assert.match(asked[0].join(" "), /startswith\("### Board against reality, 2026-10-08"\)/);
   const calls = [];
-  const quiet = (/** @type {string[]} */ args: string[]) => { calls.push(args); return ""; };
+  const quiet = (args: string[]) => { calls.push(args); return ""; };
   assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b", run: quiet }), "no-audit");
   assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b", run: quiet }), "unread", "a table carrying NOT READ would stand for the day");
   assert.deepEqual(calls, [], "neither asked nor posted");
-  const refusedAsk = (/** @type {string[]} */ args: string[]) => { calls.push(args); throw new Error("HTTP 403"); };
+  const refusedAsk = (args: string[]) => { calls.push(args); throw new Error("HTTP 403"); };
   assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run: refusedAsk }), /403/);
   assert.equal(calls.length, 1, "a record that could not be asked is not posted to: it might be there already");
 });
 
 test("the tick posts through boardTruthNow once, a failed post never stops the tick, and the gate really passes it", () => {
   const posts = [];
-  const post = (/** @type {any} */ input: any) => { posts.push(input.day); return "posted"; };
+  const post = (input: any) => { posts.push(input.day); return "posted"; };
   const audit = boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: { items: {} }, now: Date.parse("2026-10-08T23:30:00Z") }, wire({ post }));
   assert.deepEqual(posts, ["2026-10-09"], "the day is London's: 23:30 UTC on 8 October is already the 9th in BST");
   assert.equal(audit.findings.length, 0);
   const said = [];
-  const failing = boardTruthNow({ openRowsRead: [tickRow(13, [])], waitFacts: null, now: NOW }, wire({ post: () => { throw new Error("HTTP 502\nbody"); }, log: (/** @type {string} */ l: string) => said.push(l) }));
+  const failing = boardTruthNow({ openRowsRead: [tickRow(13, [])], waitFacts: null, now: NOW }, wire({ post: () => { throw new Error("HTTP 502\nbody"); }, log: (l: string) => said.push(l) }));
   assert.equal(failing.findings.length, 1, "the audit is returned all the same");
   assert.match(said.join(""), /not posted \(HTTP 502\); the next tick asks again/);
   const gate = readFileSync(new URL("./work-gate.ts", import.meta.url), "utf8");
@@ -481,7 +481,7 @@ test("the standalone read asks for blockedBy, so the seventh question is read th
 const HOME_TRACKER = { key: "", repo: "a/home" };
 const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
 /** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
-const gh = (/** @type {Record<string, any[]>} */ rowsOf: Record<string, any[]>, /** @type {string[]} */ refuse: string[] = []) => (/** @type {string[]} */ args: string[]) => {
+const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
   const repo = args[args.indexOf("--repo") + 1];
   if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
   if (args[0] === "pr") return "[]";
@@ -489,7 +489,7 @@ const gh = (/** @type {Record<string, any[]>} */ rowsOf: Record<string, any[]>, 
 };
 /** A complete herdr listing (standing panes present), so the live sessions are READ and a test of another question is not muddied by that one being unread. */
 const ORG_SEATS = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
-const twoTrackers = (/** @type {Record<string, any[]>} */ rowsOf: Record<string, any[]>, refuse = /** @type {string[]} */ ([])) =>
+const twoTrackers = (rowsOf: Record<string, any[]>, refuse = ([] as string[])) =>
   readBoardFacts("a/home", { run: gh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
     openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
 
@@ -539,7 +539,7 @@ test("#4080: the wait facts are the gate's, read for the first tracker only, so 
 });
 
 // ---- the eighth question: a `parked` row whose `Blocked-on:` names the chairman, whatever date it carries (a11ign/a11ign#4201) ----
-const onChairman = (/** @type {string[]} */ labels: string[], /** @type {Record<string, any>} */ more: Record<string, any> = {}) =>
+const onChairman = (labels: string[], more: Record<string, any> = {}) =>
   found({ openRows: [edged(4159, labels, { body: CHAIRMAN_BODY, ...more })] }, QUESTIONS.PARKED_ON_CHAIRMAN);
 
 test("#4201 (1) POSITIVE CONTROL: #4159's shape (parked, lane:any, a future Not-before, a Blocked-on naming the chairman) is found, and the table names the rule and product-manager", () => {

@@ -22,7 +22,6 @@
  */
 export function gateVerdicts(gateOutput: string | undefined) {
   const lines = String(gateOutput ?? "").split("\n");
-  /** @type {{ verdict: string, line: string }[]} */
   const found: { verdict: string; line: string; }[] = [];
   for (const raw of lines) {
     const line = raw.trim();
@@ -37,7 +36,6 @@ export function gateVerdicts(gateOutput: string | undefined) {
 /** The single worst verdict a gate printed, or null when it printed none.
  * @param {string | undefined} gateOutput */
 export function worstVerdict(gateOutput: string | undefined) {
-  /** @type {Record<string, number>} */
   const order: Record<string, number> = { PASS: 0, INCONCLUSIVE: 1, BLOCKED: 2, FAIL: 3 };
   const all = gateVerdicts(gateOutput);
   if (all.length === 0) return null;
@@ -117,7 +115,7 @@ export function isRulesRealPagesStage(output: string | undefined): boolean {
  */
 export function latestVerdictGate(gates: any[]): any | null {
   const candidates = gates.filter(
-    (/** @type {any} */ g: any) => isConformanceGate(g) && worstVerdict(g.output) !== null);
-  return candidates.sort((/** @type {any} */ a: any, /** @type {any} */ b: any) => Date.parse(b.at) - Date.parse(a.at))[0]
+    (g: any) => isConformanceGate(g) && worstVerdict(g.output) !== null);
+  return candidates.sort((a: any, b: any) => Date.parse(b.at) - Date.parse(a.at))[0]
     ?? null;
 }

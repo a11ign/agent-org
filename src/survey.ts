@@ -24,11 +24,11 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 
-/** @typedef {{ kind: "grep", pattern: string, paths: string[], flags?: string[] }} GrepTask */
-/** @typedef {{ kind: "read", path: string, offset?: number, limit?: number }} ReadTask */
-/** @typedef {{ kind: "gh", args: string[] }} GhTask */
-/** @typedef {GrepTask | ReadTask | GhTask} Task */
-/** @typedef {{ task: Task, ok: true, output: string } | { task: Task, ok: false, error: string }} Result */
+export type GrepTask = { kind: "grep", pattern: string, paths: string[], flags?: string[] };
+export type ReadTask = { kind: "read", path: string, offset?: number, limit?: number };
+export type GhTask = { kind: "gh", args: string[] };
+export type Task = GrepTask | ReadTask | GhTask;
+export type Result = { task: Task, ok: true, output: string } | { task: Task, ok: false, error: string };
 
 /** `Read`'s own default in engineer.md: a whole read only under about 200 lines. */
 export const DEFAULT_READ_LIMIT = 200;
@@ -36,12 +36,11 @@ export const DEFAULT_READ_LIMIT = 200;
 /** `gh`'s own output is capped, the same ceiling `prune-tmp.mjs`'s neighbours use for a `gh` read. */
 const MAX_GH_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-/** @type {(cmd: string, args: string[], opts: import("node:child_process").ExecFileSyncOptions) => string} */
-const defaultRun: (cmd: string, args: string[], opts: import("node:child_process").ExecFileSyncOptions) => string = (cmd, args, opts): string => /** @type {string} */ (execFileSync(cmd, args, opts));
+const defaultRun: (cmd: string, args: string[], opts: import("node:child_process").ExecFileSyncOptions) => string = (cmd, args, opts): string => (execFileSync(cmd, args, opts) as string);
 
 /** The first line of whatever a caught spawn or read failure says. @param {unknown} cause @returns {string} */
 function firstLine(cause: unknown): string {
-  return String(/** @type {{ message?: unknown }} */ (cause)?.message ?? cause).split("\n")[0];
+  return String((cause as { message?: unknown })?.message ?? cause).split("\n")[0];
 }
 
 /**
@@ -55,7 +54,7 @@ export function runGrep(task: GrepTask, { cwd, run }: { cwd: string; run: typeof
       { cwd, env: sandboxGitEnv(), encoding: "utf8" });
     return { task, ok: true, output };
   } catch (cause) {
-    if (/** @type {{ status?: number }} */ (cause).status === 1) return { task, ok: true, output: "" };
+    if ((cause as { status?: number }).status === 1) return { task, ok: true, output: "" };
     return { task, ok: false, error: firstLine(cause) };
   }
 }
@@ -67,7 +66,7 @@ export function runGrep(task: GrepTask, { cwd, run }: { cwd: string; run: typeof
  */
 export function runRead(task: ReadTask, { cwd, readFile }: { cwd: string; readFile: typeof readFileSync; }): Result {
   try {
-    const lines = /** @type {string} */ (readFile(join(cwd, task.path), "utf8")).split("\n");
+    const lines = (readFile(join(cwd, task.path), "utf8") as string).split("\n");
     const offset = task.offset ?? 1;
     const limit = task.limit ?? DEFAULT_READ_LIMIT;
     const slice = lines.slice(offset - 1, offset - 1 + limit);
@@ -103,7 +102,7 @@ export function survey(tasks: Task[], { cwd, run = defaultRun, readFile = readFi
     if (task.kind === "grep") return runGrep(task, { cwd, run });
     if (task.kind === "read") return runRead(task, { cwd, readFile });
     if (task.kind === "gh") return runGh(task, { cwd, run });
-    return { task, ok: false, error: `unknown task kind ${JSON.stringify(/** @type {any} */ (task).kind)}` };
+    return { task, ok: false, error: `unknown task kind ${JSON.stringify((task as any).kind)}` };
   });
 }
 
@@ -133,7 +132,7 @@ function tasksFromArgv(): Task[] {
     throw new Error("survey: the task list must be a JSON array of { kind: \"grep\" | \"read\" | \"gh\", ... } "
       + "(--tasks=<file>, or piped on stdin when --tasks is absent)");
   }
-  return /** @type {Task[]} */ (parsed);
+  return (parsed as Task[]);
 }
 
 function main() {

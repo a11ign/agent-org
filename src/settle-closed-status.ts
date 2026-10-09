@@ -16,10 +16,10 @@ import { RESTING_STATUS, statusContradictions } from "./board-status-health.ts";
 
 export const PROJECT_UNREADABLE = "project-unreadable";
 
-/** @typedef {{ row: number, cause: "project-unreadable" | "other", message: string }} Refusal */
-/** @typedef {{ settled: boolean, refused: Refusal[] }} SettleOutcome */
-/** @typedef {import("./board-status-health.ts").BoardItem} BoardItem */
-/** @typedef {{ number: number, status: string | null }} SettleableRow */
+export type Refusal = { row: number, cause: "project-unreadable" | "other", message: string };
+export type SettleOutcome = { settled: boolean, refused: Refusal[] };
+export type BoardItem = import("./board-status-health.ts").BoardItem;
+export type SettleableRow = { number: number, status: string | null };
 
 /**
  * WHY A MOVE WAS REFUSED, CLASSIFIED WHERE THE REFUSAL IS MADE -- never re-read from log text at the exit.
@@ -94,7 +94,6 @@ export function settleClosedStatus(n: number, { moveStatus, currentStatus = () =
         prefix?: string;
         log?: (line: string) => void;
     }): SettleOutcome {
-  /** @type {string | null} */
   let status: string | null;
   try {
     status = currentStatus(n);
@@ -102,7 +101,7 @@ export function settleClosedStatus(n: number, { moveStatus, currentStatus = () =
     // #1360, `ceo`'s ruling: a Status read that fails REFUSES with its cause, and the move never reads again. In CI
     // the Project is unreadable until #546, so letting the move try would spend a second failed read per row.
     const reason = `could not read #${n}'s Status before moving it to "${RESTING_STATUS}" -- `
-      + `${/** @type {Error} */ (error).message}`;
+      + `${(error as Error).message}`;
     log(`${prefix}: #${n} CLOSED but Status NOT moved -- ${reason}`);
     return { settled: false, refused: [{ row: n, cause: refusalCause(reason), message: reason }] };
   }
@@ -159,9 +158,9 @@ export function settleClosedStatus(n: number, { moveStatus, currentStatus = () =
  */
 export function closedRowsToSettle(items: BoardItem[]): { atLiveStatus: SettleableRow[]; withNoStatus: SettleableRow[]; } {
   const { closedButLive, closedUnboarded } = statusContradictions(items);
-  const withIssueNumber = (/** @type {BoardItem[]} */ rows: BoardItem[]) => rows
+  const withIssueNumber = (rows: BoardItem[]) => rows
     .filter((i) => typeof i.number === "number")
-    .map((i) => ({ number: /** @type {number} */ (i.number), status: i.status }));
+    .map((i) => ({ number: (i.number as number), status: i.status }));
   return { atLiveStatus: withIssueNumber(closedButLive), withNoStatus: withIssueNumber(closedUnboarded) };
 }
 
@@ -189,9 +188,7 @@ export function settleBoardRows(items: BoardItem[], { settle, log = console.log 
   const { atLiveStatus, withNoStatus } = closedRowsToSettle(items);
   log(`SETTLE-BOARD: ${items.length} board item(s) read -- ${atLiveStatus.length} CLOSED at a live Status, `
     + `${withNoStatus.length} CLOSED with no Status at all (#1228: counted apart, same repair).`);
-  /** @type {number[]} */
   const attempted: number[] = [];
-  /** @type {Refusal[]} */
   const unsettled: Refusal[] = [];
   for (const { number, status } of [...atLiveStatus, ...withNoStatus]) {
     attempted.push(number);
@@ -347,7 +344,6 @@ export const CLOSED_ROWS_QUERY = `
  * @returns {{ numbers: number[], hasNextPage: boolean, endCursor: string | null }}
  */
 export function closedRowsPageFromRead(raw: string, projectNumber: number): { numbers: number[]; hasNextPage: boolean; endCursor: string | null; } {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -355,21 +351,19 @@ export function closedRowsPageFromRead(raw: string, projectNumber: number): { nu
     throw new Error(`settle-closed-rows: gh's closed-row page was not JSON -- refusing to guess whether `
       + `the board read is complete. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const errors = /** @type {{ errors?: unknown }} */ (parsed)?.errors;
+  const errors = (parsed as { errors?: unknown })?.errors;
   if (errors) {
     throw new Error(`settle-closed-rows: the closed-row page came back with errors -- refusing to guess. `
       + `Got: ${JSON.stringify(errors).slice(0, 300)}`);
   }
-  const issues = /** @type {{ data?: { repository?: { issues?: unknown } } }} */ (parsed)?.data?.repository?.issues;
-  const nodes = /** @type {{ nodes?: unknown, pageInfo?: { hasNextPage?: unknown, endCursor?: unknown } }} */
-    (issues);
+  const issues = (parsed as { data?: { repository?: { issues?: unknown } } })?.data?.repository?.issues;
+  const nodes = (issues as { nodes?: unknown, pageInfo?: { hasNextPage?: unknown, endCursor?: unknown } });
   if (!nodes || !Array.isArray(nodes.nodes) || typeof nodes.pageInfo?.hasNextPage !== "boolean") {
     throw new Error(`settle-closed-rows: the closed-row page was not the expected shape -- refusing to `
       + `guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  const numbers = nodes.nodes.map((/** @type {unknown} */ entry: unknown, /** @type {number} */ i: number) => {
-    const node = /** @type {{ number?: unknown, projectItems?: { totalCount?: unknown, nodes?: unknown } }} */
-      (entry);
+  const numbers = nodes.nodes.map((entry: unknown, i: number) => {
+    const node = (entry as { number?: unknown, projectItems?: { totalCount?: unknown, nodes?: unknown } });
     if (typeof node?.number !== "number") {
       throw new Error(`settle-closed-rows: closed-row page entry ${i} has no number -- refusing to guess. `
         + `Got: ${JSON.stringify(entry).slice(0, 300)}`);
@@ -382,7 +376,7 @@ export function closedRowsPageFromRead(raw: string, projectNumber: number): { nu
     }
     const itemNodes = items.nodes;
     const onThisProject = itemNodes.some(
-      (/** @type {{ project?: { number?: unknown } }} */ item: { project?: { number?: unknown; }; }) => item?.project?.number === projectNumber);
+      (item: { project?: { number?: unknown; }; }) => item?.project?.number === projectNumber);
     const complete = itemNodes.length >= items.totalCount;
     if (!onThisProject && !complete) {
       throw new Error(`settle-closed-rows: #${node.number}'s Project membership could not be read `

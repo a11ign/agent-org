@@ -102,7 +102,7 @@ const longDate = (iso: string) => {
 /** @param {any} release @param {any[]} open */
 function trackStatus(release: any, open: any[]) {
   if (!release?.due_on) return { word: "has no date", why: "no date has been set." };
-  const unbounded = open.filter((/** @type {any} */ i: any) => i.milestone?.title === MILESTONE
+  const unbounded = open.filter((i: any) => i.milestone?.title === MILESTONE
     && /INCONCLUSIVE|hypothesis|unbounded|not yet known/i.test(i.title));
   const days = Math.ceil((Date.parse(release.due_on) - Date.now()) / (24 * HOURS_MS));
   if (days < 0) return { word: "has slipped", why: "the date has passed and work remains open." };
@@ -172,7 +172,7 @@ function section2() {
  * @param {any[]} achievements
  */
 function inBody(achievements: any[]) {
-  return achievements.filter((/** @type {any} */ a: any) => a.inBody !== false);
+  return achievements.filter((a: any) => a.inBody !== false);
 }
 
 /** @param {any} d */
@@ -231,7 +231,7 @@ export const DECISIONS = [
 
 /** @param {any} d */
 function section4(d: any) {
-  const blockers = d.open.filter((/** @type {any} */ i: any) => i.milestone?.title === MILESTONE);
+  const blockers = d.open.filter((i: any) => i.milestone?.title === MILESTONE);
   return [
     `## The board is asked for ${numberWord(DECISIONS.length).toLowerCase()} decisions, and `
     + `${numberWord(DECISIONS.filter((x) => x.costsNothing).length).toLowerCase()} of them cost nothing `
@@ -372,11 +372,11 @@ function section5(d: any) {
  */
 /** @param {any} d */
 function scalingArms(d: any) {
-  const gate = (d.gates ?? []).find((/** @type {any} */ g: any) => /medianSeconds/.test(g.output ?? ""));
+  const gate = (d.gates ?? []).find((g: any) => /medianSeconds/.test(g.output ?? ""));
   if (!gate) return null;
   /** @param {string} name */
   const arm = (name: string) => {
-    const line = (gate.output.split("\n").find((/** @type {string} */ l: string) => l.trim().startsWith(name)) ?? "");
+    const line = (gate.output.split("\n").find((l: string) => l.trim().startsWith(name)) ?? "");
     const json = line.slice(line.indexOf("{"));
     try { return JSON.parse(json); } catch { return null; }
   };
@@ -401,10 +401,10 @@ function scalingArms(d: any) {
  * @param {any} d
  */
 function reconciliation(d: any) {
-  const onRelease = d.open.filter((/** @type {any} */ i: any) => i.milestone?.title === MILESTONE).length;
+  const onRelease = d.open.filter((i: any) => i.milestone?.title === MILESTONE).length;
   const out = outOfRelease(d.open).length;
   const none = unclassified(d.open).length;
-  const later = d.open.filter((/** @type {any} */ i: any) => i.milestone && i.milestone.title !== MILESTONE
+  const later = d.open.filter((i: any) => i.milestone && i.milestone.title !== MILESTONE
     && !outOfRelease([i]).length).length;
   const sum = onRelease + later + out + none;
   const unclassifiedClause = none === 0
@@ -472,7 +472,6 @@ function gateSource(gate: any, captureAge: string | null, worst: any) {
 /** The source table: every figure the body states, with where it came from.
  * @param {any} d */
 function sourceTable(d: any) {
-  /** @type {string[]} */
   const rows: string[] = [];
   /** @param {string} what @param {string} value @param {string} source */
   const push = (what: string, value: string, source: string) => rows.push(`| ${what} | ${value} | ${source} |`);
@@ -480,7 +479,7 @@ function sourceTable(d: any) {
     "the project's issue tracker, on the release milestone; every change of this date is logged against "
     + "it (GitHub milestone `v0.1.0 — first publish`)");
   push("Pieces of work blocking that release",
-    String(d.open.filter((/** @type {any} */ i: any) => i.milestone?.title === MILESTONE).length),
+    String(d.open.filter((i: any) => i.milestone?.title === MILESTONE).length),
     "the project's issue tracker (GitHub Issues API)");
   // THE EXCLUSION IS PRINTED, NEVER SILENT. A count that quietly drops rows is worse than one that
   // counts the wrong thing, because a reader cannot tell. `meta` rows are containers rather than work --
@@ -738,7 +737,7 @@ const wordCount = (s: string) => s.split(/\s+/).filter(Boolean).length;
  * @param {string | null | undefined} at */
 const dateLabel = (at: string | null | undefined) => {
   const parsed = at ? Date.parse(at) : NaN;
-  return Number.isNaN(parsed) ? "unknown date" : /** @type {string} */ (at).slice(0, 10);
+  return Number.isNaN(parsed) ? "unknown date" : (at as string).slice(0, 10);
 };
 
 const MAX_CLAIM_PREVIEW = 70;
@@ -996,12 +995,12 @@ function requireSummary(publishing: boolean) {
  */
 /** @param {any[]} achievements */
 function refuseIfTheWorldMoved(achievements: any[]) {
-  const cited = achievements.map((a) => a.issue).filter((/** @type {any} */ n: any) => n !== undefined);
+  const cited = achievements.map((a) => a.issue).filter((n: any) => n !== undefined);
   if (!cited.length) return;
   // CLOSED-AT, not just CLOSED. The refusal is 'nobody has looked since it moved', so the moment it
   // moved is part of the question -- see `achievementsWhoseWorldMoved`.
   const issueState = Object.fromEntries(
-    issues().map((/** @type {any} */ i: any) => [String(i.number), { state: i.state, closedAt: i.closedAt ?? null }]));
+    issues().map((i: any) => [String(i.number), { state: i.state, closedAt: i.closedAt ?? null }]));
   const moved = achievementsWhoseWorldMoved({ achievements, issueState });
   if (!moved.length) return;
 
@@ -1081,7 +1080,6 @@ function main() {
     "--late-edition", "--discussion"], { entry: import.meta.url, command: "pnpm run board:document" });
 
   const argv = process.argv.slice(2);
-  /** @type {(n: string) => string | undefined} */
   const flagOf: (n: string) => string | undefined = (n): string | undefined => argv.find((a) => a.startsWith(`${n}=`))?.split("=").slice(1).join("=");
 
   const late = argv.includes("--late-edition");
@@ -1144,7 +1142,7 @@ function publishDiscussion(md: string) {
     const { url, action } = publishEdition({ day: editionDay(), body: md });
     process.stdout.write(`${url} (${action})\n`);
   } catch (error) {
-    console.error(String(/** @type {Error} */ (error)?.message ?? error));
+    console.error(String((error as Error)?.message ?? error));
     process.exit(6);
   }
 }
@@ -1196,7 +1194,7 @@ function renderPdfWithChrome(html: string, pdf: string) {
   try {
     chrome = resolveChromeBinary();
   } catch (e) {
-    console.error(`REFUSING to render: ${/** @type {{ message?: string }} */ (e).message}`);
+    console.error(`REFUSING to render: ${(e as { message?: string }).message}`);
     process.exit(2);
   }
   console.error(`Using ${chrome}`);

@@ -78,7 +78,6 @@ export function stashLines(entries: { ref: string; subject: string; }[]): string
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "pnpm run stash:whose" });
-  /** @type {string} */
   let raw: string;
   try {
     raw = execFileSync("git", ["stash", "list", "--format=%gd%x09%s"],
@@ -86,7 +85,7 @@ function main() {
   } catch (error) {
     process.stderr.write("CANNOT SAY what is in the stash: `git stash list` failed. This is "
       + `INCONCLUSIVE, not "no stashes" -- the two need opposite responses. ${
-        /** @type {Error} */ (error).message}\n`);
+        (error as Error).message}\n`);
     process.exit(EXIT.CANNOT_ASK);
   }
   const entries = raw.split("\n").filter(Boolean).map((line) => {

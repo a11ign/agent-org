@@ -11,16 +11,9 @@
 // imports it and supplies the items it fetched.
 
 /**
- * A board item, typed to what the PRODUCER actually emits rather than to what this file finds
- * convenient. `tsc` caught the narrower version: `board-snapshot.mjs` can return `number: null` and
- * `state: null` for a draft item, and a type here that forbade them would have made the two modules'
- * `BoardItem`s structurally incompatible -- two copies of one type, disagreeing.
- *
- * The nulls are real and the classifier already handles them: a row with no state is an offender in
- * neither direction, which is what the third clause of the test asserts.
- *
- * @typedef {{ number: number | null, state: string | null, status: string | null }} BoardItem
+ * A board item, typed to what the PRODUCER actually emits rather than to what this file finds convenient. `tsc` caught the narrower version: `board-snapshot.mjs` can return `number: null` and `state: null` for a draft item, and a type here that forbade them would have made the two modules' `BoardItem`s structurally incompatible -- two copies of one type, disagreeing. The nulls are real and the classifier already handles them: a row with no state is an offender in neither direction, which is what the third clause of the test asserts.
  */
+export type BoardItem = { number: number | null, state: string | null, status: string | null };
 
 /**
  * #1996: THE RESTING STATUS, NAMED ONCE.

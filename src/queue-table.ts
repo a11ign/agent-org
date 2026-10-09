@@ -51,7 +51,7 @@ import { armedFromApi } from "./pr-armed-state.ts";
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
 import { poolFromHeaders } from "./api-pool.ts";
 
-/** @typedef {import("./api-pool.ts").Pool} Pool */
+export type Pool = import("./api-pool.ts").Pool;
 
 export const EXIT = { EXAMINED: 0, INCOMPLETE: 2 };
 
@@ -99,13 +99,13 @@ let ghCalls = 0;
 /** @returns {number} */
 export function ghCallsMade(): number { return ghCalls; }
 
-const gh = (/** @type {string[]} */ args: string[]) => {
+const gh = (args: string[]) => {
   // `rate_limit` is the one gh call that does not count against the limit, so it must not count here
   // either -- a meter that includes reading the meter reports its own observation as consumption.
   if (!(args[0] === "api" && args[1] === "rate_limit")) ghCalls += 1;
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 };
-const git = (/** @type {string[]} */ args: string[]) => {
+const git = (args: string[]) => {
   try {
     return { status: 0, stdout: execFileSync("git", args, { encoding: "utf8", env: sandboxGitEnv() }) };
   } catch {
@@ -140,7 +140,6 @@ const defaultRunGit: (args: string[]) => string = (args): string => execFileSync
  * @returns {{ branches: string[], remoteCount: number }}
  */
 export function fetchRemoteBranchesChecked({ run = defaultRunGit }: { run?: typeof defaultRunGit; } = {}): { branches: string[]; remoteCount: number; } {
-  /** @type {string} */
   let localRaw: string;
   try {
     // `%(symref)` is EMPTY for a real branch and non-empty for a symbolic ref -- `refs/remotes/origin/HEAD`
@@ -154,19 +153,18 @@ export function fetchRemoteBranchesChecked({ run = defaultRunGit }: { run?: type
     localRaw = run(["for-each-ref", "--format=%(refname:short)%09%(symref)", "refs/remotes/origin"]);
   } catch (cause) {
     throw new Error(`queue-table: could not list remote-tracking branches -- refusing to census. `
-      + `${/** @type {Error} */ (cause).message}`, { cause });
+      + `${(cause as Error).message}`, { cause });
   }
   const branches = localRaw.split("\n").map((l) => l.trim()).filter(Boolean)
     .map((l) => l.split("\t"))
     .filter(([, symref]) => !symref)
     .map(([name]) => name.replace(/^origin\//, ""));
-  /** @type {string} */
   let remoteRaw: string;
   try {
     remoteRaw = run(["ls-remote", "--heads", "origin"]);
   } catch (cause) {
     throw new Error(`queue-table: could not ask the remote for its own branch count -- refusing to `
-      + `census a population it cannot vouch for. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `census a population it cannot vouch for. ${(cause as Error).message}`, { cause });
   }
   const remoteCount = remoteRaw.split("\n").map((l) => l.trim()).filter(Boolean).length;
   if (branches.length !== remoteCount) {
@@ -308,7 +306,7 @@ export function trunkState(): { sha: string; runId: string; conclusion: string; 
   const runs = ask(() => JSON.parse(gh(["run", "list", "--workflow=trunk.yml", "--limit", "20",
     "--json", "headSha,conclusion,status,databaseId"])));
   if (!Array.isArray(runs)) return { sha, runId: "?", conclusion: "?", status: "?" };
-  const mine = runs.find((/** @type {{headSha: string}} */ r: { headSha: string; }) => r.headSha === sha);
+  const mine = runs.find((r: { headSha: string; }) => r.headSha === sha);
   return mine
     ? { sha, runId: String(mine.databaseId), conclusion: mine.conclusion || "(none yet)", status: mine.status }
     : { sha, runId: "(no run)", conclusion: "(none)", status: "(none)" };
@@ -340,7 +338,7 @@ export function queueEntriesArgs(): string[] {
 export function queueEntries(run: (args: string[]) => string): Map<number, { autoMergeRequest?: unknown; mergeQueueEntry?: { state?: string; position?: number; } | null; }> | null {
   const nodes = ask(() => JSON.parse(run(queueEntriesArgs())));
   if (!Array.isArray(nodes)) return null;
-  return new Map(nodes.map((/** @type {any} */ node: any) => [node.number, node]));
+  return new Map(nodes.map((node: any) => [node.number, node]));
 }
 
 /**
@@ -427,7 +425,7 @@ export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}
   const prs = ask(() => JSON.parse(run(["api", `repos/${REPO}/pulls?state=open&per_page=100`])));
   if (!Array.isArray(prs)) return null;
   const queue = queueEntries(run);
-  return prs.map((/** @type {any} */ pr: any) => ({
+  return prs.map((pr: any) => ({
     number: pr.number,
     headRefName: pr.head?.ref ?? "?",
     headRefOid: pr.head?.sha ?? "",
@@ -456,7 +454,7 @@ export function openPRs({ run = gh }: { run?: (args: string[]) => string; } = {}
     // thing it just found. Importing the predicate means this row follows the rename by construction
     // rather than by somebody remembering, and it agrees with `arm-pr`/`auto-arm-sweep` at every instant
     // including the one where main has the rename and this branch has not been carried yet.
-    holders: holdersOf((pr.labels ?? []).map((/** @type {any} */ l: any) => String(l?.name ?? ""))),
+    holders: holdersOf((pr.labels ?? []).map((l: any) => String(l?.name ?? ""))),
     redChecks: brokenCheckNames(pr.labels, checksOnSha(pr.head?.sha ?? "", run)),
   }));
 }
@@ -642,7 +640,7 @@ export function renderStalled(prs: any[]): string[] {
  * @param {{mergedAt?: string | null}[]} merged
  */
 export function windowOf(merged: { mergedAt?: string | null; }[]) {
-  const stamps = merged.map((pr) => pr.mergedAt).filter((/** @type {any} */ t: any) => typeof t === "string");
+  const stamps = merged.map((pr) => pr.mergedAt).filter((t: any) => typeof t === "string");
   return stamps.length === 0 ? null : stamps.sort()[0];
 }
 
@@ -663,7 +661,7 @@ export function renderMergedChecks(merged: any[] | null, required: string[] | nu
     ? "   (no merged PRs in range)"
     : `   since ${since ?? "(merge times unreadable)"}`;
   const { byName, unreadable } = nonSuccessByName(merged);
-  const blocking = (/** @type {string} */ name: string) => (required === null
+  const blocking = (name: string) => (required === null
     ? "  (required? unknown)"
     : required.includes(name) ? "  ** REQUIRED -- this one blocks **" : "  (non-blocking)");
   const lines = [header, ...(byName.size === 0 ? ["   none"] : [...byName.entries()]
@@ -674,6 +672,10 @@ export function renderMergedChecks(merged: any[] | null, required: string[] | nu
   return { lines, incomplete: unreadable.length > 0 || timesMissing || required === null };
 }
 
+/**
+ * `load` and `gitProcesses` are declared NULLABLE even though `os.loadavg()` cannot fail today. The type is what stops the next reader writing `host.load > LOAD_CEILING` and getting `false` from a missing reading -- the exact expression this commit removes. A type that forbids the absent case is how the absent case stops being handled.
+ */
+export type HostState = {compressedMb: number, inactiveMb: number, freeMb: number, pageouts: number, load: number | null, gitProcesses: number | null, worktrees: number, topConsumers?: {pid: string, cpu: number, command: string}[] | null};
 /**
  * THE HOST ITSELF, because on 2026-09-09 it was the bottleneck and nothing said so.
  *
@@ -702,16 +704,6 @@ export function renderMergedChecks(merged: any[] | null, required: string[] | nu
  * finding, and it becomes a threshold only once its delta has a baseline -- CLAUDE.md's own rule that
  * paging must be read as a delta, since the counters are since-boot and 6.6 GB left from an incident
  * hours ago is indistinguishable from a host swapping right now.
- *
- * @typedef {{compressedMb: number, inactiveMb: number, freeMb: number, pageouts: number,
- *   load: number | null, gitProcesses: number | null, worktrees: number,
- *   topConsumers?: {pid: string, cpu: number, command: string}[] | null}} HostState
- *
- * `load` and `gitProcesses` are declared NULLABLE even though `os.loadavg()` cannot fail today. The
- * type is what stops the next reader writing `host.load > LOAD_CEILING` and getting `false` from a
- * missing reading -- the exact expression this commit removes. A type that forbids the absent case is
- * how the absent case stops being handled.
- *
  * @returns {HostState | null}
  */
 /**
@@ -733,7 +725,7 @@ function gitProcessCount(): number | null {
       .trim().split("\n").filter(Boolean).length;
   } catch (err) {
     // Exit 1 is pgrep's documented "nothing matched" -- a real measurement of zero.
-    return /** @type {{status?: number}} */ (err).status === 1 ? 0 : null;
+    return (err as {status?: number}).status === 1 ? 0 : null;
   }
 }
 
@@ -832,7 +824,6 @@ export function renderBudget(budget: { core: Pool | null; graphql: Pool | null; 
     + `   this table spent ${spent}`];
   // EXHAUSTED IS ITS OWN LINE, not a small number in a row of numbers. graphql reaching 0 takes out every
   // `gh pr list` and `gh issue list` -- which is most of this table -- while core still reads healthy.
-  /** @type {[string, Pool | null][]} */
   const pools: [string, Pool | null][] = [["core", budget.core], ["graphql", budget.graphql]];
   for (const [name, p] of pools) {
     if (p === null) continue;
@@ -854,11 +845,11 @@ export function hostState() {
   const pageSize = Number((/page size of (\d+)/.exec(stat) ?? [])[1] ?? 16384);
   // LABELLED, never positional: the compressor's label is four words long and a positional read of it
   // returns the word "by" as a number, which is 0, which reads as good news.
-  const mb = (/** @type {string} */ label: string) => {
+  const mb = (label: string) => {
     const m = new RegExp(`${label}:\\s+(\\d+)`).exec(stat);
     return m ? Math.round((Number(m[1]) * pageSize) / 1048576) : 0;
   };
-  const count = (/** @type {string} */ label: string) => {
+  const count = (label: string) => {
     const m = new RegExp(`${label}:\\s+(\\d+)`).exec(stat);
     return m ? Number(m[1]) : 0;
   };

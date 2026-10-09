@@ -35,17 +35,16 @@ const closed = (number: number, labels: string[], agoMs: number, over: object = 
  * @param {object[]} issues @param {{ hostile?: boolean, fail?: string }} [how] `hostile` ignores `state` (an open row comes back anyway); `fail` is the message every call throws
  */
 function tracker(issues: object[], { hostile = false, fail = "" }: { hostile?: boolean; fail?: string; } = {}) {
-  /** @type {string[][]} */
   const calls: string[][] = [];
-  const run = (/** @type {string[]} */ args: string[]) => {
+  const run = (args: string[]) => {
     calls.push(args);
     if (fail) throw new Error(fail);
     assert.equal(args[0], "api");
     assert.equal(args.find((a) => a.startsWith("repos/")), `repos/${REPO}/issues`);
-    const param = (/** @type {string} */ name: string) => args.flatMap((a, i) => (args[i - 1] === "-f" && a.startsWith(`${name}=`) ? [a.slice(name.length + 1)] : []))[0];
+    const param = (name: string) => args.flatMap((a, i) => (args[i - 1] === "-f" && a.startsWith(`${name}=`) ? [a.slice(name.length + 1)] : []))[0];
     let rows = issues;
-    if (!hostile && param("state")) rows = rows.filter((r) => /** @type {any} */ (r).state === param("state"));
-    if (param("labels")) rows = rows.filter((r) => /** @type {any} */ (r).labels.includes(param("labels")));
+    if (!hostile && param("state")) rows = rows.filter((r) => (r as any).state === param("state"));
+    if (param("labels")) rows = rows.filter((r) => (r as any).labels.includes(param("labels")));
     return JSON.stringify(rows.slice(0, Number(param("per_page"))));
   };
   return { run, calls };
@@ -125,7 +124,7 @@ test("a refused read of the labels or the file is unknown, never 'no repeats'", 
 test("a failure on the PER-CLASS read is unknown too, not the cheap read's answer", () => {
   let n = 0;
   const base = tracker(TWO_IN_X).run;
-  const failsSecond = (/** @type {string[]} */ args: string[]) => { if (++n === 2) throw new Error("HTTP 502"); return base(args); };
+  const failsSecond = (args: string[]) => { if (++n === 2) throw new Error("HTTP 502"); return base(args); };
   const fact = readClassRepeat(failsSecond, REPO, { root: "/project", read: () => INDEX, now: NOW });
   assert.ok("unreadable" in fact);
   assert.equal(classRepeatReadings({ now: NOW, classRepeat: fact })[0].status, "unknown");
@@ -180,7 +179,7 @@ test("a class repeated over all time is counted over all time, not over the newe
   const old = [closed(11, ["class:x"], 5 * MINUTE), closed(2, ["class:x"], 60 * DAY), closed(1, ["class:x"], 90 * DAY)];
   const recentPage = old.slice(0, 1);
   const base = tracker(old).run;
-  const run = (/** @type {string[]} */ args: string[]) => (args.some((a) => a.startsWith("labels=")) ? base(args) : JSON.stringify(recentPage));
+  const run = (args: string[]) => (args.some((a) => a.startsWith("labels=")) ? base(args) : JSON.stringify(recentPage));
   const [reading] = classRepeatReadings({ now: NOW, classRepeat: readClassRepeat(run, REPO, { root: "/project", read: () => INDEX, now: NOW }) });
   assert.equal(reading.status, "tripped");
   assert.ok(reading.detail.includes("3 closed rows") && reading.detail.includes("#11, #2, #1"));
@@ -208,9 +207,9 @@ test("two classes repeating in one tick are two readings with their own keys", (
 });
 
 test("the tick: an omitted fact is silent, a tripped one is one order to ceo, an unknown one logs and orders nothing", () => {
-  const lines = /** @type {string[]} */ ([]);
+  const lines = ([] as string[]);
   const base = { now: NOW, lastMergedAt: NOW - MINUTE, work: null, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null, copies: [] };
-  const io = { log: (/** @type {string} */ l: string) => lines.push(l), readCopies: () => [], readAutoOff: () => undefined };
+  const io = { log: (l: string) => lines.push(l), readCopies: () => [], readAutoOff: () => undefined };
   assert.equal(orgHealthReadings(base).some((r) => r.signal === SIGNALS.CLASS_REPEAT), false, "a caller that does not ask gets no class-repeat reading");
   const orders = orgHealthTick({ ...base, classRepeat: factOf(TWO_IN_X) }, io).filter((o) => o.subject === SIGNALS.CLASS_REPEAT);
   assert.deepEqual(orders.map((o) => [o.session, o.cause, o.causeKey]), [["ceo", "org-health", "ceo/org-health/class-repeat/x@11"]]);

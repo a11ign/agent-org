@@ -246,7 +246,7 @@ export const repoNow = () => activeRepo ?? REPO;
 export const GH_READ_TIMEOUT_MS = 30_000;
 
 /** The two words a `gh` call is named by in the ledger and in a line: `pr list`, `api repos/o/r/issues`. A body, a query or a token is never among them. */
-const ghCallName = (/** @type {string[]} */ args: string[]) => args.slice(0, 2).join(" ");
+const ghCallName = (args: string[]) => args.slice(0, 2).join(" ");
 
 /**
  * `gh`, run to completion or cut at `timeoutMs`. A call that hits the bound is TOLD (naming the subcommand) and then thrown as `execFileSync` throws it
@@ -255,11 +255,11 @@ const ghCallName = (/** @type {string[]} */ args: string[]) => args.slice(0, 2).
  * @param {number} timeoutMs
  * @param {{ stdio?: "pipe", log?: (line: string) => void }} [how] `stdio: "pipe"` captures `gh`'s stderr on the error instead of inheriting it; `log` is where the cut is told
  */
-export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => (/** @type {string[]} */ args: string[], repo = activeRepo) => {
+export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => (args: string[], repo = activeRepo) => {
   try {
     return execFileSync("gh", args, { ...ghOptions(repo), timeout: timeoutMs, killSignal: "SIGKILL", ...(stdio === undefined ? {} : { stdio }) });
   } catch (error) {
-    if (/** @type {{ code?: string }} */ (error)?.code === "ETIMEDOUT") {
+    if ((error as { code?: string })?.code === "ETIMEDOUT") {
       log(`GH CUT in ${repoNow()}: \`gh ${ghCallName(args)}\` ran past ${timeoutMs / 1000} s and was killed. That read is refused (null); the other reads go on.\n`);
     }
     throw error;
@@ -279,7 +279,7 @@ export function releaseBehindNow({ stateDir = REVIEWER_STATE_DIR }: { stateDir?:
     const repositories = homeProjectDeclaration().dora;
     return cachedReleaseBehind({ stateDir, now: Date.now(), read: () => readReleaseBehind({ gh: defaultRun, registry: npmRegistryRead, repositories }) });
   } catch (err) {
-    process.stderr.write(`org-health: release-behind-main could not list the dora repositories (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]})\n`);
+    process.stderr.write(`org-health: release-behind-main could not list the dora repositories (${String((err as any)?.message ?? err).split("\n")[0]})\n`);
     return null;
   }
 }
@@ -365,7 +365,6 @@ const callKey = (args: string[], repo: string | undefined) => JSON.stringify([re
  */
 export function readWithFirstWaveTogether<T>(read: (run: (args: string[], repo?: string) => string) => T, run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined, log: (line: string) => void = (line) => process.stderr.write(line)): T {
   if (batch === undefined) return read(run);
-  /** @type {Map<string, { args: string[], repo: string | undefined }>} */
   const asked: Map<string, { args: string[]; repo: string | undefined; }> = new Map();
   try {
     read((args, repo = activeRepo) => { asked.set(callKey(args, repo), { args, repo }); return "[]"; });
@@ -504,7 +503,7 @@ export function withPagedFiles(prs: any[], { run, cachePath = stateEntryPath(PAG
     return [pr, files];
   }));
   if (fetched) writePagedFilesCache(cachePath, cache, log);
-  return prs.map((pr) => ((paged.get(pr) ?? null) === null ? pr : { ...pr, files: /** @type {string[]} */ (paged.get(pr)).map((path) => ({ path })) }));
+  return prs.map((pr) => ((paged.get(pr) ?? null) === null ? pr : { ...pr, files: (paged.get(pr) as string[]).map((path) => ({ path })) }));
 }
 
 /** @param {any} pr @param {{ run: (args: string[]) => string, log: (line: string) => void }} deps @returns {string[] | null} `null` when the pages could not be read whole */
@@ -514,7 +513,7 @@ function pageFilesOf(pr: any, { run, log }: { run: (args: string[]) => string; l
     if (files.length === pr.changedFiles) return files;
     log(`work-gate: #${pr.number} lists ${files.length} files when paged, not the ${pr.changedFiles} it reports -- left out of B4's comparison; the claim still refuses (#3365)\n`);
   } catch (error) {
-    log(`work-gate: could not page #${pr.number}'s files past ${pr.files.length} (${String(/** @type {Error} */ (error).message).split("\n")[0]}) `
+    log(`work-gate: could not page #${pr.number}'s files past ${pr.files.length} (${String((error as Error).message).split("\n")[0]}) `
       + "-- left out of B4's comparison, so the gate fails open and the claim still refuses (#3365)\n");
   }
   return null;
@@ -527,13 +526,13 @@ function readPagedFilesCache(path: string, log: (line: string) => void): Record<
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch (error) {
-    log(`work-gate: ${path} is unreadable (${/** @type {Error} */ (error).message}); paging again (#3365)\n`);
+    log(`work-gate: ${path} is unreadable (${(error as Error).message}); paging again (#3365)\n`);
     return {};
   }
 }
 
 /** Keeps the newest `PAGED_FILES_KEPT` entries (insertion order), and writes through a rename so a tick reading it never sees half a file. */
-function writePagedFilesCache(/** @type {string} */ path: string, /** @type {Record<string, string[]>} */ cache: Record<string, string[]>, /** @type {(line: string) => void} */ log: (line: string) => void) {
+function writePagedFilesCache(path: string, cache: Record<string, string[]>, log: (line: string) => void) {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const kept = Object.fromEntries(Object.entries(cache).slice(-PAGED_FILES_KEPT));
@@ -541,7 +540,7 @@ function writePagedFilesCache(/** @type {string} */ path: string, /** @type {Rec
     writeFileSync(scratch, JSON.stringify(kept));
     renameSync(scratch, path);
   } catch (error) {
-    log(`work-gate: could not remember the paged file lists in ${path} (${/** @type {Error} */ (error).message}); the next tick pages again (#3365)\n`);
+    log(`work-gate: could not remember the paged file lists in ${path} (${(error as Error).message}); the next tick pages again (#3365)\n`);
   }
 }
 
@@ -792,7 +791,7 @@ export function readBranchPrs(branches: readonly { branch: string; }[], run: (ar
     try {
       const parsed = JSON.parse(run(["pr", "list", "--head", branch, "--state", "all", "--limit", String(BRANCH_PRS_LIMIT), "--json", "number,state"]));
       if (!Array.isArray(parsed) || parsed.length >= BRANCH_PRS_LIMIT) return null;
-      found.push(...parsed.map((/** @type {{ number: number, state: string }} */ pr: { number: number; state: string; }) => ({ branch, number: pr.number, state: String(pr.state) })));
+      found.push(...parsed.map((pr: { number: number; state: string; }) => ({ branch, number: pr.number, state: String(pr.state) })));
     } catch {
       return null;
     }
@@ -812,20 +811,18 @@ export function readBranchPrs(branches: readonly { branch: string; }[], run: (ar
  * @returns {Map<number, { branch: string, head: string, prs: number[] }[]>}
  */
 export function branchesToReplace(rowBranches: { branch: string; head: string; row: number; }[] | null | undefined, branchPrs: { branch: string; number: number; state: string; }[] | null | undefined): Map<number, { branch: string; head: string; prs: number[]; }[]> {
-  /** @type {Map<number, { branch: string, head: string, prs: number[] }[]>} */
   const replaceable: Map<number, { branch: string; head: string; prs: number[]; }[]> = new Map();
   if (!Array.isArray(branchPrs)) return replaceable;
   const closedOnly = (/** @type {{ branch: string }} */ { branch }: { branch: string; }) => {
     const mine = branchPrs.filter((pr) => pr.branch === branch);
     return mine.length > 0 && mine.every((pr) => pr.state === "CLOSED") ? mine.map((pr) => pr.number) : null;
   };
-  /** @type {Map<number, { branch: string, head: string, row: number }[]>} */
   const byRow: Map<number, { branch: string; head: string; row: number; }[]> = new Map();
   for (const found of rowBranches ?? []) byRow.set(found.row, [...(byRow.get(found.row) ?? []), found]);
   for (const [row, branches] of byRow) {
     const closed = branches.map((found) => ({ found, prs: closedOnly(found) }));
     if (closed.every(({ prs }) => prs !== null)) {
-      replaceable.set(row, closed.map(({ found, prs }) => ({ branch: found.branch, head: found.head, prs: /** @type {number[]} */ (prs) })));
+      replaceable.set(row, closed.map(({ found, prs }) => ({ branch: found.branch, head: found.head, prs: (prs as number[]) })));
     }
   }
   return replaceable;
@@ -917,8 +914,8 @@ export const LANE_OWNER = Object.freeze({ [`${LANE_PREFIX}ceo`]: "ceo", [`${LANE
  * @param {any} row
  */
 export function laneOwnerOf(row: any) {
-  const lane = labelsOf(row).find((/** @type {string} */ n: string) => n in LANE_OWNER);
-  return lane ? /** @type {Record<string,string>} */ (LANE_OWNER)[lane] : null;
+  const lane = labelsOf(row).find((n: string) => n in LANE_OWNER);
+  return lane ? (LANE_OWNER as Record<string,string>)[lane] : null;
 }
 
 /**
@@ -952,8 +949,8 @@ export function ownerOf(row: any): string | readonly string[] | null {
   // `product-manager`, whose brief names "lane labels" and filing: assigning an owner to an unowned
   // decision is that job, not a decision in itself.
   if (labelsOf(row).includes("decision")) return "product-manager";
-  const routed = labelsOf(row).find((/** @type {string} */ n: string) => n in ROUTED_TO);
-  return routed ? /** @type {Record<string, string | readonly string[]>} */ (ROUTED_TO)[routed] : null;
+  const routed = labelsOf(row).find((n: string) => n in ROUTED_TO);
+  return routed ? (ROUTED_TO as Record<string, string | readonly string[]>)[routed] : null;
 }
 
 /**
@@ -1173,7 +1170,7 @@ export function readPromotableRows(run: (args: string[]) => string = defaultRun)
     // first step, a private repository, did not exist) and woke `product-manager` to re-derive a verdict
     // already on the row. Dropped HERE, in this reader's own population, and not taught to `waitingOn`, which
     // every reader of that function would then inherit -- the same choice #2585 made.
-    return parsed.filter((r) => !labelsOf(r).some((/** @type {string} */ n: string) => NOT_STARTABLE.includes(n)))
+    return parsed.filter((r) => !labelsOf(r).some((n: string) => NOT_STARTABLE.includes(n)))
       .filter((r) => !labelsOf(r).includes(CHAIRMAN_LABEL))
       // `parked` IS THE THIRD READER OF THE SAME GAP (#2653): a row parked until its prerequisite phase is done is
       // not stock either, and `laneBacklogOrders` and `decide`'s pool count consume THIS list, so they inherit it.
@@ -1224,7 +1221,7 @@ export const chairmanAsksNow = (openRowsRead: any[] | null): any[] => chairmanAs
 export const PRIORITY_LABEL = "priority";
 
 /** @param {any} x @returns {string[]} */
-export const labelsOf = (x: any): string[] => (x?.labels ?? []).map((/** @type {any} */ l: any) => String(l?.name ?? l));
+export const labelsOf = (x: any): string[] => (x?.labels ?? []).map((l: any) => String(l?.name ?? l));
 
 /**
  * Every open PR the gate is ALLOWED TO COMPARE AGAINST, in `fileOverlapReason`'s shape.
@@ -1260,7 +1257,7 @@ export function comparablePrFiles(prs: any[], { trackerRepo }: { trackerRepo?: s
     .map((p) => ({
       number: Number(p?.number),
       changedFiles: Number(p?.changedFiles),
-      files: (p?.files ?? []).map((/** @type {any} */ f: any) => String(f?.path ?? f)),
+      files: (p?.files ?? []).map((f: any) => String(f?.path ?? f)),
       closes: declaredClosedRows(p?.body, { ...(p?.repo === undefined ? {} : { prRepo: p.repo }), ...(trackerRepo === undefined ? {} : { trackerRepo }) }),
       // #2493: the other half of the exclusion `fileOverlapReason` reads -- a `hold:` label on the PR.
       held: holdersOf(labelsOf(p)).length > 0,
@@ -1336,7 +1333,7 @@ export function blockersFromRows(openRows: any[] | null | undefined): (row: numb
   const byNumber = new Map((openRows ?? []).map((r) => [Number(r?.number), r]));
   return (number) => {
     const found = byNumber.get(number);
-    return found ? (found.blockedBy?.nodes ?? []).map((/** @type {any} */ n: any) => Number(n.number)) : null;
+    return found ? (found.blockedBy?.nodes ?? []).map((n: any) => Number(n.number)) : null;
   };
 }
 
@@ -1350,7 +1347,6 @@ export function blockersFromRows(openRows: any[] | null | undefined): (row: numb
  * @returns {Map<number, { branch: string, head: string }[]>}
  */
 function branchIndex(rowBranches: { branch: string; head: string; row: number; }[] | null | undefined): Map<number, { branch: string; head: string; }[]> {
-  /** @type {Map<number, { branch: string, head: string }[]>} */
   const byRow: Map<number, { branch: string; head: string; }[]> = new Map();
   for (const found of rowBranches ?? []) {
     const list = byRow.get(found.row) ?? [];
@@ -1522,7 +1518,7 @@ export function checksSettledGreen(rollup: any[] | null | undefined): boolean | 
   return !rollup.some((c) => bad.includes(conclusionOf(c)));
 }
 
-export const conclusionOf = (/** @type {any} */ c: any) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
+export const conclusionOf = (c: any) => String(c?.conclusion ?? c?.state ?? "").toUpperCase();
 
 /** @param {any} c */
 export function stillRunning(c: any) {
@@ -1540,7 +1536,7 @@ export function stillRunning(c: any) {
  * @param {any} pr
  */
 export function sessionOf(pr: any) {
-  const label = labelsOf(pr).find((/** @type {string} */ n: string) => n.startsWith(SESSION_PREFIX));
+  const label = labelsOf(pr).find((n: string) => n.startsWith(SESSION_PREFIX));
   return label ? label.slice(SESSION_PREFIX.length) : null;
 }
 
@@ -1818,27 +1814,9 @@ export function fleetBatchOrders(rows: any[], clock: { today?: string; nowMs?: n
 }
 
 /**
- * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075).
- *
- * `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no
- * Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed
- * since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and
- * answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours
- * after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the
- * gate, on an API call rather than a model turn and not a day late.
- *
- * IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured
- * 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they
- * were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two
- * minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the
- * noisiest possible false positive, on the one path that works. One connection query carries every open row's
- * `projectItems` in a single call, so this costs no more than the listing would have.
- *
- * `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and
- * none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
- *
- * @typedef {{ number: number, title: string, createdMs: number, onBoard: boolean | null }} BoardFacts
+ * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075). `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the gate, on an API call rather than a model turn and not a day late. IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the noisiest possible false positive, on the one path that works. One connection query carries every open row's `projectItems` in a single call, so this costs no more than the listing would have. `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
  */
+export type BoardFacts = { number: number, title: string, createdMs: number, onBoard: boolean | null };
 export const ROW_OFF_BOARD_QUERY = `
   query($owner: String!, $name: String!, $after: String) {
     # #3448: THE ACCOUNT AND ITS GRAPHQL BUDGET, IN AN ANSWER THIS TICK ALREADY PAYS FOR. \`rateLimit\` is never charged, so the pool-low signal costs no point.
@@ -1877,7 +1855,7 @@ export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
  */
 function boardFactsOf(node: any): BoardFacts {
   const items = node?.projectItems;
-  const found = Array.isArray(items?.nodes) && items.nodes.some((/** @type {any} */ n: any) => n?.project?.number === PROJECT_NUMBER);
+  const found = Array.isArray(items?.nodes) && items.nodes.some((n: any) => n?.project?.number === PROJECT_NUMBER);
   const complete = Array.isArray(items?.nodes) && items.nodes.length >= items.totalCount;
   return { number: node.number, title: String(node.title ?? ""), createdMs: Date.parse(node.createdAt),
     onBoard: found ? true : complete ? false : null };
@@ -1899,7 +1877,6 @@ function boardFactsOf(node: any): BoardFacts {
  */
 export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("./org-health.ts").PoolReading[] = []): BoardFacts[] | null {
   const [owner, name] = repoNow().split("/");
-  /** @type {BoardFacts[]} */
   const facts: BoardFacts[] = [];
   try {
     let after = null;
@@ -2235,7 +2212,7 @@ export function withoutEndedAnswerSessions(rows: any[], { agents = liveWorkspace
   try {
     gone = ended();
   } catch (err) {
-    say(`NOTE: the ended-session ledgers could not be read (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick (#2609).\n`);
+    say(`NOTE: the ended-session ledgers could not be read (${String((err as any)?.message ?? err).split("\n")[0]}) -- no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick (#2609).\n`);
     return rows;
   }
   return rows.map((row) => dropGoneLabels(row, (session) => session !== "engineers" && !live.includes(session)
@@ -2253,7 +2230,7 @@ function dropGoneLabels(row: any, isGone: (session: string) => boolean, say: (li
       + "(it is absent from herdr and a teardown recorded its ending), so the order would have no addressee (#2609).\n");
   }
   return goneLabels.length === 0 ? row
-    : { ...row, labels: (row.labels ?? []).filter((/** @type {any} */ l: any) => !goneLabels.includes(l?.name ?? l)) };
+    : { ...row, labels: (row.labels ?? []).filter((l: any) => !goneLabels.includes(l?.name ?? l)) };
 }
 
 /**
@@ -2263,7 +2240,7 @@ function dropGoneLabels(row: any, isGone: (session: string) => boolean, say: (li
 export function liveWorkspaceLabels(): string[] | null {
   try {
     const workspaces = JSON.parse(herdrRun(["--session", "org", "workspace", "list"]))?.result?.workspaces;
-    return Array.isArray(workspaces) ? workspaces.map((/** @type {any} */ w: any) => String(w.label ?? "")) : null;
+    return Array.isArray(workspaces) ? workspaces.map((w: any) => String(w.label ?? "")) : null;
   } catch {
     return null;
   }
@@ -2274,7 +2251,7 @@ function evidenceText(path: string, read: typeof readFileSync): string {
   try {
     return String(read(path, "utf8"));
   } catch (err) {
-    if (/** @type {any} */ (err)?.code === "ENOENT") return "";
+    if ((err as any)?.code === "ENOENT") return "";
     throw err;
   }
 }
@@ -2299,7 +2276,6 @@ function evidenceLines(path: string, read: typeof readFileSync): any[] {
  * @param {{dir?: string, read?: typeof readFileSync}} [io] @returns {Map<string, number>}
  */
 export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSync }: { dir?: string; read?: typeof readFileSync; } = {}): Map<string, number> {
-  /** @type {Map<string, number>} */
   const ended: Map<string, number> = new Map();
   /** @param {unknown} label @param {number} at */
   const note = (label: unknown, at: number) => {
@@ -2320,7 +2296,7 @@ export function endedSessionLabels({ dir = REVIEWER_STATE_DIR, read = readFileSy
 
 /** The rows that owe someone an answer. @param {any[]} rows */
 export function withAnswerLabel(rows: any[]) {
-  return (rows ?? []).filter((r) => labelsOf(r).some((/** @type {string} */ n: string) => n.startsWith(ANSWER_PREFIX)));
+  return (rows ?? []).filter((r) => labelsOf(r).some((n: string) => n.startsWith(ANSWER_PREFIX)));
 }
 
 /**
@@ -2398,7 +2374,7 @@ export function blockedWithoutReferent(rows: any[], today: string = todayIso()) 
 export function blockedReferentOrders(rows: any[], readyRows: any[], today: string = todayIso()) {
   if (readyRows.length > 0) return [];
   return blockedWithoutReferent(rows, today).slice(0, MAX_ROW_ORDERS_PER_TICK)
-    .map((/** @type {any} */ r: any) => ({
+    .map((r: any) => ({
       session: "product-manager",
       cause: "blocked-unexaminable",
       subject: `row-${subjectRef(r.repoKey, r.number)}`,
@@ -2471,7 +2447,6 @@ export { ANSWER_PREFIX };
  * @returns {Map<string, any[]>}
  */
 export function answersOwed(rows: any[]): Map<string, any[]> {
-  /** @type {Map<string, any[]>} */
   const owed: Map<string, any[]> = new Map();
   for (const row of rows ?? []) {
     for (const name of labelsOf(row)) {
@@ -2700,7 +2675,7 @@ export function answerGivenOrders(openRows: any[], run: (args: string[]) => stri
     && nowMs - Date.parse(String(row.updatedAt)) <= ANSWER_GIVEN_WINDOW_MS);
   if (touched.length === 0) return [];
   const live = agents();
-  const askable = touched.filter((row) => live === null || live.includes(/** @type {string} */ (sessionOf(row))));
+  const askable = touched.filter((row) => live === null || live.includes((sessionOf(row) as string)));
   return readWithFirstWaveTogether((read) => answerGivenOrdersFromTimelines(askable, read, nowMs), run, batch);
 }
 
@@ -2708,7 +2683,7 @@ export function answerGivenOrders(openRows: any[], run: (args: string[]) => stri
 function answerGivenOrdersFromTimelines(rows: any[], run: (args: string[]) => string, nowMs: number) {
   const orders = [];
   for (const row of rows) {
-    const claimant = /** @type {string} */ (sessionOf(row));
+    const claimant = (sessionOf(row) as string);
     const timeline = readRowTimeline(Number(row.number), run);
     for (const given of answersGiven(timeline, claimant, nowMs)) orders.push(answerGivenOrder(row, claimant, given));
     if (orders.length >= MAX_ROW_ORDERS_PER_TICK) return orders.slice(0, MAX_ROW_ORDERS_PER_TICK);
@@ -2842,7 +2817,6 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
     orders: { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[];
     drops: BlockerClearedDrop[]; log: string[];
 } {
-  /** @type {ReturnType<typeof blockerClearedReading>} */
   const reading: ReturnType<typeof blockerClearedReading> = { orders: [], drops: [], log: [] };
   const resumed = rowsWithOpenPr(openPrs);
   for (const row of rows ?? []) {
@@ -2892,10 +2866,12 @@ export function blockerClearedOrders(...args: Parameters<typeof blockerClearedRe
 
 /**
  * THE THREE REASONS A `blocker-cleared` ORDER IS DROPPED (#3451), a CLOSED set: a fourth is a new decision, not a spelling, and `work-gate-stale-blocker-cleared.test.ts` fails on one.
- * @typedef {"claimed-after-clearing" | "own-pull-request" | "moved-since-clearing"} BlockerClearedDropReason
- * @typedef {{ causeKey: string, reason: BlockerClearedDropReason, at: number }} BlockerClearedDrop `at` is the time that decided it: the claim's, the pull request's
- *   open or merge, or the holder's newest move
  */
+export type BlockerClearedDropReason = "claimed-after-clearing" | "own-pull-request" | "moved-since-clearing";
+/**
+ * `at` is the time that decided it: the claim's, the pull request's open or merge, or the holder's newest move
+ */
+export type BlockerClearedDrop = { causeKey: string, reason: BlockerClearedDropReason, at: number };
 export const BLOCKER_CLEARED_DROP_REASONS = Object.freeze(["claimed-after-clearing", "own-pull-request", "moved-since-clearing"]);
 
 /** @param {number} ms @returns {string} */
@@ -2944,7 +2920,7 @@ function refusedRead({ row, cleared, closings, claimFacts }: { row: any; cleared
  * @returns {{ at: number, boundedBy: { blocker: number, at: number } | null }}
  */
 function newestClosing(cleared: number[], closings: Closings): { at: number; boundedBy: { blocker: number; at: number; } | null; } {
-  const listed = cleared.filter((n) => closings.has(n)).map((n) => /** @type {number} */ (closings.get(n)));
+  const listed = cleared.filter((n) => closings.has(n)).map((n) => (closings.get(n) as number));
   const absent = cleared.find((n) => !closings.has(n));
   const bound = closings.closedNoLaterThan;
   const newestListed = listed.length === 0 ? -Infinity : Math.max(...listed);
@@ -2967,7 +2943,7 @@ function staleClearing({ row, cleared, causeKey, closings, claimFacts, nowMs }: 
   if (refused !== null || closings === null || claimFacts === null) {
     return { drop: null, log: [`blocker-cleared ${subjectMention(row)}: order KEPT -- ${refused}, so nothing was checked against it\n`] };
   }
-  const moves = /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimMoves} */ (claimFacts.moves.get(Number(row.number)));
+  const moves = (claimFacts.moves.get(Number(row.number)) as import("./work-gate/claim-stall-tick.mjs").ClaimMoves);
   const { at: clearedAtMs, boundedBy } = newestClosing(cleared, closings);
   const closed = boundedBy === null ? `blockers closed ${isoOf(clearedAtMs)}`
     : `#${boundedBy.blocker} is absent from the closing list and closed no later than ${isoOf(boundedBy.at)}, the oldest listed updatedAt`;
@@ -3068,10 +3044,9 @@ function clearingAskWindow(cleared: number[], nowMs: number, closings: Map<numbe
 const RECENTLY_CLOSED_LIMIT = 100;
 
 /**
- * @typedef {Map<number, number> & { closedNoLaterThan?: number }} Closings
- *   When each listed row closed. `closedNoLaterThan` is set only by `readRecentlyClosed` and only when its list is PROVEN ordered by `updatedAt`: every row ABSENT from the map
- *   then closed no later than it (#3706). A plain `Map` -- a test's, an old caller's -- carries none, and an absent blocker is then a read that was not made.
+ * When each listed row closed. `closedNoLaterThan` is set only by `readRecentlyClosed` and only when its list is PROVEN ordered by `updatedAt`: every row ABSENT from the map then closed no later than it (#3706). A plain `Map` -- a test's, an old caller's -- carries none, and an absent blocker is then a read that was not made.
  */
+export type Closings = Map<number, number> & { closedNoLaterThan?: number };
 
 /**
  * `closedNoLaterThan` of a listing, or `undefined` when the listing cannot prove one: a row without a readable `updatedAt`, or an order that is not `updatedAt` descending.
@@ -3112,7 +3087,6 @@ export function readRecentlyClosed(run: (args: string[]) => string = defaultRun)
     const parsed = JSON.parse(run(["issue", "list", "--state", "closed", "--limit",
       String(RECENTLY_CLOSED_LIMIT), "--search", "sort:updated-desc", "--json", "number,closedAt,updatedAt"]));
     if (!Array.isArray(parsed)) return null;
-    /** @type {Closings} */
     const closings: Closings = new Map();
     for (const r of parsed) {
       const at = Date.parse(r?.closedAt);
@@ -3294,8 +3268,8 @@ function promotionOrder(row: any, cleared: number[], suffix: string = "") {
 function declaredBlockers(row: any): number[] | null {
   const nodes = row?.blockedBy?.nodes ?? [];
   if (nodes.length === 0) return null;
-  return nodes.map((/** @type {any} */ n: any) => Number(n.number))
-    .sort((/** @type {number} */ a: number, /** @type {number} */ b: number) => a - b);
+  return nodes.map((n: any) => Number(n.number))
+    .sort((a: number, b: number) => a - b);
 }
 
 /**
@@ -3416,9 +3390,9 @@ function constraintLines(body: string): string[] {
  */
 export function openBlockers(row: any): number[] {
   return (row?.blockedBy?.nodes ?? [])
-    .filter((/** @type {any} */ n: any) => String(n?.state ?? "").toUpperCase() === "OPEN")
-    .map((/** @type {any} */ n: any) => Number(n.number))
-    .sort((/** @type {number} */ a: number, /** @type {number} */ b: number) => a - b);
+    .filter((n: any) => String(n?.state ?? "").toUpperCase() === "OPEN")
+    .map((n: any) => Number(n.number))
+    .sort((a: number, b: number) => a - b);
 }
 
 /**
@@ -3582,8 +3556,8 @@ function readNewestComments(numbers: number[], run: (args: string[]) => string):
       "-F", `owner=${owner}`, "-F", `name=${name}`]));
     const repository = parsed?.errors ? null : parsed?.data?.repository;
     if (repository === null || typeof repository !== "object") return null;
-    const read = Object.values(repository).filter((issue) => Array.isArray(/** @type {any} */ (issue)?.comments?.nodes));
-    return new Map(read.map((/** @type {any} */ issue: any) => [Number(issue.number), issue.comments.nodes]));
+    const read = Object.values(repository).filter((issue) => Array.isArray((issue as any)?.comments?.nodes));
+    return new Map(read.map((issue: any) => [Number(issue.number), issue.comments.nodes]));
   } catch {
     return null;
   }
@@ -3610,10 +3584,9 @@ export function readClosedClaimedRows(numbers: number[], run: (args: string[]) =
   try {
     const repository = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`]))?.data?.repository;
     if (repository === null || typeof repository !== "object") return null;
-    /** @type {any[]} */
     const issues: any[] = Object.values(repository);
     return issues
-      .filter((issue) => issue !== null && issue.state === "CLOSED" && issue.labels.nodes.some((/** @type {{ name: string }} */ l: { name: string; }) => l.name === CLAIM_LABEL))
+      .filter((issue) => issue !== null && issue.state === "CLOSED" && issue.labels.nodes.some((l: { name: string; }) => l.name === CLAIM_LABEL))
       .map((issue) => ({ number: issue.number, labels: issue.labels.nodes, comments: issue.comments.nodes,
         closedByPullRequestsReferences: issue.closedByPullRequestsReferences.nodes }));
   } catch {
@@ -3681,9 +3654,7 @@ function holdsClosedRow(holder: string, closedAt: unknown, nowMs: number) {
  */
 export function closedClaimDebris(rows: { number: number; labels: ({ name?: string; } | string)[]; closedAt?: string; }[], agents: { label: string; }[], nowMs: number = Date.now()): { strip: { number: number; labels: string[]; }[]; kept: { number: number; holders: string[]; }[]; } {
   const listed = new Set(agents.map((a) => a.label));
-  /** @type {{ number: number, labels: string[] }[]} */
   const strip: { number: number; labels: string[]; }[] = [];
-  /** @type {{ number: number, holders: string[] }[]} */
   const kept: { number: number; holders: string[]; }[] = [];
   for (const row of rows) {
     const labels = labelsOf(row);
@@ -3760,10 +3731,9 @@ export function withChecksPending(prs: any[]) {
  * @returns {{ open: any[] | null, merged: any[] | null } | undefined}
  */
 export function readElsewherePrs(scopes: readonly Scope[] = scopesOf([homeProjectDeclaration()]), run: (args: string[], repo?: string) => string = defaultRun, known: readonly { scope: Scope; read: { prs: any[] | null; }; }[] = [], batch: typeof runBatch = run === defaultRun ? runBatch : undefined): { open: any[] | null; merged: any[] | null; } | undefined {
-  /** @type {{ open: any[] | null, merged: any[] | null }[]} */
   const lanes: { open: any[] | null; merged: any[] | null; }[] = readWithFirstWaveTogether((through) => scopes.filter((scope) => scope.key !== "" && scope.code !== null).map((scope) => {
-    const repo = /** @type {ScopeRepository} */ (scope.code).repo;
-    const aimed = (/** @type {string[]} */ args: string[]) => through(args, repo);
+    const repo = (scope.code as ScopeRepository).repo;
+    const aimed = (args: string[]) => through(args, repo);
     const already = known.find((entry) => entry.scope.key === scope.key);
     return { open: already === undefined ? tagged(readPrs(aimed), scope.key, repo) : already.read.prs, merged: tagged(readMergedPrs(aimed), scope.key, repo) };
   }), run, batch);
@@ -3834,7 +3804,7 @@ export function unfiledEpics(epics: {
     // same comment ("left WHOLE", the reason already on the row). Dropped HERE, beside the `waitingOn` filter, and
     // not taught to `waitingOn`, which every reader of that function would then inherit. Removing the label puts
     // the epic back, so the lift clears itself.
-    .filter((e) => !labelsOf(e).some((/** @type {string} */ n: string) => n === PARKED_LABEL || n === CHAIRMAN_LABEL));
+    .filter((e) => !labelsOf(e).some((n: string) => n === PARKED_LABEL || n === CHAIRMAN_LABEL));
 }
 
 /**
@@ -3874,7 +3844,7 @@ export function epicOrders(epics: any[], readyRows: any[]): {
   // not a defect; it becomes the org's most urgent question only when there is nothing else to pick up.
   if (readyRows.length > 0) return [];
   const unfiled = unfiledEpics(epics);
-  return unfiled.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e: any) => ({
+  return unfiled.slice(0, MAX_ROW_ORDERS_PER_TICK).map((e: any) => ({
     session: "product-manager",
     cause: "epic-unfiled",
     subject: `epic-${subjectRef(e.repoKey, e.number)}`,
@@ -3956,7 +3926,7 @@ export function finishedEpicOrders(epics: any[]): {
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
-  return finishedEpics(epics).slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ e: any) => ({
+  return finishedEpics(epics).slice(0, MAX_ROW_ORDERS_PER_TICK).map((e: any) => ({
     session: "product-manager",
     cause: "epic-finished",
     subject: `epic-${subjectRef(e.repoKey, e.number)}`,
@@ -4108,7 +4078,7 @@ export function requiredCheckNames(run: (args: string[]) => string = defaultRun,
   } catch (error) {
     // THE REFUSAL AND THE UNUSABLE ANSWER ARE DIFFERENT FACTS, so the call is separated from the parse.
     // A refusal says nothing about whether `main` is protected, and #2022 forbids reading it as if it did.
-    const why = String(/** @type {any} */ (error)?.message ?? error).split("\n")[0].trim();
+    const why = String((error as any)?.message ?? error).split("\n")[0].trim();
     log(cannotReadRequiredChecks(`was REFUSED (${why}).`));
     return null;
   }
@@ -4183,7 +4153,7 @@ export function readBaseTip(run: (args: string[]) => string = defaultRun, log: (
   try {
     answer = run(["api", BASE_TIP_ENDPOINT, "--jq", BASE_TIP_JQ]);
   } catch (error) {
-    const why = String(/** @type {any} */ (error)?.message ?? error).split("\n")[0].trim();
+    const why = String((error as any)?.message ?? error).split("\n")[0].trim();
     log(`CANNOT READ main's tip: \`gh api ${BASE_TIP_ENDPOINT}\` was REFUSED (${why}). `
       + "pr-checks-failing prompts will call `has main moved` UNKNOWN; no order is withheld for it.\n");
     return null;
@@ -4412,7 +4382,7 @@ export const BLOCKING_REVIEW_STATES: readonly string[] = Object.freeze([
  */
 function refusalCommitOf(pr: any): string | null {
   if (!Array.isArray(pr?.reviews)) return null;
-  const refusals = pr.reviews.filter((/** @type {any} */ r: any) => r?.state === "CHANGES_REQUESTED");
+  const refusals = pr.reviews.filter((r: any) => r?.state === "CHANGES_REQUESTED");
   const oid = refusals.at(-1)?.commit?.oid;
   return oid ? String(oid) : null;
 }
@@ -4529,7 +4499,7 @@ function touchesOwnedLanePath(files: string[], lane: { paths: string[]; except?:
  */
 export function pipelineCodeownerReviewMissing(prs: any[], prFiles: { number: number; files: string[]; repoKey?: string; }[]): { number: number; repoKey?: string; session: string | null; }[] {
   const lane = pipelineLane();
-  const login = lane && /** @type {Record<string, string>} */ (ROLE_LOGIN)[lane.owner];
+  const login = lane && (ROLE_LOGIN as Record<string, string>)[lane.owner];
   if (!login) return [];
   // #3720: KEYED BY REPOSITORY AND NUMBER. Two repositories' open PRs share a number (`lab#3`, `toolchain#3`), and a number-only map let the
   // later one's files stand for both: a PR touching no owned path was named, and one touching an owned path could go unnamed.
@@ -4538,7 +4508,7 @@ export function pipelineCodeownerReviewMissing(prs: any[], prFiles: { number: nu
     .filter((pr) => pr.author?.login !== login)
     .filter((pr) => touchesOwnedLanePath(filesByRef.get(subjectRef(pr.repoKey, pr.number)) ?? [], lane))
     .filter((pr) => !(pr.reviews ?? []).some(
-      (/** @type {any} */ r: any) => r?.state === "APPROVED" && r?.author?.login === login))
+      (r: any) => r?.state === "APPROVED" && r?.author?.login === login))
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), session: sessionOf(pr) }))
     .sort((a, b) => a.number - b.number);
 }
@@ -4659,9 +4629,8 @@ function readEjection(number: number, run: (args: string[]) => string) {
  * @param {number} number @param {string | null} removedAt @param {(args: string[]) => string} run
  */
 function readEjectionRun(number: number, removedAt: string | null, run: (args: string[]) => string) {
-  const found = { removedAt, runId: /** @type {number | null} */ (null), failingTests: /** @type {string[] | null} */ (null) };
+  const found = { removedAt, runId: (null as number | null), failingTests: (null as string[] | null) };
   try {
-    /** @type {{ id: number, head_branch: string, conclusion: string, created_at: string }[]} */
     const runs: { id: number; head_branch: string; conclusion: string; created_at: string; }[] = JSON.parse(run(["api", `repos/${repoNow()}/actions/runs?event=merge_group&per_page=50`, "--jq", "[.workflow_runs[] | {id, head_branch, conclusion, created_at}]"]));
     const failed = runs
       .filter((r) => String(r.head_branch).includes(`/pr-${number}-`) && r.conclusion === "failure"
@@ -4845,7 +4814,7 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
     const base = String(pr.baseRefName ?? "main");
     const head = String(pr.headRefOid);
     const others = wait === "settled" ? evidenceHeads(pr) : predecessorOf(pr, run);
-    const entries = [head, ...others].map((oid) => /** @type {const} */ ([oid, readPatchId(oid, base, run)]));
+    const entries = [head, ...others].map((oid) => ([oid, readPatchId(oid, base, run)] as const));
     const known = entries.filter(([, id]) => id !== null);
     return known.length > 0 ? withFailingChecks({ ...pr, patchIds: Object.fromEntries(known) }, run) : pr;
   });
@@ -4883,7 +4852,6 @@ export function readFailingChecks(commit: string, run: (args: string[]) => strin
 function withFailingChecks(pr: any, run: (args: string[]) => string) {
   const refused = refusalHeads(pr);
   if (refused.length === 0) return pr;
-  /** @type {Record<string, string[]>} */
   const failing: Record<string, string[]> = {};
   for (const oid of refused) {
     const names = readFailingChecks(oid, run);
@@ -4982,7 +4950,6 @@ export function readWorktreeStamps(run: (cmd: string, args: string[]) => string 
  * @returns {(branch: string) => string | null}
  */
 export function stampLookup(read: () => Map<string, string> | null = readWorktreeStamps): (branch: string) => string | null {
-  /** @type {Map<string, string> | null | undefined} */
   let stamps: Map<string, string> | null | undefined;
   return (branch) => {
     if (stamps === undefined) stamps = read();
@@ -5003,7 +4970,7 @@ export function stampLookup(read: () => Map<string, string> | null = readWorktre
  * @param {any[]} unclaimed
  */
 function offerOrder(unclaimed: any[]) {
-  const isPriority = (/** @type {any} */ row: any) => labelsOf(row).includes(PRIORITY_LABEL);
+  const isPriority = (row: any) => labelsOf(row).includes(PRIORITY_LABEL);
   return [...unclaimed].sort((a, b) =>
     Number(isPriority(b)) - Number(isPriority(a)) || Number(a.number) - Number(b.number));
 }
@@ -5174,7 +5141,7 @@ export function recordEngineerStarts(openRows: any[], { stateDir = REVIEWER_STAT
     const kept = Object.entries(after).sort(([, a], [, b]) => a.at - b.at).slice(-PRODUCT_SHARE_WINDOW);
     if (JSON.stringify(Object.fromEntries(kept)) !== JSON.stringify(before)) writeJsonObject(path, Object.fromEntries(kept));
     return kept.map(([row, start]) => ({ row, ...start }));
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     log(`engineer-starts: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no history, so product rows are offered first this tick.\n`);
     return [];
   }
@@ -5334,7 +5301,6 @@ export function claimRefusalOf(row: { number: number; }, { worktreesDir, kept = 
  * @returns {Record<string, { reason: string, ticks: number }>}
  */
 export function nextRefusalStreaks(before: Record<string, { reason: string; ticks: number; }>, readings: Record<string, string | null>): Record<string, { reason: string; ticks: number; }> {
-  /** @type {Record<string, { reason: string, ticks: number }>} */
   const after: Record<string, { reason: string; ticks: number; }> = {};
   for (const [row, reason] of Object.entries(readings)) {
     if (reason === null) continue;
@@ -5361,13 +5327,12 @@ export function claimRefusalStreaksNow(offerable: any[], { stateDir = REVIEWER_S
     const path = `${stateDir}/${CLAIM_REFUSALS_FILE}`;
     const before = readJsonObject(path);
     const kept = readJsonObject(`${stateDir}/${KEPT_CLAIMS_FILE}`);
-    /** @type {Record<string, string | null>} */
     const readings: Record<string, string | null> = {};
     for (const row of offerable) readings[subjectRef(row.repoKey, row.number)] = claimRefusalOf(row, { worktreesDir, kept, ...seams });
     const after = nextRefusalStreaks(before, readings);
     if (JSON.stringify(after) !== JSON.stringify(before)) writeJsonObject(path, after);
     return after;
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     log(`claim-refusals: could not run (${String(err?.message ?? err).split("\n")[0]}) -- no ready-row-unclaimable order this tick.\n`);
     return {};
   }
@@ -5621,7 +5586,7 @@ export function closesUnresolvedPrs(prs: any[] | null): any[] {
     .map((pr) => ({ pr, declaration: extractClosesDeclaration(pr.body) }))
     .flatMap(({ pr, declaration }) => declaration.kind === "closes" && declaration.numbers.length > 0
       ? [{ pr, declared: declaration.numbers,
-        resolved: pr.closingIssuesReferences.map((/** @type {{number: number}} */ issue: { number: number; }) => Number(issue.number)) }]
+        resolved: pr.closingIssuesReferences.map((issue: { number: number; }) => Number(issue.number)) }]
       : []);
   const newestFirst = [...candidates].sort((a, b) => Number(b.pr.number) - Number(a.pr.number));
   const asLookup = newestFirst.map(({ pr, resolved }) => ({ number: Number(pr.number), body: pr.body, resolved }));
@@ -5737,9 +5702,8 @@ function laneBacklogOrders(promotableRows: any[], readyRows: any[]) {
   // `decision` routes to `product-manager`, which appears in neither map, so two rows (#1798, #1734)
   // resolved to an owner and then produced no order at all. A list that must be updated whenever
   // `ownerOf` gains a case is a list that will not be.
-  /** @type {Set<string | readonly string[]>} */
-  const owners: Set<string | readonly string[]> = new Set(promotableRows.map((/** @type {any} */ r: any) => ownerOf(r))
-    .filter((/** @type {string | readonly string[] | null} */ o: string | readonly string[] | null) => o !== null));
+  const owners: Set<string | readonly string[]> = new Set(promotableRows.map((r: any) => ownerOf(r))
+    .filter((o: string | readonly string[] | null) => o !== null));
   for (const owner of owners) {
     // REFERENCE EQUALITY, DELIBERATELY, for a pool owner: `ROUTED_TO`'s value is one frozen array
     // shared by every row it routes, never rebuilt per row, so grouping and re-filtering by `===` finds
@@ -5776,10 +5740,10 @@ function laneBacklogOrders(promotableRows: any[], readyRows: any[]) {
  * @param {any[]} mine @param {any} current
  */
 function alsoOwned(mine: any[], current: any) {
-  const others = mine.filter((/** @type {any} */ r: any) => r.number !== current.number);
+  const others = mine.filter((r: any) => r.number !== current.number);
   if (others.length === 0) return "";
   const named = others.slice(0, MAX_ROW_ORDERS_PER_TICK)
-    .map((/** @type {any} */ r: any) => subjectMention(r)).join(", ");
+    .map((r: any) => subjectMention(r)).join(", ");
   return `YOU ALSO OWN ${others.length} OTHER ACTIONABLE ROW(S): ${named}`
     + `${others.length > MAX_ROW_ORDERS_PER_TICK ? ", ..." : ""}.\n`
     + `IF #${current.number} CANNOT MOVE RIGHT NOW -- it waits on a clock, a capture window, or a `
@@ -5819,8 +5783,8 @@ function alsoOwned(mine: any[], current: any) {
  * @param {string | readonly string[]} owner @param {any[]} mine
  */
 function backlogOrders(owner: string | readonly string[], mine: any[]) {
-  const names = Array.isArray(owner) ? owner : [/** @type {string} */ (owner)];
-  return names.flatMap((name) => mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((/** @type {any} */ r: any) => ({
+  const names = Array.isArray(owner) ? owner : [(owner as string)];
+  return names.flatMap((name) => mine.slice(0, MAX_ROW_ORDERS_PER_TICK).map((r: any) => ({
     session: name,
     cause: "lane-backlog-unpromoted",
     subject: `row-${subjectRef(r.repoKey, r.number)}`,
@@ -5892,7 +5856,7 @@ function chairmanOrders(chairmanBlocked: any[], nowMs: number = Date.now()) {
   // permanent-ledger bug again; keyed on the rows' `updatedAt` it never advanced (#2989).
   const open = chairmanBlocked.length === 0 ? null : chairmanReminderWindow(nowMs);
   if (!open) return [];
-  const rows = chairmanBlocked.slice(0, 6).map((/** @type {any} */ r: any) => subjectMention(r)).join(", ");
+  const rows = chairmanBlocked.slice(0, 6).map((r: any) => subjectMention(r)).join(", ");
   const date = new Date(open.day * CHAIRMAN_REMINDER_PERIOD_MS).toISOString().slice(0, 10);
   return [{
     session: "ceo",
@@ -6067,7 +6031,7 @@ export function workingClaims(rows: any[] | null | undefined, agents: { label: s
   if (!Array.isArray(rows) || !Array.isArray(agents)) return [];
   const working = new Set(agents.filter((a) => a.status === "working").map((a) => a.label));
   return rows.filter((r) => waitingOn(r, today) === null
-    && labelsOf(r).some((/** @type {string} */ n: string) => n.startsWith(SESSION_PREFIX) && working.has(n.slice(SESSION_PREFIX.length))));
+    && labelsOf(r).some((n: string) => n.startsWith(SESSION_PREFIX) && working.has(n.slice(SESSION_PREFIX.length))));
 }
 
 /**
@@ -6312,7 +6276,7 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
       run(["pr", "ready", String(action.pr), ...(action.repo === undefined ? [] : ["--repo", action.repo])]);
       performed += 1;
       log(`DID ${action.kind} pr-${action.pr} (${order.cause}) -- no session woken\n`);
-    } catch (/** @type {any} */ error: any) {
+    } catch (error: any) {
       log(`COULD NOT ${action.kind} pr-${action.pr}: ${error?.message ?? error} `
         + `-- delivering to ${rest.session} instead\n`);
       delivered.push(rest);
@@ -6785,7 +6749,7 @@ export function herdrPaneReader(run: (args: string[]) => string): (session: stri
   return (session) => {
     try {
       const workspaces = JSON.parse(run(["--session", "org", "workspace", "list"]))?.result?.workspaces ?? [];
-      const workspace = workspaces.find((/** @type {any} */ w: any) => w.label === session)?.workspace_id;
+      const workspace = workspaces.find((w: any) => w.label === session)?.workspace_id;
       if (typeof workspace !== "string") return null;
       const panes = JSON.parse(run(["--session", "org", "pane", "list", "--workspace", workspace]))?.result?.panes ?? [];
       const pane = panes[0]?.pane_id;
@@ -6824,7 +6788,7 @@ export function reviewerAuthTick({ orders, dir = REVIEWER_STATE_DIR, authFile = 
       appendFileSync(ledgerPath, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
     }
   } catch (err) {
-    log(`reviewer-auth: could not append ${ledgerPath} (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- the order below is unaffected.\n`);
+    log(`reviewer-auth: could not append ${ledgerPath} (${String((err as any)?.message ?? err).split("\n")[0]}) -- the order below is unaffected.\n`);
   }
   return reviewerAuthOrders(failures, lastRefresh);
 }
@@ -6914,7 +6878,7 @@ export function diskHeadroomTick({ read = diskHeadroom, log = (line) => process.
     for (const f of low) log(`DISK LOW: ${describeLow(f)}\n`);
     return diskHeadroomOrders(low);
   } catch (err) {
-    log(`disk-headroom: could not run (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}) -- no order this tick.\n`);
+    log(`disk-headroom: could not run (${String((err as any)?.message ?? err).split("\n")[0]}) -- no order this tick.\n`);
     return [];
   }
 }
@@ -7060,7 +7024,7 @@ export function labJobRecordsOrSay(read: typeof readLabJobRecords = readLabJobRe
   try {
     return read({ skipped: (file) => process.stderr.write(`SKIPPED lab job record ${file}: unreadable or not schema 1\n`) });
   } catch (err) {
-    process.stderr.write(`COULD NOT READ lab job records: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}\n`);
+    process.stderr.write(`COULD NOT READ lab job records: ${String((err as any)?.message ?? err).split("\n")[0]}\n`);
     return null;
   }
 }
@@ -7074,7 +7038,7 @@ export function dispatchedLabJobsOrSay(read: typeof readDispatchedLabJobs = read
   try {
     return read();
   } catch (err) {
-    process.stderr.write(`COULD NOT READ dispatched lab jobs: ${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}\n`);
+    process.stderr.write(`COULD NOT READ dispatched lab jobs: ${String((err as any)?.message ?? err).split("\n")[0]}\n`);
     return null;
   }
 }
@@ -7125,10 +7089,8 @@ function closingsWhenRowsCleared(openRows: any[], run: (args: string[]) => strin
 
 // --- #2618 (child 3c of #69): EVERY REPOSITORY THE PROJECT DECLARES, NOT ONE ---------------------------------------------
 
-/**
- * @typedef {{ repo: string }} ScopeRepository
- * @typedef {{ key: string, code: ScopeRepository | null, tracker: ScopeRepository | null }} Scope
- */
+export type ScopeRepository = { repo: string };
+export type Scope = { key: string, code: ScopeRepository | null, tracker: ScopeRepository | null };
 
 /**
  * THE SCOPES OF A TICK: one per KEY across every declaration handed in, the primary project's (the empty key) FIRST.
@@ -7144,7 +7106,6 @@ function closingsWhenRowsCleared(openRows: any[], run: (args: string[]) => strin
  * @returns {Scope[]}
  */
 export function scopesOf(declarations: readonly { tracker: readonly { key: string; repo: string; }[]; code: readonly { key: string; repo: string; }[]; }[]): Scope[] {
-  /** @type {Map<string, Scope>} */
   const byKey: Map<string, Scope> = new Map();
   /** @param {string} key @param {"code" | "tracker"} part @param {string} repo */
   const declare = (key: string, part: "code" | "tracker", repo: string) => {
@@ -7240,7 +7201,7 @@ export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof 
   const prFiles = comparablePrFiles([...openPrs, ...(read.siblingPrs ?? [])], { trackerRepo: scope.tracker?.repo });
   // WHAT THE TRACKER READINGS RETURN IS TAGGED HERE, not inside them: an epic or a closed row that carried no key would make `epic-7` and
   // `answer-owed/row-7` the primary's, whatever the reading that produced it.
-  const mark = (/** @type {any[] | null} */ list: any[] | null) => tagged(list, scope.key, read.trackerRepo) ?? [];
+  const mark = (list: any[] | null) => tagged(list, scope.key, read.trackerRepo) ?? [];
   const orders = decide({ prs: code.prs, readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required: code.required, baseTip: code.baseTip,
     epics: mark(tracker.epics), answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: mark(tracker.closedRows) }),
@@ -7447,7 +7408,7 @@ function decideAndTap(args: Parameters<typeof decide>[0]): ReturnType<typeof dec
  * @param {Parameters<typeof decide>[0]} args
  */
 function reportClearingDrops({ openRows, prs, closings, claimFacts }: Parameters<typeof decide>[0]) {
-  process.stderr.write(blockerClearedReading(/** @type {any[]} */ (openRows), todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
+  process.stderr.write(blockerClearedReading((openRows as any[]), todayIso(), Date.now(), { openPrs: prs, closings, claimFacts }).log.join(""));
 }
 
 /**
@@ -7458,7 +7419,6 @@ function reportClearingDrops({ openRows, prs, closings, claimFacts }: Parameters
  * @returns {{ claimStalls: ReturnType<typeof claimStallsNow>, claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined }}
  */
 function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claimedComments: Parameters<typeof claimStallsNow>[1], prs: Parameters<typeof claimStallsNow>[2], otherScopes: ReturnType<typeof readOtherScopes>): { claimStalls: ReturnType<typeof claimStallsNow>; claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined; } {
-  /** @type {import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined} */
   let claimFacts: import("./work-gate/claim-stall-tick.mjs").ClaimFactsOfTick | null | undefined;
   const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; },
     elsewhere: () => readElsewherePrs(undefined, undefined, otherScopes) });
@@ -7490,14 +7450,14 @@ function withClosedClaims(stalls: ReturnType<typeof claimStallsWithFacts>, close
  */
 export function redPrFacts(prs: any[], decided: { cause: string; subject: string; }[], options: { holdStands?: (pr: any) => boolean; } = {}) {
   const ordered = new Set(decided.filter((order) => order.cause === "pr-checks-failing").map((order) => order.subject));
-  const asked = (/** @type {any} */ pr: any) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`) || holdersOf(labelsOf(pr)).length > 0;
+  const asked = (pr: any) => ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`) || holdersOf(labelsOf(pr)).length > 0;
   return prs.filter((pr) => asked(pr) && isBrokenRed(pr, options)).map((pr) => {
     const owner = ownerOfPr(pr);
     const login = pr.author?.login;
     return { number: pr.number, owner: owner.source === "ceo" ? null : owner.session,
       redSince: redSinceOf(pr, options),
       // The shared account opens every PR, so "its owner's comment" is a comment by the account that opened it.
-      ownerCommentAts: (pr.comments ?? []).filter((/** @type {any} */ c: any) => login && c?.author?.login === login).map((/** @type {any} */ c: any) => Date.parse(c?.createdAt)).filter(Number.isFinite) };
+      ownerCommentAts: (pr.comments ?? []).filter((c: any) => login && c?.author?.login === login).map((c: any) => Date.parse(c?.createdAt)).filter(Number.isFinite) };
   });
 }
 
@@ -7533,8 +7493,7 @@ fetch(url, { signal: AbortSignal.timeout(Number(timeoutMs)) })
   .catch((err) => answer({ error: String((err && err.name) || err) }));
 `;
 
-/** @typedef {{ state: "incident", name: string, id: string | null, components: { name: string, status: string }[], wallMs?: number }
- *   | { state: "clear", wallMs?: number } | { state: "unknown", why: string, wallMs?: number }} GithubIncident */
+export type GithubIncident = { state: "incident", name: string, id: string | null, components: { name: string, status: string }[], wallMs?: number } | { state: "clear", wallMs?: number } | { state: "unknown", why: string, wallMs?: number };
 
 /**
  * PURE. What the status page's answer says about the three components, as `incident`, `clear` or `unknown`. UNKNOWN IS NEVER A HOLD: a fetch that failed, a
@@ -7550,7 +7509,6 @@ export function githubIncidentOf(envelope: { status?: number; body?: string; err
   if (!envelope || typeof envelope !== "object") return unknown("no answer");
   if (envelope.error) return unknown(`the fetch failed (${envelope.error})`);
   if (envelope.status !== 200) return unknown(`HTTP ${envelope.status}`);
-  /** @type {any} */
   let summary: any;
   try {
     summary = JSON.parse(String(envelope.body));
@@ -7558,7 +7516,7 @@ export function githubIncidentOf(envelope: { status?: number; body?: string; err
     return unknown("the body was not JSON"); // the reading, not a swallowed fault: a status page serving HTML is unreadable, and unreadable fails open
   }
   const components = Array.isArray(summary?.components) ? summary.components : [];
-  const seen = INCIDENT_COMPONENTS.map((name) => components.find((/** @type {any} */ c: any) => c?.name === name)).filter(Boolean);
+  const seen = INCIDENT_COMPONENTS.map((name) => components.find((c: any) => c?.name === name)).filter(Boolean);
   if (seen.length === 0) return unknown("none of the three components was named");
   const down = seen.filter((c) => COMPONENT_STATUSES.includes(c.status) && c.status !== "operational");
   if (down.length > 0) return { state: "incident", ...incidentNamed(summary, down), components: down.map((c) => ({ name: c.name, status: c.status })), wallMs };
@@ -7574,7 +7532,7 @@ export function githubIncidentOf(envelope: { status?: number; body?: string; err
  */
 function incidentNamed(summary: any, down: { name: string; status: string; }[]): { name: string; id: string | null; } {
   const incidents = Array.isArray(summary?.incidents) ? summary.incidents : [];
-  const touching = incidents.find((/** @type {any} */ i: any) => (i?.components ?? []).some((/** @type {any} */ c: any) => INCIDENT_COMPONENTS.includes(c?.name))) ?? incidents[0];
+  const touching = incidents.find((i: any) => (i?.components ?? []).some((c: any) => INCIDENT_COMPONENTS.includes(c?.name))) ?? incidents[0];
   return { name: String(touching?.name ?? `${down[0].name} is ${down[0].status}`), id: touching?.id ? String(touching.id) : null };
 }
 
@@ -7634,7 +7592,7 @@ function readGhJson(args: string[], run: (args: string[]) => string): any {
 
 const ACTIONS_JOB_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/\d+\/job\/(\d+)/;
 /** A job that NEVER GOT A RUNNER: no steps and no runner, whatever its conclusion. Measured on the 2026-10-05 jobs: `cancelled`, `runner_name: ""`, zero steps. A cancelled job that had steps ran. */
-const neverStarted = (/** @type {any} */ job: any) => job !== null && typeof job === "object" && job.steps === 0 && !job.runner_name;
+const neverStarted = (job: any) => job !== null && typeof job === "object" && job.steps === 0 && !job.runner_name;
 const JOB_FIELDS = "{conclusion, runner_name, steps: (.steps // [] | length)}";
 const NOT_FAILING_JOB_CONCLUSIONS = Object.freeze(["success", "skipped", "neutral"]);
 
@@ -7660,8 +7618,7 @@ function runnerStartOf(order: any, pr: any, reads: { required: string[] | null; 
 /** @param {any} pr @param {{ required: string[] | null, nowMs: number }} reads @returns {string | null} */
 function queuedPastItsBound(pr: any, { required, nowMs }: { required: string[] | null; nowMs: number; }): string | null {
   const hung = hungCheckOf(pr, required, nowMs);
-  /** @type {any} */
-  const named: any = hung && newestPerName(pr.statusCheckRollup ?? []).find((/** @type {any} */ c: any) => String(c.name) === hung.name);
+  const named: any = hung && newestPerName(pr.statusCheckRollup ?? []).find((c: any) => String(c.name) === hung.name);
   return hung && String(named?.status).toUpperCase() === "QUEUED" ? `\`${hung.name}\` has been QUEUED ${hung.runningMinutes} minutes with no runner` : null;
 }
 
@@ -7693,16 +7650,14 @@ function ejectionNeverStarted(order: any, pr: any, ghJson: (args: string[]) => a
 export function holdForGithubIncident(orders: any[], incident: GithubIncident, { prs, required = null, run = defaultRun, nowMs = Date.now() }: { prs: any[]; required?: string[] | null; run?: (args: string[]) => string; nowMs?: number; }): { orders: any[]; held: { subject: string; session: string; why: string; }[]; } {
   if (incident?.state !== "incident") return { orders, held: [] };
   const byRef = new Map(prs.map((pr) => [`pr-${subjectRef(pr.repoKey, pr.number)}`, pr]));
-  /** @type {Map<string, any>} */
   const jobs: Map<string, any> = new Map(); // one read per job per tick, however many orders name it
-  const ghJson = (/** @type {string[]} */ args: string[]) => readGhJson(args, run);
-  const job = (/** @type {unknown} */ url: unknown) => {
+  const ghJson = (args: string[]) => readGhJson(args, run);
+  const job = (url: unknown) => {
     const found = ACTIONS_JOB_URL.exec(String(url ?? ""));
     if (found === null) return null; // not an Actions job (a status context, a third party): nothing to read steps from
     if (!jobs.has(found[0])) jobs.set(found[0], ghJson(["api", `repos/${found[1]}/actions/jobs/${found[2]}`, "--jq", JOB_FIELDS]));
     return jobs.get(found[0]);
   };
-  /** @type {{ subject: string, session: string, why: string }[]} */
   const held: { subject: string; session: string; why: string; }[] = [];
   const kept = orders.filter((order) => {
     const pr = order.cause === "pr-checks-failing" ? byRef.get(order.subject) : undefined;
@@ -7862,7 +7817,6 @@ function main() {
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const rowBranches = readRowBranches(), branchPrs = readBranchPrsOfUnclaimed(rows, rowBranches); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
-  /** @type {import("./org-health.ts").PoolReading[]} */
   const pools: import("./org-health.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and

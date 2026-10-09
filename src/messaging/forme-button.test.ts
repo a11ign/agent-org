@@ -50,7 +50,7 @@ function numericProvider(): any {
   return {
     id: "recording", sent,
     capabilities: { silent: true, buttons: true, replies: true, conversation: true, maxText: 4096 },
-    async send(/** @type {any} */ message: any) { sent.push({ text: message.text, actions: message.actions }); return { messageRef: String(500 + sent.length), silent: false }; },
+    async send(message: any) { sent.push({ text: message.text, actions: message.actions }); return { messageRef: String(500 + sent.length), silent: false }; },
     async poll() { return { updates: [], cursor: 0 }; },
   };
 }
@@ -65,7 +65,7 @@ async function watched(asking: Record<string, unknown>): Promise<{ sent: any; pa
   const ledger = () => createLedger({ path, now: () => START });
   const provider = numericProvider();
   const github = {
-    issuesLabelled: async (/** @type {any} */ query: any) => (query.label === NEEDS_CHAIRMAN ? [asking] : []),
+    issuesLabelled: async (query: any) => (query.label === NEEDS_CHAIRMAN ? [asking] : []),
     issueComments: async () => [], mergedPullsSince: async () => [], redPulls: async () => [],
   };
   await runWatch({ github, provider, ledger: ledger(), now: () => START, repo: REPO, summary: null });
@@ -73,7 +73,7 @@ async function watched(asking: Record<string, unknown>): Promise<{ sent: any; pa
 }
 
 /** @param {any} sent @returns {string[]} the callback data of the keyboard the provider was handed */
-const dataOf = (sent: any): string[] => (sent.actions ?? []).map((/** @type {any} */ action: any) => action.data);
+const dataOf = (sent: any): string[] => (sent.actions ?? []).map((action: any) => action.data);
 
 describe("the brief names the act in one line", () => {
   test("parseChairmanAct reads the line, in any markup the other lines allow, and says nothing for a brief without one", () => {
@@ -125,7 +125,7 @@ describe("a keyboard carries the button only when the brief names the act", () =
 describe("the button that is drawn is the button that works", () => {
   test("the press its data carries reaches doItForMe and writes the one ledger line, once", async () => {
     const { sent, path, ledger } = await watched(row({ act: true }));
-    const drawn = sent.actions.find((/** @type {any} */ action: any) => action.label === "Do it for me");
+    const drawn = sent.actions.find((action: any) => action.label === "Do it for me");
     const inbound = createInbound({ ledger: ledger(), chairman: CHAIRMAN });
     const labels = new Set(["ready", NEEDS_CHAIRMAN]);
     const github = /** @type {import("./answers.mjs").GithubWriter} */ (/** @type {unknown} */ ({

@@ -36,12 +36,9 @@ export const PROJECT_OWNER = homeProjectDeclaration().boardOwner;
 // the other reads as an empty board rather than a refused one.
 export const PROJECT_NUMBER = homeProjectDeclaration().boardNumber;
 /**
- * #1352: the filesystem reads `commonGitDirOf` and `primaryLaunchRefusal` make, injectable so a test drives them with
- * the shapes git writes. No spawn: git's worktree files are plain text, and reading them keeps this module free of
- * every command, not only `gh`.
- * @typedef {{ exists: (path: string) => boolean, isDirectory: (path: string) => boolean, read: (path: string) => string }} GitFs
+ * #1352: the filesystem reads `commonGitDirOf` and `primaryLaunchRefusal` make, injectable so a test drives them with the shapes git writes. No spawn: git's worktree files are plain text, and reading them keeps this module free of every command, not only `gh`.
  */
-/** @type {GitFs} */
+export type GitFs = { exists: (path: string) => boolean, isDirectory: (path: string) => boolean, read: (path: string) => string };
 const LIVE_FS: GitFs = {
   exists: existsSync,
   isDirectory: (path) => lstatSync(path).isDirectory(),
@@ -186,11 +183,9 @@ function launchCheckRefusal(command: string, { cwd, fs }: { cwd: string; fs: Git
 }
 
 /**
- * One `gh` invocation without `gh` itself: its arguments in, its stdout out. `board-snapshot.mjs` supplies a request
- * that runs `gh` with these arguments. A failure throws with the failed process's stdout on `.stdout`, as
- * `execFileSync` does, so GraphQL's own error is still read (#555).
- * @typedef {(args: string[]) => string} GhRequest
+ * One `gh` invocation without `gh` itself: its arguments in, its stdout out. `board-snapshot.mjs` supplies a request that runs `gh` with these arguments. A failure throws with the failed process's stdout on `.stdout`, as `execFileSync` does, so GraphQL's own error is still read (#555).
  */
+export type GhRequest = (args: string[]) => string;
 
 /**
  * #1275: ONE ISSUE'S ITEM ON THIS PROJECT, AND THE PROJECT ITSELF, IN ONE REQUEST.
@@ -225,18 +220,11 @@ export const TOUCHED_ITEM_QUERY = `
 `;
 
 /**
- * @typedef {{ itemId: string, number: number | null, title: string | null, status: string | null,
- *   state: string | null }} BoardItem
- *
- * #1219: `state` was NOT fetched until this row, and that is why the health check could never have
- * asked whether a CLOSED row advertises live work. It is not that the check was one-directional --
- * the field that would answer the other direction was never requested, so the question could not be
- * asked at all. A filter on a field nobody fetched, in the instrument watching for exactly this.
+ * #1219: `state` was NOT fetched until this row, and that is why the health check could never have asked whether a CLOSED row advertises live work. It is not that the check was one-directional -- the field that would answer the other direction was never requested, so the question could not be asked at all. A filter on a field nobody fetched, in the instrument watching for exactly this.
  */
+export type BoardItem = { itemId: string, number: number | null, title: string | null, status: string | null, state: string | null };
 
-/**
- * @typedef {{ type: string, message: string, path: string | null }} GraphqlError
- */
+export type GraphqlError = { type: string, message: string, path: string | null };
 
 /**
  * Extracts GraphQL's own `errors` array from a parsed response, if present -- #555. `type`/`message`/
@@ -251,9 +239,9 @@ export const TOUCHED_ITEM_QUERY = `
  * @returns {GraphqlError[] | null}
  */
 export function graphqlErrors(parsed: unknown): GraphqlError[] | null {
-  const errors = /** @type {any} */ (parsed)?.errors;
+  const errors = (parsed as any)?.errors;
   if (!Array.isArray(errors) || errors.length === 0) return null;
-  return errors.map((/** @type {any} */ e: any) => ({
+  return errors.map((e: any) => ({
     type: typeof e?.type === "string" ? e.type : "UNKNOWN",
     message: typeof e?.message === "string" ? e.message : JSON.stringify(e).slice(0, 200),
     path: Array.isArray(e?.path) ? e.path.join(".") : null,
@@ -261,7 +249,7 @@ export function graphqlErrors(parsed: unknown): GraphqlError[] | null {
 }
 
 /** One `type: message (path)` line per error, joined -- the string every refusal below actually prints. */
-export function describeGraphqlErrors(/** @type {GraphqlError[]} */ errors: GraphqlError[]) {
+export function describeGraphqlErrors(errors: GraphqlError[]) {
   return errors.map((e) => `${e.type}${e.path ? ` (${e.path})` : ""}: ${e.message}`).join("; ");
 }
 
@@ -277,9 +265,8 @@ export function describeGraphqlErrors(/** @type {GraphqlError[]} */ errors: Grap
  * @returns {string | null}
  */
 export function graphqlErrorFromFailedRun(failure: unknown): string | null {
-  const stdout = /** @type {any} */ (failure)?.stdout;
+  const stdout = (failure as any)?.stdout;
   if (typeof stdout !== "string" || stdout.length === 0) return null;
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -297,7 +284,6 @@ export function graphqlErrorFromFailedRun(failure: unknown): string | null {
  * @returns {unknown}
  */
 function parseTouchedResponse(raw: string, issueNumber: number): unknown {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -323,7 +309,7 @@ function parseTouchedResponse(raw: string, issueNumber: number): unknown {
  */
 function touchedIssue(raw: string, issueNumber: number): any {
   const parsed = parseTouchedResponse(raw, issueNumber);
-  const data = /** @type {any} */ (parsed)?.data;
+  const data = (parsed as any)?.data;
   const issue = data?.repository?.issue;
   const itemsNode = issue?.projectItems;
   if (typeof data?.organization?.projectV2?.id !== "string" || issue?.number !== issueNumber
@@ -348,7 +334,7 @@ function touchedIssue(raw: string, issueNumber: number): any {
  */
 function parseTouchedItem(raw: string, issueNumber: number): BoardItem | null {
   const issue = touchedIssue(raw, issueNumber);
-  const node = issue.projectItems.nodes.find((/** @type {any} */ n: any) => n?.project?.number === PROJECT_NUMBER);
+  const node = issue.projectItems.nodes.find((n: any) => n?.project?.number === PROJECT_NUMBER);
   if (node === undefined) return null;
   if (typeof node?.id !== "string") {
     throw new Error(`board-snapshot: #${issueNumber}'s item has no id -- refusing to guess. `
@@ -384,7 +370,7 @@ export function persistSnapshot(path: string, snapshot: object, { writeFile, mkd
     writeFile(path, JSON.stringify(snapshot, null, 2));
   } catch (cause) {
     throw new Error(`board-snapshot: could not write the snapshot to ${path} -- refusing to proceed with `
-      + `an unsnapshotted board mutation. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `an unsnapshotted board mutation. ${(cause as Error).message}`, { cause });
   }
 }
 
@@ -427,8 +413,8 @@ export function readUnlessProjectUnreadable<T>(read: () => T, subject: string): 
   try {
     return read();
   } catch (error) {
-    if (refusalCause(/** @type {Error} */ (error).message) === PROJECT_UNREADABLE) {
-      projectUnreadable = /** @type {Error} */ (error);
+    if (refusalCause((error as Error).message) === PROJECT_UNREADABLE) {
+      projectUnreadable = (error as Error);
     }
     throw error;
   }
@@ -455,19 +441,16 @@ export function touchedItemRequest(issueNumber: number): string[] {
  * @returns {{ items: BoardItem[], notOnBoard: number[] }}
  */
 export function readTouchedItems(issueNumbers: number[], { request }: { request: GhRequest; }): { items: BoardItem[]; notOnBoard: number[]; } {
-  /** @type {BoardItem[]} */
   const items: BoardItem[] = [];
-  /** @type {number[]} */
   const notOnBoard: number[] = [];
   for (const issue of issueNumbers) {
-    /** @type {string} */
     let raw: string;
     try {
       raw = request(touchedItemRequest(issue));
     } catch (cause) {
       const graphqlDetail = graphqlErrorFromFailedRun(cause);
       throw new Error(`board-snapshot: could not read Project ${PROJECT_NUMBER}'s item for #${issue} -- refusing `
-        + `to mutate without a snapshot. ${graphqlDetail ?? /** @type {Error} */ (cause).message}`, { cause });
+        + `to mutate without a snapshot. ${graphqlDetail ?? (cause as Error).message}`, { cause });
     }
     const item = parseTouchedItem(raw, issue);
     if (item) items.push(item);
@@ -547,7 +530,7 @@ export function touchedIssues(touches: unknown): number[] | null {
     throw new Error("board-snapshot: `touches` must name the issue(s) this mutation changes, got "
       + `${JSON.stringify(touches)} -- refusing to guess what it touches. Nothing was mutated.`);
   }
-  return /** @type {number[]} */ (issues);
+  return (issues as number[]);
 }
 
 /**
@@ -578,10 +561,10 @@ export function withScopedSnapshot<T>(mutate: () => T, issues: number[], { reque
         stillValid: (snapshot: { path: string; takenAt: Date; } | undefined) => boolean;
         writeFile?: (path: string, data: string) => void; mkdir?: (path: string) => void;
     }): T {
-  const touched = /** @type {number[]} */ (touchedIssues(issues));
+  const touched = (touchedIssues(issues) as number[]);
   const held = touched.map((issue) => scopedSnapshots.get(issue));
   if (held.every((snapshot) => stillValid(snapshot))) {
-    const paths = [...new Set(held.map((snapshot) => /** @type {{ path: string }} */ (snapshot).path))];
+    const paths = [...new Set(held.map((snapshot) => (snapshot as { path: string }).path))];
     log(`board-snapshot: reusing ${paths.join(", ")} for #${touched.join(", #")}, taken before an earlier `
       + "mutation of the same item(s) in this process (#1275)");
     return mutate();

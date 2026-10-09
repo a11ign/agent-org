@@ -28,7 +28,8 @@
 
 import { conditionHolds, declaredWaitsOf, hoursSince, waitItemOf, MANUAL_WAIT_HOURS } from "./wait-condition.ts";
 
-/** @typedef {import("./wait-condition.ts").Wait} Wait @typedef {import("./wait-condition.ts").WaitFacts} WaitFacts */
+export type Wait = import("./wait-condition.ts").Wait;
+export type WaitFacts = import("./wait-condition.ts").WaitFacts;
 
 /**
  * THE LABEL PREFIX THAT IS A HOLD ON A PR. Exported, because it is now the ONLY spelling: three copies

@@ -55,12 +55,9 @@ import { newestPerName } from "./newest-check-run.ts";
 export const EXIT = { DONE: 0, NOT_MERGEABLE: 1, CANNOT_TELL: 2, MERGED_THEN_STEP_FAILED: 3 };
 
 /**
- * #1482: what `runMergeQueue` does its I/O through, so a test drives the entry point with every seam injected. The
- * runner is named `gh` so the merge call keeps the call shape merge-method-is-one-fact.test.ts sweeps for, and that
- * sweep still checks its merge method.
- * @typedef {{ gh: (args: string[]) => string, append: (path: string, data: string) => void, logPath: () => string,
- *   out: (text: string) => void, err: (text: string) => void }} QueueIo
+ * #1482: what `runMergeQueue` does its I/O through, so a test drives the entry point with every seam injected. The runner is named `gh` so the merge call keeps the call shape merge-method-is-one-fact.test.ts sweeps for, and that sweep still checks its merge method.
  */
+export type QueueIo = { gh: (args: string[]) => string, append: (path: string, data: string) => void, logPath: () => string, out: (text: string) => void, err: (text: string) => void };
 
 /** @param {string[]} args */
 function gh(args: string[]) {
@@ -193,7 +190,7 @@ function appendJsonl(path: string, entry: object, append: (path: string, data: s
     append(path, `${JSON.stringify(entry)}\n`);
   } catch (error) {
     throw new Error(`could not write the orphaned-branch log at ${path}: `
-      + `${/** @type {Error} */ (error).message}`, { cause: error });
+      + `${(error as Error).message}`, { cause: error });
   }
 }
 
@@ -220,7 +217,7 @@ function mergeAndCheckOrphans(pr: { number: number; headRefName: string; }, io: 
     // for a PR that did not merge -- about a PR that did. So it is caught, the merge is NAMED as standing, what was not
     // done is said, the error is quoted, and the check to finish by hand is given.
     io.err(`#${pr.number} MERGED -- \`gh pr merge\` succeeded, and that is not undone -- but the step after it failed: `
-      + `${/** @type {Error} */ (cause).message}. The orphaned-branch record for \`${pr.headRefName}\` was NOT written, `
+      + `${(cause as Error).message}. The orphaned-branch record for \`${pr.headRefName}\` was NOT written, `
       + "and the branch was NOT checked for commits the merge left behind, or deleted. Check it by hand: "
       + `gh api repos/${REPO}/compare/main...${pr.headRefName} --jq .ahead_by\n`);
     return EXIT.MERGED_THEN_STEP_FAILED;
@@ -259,7 +256,7 @@ function checkOrphansAfterMerge(pr: { number: number; headRefName: string; }, { 
     run(["api", "-X", "DELETE", `repos/${REPO}/git/refs/heads/${pr.headRefName}`]);
   } catch (error) {
     err(`merged #${pr.number} cleanly, but could not delete \`${pr.headRefName}\`: `
-      + `${/** @type {Error} */ (error).message}\n`);
+      + `${(error as Error).message}\n`);
   }
   return EXIT.DONE;
 }
@@ -274,13 +271,12 @@ export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, log
   out = (text) => { process.stdout.write(text); }, err = (text) => { process.stderr.write(text); } }: { argv: string[]; } & Partial<QueueIo>): number {
   const wanted = wantedPrNumber(argv);
 
-  /** @type {string} */
   let raw: string;
   try {
     raw = run(["pr", "list", "--state", "open", "--json",
       "number,title,headRefName,mergeable,mergeStateStatus,isDraft,statusCheckRollup"]);
   } catch (error) {
-    err(`could not ask GitHub for the queue: ${/** @type {Error} */ (error).message}\n`);
+    err(`could not ask GitHub for the queue: ${(error as Error).message}\n`);
     return EXIT.CANNOT_TELL;
   }
 
@@ -298,7 +294,7 @@ export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, log
     return EXIT.DONE;
   }
 
-  const pr = prs.find((/** @type {{number: number}} */ p: { number: number; }) => String(p.number) === wanted);
+  const pr = prs.find((p: { number: number; }) => String(p.number) === wanted);
   if (!pr) {
     err(`#${wanted} is not an open PR. The queue is the open PRs; nothing else merges.\n`);
     return EXIT.NOT_MERGEABLE;

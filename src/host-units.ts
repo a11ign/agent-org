@@ -112,10 +112,10 @@ export const TOOL_ENTRIES = Object.freeze([
  * nor misses it, `host:install` does not write it, and an installed copy is an orphan that the install removes -- deleting the key is the off switch.
  * Presence only: whether the key is VALID is `messaging/config.mjs`'s refusal, and an invalid one still installs the clock, which then refuses.
  */
-export const OPTIONAL_UNITS = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({
+export const OPTIONAL_UNITS = (Object.freeze({
   "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
   "chairman-listen.service.in": "messaging",
-}));
+}) as Readonly<Record<string, string>>);
 
 // SERVICES NO CLOCK STARTS (#3025): see `LONG_RUNNING_TEMPLATES`, which lives in `host-config.mjs` (#3443: `update-tool.mjs` restarts them, and must not import this
 // file to name them, since its history readers would put them in the closure of the test that runs `update-tool`).
@@ -138,25 +138,23 @@ export function declaredProjectKeys(root: string = REPO_ROOT, read: typeof readF
     const parsed = JSON.parse(String(read(path, "utf8")));
     return new Set(typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? Object.keys(parsed) : []);
   } catch (cause) {
-    throw new Error(`${path}: cannot tell which optional units it asks for (${/** @type {Error} */ (cause).message})`, { cause });
+    throw new Error(`${path}: cannot tell which optional units it asks for (${(cause as Error).message})`, { cause });
   }
 }
 
 /** The host-data entry that is no longer a file, and where its content lives now. */
-export const HOST_DATA_ENTRIES = /** @type {Readonly<Record<string, string>>} */ (Object.freeze({ "gh-leads-workspaces.txt": "gh.leadsWorkspaces" }));
+export const HOST_DATA_ENTRIES = (Object.freeze({ "gh-leads-workspaces.txt": "gh.leadsWorkspaces" }) as Readonly<Record<string, string>>);
 
 /** Where a systemd USER unit has to live to be run. */
 export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
 
-/** @typedef {import("./host-config.ts").HostConfig} HostConfig @typedef {import("./host-config.ts").UnitsDeclaration} UnitsDeclaration */
+export type HostConfig = import("./host-config.ts").HostConfig;
+export type UnitsDeclaration = import("./host-config.ts").UnitsDeclaration;
 
 /**
- * @typedef {{ shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync,
- *   host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string> }} ShippedDeps
- * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own
- * `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two
- * declarations a template is rendered from.
+ * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two declarations a template is rendered from.
  */
+export type ShippedDeps = { shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync, host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string> };
 
 /**
  * The unit files this repository ships, sorted so a report reads the same way twice: the tool's (templates listed under the name
@@ -168,9 +166,8 @@ export const INSTALLED_DIR = `${process.env.HOME ?? ""}/.config/systemd/user`;
  */
 export function shippedUnits(dir: string = SHIPPED_DIR, { read = readdirSync, projectUnitsDir, prefix, declaredKeys }: { read?: typeof readdirSync; projectUnitsDir?: string | null; prefix?: string; declaredKeys?: ReadonlySet<string>; } = {}): string[] {
   const projectDir = projectUnitsDir !== undefined ? projectUnitsDir : dir === SHIPPED_DIR ? PROJECT_UNITS_DIR : null;
-  /** @type {ReadonlySet<string> | undefined} */
   let keys: ReadonlySet<string> | undefined = declaredKeys;
-  const asked = (/** @type {string} */ name: string) => {
+  const asked = (name: string) => {
     if (!Object.hasOwn(OPTIONAL_UNITS, name)) return true;
     keys ??= dir === SHIPPED_DIR ? declaredProjectKeys() : new Set();
     return keys.has(OPTIONAL_UNITS[name]);
@@ -215,7 +212,6 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
     toolDir: string; projectDir: string | null; read: typeof readFileSync; values: () => Record<string, string>; host: () => HostConfig;
     beforeTicks: () => BeforeTick[];
 } {
-  /** @type {Record<string, string> | undefined} */
   let values: Record<string, string> | undefined;
   const toolDir = shippedDir ?? SHIPPED_DIR;
   return {
@@ -228,7 +224,7 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
   };
 }
 
-/** @typedef {{ checkout: string, command: string }} BeforeTick */
+export type BeforeTick = { checkout: string, command: string };
 
 /**
  * What each project the host serves asks to have run before a tick, in the order `host.json` lists them. A project that declares
@@ -238,7 +234,7 @@ function shippedContext({ shippedDir, projectUnitsDir, read = readFileSync, host
  */
 function beforeTicksOf(host: HostConfig, read: typeof readFileSync): BeforeTick[] {
   return host.projects.flatMap(({ id, checkout }) => {
-    const command = readBeforeTick(checkout, /** @type {(path: string, encoding: "utf8") => string} */ (read));
+    const command = readBeforeTick(checkout, (read as (path: string, encoding: "utf8") => string));
     if (command === null) return [];
     if (namesToolCommand(command) && id !== host.primary) {
       throw new HostConfigRefusal("beforeTick", `\`${command}\` runs the tool, which serves the host's primary project (\`${host.primary}\`) and not \`${id}\``, join(checkout, PROJECT_DECLARATION_PATH));
@@ -275,7 +271,7 @@ function beforeTickCommand(tool: string, command: string) {
   if (!Object.hasOwn(COMMANDS, name)) {
     throw new HostConfigRefusal("beforeTick", `\`${command}\` names \`${name}\`, which is not one of the tool's commands`, "the project's declaration");
   }
-  return ["/usr/bin/node", `${tool}/src/${/** @type {Record<string, string>} */ (COMMANDS)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
+  return ["/usr/bin/node", `${tool}/src/${(COMMANDS as Record<string, string>)[name]}`, ...FIXED_ARGS[name] ?? [], ...args].join(" ");
 }
 
 /** The template whose three lines change when `host.json` names a `tool` (ADR 0040, decision 3; #2793). */
@@ -310,7 +306,7 @@ export function workTickToolForm(rendered: string, tool: string, beforeTicks: Be
     [/^WorkingDirectory=.*$/m, `WorkingDirectory=${tool}`],
     [/^ExecStartPre=.*$/m, steps.join("\n")],
     [/^ExecStart=\/usr\/bin\/node --import=\.\/packages\/agent-org\/src\/lib\/crash-exit\.mjs packages\/agent-org\/src\/work-tick\.mjs$/m, "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts"],
-  ].reduce((text, [anchor, line]) => replaceOnce(text, /** @type {RegExp} */ (anchor), /** @type {string} */ (line)), rendered);
+  ].reduce((text, [anchor, line]) => replaceOnce(text, (anchor as RegExp), (line as string)), rendered);
 }
 
 /** The variable a tool run from its own checkout reads to find the host's declaration, and from it the project (`project-config.mjs`'s `HOST_ENV`). */
@@ -335,7 +331,7 @@ const REPO_SLUG = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
  */
 export function readProjectRepo(checkout: string, read: typeof readFileSync): string | null {
   const path = join(checkout, PROJECT_DECLARATION_PATH);
-  const parsed = JSON.parse(/** @type {(p: string, e: "utf8") => string} */ (read)(path, "utf8"));
+  const parsed = JSON.parse((read as (p: string, e: "utf8") => string)(path, "utf8"));
   const repo = Array.isArray(parsed?.code) ? parsed.code[0]?.repo : undefined;
   if (repo === undefined) return null;
   if (typeof repo !== "string" || !REPO_SLUG.test(repo)) {
@@ -410,7 +406,7 @@ export function toolForm(shipped: string, rendered: string, { tool, checkout, be
       : rendered;
   if (body === rendered) return body;
   const workingDirectory = `WorkingDirectory=${tool}`;
-  const has = (/** @type {string} */ variable: string) => new RegExp(`^Environment=${variable}=`, "m").test(body);
+  const has = (variable: string) => new RegExp(`^Environment=${variable}=`, "m").test(body);
   const added = [
     ...(has(HOST_VARIABLE) ? [] : [`Environment=${HOST_VARIABLE}=${checkout}/.agent-org/host.json`]),
     ...(repo === null || has(GH_REPO_VARIABLE) ? [] : [`Environment=${GH_REPO_VARIABLE}=${repo}`]),
@@ -569,7 +565,6 @@ function systemdWords(text: string): string[] {
  * @param {string} c @returns {string}
  */
 function escapedCharacter(c: string): string {
-  /** @type {Record<string, string>} */
   const named: Record<string, string> = { n: "\n", t: "\t", s: " " };
   return named[c] ?? c;
 }
@@ -632,7 +627,7 @@ export function execCommands(unitText: string): string[] {
 /** The repository's own npm scripts, which is how a unit's `pnpm run <name>` becomes a file path. */
 export function packageScripts(repoRoot = REPO_ROOT, read = readFileSync) {
   try {
-    return /** @type {Record<string, string>} */ (JSON.parse(String(read(join(repoRoot, "package.json")))).scripts ?? {});
+    return (JSON.parse(String(read(join(repoRoot, "package.json")))).scripts ?? {} as Record<string, string>);
   } catch {
     // NO SCRIPTS RESOLVE, so every `pnpm run` command yields no entry point and `unitsSpendingGh` comes
     // back empty. That is a SILENT PASS, and the only thing standing between it and a green suite is
@@ -681,7 +676,6 @@ export function entriesFromCommand(command: string, { repoRoot = REPO_ROOT, scri
  */
 export function programCandidates(command: string, { repoRoot = REPO_ROOT,
   scripts = packageScripts(repoRoot), cwd }: { repoRoot?: string; scripts?: Record<string, string>; cwd?: string; } = {}): string[] {
-  /** @type {string[]} */
   const entries: string[] = [];
   const seen = new Set();
   /** @param {string} text */
@@ -693,7 +687,7 @@ export function programCandidates(command: string, { repoRoot = REPO_ROOT,
       const script = tool === "node" ? argv.slice(1).find((arg) => !arg.startsWith("-")) : argv[1];
       // The project's scripts run the tool through its one bin (`agent-org worktrees:prune`, #2975), which is the table's program, not a path.
       const command = agentOrgCommand([tool, ...argv.slice(1)]);
-      if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, /** @type {Record<string, string>} */ (COMMANDS)[command]));
+      if (command !== null && Object.hasOwn(COMMANDS, command)) entries.push(resolve(TOOL_SRC, (COMMANDS as Record<string, string>)[command]));
       else if ((tool === "node" || SHELLS.has(tool)) && isPath(script)) {
         entries.push(resolve(repoRoot, script));
         if (cwd !== undefined) entries.push(resolve(cwd, script));
@@ -891,7 +885,7 @@ export function ghSpawnReachedFrom(entry: string, { read = readFileSync, exists 
   const seen = new Set();
   const pending = [entry];
   while (pending.length > 0) {
-    const file = /** @type {string} */ (pending.pop());
+    const file = (pending.pop() as string);
     if (seen.has(file) || !exists(file)) continue;
     seen.add(file);
     const text = String(read(file));
@@ -1063,7 +1057,7 @@ function readGhLogins(dir: string, read: typeof readFileSync): { state: "absent"
   try {
     return { state: "read", logins: ghLogins(String(read(join(dir, "hosts.yml"), "utf8"))) };
   } catch (cause) {
-    const { code, message } = /** @type {NodeJS.ErrnoException} */ (cause);
+    const { code, message } = (cause as NodeJS.ErrnoException);
     return code === "ENOENT" ? { state: "absent" } : { state: "unreadable", cause: message };
   }
 }
@@ -1133,19 +1127,17 @@ export function codexTrustedProjects(text: string): Set<string> {
  */
 export function codexTrustDrift(deps: { host?: HostConfig; readCodexConfig?: (path: string) => string; } = {}): Finding[] {
   const host = deps.host ?? homeHostConfig();
-  const { readCodexConfig = (/** @type {string} */ path: string) => readFileSync(path, "utf8") } = deps;
+  const { readCodexConfig = (path: string) => readFileSync(path, "utf8") } = deps;
   const clones = Object.entries(host.clones ?? {});
   if (clones.length === 0) return [];
   const config = join(host.home, ".codex", "config.toml");
-  /** @type {Set<string>} */
   let trusted: Set<string>;
-  /** @type {string | null} */
   let unknown: string | null = null;
   try {
     trusted = codexTrustedProjects(readCodexConfig(config));
   } catch (cause) {
     trusted = new Set();
-    unknown = /** @type {NodeJS.ErrnoException} */ (cause).code === "ENOENT" ? "it does not exist" : `it could not be read (${/** @type {Error} */ (cause).message})`;
+    unknown = (cause as NodeJS.ErrnoException).code === "ENOENT" ? "it does not exist" : `it could not be read (${(cause as Error).message})`;
   }
   return clones.filter(([, clone]) => !trusted.has(clone)).map(([key, clone]) => ({ unit: clone, problem: "CLONE NOT TRUSTED BY CODEX", manualFix: true,
     detail: `\`clones.${key}\` is declared in host.json and \`${config}\` ${unknown === null ? "has no `trust_level = \"trusted\"` table for it"
@@ -1221,18 +1213,12 @@ export function compileCacheDrift(deps: ShippedDeps & { shippedDir?: string; rea
     });
 }
 
-/**
- * @typedef {{unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean,
- *            manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string,
- *            missingProgram?: string, installedCopy?: InstalledCopyState}} Finding
- */
+export type Finding = {unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean, manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string, missingProgram?: string, installedCopy?: InstalledCopyState};
 
 /**
- * HOW THE INSTALLED UNIT STANDS AGAINST THE REPOSITORY, carried on a `missingProgram` finding as the
- * MEASURED FACT rather than as an assumption baked into its prose. It decides both the sentence the
- * finding prints and whether `uncovered` says the shared remedy cannot fix it.
- * @typedef {"current" | "stale" | "unshipped"} InstalledCopyState
+ * HOW THE INSTALLED UNIT STANDS AGAINST THE REPOSITORY, carried on a `missingProgram` finding as the MEASURED FACT rather than as an assumption baked into its prose. It decides both the sentence the finding prints and whether `uncovered` says the shared remedy cannot fix it.
  */
+export type InstalledCopyState = "current" | "stale" | "unshipped";
 
 /**
  * ONE UNIT'S THREE ANSWERS, as data rather than as a sentence.
@@ -1274,9 +1260,7 @@ export function unitState(unit: string, deps: ShippedDeps & {
   return { unit, present, current, identityRevert, ...asked, windowEnded: windowEnd(unit, deps) };
 }
 
-/**
- * @typedef {{ cause: string, ticks: number, at: string }} WindowEnd
- */
+export type WindowEnd = { cause: string, ticks: number, at: string };
 
 /**
  * THE END A TIMER WAS DESIGNED TO COME TO (#2971), read from the window's own record rather than from the timer's name.
@@ -1346,7 +1330,7 @@ function ask(systemctl: (args: string[]) => string, verb: string, unit: string):
   try {
     return systemctl([verb, unit]).trim() || null;
   } catch (error) {
-    const out = String(/** @type {{ stdout?: unknown }} */ (error)?.stdout ?? "").trim();
+    const out = String((error as { stdout?: unknown })?.stdout ?? "").trim();
     return out === "" ? null : out;
   }
 }
@@ -1527,7 +1511,6 @@ export function orphanedUnits(deps: ShippedDeps & {
 } = {}): Finding[] {
   const { shippedDir = SHIPPED_DIR, installedDir = INSTALLED_DIR, readDir = readdirSync, git = defaultGit } = deps;
   const shipped = new Set(shippedUnitNames(deps));
-  /** @type {string[]} */
   let installed: string[];
   try {
     installed = readDir(installedDir).map(String);
@@ -1717,12 +1700,12 @@ function defaultGitConfig(path: string, key: string): string[] | null {
     lines.pop(); // the newline after the last value; an EMPTY value is a real line and must survive
     return lines;
   } catch (cause) {
-    return /** @type {{ status?: number }} */ (cause).status === 1 ? [] : null;
+    return (cause as { status?: number }).status === 1 ? [] : null;
   }
 }
 
 /** The helper a push to github.com must use: the wrapper, so the push is routed like every other call. */
-const wrapperHelper = (/** @type {string} */ scriptDir: string) => `!${scriptDir}/gh auth git-credential`;
+const wrapperHelper = (scriptDir: string) => `!${scriptDir}/gh auth git-credential`;
 
 /**
  * THE SECOND DOOR. `git push` does not run `gh` as the caller types it: it runs whatever
@@ -1924,7 +1907,7 @@ export function reviewerDoorState(deps: Parameters<typeof reviewerDoorPath>[0] &
   const target = reviewerDoorPath(deps);
   const shipped = textOf(source, read);
   const installed = textOf(target, read);
-  const bytes = (/** @type {string | null} */ text: string | null) => (text === null ? null : Buffer.byteLength(text));
+  const bytes = (text: string | null) => (text === null ? null : Buffer.byteLength(text));
   const state = shipped === null ? "SOURCE UNREADABLE" : installed === null ? "NOT INSTALLED" : installed === shipped ? "CURRENT" : "DRIFTED";
   return { state, target, shippedBytes: bytes(shipped) ?? 0, installedBytes: bytes(installed) };
 }
@@ -1959,9 +1942,7 @@ export function reviewerDoorInstall(deps: Parameters<typeof reviewerDoorPath>[0]
   return target;
 }
 
-/**
- * @typedef {{ state: "retired" | "never" | "unreadable" } | { state: "unmerged", sha: string }} OrphanOrigin
- */
+export type OrphanOrigin = { state: "retired" | "never" | "unreadable" } | { state: "unmerged", sha: string };
 
 /**
  * WHERE DID THIS ORPHAN COME FROM? FOUR ANSWERS, AND THE THIRD IS WHY #2013 WAS FILED.
@@ -2216,7 +2197,7 @@ function installedCopyState(shippedText: string | null, installedText: string | 
  */
 function installedOrgUnits(dir: string, readDir: typeof readdirSync, prefix: string): string[] {
   try {
-    return /** @type {string[]} */ (readDir(dir))
+    return (readDir(dir) as string[])
       .map(String).filter((n) => n.startsWith(prefix));
   } catch {
     // NOT AN AGENT HOST, or a directory this process cannot read. `hostUnitDrift`'s `systemdUserAvailable`
@@ -2264,11 +2245,10 @@ function missingProgramFinding({ unit, path, dir, installedCopy }: { unit: strin
 }
 
 /** Where `ExecStart` resolved, said the same way in all three sentences. */
-const resolvedAgainst = (/** @type {string} */ path: string, /** @type {string} */ dir: string) =>
+const resolvedAgainst = (path: string, dir: string) =>
   `the program it starts is not there: ${path}. \`ExecStart\` is resolved against this unit's own `
   + `\`WorkingDirectory=${dir}\``;
 
-/** @type {Record<InstalledCopyState, (path: string, dir: string) => string>} */
 const MISSING_PROGRAM_DETAIL: Record<InstalledCopyState, (path: string, dir: string) => string> = {
   current: (path, dir) => `the unit is installed and matches the repository, and `
     + `${resolvedAgainst(path, dir)}, which is `
@@ -2319,7 +2299,6 @@ export function workingDirectoryOf(unitText: string): string | null {
  * @param {string[]} texts the unit file, then each `<unit>.d/*.conf` in name order @returns {string | null}
  */
 export function hostVariableAsRun(texts: string[]): string | null {
-  /** @type {string | null} */
   let value: string | null = null;
   for (const line of texts.flatMap((text) => text.split("\n"))) {
     const set = /^\s*Environment=(.*)$/.exec(line);
@@ -2340,10 +2319,9 @@ export function hostVariableAsRun(texts: string[]): string | null {
  */
 function dropInTexts(installedDir: string, unit: string, { readDir, read }: { readDir: typeof readdirSync; read: typeof readFileSync; }): string[] {
   const dir = join(installedDir, `${unit}.d`);
-  /** @type {string[]} */
   let names: string[];
   try {
-    names = /** @type {string[]} */ (readDir(dir)).map(String);
+    names = (readDir(dir) as string[]).map(String);
   } catch {
     return [];
   }
@@ -2629,7 +2607,7 @@ export function permissionModeDrift({ settingsPath = `${process.env.HOME ?? ""}/
     // A FILE THAT CANNOT BE PARSED IS NOT A FILE THAT SAYS "default". Reporting it as the wrong mode
     // would send a reader to change a key in a file that will not load whatever they put in it.
     return [{ unit: name, problem: "UNREADABLE",
-      detail: `could not be parsed (${/** @type {Error} */ (cause).message}), so the permission posture `
+      detail: `could not be parsed (${(cause as Error).message}), so the permission posture `
         + "is UNKNOWN rather than wrong. Fix the JSON first." }];
   }
   if (mode === "bypassPermissions") return [];
@@ -2665,7 +2643,7 @@ export function modelEffortDrift({ settingsPath = `${process.env.HOME ?? ""}/.cl
   } catch {
     return [];
   }
-  const rank = (/** @type {unknown} */ level: unknown) => CLAUDE_EFFORTS.indexOf(/** @type {never} */ (level));
+  const rank = (level: unknown) => CLAUDE_EFFORTS.indexOf((level as never));
   return Object.entries(declared).flatMap(([alias, { id, effortLevel }]) => {
     const has = entries?.[id]?.effortLevel;
     if (rank(has) >= rank(effortLevel)) return [];
@@ -2737,6 +2715,7 @@ export function liveClaudeSessions(run: (args: string[]) => string = (args) => e
   }
 }
 
+export type SessionModelDeps = { sessions?: ReturnType<typeof liveClaudeSessions>, projectsDir?: string, tail?: (path: string) => string, declared?: Record<string, { id: string }> };
 /**
  * A RESUMED SESSION KEEPS ITS SAVED MODEL (#2783). 2026-09-29: the chairman moved the org to Sonnet 5.5 and the three
  * standing sessions, restarted with `--resume`, came back on Sonnet 5 -- `settings.json`'s `model` is read for a FRESH
@@ -2753,8 +2732,6 @@ export function liveClaudeSessions(run: (args: string[]) => string = (args) => e
  * just cleared, as `product-manager` was when this was first run against the live host) is NOT a finding -- the gate wakes
  * a session on any finding, and "has not answered yet" is nothing to wake anybody for -- but it is reported as a NOTE
  * ({@link sessionModelNotes}), because absence of a reading is not a clean one.
- * @typedef {{ sessions?: ReturnType<typeof liveClaudeSessions>, projectsDir?: string,
- *   tail?: (path: string) => string, declared?: Record<string, { id: string }> }} SessionModelDeps
  * @param {SessionModelDeps} [deps]
  * @returns {{ name: string, path: string, model: string | null }[]}
  */
@@ -2787,6 +2764,7 @@ export function sessionModelNotes(deps: SessionModelDeps = {}): Finding[] {
     detail: `no assistant message could be read from ${path}, so its model is unknown rather than correct.` }));
 }
 
+export type SeatDeps = { seats?: string[] | null, agents?: ReturnType<typeof readAgents> };
 /**
  * A PERSISTENT SEAT THE ROSTER NAMES AND HERDR DOES NOT LIST (#3539). A roster entry is not a process: the routing sends the chairman's
  * messages to `liaison` the moment its entry exists, and on 2026-10-04 the seat was absent and his message was refused. The work tick
@@ -2794,7 +2772,6 @@ export function sessionModelNotes(deps: SessionModelDeps = {}): Finding[] {
  *
  * `roster` and `agents` are what was read, or `null` for what could not be: THEY ARE NOTHING HERE, never `[]`, so a roster or a herdr that
  * could not be asked reads as unknown ({@link persistentSeatNotes}) and never as every seat present.
- * @typedef {{ seats?: string[] | null, agents?: ReturnType<typeof readAgents> }} SeatDeps
  * @param {SeatDeps} [deps]
  * @returns {{ seats: string[] | null, agents: ReturnType<typeof readAgents> }}
  */

@@ -261,12 +261,12 @@ function readOpenBlockers({ row, run }: { row: { repo: string; number: number; }
     const open = openBlockersOf(JSON.parse(run(["issue", "view", String(row.number), "--repo", row.repo, "--json", "blockedBy"])));
     return open === null ? { open, failure: "the API returned no complete blocked-by list" } : { open, failure: null };
   } catch (cause) {
-    return { open: null, failure: /** @type {Error} */ (cause).message };
+    return { open: null, failure: (cause as Error).message };
   }
 }
 
 /** The line that makes a once-only comment findable again; the blocker numbers are in it, so a CHANGED set is said afresh. */
-const blockedMarker = (/** @type {number[]} */ blockers: number[]) => `<!-- arm-refused: open-blocker ${[...blockers].sort((a, b) => a - b).join(",")} -->`;
+const blockedMarker = (blockers: number[]) => `<!-- arm-refused: open-blocker ${[...blockers].sort((a, b) => a - b).join(",")} -->`;
 
 /**
  * #3544: THE REFUSAL, WHERE A HUMAN LOOKS -- one comment on the PR, not one per tick. The sweep re-asks every tick, so the comment
@@ -289,7 +289,7 @@ export function announceBlocked({ number, repo, verdict, run, error }: {
       `${marker}\n**Not armed: ${verdict.why}.** This comment is posted once; nothing needs doing here.`]);
     return { posted: true };
   } catch (cause) {
-    error(`arm-pr: could not tell #${number} why it is not armed: ${/** @type {Error} */ (cause).message}`);
+    error(`arm-pr: could not tell #${number} why it is not armed: ${(cause as Error).message}`);
     return { posted: false };
   }
 }
@@ -333,18 +333,15 @@ export function sessionLabelsOf(rowLabels: string[]): string[] {
  * The pane a session currently holds is herdr's answer at runtime (`wake.mjs` asks for the workspace list and matches
  * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
-const SESSIONS = /** @type {{ live: { name: string, family?: SpareFamily }[], retired: { name: string }[] }} */ (
-  JSON.parse(readFileSync(roleBriefPath("sessions.json").absolute, "utf8")));
+const SESSIONS = (
+  JSON.parse(readFileSync(roleBriefPath("sessions.json").absolute, "utf8")) as { live: { name: string, family?: SpareFamily }[], retired: { name: string }[] });
 /** The `live` entries that are ONE ADDRESS each -- a family entry (#2403) is a rule for many, listed in {@link SPARE_FAMILIES}. */
 export const LIVE_SESSIONS = SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name);
 
 /**
- * #2403: A SPARE FAMILY IS A FACT ABOUT A ROLE, NOT A LONGER LIST. `{ prefix: "worker-", from: 4 }` says every
- * `worker-<n>` for n from 4 is an instance of the entry's role, so the allocator can name `worker-9` and
- * `worker-10` without a committed edit for each. Read from the same file as the names, so no reader types one.
- * @typedef {{ prefix: string, from: number }} SpareFamily
+ * #2403: A SPARE FAMILY IS A FACT ABOUT A ROLE, NOT A LONGER LIST. `{ prefix: "worker-", from: 4 }` says every `worker-<n>` for n from 4 is an instance of the entry's role, so the allocator can name `worker-9` and `worker-10` without a committed edit for each. Read from the same file as the names, so no reader types one.
  */
-/** @type {SpareFamily[]} */
+export type SpareFamily = { prefix: string, from: number };
 export const SPARE_FAMILIES: SpareFamily[] = SESSIONS.live.flatMap((s) => (s.family === undefined ? [] : [s.family]));
 
 /**
@@ -431,10 +428,10 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }: { numbe
   const rowLabelLists = rows.map((rowNumber) => {
     try {
       return JSON.parse(gh(["issue", "view", String(rowNumber), "--repo", repo, "--json", "labels"], run))
-        .labels.map((/** @type {{name: string}} */ l: { name: string; }) => l.name);
+        .labels.map((l: { name: string; }) => l.name);
     } catch (cause) {
       console.error(`arm-pr: could not read row #${rowNumber}'s labels -- leaving the PR unlabelled `
-        + `for it: ${/** @type {Error} */ (cause).message}`);
+        + `for it: ${(cause as Error).message}`);
       return [];
     }
   });
@@ -509,7 +506,7 @@ export function prState({ number, repo, run = defaultRun }: { number: string; re
     const state = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "state"], run)).state;
     return typeof state === "string" ? state : null;
   } catch (cause) {
-    console.error(`arm-pr: could not read #${number}'s state: ${/** @type {Error} */ (cause).message}`);
+    console.error(`arm-pr: could not read #${number}'s state: ${(cause as Error).message}`);
     return null;
   }
 }
@@ -555,7 +552,7 @@ export function armedAlready({ number, repo, run = defaultRun, error = console.e
     return armedReason(JSON.parse(gh(armedQueryArgs({ number, repo }), run)));
   } catch (cause) {
     error(`arm-pr: could not read whether #${number} is already armed: `
-      + `${/** @type {Error} */ (cause).message}`);
+      + `${(cause as Error).message}`);
     return null;
   }
 }
@@ -743,7 +740,6 @@ const streakNames = (streak: ReturnType<typeof redStreak>, shas: string[]) => st
  * @returns {ReturnType<typeof redStreak> | null}
  */
 function readRedStreak({ repo, shas, run, error }: { repo: string; shas: string[]; run: typeof defaultRun; error: (line: string) => void; }): ReturnType<typeof redStreak> | null {
-  /** @type {any[]} */
   const runs: any[] = [];
   try {
     for (let page = 1; page <= RED_STREAK_MAX_PAGES; page += 1) {
@@ -754,7 +750,7 @@ function readRedStreak({ repo, shas, run, error }: { repo: string; shas: string[
       if (ended || streakNames(streak, shas) || answered.length < RED_STREAK_PAGE_SIZE) return streak;
     }
   } catch (cause) {
-    error(`arm-pr: could not read ${TRUNK_WORKFLOW}'s runs on main: ${/** @type {Error} */ (cause).message}`);
+    error(`arm-pr: could not read ${TRUNK_WORKFLOW}'s runs on main: ${(cause as Error).message}`);
     return null;
   }
   error(`arm-pr: ${TRUNK_WORKFLOW}'s red streak on main is longer than ${RED_STREAK_MAX_PAGES * RED_STREAK_PAGE_SIZE} runs and names none of ${shas.join(", ")} -- not read to its end`);
@@ -800,11 +796,9 @@ export function atFrontOfQueue(entry: { position?: unknown; } | null | undefined
 }
 
 /**
- * What became of a GRANTED jump: `front` (read back at position 1), `behind` / `unconfirmed` (queued or
- * possibly queued, NOT confirmed at the front -- exit `JUMP_UNCONFIRMED`), or `not-jumped` (nothing was
- * enqueued, so the ordinary arm still has to run).
- * @typedef {{ kind: "front" | "behind" | "unconfirmed" | "not-jumped", why: string }} JumpResult
+ * What became of a GRANTED jump: `front` (read back at position 1), `behind` / `unconfirmed` (queued or possibly queued, NOT confirmed at the front -- exit `JUMP_UNCONFIRMED`), or `not-jumped` (nothing was enqueued, so the ordinary arm still has to run).
  */
+export type JumpResult = { kind: "front" | "behind" | "unconfirmed" | "not-jumped", why: string };
 
 /**
  * IMPURE. Put ONE granted PR at the front of the merge queue, and say what a READ of the queue then shows.
@@ -829,7 +823,7 @@ export function enqueueAtFront({ number, repo, run }: { number: string; repo: st
   try {
     seat = readSeat({ number, repo, run });
   } catch (cause) {
-    return { kind: "not-jumped", why: `could not read #${number}'s queue seat: ${/** @type {Error} */ (cause).message}` };
+    return { kind: "not-jumped", why: `could not read #${number}'s queue seat: ${(cause as Error).message}` };
   }
   if (seat.mergeQueueEntry !== null && seat.mergeQueueEntry !== undefined) return judgeSeat(seat.mergeQueueEntry, "it was already queued");
   if (seat.mergeStateStatus !== "CLEAN") {
@@ -839,7 +833,7 @@ export function enqueueAtFront({ number, repo, run }: { number: string; repo: st
   try {
     gh(["api", "graphql", "-f", `query=${JUMP_MUTATION}`, "-f", `id=${seat.id}`, "-f", `oid=${seat.headRefOid}`], run);
   } catch (cause) {
-    refusal = /** @type {Error} */ (cause).message;
+    refusal = (cause as Error).message;
   }
   return readBack({ number, repo, run }, refusal);
 }
@@ -859,7 +853,7 @@ function readBack({ number, repo, run }: { number: string; repo: string; run: ty
       ? { kind: "unconfirmed", why: "the jump reported success and the PR is NOT in the merge queue on read-back" }
       : { kind: "not-jumped", why: `the jump was refused: ${refusal}` };
   } catch (cause) {
-    return { kind: "unconfirmed", why: `the jump ${refusal === null ? "reported success" : "was refused"} and the read-back FAILED, so its position is unknown: ${/** @type {Error} */ (cause).message}` };
+    return { kind: "unconfirmed", why: `the jump ${refusal === null ? "reported success" : "was refused"} and the read-back FAILED, so its position is unknown: ${(cause as Error).message}` };
   }
 }
 
@@ -916,10 +910,10 @@ function readPr({ number, repo, run, error }: { number: string; repo: string; ru
     // #1022: `state` rides along on the read that was already happening -- no extra `gh` call for the
     // common case, where the PR is plainly OPEN and this costs nothing.
     const view = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels,body,state,author"], run));
-    return { labels: view.labels.map((/** @type {{name: string}} */ l: { name: string; }) => l.name), prBody: view.body,
+    return { labels: view.labels.map((l: { name: string; }) => l.name), prBody: view.body,
       state: typeof view.state === "string" ? view.state : null, author: view.author?.login ?? null, failure: null };
   } catch (cause) {
-    const failure = /** @type {Error} */ (cause).message;
+    const failure = (cause as Error).message;
     error(`arm-pr: could not read #${number}'s labels: ${failure}`);
     return { labels: null, prBody: null, state: null, author: null, failure };
   }
@@ -976,7 +970,7 @@ function labelAfterArm({ number, repo, prBody, run, error }: {
       ? ` Apply them by hand: gh pr edit ${number} --repo ${repo} ${wanted.labels.map((l) => `--add-label ${l}`).join(" ")}`
       : "";
     error(`arm-pr: labelling failed AFTER the arm step. ${landed}. NOT applied: ${wanted.text}. `
-      + `The failure: ${/** @type {Error} */ (cause).message}.${finish}`);
+      + `The failure: ${(cause as Error).message}.${finish}`);
     return EXIT.ARMED_THEN_LABEL_FAILED;
   }
 }
@@ -990,11 +984,11 @@ function labelAfterArm({ number, repo, prBody, run, error }: {
 function labelsWanted({ repo, prBody, run }: { repo: string; prBody: string | null; run: typeof defaultRun; }): { labels: string[]; text: string; } {
   try {
     const lists = closedRowNumbers(prBody).map((rowNumber) => JSON.parse(
-      gh(["issue", "view", String(rowNumber), "--repo", repo, "--json", "labels"], run)).labels.map((/** @type {{name: string}} */ l: { name: string; }) => l.name));
+      gh(["issue", "view", String(rowNumber), "--repo", repo, "--json", "labels"], run)).labels.map((l: { name: string; }) => l.name));
     const labels = sessionLabelsForArm(lists);
     return { labels, text: labels.length > 0 ? labels.join(", ") : "(none were wanted)" };
   } catch (cause) {
-    return { labels: [], text: `(could not re-read the rows' labels: ${/** @type {Error} */ (cause).message})` };
+    return { labels: [], text: `(could not re-read the rows' labels: ${(cause as Error).message})` };
   }
 }
 

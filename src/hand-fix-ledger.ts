@@ -91,11 +91,8 @@ export function declarationsIn(body: string | null | undefined): {
     handFixes: { did: string; gate: string; }[]; notHandFixes: { kind: string; reason: string; }[];
     malformed: string[];
 } {
-  /** @type {{ did: string, gate: string }[]} */
   const handFixes: { did: string; gate: string; }[] = [];
-  /** @type {{ kind: string, reason: string }[]} */
   const notHandFixes: { kind: string; reason: string; }[] = [];
-  /** @type {string[]} */
   const malformed: string[] = [];
   for (const line of String(body ?? "").split(/\r\n|\r|\n/)) {
     const hand = HAND_FIX_LINE.exec(line);
@@ -138,28 +135,11 @@ export function classifyLogin(login: string | null | undefined, { org = ORG_LOGI
 }
 
 /**
- * @typedef {object} Change one unit of work that reached `main`: a pull request with the commits it carried, or a
- *   commit nothing groups.
- * @property {string} key `pr:<n>` or `commit:<sha>` -- what makes "once" mean something
- * @property {number | null} number the pull request, when there is one
- * @property {string} title
- * @property {string} at ISO time it reached `main`
- * @property {string | null} author the pull request's own author, null for a bare commit or one that could not be read
- * @property {(string | null)[]} actors the login of the PR's author and of each non-merge commit; null = unresolved
- * @property {string | null} body the PR body, null for a bare commit or a body that could not be read
+ * one unit of work that reached `main`: a pull request with the commits it carried, or a commit nothing groups.
  */
+export type Change = { key: string; number: number | null; title: string; at: string; author: string | null; actors: (string | null)[]; body: string | null };
 
-/**
- * @typedef {object} LedgerEntry
- * @property {string} key
- * @property {number | null} number
- * @property {string} title
- * @property {string} at
- * @property {boolean} humanAuthored the PR's own author is human-side, not only a commit in it
- * @property {"derived" | "declared" | "both"} via
- * @property {string[]} humans the human-side logins that made it, empty when only declared
- * @property {{ did: string, gate: string }[]} declared
- */
+export type LedgerEntry = { key: string; number: number | null; title: string; at: string; humanAuthored: boolean; via: "derived" | "declared" | "both"; humans: string[]; declared: { did: string, gate: string }[] };
 
 /**
  * ONE CHANGE, AS THE LEDGER SEES IT: counted (and by which mechanism), excluded (and why), unread, or clean.
@@ -193,11 +173,8 @@ export function judgeChange(change: Change, lists?: { org?: readonly string[]; a
  * @param {{ org?: readonly string[], automation?: readonly string[] }} [lists]
  */
 export function buildLedger(changes: Change[], lists?: { org?: readonly string[]; automation?: readonly string[]; }) {
-  /** @type {Map<string, LedgerEntry>} */
   const counted: Map<string, LedgerEntry> = new Map();
-  /** @type {{ key: string, kind: string, reason: string }[]} */
   const excluded: { key: string; kind: string; reason: string; }[] = [];
-  /** @type {{ key: string, why: string }[]} */
   const unread: { key: string; why: string; }[] = [];
   for (const change of changes) {
     const judged = judgeChange(change, lists);
@@ -206,7 +183,7 @@ export function buildLedger(changes: Change[], lists?: { org?: readonly string[]
     else if (judged.verdict === "unread") unread.push(judged);
   }
   const entries = [...counted.values()];
-  const via = (/** @type {string} */ kind: string) => entries.filter((e) => e.via === kind).length;
+  const via = (kind: string) => entries.filter((e) => e.via === kind).length;
   const latest = entries.map((e) => e.at).sort().at(-1) ?? null;
   return { count: entries.length, derived: via("derived"), declared: via("declared"), both: via("both"),
     humanAuthored: entries.filter((e) => e.humanAuthored).length, latest, entries, excluded, unread,
@@ -258,23 +235,22 @@ export function readLedger({ read, now = new Date(), days = WINDOW_DAYS, lists }
   const to = now;
   const mid = new Date(now.getTime() - days * DAY_MS);
   const from = new Date(mid.getTime() - days * DAY_MS);
-  /** @type {Change[]} */
   let changes: Change[];
   try {
     changes = read({ from, to });
   } catch (cause) {
-    return { status: /** @type {const} */ ("unknown"), count: null, previous: null, trend: /** @type {const} */ ("unknown"),
-      why: String(/** @type {Error} */ (cause).message ?? cause).split("\n")[0], days, current: null };
+    return { status: ("unknown" as const), count: null, previous: null, trend: ("unknown" as const),
+      why: String((cause as Error).message ?? cause).split("\n")[0], days, current: null };
   }
   const current = buildLedger(inWindow(changes, { from: mid, to }), lists);
   const before = buildLedger(inWindow(changes, { from, to: mid }), lists);
   // BOTH windows: the trend compares them, so a count beside a previous one that cannot be read is no comparison either.
   const untrusted = unreadRefusal(current, "current") ?? unreadRefusal(before, "previous");
   if (untrusted !== null) {
-    return { status: /** @type {const} */ ("unknown"), count: null, previous: null, trend: /** @type {const} */ ("unknown"),
+    return { status: ("unknown" as const), count: null, previous: null, trend: ("unknown" as const),
       why: untrusted, days, current: null };
   }
-  return { status: /** @type {const} */ ("read"), count: current.count, previous: before.count,
+  return { status: ("read" as const), count: current.count, previous: before.count,
     trend: trendOf(before.count, current.count), why: null, days, current };
 }
 
@@ -300,7 +276,7 @@ export function ledgerLine(reading: ReturnType<typeof readLedger>): string {
 
 // --- the gathering: the only part that reaches GitHub or git, behind two seams ------------------------------------
 
-/** @typedef {(args: string[]) => string} Run */
+export type Run = (args: string[]) => string;
 
 /**
  * `git` run IN `cwd`, which the caller must name (#3363). The tick's working directory is the TOOL's checkout, so a `git` with no `cwd`
@@ -310,7 +286,6 @@ export function ledgerLine(reading: ReturnType<typeof readLedger>): string {
  */
 const gitIn = (cwd: string): Run => (args) =>
   execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: sandboxGitEnv() });
-/** @type {Run} */
 const defaultGh: Run = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
 /**
@@ -349,7 +324,6 @@ function loginsBySha(runGh: Run, repo: string, since: Date): Map<string, string 
 function mergedPullRequests(runGh: Run, repo: string, since: Date): Map<number, { author: string | null; title: string; body: string; }> {
   const raw = runGh(["pr", "list", "--repo", repo, "--state", "merged", "--search", `merged:>=${since.toISOString().slice(0, 10)}`,
     "--limit", "5000", "--json", "number,author,title,body"]);
-  /** @type {{ number: number, author: { login?: string } | null, title: string, body: string }[]} */
   const rows: { number: number; author: { login?: string; } | null; title: string; body: string; }[] = JSON.parse(raw);
   return new Map(rows.map((r) => [r.number, { author: r.author?.login ?? null, title: r.title, body: r.body ?? "" }]));
 }
@@ -439,7 +413,6 @@ export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout),
     assertBaseIsLive({ git, gh: runGh, repo, base });
     const prs = mergedPullRequests(runGh, repo, from);
     const logins = loginsBySha(runGh, repo, from);
-    /** @type {Map<string, Change>} */
     const changes: Map<string, Change> = new Map();
     for (const commit of firstParentLine(git, base, from)) {
       const number = pullRequestNumber(commit);

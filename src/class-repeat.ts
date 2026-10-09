@@ -30,14 +30,14 @@ const MAX_REASON_CHARS = 160;
 /** What `gh` is asked to keep of each row: the raw `issues` listing carries every body, which this never reads. */
 const ROW_PROJECTION = "[.[] | {number, state, closed_at, pull_request: (.pull_request != null), labels: [.labels[].name]}]";
 
-/**
- * @typedef {{ id: string, name: string, guard: string | null, guardNote: string | null }} FailureClass
- * @typedef {{ number: number, closedAt: number | null, classes: string[] }} ClassRow a CLOSED row and the class ids its `class:` labels name; `closedAt` is epoch ms
- * @typedef {{ index: FailureClass[], rows: ClassRow[] } | { unreadable: string }} ClassRepeatFact `unreadable` is a refused read of the labels or the file and says why: it is never "no repeats"
- */
+export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null };
+/** a CLOSED row and the class ids its `class:` labels name; `closedAt` is epoch ms */
+export type ClassRow = { number: number, closedAt: number | null, classes: string[] };
+/** `unreadable` is a refused read of the labels or the file and says why: it is never "no repeats" */
+export type ClassRepeatFact = { index: FailureClass[], rows: ClassRow[] } | { unreadable: string };
 
 /** @param {unknown} err @returns {string} */
-const firstLine = (err: unknown): string => String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS);
+const firstLine = (err: unknown): string => String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS);
 
 /**
  * THE INDEX, parsed. `null` is text that is not an index (a bad parse, no `classes` list, an entry without a string `id`): a stated gap, since an index
@@ -64,7 +64,7 @@ export function parseFailureClasses(text: string): FailureClass[] | null {
 function rowOf(entry: any): ClassRow | null | "skip" {
   if (typeof entry?.number !== "number" || !Array.isArray(entry.labels)) return null;
   if (entry.pull_request === true || entry.state !== "closed") return "skip";
-  const classes = entry.labels.filter((/** @type {unknown} */ l: unknown) => typeof l === "string" && l.startsWith(CLASS_LABEL_PREFIX)).map((/** @type {string} */ l: string) => l.slice(CLASS_LABEL_PREFIX.length));
+  const classes = entry.labels.filter((l: unknown) => typeof l === "string" && l.startsWith(CLASS_LABEL_PREFIX)).map((l: string) => l.slice(CLASS_LABEL_PREFIX.length));
   const closedAt = Date.parse(entry.closed_at);
   return { number: entry.number, closedAt: Number.isFinite(closedAt) ? closedAt : null, classes };
 }
@@ -78,7 +78,7 @@ function parseRows(text: string): ClassRow[] | null {
     if (!Array.isArray(entries)) return null;
     const rows = entries.map(rowOf);
     if (rows.includes(null)) return null;
-    return /** @type {ClassRow[]} */ (rows.filter((r) => r !== null && r !== "skip" && r.classes.length > 0));
+    return (rows.filter((r) => r !== null && r !== "skip" && r.classes.length > 0) as ClassRow[]);
   } catch {
     return null;
   }
@@ -129,18 +129,16 @@ export function readClassRepeat(run: (args: string[]) => string, repo: string, {
   }
 }
 
-/**
- * @typedef {{ id: string, entry: FailureClass | null, rows: ClassRow[] }} ClassGroup `rows` newest first (by close time, then by number); `entry` is `null` for a label naming no class
- */
+/** `rows` newest first (by close time, then by number); `entry` is `null` for a label naming no class */
+export type ClassGroup = { id: string, entry: FailureClass | null, rows: ClassRow[] };
 
 /**
  * EVERY CLASS ID THE ROWS NAME, with its rows newest first. One row under two classes is an instance of each. Membership is the label and nothing else.
  * @param {FailureClass[]} index @param {ClassRow[]} rows @returns {ClassGroup[]}
  */
 export function groupByClass(index: FailureClass[], rows: ClassRow[]): ClassGroup[] {
-  /** @type {Map<string, ClassRow[]>} */
   const byId: Map<string, ClassRow[]> = new Map();
   for (const row of rows) for (const id of new Set(row.classes)) byId.set(id, [...(byId.get(id) ?? []), row]);
-  const newestFirst = (/** @type {ClassRow} */ a: ClassRow, /** @type {ClassRow} */ b: ClassRow) => ((b.closedAt ?? 0) - (a.closedAt ?? 0)) || b.number - a.number;
+  const newestFirst = (a: ClassRow, b: ClassRow) => ((b.closedAt ?? 0) - (a.closedAt ?? 0)) || b.number - a.number;
   return [...byId].map(([id, group]) => ({ id, entry: index.find((c) => c.id === id) ?? null, rows: [...group].sort(newestFirst) }));
 }

@@ -69,9 +69,9 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, DISPLACED_NOT_HELD: 3 };
 
 /**
- * @typedef {{ number: number, repo: string, key: string }} HeldPr
  * The pull request a hold is about, with its repository (`owner/repo`) and the project's key for it: `""` is the first repository (#3479).
  */
+export type HeldPr = { number: number, repo: string, key: string };
 
 /** @param {HeldPr} pr @returns {string} how a message names it: `#7`, or `agent-org#7` */
 const mention = (pr: HeldPr): string => (pr.key === "" ? `#${pr.number}` : `${pr.key}#${pr.number}`);
@@ -124,9 +124,9 @@ export function prLabels(number: number, repo: string = REPO): string[] | null {
   try {
     const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", repo, "--json", "labels"]));
     if (!Array.isArray(pr.labels)) return null;
-    const names = pr.labels.map((/** @type {{name?: unknown}} */ l: { name?: unknown; }) => l?.name);
-    return names.every((/** @type {unknown} */ n: unknown) => typeof n === "string")
-      ? /** @type {string[]} */ (names) : null;
+    const names = pr.labels.map((l: { name?: unknown; }) => l?.name);
+    return names.every((n: unknown) => typeof n === "string")
+      ? (names as string[]) : null;
   } catch {
     return null;
   }
@@ -189,7 +189,7 @@ function writeLabel(pr: HeldPr, session: string, how: "add" | "remove") {
 
 /** @param {unknown} error @param {string} label @returns {boolean} whether `gh` said THIS label does not exist */
 function isLabelNotFound(error: unknown, label: string): boolean {
-  const stderr = /** @type {{stderr?: unknown}} */ (error)?.stderr;
+  const stderr = (error as {stderr?: unknown})?.stderr;
   return typeof stderr === "string" && stderr.includes(`'${label}' not found`);
 }
 
@@ -306,7 +306,7 @@ function writeUntilMarker(pr: HeldPr, session: string, until: string | null): bo
     assertNoLeakInArgv("gh", write); // #1053: every script that sends a body to GitHub is declared in `TRACKER_WRITERS` and guarded
     gh(write);
     const comments = JSON.parse(gh(["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "comments"])).comments ?? [];
-    return comments.some((/** @type {{ body?: string }} */ c: { body?: string; }) => String(c?.body ?? "").trim() === body);
+    return comments.some((c: { body?: string; }) => String(c?.body ?? "").trim() === body);
   } catch {
     return false;
   }
@@ -418,7 +418,6 @@ function holdLanded(pr: HeldPr, session: string): string | null {
  * @returns {string | null} the operator-facing message for a partial write, or `null` when every write succeeded
  */
 function displaceThenTake(pr: HeldPr, session: string, displaces: string[]): string | null {
-  /** @type {string[]} */
   const removed: string[] = [];
   try {
     for (const displaced of displaces) {
@@ -431,7 +430,7 @@ function displaceThenTake(pr: HeldPr, session: string, displaces: string[]): str
     if (removed.length === 0) throw error;
     return `${mention(pr)}: DISPLACED BUT NOT HELD (exit ${EXIT.DISPLACED_NOT_HELD}) -- removed ${removed.join(", ")}; `
       + `the next label write failed, so ${HOLD_PREFIX}${session} was NOT added: `
-      + `${/** @type {Error} */ (error).message.trim()}\n`
+      + `${(error as Error).message.trim()}\n`
       + `  Read ${mention(pr)}'s labels before acting, then take it again (\`pnpm run pr:hold ${pr.number} `
       + `${pr.key === "" ? "" : `--repo-key=${pr.key} `}--session=${session} --steal\`) or tell the displaced session its hold is gone.\n`;
   }
@@ -555,7 +554,7 @@ function disarmAutoMerge(pr: HeldPr): { disarmed: boolean; reason: string; } {
     after = JSON.parse(gh(["pr", "view", String(pr.number), ...aimedIfKeyed(pr), "--json", "autoMergeRequest"]));
   } catch (cause) {
     return { disarmed: false, reason: "COULD NOT READ `autoMergeRequest` back after disarming: "
-      + `${/** @type {Error} */ (cause).message}. Unverified is not disarmed -- check by hand.` };
+      + `${(cause as Error).message}. Unverified is not disarmed -- check by hand.` };
   }
   return disarmVerdict(after);
 }

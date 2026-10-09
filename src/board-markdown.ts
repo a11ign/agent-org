@@ -33,7 +33,6 @@ const SLOT = (i: number) => `§CODE${i}§`;
  * @param {string} text
  */
 export function inline(text: string) {
-  /** @type {string[]} */
   const codes: string[] = [];
   let s = escape(text).replace(/`([^`]+)`/g, (_, c) => SLOT(codes.push(c) - 1));
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -53,37 +52,30 @@ const startsBlock = (line: string, next: string = "") => /^```/.test(line) || /^
   || /^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)
   || (/^\|/.test(line) && /^\|[\s:|-]+\|?\s*$/.test(next));
 
-/** @typedef {(lines: string[], i: number) => [string, number] | null} BlockHandler */
+export type BlockHandler = (lines: string[], i: number) => [string, number] | null;
 
 // ONE HANDLER PER BLOCK KIND. Each takes the lines and the cursor, and returns `[html, nextIndex]` when
 // it claims the line or `null` when it does not -- so `toHtml` is a loop over handlers rather than a
 // fifteen-branch conditional. Extracted when `complexity` refused the single function at 25 against a
 // budget of 15; the handlers are the shape the file already had, named.
-/** @type {BlockHandler} */
 const fence: BlockHandler = (lines, i) => {
   if (!/^```/.test(lines[i])) return null;
-  /** @type {string[]} */
   const body: string[] = [];
   for (i++; i < lines.length && !/^```/.test(lines[i]); i++) body.push(lines[i]);
   return [`<pre><code>${escape(body.join("\n"))}</code></pre>`, i + 1];
 };
 
-/** @type {BlockHandler} */
 const blank: BlockHandler = (lines, i) => (/^\s*$/.test(lines[i]) ? ["", i + 1] : null);
-/** @type {BlockHandler} */
 const rule: BlockHandler = (lines, i) => (/^---+\s*$/.test(lines[i]) ? ["<hr/>", i + 1] : null);
 
-/** @type {BlockHandler} */
 const heading: BlockHandler = (lines, i) => {
   const m = /^(#{1,4})\s+(.*)$/.exec(lines[i]);
   return m ? [`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`, i + 1] : null;
 };
 
-/** @type {BlockHandler} */
 const table: BlockHandler = (lines, i) => {
   if (!/^\|/.test(lines[i]) || !/^\|[\s:|-]+\|?\s*$/.test(lines[i + 1] ?? "")) return null;
   const head = cells(lines[i]);
-  /** @type {string[][]} */
   const rows: string[][] = [];
   let j = i + 2;
   for (; j < lines.length && /^\|/.test(lines[j]); j++) rows.push(cells(lines[j]));
@@ -92,10 +84,8 @@ const table: BlockHandler = (lines, i) => {
     + "</tbody></table>", j];
 };
 
-/** @type {BlockHandler} */
 const quote: BlockHandler = (lines, i) => {
   if (!/^>\s?/.test(lines[i])) return null;
-  /** @type {string[]} */
   const body: string[] = [];
   for (; i < lines.length && /^>\s?/.test(lines[i]); i++) body.push(lines[i].replace(/^>\s?/, ""));
   return [`<blockquote>${toHtml(body.join("\n"))}</blockquote>`, i];
@@ -104,23 +94,20 @@ const quote: BlockHandler = (lines, i) => {
 /** @param {string} tag @param {RegExp} pattern @returns {BlockHandler} */
 const listOf = (tag: string, pattern: RegExp): BlockHandler => (lines, i) => {
   if (!pattern.test(lines[i])) return null;
-  /** @type {string[]} */
   const items: string[] = [];
   for (; i < lines.length && pattern.test(lines[i]); i++) items.push(lines[i].replace(pattern, ""));
   return [`<${tag}>${items.map((t) => `<li>${inline(t)}</li>`).join("")}</${tag}>`, i];
 };
 
-/** @type {BlockHandler[]} */
 const HANDLERS: BlockHandler[] = [fence, blank, rule, heading, table, quote,
   listOf("ul", /^\s*[-*]\s+/), listOf("ol", /^\s*\d+\.\s+/)];
 
 /** @param {string} md */
 export function toHtml(md: string) {
   const lines = md.split("\n");
-  /** @type {string[]} */
   const out: string[] = [];
   for (let i = 0; i < lines.length;) {
-    const claimed = HANDLERS.reduce((/** @type {[string, number] | null} */ hit: [string, number] | null, handler) => hit ?? handler(lines, i), null);
+    const claimed = HANDLERS.reduce((hit: [string, number] | null, handler) => hit ?? handler(lines, i), null);
     if (claimed) {
       const [html, next] = claimed;
       if (html) out.push(html);

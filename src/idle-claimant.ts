@@ -79,10 +79,11 @@ export const WAIT_FIELDS: Readonly<Record<string, { on: "row" | "pr"; spelling: 
   "pr-held": { on: "pr", spelling: `\`pnpm run pr:hold <n> --until "merged #<m>"\` (the \`${HOLD_LABEL_PREFIX}<session>\` label and its \`Waiting-for:\`, which the gate lifts)` },
 });
 
-/** @typedef {{ label: string, status: string }} Agent */
-/** @typedef {{ number?: number, repoKey?: string, reviewDecision?: string | null, labels?: ({ name?: string } | string)[],
- *   checksPending?: boolean }} IdlePr a `gh pr list --json` object, as `readPrs` returns it, plus `checksPending`, which THE GATE derives: the rollup is
- * read only where `stillRunning` and `newestPerName` live, so this leaf neither re-decides what a running check is nor reads a rollup unnarrowed */
+export type Agent = { label: string, status: string };
+/**
+ * a `gh pr list --json` object, as `readPrs` returns it, plus `checksPending`, which THE GATE derives: the rollup is read only where `stillRunning` and `newestPerName` live, so this leaf neither re-decides what a running check is nor reads a rollup unnarrowed
+ */
+export type IdlePr = { number?: number, repoKey?: string, reviewDecision?: string | null, labels?: ({ name?: string } | string)[], checksPending?: boolean };
 
 /** @param {IdlePr} pr @returns {string[]} */
 const labelNames = (pr: IdlePr): string[] => (pr.labels ?? []).map((l) => String(typeof l === "string" ? l : l?.name));
@@ -97,7 +98,6 @@ const hasEvidenceLabel = (pr: IdlePr): boolean => labelNames(pr).includes(EVIDEN
  * @param {IdlePr} pr @param {Agent[]} agents @returns {string[]}
  */
 function prWaitKinds(pr: IdlePr, agents: Agent[]): string[] {
-  /** @type {string[]} */
   const kinds: string[] = [];
   // #3075: `reviewer-7` and `reviewer-agent-org-7` are two seats, so a pull request in another tracked repository is asked for by ITS seat's name.
   if (agents.some((a) => a.label === reviewerSeat({ number: Number(pr.number), repoKey: pr.repoKey }) && a.status !== "unknown")) kinds.push("review-requested");
@@ -108,13 +108,7 @@ function prWaitKinds(pr: IdlePr, agents: Agent[]): string[] {
   return kinds;
 }
 
-/**
- * @typedef {{ kind: "unknown", why: string }
- *   | { kind: "not-idle", status: string | null }
- *   | { kind: "waiting", fields: string[] }
- *   | { kind: "watching", since: number, idleMs: number }
- *   | { kind: "stall", since: number, idleMs: number }} IdleReading
- */
+export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle", status: string | null } | { kind: "waiting", fields: string[] } | { kind: "watching", since: number, idleMs: number } | { kind: "stall", since: number, idleMs: number };
 
 /**
  * IS THIS HOLDER AN IDLE CLAIMANT WITH NO DECLARED WAIT?

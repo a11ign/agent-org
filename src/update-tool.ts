@@ -109,7 +109,7 @@ async function longRunningUnits(): Promise<string[]> {
     const { prefix } = readUnitsDeclaration();
     return LONG_RUNNING_TEMPLATES.map((template) => renderedName(template, prefix));
   } catch (err) {
-    console.error(`CANNOT NAME THE LONG-RUNNING UNITS (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]}): none will be restarted if the checkout moves.`);
+    console.error(`CANNOT NAME THE LONG-RUNNING UNITS (${String((err as any)?.message ?? err).split("\n")[0]}): none will be restarted if the checkout moves.`);
     return [];
   }
 }
@@ -131,8 +131,8 @@ export function restartLongRunning(units: string[], { exec = execFileSync, out =
       out.log(`restarted ${unit} (try-restart) so it runs the version above`);
     } catch (err) {
       // systemctl's exit 5 is "unit not found": a host with no `messaging` key has no listener, and there is nothing running the old version to restart.
-      if (/** @type {any} */ (err)?.status === NOT_INSTALLED) { out.log(`${unit} is not installed; nothing to restart`); continue; }
-      out.error(`COULD NOT RESTART ${unit}: ${String(/** @type {any} */ (err)?.message ?? err)}. It still runs the PREVIOUS agent-org version.`);
+      if ((err as any)?.status === NOT_INSTALLED) { out.log(`${unit} is not installed; nothing to restart`); continue; }
+      out.error(`COULD NOT RESTART ${unit}: ${String((err as any)?.message ?? err)}. It still runs the PREVIOUS agent-org version.`);
     }
   }
 }

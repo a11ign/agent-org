@@ -52,13 +52,13 @@ export function parseProjectCauseModule(parsed: unknown): string | undefined {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new ProjectDeclarationRefusal("(file)", "it must be a JSON object", SOURCE);
   }
-  const holder = /** @type {Record<string, unknown>} */ (parsed);
+  const holder = (parsed as Record<string, unknown>);
   if (!Object.hasOwn(holder, "causes")) return undefined;
   const causes = holder.causes;
   if (typeof causes !== "object" || causes === null || Array.isArray(causes)) {
     throw new ProjectDeclarationRefusal("causes", `it must be an object, not ${Array.isArray(causes) ? "an array" : typeof causes}`, SOURCE);
   }
-  const module = /** @type {Record<string, unknown>} */ (causes).module;
+  const module = (causes as Record<string, unknown>).module;
   if (typeof module !== "string" || module === "") {
     throw new ProjectDeclarationRefusal("causes.module", "it must be a non-empty string", SOURCE);
   }
@@ -79,14 +79,12 @@ export function parseProjectCauseModule(parsed: unknown): string | undefined {
  */
 export function projectCauseDeclarations(root: string = HOME_CHECKOUT): ReturnType<typeof declareCause>[] {
   const path = `${root}/${SOURCE}`;
-  /** @type {string} */
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (cause) {
     throw new ProjectDeclarationRefusal("(file)", "the declaration cannot be read", path, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

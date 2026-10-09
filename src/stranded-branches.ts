@@ -59,7 +59,6 @@ import { BLOCKED_LABEL } from "./project-vocabulary.ts";
 
 export const EXIT = { OK: 0, CANDIDATES: 1, CANNOT_ASK: 2, LANDED_THEN_FAILED: 3 };
 
-/** @type {(cmd: string, args: string[]) => string} */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => {
   assertNoLeakInArgv(cmd, args); // #1053: guarded in the SPAWN HELPER, so every call site here is covered
   return execFileSync(cmd, args,
@@ -79,14 +78,13 @@ const writeErr = (line: string) => { process.stderr.write(line); };
  * @returns {string[]}
  */
 export function fetchPushedBranches({ run = defaultRun }: { run?: typeof defaultRun; } = {}): string[] {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("git", ["for-each-ref", "--format=%(refname:short)",
       "refs/remotes/origin/agent", "refs/remotes/origin/lead"]);
   } catch (cause) {
     throw new Error(`stranded-branches: could not list pushed branches -- refusing to guess. `
-      + `${/** @type {Error} */ (cause).message}`, { cause });
+      + `${(cause as Error).message}`, { cause });
   }
   return raw.split("\n").map((l) => l.trim()).filter(Boolean).map((r) => r.replace(/^origin\//, ""));
 }
@@ -160,7 +158,6 @@ export const MAX_PR_PAGES = 100;
  * @returns {{ refs: Set<string>, calls: number, prs: number }}
  */
 export function fetchAllPRHeadRefs({ run = defaultRun }: { run?: typeof defaultRun; } = {}): { refs: Set<string>; calls: number; prs: number; } {
-  /** @type {Set<string>} */
   const refs: Set<string> = new Set();
   let calls = 0;
   let prs = 0;
@@ -192,15 +189,13 @@ export function fetchAllPRHeadRefs({ run = defaultRun }: { run?: typeof defaultR
 function fetchPRHeadRefPage({ run, page }: { run: typeof defaultRun; page: number; }): string[] {
   const path = `repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}`
     + `&sort=created&direction=asc&page=${page}`;
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["api", path, "--jq", "[.[] | {ref: .head.ref}]"]);
   } catch (cause) {
     throw new Error(`stranded-branches: could not list PRs from ${REPO} (page ${page}) -- refusing to `
-      + `guess. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `guess. ${(cause as Error).message}`, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -212,8 +207,8 @@ function fetchPRHeadRefPage({ run, page }: { run: typeof defaultRun; page: numbe
     throw new Error(`stranded-branches: gh's PR list (page ${page}) was not an array -- refusing to `
       + `guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  return parsed.map((/** @type {unknown} */ row: unknown, /** @type {number} */ i: number) => {
-    const ref = /** @type {{ ref?: unknown }} */ (row)?.ref;
+  return parsed.map((row: unknown, i: number) => {
+    const ref = (row as { ref?: unknown })?.ref;
     if (typeof ref !== "string") {
       throw new Error(`stranded-branches: PR entry ${i} on page ${page} has no head ref -- refusing to `
         + `guess. Got: ${JSON.stringify(row).slice(0, 200)}`);
@@ -248,7 +243,7 @@ export function aheadCount(branch: string, { run = defaultRun }: { run?: typeof 
     return Number(run("git", ["rev-list", "--count", `origin/main..origin/${branch}`]).trim());
   } catch (cause) {
     throw new Error(`stranded-branches: could not compute how far ${branch} is ahead of main -- `
-      + `refusing to guess. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `refusing to guess. ${(cause as Error).message}`, { cause });
   }
 }
 
@@ -382,7 +377,7 @@ export function prForDecision(pr: any, now: Date) {
     headRefName: pr.headRefName,
     ageHours: (now.getTime() - new Date(pr.createdAt).getTime()) / 3_600_000,
     isDraft: Boolean(pr.isDraft),
-    labels: (pr.labels ?? []).map((/** @type {any} */ l: any) => String(l.name)),
+    labels: (pr.labels ?? []).map((l: any) => String(l.name)),
     // BEHIND is the only state that means "waiting for the train". CLEAN merges on its own; BLOCKED and
     // DIRTY are the PR's own problem and the train will not touch them.
     checksGreen: pr.mergeStateStatus === "BEHIND" || pr.mergeStateStatus === "CLEAN",
@@ -445,7 +440,6 @@ export function sweepPullRequests({ now = new Date(), maxAgeHours = 4, close = f
   }
   if (!close || closing.length === 0) return closing;
 
-  /** @type {number[]} */
   const closed: number[] = [];
   for (const { pr, decision } of closing) {
     // THE BRANCH IS KEPT: `gh pr close` without `--delete-branch`, said out loud because the flag's
@@ -478,7 +472,7 @@ function sweepCommand(argv: string[], { run, err }: { run: typeof defaultRun; er
   try {
     sweepPullRequests({ close: argv.includes("--close"), maxAgeHours: hours ? Number(hours) : 4, run });
   } catch (error) {
-    const { exitCode, message } = /** @type {Error & { exitCode?: number }} */ (error);
+    const { exitCode, message } = (error as Error & { exitCode?: number });
     err(`${exitCode === undefined ? `COULD NOT SWEEP: ${message}` : message}\n`);
     return exitCode ?? EXIT.CANNOT_ASK;
   }
@@ -496,15 +490,13 @@ export function main(argv: string[] = process.argv.slice(2), { run = defaultRun,
   refuseUnknownFlags(["--dry-run", "--close", "--max-age-hours="],
     { entry: import.meta.url, argv, command: "node packages/agent-org/src/stranded-branches.mjs" });
   if (argv.includes("--dry-run") || argv.includes("--close")) return sweepCommand(argv, { run, err });
-  /** @type {string[]} */
   let pushed: string[];
-  /** @type {{ refs: Set<string>, calls: number, prs: number }} */
   let prs: { refs: Set<string>; calls: number; prs: number; };
   try {
     pushed = fetchPushedBranches({ run });
     prs = fetchAllPRHeadRefs({ run });
   } catch (error) {
-    err(`COULD NOT AUDIT: ${/** @type {Error} */ (error).message}\n`);
+    err(`COULD NOT AUDIT: ${(error as Error).message}\n`);
     return EXIT.CANNOT_ASK;
   }
 
@@ -521,7 +513,7 @@ export function main(argv: string[] = process.argv.slice(2), { run = defaultRun,
     try {
       aheadCounts.set(branch, aheadCount(branch, { run }));
     } catch (error) {
-      err(`COULD NOT AUDIT: ${/** @type {Error} */ (error).message}\n`);
+      err(`COULD NOT AUDIT: ${(error as Error).message}\n`);
       return EXIT.CANNOT_ASK;
     }
   }

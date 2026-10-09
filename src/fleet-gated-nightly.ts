@@ -114,12 +114,7 @@ export function wakeText(issues: { number: number; }[]) {
     + "named not covered and why. State the examined count against this list when you report on #914.";
 }
 
-/**
- * @typedef {{ kind: "cannot-ask", message: string }
- *         | { kind: "quiet", comment: string }
- *         | { kind: "not-woken", comment: string, why: string }
- *         | { kind: "woke", comment: string, wakeReport: string | null }} FiringResult
- */
+export type FiringResult = { kind: "cannot-ask", message: string } | { kind: "quiet", comment: string } | { kind: "not-woken", comment: string, why: string } | { kind: "woke", comment: string, wakeReport: string | null };
 
 /**
  * THE WHOLE ORCHESTRATION, injectable, so a test can inject stubs for `ghRun`/`herdrRun` and assert what
@@ -143,11 +138,10 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
         ghRun?: (args: string[]) => string; herdrRun?: (args: string[]) => string;
         now?: () => string; sleep?: (ms: number) => void;
     } = {}): FiringResult {
-  /** @type {{ number: number, comments: unknown[] }[]} */
   let issues: { number: number; comments: unknown[]; }[];
   try {
     issues = fleetGatedRows(ghRun);
-  } catch (/** @type {any} */ error: any) {
+  } catch (error: any) {
     return { kind: "cannot-ask", message: `CANNOT ASK: could not list fleet-gated rows `
       + `(${error?.message ?? error}). Nothing was examined and nothing was posted.` };
   }
@@ -155,7 +149,7 @@ export function performFiring({ ghRun = defaultGhRun, herdrRun = defaultHerdrRun
   const comment = examinedComment(issues, now());
   try {
     ghRun(["issue", "comment", STANDING_ROW, "--repo", REPO, "--body", comment]);
-  } catch (/** @type {any} */ error: any) {
+  } catch (error: any) {
     return { kind: "cannot-ask", message: `CANNOT ASK: could not post the examined-count comment on `
       + `#${STANDING_ROW} (${error?.message ?? error}).` };
   }

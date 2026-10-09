@@ -142,7 +142,7 @@ function recordingQueue(queue: Record<string, any> | undefined, events = /** @ty
       events.push("dispatch");
       const original = process.stderr.write;
       words = "";
-      process.stderr.write = /** @type {any} */ ((/** @type {any} */ chunk: any) => { words += String(chunk); return true; });
+      process.stderr.write = /** @type {any} */ ((chunk: any) => { words += String(chunk); return true; });
       try {
         return queue.promptOrQueue(order);
       } finally {
@@ -168,7 +168,7 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   /** What happened, in order: `send` for each message to the chairman, `dispatch` for each call to `promptOrQueue`. The ack-before-write assertions read it. */
   const events: string[]|undefined = /** @type {string[]} */ ([]);
   const said = recordingQueue(queue, events);
-  const tellChairman = send ?? ((/** @type {any} */ message: any) => provider.send(message));
+  const tellChairman = send ?? ((message: any) => provider.send(message));
   const converse = createConverse({ chairman: CHAIRMAN, queuePath, ledger, send: (message) => { events.push(`send: ${message.text}`); return tellChairman(message); }, agents: () => roster, now: () => clock.at, queue: said.port });
   /** @param {unknown} update @returns {any} the accepted value `handle` minted for it */
   const accept = (update: unknown): any => {

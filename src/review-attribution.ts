@@ -88,22 +88,9 @@ export function attributionContext(session: string) {
 }
 
 /**
- * THE NAMING GRAMMAR OF A REPOSITORY'S KEY (ADR 0040, decision 2; #2618, child 3c of #69), IN THE ONE PLACE A SEAT IS BUILT.
- *
- * A pull request number is only unique WITHIN a repository, so once the tool serves a second one `reviewer-7` names two
- * pull requests. A repository or tracker carries a KEY -- `[a-z0-9-]+`, never ending in `-<digits>`, and the EMPTY key
- * belongs to the primary project's first repository and tracker -- and:
- *
- *   - a NAME is `<role>-<n>` for the empty key (exactly today's) and `<role>-<key>-<n>` otherwise ({@link seatName});
- *   - a LEDGER, MARKER or QUEUE key is the bare `<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectRef}),
- *     so the primary project's wake ledger, its `VOIDED` markers and the handoff queue are read by this code with no
- *     conversion and by the old code unchanged, which is what makes a rollback a unit edit and not a state migration;
- *   - a person is told `#<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectMention}).
- *
- * `undefined` is the empty key on purpose: a pull request or row that no reader tagged is the primary project's, so
- * every fixture and caller written before the second repository existed keeps meaning what it meant.
- * @typedef {string | undefined} RepoKey
+ * THE NAMING GRAMMAR OF A REPOSITORY'S KEY (ADR 0040, decision 2; #2618, child 3c of #69), IN THE ONE PLACE A SEAT IS BUILT. A pull request number is only unique WITHIN a repository, so once the tool serves a second one `reviewer-7` names two pull requests. A repository or tracker carries a KEY -- `[a-z0-9-]+`, never ending in `-<digits>`, and the EMPTY key belongs to the primary project's first repository and tracker -- and: - a NAME is `<role>-<n>` for the empty key (exactly today's) and `<role>-<key>-<n>` otherwise ({@link seatName}); - a LEDGER, MARKER or QUEUE key is the bare `<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectRef}), so the primary project's wake ledger, its `VOIDED` markers and the handoff queue are read by this code with no conversion and by the old code unchanged, which is what makes a rollback a unit edit and not a state migration; - a person is told `#<n>` for the empty key and `<key>#<n>` otherwise ({@link subjectMention}). `undefined` is the empty key on purpose: a pull request or row that no reader tagged is the primary project's, so every fixture and caller written before the second repository existed keeps meaning what it meant.
  */
+export type RepoKey = string | undefined;
 
 /** @param {RepoKey} key @returns {boolean} */
 const isPrimary = (key: RepoKey): boolean => key === undefined || key === "";
@@ -257,7 +244,6 @@ export function attributedSession(status: any): string | null {
  * @returns {string[]}
  */
 function sessionsNamedBy(statuses: any[]): string[] {
-  /** @type {string[]} */
   const named: string[] = [];
   for (const status of statuses) {
     const session = attributedSession(status);

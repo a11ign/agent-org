@@ -197,8 +197,7 @@ export { PROFILES };
  * @returns {{ kind: "claude"|"codex", model: string, effort: string, why: string } | { refusal: string }}
  */
 export function profileFor(cause: string, override: { model?: string; effort?: string; } = {}): { kind: "claude" | "codex"; model: string; effort: string; why: string; } | { refusal: string; } {
-  const base = /** @type {Record<string, {kind: "claude"|"codex", model: string, effort: string, why: string}>} */
-    (PROFILES)[cause];
+  const base = (PROFILES as Record<string, {kind: "claude"|"codex", model: string, effort: string, why: string}>)[cause];
   if (!base) {
     return { refusal: `no profile for cause "${cause}" -- add one to PROFILES with the reason. `
       + `Known causes: ${Object.keys(PROFILES).join(", ")}` };
@@ -302,7 +301,7 @@ export function agentArgs(profile: { kind: string; model: string; effort: string
     "--settings", WORKER_SETTINGS_PATH];
 }
 
-/** @typedef {{ maxTurns: number, maxBudgetUsd: number }} HeadlessCaps */
+export type HeadlessCaps = { maxTurns: number, maxBudgetUsd: number };
 
 /**
  * A worker as `claude -p` over stream-json instead of a pane (#4075, the report's move 9): the same process, but its
@@ -325,7 +324,7 @@ export function agentArgs(profile: { kind: string; model: string; effort: string
  */
 function headlessClaudeArgs(profile: { kind: string; model: string; effort: string; }, caps: HeadlessCaps): string[] {
   if (profile.kind !== "claude") throw new Error(`headless workers are claude-only, not "${profile.kind}"`);
-  for (const name of /** @type {const} */ (["maxTurns", "maxBudgetUsd"])) {
+  for (const name of (["maxTurns", "maxBudgetUsd"] as const)) {
     const value = caps[name];
     if (!Number.isFinite(value) || value <= 0) throw new Error(`headless cap ${name} must be a positive number, got ${value}`);
   }

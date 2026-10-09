@@ -37,20 +37,9 @@ import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.mjs";
 export const EXIT = { REPORTED: 0, CANNOT_ASK: 2 };
 
 /**
- * One turn's spend, in the shape both products can be read into.
- *
- * `cacheRead` AND `cacheWrite` STAY SEPARATE because they bill differently and in opposite directions: a
- * read is the discount, a write is the premium paid to get it. Summing them into one "cache" number would
- * hide exactly the trade the two-minute tick is making.
- *
- * `at` IS THE FULL INSTANT, `day` ITS OWN FIRST TEN CHARACTERS -- kept apart because a day string is all
- * `main`'s reporting ever needed until #2710 asked a finer question: whether a call fell inside a row's
- * own claim window, which a same-day session claiming two rows cannot answer from `day` alone.
- *
- * @typedef {{ session: string, model: string, day: string, at: number,
- *             fresh: number, cacheRead: number, cacheWrite: number,
- *             output: number, thinking: number }} Turn
+ * One turn's spend, in the shape both products can be read into. `cacheRead` AND `cacheWrite` STAY SEPARATE because they bill differently and in opposite directions: a read is the discount, a write is the premium paid to get it. Summing them into one "cache" number would hide exactly the trade the two-minute tick is making. `at` IS THE FULL INSTANT, `day` ITS OWN FIRST TEN CHARACTERS -- kept apart because a day string is all `main`'s reporting ever needed until #2710 asked a finer question: whether a call fell inside a row's own claim window, which a same-day session claiming two rows cannot answer from `day` alone.
  */
+export type Turn = { session: string, model: string, day: string, at: number, fresh: number, cacheRead: number, cacheWrite: number, output: number, thinking: number };
 
 /**
  * A record's timestamp as epoch milliseconds, or `0` for one that will not parse -- never `NaN`, which
@@ -144,9 +133,7 @@ function alreadyCounted(seen: Set<string>, id: string) {
  */
 export function claudeTurns(text: string, fallbackSession: string = "unattributed"): Turn[] {
   const session = sessionOf(text) ?? fallbackSession;
-  /** @type {Turn[]} */
   const turns: Turn[] = [];
-  /** @type {Set<string>} */
   const seen: Set<string> = new Set();
   for (const d of records(text)) {
     const turn = claudeTurn(d, session, seen);
@@ -192,9 +179,7 @@ function claudeTurn(d: any, session: string, seen: Set<string>): Turn | null {
  * @returns {Turn[]}
  */
 export function codexTurns(text: string, session: string): Turn[] {
-  /** @type {Turn[]} */
   const turns: Turn[] = [];
-  /** @type {Set<string>} */
   const seen: Set<string> = new Set();
   for (const d of records(text)) {
     const turn = codexTurn(d, session, seen);
@@ -234,7 +219,6 @@ function codexTurn(d: any, session: string, seen: Set<string>): Turn | null {
  * @param {string} root
  */
 export function transcriptFiles(root: string) {
-  /** @type {string[]} */
   const found: string[] = [];
   let entries;
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
@@ -256,7 +240,6 @@ export function transcriptFiles(root: string) {
  * @param {Turn[]} turns @param {(t: Turn) => string} by
  */
 export function summarise(turns: Turn[], by: (t: Turn) => string) {
-  /** @type {Map<string, {turns: number, fresh: number, cacheRead: number, cacheWrite: number, output: number, thinking: number}>} */
   const rows: Map<string, { turns: number; fresh: number; cacheRead: number; cacheWrite: number; output: number; thinking: number; }> = new Map();
   for (const t of turns) {
     const key = by(t);
@@ -308,7 +291,6 @@ function main() {
   const codexRoot = flagValue(process.argv, "codex-root") ?? join(home, ".codex", "sessions");
   const since = flagValue(process.argv, "since");
 
-  /** @type {Turn[]} */
   const turns: Turn[] = [];
   for (const file of transcriptFiles(claudeRoot)) {
     try { turns.push(...claudeTurns(readFileSync(file, "utf8"))); } catch { /* unreadable: counted below */ }

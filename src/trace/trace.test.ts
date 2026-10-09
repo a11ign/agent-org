@@ -1154,7 +1154,7 @@ test("DEFERRAL (#3510): the log is ingested INCREMENTALLY through the ingest sta
   const logFile = join(dir, DEFERRAL_LOG_FILE);
   const store = openStore(join(dir, "events.ndjson"));
   const state = { version: 2, firstRunAt: 0, firstRunSince: 0, storeBytes: 0, files: {} };
-  const run = (/** @type {any} */ from: any) => ingestDeferrals({ logs: [logFile], rowRepo: ROW_REPO, store, state: from, now: at("2026-10-04T12:00:00Z") });
+  const run = (from: any) => ingestDeferrals({ logs: [logFile], rowRepo: ROW_REPO, store, state: from, now: at("2026-10-04T12:00:00Z") });
   assert.deepEqual(run(state).report.absent, [logFile], "no log is ABSENT, never an empty one");
   writeFileSync(logFile, deferralLogText([SPAN]));
   const first = run(state);

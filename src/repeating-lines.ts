@@ -85,7 +85,6 @@ export function normaliseLine(line: string) {
  * @returns {{ at: string, lines: Map<string, string> }[]}
  */
 export function parseTicks(journal: string): { at: string; lines: Map<string, string>; }[] {
-  /** @type {{ at: string, lines: Map<string, string>, done: boolean }[]} */
   const ticks: { at: string; lines: Map<string, string>; done: boolean; }[] = [];
   for (const entry of journal.split("\n")) {
     const m = entry.match(/^(\S+) \S+ [^\s[]+(?:\[\d+\])?: (.*)$/);
@@ -110,9 +109,9 @@ export function parseTicks(journal: string): { at: string; lines: Map<string, st
  * @returns {{ pattern: RegExp, reason: string }[]}
  */
 export function parseAllowlist(parsed: unknown): { pattern: RegExp; reason: string; }[] {
-  const entries = /** @type {any} */ (parsed)?.allow;
+  const entries = (parsed as any)?.allow;
   if (!Array.isArray(entries)) throw new Error("repeating-lines allowlist: `allow` must be an array");
-  return entries.map((/** @type {any} */ e: any, i) => {
+  return entries.map((e: any, i) => {
     if (typeof e?.pattern !== "string" || e.pattern === "") {
       throw new Error(`repeating-lines allowlist: entry ${i} has no \`pattern\``);
     }
@@ -129,10 +128,9 @@ export function loadAllowlist(path: URL | string = ALLOWLIST_FILE) {
 }
 
 /**
- * @typedef {{ lines: string[], count: number, since: string, atLeast: boolean }} RepeatingGroup
- * `lines` are the newest copies, raw, in the order the tick wrote them; `count` is the consecutive-tick run ending at the
- * newest complete tick; `since` is when the run's first tick began; `atLeast` says the run reaches the edge of the window.
+ * `lines` are the newest copies, raw, in the order the tick wrote them; `count` is the consecutive-tick run ending at the newest complete tick; `since` is when the run's first tick began; `atLeast` says the run reaches the edge of the window.
  */
+export type RepeatingGroup = { lines: string[], count: number, since: string, atLeast: boolean };
 
 /**
  * The lines present in the newest `k` or more consecutive complete ticks, grouped by the tick the run began on.
@@ -153,7 +151,6 @@ export function repeatingLines({ ticks, k = REPEAT_TICKS, allow = [] }: {
     }): RepeatingGroup[] {
   const newest = ticks.at(-1);
   if (!newest) return [];
-  /** @type {Map<number, { lines: string[], count: number }>} */
   const byStart: Map<number, { lines: string[]; count: number; }> = new Map();
   for (const [line, raw] of newest.lines) {
     if (allow.some((a) => a.pattern.test(line))) continue;
@@ -242,7 +239,7 @@ export function repeatingLinesTick({ run = journalctl, allow = loadAllowlist, k 
     }
     return repeatingLineOrders(groups);
   } catch (err) {
-    log(`${SELF} could not run (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, 160)}) -- no order this tick.\n`);
+    log(`${SELF} could not run (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 160)}) -- no order this tick.\n`);
     return [];
   }
 }

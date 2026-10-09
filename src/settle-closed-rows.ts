@@ -89,9 +89,7 @@ const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).tr
  */
 export function closedRowsOnProject(gh_: (args: string[]) => string = gh): number[] {
   const [owner, name] = REPO.split("/");
-  /** @type {number[]} */
   const numbers: number[] = [];
-  /** @type {string | null} */
   let after: string | null = null;
   for (let page = 0; page < CLOSED_ROWS_MAX_PAGES; page++) {
     const raw = gh_(closedRowsPageQuery({ owner, name, after }));

@@ -164,11 +164,11 @@ export function signoffVerdict({ changed, body, facts }: {
       + "  INCONCLUSIVE, never clean -- a check that cannot ask must not report a pass.",
     ] };
   }
-  const known = /** @type {{owned: string[], facts: {id: string, states: string[]}[]}} */ (facts);
-  const touched = /** @type {string[]} */ (changed).filter((p) => isOwned(p, known.owned));
+  const known = (facts as {owned: string[], facts: {id: string, states: string[]}[]});
+  const touched = (changed as string[]).filter((p) => isOwned(p, known.owned));
   if (touched.length === 0) return { code: EXIT.SIGNED, reasons: [] };
 
-  const lines = /** @type {string} */ (body).split("\n");
+  const lines = (body as string).split("\n");
   const unstated = [];
   const contradicted = [];
   for (const fact of known.facts) {

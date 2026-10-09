@@ -18,7 +18,7 @@ const NONE = `Class: none ${EM} a one-off typo in a doc, no mechanism behind it`
 const bodyWith = (...lines: string[]) => `## Acceptance\n\nnode -e "process.exit(0)"\n\nCloses #4107\n${lines.join("\n")}\n`;
 const LABELS = { "a11ign/a11ign#4107": ["defect", "ready"], "a11ign/a11ign#4108": ["ready"] };
 /** The reader `pr-open` is handed: `(number, repo)`. */
-const rowLabels = (/** @type {number} */ number: number, /** @type {string} */ repo: string) => {
+const rowLabels = (number: number, repo: string) => {
   const labels = LABELS[`${repo}#${number}`];
   if (!labels) throw new Error(`HTTP 403 reading ${repo}#${number}`);
   return labels;
@@ -108,7 +108,7 @@ test("a refused label read is UNKNOWN with a message and never a pass; a half-an
   const both = bodyWith().replace("Closes #4107", "Closes #4107, #4108");
   const half = openPr(both, { rowLabels: (number, repo) => { if (number === 4108) throw new Error("HTTP 502"); return rowLabels(number, repo); } });
   assert.match(half.said, /closes a defect row without the Class line/, "a row that answered `defect` decides, whatever the other did");
-  const unreadable = { rowLabels: (/** @type {number} */ n: number, /** @type {string} */ repo: string) => { if (n === 4107) return ["ready"]; throw new Error("HTTP 502"); } };
+  const unreadable = { rowLabels: (n: number, repo: string) => { if (n === 4107) return ["ready"]; throw new Error("HTTP 502"); } };
   assert.match(openPr(both, unreadable).said, /CLASS: UNKNOWN -- could not read the labels of #4108/, "one clean row and one unread is still unknown");
 });
 

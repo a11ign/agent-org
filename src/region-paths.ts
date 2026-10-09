@@ -177,7 +177,6 @@ export function unrecognisedRegionPaths(body: string): string[] {
   if (section === null) return [];
   const declared = new Set(declaredRegionFiles(body) ?? []);
   const shaped = section.matchAll(/(?:^|[\s`"'(])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+)/g);
-  /** @type {string[]} */
   const out: string[] = [];
   for (const [, token] of shaped) {
     if (declared.has(token)) continue;
@@ -217,7 +216,7 @@ export function unrecognisedRegionPaths(body: string): string[] {
  */
 const ROOT_FILE_CANDIDATE = /(?:^|[\s`"'([])(\.[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?|[A-Za-z0-9_][A-Za-z0-9_.-]*\.[A-Za-z0-9]{1,10})(?=$|[\s`"',.;:)\]])/g;
 
-/** @typedef {{ files: Set<string>, source: "origin/main" | "HEAD" | null }} RootFileReading */
+export type RootFileReading = { files: Set<string>, source: "origin/main" | "HEAD" | null };
 
 /** @type {RootFileReading | null} Only a SUCCESSFUL reading is memoised -- see `rootFilesOnMain`. */
 let rootFilesReading: RootFileReading | null = null;
@@ -266,7 +265,7 @@ let rootFilesReading: RootFileReading | null = null;
 export function rootFilesOnMain({ repoRoot }: { repoRoot?: string; } = {}): RootFileReading {
   if (rootFilesReading && repoRoot === undefined) return rootFilesReading;
   const repo = repoRoot ?? HOME_CHECKOUT;
-  for (const ref of /** @type {const} */ (["origin/main", "HEAD"])) {
+  for (const ref of (["origin/main", "HEAD"] as const)) {
     try {
       const listing = execFileSync("git", ["ls-tree", ref, "--"],
         { cwd: repo, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -504,7 +503,7 @@ function fencedPaths(section: string): string[] {
   return out;
 }
 /** `.` and `..` name no directory in the tree: `../x/` is outside it and `./` is all of it. */
-const isTreePath = (/** @type {string} */ entry: string) => !splitRegionEntry(entry).path.split("/").some((segment) => segment === "." || segment === "..");
+const isTreePath = (entry: string) => !splitRegionEntry(entry).path.split("/").some((segment) => segment === "." || segment === "..");
 const LIST_SEPARATOR = /[,;]|\band\b|\bor\b/;
 
 /**

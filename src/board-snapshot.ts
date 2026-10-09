@@ -95,7 +95,6 @@ export const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1000;
 /** @type {{ path: string, takenAt: Date } | null} The snapshot this process has already taken. */
 let processSnapshot: { path: string; takenAt: Date; } | null = null;
 
-/** @type {(cmd: string, args: string[]) => string} */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8" });
 
 const ITEMS_QUERY = `
@@ -136,7 +135,7 @@ const ITEMS_QUERY = `
   }
 `;
 
-/** @typedef {import("./board-snapshot-scope.ts").BoardItem} BoardItem */
+export type BoardItem = import("./board-snapshot-scope.ts").BoardItem;
 
 /**
  * #1996: THE LIVE `Status` OPTION NAMES OFF ONE PAGE, or `null` when the page did not carry the field.
@@ -153,9 +152,9 @@ const ITEMS_QUERY = `
  * @returns {string[] | null}
  */
 function statusOptionNames(parsed: unknown): string[] | null {
-  const options = /** @type {any} */ (parsed)?.data?.organization?.projectV2?.field?.options;
+  const options = (parsed as any)?.data?.organization?.projectV2?.field?.options;
   if (!Array.isArray(options)) return null;
-  return options.map((/** @type {any} */ o: any) => o?.name).filter((/** @type {unknown} */ n: unknown) => typeof n === "string");
+  return options.map((o: any) => o?.name).filter((n: unknown) => typeof n === "string");
 }
 
 /**
@@ -179,7 +178,6 @@ function parsePage(raw: string): {
     items: BoardItem[]; statusOptions: string[] | null; hasNextPage: boolean;
     endCursor: string | null;
 } {
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -193,19 +191,19 @@ function parsePage(raw: string): {
       + `treat a partial answer as complete, even though the request otherwise succeeded. `
       + `${describeGraphqlErrors(errors)}`);
   }
-  const itemsNode = /** @type {any} */ (parsed)?.data?.organization?.projectV2?.items;
+  const itemsNode = (parsed as any)?.data?.organization?.projectV2?.items;
   if (!itemsNode || !Array.isArray(itemsNode.nodes) || !itemsNode.pageInfo) {
     throw new Error(`board-snapshot: gh's response did not have the shape data.organization.projectV2.items -- `
       + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  const items = itemsNode.nodes.map((/** @type {unknown} */ node: unknown, /** @type {number} */ i: number) => {
-    const n = /** @type {any} */ (node);
+  const items = itemsNode.nodes.map((node: unknown, i: number) => {
+    const n = (node as any);
     if (typeof n?.id !== "string") {
       throw new Error(`board-snapshot: item ${i} has no id -- refusing to guess. `
         + `Got: ${JSON.stringify(node).slice(0, 300)}`);
     }
     const statusValue = Array.isArray(n.fieldValues?.nodes)
-      ? n.fieldValues.nodes.find((/** @type {any} */ v: any) => v?.field?.name === "Status")
+      ? n.fieldValues.nodes.find((v: any) => v?.field?.name === "Status")
       : undefined;
     return {
       itemId: n.id,
@@ -243,7 +241,6 @@ function parsePage(raw: string): {
  * @returns {number[]}
  */
 export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?: typeof defaultRun; limit?: number; } = {}): number[] {
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["issue", "list", "--repo", REPO, "--state", "open", "--label", READY_LABEL,
@@ -251,9 +248,8 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
   } catch (cause) {
     throw new Error(`board-snapshot: could not list open ${READY_LABEL} issues from ${REPO} -- refusing `
       + `to guess whether the snapshot's Status coverage is complete. `
-      + `${/** @type {Error} */ (cause).message}`, { cause });
+      + `${(cause as Error).message}`, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -270,8 +266,8 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
       + `${READY_LABEL} issues -- indistinguishable from a truncated result, refusing to check the `
       + `snapshot's Status coverage against a partial population. Raise the limit.`);
   }
-  return parsed.map((/** @type {unknown} */ entry: unknown, /** @type {number} */ i: number) => {
-    const number = /** @type {{ number?: unknown }} */ (entry)?.number;
+  return parsed.map((entry: unknown, i: number) => {
+    const number = (entry as { number?: unknown })?.number;
     if (typeof number !== "number") {
       throw new Error(`board-snapshot: ${READY_LABEL}-issue list entry ${i} has no number -- refusing `
         + `to guess. Got: ${JSON.stringify(entry).slice(0, 300)}`);
@@ -331,9 +327,7 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
 export function readyRowsMissingStatus(items: BoardItem[], readyIssueNumbers: number[], excludeIssueNumber: number | null = null): { absentFromItems: number[]; boardedWithoutStatus: number[]; } {
   const statusByNumber = new Map(
     items.filter((i) => i.number !== null).map((i) => [i.number, i.status]));
-  /** @type {number[]} */
   const absentFromItems: number[] = [];
-  /** @type {number[]} */
   const boardedWithoutStatus: number[] = [];
   for (const n of readyIssueNumbers) {
     if (n === excludeIssueNumber) continue;
@@ -376,15 +370,15 @@ export function classifyAbsentReadyRows(absentFromItems: number[], { request, re
     return {
       ...none,
       offBoard: notOnBoard,
-      boardedButNotEnumerated: /** @type {number[]} */ (items.map((i) => i.number).filter((n) => n !== null)),
+      boardedButNotEnumerated: (items.map((i) => i.number).filter((n) => n !== null) as number[]),
     };
   } catch (cause) {
-    return { ...none, undecided: absentFromItems, undecidedReason: /** @type {Error} */ (cause).message };
+    return { ...none, undecided: absentFromItems, undecidedReason: (cause as Error).message };
   }
 }
 
 /** `#1, #2, #3` -- the spelling every line of the refusal below uses. */
-function numberList(/** @type {number[]} */ numbers: number[]) {
+function numberList(numbers: number[]) {
   return `#${numbers.join(", #")}`;
 }
 
@@ -523,11 +517,8 @@ export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssue
         run?: typeof defaultRun; fetchReady?: typeof fetchReadyIssueNumbers;
         readTouched?: typeof readTouchedItems; excludeIssueNumber?: number | null;
     } = {}): BoardItem[] {
-  /** @type {BoardItem[]} */
   const items: BoardItem[] = [];
-  /** @type {string[] | null} */
   let statusOptions: string[] | null = null;
-  /** @type {string | null} */
   let cursor: string | null = null;
   for (;;) {
     const args = ["api", "graphql", "-f", `query=${ITEMS_QUERY}`, "-f", `owner=${PROJECT_OWNER}`,
@@ -543,7 +534,7 @@ export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssue
       // exit message never carries the API's answer; the FAILED PROCESS's stdout does.
       const graphqlDetail = graphqlErrorFromFailedRun(cause);
       throw new Error(`board-snapshot: could not read Project ${PROJECT_NUMBER} items -- refusing to `
-        + `snapshot a partial board. ${graphqlDetail ?? /** @type {Error} */ (cause).message}`, { cause });
+        + `snapshot a partial board. ${graphqlDetail ?? (cause as Error).message}`, { cause });
     }
     const page = parsePage(raw);
     items.push(...page.items);
@@ -697,7 +688,7 @@ export function withBoardSnapshot<T>(mutate: () => T, deps: {
   // true of a process's first mutation and false of every reused one, which is not what #399 promises.
   const route = snapshotRoute({ touchedIssues: issues, fullSnapshotValid: held !== null && stillValid(held) });
   if (route === "reuse-full") {
-    const reused = /** @type {{ path: string, takenAt: Date }} */ (held);
+    const reused = (held as { path: string, takenAt: Date });
     log(`board-snapshot: reusing ${reused.path}, taken ${describeAge(at, reused.takenAt)} before this `
       + "mutation -- one sweep per process (#852)");
     return mutate();
@@ -706,7 +697,7 @@ export function withBoardSnapshot<T>(mutate: () => T, deps: {
     const { run = defaultRun, writeFile, mkdir } = snapshotDeps;
     // #1275: THE ONE `gh` CALL THE SCOPED HALF NEEDS, made here so `board-snapshot-scope.mjs` never names `gh` and
     // its test can run in a job with no token.
-    return withScopedSnapshot(mutate, /** @type {number[]} */ (issues), { request: (args) => run("gh", args), log, at,
+    return withScopedSnapshot(mutate, (issues as number[]), { request: (args) => run("gh", args), log, at,
       now, maxAgeMs: SNAPSHOT_MAX_AGE_MS, stillValid, writeFile, mkdir });
   }
   const path = readUnlessProjectUnreadable(() => writeBoardSnapshot({ ...snapshotDeps, now }), "the board");
@@ -744,7 +735,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     const path = writeBoardSnapshot();
     process.stdout.write(`wrote ${path}\n`);
   } catch (error) {
-    process.stderr.write(`${/** @type {Error} */ (error).message}\n`);
+    process.stderr.write(`${(error as Error).message}\n`);
     process.exitCode = 1;
   }
 }

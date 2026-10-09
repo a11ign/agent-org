@@ -238,13 +238,12 @@ export function mergeReadiness({ pr, required, runs, mainTipIso, behindBy, branc
     : [`note: #${pr.number} is ${pr.state}, so this is a post-mortem rather than a merge decision.`];
   // Already proven non-null by `missingLookups` above -- TS's narrowing does not follow a null check
   // performed inside an array-literal expression, so the casts restate what the guard clause established.
-  const knownRequired = /** @type {string[]} */ (required);
-  const knownRuns = /** @type {{name: string, status: string, conclusion: string | null,
-    completedAt: string | null}[]} */ (runs);
-  const knownMainTipIso = /** @type {string} */ (mainTipIso);
-  const knownBranchTip = /** @type {string} */ (branchTip);
-  const knownCloses = /** @type {{number: number, title?: string, labels: string[]}[]} */ (closes);
-  const knownPrLabels = /** @type {string[]} */ (prLabels);
+  const knownRequired = (required as string[]);
+  const knownRuns = (runs as {name: string, status: string, conclusion: string | null, completedAt: string | null}[]);
+  const knownMainTipIso = (mainTipIso as string);
+  const knownBranchTip = (branchTip as string);
+  const knownCloses = (closes as {number: number, title?: string, labels: string[]}[]);
+  const knownPrLabels = (prLabels as string[]);
   const reasons = [...baseReason(pr), ...headTipMismatchReason(pr, knownBranchTip),
     ...checkReasons(pr, knownRequired, knownRuns),
     ...ancestryReason(behindBy), ...stalenessReason(knownRuns, knownMainTipIso),
@@ -284,10 +283,10 @@ function ciGateFacts(number: number) {
     headRefName: raw.head?.ref,
   };
   const names = Array.isArray(raw.labels)
-    ? raw.labels.map((/** @type {{name?: unknown}} */ l: { name?: unknown; }) => l?.name)
+    ? raw.labels.map((l: { name?: unknown; }) => l?.name)
     : null;
-  const prLabels = names && names.every((/** @type {unknown} */ n: unknown) => typeof n === "string")
-    ? /** @type {string[]} */ (names)
+  const prLabels = names && names.every((n: unknown) => typeof n === "string")
+    ? (names as string[])
     : null;
   const branchTip = lookupBranchTip(pr.headRefName);
   return { pr, branchTip, prLabels };
@@ -320,8 +319,8 @@ function facts(number: number) {
   // this PR", which is the safest-LOOKING answer and the wrong one when the truth is "I could not ask".
   // Same rule as every other lookup here, and the reason this file exists.
   const prLabels = Array.isArray(pr.labels)
-    ? pr.labels.map((/** @type {{name?: unknown}} */ l: { name?: unknown; }) => l?.name).filter(
-      (/** @type {unknown} */ name: unknown) => typeof name === "string")
+    ? pr.labels.map((l: { name?: unknown; }) => l?.name).filter(
+      (name: unknown) => typeof name === "string")
     : null;
   const required = lookupRequiredContexts();
   const runs = lookupCheckRuns(pr.headRefOid);
@@ -376,7 +375,7 @@ function armedCheckCommand(branch: string) {
   const status = lookupArmedPrStatus(branch);
   if (racesAnArmedMerge(status)) {
     // `status` is non-null here (racesAnArmedMerge(null) is false), so `.number` is safe.
-    console.error(`REFUSING: #${/** @type {{number: number}} */ (status).number} is armed and its gate `
+    console.error(`REFUSING: #${(status as {number: number}).number} is armed and its gate `
       + "is already green -- pushing now risks racing a merge that can complete before this push "
       + "finishes (#386), stranding the commit on a branch nothing can find afterward. Wait a moment "
       + "and push again once the merge has landed, or if this is deliberate:\n"
@@ -415,7 +414,7 @@ function main() {
     { entry: import.meta.url, command: "node packages/agent-org/src/merge-guard.mjs" });
 
   if (flagValue(process.argv, "armed-check") !== undefined) {
-    armedCheckCommand(/** @type {string} */ (flagValue(process.argv, "armed-check")));
+    armedCheckCommand((flagValue(process.argv, "armed-check") as string));
     return;
   }
 

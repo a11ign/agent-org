@@ -43,17 +43,19 @@ const NO_RELEASE_LINE = /^[ \t]*no-release:[ \t]*(.*?)[ \t]*$/;
 const PLACEHOLDER = "<reason>";
 
 /** `isNameReservation` of `dora.mjs`, restated because that module runs its readers at import: a `0.0.0-` version is a name held on the registry and is no release. */
-const isNameReservation = (/** @type {string} */ version: string) => version.startsWith("0.0.0-");
+const isNameReservation = (version: string) => version.startsWith("0.0.0-");
 
+/** the latest release; `at` is epoch ms of its publish or release time */
+export type Release = { name: string, version: string, at: number };
 /**
- * @typedef {{ name: string, version: string, at: number }} Release the latest release; `at` is epoch ms of its publish or release time
- * @typedef {{ sha: string, at: number, pr: number | null, touches: boolean, declared: string | null }} Commit
- *   a commit made after the release; `touches` is a non-test file under a releasable path; `declared` is the reason of a `no-release:` line in its pull request's body
- * @typedef {{ repo: string, release: Release | null, commits: Commit[], unexamined: number, truncated: boolean } | { repo: string, unreadable: string }} RepoFact
- *   `release: null` is a repository that has never released, which is a reading and not a gap
- * @typedef {{ repo: string, verdict: "tripped" | "clear" | "unknown", detail: string, discriminator?: string, firstTrippedAt?: number }} Verdict
- * @typedef {{ repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] }} Repository a `dora` entry of `.agent-org/project.json`
+ * a commit made after the release; `touches` is a non-test file under a releasable path; `declared` is the reason of a `no-release:` line in its pull request's body
  */
+export type Commit = { sha: string, at: number, pr: number | null, touches: boolean, declared: string | null };
+/** `release: null` is a repository that has never released, which is a reading and not a gap */
+export type RepoFact = { repo: string, release: Release | null, commits: Commit[], unexamined: number, truncated: boolean } | { repo: string, unreadable: string };
+export type Verdict = { repo: string, verdict: "tripped" | "clear" | "unknown", detail: string, discriminator?: string, firstTrippedAt?: number };
+/** a `dora` entry of `.agent-org/project.json` */
+export type Repository = { repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] };
 
 /** @param {string} path @param {string[]} releasablePaths @returns {boolean} the file counts: under a releasable path, not a test file, not a changeset */
 export function isShipped(path: string, releasablePaths: string[]): boolean {
@@ -122,12 +124,10 @@ export function repoVerdict(fact: RepoFact, now: number): Verdict {
 // --- the fact reader: gh and the registry are handed in ----------------------------------------------------------------------------
 
 /** @param {unknown} err @returns {string} */
-const firstLine = (err: unknown): string => String(/** @type {any} */ (err)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS);
+const firstLine = (err: unknown): string => String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS);
 
-/**
- * @typedef {(args: string[]) => string} Gh
- * @typedef {(npmPackage: string) => { status: string, body: string }} Registry
- */
+export type Gh = (args: string[]) => string;
+export type Registry = (npmPackage: string) => { status: string, body: string };
 
 /** @param {string} text @param {string} what @returns {any[]} */
 function jsonList(text: string, what: string): any[] {
@@ -170,7 +170,6 @@ function tagRelease(gh: Gh, repo: string): Release | null {
  * @returns {{ commits: { sha: string, at: number }[], truncated: boolean }}
  */
 function pathCommits(gh: Gh, repo: string, path: string, since: number | null): { commits: { sha: string; at: number; }[]; truncated: boolean; } {
-  /** @type {{ sha: string, at: number }[]} */
   const commits: { sha: string; at: number; }[] = [];
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const rows = jsonList(gh(["api", "--method", "GET", `repos/${repo}/commits`, "-f", "sha=main", "-f", `path=${path}`, "-f", `per_page=${COMMIT_PAGE}`, "-f", `page=${page}`,

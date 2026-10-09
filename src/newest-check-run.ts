@@ -30,7 +30,7 @@
 /** A run still in flight reports this rather than null, so it must not be read as a completion time. */
 export const ZERO_DATE = "0001-01-01T00:00:00Z";
 
-const real = (/** @type {string | null | undefined} */ v: string | null | undefined) => (v && v !== ZERO_DATE ? v : "");
+const real = (v: string | null | undefined) => (v && v !== ZERO_DATE ? v : "");
 
 /**
  * When a run last said anything. `completedAt` if it has finished, else `startedAt`.

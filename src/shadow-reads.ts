@@ -43,9 +43,9 @@ const KNOWN_TAGS = ["Map", "Set", "Date"];
 const MAX_DIAGNOSTICS = 10;
 
 /**
- * @typedef {{ diagnostics: string[], ancestors: object[] }} Walk
  * `ancestors` is the chain from the root to the value being encoded: a value met again inside itself is a cycle.
  */
+export type Walk = { diagnostics: string[], ancestors: object[] };
 
 /** @param {unknown} value */
 const isPlainObject = (value: unknown) => {
@@ -82,7 +82,7 @@ function encodeObject(value: object, path: string, walk: Walk): unknown {
   if (value instanceof Set) return { [TYPE_TAG]: "Set", values: [...value].map((item, i) => child(item, `.values[${i}]`)) };
   if (Array.isArray(value)) return value.map((item, i) => child(item, `[${i}]`));
   if (!isPlainObject(value)) note(path, `is a ${value.constructor?.name ?? "non-plain object"}, which is not a Map, a Set or a Date; it was written as a plain object and will not revive as one`, walk);
-  else if (KNOWN_TAGS.includes(/** @type {any} */ (value)[TYPE_TAG])) note(path, `holds ${TYPE_TAG} "${/** @type {any} */ (value)[TYPE_TAG]}", which reading would turn into a ${/** @type {any} */ (value)[TYPE_TAG]}`, walk);
+  else if (KNOWN_TAGS.includes((value as any)[TYPE_TAG])) note(path, `holds ${TYPE_TAG} "${(value as any)[TYPE_TAG]}", which reading would turn into a ${(value as any)[TYPE_TAG]}`, walk);
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, child(item, `.${key}`)]));
 }
 
@@ -107,7 +107,7 @@ function encodeShadowAt(value: unknown, path: string, walk: Walk) {
  * @returns {{ encoded: unknown, diagnostics: string[] }}
  */
 export function encodeShadowValue(value: unknown, root: string = "args"): { encoded: unknown; diagnostics: string[]; } {
-  /** @type {Walk} */ const walk: Walk = { diagnostics: [], ancestors: [] };
+  const walk: Walk = { diagnostics: [], ancestors: [] };
   return { encoded: encodeShadowAt(value, root, walk), diagnostics: walk.diagnostics };
 }
 
@@ -160,8 +160,8 @@ function writeRecord({ dir, tick, args, orders }: { dir: string; tick: number; a
  * @returns {{ removed: string[], diagnostics: string[] }}
  */
 export function pruneShadowReads(dir: string, { keep = KEEP_TICKS }: { keep?: number; } = {}): { removed: string[]; diagnostics: string[]; } {
-  /** @type {string[]} */ const removed: string[] = [];
-  /** @type {string[]} */ const diagnostics: string[] = [];
+  const removed: string[] = [];
+  const diagnostics: string[] = [];
   let names;
   try {
     names = readdirSync(dir);

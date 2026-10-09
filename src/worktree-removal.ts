@@ -32,10 +32,7 @@ const ROW_FROM_DIRECTORY = /^wt-(\d+)$/;
 /** Sub-directories searched for worktrees inside a tree a remover deletes whole -- a scratchpad holds them one or two deep. */
 const NESTED_DEPTH = 3;
 
-/**
- * @typedef {{ path: string, caller: string, reason: string, event: "removing" | "removed" | "refused" | "failed",
- *   branch?: string | null, owner?: string | null, detail?: string }} RemovalRecord
- */
+export type RemovalRecord = { path: string, caller: string, reason: string, event: "removing" | "removed" | "refused" | "failed", branch?: string | null, owner?: string | null, detail?: string };
 
 /** @param {NodeJS.ProcessEnv} [env] @returns {string} */
 export function removalLogPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -83,9 +80,10 @@ export function rowCandidates({ path, branch }: { path: string; branch?: string 
 }
 
 /**
- * @typedef {(args: string[]) => string} Gh
- * A LITERAL `spawnSync("gh", ...)`, on purpose: `host-units.mjs`'s `SPAWNS_GH` reads the quoted name, and a spawn it cannot read
- * is a unit that spends an API pool while the guard reports it clean (the prune unit does, since #2782).
+ * A LITERAL `spawnSync("gh", ...)`, on purpose: `host-units.mjs`'s `SPAWNS_GH` reads the quoted name, and a spawn it cannot read is a unit that spends an API pool while the guard reports it clean (the prune unit does, since #2782).
+ */
+export type Gh = (args: string[]) => string;
+/**
  * @type {Gh}
  */
 const defaultGh: Gh = (args) => {
@@ -102,9 +100,9 @@ const defaultGh: Gh = (args) => {
 function sessionsHolding(row: number, gh: Gh): string[] {
   const read = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO, "--json", "state,labels"]));
   if (read.state === "CLOSED") return [];
-  return read.labels.map((/** @type {{ name: string }} */ l: { name: string; }) => l.name)
-    .filter((/** @type {string} */ name: string) => name.startsWith(SESSION_PREFIX))
-    .map((/** @type {string} */ name: string) => name.slice(SESSION_PREFIX.length));
+  return read.labels.map((l: { name: string; }) => l.name)
+    .filter((name: string) => name.startsWith(SESSION_PREFIX))
+    .map((name: string) => name.slice(SESSION_PREFIX.length));
 }
 
 /**
@@ -121,12 +119,11 @@ function sessionsHolding(row: number, gh: Gh): string[] {
  */
 export function claimRefusal(tree: { path: string; branch?: string | null; }, { gh = defaultGh, except }: { gh?: Gh; except?: string; } = {}): { refused: false; } | { refused: true; reason: string; } {
   for (const row of rowCandidates(tree)) {
-    /** @type {string[]} */
     let held: string[];
     try {
       held = sessionsHolding(row, gh);
     } catch (cause) {
-      return { refused: true, reason: `${tree.path} names row #${row} and its claim could not be read (${/** @type {Error} */ (cause).message}) -- refusing to remove a tree on an unanswered question (#2782)` };
+      return { refused: true, reason: `${tree.path} names row #${row} and its claim could not be read (${(cause as Error).message}) -- refusing to remove a tree on an unanswered question (#2782)` };
     }
     const others = held.filter((session) => session !== except);
     if (others.length > 0) {
@@ -155,7 +152,7 @@ export function rowsClosed(tree: { path: string; branch?: string | null; }, { gh
       const { state } = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO, "--json", "state"]));
       if (state !== "CLOSED") return { closed: false, reason: `row #${row} is ${String(state).toLowerCase()}, so the stamp is not stale (#3850)` };
     } catch (cause) {
-      return { closed: false, reason: `row #${row} could not be read (${/** @type {Error} */ (cause).message}) -- not treated as closed (#3850)` };
+      return { closed: false, reason: `row #${row} could not be read (${(cause as Error).message}) -- not treated as closed (#3850)` };
     }
   }
   return { closed: true };
@@ -168,7 +165,6 @@ export function rowsClosed(tree: { path: string; branch?: string | null; }, { gh
  */
 export function nestedWorktrees(dir: string, depth: number = NESTED_DEPTH): string[] {
   if (depth < 0) return [];
-  /** @type {import("node:fs").Dirent[]} */
   let entries: import("node:fs").Dirent[];
   try {
     entries = readdirSync(dir, { withFileTypes: true });

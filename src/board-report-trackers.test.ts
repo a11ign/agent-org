@@ -29,7 +29,7 @@ const node = (number: number, title: string, over: Record<string, unknown> = {})
 
 /** A GraphQL answer per repository: `rows[repo]` is the node list, a missing repository throws like a refused read. @param {Record<string, any[]>} rows */
 function runOf(rows: Record<string, any[]>) {
-  return (/** @type {string[]} */ args: string[]) => {
+  return (args: string[]) => {
     const owner = args.find((a) => a.startsWith("owner="))?.slice("owner=".length);
     const name = args.find((a) => a.startsWith("name="))?.slice("name=".length);
     const nodes = rows[`${owner}/${name}`];
@@ -48,7 +48,7 @@ const MINIMAL_FACTS = {
 
 /** The home tracker's open row #7, as `facts()` hands it to `render`; the Blockers table is where the home rows are printed by title. */
 const homeSeven = { number: 7, title: "home seven", url: "https://github.com/a11ign/a11ign/issues/7", labelNames: ["ready"], state: "OPEN" };
-const render = (/** @type {any} */ d: any) => report.render(d, new Date(NOW), () => "agent-org vTEST");
+const render = (d: any) => report.render(d, new Date(NOW), () => "agent-org vTEST");
 
 /** @param {any[]} otherTrackers @param {any[]} [ready] */
 const edition = (otherTrackers: any[], ready: any[] = []) => render({ ...MINIMAL_FACTS, open: ready, ready, blockers: ready, otherTrackers });

@@ -124,7 +124,6 @@ import { CLAIM_LABEL, READY_LABEL, STATE_LABELS } from "./claim-labels.ts";
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX,
   LANE_ANY_LABEL, LANES_FILE_PATH, ACCEPTANCE_FIELD, FLEET_QUESTION, ANSWER_PREFIX } from "./project-vocabulary.ts";
 
-/** @type {(cmd: string, args: string[]) => string} */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8" });
 
 /** `gh issue create --help`'s complete flag surface, long and short forms, plus its two inherited flags. */
@@ -936,14 +935,14 @@ export function kindRefusal(argv: string[]): string | null {
  * @returns {string[]}
  */
 export function withKindLabel(argv: string[]): string[] {
-  const labels = kindValuesFromArgv(argv).map((value) => KIND_LABELS[/** @type {keyof typeof KIND_LABELS} */ (value)]).filter(Boolean);
+  const labels = kindValuesFromArgv(argv).map((value) => KIND_LABELS[(value as keyof typeof KIND_LABELS)]).filter(Boolean);
   if (labels.length === 0) return argv;
   const kept = argv.filter((arg, i) => arg !== KIND_FLAG && argv[i - 1] !== KIND_FLAG && !arg.startsWith(`${KIND_FLAG}=`));
   const given = labelValuesFromArgv(kept).map((label) => label.toLowerCase());
   return [...kept, ...labels.filter((label) => !given.includes(label)).flatMap((label) => ["--label", label])];
 }
 
-/** @typedef {import("./project-config.ts").Tracker} Tracker */
+export type Tracker = import("./project-config.ts").Tracker;
 
 /**
  * #4078: THE PROJECT'S OWN TRACKER -- the first declared, which is also what `REPO`, `PROJECT_OWNER` and `PROJECT_NUMBER` name. Promotion
@@ -1193,7 +1192,6 @@ const splitLabels = (value: string) => value.split(",").map((label) => label.tri
  * @returns {{ start: number, span: 1 | 2, values: string[] }[]}
  */
 function labelOccurrences(argv: string[]): { start: number; span: 1 | 2; values: string[]; }[] {
-  /** @type {{ start: number, span: 1 | 2, values: string[] }[]} */
   const found: { start: number; span: 1 | 2; values: string[]; }[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const inline = /^(?:--label|-l)=(.*)$/s.exec(argv[i]);
@@ -1404,15 +1402,13 @@ function projectItemsPage(issueNumber: number, cursor: string | null, run: typeo
     + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
     + `nodes { project { number owner { ... on Organization { login } ... on User { login } } } fieldValueByName(name: "Status") `
     + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
-  /** @type {string} */
   let raw: string;
   try {
     raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
   } catch (cause) {
     throw new Error(`row-file: could not read #${issueNumber}'s Project membership -- refusing to guess `
-      + `whether it boarded. ${/** @type {Error} */ (cause).message}`, { cause });
+      + `whether it boarded. ${(cause as Error).message}`, { cause });
   }
-  /** @type {unknown} */
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -1420,7 +1416,7 @@ function projectItemsPage(issueNumber: number, cursor: string | null, run: typeo
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} was not JSON -- `
       + `refusing to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  const items = /** @type {any} */ (parsed)?.data?.repository?.issue?.projectItems;
+  const items = (parsed as any)?.data?.repository?.issue?.projectItems;
   if (!Array.isArray(items?.nodes)) {
     throw new Error(`row-file: gh's Project-membership response for #${issueNumber} did not have the `
       + `expected shape -- refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
@@ -1452,7 +1448,6 @@ function projectItemsPage(issueNumber: number, cursor: string | null, run: typeo
  * @returns {string | null} the Status option name, or `null` if the issue is not on this tracker's Project at all
  */
 export function fetchIssueBoardStatus(issueNumber: number, { run = defaultRun, tracker = homeTracker() }: { run?: typeof defaultRun; tracker?: Tracker; } = {}): string | null {
-  /** @type {string | null} */
   let cursor: string | null = null;
   do {
     const page = projectItemsPage(issueNumber, cursor, run, tracker.repo);
@@ -1502,7 +1497,7 @@ function laneLabelsOrRefusal(body: string, loadLanesConfig: typeof loadLanes, ar
     return { ok: false, message: `row-file: could not read ${LANES_FILE_PATH} (absent, empty or `
       + "malformed) -- refusing to guess which lane this row belongs to. Nothing was filed." };
   }
-  const regionFiles = /** @type {string[]} */ (declaredRegionFiles(body));
+  const regionFiles = (declaredRegionFiles(body) as string[]);
   const laneLabels = laneLabelsFor(regionFiles, lanes);
   // #1241: THE ACCEPTANCE ANSWERS WHAT THE REGION CANNOT. `laneLabelsFor` derives a lane from PATHS, so a
   // row whose deliverable is not a commit carries none -- #1042 and #1234 both reached `ready`/`lane:any`
@@ -1711,7 +1706,7 @@ export function createIssue(argv: string[], deps: {
   }
   // #4078: THE TRACKER, chosen before anything reads a repository: the blocker below lives in it, and so do the milestone read, the
   // labels and the board.
-  const chosen = chooseTracker(argv, /** @type {string} */ (body), declaration);
+  const chosen = chooseTracker(argv, (body as string), declaration);
   if ("refusal" in chosen) {
     process.stderr.write(`${chosen.refusal}\n`);
     return 1;
@@ -1724,17 +1719,17 @@ export function createIssue(argv: string[], deps: {
   // different questions about one body and a body can trip several: all are printed, never chosen between.
   // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
   // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
-  const umbrella = blockedByRefusal(/** @type {string} */ (body), argv, { read: (number) => readBlocker(number, run, tracker.repo) }) ?? chairmanAskRefusal(/** @type {string} */ (body)); // #4020: a declared ask that could never raise one
+  const umbrella = blockedByRefusal((body as string), argv, { read: (number) => readBlocker(number, run, tracker.repo) }) ?? chairmanAskRefusal((body as string)); // #4020: a declared ask that could never raise one
   if (umbrella) {
     process.stderr.write(`${umbrella}\n`);
     return 1;
   }
-  for (const warning of filingWarnings(/** @type {string} */ (body), argv)) {
+  for (const warning of filingWarnings((body as string), argv)) {
     process.stderr.write(`row-file: ${warning}\n`);
   }
   // #883: THE LANE(S), DERIVED BEFORE ANYTHING IS FILED -- see `laneLabelsOrRefusal`'s own header for why
   // a missing/malformed `docs/lane-ownership.json` refuses here rather than guessing.
-  const laneResult = laneLabelsOrRefusal(/** @type {string} */ (body), loadLanesConfig, argv);
+  const laneResult = laneLabelsOrRefusal((body as string), loadLanesConfig, argv);
   if (!laneResult.ok) {
     process.stderr.write(`${laneResult.message}\n`);
     return 1;
@@ -1758,9 +1753,8 @@ export function createIssue(argv: string[], deps: {
   // #1322: the board and lane labels are this tool's to apply, after the Status move. A filer's copy of either is
   // dropped from the create call rather than landing at creation beside them -- a `ready` there is #867's refusal.
   const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(withKindLabel(argv), tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
-    /** @type {string} */ (body)), tracker, declaration);
+    (body as string)), tracker, declaration);
 
-  /** @type {string} */
   let url: string;
   try {
     ensureReleaseLabel(filedArgv, tracker, declaration, { run, ensureLabels });
@@ -1768,8 +1762,8 @@ export function createIssue(argv: string[], deps: {
     url = spawnGh(filedArgv);
   } catch (error) {
     process.stderr.write(`row-file: gh issue create failed -- nothing was filed. `
-      + `${/** @type {Error} */ (error).message}\n`);
-    return /** @type {{ status?: number }} */ (error).status ?? 1;
+      + `${(error as Error).message}\n`);
+    return (error as { status?: number }).status ?? 1;
   }
   const issueNumber = issueNumberFromUrl(url);
   if (issueNumber === null) {
@@ -1803,7 +1797,7 @@ export function moveTrackerStatus(issueNumber: number, statusName: string, { run
       "--url", `https://github.com/${tracker.repo}/issues/${issueNumber}`, "--field", "Status", "--value", statusName]);
     return { moved: true };
   } catch (error) {
-    const message = /** @type {Error} */ (error).message;
+    const message = (error as Error).message;
     return { moved: false, notOnBoard: /is not an item in project/.test(message),
       reason: `could not move #${issueNumber}'s Status to "${statusName}" on ${tracker.board.owner}/projects/${tracker.board.number} -- ${message}` };
   }
@@ -1837,7 +1831,7 @@ function boardAddRefusal({ issueNumber, url, boarding, tracker, allLabels, repai
     }, error: unknown) {
   const { number: boardNumber, owner: boardOwner } = tracker.board;
   return `${lead}, but could NOT add it to Project ${boardNumber} -- refusing to `
-    + `report success for a row nothing else can find. ${/** @type {Error} */ (error).message}\n  `
+    + `report success for a row nothing else can find. ${(error as Error).message}\n  `
     + `AND neither the Status "${boarding.status}" nor ${allLabels.map((l) => `\`${l}\``).join("/")} `
     + `were applied, because both steps sit behind the board add and neither ran. Adding it by hand `
     + `alone leaves this row on the board with no Status and no labels. Apply all three:\n`
@@ -1934,10 +1928,9 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   } catch (error) {
     return { ok: false, message: `${lead}, boarded with Status "${boarding.status}", `
       + `but ${allLabels.map((l) => `\`${l}\``).join("/")} could not be added -- `
-      + `${/** @type {Error} */ (error).message}` };
+      + `${(error as Error).message}` };
   }
 
-  /** @type {string | null} */
   let bodyAfter: string | null;
   try {
     bodyAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body",
@@ -1945,7 +1938,6 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   } catch {
     bodyAfter = null; // read-back failure reads as "cannot confirm the Filed-by line", not a crash
   }
-  /** @type {string | null} */
   let milestoneAfter: string | null;
   try {
     milestoneAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "milestone",
@@ -2157,14 +2149,13 @@ export function unverifiedPromotionFields(after: { labels: string[]; boardStatus
  * @returns {{ refusal: string | null }}
  */
 function promoteGate(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string | null; } {
-  /** @type {{ labels: string[], state?: string }} */
   let before: { labels: string[]; state?: string; };
   try {
     before = fetchLabels(issueNumber, { run });
   } catch (error) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s labels could not be read, and a `
       + `promotion that cannot see what the row already carries cannot know what to write. `
-      + `${/** @type {Error} */ (error).message}` };
+      + `${(error as Error).message}` };
   }
   // `state` is OPTIONAL on `fetchLabels`' own contract (#752) -- absent reads as "not verified closed",
   // never as closed, so a caller's fixture that omits it behaves exactly as an open row does.
@@ -2182,13 +2173,12 @@ function promoteGate(issueNumber: number, { run, fetchLabels }: { run: typeof de
       + "(`row-claim.mjs decline "
       + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
   }
-  /** @type {string} */
   let body: string;
   try {
     body = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body", "--jq", ".body"]);
   } catch (error) {
     return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s body could not be read, so the `
-      + `claimability check below could not be asked. ${/** @type {Error} */ (error).message}` };
+      + `claimability check below could not be asked. ${(error as Error).message}` };
   }
   const reason = promoteRefusalReason(body, issueNumber);
   return { refusal: reason };
@@ -2208,14 +2198,13 @@ function verifyPromotion(issueNumber: number, session: string | null, { run, fet
         run: typeof defaultRun; fetchBoardStatus: typeof fetchIssueBoardStatus;
         fetchLabels: typeof fetchIssueLabels;
     }): { ok: true; message: string; } | { ok: false; code: number; message: string; } {
-  /** @type {{ labels: string[], boardStatus: string | null }} */
   let after: { labels: string[]; boardStatus: string | null; };
   try {
     after = { labels: fetchLabels(issueNumber, { run }).labels,
       boardStatus: fetchBoardStatus(issueNumber, { run }) };
   } catch (error) {
     return { ok: false, code: 2, message: `row-file: #${issueNumber}'s promotion was WRITTEN but could not `
-      + `be read back, so it is unconfirmed rather than done. ${/** @type {Error} */ (error).message}` };
+      + `be read back, so it is unconfirmed rather than done. ${(error as Error).message}` };
   }
   const missing = unverifiedPromotionFields(after);
   if (missing.length > 0) {
@@ -2245,14 +2234,13 @@ function verifyPromotion(issueNumber: number, session: string | null, { run, fet
  * @returns {{ refusal: string } | { refusal: null, labels: string[] }}
  */
 function freshLabelsForWrite(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string; } | { refusal: null; labels: string[]; } {
-  /** @type {string[]} */
   let labels: string[];
   try {
     labels = fetchLabels(issueNumber, { run }).labels;
   } catch (error) {
     return { refusal: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but its labels could not `
       + `be read, so the label write DID NOT RUN -- a set write computed from a stale read would carry `
-      + `whatever the row held a moment ago and erase anything else. ${/** @type {Error} */ (error).message}`
+      + `whatever the row held a moment ago and erase anything else. ${(error as Error).message}`
       + `\n  The labels are untouched. Run \`--promote=${issueNumber}\` again: it is idempotent.` };
   }
   if (labels.includes(CLAIM_LABEL)) {
@@ -2290,7 +2278,7 @@ function writePromotionLabels(issueNumber: number, deps: {
     run("gh", labelSetArgs(issueNumber, wanted));
   } catch (error) {
     return { ok: false, code: 2, message: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but `
-      + `the label write FAILED -- ${/** @type {Error} */ (error).message}\n  The labels are UNTOUCHED: one `
+      + `the label write FAILED -- ${(error as Error).message}\n  The labels are UNTOUCHED: one `
       + `PUT sets the whole list, so there is no half-applied add or remove to unpick -- the row still `
       + `reads \`${BACKLOG_LABEL}\` and is still counted as promotable stock, exactly as before this ran. `
       + `It is NOT in the both-labels state this row is about. What is now inconsistent is the board: `
@@ -2488,14 +2476,13 @@ function boardExisting(argv: string[], deps: {
   }
   const lane = boardLane(argv, deps.loadLanesConfig);
   if ("refusal" in lane) return { ok: false, code: 1, message: lane.refusal };
-  /** @type {string | null} */
   let status: string | null;
   try {
     status = deps.fetchBoardStatus(issueNumber, { run: deps.run });
   } catch (error) {
     return { ok: false, code: 1, message: `row-file: REFUSING to board #${issueNumber} -- whether it is already `
       + `on Project ${PROJECT_NUMBER} could not be read, and boarding a row that may be in flight on a guess `
-      + `could move it. ${/** @type {Error} */ (error).message} Nothing was changed.` };
+      + `could move it. ${(error as Error).message} Nothing was changed.` };
   }
   if (status !== null) {
     return { ok: true, message: `#${issueNumber} is already boarded on Project ${PROJECT_NUMBER} `
@@ -2534,7 +2521,7 @@ export function boardRow(argv: string[], deps: {
   const result = stray ? { ok: false, code: 1, message: stray } : boardExisting(argv, merged);
   if (!result.ok) {
     process.stderr.write(`${result.message}\n`);
-    return /** @type {number} */ (result.code);
+    return (result.code as number);
   }
   process.stdout.write(`${result.message}\n`);
   return 0;
@@ -2553,7 +2540,7 @@ function main() {
   // must reach `promoteRow`'s own refusal rather than fall through and try to FILE a row. `--board=` (#3330)
   // routes the same way, and first: it is the act that takes an existing number AND a lane.
   const argv = process.argv.slice(2);
-  const present = (/** @type {string} */ flag: string) => argv.some((a) => a.startsWith(flag));
+  const present = (flag: string) => argv.some((a) => a.startsWith(flag));
   if (present(BOARD_FLAG)) process.exitCode = boardRow(argv);
   else process.exitCode = present(PROMOTE_FLAG) ? promoteRow(argv) : createIssue(argv);
 }

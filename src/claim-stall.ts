@@ -175,11 +175,11 @@ const CLAIMED_WORKTREE = /^Claimed-worktree:\s*(.+)$/m;
 const CLAIMED_NOTHING = /^Claimed-nothing:\s*(.+)$/m;
 const CLAIMED_BY = /-- claimed by `/;
 
+export type RowComment = { body?: string, createdAt?: string, author?: { login?: string } | null, id?: string };
 /**
- * @typedef {{ body?: string, createdAt?: string, author?: { login?: string } | null, id?: string }} RowComment
- * @typedef {{ at: number, author: string | null, branch: string | null, worktree: string | null, nothing: boolean }} ClaimRecord `nothing` is #3407's
- * `Claimed-nothing:` claim: a claim that names no git object on purpose, which is evaluated by the clock and never released
+ * `nothing` is #3407's `Claimed-nothing:` claim: a claim that names no git object on purpose, which is evaluated by the clock and never released
  */
+export type ClaimRecord = { at: number, author: string | null, branch: string | null, worktree: string | null, nothing: boolean };
 
 /**
  * The newest claim record on a row, or `null` when none is a CLAIM: no record at all (a dispatch, or a claim that named
@@ -229,13 +229,14 @@ export function commentMove(comments: RowComment[], record: ClaimRecord): number
 // --- GIT AND THE FILESYSTEM, THROUGH SEAMS --------------------------------------------------------------------------
 
 /**
- * One process run, WITHOUT a throw: the status decides what an answer MEANS (`rev-parse --verify` exits 1 for "no such
- * ref", which is an answer, and anything else is "could not ask", which is not one).
- * @typedef {(dir: string, args: string[]) => { status: number | null, out: string }} GitRun
- * @typedef {{ clone: string } | { refusal: string }} CloneAnswer
- * @typedef {{ git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null, cloneOf?: (key: string) => CloneAnswer }} HostReads
- *   `cloneOf` (#3453) is the seam for WHERE A KEYED REPOSITORY'S CLONE LIVES; absent, it is `host.json`'s declaration ({@link cloneOfKey})
+ * One process run, WITHOUT a throw: the status decides what an answer MEANS (`rev-parse --verify` exits 1 for "no such ref", which is an answer, and anything else is "could not ask", which is not one).
  */
+export type GitRun = (dir: string, args: string[]) => { status: number | null, out: string };
+export type CloneAnswer = { clone: string } | { refusal: string };
+/**
+ * `cloneOf` (#3453) is the seam for WHERE A KEYED REPOSITORY'S CLONE LIVES; absent, it is `host.json`'s declaration ({@link cloneOfKey})
+ */
+export type HostReads = { git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null, cloneOf?: (key: string) => CloneAnswer };
 
 /** A read that could not be made. NEVER an absence: "no commit" is `null`, "could not ask git" is this. */
 export class Unreadable extends Error {}
@@ -355,12 +356,11 @@ export function workAtRisk(io: HostReads, { worktree, branch, repo }: { worktree
  * @param {string} key @param {{ path?: string, read?: typeof readFileSync }} [from] @returns {CloneAnswer}
  */
 export function cloneOfKey(key: string, { path = hostConfigPath(), read = readFileSync }: { path?: string; read?: typeof readFileSync; } = {}): CloneAnswer {
-  /** @type {Readonly<import("./host-config.ts").HostConfig>} */
   let host: Readonly<import("./host-config.ts").HostConfig>;
   try {
     host = readHostConfig(path, read);
   } catch (err) {
-    return { refusal: `${path} cannot be read as the host declaration (${String(/** @type {any} */ (err)?.message ?? err).split("\n")[0]})` };
+    return { refusal: `${path} cannot be read as the host declaration (${String((err as any)?.message ?? err).split("\n")[0]})` };
   }
   const clone = host.clones !== undefined && Object.hasOwn(host.clones, key) ? host.clones[key] : undefined;
   return clone === undefined ? { refusal: `${path} declares no absolute \`clones.${key}\` path` } : { clone };
@@ -441,37 +441,15 @@ export function holderWorkAtRisk(io: HostReads, { merged, ...home }: {
 // --- THE READING ----------------------------------------------------------------------------------------------------
 
 /**
- * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving
- * (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals
- * already say it has been quiet.
- *
- * @typedef {{
- *   row: number, title?: string, session: string, claimedAt: number,
- *   branch: string | null, worktree: string | null,
- *   comment: number | null, commit: number | null, push: number | null,
- *   file: () => number | null,
- *   work: () => ReturnType<typeof workAtRisk>,
- *   openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null,
- *   waiting: string | null, blockedBy: number[],
- *   waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[],
- *   nothing?: boolean,
- * }} ClaimFacts `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
- *
- * @typedef {{ kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string }
- *   | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean }
- *   | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean }
- *   | { kind: "idle-watch", since: number }
- *   | { kind: "vacating", since: number }
- *   | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed", lastMoveAt: number | null, idleMs: number | null,
- *       nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[],
- *       openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean }
- *   | { kind: "holding", why: string, expected?: boolean }} Reading
+ * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals already say it has been quiet. `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  */
+export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, };
+export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
 
 /** @param {(number | null)[]} times @returns {number | null} */
 function latest(times: (number | null)[]): number | null {
   const known = times.filter((t) => t !== null);
-  return known.length === 0 ? null : Math.max(.../** @type {number[]} */ (known));
+  return known.length === 0 ? null : Math.max(...(known as number[]));
 }
 
 /**
@@ -527,7 +505,7 @@ function overlayReading(facts: ClaimFacts, ctx: {
  */
 function ownPrStillYoung(facts: ClaimFacts, ctx: { now: number; intervalMs?: number; }): boolean {
   const interval = ctx.intervalMs ?? STALL_INTERVAL_MS;
-  const opened = (facts.ownPrs ?? []).map((pr) => Date.parse(String(/** @type {{ createdAt?: string }} */ (pr).createdAt ?? ""))).filter(Number.isFinite);
+  const opened = (facts.ownPrs ?? []).map((pr) => Date.parse(String((pr as { createdAt?: string }).createdAt ?? ""))).filter(Number.isFinite);
   return opened.length > 0 && ctx.now - Math.max(...opened) < interval;
 }
 
@@ -542,7 +520,7 @@ export function claimReading(facts: ClaimFacts, ctx: Parameters<typeof overlayRe
   const reading = overlayReading(facts, ctx);
   if (facts.nothing !== true || reading.kind !== "release") return reading;
   if (reading.why === "stalled" && reading.nudgedAt !== null) {
-    return { kind: "nudged", nudgedAt: reading.nudgedAt, deliveredAt: ctx.nudge?.deliveredAt ?? null, lastMoveAt: /** @type {number} */ (reading.lastMoveAt),
+    return { kind: "nudged", nudgedAt: reading.nudgedAt, deliveredAt: ctx.nudge?.deliveredAt ?? null, lastMoveAt: (reading.lastMoveAt as number),
       ...(reading.idle ? { idle: true } : {}) };
   }
   return { kind: "holding", expected: true, why: `a claim that names no branch or worktree is never released (${reading.why})` };
@@ -554,7 +532,7 @@ export function claimReading(facts: ClaimFacts, ctx: Parameters<typeof overlayRe
  * @param {ClaimFacts} facts @param {Parameters<typeof claimReading>[1]} ctx @returns {Reading | null}
  */
 function rememberedNudge(facts: ClaimFacts, ctx: Parameters<typeof claimReading>[1]): Reading | null {
-  const lastMoveAt = /** @type {number} */ (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt, facts.file()]));
+  const lastMoveAt = (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt, facts.file()]) as number);
   return secondReading(facts, ctx, lastMoveAt);
 }
 
@@ -593,9 +571,9 @@ function clockReading(facts: ClaimFacts, ctx: Parameters<typeof claimReading>[1]
   if (gone !== null) return gone;
   if (facts.blockedBy.length > 0) return blockedReading(facts);
   if (facts.waiting !== null) return { kind: "waiting", waiting: facts.waiting };
-  const cheap = /** @type {number} */ (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt]));
+  const cheap = (latest([facts.claimedAt, facts.comment, facts.commit, facts.push, ctx.restartAt]) as number);
   if (ctx.now - cheap < interval) return { kind: "moving", lastMoveAt: cheap };
-  const lastMoveAt = /** @type {number} */ (latest([cheap, facts.file()]));
+  const lastMoveAt = (latest([cheap, facts.file()]) as number);
   if (ctx.now - lastMoveAt < interval) return { kind: "moving", lastMoveAt };
   const second = secondReading(facts, ctx, lastMoveAt);
   if (second !== null) return second;
@@ -640,7 +618,7 @@ function goneWithOpenPrReading(facts: ClaimFacts, ctx: Parameters<typeof claimRe
   if (gone === null || gone.kind !== "release") return gone;
   const own = facts.ownPrs ?? [];
   // `gh pr list` always returns the number; IdlePr only marks it optional. The keys ride beside the numbers (which stay numbers) and only when a pull request is in another repository, so a home-only release is today's.
-  return { ...gone, openPrs: /** @type {number[]} */ (own.map((pr) => pr.number)), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
+  return { ...gone, openPrs: (own.map((pr) => pr.number) as number[]), ...(own.some((pr) => pr.repoKey) ? { openPrRepoKeys: own.map((pr) => pr.repoKey || undefined) } : {}) };
 }
 
 /** @param {{ trees?: string[] }} work @returns {string} the worktrees of the pull request's repository that were read, for a line naming where the work is */
@@ -728,17 +706,16 @@ function blockedReading(facts: ClaimFacts): Reading {
 
 // --- THE FACTS OF ONE ROW ---------------------------------------------------------------------------------------------
 
+export type OpenPr = import("./idle-claimant.ts").IdlePr & { headRefName?: string, title?: string };
+export type MergedPr = { number: number, headRefName?: string, mergedAt?: string, title?: string, labels?: ({ name?: string } | string)[] };
 /**
- * @typedef {import("./idle-claimant.ts").IdlePr & { headRefName?: string, title?: string }} OpenPr
- * @typedef {{ number: number, headRefName?: string, mergedAt?: string, title?: string, labels?: ({ name?: string } | string)[] }} MergedPr
- * @typedef {{ open: OpenPr[] | null, merged: MergedPr[] | null }} ElsewherePrs the OTHER tracked code repositories' lists (#3075), each member
- *   tagged with the `repoKey` it came from. `open: null` is a read that was refused, and is never "none open".
- * @typedef {{ row: number, title?: string, session: string, waiting: string | null, blockedBy: number[],
- *   comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string,
- *   trackerRepo?: string, sessionRows?: number, waitKind?: string | null }} ClaimInput `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository;
- *   `trackerRepo` is the home repository's `owner/repo`, which a pull request title's reference names (`ownsPr`'s third rung);
- *   `sessionRows` is how many claimed rows the session holds, and its label (the fourth rung) counts only for a session holding one
+ * the OTHER tracked code repositories' lists (#3075), each member tagged with the `repoKey` it came from. `open: null` is a read that was refused, and is never "none open".
  */
+export type ElsewherePrs = { open: OpenPr[] | null, merged: MergedPr[] | null };
+/**
+ * `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository; `trackerRepo` is the home repository's `owner/repo`, which a pull request title's reference names (`ownsPr`'s third rung); `sessionRows` is how many claimed rows the session holds, and its label (the fourth rung) counts only for a session holding one
+ */
+export type ClaimInput = { row: number, title?: string, session: string, waiting: string | null, blockedBy: number[], comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string, trackerRepo?: string, sessionRows?: number, waitKind?: string | null };
 
 /**
  * (#3075) THE PULL REQUESTS A ROW'S WORK CAN BE IN, from every tracked code repository, by the ONE function every reader of "has this row got a pull
@@ -833,10 +810,9 @@ export function readClaim(facts: ClaimFacts, ctx: Parameters<typeof claimReading
 // --- THE NUDGE MEMORY -----------------------------------------------------------------------------------------------
 
 /**
- * @typedef {Record<string, { session: string, nudgedAt?: number, goneSince?: number, idleSince?: number, idle?: boolean }>} StallState
- * keyed by row number, one memory or the other per row: a nudge (`idle` when it was the idle-claimant's, #2999), the tick a session was first
- * found gone, or the tick a holder was first found idle.
+ * keyed by row number, one memory or the other per row: a nudge (`idle` when it was the idle-claimant's, #2999), the tick a session was first found gone, or the tick a holder was first found idle.
  */
+export type StallState = Record<string, { session: string, nudgedAt?: number, goneSince?: number, idleSince?: number, idle?: boolean }>;
 
 /**
  * A JSON object kept in a file beside the wake ledger, or `{}`. A missing file is EMPTY and an unparseable one is empty too:
@@ -873,7 +849,6 @@ export function readStallState(path: string, read: typeof readFileSync = readFil
  * @returns {StallState}
  */
 export function nextStallState(before: StallState, readings: { facts: ClaimFacts; reading: Reading; }[], now: number): StallState {
-  /** @type {StallState} */
   const after: StallState = {};
   for (const { facts, reading } of readings) {
     const memory = memoryOf(reading, now);
@@ -928,13 +903,10 @@ export function writeStallState(path: string, state: StallState, writer: (path: 
 const minutes = (ms: number) => Math.round(ms / MINUTE_MS);
 
 /**
- * @typedef {{ row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone" | "closed", branch: string | null,
- *   worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[],
- *   mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string,
- *   interrupt?: boolean }} ReleaseRequest `interrupt` (#3535) is a closed row's per-row instance caught mid-turn: the performer stops it, with no prompt
- * @typedef {{ session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string,
- *   title?: string, release?: ReleaseRequest, resume?: boolean }} StallOrder
+ * `interrupt` (#3535) is a closed row's per-row instance caught mid-turn: the performer stops it, with no prompt
  */
+export type ReleaseRequest = { row: number, session: string, why: "stalled" | "blocked" | "merged" | "gone" | "closed", branch: string | null, worktree: string | null, idleMinutes: number | null, nudgedAt: number | null, edges?: number[], mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], answer?: string, interrupt?: boolean };
+export type StallOrder = { session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string, title?: string, release?: ReleaseRequest, resume?: boolean };
 
 /**
  * The nudge to an IDLE holder (#2999): the same cause, key and delivery as {@link nudgeOrder}'s -- so the ledger, the offer window and the
@@ -999,7 +971,6 @@ export function nudgeKey(session: string, row: number, nudgedAt: number) {
  * @param {string} raw the ledger's text @param {string} key @returns {number | null}
  */
 export function nudgeDeliveredAt(raw: string, key: string): number | null {
-  /** @type {number[]} */
   const times: number[] = [];
   for (const line of raw.split("\n")) {
     const fields = line.trim().split("\t");
@@ -1039,7 +1010,6 @@ export function openPrMentions(release: { openPrs?: number[]; openPrRepoKeys?: (
  * @param {Pick<ClaimFacts, "row" | "session" | "branch" | "worktree">} facts @param {Extract<Reading, { kind: "release" }>} reading @returns {StallOrder}
  */
 function releaseOrder(facts: Pick<ClaimFacts, "row" | "session" | "branch" | "worktree">, reading: Extract<Reading, { kind: "release"; }>): StallOrder {
-  /** @type {ReleaseRequest} */
   const release: ReleaseRequest = { row: facts.row, session: facts.session, why: reading.why, branch: facts.branch, worktree: facts.worktree,
     idleMinutes: reading.idleMs === null ? null : minutes(reading.idleMs), nudgedAt: reading.nudgedAt,
     ...(reading.interrupt === true ? { interrupt: true } : {}),
@@ -1072,7 +1042,6 @@ function releaseOrder(facts: Pick<ClaimFacts, "row" | "session" | "branch" | "wo
  * @returns {StallOrder[]}
  */
 export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Reading; }[] | undefined, now: number): StallOrder[] {
-  /** @type {StallOrder[]} */
   const orders: StallOrder[] = [];
   for (const { facts, reading } of readings ?? []) {
     if (reading.kind === "nudge" && reading.idle) orders.push(idleNudgeOrder(facts, now, reading.idleMs));
@@ -1088,11 +1057,12 @@ export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Readi
 
 // --- A CLOSED ROW'S CLAIM (#3535) -----------------------------------------------------------------------------------------
 
+/** a pull request GitHub says closed the row: ANY of them, in any tracked repository */
+export type ClosingPr = { number: number, headRefName?: string, title?: string };
 /**
- * @typedef {{ number: number, headRefName?: string, title?: string }} ClosingPr a pull request GitHub says closed the row: ANY of them, in any tracked repository
- * @typedef {{ number: number, title?: string, labels?: ({ name?: string } | string)[], comments?: RowComment[],
- *   closedByPullRequestsReferences?: ClosingPr[] }} ClosedClaimedRow a CLOSED row that still carries the claim label, as `gh issue list --state closed --label in-progress` returns it
+ * a CLOSED row that still carries the claim label, as `gh issue list --state closed --label in-progress` returns it
  */
+export type ClosedClaimedRow = { number: number, title?: string, labels?: ({ name?: string } | string)[], comments?: RowComment[], closedByPullRequestsReferences?: ClosingPr[] };
 
 /**
  * THE ORDERS FOR CLAIMS THAT OUTLIVED THEIR ROW: a row CLOSED (not planned, or superseded by hand) while it still carries `in-progress` and a
@@ -1123,7 +1093,6 @@ export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => 
     log(`claim-stall: the closed rows still carrying a claim were NOT read this tick${agents === null ? " (herdr could not be asked, so whether a per-row instance exists is unknown)" : ""} -- a closed row's claim was NOT evaluated.\n`);
     return [];
   }
-  /** @type {StallOrder[]} */
   const orders: StallOrder[] = [];
   for (const row of rows) {
     const order = closedClaimOrder(row, { agents, repo, isInstance, log, trackerRepo });
@@ -1249,7 +1218,7 @@ export function statMtime(path: string): number | null {
   try {
     return statSync(path).mtimeMs;
   } catch (err) {
-    if (/** @type {any} */ (err)?.code === "ENOENT" || /** @type {any} */ (err)?.code === "ENOTDIR") return null;
+    if ((err as any)?.code === "ENOENT" || (err as any)?.code === "ENOTDIR") return null;
     throw err;
   }
 }

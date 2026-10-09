@@ -33,15 +33,15 @@ function host(over: {
     running?: string; boot?: string[]; agents?: ReturnType<typeof import("./herdr-agents.ts").readAgents> | (() => ReturnType<typeof import("./herdr-agents.ts").readAgents>);
     jobs?: string; record?: any; failReboot?: boolean; failStop?: boolean; unreadableRecord?: boolean; ignoreSeats?: string[];
 } = {}) {
-  const calls = /** @type {string[][]} */ ([]);
+  const calls = ([] as string[][]);
   const clock = { t: NOW };
   const idle = [{ label: "ceo", status: "idle" }, { label: "worker-1", status: "done" }, { label: "pm", status: "blocked" }];
-  const stored = { record: over.record ?? null, writes: /** @type {any[]} */ ([]) };
+  const stored = { record: over.record ?? null, writes: ([] as any[]) };
   const agents = "agents" in over ? over.agents : idle;
   return {
     calls, clock, stored,
     deps: {
-      run: (/** @type {string[]} */ argv: string[]) => {
+      run: (argv: string[]) => {
         calls.push(argv);
         if (argv.join(" ") === `systemctl --user stop ${TICK_TIMER}` && over.failStop) throw new Error("stop refused");
         if (argv[0] === "sudo" && over.failReboot) throw new Error("a password is required");
@@ -51,15 +51,15 @@ function host(over: {
       bootEntries: () => over.boot ?? BOOT,
       agents: typeof agents === "function" ? agents : () => agents,
       store: { read: () => { if (over.unreadableRecord) throw new Error("kernel-reboot.json is not JSON"); return stored.record; },
-        write: (/** @type {any} */ r: any) => { stored.writes.push(r); stored.record = r; } },
+        write: (r: any) => { stored.writes.push(r); stored.record = r; } },
       now: () => clock.t,
-      sleep: async (/** @type {number} */ ms: number) => { clock.t += ms; },
+      sleep: async (ms: number) => { clock.t += ms; },
       ...over.ignoreSeats === undefined ? {} : { ignoreSeats: over.ignoreSeats },
     },
   };
 }
-const sudoCalls = (/** @type {string[][]} */ calls: string[][]) => calls.filter((argv) => argv[0] === "sudo");
-const timerCalls = (/** @type {string[][]} */ calls: string[][], verb) => calls.filter((argv) => argv[2] === verb && argv[3] === TICK_TIMER);
+const sudoCalls = (calls: string[][]) => calls.filter((argv) => argv[0] === "sudo");
+const timerCalls = (calls: string[][], verb) => calls.filter((argv) => argv[2] === verb && argv[3] === TICK_TIMER);
 
 describe("the note: version order, and what a refused read is", () => {
   test("running 7.0.0-34 over installed 7.0.0-38 gives the note, named as the row words it", () => {
@@ -228,8 +228,8 @@ describe("the ONE privileged command", () => {
   });
 
   test("runPrivileged refuses any other argv, however close; the granted one passes (the positive control)", () => {
-    const ran = /** @type {string[][]} */ ([]);
-    const run = (/** @type {string[]} */ argv: string[]) => { ran.push(argv); return ""; };
+    const ran = ([] as string[][]);
+    const run = (argv: string[]) => { ran.push(argv); return ""; };
     for (const argv of [["sudo", "systemctl", "poweroff"], ["sudo", "systemctl", "reboot", "--force"], ["sudo", "rm", "-rf", "/"], ["sudo", "-n", "systemctl", "reboot"], ["systemctl", "reboot"], []]) {
       assert.throws(() => runPrivileged(argv, run), /refusing to run/, argv.join(" "));
     }
@@ -246,7 +246,7 @@ describe("the ONE privileged command", () => {
 });
 
 describe("it cannot loop: a second reboot inside 24 hours is refused and the finding is raised", () => {
-  const last = (/** @type {number} */ hoursAgo: number, /** @type {string} */ to: string = "7.0.0-38-generic") => ({ at: NOW - hoursAgo * HOUR, from: "7.0.0-34-generic", to });
+  const last = (hoursAgo: number, to: string = "7.0.0-38-generic") => ({ at: NOW - hoursAgo * HOUR, from: "7.0.0-34-generic", to });
 
   test("a reboot 2 h ago, the note still true: REFUSED, with the finding, and nothing is stopped or run", async () => {
     const h = host({ record: last(2) });
@@ -284,7 +284,7 @@ describe("it cannot loop: a second reboot inside 24 hours is refused and the fin
   });
 
   test("host:check raises the loop finding as a FINDING (a note would wake nobody), and none on the live-shaped host with no record", () => {
-    const store = (/** @type {any} */ record: any) => () => ({ read: () => record, write: () => {} });
+    const store = (record: any) => () => ({ read: () => record, write: () => {} });
     const base = { uname: () => "7.0.0-34-generic", bootEntries: () => BOOT, now: () => NOW, bootedAt: () => NOW - 100 * HOUR };
     assert.equal(kernelFindings({ ...base, store: store(last(2)) })[0].problem, "REBOOTED INSIDE 24 H, NEWER KERNEL STILL NOT RUNNING");
     assert.deepEqual(kernelFindings({ ...base, store: store(null) }), []);
@@ -326,9 +326,9 @@ describe("the read-back after boot", () => {
 
   /** @param {Partial<Parameters<typeof readBack>[0]>} [over] */
   const deps = (over: Partial<Parameters<typeof readBack>[0]> = {}) => ({
-    run: (/** @type {string[]} */ argv: string[]) => (argv.includes("show") ? "747554924\n" : "active\n"),
+    run: (argv: string[]) => (argv.includes("show") ? "747554924\n" : "active\n"),
     uname: () => "7.0.0-38-generic\n", agents: () => [{ label: "ceo", status: "idle" }], seats: () => ["ceo"],
-    proc: (/** @type {string} */ name: string) => ({ softlockup_panic: "1", panic_on_rcu_stall: "1", panic_on_oops: "1", hung_task_panic: "0", panic: "10" })[name] + "\n",
+    proc: (name: string) => ({ softlockup_panic: "1", panic_on_rcu_stall: "1", panic_on_oops: "1", hung_task_panic: "0", panic: "10" })[name] + "\n",
     tracePages: async () => "https://host/ answered 200, 1102 characters", ...over,
   });
 
@@ -375,10 +375,10 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   mkdirSync(join(project, ".agent-org"), { recursive: true });
   writeFileSync(join(project, ".agent-org", "project.json"), JSON.stringify({ schema: 1 }));
   const home = homeHostConfig();
-  const { tool: _tool, ...untooled } = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (home));
-  const plainHost = /** @type {any} */ (untooled);
-  const toolHost = /** @type {any} */ ({ ...untooled, projects: [{ id: home.primary, checkout: project }], tool: "/tool" });
-  const text = (/** @type {string} */ unit: string, /** @type {any} */ host: any = toolHost) => String(shippedUnitText(unit, { host }));
+  const { tool: _tool, ...untooled } = ((home as unknown) as Record<string, unknown>);
+  const plainHost = (untooled as any);
+  const toolHost = ({ ...untooled, projects: [{ id: home.primary, checkout: project }], tool: "/tool" } as any);
+  const text = (unit: string, host: any = toolHost) => String(shippedUnitText(unit, { host }));
 
   test("both units ship and render, and the service is the name the drain excuses (the positive control for every pin below)", () => {
     assert.deepEqual(shippedUnits().filter((u) => u.includes("kernel-reboot")).sort(), [SERVICE, TIMER]);
@@ -408,7 +408,7 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   test("host:check finds the pair CURRENT once installed; a missing, edited or untouched-but-different copy is reported", () => {
     const installedDir = join(scratch, "installed");
     mkdirSync(installedDir, { recursive: true });
-    const systemctl = (/** @type {string[]} */ args: string[]) => (args[0] === "is-enabled" ? "enabled" : "active");
+    const systemctl = (args: string[]) => (args[0] === "is-enabled" ? "enabled" : "active");
     const states = () => [SERVICE, TIMER].map((unit) => unitState(unit, { installedDir, systemctl, host: toolHost }));
     assert.deepEqual(unitDrift(states()).map((d) => `${d.unit}: ${d.problem}`), [`${SERVICE}: NOT INSTALLED`, `${TIMER}: NOT INSTALLED`], "the control: absent is reported");
     for (const unit of [SERVICE, TIMER]) writeFileSync(join(installedDir, unit), text(unit));

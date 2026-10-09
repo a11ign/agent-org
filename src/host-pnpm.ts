@@ -43,7 +43,7 @@ export function pnpmDrift({ path = process.env.PATH ?? "", repoRoot, read = read
     has = version(found).trim();
   } catch (cause) {
     return [{ unit: "pnpm", problem: "DOES NOT RUN", hostProgram: true,
-      detail: `${found} is on the PATH and \`${found} --version\` failed (${/** @type {Error} */ (cause).message}), so its version `
+      detail: `${found} is on the PATH and \`${found} --version\` failed (${(cause as Error).message}), so its version `
         + `is UNKNOWN rather than wrong. ${install}` }];
   }
   if (has === wanted) return [];

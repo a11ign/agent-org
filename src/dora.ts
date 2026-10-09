@@ -91,26 +91,27 @@ const HTTP_NOT_FOUND = "404";
 /** The attestation predicate that names the build's source; the registry also serves a `publish` attestation beside it, which names no commit. */
 const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 
+export type Repository = { repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] };
 /**
- * @typedef {{ repo: string, release: { kind: "npm", package: string } | { kind: "tag" }, releasablePaths: string[] }} Repository
- * @typedef {{ id: string, publishedAt: string, commit: string | null, deprecated: boolean }} Release `commit` is null when it could not be resolved, and for a release older than the window, which no change in it can be in
- * @typedef {{ number: number, mergedAt: string, mergeCommit: string | null, paths: string[] | null }} MergedPr `paths` null: the file list was truncated
- * @typedef {{ number: number, openedAt: string, closedAt: string | null, fixCommit: string | null, fixMergedAt: string | null }} Regression `fixCommit`: the merge commit of the pull request that closed it, merged at `fixMergedAt`
- * @typedef {{ releases: (r: Repository, window: { since: string }) => Release[] | null,
- *   mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null,
- *   regressions: (r: Repository, window: { since: string }) => Regression[] | null,
- *   range: (r: Repository, commits: { base: string, head: string }) => Range | null,
- *   parentOf?: (r: Repository, commit: string) => string | null,
- *   promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null,
- *   distTags?: (r: Repository) => Record<string, string> | null }} Readers `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone.
- *   `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`. `distTags` is the npm package's dist-tags, which say whether it HAS a `next` channel (#4040):
- *   a reader without it leaves that question unasked, and the repository is read as one that has the channel
- * @typedef {{ latest: string | null, notes: Record<string, string> }} PromotionRecords `latest` is the version the `latest` dist-tag names now (`null`: it names none); `notes` is the notes of each
- *   version's GitHub Release, keyed by version, and a version with no Release has no key
- * @typedef {{ status: string, commits: string[] }} Range GitHub's compare of `base...head`: `status` is `ahead`/`identical` when `base` is in `head`'s history, `behind`/`diverged` when it is not;
- *   `commits` are the commits in `head`'s history that are not in `base`'s, so a commit is in `head` exactly when it is in that list or is `base` itself
- * Every reader answers `null` (or throws) for a read that was REFUSED, and `[]` only for a read that found nothing.
+ * `commit` is null when it could not be resolved, and for a release older than the window, which no change in it can be in
  */
+export type Release = { id: string, publishedAt: string, commit: string | null, deprecated: boolean };
+/** `paths` null: the file list was truncated */
+export type MergedPr = { number: number, mergedAt: string, mergeCommit: string | null, paths: string[] | null };
+/** `fixCommit`: the merge commit of the pull request that closed it, merged at `fixMergedAt` */
+export type Regression = { number: number, openedAt: string, closedAt: string | null, fixCommit: string | null, fixMergedAt: string | null };
+/**
+ * `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone. `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`. `distTags` is the npm package's dist-tags, which say whether it HAS a `next` channel (#4040): a reader without it leaves that question unasked, and the repository is read as one that has the channel
+ */
+export type Readers = { releases: (r: Repository, window: { since: string }) => Release[] | null, mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null, regressions: (r: Repository, window: { since: string }) => Regression[] | null, range: (r: Repository, commits: { base: string, head: string }) => Range | null, parentOf?: (r: Repository, commit: string) => string | null, promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null, distTags?: (r: Repository) => Record<string, string> | null };
+/**
+ * `latest` is the version the `latest` dist-tag names now (`null`: it names none); `notes` is the notes of each version's GitHub Release, keyed by version, and a version with no Release has no key
+ */
+export type PromotionRecords = { latest: string | null, notes: Record<string, string> };
+/**
+ * GitHub's compare of `base...head`: `status` is `ahead`/`identical` when `base` is in `head`'s history, `behind`/`diverged` when it is not; `commits` are the commits in `head`'s history that are not in `base`'s, so a commit is in `head` exactly when it is in that list or is `base` itself Every reader answers `null` (or throws) for a read that was REFUSED, and `[]` only for a read that found nothing.
+ */
+export type Range = { status: string, commits: string[] };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // PURE: the metrics, from what the readers returned.
@@ -169,7 +170,7 @@ function ordered(releases: Release[]): (Release & { at: number; })[] | null {
 function ancestryOf({ repository, readers, base, releases }: { repository: Repository; readers: Readers; base: string | null; releases: Release[]; }): { contains: (release: Release, commit: string) => boolean | null; inHistory: (release: Release, commit: string) => boolean | undefined; } {
   /** Keyed by COMMIT: a backport and the release it was cut beside can point at one commit, and the range is the commit's. The Set keeps the order the commits were listed in. @type {Map<string, { status: string, commits: Set<string> } | null>} */
   const ranges: Map<string, { status: string; commits: Set<string>; } | null> = new Map();
-  const rangeOf = (/** @type {Release} */ release: Release) => {
+  const rangeOf = (release: Release) => {
     const head = release.commit;
     if (head === null || base === null) return null;
     if (!ranges.has(head)) {
@@ -185,13 +186,13 @@ function ancestryOf({ repository, readers, base, releases }: { repository: Repos
     const newest = releases.findLast((release) => release.commit !== null);
     const range = newest === undefined || base === null ? null : rangeOf(newest);
     const descends = range !== null && (range.status === "ahead" || range.status === "identical");
-    positions = descends && base !== null ? new Map([[base, 0], ...[...range.commits].map((sha, index) => /** @type {[string, number]} */ ([sha, index + 1]))]) : null;
+    positions = descends && base !== null ? new Map([[base, 0], ...[...range.commits].map((sha, index) => ([sha, index + 1] as [string, number]))]) : null;
     return positions;
   };
   /** A release's place in the history: its own commit's, else its ONLY PARENT's, because a tag is often a one-commit "Release x.y.z" cut from a main commit and never merged back
    *  (all but 3 of agent-org's 185 in the window), and a commit that adds nothing but itself contains what its parent does. @type {Map<string, number | undefined>} */
   const placed: Map<string, number | undefined> = new Map();
-  const placeOf = (/** @type {Release} */ release: Release) => {
+  const placeOf = (release: Release) => {
     const history = positionsOfHistory();
     const head = release.commit;
     if (history === null || head === null) return undefined;
@@ -201,12 +202,12 @@ function ancestryOf({ repository, readers, base, releases }: { repository: Repos
     }
     return placed.get(head);
   };
-  const inHistory = (/** @type {Release} */ release: Release, /** @type {string} */ commit: string) => {
+  const inHistory = (release: Release, commit: string) => {
     const at = placeOf(release);
     const wanted = positionsOfHistory()?.get(commit);
     return at === undefined || wanted === undefined ? undefined : at >= wanted;
   };
-  const contains = (/** @type {Release} */ release: Release, /** @type {string} */ commit: string) => {
+  const contains = (release: Release, commit: string) => {
     const known = inHistory(release, commit);
     if (known !== undefined) return known;
     const range = rangeOf(release);
@@ -259,7 +260,8 @@ function firstContaining({ commit, notBefore, releases, windowStart, contains, i
   return { release, unreadable: false };
 }
 
-/** @typedef {Omit<Parameters<typeof firstContaining>[0], "commit" | "notBefore">} Context what every ancestry question shares */
+/** what every ancestry question shares */
+export type Context = Omit<Parameters<typeof firstContaining>[0], "commit" | "notBefore">;
 
 /** @param {number} now @returns {string[]} the `LOOKBACK_DAYS` UTC dates ending with today's, oldest first */
 function windowDates(now: number): string[] {
@@ -285,8 +287,8 @@ function deploymentFrequency({ releases, releasable, now }: { releases: (Release
  * @returns {{ block: object | null, reason: string | null }} `block` null with a reason when any ancestry could not be read
  */
 function leadTime({ releasable, context, now }: { releasable: MergedPr[]; context: Context; now: number; }): { block: object | null; reason: string | null; } {
-  /** @type {number[]} */ const minutes: number[] = [];
-  /** @type {{ number: number, minutes: number }[]} */ const unreleased: { number: number; minutes: number; }[] = [];
+  const minutes: number[] = [];
+  const unreleased: { number: number; minutes: number; }[] = [];
   for (const pr of releasable) {
     const mergedAt = Date.parse(pr.mergedAt);
     const { release, unreadable } = firstContaining({ ...context, commit: pr.mergeCommit, notBefore: mergedAt });
@@ -322,7 +324,7 @@ function fixingReleases({ regressions, context }: { regressions: Regression[]; c
  * @param {{ inWindow: (Release & { at: number })[], fixes: (Release & { at: number })[] }} input
  */
 function changeFailure({ inWindow, fixes }: { inWindow: (Release & { at: number; })[]; fixes: (Release & { at: number; })[]; }) {
-  const followed = (/** @type {Release & { at: number }} */ release: Release & { at: number; }) => fixes.some((fix) => fix.at > release.at && fix.at - release.at <= FAILURE_FOLLOW_HOURS * MS_PER_HOUR);
+  const followed = (release: Release & { at: number; }) => fixes.some((fix) => fix.at > release.at && fix.at - release.at <= FAILURE_FOLLOW_HOURS * MS_PER_HOUR);
   const failed = inWindow.filter((release) => release.deprecated || followed(release));
   const rate = inWindow.length === 0 ? null : Math.round((PERCENT * failed.length) / inWindow.length);
   return { value: rate, releases: inWindow.length, failed: failed.length, fewReleases: inWindow.length < MIN_RELEASES_FOR_A_RATE,
@@ -335,7 +337,7 @@ function changeFailure({ inWindow, fixes }: { inWindow: (Release & { at: number;
  * @param {{ rows: { regression: Regression, fix: (Release & { at: number }) | null }[], windowStart: number, now: number }} input
  */
 function timeToRestore({ rows, windowStart, now }: { rows: { regression: Regression; fix: (Release & { at: number; }) | null; }[]; windowStart: number; now: number; }) {
-  /** @type {number[]} */ const minutes: number[] = [];
+  const minutes: number[] = [];
   let unrestored = 0;
   let unattributed = 0;
   for (const { regression, fix } of rows) {
@@ -360,9 +362,9 @@ export function promotionTimeFrom(body: string): string | null {
 }
 
 /**
- * @typedef {{ id: string, state: "promoted" | "unpromoted", minutes: number } | { id: string, state: "unknown", why: string }} Wait
  * How long a version waited between `next` and `latest`: to the promotion when it has one, else to now (`unpromoted`). `unknown` when the record cannot say which.
  */
+export type Wait = { id: string, state: "promoted" | "unpromoted", minutes: number } | { id: string, state: "unknown", why: string };
 
 /** @param {{ release: Release & { at: number }, records: PromotionRecords, now: number }} input @returns {Wait} */
 function waitOf({ release, records, now }: { release: Release & { at: number; }; records: PromotionRecords; now: number; }): Wait {
@@ -422,8 +424,8 @@ function channelBlocks({ repository, versions, tags, records, now }: { repositor
 
 /** @param {Repository} repository @param {string} reason */
 function unknownRepository(repository: Repository, reason: string) {
-  return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: /** @type {const} */ ("unknown"), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, promotionLeadTime: null, qualified: null, changeFailure: null, restore: null,
-    reasons: /** @type {Record<string, string>} */ ({}) };
+  return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: ("unknown" as const), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, promotionLeadTime: null, qualified: null, changeFailure: null, restore: null,
+    reasons: ({} as Record<string, string>) };
 }
 
 /**
@@ -441,7 +443,6 @@ function regressionInScope(regression: Regression, windowStart: number): boolean
  * @param {{ releasable: MergedPr[], regressions: Regression[] }} input @returns {string | null}
  */
 function oldestCommit({ releasable, regressions }: { releasable: MergedPr[]; regressions: Regression[]; }): string | null {
-  /** @type {{ commit: string, at: number }[]} */
   const asked: { commit: string; at: number; }[] = [];
   for (const pr of releasable) if (pr.mergeCommit !== null) asked.push({ commit: pr.mergeCommit, at: Date.parse(pr.mergedAt) });
   for (const regression of regressions) if (regression.fixCommit !== null) asked.push({ commit: regression.fixCommit, at: Date.parse(regression.fixMergedAt ?? regression.openedAt) });
@@ -457,7 +458,7 @@ function oldestCommit({ releasable, regressions }: { releasable: MergedPr[]; reg
 function readReleases({ repository, readers, windowStart }: { repository: Repository; readers: Readers; windowStart: number; }): Release[] | null {
   try {
     return readers.releases(repository, { since: new Date(windowStart).toISOString() });
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     return err?.code === NEVER_PUBLISHED && repository.release.kind === "npm" ? [] : null;
   }
 }
@@ -550,12 +551,12 @@ export function measureRepository(repository: Repository, readers: Readers, now:
     ...(fixing.reason === null ? {} : { changeFailure: fixing.reason, restore: fixing.reason }),
   };
   return {
-    repo: repository.repo, npmPackage: npmPackageOf(repository), status: noReleaseYet ? /** @type {const} */ ("no release yet") : /** @type {const} */ ("read"), reason: null,
-    deploymentFrequency: frequency, leadTime: /** @type {any} */ (lead.block), promotionLeadTime: /** @type {any} */ (channel.promotionLeadTime), qualified: /** @type {any} */ (channel.qualified),
-    oldestUnreleasedMinutes: /** @type {any} */ (lead.block)?.oldestUnreleasedMinutes ?? null,
+    repo: repository.repo, npmPackage: npmPackageOf(repository), status: noReleaseYet ? ("no release yet" as const) : ("read" as const), reason: null,
+    deploymentFrequency: frequency, leadTime: (lead.block as any), promotionLeadTime: (channel.promotionLeadTime as any), qualified: (channel.qualified as any),
+    oldestUnreleasedMinutes: (lead.block as any)?.oldestUnreleasedMinutes ?? null,
     changeFailure: fixing.rows === null ? null : changeFailure({ inWindow: frequency.releases, fixes }),
     restore: fixing.rows === null ? null : timeToRestore({ rows: fixing.rows, windowStart, now }),
-    reasons: /** @type {Record<string, string>} */ (reasons),
+    reasons: (reasons as Record<string, string>),
   };
 }
 
@@ -563,7 +564,7 @@ export function measureRepository(repository: Repository, readers: Readers, now:
 function measureOrUnknown(repository: Repository, readers: Readers, now: number): ReturnType<typeof measureRepository> {
   try {
     return measureRepository(repository, readers, now);
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     return unknownRepository(repository, `the measurement failed (${String(err?.message ?? err).split("\n")[0]})`);
   }
 }
@@ -601,8 +602,8 @@ export function dora({ repositories, readers, now }: { repositories: Repository[
   return doraReport({ readings: repositories.map((repository) => readRepository({ repository, readers, now })), now });
 }
 
-/** @typedef {ReturnType<typeof dora>} DoraReport */
-/** @typedef {DoraReport["repositories"][number]} RepositoryReading */
+export type DoraReport = ReturnType<typeof dora>;
+export type RepositoryReading = DoraReport["repositories"][number];
 
 // ---------------------------------------------------------------------------------------------------------------------
 // THE ONE TABLE: what each metric is, which way is better, and how it prints.
@@ -617,9 +618,9 @@ function duration(minutes: number): string {
 
 /** @param {any} b @returns {string} */
 function frequencyText(b: any): string {
-  const days = Object.entries(b.perDay).filter(([, n]) => /** @type {number} */ (n) > 0).map(([date, n]) => `${date.slice(5)} x${n}`);
+  const days = Object.entries(b.perDay).filter(([, n]) => (n as number) > 0).map(([date, n]) => `${date.slice(5)} x${n}`);
   const missed = b.missedDays === null ? "; days a releasable change merged with no release: unknown (merged pull requests unreadable)"
-    : b.missedDays.length === 0 ? "" : `; MISSED (a releasable change merged, nothing shipped): ${b.missedDays.map((/** @type {string} */ d: string) => d.slice(5)).join(", ")}`;
+    : b.missedDays.length === 0 ? "" : `; MISSED (a releasable change merged, nothing shipped): ${b.missedDays.map((d: string) => d.slice(5)).join(", ")}`;
   return `${b.value} release${b.value === 1 ? "" : "s"} in ${LOOKBACK_DAYS} days${days.length === 0 ? "" : ` (${days.join(", ")})`}${missed}`;
 }
 
@@ -682,7 +683,7 @@ export const DORA_METRICS: readonly {
  * @returns {{ state: "value", value: number | null } | { state: "undefined" | "unknown", reason: string }}
  */
 export function metricState(reading: RepositoryReading, metric: (typeof DORA_METRICS)[number]): { state: "value"; value: number | null; } | { state: "undefined" | "unknown"; reason: string; } {
-  const block = /** @type {any} */ (reading)[metric.block];
+  const block = (reading as any)[metric.block];
   if (block === undefined) return { state: "unknown", reason: "this reading was taken before the metric existed" };
   if (block === null) return { state: "unknown", reason: reading.reason ?? reading.reasons[metric.block] ?? "its source could not be read" };
   if (block.undefinedBecause !== null) return { state: "undefined", reason: block.undefinedBecause };
@@ -690,7 +691,7 @@ export function metricState(reading: RepositoryReading, metric: (typeof DORA_MET
 }
 
 /** The id a repository's metric is trended under. */
-export const doraNumberId = (/** @type {string} */ repo: string, /** @type {string} */ metricId: string) => `dora:${repo}:${metricId}`;
+export const doraNumberId = (repo: string, metricId: string) => `dora:${repo}:${metricId}`;
 
 /**
  * The numbers the retrospective trends: one per repository per metric, `null` for UNKNOWN and for UNDEFINED alike (the declarations say which).
@@ -729,7 +730,7 @@ function repositoryLines(reading: RepositoryReading): string[] {
   const lines = [reading.status === "no release yet" ? `- ${reading.repo}: no release yet${age}` : `- ${reading.repo}:`];
   for (const metric of PRINTED) {
     const state = metricState(reading, metric);
-    const body = state.state === "value" ? metric.text(/** @type {any} */ (reading)[metric.block]) : `${state.state} -- ${state.reason}`;
+    const body = state.state === "value" ? metric.text((reading as any)[metric.block]) : `${state.state} -- ${state.reason}`;
     lines.push(`    ${metric.title}${targetNote(metric)}: ${body} (${metric.better} is better)`);
   }
   return lines;
@@ -788,7 +789,7 @@ function run(command: string, args: string[]): string {
   const timeout = Math.min(readLimits.timeoutMs, startable(call));
   try {
     return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout });
-  } catch (/** @type {any} */ err: any) {
+  } catch (err: any) {
     if (err?.code !== "ETIMEDOUT") throw err;
     readLimits.timedOut.push(call);
     throw new Error(`${call} timed out after ${Math.round(timeout / 1000)} s`, { cause: err });
@@ -849,15 +850,15 @@ export const isNameReservation = (version: string) => version.startsWith("0.0.0-
  * @param {any} document the registry's `attestations` document for one version @returns {string | null}
  */
 export function commitFromAttestations(document: any): string | null {
-  const payload = document?.attestations?.find((/** @type {any} */ a: any) => a?.predicateType === PROVENANCE_PREDICATE)?.bundle?.dsseEnvelope?.payload;
+  const payload = document?.attestations?.find((a: any) => a?.predicateType === PROVENANCE_PREDICATE)?.bundle?.dsseEnvelope?.payload;
   if (typeof payload !== "string") return null;
   const statement = attempt(() => JSON.parse(Buffer.from(payload, "base64").toString("utf8")));
-  const source = statement?.predicate?.buildDefinition?.resolvedDependencies?.find((/** @type {any} */ dependency: any) => dependency?.digest?.gitCommit);
+  const source = statement?.predicate?.buildDefinition?.resolvedDependencies?.find((dependency: any) => dependency?.digest?.gitCommit);
   const commit = source?.digest?.gitCommit;
   return typeof commit === "string" && commit.length === SHA_LENGTH && /^[0-9a-f]+$/.test(commit) ? commit : null;
 }
 
-/** @typedef {{ commitOf: (repo: string, ref: string) => string | null, attestedCommit: (npmPackage: string, version: string) => string | null }} CommitReaders */
+export type CommitReaders = { commitOf: (repo: string, ref: string) => string | null, attestedCommit: (npmPackage: string, version: string) => string | null };
 
 /**
  * The releases of an npm package from its registry document: name reservations dropped, and each version in the window placed by its `gitHead`, then its
@@ -867,8 +868,8 @@ export function commitFromAttestations(document: any): string | null {
 export function npmReleasesFrom({ document, repository, since, commits }: { document: any; repository: Repository & { release: { kind: "npm"; package: string; }; }; since: string; commits: CommitReaders; }): Release[] {
   const npmPackage = repository.release.package;
   return Object.entries(document.versions ?? {}).filter(([version]) => !isNameReservation(version)).map(([version, meta]) => ({
-    id: version, publishedAt: document.time?.[version], deprecated: Boolean(/** @type {any} */ (meta).deprecated),
-    commit: resolveCommit({ publishedAt: document.time?.[version], since, known: /** @type {any} */ (meta).gitHead,
+    id: version, publishedAt: document.time?.[version], deprecated: Boolean((meta as any).deprecated),
+    commit: resolveCommit({ publishedAt: document.time?.[version], since, known: (meta as any).gitHead,
       lookups: [() => commits.commitOf(repository.repo, `v${version}`), () => commits.attestedCommit(npmPackage, version)] }),
   }));
 }
@@ -894,7 +895,7 @@ function npmReleases(repository: Repository & { release: { kind: "npm"; package:
 /** @param {Repository} repository @param {{ since: string }} window @returns {Release[]} the `v*` tags that have a published GitHub Release */
 function tagReleases(repository: Repository, { since }: { since: string; }): Release[] {
   const rows = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
-  return rows.filter((/** @type {any} */ r: any) => !r.draft && typeof r.tag_name === "string" && r.tag_name.startsWith("v")).map((/** @type {any} */ r: any) => ({
+  return rows.filter((r: any) => !r.draft && typeof r.tag_name === "string" && r.tag_name.startsWith("v")).map((r: any) => ({
     id: r.tag_name, publishedAt: r.published_at, deprecated: false,
     commit: resolveCommit({ publishedAt: r.published_at, since, known: undefined, lookups: [() => commitOf(repository.repo, r.tag_name)] }),
   }));
@@ -940,27 +941,26 @@ function promotionRecords(repository: Repository & { release: { kind: "npm"; pac
 function regressionRows(repo: string, since: string): Regression[] {
   if (ghJson(["repo", "view", repo, "--json", "hasIssuesEnabled"]).hasIssuesEnabled !== true) return [];
   return ghJson(["issue", "list", "-R", repo, "--label", "regression", "--state", "all", "--limit", "200",
-    "--json", "number,createdAt,closedAt,closedByPullRequestsReferences"]).map((/** @type {any} */ row: any) => ({
+    "--json", "number,createdAt,closedAt,closedByPullRequestsReferences"]).map((row: any) => ({
     number: row.number, openedAt: row.createdAt, closedAt: row.closedAt ?? null,
     ...(row.closedAt && row.closedAt >= since ? fixOf(repo, row.closedByPullRequestsReferences ?? []) : { fixCommit: null, fixMergedAt: null }),
   }));
 }
 
-/** @type {Readers} */
 export const githubReaders: Readers = {
-  releases: (repository, window) => (repository.release.kind === "npm" ? npmReleases(/** @type {any} */ (repository), window) : tagReleases(repository, window)),
+  releases: (repository, window) => (repository.release.kind === "npm" ? npmReleases((repository as any), window) : tagReleases(repository, window)),
   mergedPrs: (repository, { since }) => ghJson(["pr", "list", "-R", repository.repo, "--state", "merged", ...(since === null ? [] : ["--search", `merged:>=${since}`]),
-    "--limit", "1000", "--json", "number,mergedAt,mergeCommit,files"]).map((/** @type {any} */ pr: any) => ({
-    number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((/** @type {any} */ f: any) => f.path) : null,
+    "--limit", "1000", "--json", "number,mergedAt,mergeCommit,files"]).map((pr: any) => ({
+    number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((f: any) => f.path) : null,
   })),
   regressions: (repository, { since }) => regressionRows(repository.repo, since),
-  promotions: (repository) => (repository.release.kind === "npm" ? promotionRecords(/** @type {any} */ (repository)) : null),
+  promotions: (repository) => (repository.release.kind === "npm" ? promotionRecords((repository as any)) : null),
   distTags: (repository) => (repository.release.kind === "npm" ? distTagsOf(repository.release.package) : null),
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
   parentOf: (repository, commit) => parentOf(repository.repo, commit),
   range: (repository, { base, head }) => {
     const pages = ghJson(["api", `repos/${repository.repo}/compare/${base}...${head}?per_page=100`, "--paginate", "--slurp"]);
-    return { status: pages[0].status, commits: pages.flatMap((/** @type {any} */ page: any) => page.commits.map((/** @type {any} */ commit: any) => commit.sha))};
+    return { status: pages[0].status, commits: pages.flatMap((page: any) => page.commits.map((commit: any) => commit.sha))};
   },
 };
 
@@ -1003,7 +1003,7 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  main().catch((/** @type {any} */ err: any) => {
+  main().catch((err: any) => {
     process.stderr.write(`dora: ${String(err?.message ?? err)}\n`);
     process.exit(1);
   });

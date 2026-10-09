@@ -61,7 +61,6 @@ import { recordRemoval } from "./worktree-removal.ts"; // #2827
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.mjs";
 
-/** @type {(cmd: string, args: string[], opts?: { cwd?: string }) => string} */
 const defaultRun: (cmd: string, args: string[], opts?: { cwd?: string; }) => string = (cmd, args, opts = {}): string => {
   assertNoLeakInArgv(cmd, args); // #1053: guarded in the SPAWN HELPER, not per call site
   return execFileSync(cmd, args, { ...opts, env: sandboxGitEnv(), encoding: "utf8" });
@@ -72,7 +71,7 @@ export const EXIT = Object.freeze({ CARRIED: 0, NOT_CARRIED: 1, USAGE: 2, CARRIE
 
 /** @param {unknown} error @returns {string} */
 function errMsg(error: unknown): string {
-  return /** @type {Error} */ (error).message;
+  return (error as Error).message;
 }
 
 /**
@@ -117,7 +116,6 @@ function removeCarryScratch(dir: string, repoRoot: string, { run, record }: { ru
     process.stderr.write(`carry-branch: the removal log could not be written, so ${dir} was left in place -- ${errMsg(error)}\n`);
     return;
   }
-  /** @type {{ event: "removed" | "failed", detail?: string }} */
   let outcome: { event: "removed" | "failed"; detail?: string; } = { event: "removed" };
   try {
     run("git", ["worktree", "remove", "--force", dir], { cwd: repoRoot });
@@ -216,7 +214,6 @@ export function carryBranch(repoRoot: string, branch: string, { run = defaultRun
  * @returns {{ commented: true, prNumber: number } | { commented: false, reason: string }}
  */
 export function noteCarryOnPr(branch: string, carrier: string, reason: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): { commented: true; prNumber: number; } | { commented: false; reason: string; } {
-  /** @type {unknown} */
   let found: unknown;
   try {
     found = JSON.parse(run("gh", ["pr", "list", "--repo", REPO, "--head", branch, "--state", "open",
@@ -227,7 +224,7 @@ export function noteCarryOnPr(branch: string, carrier: string, reason: string, {
   if (!Array.isArray(found) || found.length === 0) {
     return { commented: false, reason: `no open PR found for ${branch} -- nothing to comment on` };
   }
-  const prNumber = /** @type {{ number: number }} */ (found[0]).number;
+  const prNumber = (found[0] as { number: number }).number;
   try {
     run("gh", ["pr", "comment", String(prNumber), "--repo", REPO, "--body",
       `Carried by \`${carrier}\` from a detached checkout: ${reason}`]);
@@ -256,7 +253,7 @@ const writeErr = (text: string) => { process.stderr.write(text); };
  * @returns {{ branch: string, carrier: string, reason: string, repoRoot: string | undefined } | null}
  */
 function carryArgs(argv: string[]): { branch: string; carrier: string; reason: string; repoRoot: string | undefined; } | null {
-  const flag = (/** @type {string} */ name: string) => {
+  const flag = (name: string) => {
     const prefix = `--${name}=`;
     return argv.find((a) => a.startsWith(prefix))?.slice(prefix.length);
   };

@@ -35,9 +35,9 @@ const SHORT_SHA = 9;
 const CHECK_TIMEOUT_MS = 60_000;
 
 /**
- * @typedef {{ state: "green" | "red" | "no-verify", reasons: string[], project: string }} VerifyReading
  * `project` names the repository the reading is about, for the line that says "no verify declared for <project>".
  */
+export type VerifyReading = { state: "green" | "red" | "no-verify", reasons: string[], project: string };
 
 /**
  * The project's `verify` script and its name, or `script: null` when it declares none. A `package.json` that is missing
@@ -50,8 +50,8 @@ export function verifyDeclaration(dir: string, read: (path: string, encoding: "u
   try {
     text = read(join(dir, "package.json"), "utf8");
   } catch (cause) {
-    if (/** @type {any} */ (cause)?.code === "ENOENT") return { script: null, project: basename(dir) };
-    throw new Error(`${join(dir, "package.json")} cannot be read: ${/** @type {any} */ (cause)?.message ?? cause}`, { cause });
+    if ((cause as any)?.code === "ENOENT") return { script: null, project: basename(dir) };
+    throw new Error(`${join(dir, "package.json")} cannot be read: ${(cause as any)?.message ?? cause}`, { cause });
   }
   const manifest = JSON.parse(text);
   const script = manifest?.scripts?.verify;
@@ -66,7 +66,7 @@ export function verifyDeclaration(dir: string, read: (path: string, encoding: "u
 export function readingFromCheck({ status, stdout, stderr }: { status: number | null; stdout: string; stderr: string; }, project: string): VerifyReading {
   if (status === 0) return { state: VERIFY_STATE.GREEN, reasons: [], project };
   const reasons = stdout.split("\n").map((line) => REASON_LINE.exec(line)?.[1]).filter((reason) => reason !== undefined);
-  if (status === 1 && reasons.length > 0) return { state: VERIFY_STATE.RED, reasons: /** @type {string[]} */ (reasons), project };
+  if (status === 1 && reasons.length > 0) return { state: VERIFY_STATE.RED, reasons: (reasons as string[]), project };
   // The check did not answer in its own words (exit 2, a missing command, a timeout): that is red and says so, never green.
   const said = `${stderr}${stdout}`.trim().split("\n").at(-1) ?? "";
   return { state: VERIFY_STATE.RED, project, reasons: [`the project's verify check did not answer (exit ${status ?? "none"})${said ? `: ${said}` : ""}`] };
@@ -140,7 +140,6 @@ export function verifyCheckoutOf(key: string, host: () => { clones?: Readonly<Re
  */
 export function withVerifyStamps(prs: any[], { checkout, git = defaultGit, read = readVerifyStamp }: { checkout: string | undefined; git?: (args: string[]) => string; read?: typeof readVerifyStamp; }) {
   if (checkout === undefined || !prs.some((pr) => pr?.isDraft === true)) return prs;
-  /** @type {(pr: any) => VerifyReading} */
   const stampOf: (pr: any) => VerifyReading = (pr): VerifyReading => {
     const head = String(pr.headRefOid ?? "");
     const { script, project } = verifyDeclaration(checkout);
@@ -153,12 +152,11 @@ export function withVerifyStamps(prs: any[], { checkout, git = defaultGit, read 
   };
   // An unreadable manifest or a failed `git` is RED with its reason and never a thrown error: the tick must survive it, and
   // "could not read" is not "green".
-  /** @type {(pr: any) => VerifyReading} */
   const safely: (pr: any) => VerifyReading = (pr): VerifyReading => {
     try {
       return stampOf(pr);
     } catch (cause) {
-      return { state: VERIFY_STATE.RED, project: basename(checkout), reasons: [`the stamp could not be read: ${/** @type {any} */ (cause)?.message ?? cause}`] };
+      return { state: VERIFY_STATE.RED, project: basename(checkout), reasons: [`the stamp could not be read: ${(cause as any)?.message ?? cause}`] };
     }
   };
   return prs.map((pr) => (pr?.isDraft === true ? { ...pr, verifyStamp: safely(pr) } : pr));
