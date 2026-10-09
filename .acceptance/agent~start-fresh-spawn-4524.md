@@ -6,7 +6,7 @@ Evidence: `wake-start-fresh.test.ts` 9/9 pass, driven through `deliver` with an 
 
 Acceptance: `bash -c 'cd "$AGENT_ORG_TOOL" 2>/dev/null || cd ~/repos/agent-org; npx rstest run --config scripts/rstest/rstest.config.ts src/wake-start-fresh.test.ts'`
 
-Closes: none -- the row stays open until Done-when 3's live reading is posted on it (#4437)
+Closes: none — the row stays open until Done-when 3's live reading is posted on it (#4437)
 
 platform: n/a (spawner logic in `wake.ts`; no GitHub, pnpm, systemd or git feature starts a process past a pace limit)
 
